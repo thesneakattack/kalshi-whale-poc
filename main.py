@@ -62,7 +62,10 @@ state = {
     "last_poll": None,
     "error": None,
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
-    "account": {"connected": account.enabled, "balance": None, "positions": None, "fills": None, "error": None},
+    "account": {
+        "connected": account.enabled, "balance": None, "positions": None, "fills": None,
+        "error": None, "trading_enabled": account.trading_enabled,
+    },
 }
 
 
@@ -93,16 +96,25 @@ async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
 async def _fetch_account_snapshot(cfg: dict) -> dict:
     account.trading_enabled = cfg["kalshi_account"]["trading_enabled"]
     if not account.enabled:
-        return {"connected": False, "balance": None, "positions": None, "fills": None, "error": account.status["error"]}
+        return {
+            "connected": False, "balance": None, "positions": None, "fills": None,
+            "error": account.status["error"], "trading_enabled": account.trading_enabled,
+        }
     try:
         # balance, positions, and fills are independent reads — fetch all three
         # at once instead of one after another.
         balance, positions, fills = await asyncio.gather(
             account.get_balance(), account.get_positions(), account.get_fills(limit=25)
         )
-        return {"connected": True, "balance": balance, "positions": positions, "fills": fills, "error": None}
+        return {
+            "connected": True, "balance": balance, "positions": positions, "fills": fills,
+            "error": None, "trading_enabled": account.trading_enabled,
+        }
     except Exception as e:
-        return {"connected": True, "balance": None, "positions": None, "fills": None, "error": str(e)}
+        return {
+            "connected": True, "balance": None, "positions": None, "fills": None,
+            "error": str(e), "trading_enabled": account.trading_enabled,
+        }
 
 
 async def _check_signal_resolutions(client: KalshiClient):
@@ -306,6 +318,18 @@ class ConfigPatch(BaseModel):
     patch: dict
 
 
+# kalshi_account.trading_enabled is the one config value that turns on real
+# order placement — it doesn't go through the generic config patch endpoint
+# below at all, on purpose. See EnableTradingBody/enable_trading for the only
+# path that can flip it on, which requires a real connected account and an
+# exact-match typed confirmation phrase, not just a checkbox.
+TRADING_CONFIRMATION_PHRASE = "ENABLE REAL TRADING"
+
+
+class EnableTradingBody(BaseModel):
+    confirmation_phrase: str
+
+
 @app.get("/api/state")
 async def get_state():
     return {
@@ -336,8 +360,44 @@ async def get_config():
 
 @app.post("/api/config")
 async def update_config(body: ConfigPatch):
+    if "kalshi_account" in body.patch and "trading_enabled" in (body.patch.get("kalshi_account") or {}):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "kalshi_account.trading_enabled can't be changed through /api/config — "
+                "use POST /api/trading/enable (requires a connected account and a typed "
+                "confirmation phrase) or POST /api/trading/disable."
+            ),
+        )
     new_cfg = config_store.update(body.patch)
     return new_cfg
+
+
+@app.post("/api/trading/enable")
+async def enable_trading(body: EnableTradingBody):
+    if not account.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="No real Kalshi account is connected — set KALSHI_API_KEY_ID and "
+                   "KALSHI_PRIVATE_KEY_PATH in .env first.",
+        )
+    if body.confirmation_phrase != TRADING_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation phrase did not match. Type exactly: "{TRADING_CONFIRMATION_PHRASE}"',
+        )
+    config_store.update({"kalshi_account": {"trading_enabled": True}})
+    account.trading_enabled = True  # take effect immediately, not on the next poll tick
+    return {"trading_enabled": True}
+
+
+@app.post("/api/trading/disable")
+async def disable_trading():
+    # Always allowed, no confirmation needed — turning real trading back off
+    # is never the dangerous direction.
+    config_store.update({"kalshi_account": {"trading_enabled": False}})
+    account.trading_enabled = False
+    return {"trading_enabled": False}
 
 
 @app.post("/api/toggle")

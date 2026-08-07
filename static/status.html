@@ -180,7 +180,7 @@
   <section aria-label="headline status">
     <div class="stats">
       <div class="stat"><div class="k">Total surface</div><div class="v">3,687 lines</div><div class="n">22 .py/.html files, 0 stubs left unimplemented</div></div>
-      <div class="stat"><div class="k">API routes</div><div class="v">18</div><div class="n">4 pages, 4 auth/session, 10 trading/config</div></div>
+      <div class="stat"><div class="k">API routes</div><div class="v">20</div><div class="n">4 pages, 4 auth/session, 12 trading/config</div></div>
       <div class="stat"><div class="k">Dashboard views</div><div class="v">4</div><div class="n">Portfolio, Markets, Whale Watch, Terminal</div></div>
       <div class="stat"><div class="k">Real money moved</div><div class="v">$0</div><div class="n">no order-execution path exists — by design</div></div>
     </div>
@@ -316,6 +316,29 @@
           <code>pytest.ini</code> · <code>requirements-dev.txt</code> · <code>.github/workflows/tests.yml</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 10 · the confirmation gate</div>
+        <h4>Real trading needs a deliberate, typed confirmation now</h4>
+        <p>Closed the gap the roadmap had flagged since before this session: nothing previously stopped
+          <code>kalshi_account.trading_enabled</code> from being flipped except a comment in
+          <code>config/settings.yaml</code>. <code>POST /api/config</code> now structurally refuses to touch that
+          field at all — the only path is <code>POST /api/trading/enable</code>, which requires a real connected
+          account <i>and</i> a typed, exact-match confirmation phrase ("ENABLE REAL TRADING"), not a checkbox.
+          <code>POST /api/trading/disable</code> is always allowed, no confirmation — turning real trading back off
+          is never the dangerous direction. The dashboard's account bar gets a matching control. Building the
+          frontend piece surfaced a real bug before it shipped: the account bar re-renders from scratch on every
+          5-second poll, which would have silently wiped the confirmation phrase (and focus) mid-typing — fixed by
+          capturing and restoring the input's value/selection/focus across each re-render. Verified two ways: 8
+          backend tests exercise every branch (wrong phrase, no account connected, correct phrase, disable) against
+          an isolated copy of <code>config/settings.yaml</code> and the paper broker/risk DBs — not the real,
+          live ones — and a real Chrome session via the project's ddev <code>selenium-chrome</code> service
+          confirmed the gate renders, the confirm button enables only on an exact match, the mid-typing refresh no
+          longer clobbers the input, and a failed backend call surfaces its real error text in the UI.</p>
+        <div class="files"><code>main.py</code> (<code>/api/trading/enable</code>, <code>/api/trading/disable</code>,
+          <code>/api/config</code> guard) · <code>static/index.html</code> (trading-gate UI) ·
+          <code>tests/test_trading_gate.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -356,7 +379,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, trading loop, 18 routes, all state assembly, CORS restricted to <code>ALLOWED_ORIGINS</code></td><td class="loc">446</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, trading loop, 20 routes, all state assembly, CORS restricted, real-trading confirmation gate</td><td class="loc">506</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client (public, unauthenticated)</td><td class="loc">46</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note">shared, connection-pooled httpx client used by the Kalshi clients</td><td class="loc">25</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
@@ -372,7 +395,7 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal</td><td class="loc">813</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate</td><td class="loc">1192</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~550</td><td><span class="pill good">done</span></td></tr>
@@ -407,6 +430,8 @@
           <tr><td class="mod">POST</td><td class="mod">/api/risk/halt</td><td class="note">if configured</td><td class="note">manual kill switch</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/risk/resume</td><td class="note">if configured</td><td class="note">clear a halt</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/reset</td><td class="note">if configured</td><td class="note">reset paper broker, stats, equity history</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/trading/enable</td><td class="note">if configured</td><td class="note">flip real trading on — requires a connected account + typed confirmation phrase</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/trading/disable</td><td class="note">if configured</td><td class="note">flip real trading off — always allowed, no confirmation</td></tr>
           <tr><td class="mod">GET</td><td class="mod">/api/accounts</td><td class="note">if configured</td><td class="note">connected-account status per provider</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/accounts/connect</td><td class="note">if configured</td><td class="note">save encrypted provider credentials</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/accounts/{provider}/disconnect</td><td class="note">if configured</td><td class="note">remove stored credentials</td></tr>

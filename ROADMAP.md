@@ -23,9 +23,18 @@ one is the historical record.
       ever flipped to `true` for real. Flagged with real uncertainty in
       `/status` Known Limitations — this is the one piece of the whole app
       with a genuine correctness question mark.
-- [ ] Add an in-app confirmation step before real trading can be enabled —
-      right now the only thing stopping it is a comment in
-      `config/settings.yaml`, not a UI guard.
+- [x] Add an in-app confirmation step before real trading can be enabled.
+      `POST /api/config` now structurally refuses to touch
+      `kalshi_account.trading_enabled` at all — the only path is
+      `POST /api/trading/enable`, which requires both a connected real
+      account and an exact-match typed confirmation phrase ("ENABLE REAL
+      TRADING", not a checkbox). `POST /api/trading/disable` always works,
+      no confirmation needed. Dashboard gets a matching control on the
+      account bar. Covered by 8 backend tests (`tests/test_trading_gate.py`,
+      isolated from the real config/settings.yaml and data/*.db) and
+      verified live in a real browser via the project's ddev selenium-chrome
+      service, including that the confirmation input survives the
+      dashboard's periodic 5s refresh instead of getting wiped mid-typing.
 - [x] Persist paper broker state (bankroll, open positions, trade log)
       across restarts. `services/paper_broker.py` now persists to
       `data/paper_broker.db`, same SQLite pattern as `signal_log.py`.

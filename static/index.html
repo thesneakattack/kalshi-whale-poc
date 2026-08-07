@@ -198,6 +198,32 @@
   .account-bar summary { cursor: pointer; color: var(--muted); }
   .account-bar pre { max-height: 200px; overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; margin: 6px 0 0; font-size: 11px; }
 
+  .trading-status { display: flex; align-items: center; gap: 8px; }
+  .trading-status .badge-on { color: white; background: var(--danger); font-weight: 700; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 4px; font-size: 11px; }
+  .trading-status .badge-off { color: var(--muted); font-size: 11px; }
+  .trading-gate {
+    width: 100%;
+    margin-top: 8px;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    font-family: var(--sans);
+  }
+  .trading-gate .warn { color: var(--danger); font-weight: 600; margin-bottom: 8px; }
+  .trading-gate .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .trading-gate input {
+    font-family: var(--mono);
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 4px;
+    width: 260px;
+    margin-right: 8px;
+  }
+  .trading-gate button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
   .util-bar {
     display: flex;
     align-items: center;
@@ -828,6 +854,16 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
 
 function renderAccount(account) {
   const el = $('account-panel');
+  // refresh() calls this every 5s and always rebuilds this panel's innerHTML
+  // from scratch - if the trading confirmation gate is open, that would wipe
+  // whatever the user has typed (and their focus/cursor) mid-confirmation.
+  // Capture it here and restore it after the rebuild below.
+  const priorInput = document.getElementById('trading-confirm-input');
+  const priorValue = priorInput ? priorInput.value : '';
+  const hadFocus = priorInput && priorInput === document.activeElement;
+  const priorSelStart = hadFocus ? priorInput.selectionStart : null;
+  const priorSelEnd = hadFocus ? priorInput.selectionEnd : null;
+
   if (!account || !account.connected) {
     el.innerHTML = `<div class="account-bar disconnected">
       <span class="tag">○ REAL KALSHI ACCOUNT — not connected</span>
@@ -849,15 +885,80 @@ function renderAccount(account) {
   if (Array.isArray(positions)) positionCount = positions.length;
   else if (positions && Array.isArray(positions.market_positions)) positionCount = positions.market_positions.length;
 
+  const tradingHtml = account.trading_enabled
+    ? `<span class="trading-status"><span class="badge-on">🔴 REAL TRADING ENABLED</span>
+        <button class="danger" onclick="disableTrading()">Disable</button></span>`
+    : `<span class="trading-status"><span class="badge-off">real trading off</span>
+        <button class="danger" onclick="toggleTradingGate()">Enable Real Trading…</button></span>`;
+
   el.innerHTML = `<div class="account-bar">
     <span class="tag">● REAL KALSHI ACCOUNT — REAL MONEY, not the paper numbers above</span>
     <span class="field"><span class="label">Balance</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
     <span class="field"><span class="label">Positions</span>${positionCount}</span>
+    ${tradingHtml}
     <details>
       <summary>raw response</summary>
       <pre>${JSON.stringify({balance: account.balance, positions: account.positions}, null, 2)}</pre>
     </details>
+    ${tradingGateOpen ? tradingGateHTML() : ''}
   </div>`;
+
+  if (tradingGateOpen) {
+    const input = document.getElementById('trading-confirm-input');
+    if (input && priorValue) {
+      input.value = priorValue;
+      document.getElementById('trading-confirm-btn').disabled = (priorValue !== TRADING_PHRASE);
+    }
+    if (input && hadFocus) {
+      input.focus();
+      input.setSelectionRange(priorSelStart, priorSelEnd);
+    }
+  }
+}
+
+// Real trading is off by default and only ever turns on through this gate —
+// POST /api/config explicitly refuses to touch kalshi_account.trading_enabled
+// (see main.py), so this typed-phrase confirmation is the only path. Typing
+// it out (not a checkbox) is deliberate friction for a decision that places
+// real orders with real money.
+const TRADING_PHRASE = 'ENABLE REAL TRADING';
+let tradingGateOpen = false;
+
+function toggleTradingGate() {
+  tradingGateOpen = !tradingGateOpen;
+  refresh();
+}
+
+function tradingGateHTML() {
+  return `<div class="trading-gate">
+    <div class="warn">⚠ This places real orders with real money on your Kalshi account.</div>
+    <div class="sub">Type <b>${TRADING_PHRASE}</b> exactly to confirm, or Cancel.</div>
+    <input id="trading-confirm-input" type="text" autocomplete="off" placeholder="${TRADING_PHRASE}"
+      oninput="document.getElementById('trading-confirm-btn').disabled = (this.value !== '${TRADING_PHRASE}')">
+    <button class="danger" id="trading-confirm-btn" disabled onclick="confirmEnableTrading()">Confirm</button>
+    <button onclick="toggleTradingGate()">Cancel</button>
+    <div class="sub" id="trading-gate-error" style="color: var(--danger); margin-top: 8px;"></div>
+  </div>`;
+}
+
+async function confirmEnableTrading() {
+  const phrase = document.getElementById('trading-confirm-input').value;
+  const result = await fetchJSON('/api/trading/enable', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({confirmation_phrase: phrase}),
+  });
+  if (result.trading_enabled) {
+    tradingGateOpen = false;
+    refresh();
+  } else {
+    const err = document.getElementById('trading-gate-error');
+    if (err) err.textContent = result.detail || 'Failed to enable real trading.';
+  }
+}
+
+async function disableTrading() {
+  await fetchJSON('/api/trading/disable', {method: 'POST'});
+  refresh();
 }
 
 function sourceLabel(raw) {
