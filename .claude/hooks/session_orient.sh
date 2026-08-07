@@ -1,0 +1,37 @@
+#!/bin/bash
+# SessionStart hook: reconstruct the basics every session instead of leaving
+# it to be manually rediscovered - git status, ddev status, open P0 safety
+# items, and whether data/*.db files exist (they're live while ddev runs -
+# see CLAUDE.md). Most of this predates the repo's git history (see CLAUDE.md
+# for the cutover point), so ROADMAP.md/status.html still matter alongside
+# git log for anything from before that point.
+set -uo pipefail
+cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || exit 0
+
+echo "=== autotrade orientation ==="
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  branch=$(git branch --show-current 2>/dev/null)
+  dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  echo "git: on branch '$branch', $dirty uncommitted change(s) - see CLAUDE.md, git history only covers work after the initial commit"
+fi
+
+if command -v ddev >/dev/null 2>&1 && ddev describe >/dev/null 2>&1; then
+  echo "ddev: running at https://kalshi-whale-poc.ddev.site - the app is probably already up, don't assume a venv is needed"
+else
+  echo "ddev: not detected as running here - check 'ddev describe' / 'ddev start' before assuming the app needs a fresh venv"
+fi
+
+if [ -f ROADMAP.md ]; then
+  p0_open=$(awk '/^## P0/,/^## P1/' ROADMAP.md | grep -c '^- \[ \]')
+  echo "ROADMAP.md: $p0_open open P0 (safety/correctness) item(s) - check before touching trading, risk, or auth code"
+fi
+
+if [ -d data ]; then
+  dbs=$(cd data && ls -- *.db 2>/dev/null | tr '\n' ' ')
+  if [ -n "$dbs" ]; then
+    echo "data/*.db present ($dbs) - LIVE SQLite files the running dev server reads/writes; don't rm/mv them without checking ddev status first"
+  fi
+fi
+
+echo "Docs: ROADMAP.md = forward-looking to-do (check items off in place). static/status.html (/status) = historical build record. Update both when a roadmap item ships - see the /sync-status-docs skill."

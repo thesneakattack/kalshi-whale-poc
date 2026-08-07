@@ -1,0 +1,23 @@
+# DDEV picks up any docker-compose.*.yaml file in .ddev/ and merges it into the project.
+# HTTP_EXPOSE / HTTPS_EXPOSE are DDEV's convention for telling ddev-router to proxy
+# a container's port under https://kalshi-whale-poc.ddev.site
+
+services:
+  fastapi:
+    container_name: ddev-${DDEV_SITENAME}-fastapi
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: "no"
+    environment:
+      - HTTP_EXPOSE=8000:8000
+      - HTTPS_EXPOSE=443:8000
+      - VIRTUAL_HOST=$DDEV_HOSTNAME
+    volumes:
+      - "../:/app"
+      - ".:/mnt/ddev_config:ro"
+    working_dir: /app
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: $DDEV_APPROOT

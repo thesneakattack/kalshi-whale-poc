@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whale Signal — Build Status</title>
+<style>
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --no: #F97066;
+    --whale: #F5B942;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  a { color: var(--yes); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px 64px; }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+    margin-bottom: 32px;
+  }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0; }
+  header .back { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; }
+  header .back:hover { color: var(--text); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 11px;
+    color: var(--yes);
+    margin: 0 0 6px;
+  }
+  h2.title { font-size: 22px; font-weight: 600; margin: 0 0 10px; }
+  .dek { color: var(--muted); max-width: 74ch; margin: 0 0 20px; }
+  .dek .mono { font-family: var(--mono); color: var(--text); }
+
+  nav.jump { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 40px; font-family: var(--mono); font-size: 11px; }
+  nav.jump a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--panel-border); }
+  nav.jump a:hover { color: var(--text); }
+
+  section { margin: 40px 0; }
+  section > .panel-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px;
+  }
+  section > h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+  section > p.lede { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 74ch; }
+
+  /* stat strip */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 14px 16px; }
+  .stat .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .stat .n { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  /* timeline */
+  .timeline { position: relative; padding-left: 26px; }
+  .timeline::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 1px; background: var(--panel-border); }
+  .t-phase { position: relative; margin-bottom: 22px; }
+  .t-phase::before {
+    content: ""; position: absolute; left: -26px; top: 4px; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--yes);
+  }
+  .t-phase .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--yes); }
+  .t-phase h4 { margin: 3px 0 5px; font-size: 14px; }
+  .t-phase p { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; max-width: 70ch; }
+  .t-phase .files { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .t-phase .files code { color: var(--whale); }
+
+  /* pipeline */
+  .pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; row-gap: 14px; }
+  .node { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px 12px; min-width: 118px; flex: 1 1 118px; display: flex; flex-direction: column; gap: 6px; }
+  .node .name { font-weight: 600; font-size: 12.5px; }
+  .node .sub { font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+  .arrow { align-self: center; color: var(--muted); font-size: 16px; padding: 0 2px; }
+  .branch { margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .branch .stem { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .node.dashed { border-style: dashed; background: transparent; flex-direction: row; align-items: center; padding: 8px 12px; flex: 0 1 320px; }
+
+  .pill { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 7px; border-radius: 100px; width: fit-content; font-weight: 700; white-space: nowrap; }
+  .pill.good { background: rgba(45,212,191,0.15); color: var(--yes); }
+  .pill.dormant { background: rgba(245,185,66,0.15); color: var(--whale); }
+  .pill.planned { background: rgba(124,135,148,0.18); color: var(--muted); }
+  .pill.gated { background: rgba(249,112,102,0.15); color: var(--no); }
+
+  /* tables */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; background: var(--panel); }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--panel-border); font-size: 12px; vertical-align: top; }
+  thead th { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: #0D1116; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #161B22; }
+  td.mod { font-family: var(--mono); color: var(--text); }
+  td.loc { font-family: var(--mono); color: var(--muted); }
+  td.note { color: var(--muted); }
+  td code { font-family: var(--mono); color: var(--whale); background: none; }
+
+  /* stage tracker */
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 560px) { .stages { grid-template-columns: 1fr; } }
+  .stage { border: 1px solid var(--panel-border); border-radius: 8px; padding: 14px 16px; background: var(--panel); }
+  .stage.current { border-color: var(--whale); }
+  .stage .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .stage.current .tag { color: var(--whale); }
+  .stage h4 { margin: 6px 0; font-size: 14px; }
+  .stage p { margin: 0; font-size: 12px; color: var(--muted); }
+  .here { display: inline-block; margin-top: 8px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: #2A1D08; background: var(--whale); padding: 2px 7px; border-radius: 4px; font-weight: 700; }
+
+  /* checklist */
+  .checklist { display: flex; flex-direction: column; gap: 8px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--panel-border); border-left: 3px solid var(--danger); background: var(--panel); border-radius: 6px; padding: 10px 12px; }
+  .check .box { flex: 0 0 auto; width: 14px; height: 14px; border: 1.5px solid var(--muted); border-radius: 3px; margin-top: 2px; }
+  .check .txt { font-size: 12px; }
+  .check .txt .why { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+  /* config grid */
+  .cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+  .cfg-cell { background: var(--panel); padding: 10px 14px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .cfg-cell .p { font-size: 12px; color: var(--muted); }
+  .cfg-cell .v { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
+
+  .limitation { border: 1px solid var(--panel-border); border-left: 3px solid var(--whale); background: var(--panel); border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; }
+  .limitation .h { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .limitation .b { font-size: 12px; color: var(--muted); }
+  .limitation .b code { font-family: var(--mono); color: var(--whale); }
+
+  footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--panel-border); color: var(--muted); font-size: 12px; }
+  footer .mono { font-family: var(--mono); color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>WHALE SIGNAL — BUILD STATUS</h1>
+  <a class="back" href="/">← trading terminal</a>
+</header>
+
+<div class="wrap">
+
+  <p class="eyebrow">kalshi-whale-poc · extremely detailed build status</p>
+  <h2 class="title">Everything that's been built, in the order it was built, and exactly what state it's in</h2>
+  <p class="dek">A complete technical reference plus a development timeline — not just what exists today, but the
+    sequence of decisions that got here. Generated by reading the actual repository
+    (<span class="mono">2,964</span> lines across <span class="mono">17</span> files), not from memory.
+    This project has no git history to read from (not a git repo), so the timeline below is the real, ordered
+    record of what was built and why.</p>
+
+  <nav class="jump">
+    <a href="#timeline">Development Timeline</a>
+    <a href="#pipeline">Architecture</a>
+    <a href="#components">Component Reference</a>
+    <a href="#api">API Reference</a>
+    <a href="#config">Configuration Reference</a>
+    <a href="#limitations">Known Limitations</a>
+    <a href="#stages">Path to Live</a>
+    <a href="#checklist">Safety Gates</a>
+  </nav>
+
+  <section aria-label="headline status">
+    <div class="stats">
+      <div class="stat"><div class="k">Total surface</div><div class="v">2,964 lines</div><div class="n">17 files, 0 stubs left unimplemented</div></div>
+      <div class="stat"><div class="k">API routes</div><div class="v">18</div><div class="n">4 pages, 4 auth/session, 10 trading/config</div></div>
+      <div class="stat"><div class="k">Dashboard views</div><div class="v">4</div><div class="n">Portfolio, Markets, Whale Watch, Terminal</div></div>
+      <div class="stat"><div class="k">Real money moved</div><div class="v">$0</div><div class="n">no order-execution path exists — by design</div></div>
+    </div>
+  </section>
+
+  <section id="timeline">
+    <p class="eyebrow">chronological, not categorical</p>
+    <h3>Development Timeline</h3>
+    <p class="lede">Each phase was a distinct request, built on top of the last. Nothing here was planned upfront —
+      this is the actual order things happened in.</p>
+    <div class="timeline">
+
+      <div class="t-phase">
+        <div class="tag">phase 0 · baseline</div>
+        <h4>Original POC</h4>
+        <p>Real Kalshi public market data, a simulated whale-signal feed, and a fake broker. Paper mode only,
+          no accounts, no login, one dashboard.</p>
+        <div class="files"><code>main.py</code> <code>services/kalshi_client.py</code> <code>services/whale_simulator.py</code>
+          <code>services/strategy_engine.py</code> <code>services/risk_manager.py</code> <code>services/paper_broker.py</code>
+          <code>services/config_store.py</code> <code>static/index.html</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 1 · visibility</div>
+        <h4>Build-status dashboard</h4>
+        <p>A separate, locally-hosted page reading the actual repo to answer "is development progressing as
+          intended" — component ledger, pipeline diagram, safety-gate checklist, config snapshot.</p>
+        <div class="files"><code>static/status.html</code> · <code>/status</code> route</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 2 · real accounts</div>
+        <h4>Real Kalshi account access (read-only) + whale-watcher provider library</h4>
+        <p>A second, separate authenticated client using Kalshi's RSA-PSS request signing — read-only endpoints
+          (balance/positions/fills/orders) active as soon as credentials exist; <code>create_order</code>/<code>cancel_order</code>
+          fully implemented but refuse to run unless explicitly enabled. Also generalized the single
+          <code>whale_live.py</code> file into a provider interface + registry so more whale-watcher tools can be
+          added as separate files later.</p>
+        <div class="files"><code>services/kalshi_account_client.py</code> · <code>services/whalewatchers/{base,generic_rest,template_provider,__init__}.py</code>
+          (replaced <code>whale_live.py</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 3 · identity</div>
+        <h4>Google sign-in + Connected Accounts</h4>
+        <p>Single-operator login gate (inert until 3 env vars are set — the app stays fully open otherwise) plus
+          an encrypted local store so whale-watcher credentials can be entered through a form instead of hand-edited
+          into <code>.env</code>. Kalshi's own account deliberately stayed file-path-based — a private key shouldn't
+          pass through a browser form. Along the way, found and fixed an unrelated pre-existing DDEV misconfiguration
+          where two services were both claiming the same hostname/port, causing non-deterministic routing.</p>
+        <div class="files"><code>services/auth.py</code> · <code>services/accounts_store.py</code> ·
+          <code>static/login.html</code> · <code>static/accounts.html</code> · <code>.ddev/config.yaml</code> (router fix)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 4 · clarity</div>
+        <h4>Interface cleanup pass</h4>
+        <p>Session/login status moved to its own always-visible bar instead of being buried next to P&amp;L numbers.
+          Fixed a real word collision: the green "running" dot and the real-money account bar both used "live" for
+          different meanings — the account bar became "REAL KALSHI ACCOUNT" everywhere, and paper numbers got an
+          explicit "PAPER" tag so the two kinds of money on screen can't be confused.</p>
+        <div class="files"><code>static/index.html</code> (header/util-bar restructure) · <code>static/status.html</code>,
+          <code>static/accounts.html</code> (link wording)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 5 · correctness</div>
+        <h4>Real data, not silently-wrong data</h4>
+        <p>Found that the code was written against Kalshi field names (<code>yes_bid</code>, <code>volume</code>) that
+          don't exist in the live API — it actually returns <code>yes_bid_dollars</code> and <code>volume_24h_fp</code>.
+          That single mismatch had been silently causing four separate bugs: blank prices/volume on the dashboard,
+          a "top volume" sort that was a no-op, whale-signal prices falling back to random numbers instead of real
+          market prices, and momentum/contrarian bias always picking the same side. Fixed all four, then replaced
+          raw tickers everywhere with Kalshi's own human-readable title field, with combo-parlay-aware formatting
+          once it became clear every currently open market is a multi-leg combination contract.</p>
+        <div class="files"><code>services/kalshi_client.py</code> · <code>services/whale_simulator.py</code> · <code>main.py</code> ·
+          <code>static/index.html</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 6 · money flow</div>
+        <h4>Positions and trade history made visible</h4>
+        <p>The paper broker had been tracking open positions and a trade log the entire time — none of it was ever
+          rendered anywhere. Added dedicated panels for both, plus a signal→decision funnel stat
+          ("N signals seen → N trades placed → N skipped") so it's obvious at a glance why the bankroll may not be
+          moving, instead of inferring it from a wall of skip reasons.</p>
+        <div class="files"><code>static/index.html</code> · <code>main.py</code> (stats counters)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 7 · range of views</div>
+        <h4>Multi-view dashboard</h4>
+        <p>Split one dense screen into four purpose-built views behind a tab bar: <b>Portfolio</b> (equity-over-time
+          chart, positions, trade log — the definitive "where's my money" view), <b>Markets</b> (a simplified,
+          Kalshi-style card grid — big Yes/No prices, no jargon), <b>Whale Watch</b> (the same cards with a large,
+          aggregated whale-lean indicator per market), and <b>Terminal</b> (the original dense technical view, kept
+          for the signal→decision→config workflow).</p>
+        <div class="files"><code>static/index.html</code> · <code>main.py</code> (equity_history tracking)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 8 · durability</div>
+        <h4>Paper account survives a restart</h4>
+        <p>The paper broker (bankroll, open positions, trade log) was the last piece of runtime state still
+          in-memory only — a restart silently reset it back to <code>config/settings.yaml</code>'s
+          <code>starting_bankroll</code> while <code>signal_log.py</code>'s whale track record kept growing
+          underneath it. Now persists to SQLite the same way. Fixing that surfaced a second, sharper bug: doing
+          it for the broker alone would have kept the recovered bankroll but reset <code>risk_manager.py</code>'s
+          daily-loss baseline to config's number on every restart — either mismeasuring today's loss against a
+          stale figure, or silently un-halting a kill switch that had actually tripped. Persisted that alongside
+          it. <code>POST /api/reset</code> now wipes both in place rather than swapping in a new broker object
+          (which would have left stale rows behind and gotten resurrected on the next restart). Verified against
+          the live dev container: placed a real paper trade, ran a full <code>ddev restart</code>, confirmed the
+          exact position/bankroll/trade survived.</p>
+        <div class="files"><code>services/paper_broker.py</code> (+ <code>data/paper_broker.db</code>) ·
+          <code>services/risk_manager.py</code> (+ <code>data/risk_state.db</code>) · <code>main.py</code> (<code>/api/reset</code>)</div>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="pipeline">
+    <p class="eyebrow">signal → decision → fill, plus everything that gates it</p>
+    <h3>Architecture</h3>
+    <div class="pipeline">
+      <div class="node"><span class="pill good">done</span><span class="name">Kalshi market data</span><span class="sub">read-only, unauthenticated</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Whale-watcher library</span><span class="sub">generic_rest active · template for more</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Strategy engine</span><span class="sub">threshold + cooldown</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Risk manager</span><span class="sub">daily-loss kill switch</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Paper broker</span><span class="sub">simulated fills</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">4-view dashboard</span><span class="sub">polls /api/state · 5s</span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ gated off the paper broker —</span>
+      <div class="node dashed"><span class="pill gated" style="margin-right:8px;">gated</span><span class="sub">real order execution — implemented, refuses to run unless <code>trading_enabled: true</code></span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ parallel, real-account read path —</span>
+      <div class="node dashed"><span class="pill good" style="margin-right:8px;">done</span><span class="sub">Kalshi account client → balance/positions/fills, shown on dashboard header</span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ optional front door —</span>
+      <div class="node dashed"><span class="pill dormant" style="margin-right:8px;">dormant</span><span class="sub">Google sign-in → session → Connected Accounts store, inert until 3 env vars are set</span></div>
+    </div>
+  </section>
+
+  <section id="components">
+    <p class="eyebrow">every file, what it does, current status</p>
+    <h3>Component Reference</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, trading loop, 18 routes, all state assembly</td><td class="loc">351</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client (public, unauthenticated)</td><td class="loc">46</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">RSA-PSS signed client for your real account</td><td class="loc">155</td><td><span class="pill good">reads done</span> <span class="pill gated">writes gated</span></td></tr>
+          <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, now priced off real market data</td><td class="loc">78</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements</td><td class="loc">21</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
+          <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">35</td><td><span class="pill planned">not registered</span></td></tr>
+          <tr><td class="mod">services/whalewatchers/__init__.py</td><td class="note">provider registry, selects active one via env var</td><td class="loc">22</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic</td><td class="loc">48</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/risk_manager.py</td><td class="note">daily loss cap, kill switch, manual halt — day_start_bankroll/halt state persisted to <code>data/risk_state.db</code></td><td class="loc">95</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/paper_broker.py</td><td class="note">simulated fills, positions, trade log, P&amp;L — persisted to <code>data/paper_broker.db</code>, survives restarts</td><td class="loc">193</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
+          <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal</td><td class="loc">813</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
+          <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">499</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
+          <tr><td class="mod">shadow mode</td><td class="note">logs intended trades, executes none</td><td class="loc">—</td><td><span class="pill planned">not started</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="api">
+    <p class="eyebrow">every route main.py serves</p>
+    <h3>API Reference</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Auth gate</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="mod">GET</td><td class="mod">/</td><td class="note">if configured</td><td class="note">trading terminal (4-view dashboard)</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/status</td><td class="note">if configured</td><td class="note">this page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/login</td><td class="note">public</td><td class="note">Google sign-in page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/accounts</td><td class="note">if configured</td><td class="note">Connected Accounts management page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/session</td><td class="note">public</td><td class="note">current login state, for the header</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/auth/login</td><td class="note">public</td><td class="note">redirects to Google's consent screen</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/auth/callback</td><td class="note">public</td><td class="note">exchanges code, verifies ID token, opens session</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/auth/logout</td><td class="note">public</td><td class="note">clears session</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/state</td><td class="note">if configured</td><td class="note">everything the dashboard polls every 5s</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/config</td><td class="note">if configured</td><td class="note">current settings.yaml</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/config</td><td class="note">if configured</td><td class="note">patch + persist settings.yaml</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/toggle</td><td class="note">if configured</td><td class="note">pause/resume the trading loop</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/risk/halt</td><td class="note">if configured</td><td class="note">manual kill switch</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/risk/resume</td><td class="note">if configured</td><td class="note">clear a halt</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/reset</td><td class="note">if configured</td><td class="note">reset paper broker, stats, equity history</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/accounts</td><td class="note">if configured</td><td class="note">connected-account status per provider</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/accounts/connect</td><td class="note">if configured</td><td class="note">save encrypted provider credentials</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/accounts/{provider}/disconnect</td><td class="note">if configured</td><td class="note">remove stored credentials</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="margin-top:10px;">"if configured" means: open to anyone while <code style="color:var(--whale); font-family:var(--mono);">GOOGLE_CLIENT_ID</code>/<code style="color:var(--whale); font-family:var(--mono);">GOOGLE_CLIENT_SECRET</code>/<code style="color:var(--whale); font-family:var(--mono);">APP_SECRET_KEY</code> aren't all set (today's default); requires a valid session once they are.</p>
+  </section>
+
+  <section id="config">
+    <p class="eyebrow">every knob, where it lives, what it defaults to</p>
+    <h3>Configuration Reference</h3>
+    <p class="lede"><code style="color:var(--whale); font-family:var(--mono);">config/settings.yaml</code> — non-secret tuning, committed to git, editable live from the dashboard's Controls panel:</p>
+    <div class="cfg-grid">
+      <div class="cfg-cell"><span class="p">mode</span><span class="v">paper</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.poll_interval_sec</span><span class="v">15s</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.watchlist_size</span><span class="v">top 8 by volume</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.markets_watchlist</span><span class="v">[] (auto)</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.signal_frequency_sec</span><span class="v">~12s avg</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.whale_size_range</span><span class="v">5,000–50,000</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.bias</span><span class="v">random</span></div>
+      <div class="cfg-cell"><span class="p">strategy.entry_threshold</span><span class="v">0.65 confidence</span></div>
+      <div class="cfg-cell"><span class="p">strategy.max_position_pct</span><span class="v">5% of bankroll</span></div>
+      <div class="cfg-cell"><span class="p">strategy.cooldown_sec</span><span class="v">300s</span></div>
+      <div class="cfg-cell"><span class="p">risk.starting_bankroll</span><span class="v">$10,000</span></div>
+      <div class="cfg-cell"><span class="p">risk.max_daily_loss_pct</span><span class="v">10%</span></div>
+      <div class="cfg-cell"><span class="p">risk.kill_switch_enabled</span><span class="v">true</span></div>
+      <div class="cfg-cell"><span class="p">kalshi_account.trading_enabled</span><span class="v" style="color:var(--danger);">false</span></div>
+    </div>
+
+    <p class="lede" style="margin-top:24px;"><code style="color:var(--whale); font-family:var(--mono);">.env</code> — secrets and URLs, gitignored, every variable optional:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Variable</th><th>Default if blank</th><th>Unlocks</th></tr></thead>
+        <tbody>
+          <tr><td class="mod">KALSHI_API_KEY_ID</td><td class="note">stays paper-only</td><td class="note">real account read access (with the key below)</td></tr>
+          <tr><td class="mod">KALSHI_PRIVATE_KEY_PATH</td><td class="note">stays paper-only</td><td class="note">real account read access (with the key above)</td></tr>
+          <tr><td class="mod">GOOGLE_CLIENT_ID</td><td class="note">app stays fully open</td><td class="note">part of the Google login gate (needs all 3)</td></tr>
+          <tr><td class="mod">GOOGLE_CLIENT_SECRET</td><td class="note">app stays fully open</td><td class="note">part of the Google login gate (needs all 3)</td></tr>
+          <tr><td class="mod">APP_SECRET_KEY</td><td class="note">app stays fully open</td><td class="note">session signing + Connected Accounts encryption</td></tr>
+          <tr><td class="mod">ALLOWED_GOOGLE_EMAIL</td><td class="note">any Google account can sign in</td><td class="note">restricts login to one address</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_PROVIDER</td><td class="note">generic_rest</td><td class="note">which services/whalewatchers/ provider is active</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_API_URL</td><td class="note">falls back to the built-in simulator</td><td class="note">generic_rest provider's live feed</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_API_KEY</td><td class="note">unauthenticated request to the feed</td><td class="note">auth header for the live feed</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_*_FIELD</td><td class="note">ticker/side/size/price</td><td class="note">field-name mapping for non-matching feed JSON</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="limitations">
+    <p class="eyebrow">honest, not optimistic</p>
+    <h3>Known Limitations</h3>
+    <div class="limitation">
+      <div class="h">Every currently open Kalshi market is a multi-leg combo contract</div>
+      <div class="b">Verified by paginating 500 live open markets from Kalshi's real API — zero simple single-outcome
+        markets exist right now. Titles are formatted as "<code>N-leg parlay: A, B +N more</code>" to stay scannable,
+        but that's the ceiling on readability given the actual data, not a partial fix.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">Order-placement request schema is unverified against Kalshi's current docs</div>
+      <div class="b">Research surfaced more than one order-placement API shape on Kalshi's side (this targets the
+        classic prediction-markets shape, not their separate perpetuals/margin product). Irrelevant while
+        <code>trading_enabled: false</code>, but re-verify the exact request body in
+        <code>services/kalshi_account_client.py</code> before ever flipping that switch.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">No "close position" flow</div>
+      <div class="b">The paper broker opens positions but nothing ever explicitly closes one — equity reflects
+        mark-to-market unrealized P&amp;L on whatever's still open. There's no realized-P&amp;L concept yet, so none
+        is shown.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">Real balance/position field names are best-effort</div>
+      <div class="b">The Live Account panel tries common Kalshi response shapes for balance/positions and always
+        shows the raw JSON alongside its best-effort formatting, specifically because those exact field names
+        weren't independently confirmed the way the read-only GET paths' existence was.</div>
+    </div>
+  </section>
+
+  <section id="stages">
+    <p class="eyebrow">paper → shadow → live</p>
+    <h3>Where this sits on the path to real money</h3>
+    <div class="stages">
+      <div class="stage current">
+        <div class="tag">stage 1</div>
+        <h4>Paper</h4>
+        <p>Fake fills against real Kalshi prices and a simulated or live whale feed. Nothing leaves the process.</p>
+        <span class="here">you are here</span>
+      </div>
+      <div class="stage">
+        <div class="tag">stage 2</div>
+        <h4>Shadow</h4>
+        <p>Logs what it would have traded against a live whale feed. Still places nothing. Not started yet.</p>
+      </div>
+      <div class="stage">
+        <div class="tag">stage 3</div>
+        <h4>Live</h4>
+        <p>Real orders through the already-implemented, already-gated <code>create_order</code>/<code>cancel_order</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="checklist">
+    <p class="eyebrow">gates before real capital</p>
+    <h3>Nothing here is done yet — and that's correct for a POC</h3>
+    <div class="checklist">
+      <div class="check"><div class="box"></div><div class="txt">Re-verify the order-placement request schema against Kalshi's current API reference.
+        <span class="why">Why: flagged above as unverified — the one piece of this build with real ambiguity.</span></div></div>
+      <div class="check"><div class="box"></div><div class="txt">Build shadow mode: logs intended trades, executes none.
+        <span class="why">Why: the required step before ever flipping to live.</span></div></div>
+      <div class="check"><div class="box"></div><div class="txt">Run shadow mode against a live whale feed and compare decisions to what you'd actually have wanted.
+        <span class="why">Why: validates the strategy on real signal noise, not the simulator's.</span></div></div>
+      <div class="check"><div class="box"></div><div class="txt">Trust the kill switch and position limits with real bankroll numbers before wiring them to actual capital.
+        <span class="why">Why: the daily-loss halt in risk_manager.py has only ever seen a paper bankroll.</span></div></div>
+      <div class="check"><div class="box"></div><div class="txt">Set ALLOWED_GOOGLE_EMAIL if the app is reachable from outside your own machine.
+        <span class="why">Why: without it, any Google account that completes the consent screen gets in.</span></div></div>
+      <div class="check"><div class="box"></div><div class="txt">Confirm compliance posture — Kalshi is a CFTC-regulated exchange.
+        <span class="why">Why: this is a POC, not financial advice or a production trading system.</span></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Generated by reading the repository, not by polling a running instance — for live P&amp;L, positions, and
+      controls, open <span class="mono">/</span>. Source of truth for the roadmap is <span class="mono">README.md</span>.</p>
+  </footer>
+
+</div>
+</body>
+</html>

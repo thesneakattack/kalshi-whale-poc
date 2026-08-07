@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connected Accounts — Whale Signal</title>
+<style>
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --no: #F97066;
+    --whale: #F5B942;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.55; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 20px 64px; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--panel-border); background: var(--panel); margin-bottom: 28px;
+  }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0; }
+  header .right { display: flex; align-items: center; gap: 14px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  header a.back { color: var(--muted); text-decoration: none; }
+  header a.back:hover { color: var(--text); }
+  #session-info { display: flex; align-items: center; gap: 8px; }
+  #session-info img { width: 20px; height: 20px; border-radius: 50%; }
+  #session-info button {
+    background: none; border: 1px solid var(--panel-border); color: var(--muted);
+    font-family: var(--sans); font-size: 11px; padding: 4px 8px; border-radius: 5px; cursor: pointer;
+  }
+
+  section { margin-bottom: 32px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 16px 18px; }
+  .card + .card { margin-top: 12px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .name { font-weight: 600; font-size: 14px; }
+  .pill { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 100px; font-weight: 700; }
+  .pill.connected { background: rgba(45,212,191,0.15); color: var(--yes); }
+  .pill.not-connected { background: rgba(124,135,148,0.18); color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .note code { color: var(--whale); }
+
+  .field { margin: 10px 0; }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .field input {
+    width: 100%; background: var(--bg); border: 1px solid var(--panel-border); color: var(--text);
+    padding: 7px 9px; border-radius: 6px; font-family: var(--mono); font-size: 12px;
+  }
+  .field input:focus { outline: none; border-color: var(--whale); }
+  .field-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 14px; }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+  button.action {
+    font-family: var(--sans); font-size: 12px; font-weight: 600; padding: 8px 14px; border-radius: 6px;
+    border: 1px solid var(--panel-border); background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  button.action.primary { background: var(--yes); color: #06231F; border: none; }
+  button.action.danger { background: transparent; color: var(--no); border: 1px solid var(--no); }
+  button.action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .banner {
+    background: rgba(245,185,66,0.1); border: 1px solid var(--whale); color: var(--whale);
+    font-size: 12px; padding: 10px 14px; border-radius: 6px; margin-bottom: 20px; font-family: var(--mono);
+  }
+  .status-msg { font-size: 12px; margin-top: 8px; font-family: var(--mono); }
+  .status-msg.ok { color: var(--yes); }
+  .status-msg.err { color: var(--no); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CONNECTED ACCOUNTS</h1>
+  <div class="right">
+    <a class="back" href="/">← trading terminal</a>
+    <div id="session-info"></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div id="storage-banner"></div>
+
+  <section>
+    <h2>Kalshi account</h2>
+    <div class="card">
+      <div class="row">
+        <span class="name">Your real Kalshi account</span>
+        <span class="pill" id="kalshi-pill">—</span>
+      </div>
+      <p class="note" id="kalshi-note">Checking…</p>
+      <p class="note">
+        This one stays file-path based in <code>.env</code> (<code>KALSHI_API_KEY_ID</code> /
+        <code>KALSHI_PRIVATE_KEY_PATH</code>) rather than a form on this page — an RSA private
+        key shouldn't pass through a browser input. See README for setup steps.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Whale-watcher providers</h2>
+    <div class="card">
+      <div class="row">
+        <span class="name">generic_rest <span style="color:var(--muted); font-weight:400;">(REST + field mapping)</span></span>
+        <span class="pill" id="ww-pill">—</span>
+      </div>
+      <p class="note">Connecting here overrides the WHALE_WATCHER_* values in <code>.env</code> — no restart needed.</p>
+
+      <div class="field-grid">
+        <div class="field"><label>API URL</label><input id="f-api-url" placeholder="https://..."></div>
+        <div class="field"><label>API key (optional)</label><input id="f-api-key" type="password"></div>
+        <div class="field"><label>Ticker field</label><input id="f-ticker-field" placeholder="ticker"></div>
+        <div class="field"><label>Side field</label><input id="f-side-field" placeholder="side"></div>
+        <div class="field"><label>Size field</label><input id="f-size-field" placeholder="size"></div>
+        <div class="field"><label>Price field</label><input id="f-price-field" placeholder="price"></div>
+      </div>
+
+      <div class="btn-row">
+        <button class="action primary" id="connect-btn">Save &amp; Connect</button>
+        <button class="action danger" id="disconnect-btn">Disconnect</button>
+      </div>
+      <div id="ww-status" class="status-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="name" style="color: var(--muted);">template <span style="font-weight:400;">(not registered)</span></span>
+        <span class="pill not-connected">not started</span>
+      </div>
+      <p class="note">Copy <code>services/whalewatchers/template_provider.py</code> to add a real named
+        provider once you've picked one — see the file's own docstring.</p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fj = (url, opts) => fetch(url, opts).then(r => r.json().then(data => ({ok: r.ok, data})));
+
+async function loadSession() {
+  const {data} = await fj('/api/session');
+  const el = $('session-info');
+  if (!data.auth_configured) { el.textContent = 'Open access · no login required'; return; }
+  if (data.user) {
+    el.innerHTML = `${data.user.picture ? `<img src="${data.user.picture}">` : ''}
+      <span>Signed in as ${data.user.email}</span>
+      <button onclick="fetch('/auth/logout',{method:'POST'}).then(()=>location.href='/login')">Logout</button>`;
+  } else {
+    el.innerHTML = `<a class="back" href="/login">Not signed in</a>`;
+  }
+}
+
+async function loadAccounts() {
+  const {data} = await fj('/api/accounts');
+  if (!data.storage_enabled) {
+    $('storage-banner').innerHTML = `<div class="banner">Set APP_SECRET_KEY in .env to enable encrypted
+      storage for connected accounts — the form below is disabled until then.</div>`;
+    $('connect-btn').disabled = true;
+  }
+  const connected = data.connected['generic_rest'];
+  $('ww-pill').className = 'pill ' + (connected ? 'connected' : 'not-connected');
+  $('ww-pill').textContent = connected ? 'connected' : 'not connected';
+  $('disconnect-btn').disabled = !connected;
+}
+
+async function loadKalshi() {
+  const {data} = await fj('/api/state');
+  const acct = data.account || {};
+  const pill = $('kalshi-pill');
+  const note = $('kalshi-note');
+  if (acct.connected) {
+    pill.className = 'pill connected';
+    pill.textContent = acct.error ? 'error' : 'connected';
+    note.textContent = acct.error || 'Connected — balance/positions shown on the trading terminal.';
+  } else {
+    pill.className = 'pill not-connected';
+    pill.textContent = 'not connected';
+    note.textContent = 'Not connected — set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env.';
+  }
+}
+
+$('connect-btn').addEventListener('click', async () => {
+  const credentials = {
+    api_url: $('f-api-url').value.trim(),
+    api_key: $('f-api-key').value.trim(),
+    ticker_field: $('f-ticker-field').value.trim(),
+    side_field: $('f-side-field').value.trim(),
+    size_field: $('f-size-field').value.trim(),
+    price_field: $('f-price-field').value.trim(),
+  };
+  const {ok, data} = await fj('/api/accounts/connect', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider: 'generic_rest', credentials}),
+  });
+  const msg = $('ww-status');
+  msg.className = 'status-msg ' + (ok ? 'ok' : 'err');
+  msg.textContent = ok ? 'Connected.' : (data.detail || 'Failed to connect.');
+  if (ok) loadAccounts();
+});
+
+$('disconnect-btn').addEventListener('click', async () => {
+  await fetch('/api/accounts/generic_rest/disconnect', {method: 'POST'});
+  loadAccounts();
+});
+
+loadSession();
+loadAccounts();
+loadKalshi();
+</script>
+</body>
+</html>

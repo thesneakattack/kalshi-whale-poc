@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+venv/
+data/*.db
+.ddev/.web
+.ddev/db_snapshots
+
+# Kalshi RSA private key — never commit this, wherever KALSHI_PRIVATE_KEY_PATH points
+*.pem
+*.key

@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whale Signal — Paper Trading Terminal</title>
+<style>
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --no: #F97066;
+    --whale: #F5B942;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--yes); box-shadow: 0 0 8px var(--yes); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .equity-strip { display: flex; gap: 28px; font-family: var(--mono); }
+  .equity-strip .item { text-align: right; }
+  .equity-strip .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .equity-strip .value { font-size: 16px; font-weight: 600; }
+  .value.pos { color: var(--yes); }
+  .value.neg { color: var(--no); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1.3fr 1.2fr 1fr;
+    gap: 1px;
+    background: var(--panel-border);
+    height: calc(100vh - 57px);
+  }
+  .col { background: var(--bg); overflow-y: auto; padding: 16px; }
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .market-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .market-row .ticker { color: var(--text); font-weight: 600; }
+  .market-row .price { color: var(--muted); }
+
+  .position-row, .trade-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .position-row .name, .trade-row .name { flex: 1; min-width: 0; }
+  .position-row .nums, .trade-row .nums {
+    text-align: right; white-space: nowrap; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  }
+  .pnl.pos { color: var(--yes); }
+  .pnl.neg { color: var(--no); }
+
+  .funnel-bar {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 9px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .funnel-bar b { color: var(--text); font-size: 13px; }
+
+  .signal-card, .decision-card {
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    animation: slide-in 0.3s ease;
+  }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .signal-card .top-row, .decision-card .top-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .side-tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .side-tag.yes { background: rgba(45,212,191,0.15); color: var(--yes); }
+  .side-tag.no { background: rgba(249,112,102,0.15); color: var(--no); }
+  .conf-bar { height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .conf-fill { height: 100%; background: var(--whale); }
+  .decision-card.trade { border-left: 3px solid var(--yes); }
+  .decision-card.skip { border-left: 3px solid var(--panel-border); opacity: 0.7; }
+  .action-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  .action-tag.trade { color: var(--yes); }
+  .action-tag.skip { color: var(--muted); }
+
+  .config-group { margin-bottom: 20px; }
+  .config-group h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; margin: 0 0 10px 0; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .field input {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 7px 9px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .field input:focus { outline: none; border-color: var(--whale); }
+
+  button {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--yes); color: #06231F; border: none; }
+  button.danger { background: var(--danger); color: white; border: none; }
+  .btn-row { display: flex; gap: 8px; margin-top: 6px; }
+
+  .account-bar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 8px 20px;
+    background: rgba(229,72,77,0.08);
+    border-bottom: 1px solid var(--danger);
+    font-family: var(--mono);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .account-bar.disconnected { background: var(--panel); border-bottom: 1px solid var(--panel-border); }
+  .account-bar .tag { color: var(--danger); font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
+  .account-bar.disconnected .tag { color: var(--muted); }
+  .account-bar .field { color: var(--text); }
+  .account-bar .field .label { color: var(--muted); margin-right: 4px; }
+  .account-bar .msg { color: var(--muted); }
+  .account-bar details { margin-left: auto; }
+  .account-bar summary { cursor: pointer; color: var(--muted); }
+  .account-bar pre { max-height: 200px; overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; margin: 6px 0 0; font-size: 11px; }
+
+  .util-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 20px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--panel-border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .util-bar .tools { display: flex; align-items: center; gap: 12px; }
+  .util-bar .tools .label { text-transform: uppercase; letter-spacing: 0.08em; margin-right: 2px; }
+  .util-bar a { color: var(--muted); text-decoration: none; }
+  .util-bar a:hover { color: var(--text); }
+  #session-info { display: flex; align-items: center; gap: 8px; }
+  #session-info button {
+    background: none; border: 1px solid var(--panel-border); color: var(--muted);
+    font-family: var(--sans); font-size: 10px; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+  }
+  .mode-tag {
+    font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--yes); border: 1px solid var(--yes); padding: 3px 7px; border-radius: 4px; align-self: center;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    padding: 0 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    padding: 12px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--whale); }
+  .view { display: none; }
+  .view.active { display: block; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 20px; }
+
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  .market-card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .market-card .title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+  .market-card .prices { display: flex; gap: 10px; }
+  .price-btn { flex: 1; text-align: center; border-radius: 8px; padding: 10px 8px; font-family: var(--mono); }
+  .price-btn.yes { background: rgba(45,212,191,0.1); border: 1px solid var(--yes); }
+  .price-btn.no { background: rgba(249,112,102,0.1); border: 1px solid var(--no); }
+  .price-btn .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .price-btn .val { font-size: 20px; font-weight: 700; }
+  .price-btn.yes .val { color: var(--yes); }
+  .price-btn.no .val { color: var(--no); }
+  .prob-bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--no); }
+  .prob-bar .fill { height: 100%; background: var(--yes); }
+  .market-card .meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; justify-content: space-between; }
+
+  .whale-lean { border-top: 1px solid var(--panel-border); padding-top: 10px; }
+  .whale-lean .headline { font-size: 12px; font-weight: 700; }
+  .whale-lean .headline.yes { color: var(--yes); }
+  .whale-lean .headline.no { color: var(--no); }
+  .whale-lean .headline.none { color: var(--muted); font-weight: 400; }
+  .whale-bar { height: 10px; border-radius: 5px; overflow: hidden; display: flex; margin-top: 6px; background: var(--panel-border); }
+  .whale-bar .yes-seg { background: var(--yes); }
+  .whale-bar .no-seg { background: var(--no); }
+  .whale-lean .sub { font-size: 10px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .winrate-block { border-top: 1px solid var(--panel-border); padding-top: 10px; margin-top: 2px; }
+  .winrate-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .winrate-block .sub { font-size: 10px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+
+  .account-toggle { display: flex; gap: 8px; margin-bottom: 16px; }
+  .account-toggle .toggle-btn {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--muted);
+    font-family: var(--sans); font-size: 12px; font-weight: 600; padding: 9px 16px; border-radius: 6px; cursor: pointer;
+  }
+  .account-toggle .toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #toggle-btn-paper.active { border-color: var(--yes); color: var(--yes); background: rgba(45,212,191,0.1); }
+  #toggle-btn-real.active { border-color: var(--danger); color: var(--danger); background: rgba(229,72,77,0.1); }
+  .raw-json { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 240px; margin-top: 8px; }
+  .raw-json summary { cursor: pointer; color: var(--muted); font-size: 11px; margin-top: 8px; }
+
+  .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+  .stat-cards .cell { background: var(--panel); padding: 12px 16px; }
+  .stat-cards .cell .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  .stat-cards .cell .val { font-family: var(--mono); font-size: 18px; font-weight: 600; margin-top: 4px; }
+
+  /* "trading for dummies" panel — plain-English sentences, not a stat table */
+  .dummies-intro {
+    background: rgba(245,185,66,0.08); border: 1px solid var(--whale); border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 12px; font-size: 12.5px; color: var(--text); line-height: 1.8;
+  }
+  .dummies-intro b { color: var(--whale); }
+  .dummies-card {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 10px; font-size: 13px; line-height: 1.85; font-family: var(--sans);
+  }
+  .dummies-card b { color: var(--text); }
+  .dummies-card .hl-yes { color: var(--yes); font-weight: 700; }
+  .dummies-card .hl-no { color: var(--no); font-weight: 700; }
+  .dummies-card .hl-whale { color: var(--whale); font-weight: 700; }
+  .dummies-verdict { margin-top: 8px; font-weight: 700; font-size: 13px; }
+  .dummies-verdict.aligned { color: var(--yes); }
+  .dummies-verdict.against { color: var(--no); }
+  .dummies-verdict.unknown { color: var(--muted); font-weight: 400; }
+
+  .empty { color: var(--muted); font-size: 12px; padding: 20px 0; text-align: center; }
+  .halted-banner {
+    background: rgba(229,72,77,0.12);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="util-bar">
+  <div class="tools">
+    <span class="label">Tools</span>
+    <a href="/accounts">Connected Accounts</a>
+    <a href="/status">Build Status</a>
+  </div>
+  <div id="session-info"></div>
+</div>
+
+<header>
+  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span></h1>
+  <div class="equity-strip">
+    <span class="mode-tag">PAPER</span>
+    <div class="item"><div class="label">Bankroll</div><div class="value" id="bankroll">—</div></div>
+    <div class="item"><div class="label">Equity</div><div class="value" id="equity">—</div></div>
+    <div class="item"><div class="label">Unrealized P&amp;L</div><div class="value" id="pnl">—</div></div>
+  </div>
+</header>
+
+<div id="account-panel"></div>
+
+<div class="tab-bar">
+  <button class="tab-btn" id="tab-btn-portfolio" onclick="showView('portfolio'); refresh();">Portfolio</button>
+  <button class="tab-btn" id="tab-btn-markets" onclick="showView('markets'); refresh();">Markets</button>
+  <button class="tab-btn" id="tab-btn-whale" onclick="showView('whale'); refresh();">Whale Watch</button>
+  <button class="tab-btn" id="tab-btn-terminal" onclick="showView('terminal'); refresh();">Terminal</button>
+</div>
+
+<!-- Portfolio: the definitive "where is my money" view -->
+<div class="view" id="view-portfolio">
+  <div class="wrap">
+    <div class="account-toggle">
+      <button class="toggle-btn active" id="toggle-btn-paper" onclick="setAccountMode('paper')">🧪 Paper (simulated)</button>
+      <button class="toggle-btn" id="toggle-btn-real" onclick="setAccountMode('real')" title="Connect KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env first">💰 Real Kalshi Account</button>
+    </div>
+
+    <div class="panel-title" style="margin-top:0;"><span id="equity-title-text">Equity over time (paper)</span></div>
+    <div id="equity-chart"><div class="empty">Not enough history yet — check back in a minute</div></div>
+
+    <div class="panel-title" style="margin-top:24px;"><span id="positions-title-text">Open Positions</span> <span id="position-count"></span></div>
+    <div id="positions-list"><div class="empty">No open positions</div></div>
+
+    <div class="panel-title" style="margin-top:24px;"><span id="tradelog-title-text">Trade Log</span></div>
+    <div id="trades-list"><div class="empty">No trades placed yet</div></div>
+
+    <div class="panel-title" style="margin-top:24px;">Betting vs. Likelihood vs. Risk vs. Whales — plain English</div>
+    <div id="dummies-panel"></div>
+  </div>
+</div>
+
+<!-- Markets: a simplified, Kalshi-style read of the current watchlist -->
+<div class="view" id="view-markets">
+  <div class="wrap">
+    <div class="panel-title" style="margin-top:0;">Markets <span id="markets-card-count"></span></div>
+    <div id="markets-cards" class="cards-grid"><div class="empty">Loading markets…</div></div>
+  </div>
+</div>
+
+<!-- Whale Watch: the same simple market view, with whale positioning made loud -->
+<div class="view" id="view-whale">
+  <div class="wrap">
+    <div class="panel-title" style="margin-top:0;">Whale Track Record</div>
+    <div class="stat-cards" id="whale-track-record">
+      <div class="cell"><div class="lbl">Signals Logged (30d)</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Resolved</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Win Rate</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Tracking Since</div><div class="val">—</div></div>
+    </div>
+    <p id="whale-track-note" style="font-size:12px; color:var(--muted); margin:-10px 0 24px;"></p>
+
+    <div class="panel-title">Whale Watch — market view + how whales are betting</div>
+    <div id="whale-cards" class="cards-grid"><div class="empty">Loading markets…</div></div>
+  </div>
+</div>
+
+<!-- Terminal: the dense, technical signal → decision → config view -->
+<div class="view" id="view-terminal">
+<div class="layout">
+
+  <!-- Markets being watched -->
+  <div class="col">
+    <div class="panel-title">Watchlist <span id="market-count"></span></div>
+    <div id="markets-list"><div class="empty">Loading markets…</div></div>
+  </div>
+
+  <!-- Why: signal tape + decisions -->
+  <div class="col">
+    <div id="halted-banner-slot"></div>
+    <div id="funnel-bar" class="funnel-bar"></div>
+    <div class="panel-title">Whale Signals (simulated or live feed)</div>
+    <div id="signal-feed"><div class="empty">Waiting for signals…</div></div>
+    <div class="panel-title" style="margin-top:20px;">Strategy Decisions</div>
+    <div id="decision-feed"><div class="empty">No decisions yet…</div></div>
+  </div>
+
+  <!-- Config + context -->
+  <div class="col">
+    <div class="panel-title">Controls</div>
+    <div class="btn-row">
+      <button class="primary" id="toggle-btn">Pause</button>
+      <button id="reset-btn">Reset</button>
+    </div>
+    <div class="btn-row">
+      <button class="danger" id="halt-btn">Kill Switch</button>
+      <button id="resume-btn">Resume</button>
+    </div>
+
+    <div class="config-group" style="margin-top:24px;">
+      <h3>Strategy</h3>
+      <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
+      <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
+      <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
+      <div class="field"><label>Avoid whales below this win rate (%)</label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
+      <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+    </div>
+
+    <div class="config-group">
+      <h3>Whale Signal (simulated)</h3>
+      <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
+      <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
+      <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
+    </div>
+
+    <div class="config-group">
+      <h3>Risk</h3>
+      <div class="field"><label>Max daily loss (% of bankroll)</label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
+    </div>
+
+    <button class="primary" id="save-config-btn" style="width:100%;">Save Config</button>
+  </div>
+
+</div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n === undefined || n === null ? '—' : Number(n).toLocaleString(undefined, {style:'currency', currency:'USD'});
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+let marketTitles = {};
+let accountMode = localStorage.getItem('whale-signal-account-mode') || 'paper'; // 'paper' | 'real' — Portfolio view toggle
+
+function esc(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Kalshi's real title for a combo/parlay market is a flat comma list like
+// "yes Beijing Guoan,yes Bayern Munich,yes Real Sociedad,...,yes Minnesota" —
+// technically a "title" but not something a person can scan. Collapse it to
+// "N-leg parlay: first two legs +N more" instead; the full list is still in
+// the hover tooltip for anyone who needs it.
+function formatTitle(full) {
+  if (!full) return full;
+  const legs = full.split(',').map(s => s.trim()).filter(Boolean);
+  if (legs.length <= 1) return full;
+  const names = legs.map(l => l.replace(/^(yes|no)\s+/i, ''));
+  const shown = names.slice(0, 2).join(', ');
+  const more = names.length > 2 ? ` +${names.length - 2} more` : '';
+  return `${legs.length}-leg parlay: ${shown}${more}`;
+}
+
+// Whale signals/decisions only carry a raw ticker (e.g. "KXMVESPORTS...-FC34E0243A1")
+// — market_titles (from Kalshi's own title/yes_sub_title field) is what makes that
+// mean something to a person. Falls back to the ticker if a title isn't known yet.
+function marketLabel(ticker) {
+  const raw = marketTitles[ticker] || ticker || 'unknown market';
+  const formatted = formatTitle(raw);
+  const short = formatted.length > 64 ? formatted.slice(0, 63) + '…' : formatted;
+  return { short, full: raw };
+}
+
+function renderMarkets(markets, prices) {
+  const el = $('markets-list');
+  $('market-count').textContent = markets.length ? `(${markets.length})` : '';
+  if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+  el.innerHTML = markets.map(m => {
+    const label = marketLabel(m.ticker);
+    const price = prices[m.ticker];
+    const vol = m.volume_24h_fp;
+    return `
+    <div class="market-row" title="${esc(label.full)}\n${esc(m.ticker)}">
+      <span class="ticker">${esc(label.short)}</span>
+      <span class="price">YES ${price !== undefined ? (price * 100).toFixed(0) : '—'}¢ · vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span>
+    </div>
+  `;
+  }).join('');
+}
+
+function renderSignals(signals) {
+  const el = $('signal-feed');
+  if (!signals.length) { el.innerHTML = '<div class="empty">Waiting for signals…</div>'; return; }
+  el.innerHTML = signals.map(s => {
+    const label = marketLabel(s.ticker);
+    return `
+    <div class="signal-card" title="${esc(label.full)}">
+      <div class="top-row">
+        <span>${esc(label.short)} <span class="side-tag ${s.side}">${s.side}</span></span>
+        <span style="color: var(--whale)">${s.size.toLocaleString()} ct</span>
+      </div>
+      <div style="color: var(--muted)">@ ${(s.price*100).toFixed(0)}¢ · confidence ${(s.confidence*100).toFixed(0)}%</div>
+      <div class="conf-bar"><div class="conf-fill" style="width:${s.confidence*100}%"></div></div>
+    </div>
+  `;
+  }).join('');
+}
+
+function renderDecisions(decisions) {
+  const el = $('decision-feed');
+  if (!decisions.length) { el.innerHTML = '<div class="empty">No decisions yet…</div>'; return; }
+  el.innerHTML = decisions.map(d => {
+    const label = marketLabel(d.signal.ticker);
+    return `
+    <div class="decision-card ${d.action}" title="${esc(label.full)}">
+      <div class="top-row">
+        <span>${esc(label.short)}</span>
+        <span class="action-tag ${d.action}">${d.action}</span>
+      </div>
+      <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : d.reason}</div>
+    </div>
+  `;
+  }).join('');
+}
+
+// The actual answer to "where did my money go": every open position, what it
+// cost, what it's worth now, and the running gain/loss on it specifically —
+// not just the aggregate P&L number in the header.
+function renderPositions(positions, prices) {
+  const el = $('positions-list');
+  $('position-count').textContent = positions.length ? `(${positions.length})` : '';
+  if (!positions.length) {
+    el.innerHTML = '<div class="empty">No open positions — nothing has been bought yet</div>';
+    return;
+  }
+  el.innerHTML = positions.map(p => {
+    const label = marketLabel(p.ticker);
+    const current = prices[p.ticker] ?? p.entry_price;
+    const direction = p.side === 'yes' ? 1 : -1;
+    const pnl = direction * (current - p.entry_price) * p.size;
+    return `
+    <div class="position-row" title="${esc(label.full)}">
+      <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span></div>
+      <div class="nums">
+        <span>${p.size.toLocaleString()} ct @ ${(p.entry_price*100).toFixed(0)}¢ → ${(current*100).toFixed(0)}¢</span>
+        <span class="pnl ${pnl >= 0 ? 'pos' : 'neg'}">${fmt(pnl)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Every fill that's actually happened to the paper bankroll, in order — the
+// receipt trail behind the Bankroll/Equity numbers up top.
+function renderTrades(trades) {
+  const el = $('trades-list');
+  if (!trades.length) {
+    el.innerHTML = '<div class="empty">No trades placed yet — check Strategy Decisions below to see why signals are being skipped</div>';
+    return;
+  }
+  el.innerHTML = trades.map(t => {
+    const label = marketLabel(t.ticker);
+    const when = new Date(t.timestamp * 1000).toLocaleTimeString();
+    return `
+    <div class="trade-row" title="${esc(label.full)}">
+      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span></div>
+      <div class="nums">
+        <span>${t.size.toLocaleString()} ct @ ${(t.price*100).toFixed(0)}¢</span>
+        <span style="color: var(--muted)">${when}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function rawJsonDetails(data) {
+  return `<details class="raw-json-wrap"><summary>raw response</summary><pre class="raw-json">${esc(JSON.stringify(data, null, 2))}</pre></details>`;
+}
+
+// Real positions/fills field names aren't independently confirmed (see /status
+// Known Limitations) — try the common shapes, but always keep the raw response
+// visible too rather than silently hiding data that doesn't match a guess.
+function renderRealPositions(positions) {
+  const el = $('positions-list');
+  $('position-count').textContent = '';
+  if (positions === null || positions === undefined) {
+    el.innerHTML = '<div class="empty">Not connected — set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env</div>';
+    return;
+  }
+  const list = Array.isArray(positions) ? positions : (positions.market_positions || []);
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">No open real positions</div>' + rawJsonDetails(positions);
+    return;
+  }
+  el.innerHTML = list.map(p => {
+    const ticker = p.ticker || p.market_ticker || 'unknown';
+    const label = marketLabel(ticker);
+    const qty = p.position ?? p.count ?? p.total_traded ?? '—';
+    const exposure = p.market_exposure ?? p.resting_order_count ?? null;
+    return `<div class="position-row" title="${esc(JSON.stringify(p))}">
+      <div class="name">${esc(label.short)}</div>
+      <div class="nums"><span>qty ${esc(String(qty))}${exposure != null ? ' · exposure ' + esc(String(exposure)) : ''}</span></div>
+    </div>`;
+  }).join('') + rawJsonDetails(positions);
+}
+
+function renderRealFills(fills) {
+  const el = $('trades-list');
+  if (fills === null || fills === undefined) {
+    el.innerHTML = '<div class="empty">Not connected — set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env</div>';
+    return;
+  }
+  const list = Array.isArray(fills) ? fills : (fills.fills || []);
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">No fills recorded on this account</div>' + rawJsonDetails(fills);
+    return;
+  }
+  el.innerHTML = list.slice(0, 25).map(f => {
+    const ticker = f.ticker || f.market_ticker || 'unknown';
+    const label = marketLabel(ticker);
+    const side = f.side || f.action || '';
+    const count = f.count ?? f.size ?? '—';
+    const price = f.yes_price ?? f.price ?? null;
+    return `<div class="trade-row" title="${esc(JSON.stringify(f))}">
+      <div class="name">${esc(label.short)} ${side ? `<span class="side-tag ${esc(side)}">${esc(side)}</span>` : ''}</div>
+      <div class="nums"><span>${esc(String(count))} ct${price != null ? ' @ ' + esc(String(price)) : ''}</span></div>
+    </div>`;
+  }).join('') + rawJsonDetails(fills);
+}
+
+// Explains at a glance why the bankroll may not be moving: most whale signals
+// are expected to be skipped (that's the strategy's confidence filter working).
+function renderFunnel(stats) {
+  if (!stats) return;
+  $('funnel-bar').innerHTML = `
+    <span><b>${stats.signals_seen}</b> signals seen</span>
+    <span>→ <b>${stats.trades_placed}</b> trades placed</span>
+    <span>→ <b>${stats.skipped}</b> skipped (below confidence threshold, cooldown, or halted)</span>
+  `;
+}
+
+// Real, persisted history (services/signal_log.py) — not derived from the
+// last-50-in-memory signal feed, so it survives restarts and actually means
+// something as "last 30 days" once enough time has passed.
+function renderWhaleTrackRecord(stats, whaleSource) {
+  if (!stats) return;
+  const winRate = (stats.win_rate !== null && stats.win_rate !== undefined) ? `${stats.win_rate.toFixed(0)}%` : '—';
+  const since = stats.tracking_since ? new Date(stats.tracking_since * 1000).toLocaleDateString() : '—';
+  $('whale-track-record').innerHTML = `
+    <div class="cell"><div class="lbl">Signals Logged (30d)</div><div class="val">${stats.total_signals}</div></div>
+    <div class="cell"><div class="lbl">Resolved</div><div class="val">${stats.resolved}</div></div>
+    <div class="cell"><div class="lbl">Win Rate</div><div class="val">${winRate}</div></div>
+    <div class="cell"><div class="lbl">Tracking Since</div><div class="val" style="font-size:13px;">${since}</div></div>
+  `;
+  const simulated = (whaleSource || '').startsWith('simulated');
+  const note = $('whale-track-note');
+  if (simulated) {
+    note.textContent = 'Currently tracking the built-in simulator, not real whales — connect a live feed in Connected Accounts to start tracking real whale accuracy.';
+  } else if (stats.resolved === 0) {
+    note.textContent = 'No signals have resolved yet — markets need to settle before "correct" can be measured. Check back later.';
+  } else {
+    note.textContent = `Based on ${stats.resolved} resolved signal${stats.resolved === 1 ? '' : 's'} out of ${stats.total_signals} logged in the last ${stats.window_days} days.`;
+  }
+}
+
+// Traditional trading-view element: bankroll trajectory over time, not just
+// the current number. Plain inline SVG, no charting library.
+// Shared by both the paper equity curve and the real-balance curve — valueKey
+// picks which field each point uses ("equity" vs "balance"), baselineLabel
+// just changes the caption underneath.
+function renderEquityChart(history, baseline, valueKey, baselineLabel) {
+  valueKey = valueKey || 'equity';
+  baselineLabel = baselineLabel || 'starting bankroll';
+  const el = $('equity-chart');
+  if (!history || history.length < 2 || baseline === undefined || baseline === null) {
+    el.innerHTML = '<div class="empty">Not enough history yet — check back in a minute</div>';
+    return;
+  }
+  const w = 900, h = 180, pad = 10;
+  const values = history.map(p => p[valueKey]);
+  const min = Math.min(...values, baseline);
+  const max = Math.max(...values, baseline);
+  const range = (max - min) || 1;
+  const xStep = (w - pad * 2) / (history.length - 1);
+  const points = history.map((p, i) => {
+    const x = pad + i * xStep;
+    const y = pad + (1 - (p[valueKey] - min) / range) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const baseY = (pad + (1 - (baseline - min) / range) * (h - pad * 2)).toFixed(1);
+  const last = values[values.length - 1];
+  const color = last >= baseline ? 'var(--yes)' : 'var(--no)';
+  el.innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%; height:180px; display:block;">
+      <line x1="${pad}" y1="${baseY}" x2="${w - pad}" y2="${baseY}" style="stroke:var(--panel-border); stroke-dasharray:4,3;" />
+      <polyline points="${points}" style="fill:none; stroke:${color}; stroke-width:2;" />
+    </svg>
+    <div style="font-family:var(--mono); font-size:10px; color:var(--muted); display:flex; justify-content:space-between;">
+      <span>${baselineLabel} ${fmt(baseline)}</span>
+      <span>${history.length} samples</span>
+    </div>
+  `;
+}
+
+// Aggregates recent whale prints on one ticker into a single lean — this is
+// what the Whale Watch view foregrounds next to each market's plain price.
+function computeWhaleLean(ticker, signals) {
+  const matches = signals.filter(s => s.ticker === ticker);
+  if (!matches.length) return null;
+  let yesSize = 0, noSize = 0;
+  matches.forEach(s => { if (s.side === 'yes') yesSize += s.size; else noSize += s.size; });
+  const total = yesSize + noSize;
+  return { count: matches.length, yesSize, noSize, total, yesPct: total ? (yesSize / total * 100) : 50 };
+}
+
+// "This type of market" win rate — grouped server-side by Kalshi's series/
+// ticker prefix (e.g. every Oscar Best Picture market), not the one specific
+// instance, which usually has too few resolved signals to mean anything.
+function winRateBlockHTML(ticker, seriesTrackRecord) {
+  const rec = (seriesTrackRecord || {})[ticker];
+  if (!rec || !rec.resolved) {
+    return `<div class="winrate-block">
+      <div class="winrate-label">🐋 Whale win rate for this type of market (30d)</div>
+      <div class="sub">Not enough resolved signals yet to calculate this.</div>
+    </div>`;
+  }
+  const wr = rec.win_rate;
+  const color = wr >= 50 ? 'var(--yes)' : 'var(--no)';
+  return `<div class="winrate-block">
+    <div class="winrate-label">🐋 Whale win rate for this type of market (30d)</div>
+    <div class="whale-bar"><div class="yes-seg" style="width:${wr}%; background:${color};"></div><div class="no-seg" style="width:${100 - wr}%"></div></div>
+    <div class="sub">${wr.toFixed(0)}% correct · ${rec.resolved} resolved signal${rec.resolved === 1 ? '' : 's'} on "${esc(rec.series)}"-type markets</div>
+  </div>`;
+}
+
+function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
+  const label = marketLabel(m.ticker);
+  const yesBid = prices[m.ticker];
+  const yesPrice = yesBid !== undefined ? Math.round(yesBid * 100) : null;
+  const noPrice = yesPrice !== null ? 100 - yesPrice : null;
+  const vol = m.volume_24h_fp;
+
+  let whaleHtml = '';
+  if (includeWhale) {
+    const lean = computeWhaleLean(m.ticker, signals);
+    if (!lean) {
+      whaleHtml = `<div class="whale-lean"><div class="headline none">🐋 No whale prints seen yet on this market</div></div>`;
+    } else {
+      const dir = lean.yesPct >= 50 ? 'yes' : 'no';
+      const pct = dir === 'yes' ? lean.yesPct : 100 - lean.yesPct;
+      // How the whales' own betting split compares to what the market's price
+      // already implies — a market can be "60% likely" while whales are piling
+      // in 90% one-sided, which is the interesting divergence to surface.
+      let divergenceLine = '';
+      if (yesPrice !== null) {
+        const diff = Math.round(lean.yesPct - yesPrice);
+        divergenceLine = Math.abs(diff) >= 5
+          ? `<div class="sub">Betting is <b>${Math.abs(diff)} pts</b> more ${diff > 0 ? 'bullish (YES)' : 'bearish (NO)'} than the market price implies.</div>`
+          : `<div class="sub">Betting roughly matches the market price.</div>`;
+      }
+      whaleHtml = `<div class="whale-lean">
+        <div class="headline ${dir}">🐋 Whales leaning ${dir.toUpperCase()} — ${pct.toFixed(0)}%</div>
+        <div class="whale-bar"><div class="yes-seg" style="width:${lean.yesPct}%"></div><div class="no-seg" style="width:${100 - lean.yesPct}%"></div></div>
+        <div class="sub">${lean.count} print${lean.count === 1 ? '' : 's'} seen · ${lean.total.toLocaleString()} ct total</div>
+        ${divergenceLine}
+      </div>
+      ${winRateBlockHTML(m.ticker, seriesTrackRecord)}`;
+    }
+  }
+
+  return `
+  <div class="market-card" title="${esc(label.full)}">
+    <div class="title">${esc(label.short)}</div>
+    <div class="prices">
+      <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div></div>
+      <div class="price-btn no"><div class="lbl">No</div><div class="val">${noPrice !== null ? noPrice + '¢' : '—'}</div></div>
+    </div>
+    <div class="prob-bar"><div class="fill" style="width:${yesPrice ?? 50}%"></div></div>
+    <div class="meta"><span>vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span><span>${esc(m.ticker.split('-')[0])}</span></div>
+    ${whaleHtml}
+  </div>`;
+}
+
+function renderMarketCards(containerId, countId, markets, prices, includeWhale, signals, seriesTrackRecord) {
+  const el = $(containerId);
+  if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
+  if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+  el.innerHTML = markets.map(m => marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord)).join('');
+}
+
+function renderAccount(account) {
+  const el = $('account-panel');
+  if (!account || !account.connected) {
+    el.innerHTML = `<div class="account-bar disconnected">
+      <span class="tag">○ REAL KALSHI ACCOUNT — not connected</span>
+      <span class="msg">set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env to see your real balance here (read-only; separate from the paper numbers above)</span>
+    </div>`;
+    return;
+  }
+  if (account.error) {
+    el.innerHTML = `<div class="account-bar">
+      <span class="tag">⚠ REAL KALSHI ACCOUNT</span>
+      <span class="msg" style="color: var(--danger)">error: ${account.error}</span>
+    </div>`;
+    return;
+  }
+  const bal = account.balance || {};
+  const balanceCents = bal.balance ?? bal.portfolio_value ?? null;
+  const positions = account.positions;
+  let positionCount = '—';
+  if (Array.isArray(positions)) positionCount = positions.length;
+  else if (positions && Array.isArray(positions.market_positions)) positionCount = positions.market_positions.length;
+
+  el.innerHTML = `<div class="account-bar">
+    <span class="tag">● REAL KALSHI ACCOUNT — REAL MONEY, not the paper numbers above</span>
+    <span class="field"><span class="label">Balance</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
+    <span class="field"><span class="label">Positions</span>${positionCount}</span>
+    <details>
+      <summary>raw response</summary>
+      <pre>${JSON.stringify({balance: account.balance, positions: account.positions}, null, 2)}</pre>
+    </details>
+  </div>`;
+}
+
+function sourceLabel(raw) {
+  if (!raw) return '';
+  if (raw === 'simulated') return 'signal: simulated';
+  if (raw.startsWith('simulated (')) return 'signal: simulated (feed unavailable, using backup)';
+  return `signal: live feed (${raw})`;
+}
+
+function renderHalted(risk) {
+  const slot = $('halted-banner-slot');
+  slot.innerHTML = risk.halted
+    ? `<div class="halted-banner">⏸ Trading halted — ${risk.halt_reason}</div>`
+    : '';
+}
+
+// The Portfolio view's hot-swap: same three panels (equity chart, positions,
+// trade history), sourced from either the paper broker or your real Kalshi
+// account depending on accountMode.
+// Plain-English version of the same comparison, always about paper bets
+// specifically — that's what the whale-following strategy actually acts on,
+// so it's the thing worth explaining in beginner terms. One sentence per bet:
+// what you bet, what the market thinks the odds are, how much you'd lose if
+// wrong, and whether whales are doing the same thing.
+function renderDummiesPanel(positions, prices, signals, startingBankroll) {
+  const el = $('dummies-panel');
+  const intro = `<div class="dummies-intro">
+    <b>Your Bet</b> — what you actually put paper money on.
+    <b>Likelihood</b> — the market's own guess at the odds, from its current price.
+    <b>Risk</b> — how much you'd lose if you're wrong.
+    <b>🐋 Whale Prediction</b> — what large traders are doing on the same market right now.
+  </div>`;
+
+  if (!positions.length) {
+    el.innerHTML = intro + '<div class="empty">No open paper bets yet — once the strategy places one, it will be explained here.</div>';
+    return;
+  }
+
+  const cards = positions.map(p => {
+    const label = marketLabel(p.ticker);
+    const sideWord = p.side === 'yes' ? 'YES' : 'NO';
+    const sideClass = p.side === 'yes' ? 'hl-yes' : 'hl-no';
+    const currentYes = prices[p.ticker] ?? p.entry_price;
+    const likelihood = Math.round((p.side === 'yes' ? currentYes : (1 - currentYes)) * 100);
+    const capitalAtRisk = p.size * p.entry_price;
+    const riskPct = startingBankroll ? (capitalAtRisk / startingBankroll * 100) : 0;
+    const lean = computeWhaleLean(p.ticker, signals);
+
+    let whaleSentence, verdictHtml;
+    if (!lean) {
+      whaleSentence = `No whales have printed on this market recently, so there's nothing to compare against.`;
+      verdictHtml = `<div class="dummies-verdict unknown">— no whale data to compare yet</div>`;
+    } else {
+      const leanDir = lean.yesPct >= 50 ? 'YES' : 'NO';
+      const leanPct = Math.round(leanDir === 'YES' ? lean.yesPct : 100 - lean.yesPct);
+      const leanClass = leanDir === 'YES' ? 'hl-yes' : 'hl-no';
+      whaleSentence = `🐋 Whales have been leaning <span class="${leanClass}">${leanDir}</span> too
+        (<span class="hl-whale">${leanPct}%</span> of ${lean.count} recent big print${lean.count === 1 ? '' : 's'}).`;
+      verdictHtml = leanDir === sideWord
+        ? `<div class="dummies-verdict aligned">✅ You're betting the same way as the whales.</div>`
+        : `<div class="dummies-verdict against">⚠️ You're betting against what the whales are doing.</div>`;
+    }
+
+    return `<div class="dummies-card" title="${esc(label.full)}">
+      On <b>${esc(label.short)}</b>, you bet <span class="${sideClass}">${sideWord}</span> with
+      <b>${p.size.toLocaleString()} contracts</b>. The market thinks this has about a
+      <b>${likelihood}% chance</b> of happening. You've put <b>${fmt(capitalAtRisk)}</b> at risk —
+      that's <b>${riskPct.toFixed(1)}%</b> of your starting bankroll. ${whaleSentence}
+      ${verdictHtml}
+    </div>`;
+  }).join('');
+
+  el.innerHTML = intro + cards;
+}
+
+function renderPortfolio(state, broker) {
+  const connected = !!(state.account && state.account.connected);
+  $('toggle-btn-real').disabled = !connected;
+  if (!connected && accountMode === 'real') {
+    accountMode = 'paper'; // don't strand the view in a mode that's no longer available
+    localStorage.setItem('whale-signal-account-mode', 'paper');
+  }
+  $('toggle-btn-paper').classList.toggle('active', accountMode === 'paper');
+  $('toggle-btn-real').classList.toggle('active', accountMode === 'real');
+
+  if (accountMode === 'real') {
+    $('equity-title-text').textContent = 'Balance over time (real)';
+    $('positions-title-text').textContent = 'Real Positions';
+    $('tradelog-title-text').textContent = 'Recent Fills';
+    const firstBalance = (state.real_balance_history || [])[0];
+    renderEquityChart(state.real_balance_history, firstBalance ? firstBalance.balance : null, 'balance', 'first recorded balance');
+    renderRealPositions(state.account ? state.account.positions : null);
+    renderRealFills(state.account ? state.account.fills : null);
+  } else {
+    $('equity-title-text').textContent = 'Equity over time (paper)';
+    $('positions-title-text').textContent = 'Open Positions';
+    $('tradelog-title-text').textContent = 'Trade Log';
+    renderPositions(broker.positions || [], state.latest_prices || {});
+    renderTrades(broker.recent_trades || []);
+    renderEquityChart(state.equity_history, broker.starting_bankroll, 'equity', 'starting bankroll');
+  }
+
+  // Always about paper bets specifically, regardless of which mode is toggled
+  // above — this explains what the whale-following strategy itself is doing.
+  renderDummiesPanel(broker.positions || [], state.latest_prices || {}, state.signal_feed || [], broker.starting_bankroll);
+}
+
+async function refresh() {
+  try {
+    const state = await fetchJSON('/api/state');
+    $('live-dot').classList.toggle('live', state.running);
+    $('whale-source').textContent = `· ${sourceLabel(state.whale_source)}`;
+    $('toggle-btn').textContent = state.running ? 'Pause' : 'Resume Loop';
+
+    const broker = state.broker;
+    $('bankroll').textContent = fmt(broker.bankroll);
+    $('equity').textContent = fmt(broker.equity);
+    const pnl = broker.equity - broker.starting_bankroll;
+    const pnlEl = $('pnl');
+    pnlEl.textContent = fmt(pnl);
+    pnlEl.className = 'value ' + (pnl >= 0 ? 'pos' : 'neg');
+
+    marketTitles = state.market_titles || {};
+    renderAccount(state.account); // always visible, above the tabs
+
+    // Only build the DOM for whichever view is actually on screen — the other
+    // three don't need fresh HTML every poll if nobody's looking at them.
+    const active = VIEWS.find(v => $('view-' + v).classList.contains('active'));
+    if (active === 'terminal') {
+      renderMarkets(state.markets, state.latest_prices || {});
+      renderFunnel(state.stats);
+      renderSignals(state.signal_feed);
+      renderDecisions(state.decision_feed);
+      renderHalted(state.risk);
+    } else if (active === 'portfolio') {
+      renderPortfolio(state, broker);
+    } else if (active === 'markets') {
+      renderMarketCards('markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
+    } else if (active === 'whale') {
+      renderWhaleTrackRecord(state.whale_track_record, state.whale_source);
+      renderMarketCards('whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || [], state.series_track_record || {});
+    }
+  } catch (e) {
+    console.error('refresh failed', e);
+  }
+}
+
+async function loadConfig() {
+  const cfg = await fetchJSON('/api/config');
+  $('cfg-threshold').value = cfg.strategy.entry_threshold;
+  $('cfg-position-pct').value = cfg.strategy.max_position_pct;
+  $('cfg-cooldown').value = cfg.strategy.cooldown_sec;
+  $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
+  $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
+  $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
+  $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
+  $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
+  $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
+}
+
+$('toggle-btn').addEventListener('click', async () => { await fetchJSON('/api/toggle', {method:'POST'}); refresh(); });
+$('reset-btn').addEventListener('click', async () => { await fetchJSON('/api/reset', {method:'POST'}); refresh(); });
+$('halt-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/halt', {method:'POST'}); refresh(); });
+$('resume-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/resume', {method:'POST'}); refresh(); });
+
+$('save-config-btn').addEventListener('click', async () => {
+  const patch = {
+    strategy: {
+      entry_threshold: parseFloat($('cfg-threshold').value),
+      max_position_pct: parseFloat($('cfg-position-pct').value),
+      cooldown_sec: parseInt($('cfg-cooldown').value),
+      min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
+      min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
+    },
+    whale_signal: {
+      signal_frequency_sec: parseInt($('cfg-freq').value),
+      whale_size_range: [parseInt($('cfg-size-min').value), parseInt($('cfg-size-max').value)],
+    },
+    risk: {
+      max_daily_loss_pct: parseFloat($('cfg-max-loss').value),
+    },
+  };
+  await fetchJSON('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({patch})});
+  const btn = $('save-config-btn');
+  btn.textContent = 'Saved ✓';
+  setTimeout(() => btn.textContent = 'Save Config', 1200);
+});
+
+async function loadSession() {
+  const el = $('session-info');
+  try {
+    const session = await fetchJSON('/api/session');
+    if (!session.auth_configured) {
+      el.innerHTML = `<span title="Set GOOGLE_CLIENT_ID/SECRET + APP_SECRET_KEY in .env to require sign-in">Open access · no login required</span>`;
+      return;
+    }
+    if (session.user) {
+      el.innerHTML = `<span>Signed in as ${session.user.email}</span>
+        <button onclick="fetch('/auth/logout',{method:'POST'}).then(()=>location.href='/login')">Logout</button>`;
+    } else {
+      el.innerHTML = `<a href="/login">Not signed in</a>`;
+    }
+  } catch (e) {
+    el.textContent = 'session status unavailable';
+  }
+}
+
+const VIEWS = ['portfolio', 'markets', 'whale', 'terminal'];
+function showView(name) {
+  VIEWS.forEach(v => {
+    $('view-' + v).classList.toggle('active', v === name);
+    $('tab-btn-' + v).classList.toggle('active', v === name);
+  });
+  localStorage.setItem('whale-signal-view', name);
+}
+showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
+
+function setAccountMode(mode) {
+  accountMode = mode;
+  localStorage.setItem('whale-signal-account-mode', mode);
+  refresh();
+}
+
+loadConfig();
+loadSession();
+refresh();
+setInterval(refresh, 5000); // backend only updates every poll_interval_sec (15s default) — polling every 3s was fetching identical data ~5x per real update
+</script>
+
+</body>
+</html>

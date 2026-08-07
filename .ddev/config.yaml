@@ -1,0 +1,15 @@
+name: kalshi-whale-poc
+type: generic
+docroot: ""
+# Empty on purpose: this project runs entirely through the additional "fastapi"
+# service defined in .ddev/docker-compose.fastapi.yaml, which claims the main
+# hostname itself via HTTP_EXPOSE/HTTPS_EXPOSE. Leaving router_http_port/
+# router_https_port set to 80/443 here made the default (unused) web container
+# ALSO claim the same hostname/port 443 — ddev-router's tie-break between the
+# two was non-deterministic across restarts, occasionally routing the site to
+# the empty default nginx container instead of fastapi. Clearing these two
+# stops the default web container from competing for the hostname at all.
+router_http_port: ""
+router_https_port: ""
+use_dns_when_possible: true
+web_environment: []

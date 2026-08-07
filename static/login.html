@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — Whale Signal</title>
+<style>
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+  }
+  .card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 32px 28px;
+    text-align: center;
+  }
+  h1 { font-size: 15px; letter-spacing: 0.02em; margin: 0 0 6px; }
+  p.sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+  .error {
+    background: rgba(229,72,77,0.12);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    font-size: 12px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 18px;
+    font-family: var(--mono);
+    text-align: left;
+  }
+  a.google-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #fff;
+    color: #1f1f1f;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    padding: 11px 16px;
+    border-radius: 6px;
+  }
+  a.google-btn:hover { background: #f2f2f2; }
+  .not-configured {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 14px;
+    line-height: 1.6;
+  }
+  .not-configured code { color: var(--yes); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>WHALE SIGNAL</h1>
+    <p class="sub">Sign in to continue</p>
+    <div id="error-slot"></div>
+    <div id="action-slot"><div class="not-configured">Checking configuration…</div></div>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const err = params.get('error');
+if (err) {
+  document.getElementById('error-slot').innerHTML =
+    `<div class="error">Sign-in failed: ${err}</div>`;
+}
+
+fetch('/api/session').then(r => r.json()).then(data => {
+  const slot = document.getElementById('action-slot');
+  if (data.auth_configured) {
+    slot.innerHTML = `<a class="google-btn" href="/auth/login">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h11.8c-.5 2.7-2 5-4.3 6.6v5.5h7C42.6 37.2 45.1 31.4 45.1 24.5z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-7-5.5c-2 1.3-4.5 2.1-7.5 2.1-5.8 0-10.7-3.9-12.4-9.1H4.3v5.7C7.9 41 15.3 46 24 46z"/><path fill="#FBBC05" d="M11.6 28.2c-.4-1.3-.7-2.7-.7-4.2s.2-2.9.7-4.2v-5.7H4.3C2.8 17 2 20.4 2 24s.8 7 2.3 10z"/><path fill="#EA4335" d="M24 10.7c3.2 0 6.1 1.1 8.4 3.3l6.2-6.2C34.9 4.2 29.9 2 24 2 15.3 2 7.9 7 4.3 14l7.3 5.7c1.7-5.2 6.6-9 12.4-9z"/></svg>
+      Sign in with Google
+    </a>`;
+  } else {
+    slot.innerHTML = `<div class="not-configured">
+      Google sign-in isn't configured yet — the app is running fully open.<br><br>
+      Set <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code>, and
+      <code>APP_SECRET_KEY</code> in <code>.env</code> to enable it.
+      See README.
+    </div>`;
+  }
+});
+</script>
+</body>
+</html>
