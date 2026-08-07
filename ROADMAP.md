@@ -36,8 +36,11 @@ one is the historical record.
       mismeasuring today's loss or silently un-halting a tripped kill
       switch. A plain restart now resumes; `POST /api/reset` is the only
       thing that wipes it. Verified end-to-end with a real `ddev restart`.
-- [ ] Tighten CORS (`allow_origins=["*"]` in `main.py`) before this is ever
-      reachable from anywhere but localhost/DDEV.
+- [x] Tighten CORS (`allow_origins=["*"]` in `main.py`). Now defaults to the
+      DDEV hostname + `localhost:8000`, overridable via a comma-separated
+      `ALLOWED_ORIGINS` in `.env` for any other deployment. Verified live:
+      preflight from the DDEV origin gets `access-control-allow-origin`
+      back, a random origin gets nothing.
 - [ ] Build shadow mode (logs intended real trades, executes nothing) — the
       README has called this a prerequisite to live trading since before
       any of this session's work; still not started.
@@ -78,11 +81,18 @@ one is the historical record.
 
 ## P3 — Reliability & engineering hygiene
 
-- [ ] Add an automated test suite. There is currently no test coverage
-      anywhere in the project — `strategy_engine.py`'s decision logic,
-      `paper_broker.py`'s fill/P&L math, and `signal_log.py`'s win-rate
-      calculation are all untested.
-- [ ] Basic CI (run tests on every change).
+- [x] Add an automated test suite. 35 tests in `tests/` cover
+      `paper_broker.py` (fill/cost-capping/P&L math, cooldowns, persistence
+      across a simulated restart, reset), `risk_manager.py` (daily-loss
+      kill-switch trip/stay-halted/resume, persistence), `strategy_engine.py`
+      (every skip/trade branch), and `signal_log.py` (series grouping,
+      win-rate math, time-window filtering). Each test isolates its own
+      SQLite file via `monkeypatch`-ing the module's `DB_PATH` — none of them
+      touch the real, live `data/*.db` files. Spot-verified the suite isn't
+      vacuous by deliberately breaking the "no"-side P&L direction math and
+      confirming the right test failed, then reverting.
+- [x] Basic CI. `.github/workflows/tests.yml` runs the suite via GitHub
+      Actions on every push to `main` and every PR.
 - [ ] Mobile/responsive pass — the Terminal view's 3-column grid is
       desktop-only right now.
 - [ ] Accessibility pass — keyboard navigation, aria labels, and a check

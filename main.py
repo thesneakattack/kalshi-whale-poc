@@ -225,7 +225,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Kalshi Whale-Signal Paper Trader", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# allow_origins=["*"] was fine while this only ever ran on localhost/DDEV, but
+# doesn't hold once it's reachable from anywhere else — a same-origin browser
+# tab never needs CORS at all (the frontend and API are served from this same
+# app), so this only matters for cross-origin callers, which by default means
+# just the DDEV hostname and common local dev ports. Override with a
+# comma-separated ALLOWED_ORIGINS in .env for any other real deployment.
+_default_origins = [
+    "https://kalshi-whale-poc.ddev.site",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+allowed_origins = (
+    [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+    if _allowed_origins_env
+    else _default_origins
+)
+app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=["*"], allow_headers=["*"])
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.
