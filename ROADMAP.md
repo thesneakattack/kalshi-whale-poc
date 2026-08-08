@@ -69,9 +69,23 @@ one is the historical record.
       `ALLOWED_ORIGINS` in `.env` for any other deployment. Verified live:
       preflight from the DDEV origin gets `access-control-allow-origin`
       back, a random origin gets nothing.
-- [ ] Build shadow mode (logs intended real trades, executes nothing) — the
-      README has called this a prerequisite to live trading since before
-      any of this session's work; still not started.
+- [x] Build shadow mode (logs intended real trades, executes nothing).
+      `services/shadow_mode.py`'s `ShadowTrader` runs the exact same
+      follow-the-whale gates as `strategy_engine.py` (confidence, whale
+      win-rate filter, cooldown, position-size-rounds-to-zero, its own
+      independent daily-loss kill switch) but sized against a *real*
+      reference bankroll — the connected account's actual balance if one
+      exists, or `risk.starting_bankroll` as a clearly-labeled fallback
+      when it doesn't — and only ever logs the result to
+      `data/shadow_mode.db`; `create_order` is never called. Active when
+      `mode: shadow` or `mode: live` in `config/settings.yaml` (a Controls
+      panel dropdown now exposes this — previously `mode` was set in the
+      YAML but read by nothing). Portfolio view gets a Shadow Trades panel.
+      10 tests cover every gate in isolation; live-verified end-to-end
+      against the running app (flipped to `shadow`, watched a real
+      intended-trade row appear with the correct fallback-bankroll label,
+      confirmed the dashboard renders it, reverted back to `paper`
+      afterward).
 
 ## P1 — Actually dummy-proof (a first-timer understands what's happening)
 

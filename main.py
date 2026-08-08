@@ -25,6 +25,7 @@ from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
+from services.shadow_mode import ShadowTrader
 from services.strategy_engine import FollowTheWhaleStrategy
 
 # ---- shared runtime state -------------------------------------------------
@@ -37,6 +38,7 @@ risk = RiskManager(
     kill_switch_enabled=cfg["risk"]["kill_switch_enabled"],
 )
 strategy = FollowTheWhaleStrategy(broker, risk)
+shadow = ShadowTrader(default_bankroll=cfg["risk"]["starting_bankroll"])
 whale_sim = WhaleSimulator(
     size_range=tuple(cfg["whale_signal"]["whale_size_range"]),
     bias=cfg["whale_signal"]["bias"],
@@ -131,6 +133,24 @@ async def _check_signal_resolutions(client: KalshiClient):
             continue  # market may be gone/renamed — leave unresolved, retry next time
 
 
+def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float, str]:
+    """What shadow mode treats as "your real bankroll" for position sizing.
+    Prefers the real connected account's balance (Kalshi reports it in
+    cents, same field the dashboard's account bar divides by 100 to
+    display); falls back to config's starting_bankroll, clearly labeled as
+    a fallback, so shadow mode is still meaningfully testable without a
+    real Kalshi account connected."""
+    if account_snapshot.get("connected"):
+        bal = account_snapshot.get("balance") or {}
+        cents = bal.get("balance") if isinstance(bal, dict) else None
+        if cents is not None:
+            try:
+                return float(cents) / 100.0, "real_account"
+            except (TypeError, ValueError):
+                pass
+    return float(cfg["risk"]["starting_bankroll"]), "configured_starting_bankroll (no real account connected)"
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -208,6 +228,10 @@ async def trading_loop():
                 new_signals = [sig] if sig else []
                 state["whale_source"] = "simulated"
 
+            shadow_active = cfg.get("mode") in ("shadow", "live")
+            if shadow_active:
+                shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(account_snapshot, cfg)
+
             for signal in new_signals:
                 state["signal_feed"].insert(0, signal.to_dict())
                 state["signal_feed"] = state["signal_feed"][:50]
@@ -221,6 +245,12 @@ async def trading_loop():
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
+
+                # Independent of the paper decision above - shadow mode asks
+                # the same question against real-account-sized bankroll,
+                # and only ever logs, never executes. See services/shadow_mode.py.
+                if shadow_active:
+                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source)
 
         except Exception as e:
             state["error"] = str(e)
@@ -350,6 +380,20 @@ async def get_state():
         "risk": {"halted": risk.halted, "halt_reason": risk.halt_reason},
         "broker": broker.state(state["latest_prices"]),
         "account": state["account"],
+        "shadow": _shadow_state(),
+    }
+
+
+def _shadow_state() -> dict:
+    # Reads config_store fresh rather than the module-level cfg (only ever
+    # set once, at import time) - mode can change live via /api/config and
+    # this should reflect it immediately, not just after the next poll tick.
+    mode = config_store.get().get("mode")
+    return {
+        "active": mode in ("shadow", "live"),
+        "mode": mode,
+        "recent_trades": shadow.recent(25),
+        **shadow.stats(),
     }
 
 
