@@ -174,6 +174,7 @@ async def trading_loop():
         if not state["running"]:
             await asyncio.sleep(1)
             continue
+        client = None
         try:
             client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
 
@@ -215,9 +216,9 @@ async def trading_loop():
             state["equity_history"].append({"t": state["last_poll"], "equity": broker.equity(state["latest_prices"])})
             state["equity_history"] = state["equity_history"][-200:]
 
-            # Real balance's exact field name is unverified against Kalshi's current
-            # docs (see /status Known Limitations) — try the common shape, skip the
-            # sample entirely rather than guess wrong if it doesn't match.
+            # "balance" (cash, in cents) verified against a real account 2026-08-07
+            # — see ROADMAP.md/status.html. Still guarded rather than assumed,
+            # since a disconnected/errored account has no balance dict at all.
             real_balance = (account_snapshot.get("balance") or {}) if account_snapshot.get("connected") else {}
             real_balance_value = real_balance.get("balance") if isinstance(real_balance, dict) else None
             if real_balance_value is not None:
@@ -274,6 +275,13 @@ async def trading_loop():
 
         except Exception as e:
             state["error"] = str(e)
+        finally:
+            # A fresh client every tick means base_url changes (rare, but
+            # live-reloadable) take effect immediately - but the SDK client
+            # wraps its own aiohttp session, so it needs closing after use
+            # or sessions leak across a long-running process.
+            if client is not None:
+                await client.close()
 
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
@@ -284,6 +292,11 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
     await close_client()
+    # `account` is a long-lived singleton (unlike the per-tick market-data
+    # client) holding its own SDK-managed aiohttp session — needs its own
+    # explicit close, the hand-rolled version never did since it only ever
+    # used the shared httpx client via get_client().
+    await account.close()
 
 
 app = FastAPI(title="Kalshi Whale-Signal Paper Trader", lifespan=lifespan)

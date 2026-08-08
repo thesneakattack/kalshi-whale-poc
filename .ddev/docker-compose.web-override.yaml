@@ -1,0 +1,27 @@
+# This project serves everything through the "fastapi" service (see
+# docker-compose.fastapi.yaml); the default "web" (nginx-fpm) container is
+# unused and has an empty docroot on purpose (config.yaml: docroot: "").
+#
+# Root cause of the intermittent 403s that plagued this project: ddev
+# auto-generates a Traefik router for EVERY service's HTTP_EXPOSE/
+# HTTPS_EXPOSE, including "web" - so both "web" and "fastapi" ended up with
+# their own router matching the exact same hostname on the same entrypoint
+# (confirmed by reading ddev-router's generated
+# /mnt/ddev-global-cache/traefik/config/<project>_merged.yaml directly).
+# Traefik's tie-break between two equal-priority routers on a naming
+# collision is not guaranteed stable across reloads, so the site would
+# randomly route to "web"'s empty docroot (-> 403) instead of "fastapi".
+# Clearing router_http_port/router_https_port in config.yaml (an earlier fix
+# attempt) does NOT prevent this - those only set the ports ddev-router
+# itself listens on, not which services it generates routers for.
+#
+# Fix: blank out "web"'s own HTTP_EXPOSE/HTTPS_EXPOSE/VIRTUAL_HOST so ddev's
+# router-config generator never creates a "web" router for this hostname at
+# all. Only "fastapi" (docker-compose.fastapi.yaml) claims it now - no more
+# race to lose.
+services:
+  web:
+    environment:
+      - HTTP_EXPOSE=
+      - HTTPS_EXPOSE=
+      - VIRTUAL_HOST=

@@ -6,3 +6,13 @@ pydantic==2.9.2
 python-dotenv==1.0.1
 cryptography==43.0.3
 itsdangerous==2.2.0
+# Official Kalshi SDK. Requires Python >=3.13 (see Dockerfile) - every
+# version after 3.2.0 does; only 3.2.0 supports older Python, and 3.2.0 is
+# stale relative to Kalshi's current API (verified 2026-08-07: its Pydantic
+# models reject real positions/fills responses entirely). Pin exact version
+# rather than trusting `pip index versions`, which silently resolved to the
+# stale 3.2.0 under Python 3.11 with no warning that newer releases existed.
+kalshi-python-async==3.27.0
+# Not declared as a kalshi-python-async dependency despite being imported
+# directly by its configuration.py - a real packaging gap on Kalshi's side.
+urllib3==2.7.0

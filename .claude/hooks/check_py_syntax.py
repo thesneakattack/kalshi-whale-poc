@@ -7,6 +7,7 @@ transcript noise on every routine edit; no-op for anything that isn't a .py
 file.
 """
 import json
+import os
 import subprocess
 import sys
 
@@ -22,9 +23,14 @@ def main():
         return
 
     try:
+        # PYTHONDONTWRITEBYTECODE avoids writing a .pyc cache file at all -
+        # without it, a stale root-owned __pycache__ (e.g. from an earlier
+        # `ddev exec` pytest run) causes a PermissionError that this hook
+        # used to misreport as a syntax error, which it wasn't.
         result = subprocess.run(
             [sys.executable, "-m", "py_compile", file_path],
             capture_output=True, text=True, timeout=15,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
     except Exception:
         return

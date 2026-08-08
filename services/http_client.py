@@ -28,20 +28,25 @@ async def close_client():
         _client = None
 
 
-async def request_with_backoff(
-    method: str, url: str, max_retries: int = 4, base_delay: float = 0.5, **kwargs
-) -> httpx.Response:
+async def call_with_backoff(coro_func, *args, max_retries: int = 4, base_delay: float = 0.5, **kwargs):
     """Kalshi's rate limiter returns 429 with no Retry-After header — their
     own docs (docs.kalshi.com/getting_started/rate_limits) say to apply
-    exponential backoff on 429, so this is that, shared by every Kalshi
-    client rather than each reimplementing it. Only 429 triggers a retry;
-    every other status (including other 4xx/5xx) is returned immediately for
-    the caller's own raise_for_status() to handle, same as before."""
+    exponential backoff on 429. Originally implemented as a raw-httpx request
+    wrapper; rewritten 2026-08-08 to wrap an arbitrary async callable instead
+    after migrating the Kalshi clients to the official SDK (kalshi_python_async) —
+    the SDK's own retry support only covers 5xx/connection errors, not 429
+    specifically, and there's no public way to add 429 to its retry list, so
+    this still earns its place. Detects a 429 via the SDK's own exception
+    shape (kalshi_python_async.exceptions.ApiException and subclasses all
+    expose .status) rather than an HTTP response object. Only a 429-shaped
+    exception triggers a retry; anything else propagates immediately,
+    including on the final attempt."""
     delay = base_delay
     for attempt in range(max_retries + 1):
-        resp = await get_client().request(method, url, **kwargs)
-        if resp.status_code != 429 or attempt == max_retries:
-            return resp
-        await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter
-        delay *= 2
-    return resp  # unreachable — loop always returns on its last iteration
+        try:
+            return await coro_func(*args, **kwargs)
+        except Exception as e:
+            if getattr(e, "status", None) != 429 or attempt == max_retries:
+                raise
+            await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter
+            delay *= 2

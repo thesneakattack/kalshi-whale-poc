@@ -1,26 +1,26 @@
 """
-Verifies request_with_backoff's retry behavior in isolation - no real network
+Verifies call_with_backoff's retry behavior in isolation - no real network
 call, no real sleeping (asyncio.sleep is monkeypatched to a no-op so this
 runs instantly regardless of how many retries it exercises).
+
+Rewritten 2026-08-08 when the Kalshi clients migrated to the official
+kalshi_python_async SDK: the SDK's own retry support doesn't cover 429
+specifically (only 5xx/connection errors), so this now wraps arbitrary async
+callables (SDK client methods) instead of raw httpx requests, detecting a
+429 via the SDK's exception shape (an exception exposing `.status`) rather
+than an HTTP response object.
 """
 import asyncio
+
+import pytest
 
 from services import http_client
 
 
-class _FakeResponse:
-    def __init__(self, status_code):
-        self.status_code = status_code
-
-
-class _FakeAsyncClient:
-    def __init__(self, statuses):
-        self._statuses = list(statuses)
-        self.calls = 0
-
-    async def request(self, method, url, **kwargs):
-        self.calls += 1
-        return _FakeResponse(self._statuses.pop(0))
+class _FakeApiException(Exception):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f"status {status}")
 
 
 def _no_sleep(monkeypatch):
@@ -33,49 +33,78 @@ def _no_sleep(monkeypatch):
     return sleeps
 
 
-def test_returns_immediately_on_non_429(monkeypatch):
-    fake = _FakeAsyncClient([200])
-    monkeypatch.setattr(http_client, "get_client", lambda: fake)
+def test_returns_immediately_on_success(monkeypatch):
     sleeps = _no_sleep(monkeypatch)
+    calls = []
 
-    resp = asyncio.run(http_client.request_with_backoff("GET", "https://example.test/x"))
+    async def succeeds(x):
+        calls.append(x)
+        return "ok"
 
-    assert resp.status_code == 200
-    assert fake.calls == 1
+    result = asyncio.run(http_client.call_with_backoff(succeeds, "arg"))
+
+    assert result == "ok"
+    assert calls == ["arg"]
     assert sleeps == []  # never had to wait
 
 
 def test_retries_on_429_then_succeeds(monkeypatch):
-    fake = _FakeAsyncClient([429, 429, 200])
-    monkeypatch.setattr(http_client, "get_client", lambda: fake)
     sleeps = _no_sleep(monkeypatch)
+    attempts = {"n": 0}
 
-    resp = asyncio.run(http_client.request_with_backoff("GET", "https://example.test/x", base_delay=1.0))
+    async def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise _FakeApiException(429)
+        return "ok"
 
-    assert resp.status_code == 200
-    assert fake.calls == 3
+    result = asyncio.run(http_client.call_with_backoff(flaky, base_delay=1.0))
+
+    assert result == "ok"
+    assert attempts["n"] == 3
     assert len(sleeps) == 2
     assert sleeps[1] > sleeps[0]  # exponential growth, not fixed delay
 
 
-def test_gives_up_after_max_retries_and_returns_the_429(monkeypatch):
-    fake = _FakeAsyncClient([429, 429, 429, 429])  # 1 initial + 3 retries = max_retries=3
-    monkeypatch.setattr(http_client, "get_client", lambda: fake)
+def test_gives_up_after_max_retries_and_reraises(monkeypatch):
     _no_sleep(monkeypatch)
+    attempts = {"n": 0}
 
-    resp = asyncio.run(http_client.request_with_backoff("GET", "https://example.test/x", max_retries=3))
+    async def always_429():
+        attempts["n"] += 1
+        raise _FakeApiException(429)
 
-    assert resp.status_code == 429  # caller's raise_for_status() handles this, backoff doesn't hide it
-    assert fake.calls == 4
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_429, max_retries=3))
+
+    assert attempts["n"] == 4  # 1 initial + 3 retries
 
 
-def test_other_error_statuses_are_not_retried(monkeypatch):
-    fake = _FakeAsyncClient([500])
-    monkeypatch.setattr(http_client, "get_client", lambda: fake)
+def test_non_429_exceptions_are_not_retried(monkeypatch):
     sleeps = _no_sleep(monkeypatch)
+    attempts = {"n": 0}
 
-    resp = asyncio.run(http_client.request_with_backoff("GET", "https://example.test/x"))
+    async def always_500():
+        attempts["n"] += 1
+        raise _FakeApiException(500)
 
-    assert resp.status_code == 500
-    assert fake.calls == 1
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_500))
+
+    assert attempts["n"] == 1  # no retry at all
+    assert sleeps == []
+
+
+def test_exceptions_without_a_status_attribute_are_not_retried(monkeypatch):
+    sleeps = _no_sleep(monkeypatch)
+    attempts = {"n": 0}
+
+    async def raises_plain_error():
+        attempts["n"] += 1
+        raise ValueError("not an API exception")
+
+    with pytest.raises(ValueError):
+        asyncio.run(http_client.call_with_backoff(raises_plain_error))
+
+    assert attempts["n"] == 1
     assert sleeps == []

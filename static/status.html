@@ -451,6 +451,57 @@
           <code>tests/test_http_client.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 15 · the SDK detour, reversed — with more evidence</div>
+        <h4>Full migration to the official SDK, once "decided against it" turned out to be a version artifact</h4>
+        <p>Pushed back on: "the SDK shouldn't be crashing, investigate further" — phase 14's conclusion was real but
+          incomplete. <code>pip index versions</code> had silently resolved <code>kalshi_python_async</code> to
+          3.2.0 under Python 3.11 with no warning that newer releases existed and needed newer Python; the real
+          PyPI JSON API showed the true latest was 3.27.0, requiring Python ≥3.13, and matching Kalshi's current
+          OpenAPI spec exactly. Bumped the Dockerfile to <code>python:3.13-slim</code>, pinned the exact SDK version
+          (plus <code>urllib3</code>, an undeclared dependency the SDK needs but doesn't list — a real packaging gap
+          on Kalshi's side, found via a genuine <code>ModuleNotFoundError</code>), and re-tested: every read
+          endpoint and order placement worked cleanly against the real connected account. Given the do-over,
+          migrated fully rather than re-verifying the old hand-rolled client — <code>kalshi_client.py</code> and
+          <code>kalshi_account_client.py</code> were rewritten so the SDK owns signing, endpoint paths, and
+          request/response schemas entirely, keeping the same public method signatures and dict-shaped returns so
+          <code>main.py</code> barely changed. Two implementation details that only surfaced by reading the SDK's
+          own generated source, not by guessing from its docs: <code>_request_timeout</code> is accepted by
+          <code>create_order_v2</code> but rejected outright by every read endpoint and by
+          <code>cancel_order_v2</code>; and the 429 backoff wrapper (phase 14) became dead code the instant Kalshi
+          calls stopped going through raw <code>httpx</code>, so it was rewritten as <code>call_with_backoff</code>
+          to wrap SDK calls directly instead — the SDK's own retry support doesn't cover 429 at all, so this still
+          earns its keep. Whole test suite rewritten around fakes/throwaway keys rather than real credentials.</p>
+        <div class="files"><code>services/kalshi_client.py</code> · <code>services/kalshi_account_client.py</code> ·
+          <code>services/http_client.py</code> (<code>call_with_backoff</code>) · <code>main.py</code>
+          (client lifecycle) · <code>requirements.txt</code> · <code>Dockerfile</code> ·
+          <code>tests/test_http_client.py</code> · <code>tests/test_kalshi_account_client.py</code> ·
+          <code>tests/test_trading_gate.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 16 · chasing down the 403s for real</div>
+        <h4>Root-caused the recurring ddev-router 403/404s instead of restarting past them again</h4>
+        <p>This exact site had gone briefly unreachable several times already this session, always "fixed" by a
+          <code>ddev restart</code> — until one restart didn't fix it, which was the signal to stop treating it as
+          noise. Read ddev-router's own generated Traefik config directly
+          (<code>/mnt/ddev-global-cache/traefik/config/&lt;project&gt;_merged.yaml</code>) instead of guessing: it
+          showed <em>two</em> routers with the identical <code>HostRegexp</code> rule on the same
+          <code>https</code> entrypoint — one for the custom <code>fastapi</code> service, one for ddev's default,
+          empty-docroot <code>web</code> service, which every ddev project gets whether it's used or not. Traefik's
+          tie-break between two equal-priority routers isn't stable across reloads, so the site would randomly land
+          on <code>web</code>'s empty docroot (→ 403) instead of <code>fastapi</code>. <code>config.yaml</code>'s
+          existing <code>router_http_port</code>/<code>router_https_port: ""</code> (an earlier fix attempt, whose
+          own comment described this exact symptom) never actually addressed it — those only set the ports
+          ddev-router itself listens on, not which services get routers generated at all, which is exactly why the
+          problem kept coming back despite it. Real fix: a docker-compose override blanking out <code>web</code>'s
+          own <code>HTTP_EXPOSE</code>/<code>HTTPS_EXPOSE</code>/<code>VIRTUAL_HOST</code> so ddev's router-config
+          generator never creates a <code>web</code> router for this hostname in the first place. Verified two
+          ways post-restart: re-read the generated config (<code>web</code> routers for this host: 0, was 3), and
+          10/10 real external HTTPS requests through the actual router path returned 200.</p>
+        <div class="files"><code>.ddev/docker-compose.web-override.yaml</code> (new)</div>
+      </div>
+
     </div>
   </section>
 
@@ -496,10 +547,10 @@
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
           <tr><td class="mod">main.py</td><td class="note">FastAPI app, trading loop, 20 routes, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch</td><td class="loc">571</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client (public, unauthenticated) + exchange status</td><td class="loc">54</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/http_client.py</td><td class="note">shared, connection-pooled httpx client + <code>request_with_backoff</code> (429 retry) used by the Kalshi clients</td><td class="loc">47</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status</td><td class="loc">80</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">RSA-PSS signed client for your real account — order schema rewritten to Kalshi's current V2 shape, auth signing bug fixed and verified against a real account</td><td class="loc">199</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
+          <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
           <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, now priced off real market data</td><td class="loc">78</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements</td><td class="loc">21</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
@@ -515,7 +566,7 @@
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~550</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">tests/*.py</td><td class="note">35 tests: paper_broker, risk_manager, strategy_engine, signal_log — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">389</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
           <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none — <code>data/shadow_mode.db</code></td><td class="loc">179</td><td><span class="pill good">done</span></td></tr>

@@ -41,7 +41,7 @@ client = TestClient(main.app)
 def _reset_trading_state():
     main.config_store.update({"kalshi_account": {"trading_enabled": False}})
     main.account.trading_enabled = False
-    main.account._private_key = None
+    main.account._client = None
 
 
 def test_files_are_actually_redirected_away_from_the_real_repo():
@@ -70,7 +70,7 @@ def test_config_endpoint_still_allows_other_patches():
 
 def test_enable_trading_rejected_without_connected_account():
     _reset_trading_state()
-    assert main.account.enabled is False  # no private key loaded
+    assert main.account.enabled is False  # no SDK client constructed
     resp = client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
     assert resp.status_code == 400
     assert "connected" in resp.json()["detail"].lower()
@@ -79,7 +79,7 @@ def test_enable_trading_rejected_without_connected_account():
 
 def test_enable_trading_rejected_with_wrong_phrase(monkeypatch):
     _reset_trading_state()
-    monkeypatch.setattr(main.account, "_private_key", object())  # simulate a connected account
+    monkeypatch.setattr(main.account, "_client", object())  # simulate a connected account
     assert main.account.enabled is True
     resp = client.post("/api/trading/enable", json={"confirmation_phrase": "yes please"})
     assert resp.status_code == 400
@@ -89,7 +89,7 @@ def test_enable_trading_rejected_with_wrong_phrase(monkeypatch):
 
 def test_enable_trading_succeeds_with_correct_phrase_and_connected_account(monkeypatch):
     _reset_trading_state()
-    monkeypatch.setattr(main.account, "_private_key", object())
+    monkeypatch.setattr(main.account, "_client", object())
     resp = client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
     assert resp.status_code == 200
     assert resp.json() == {"trading_enabled": True}
@@ -99,7 +99,7 @@ def test_enable_trading_succeeds_with_correct_phrase_and_connected_account(monke
 
 def test_disable_trading_always_allowed_no_confirmation_needed(monkeypatch):
     _reset_trading_state()
-    monkeypatch.setattr(main.account, "_private_key", object())
+    monkeypatch.setattr(main.account, "_client", object())
     client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
     assert main.config_store.get()["kalshi_account"]["trading_enabled"] is True
 

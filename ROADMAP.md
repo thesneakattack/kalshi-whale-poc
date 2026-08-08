@@ -160,10 +160,35 @@ one is the historical record.
       confirming the right test failed, then reverting.
 - [x] Basic CI. `.github/workflows/tests.yml` runs the suite via GitHub
       Actions on every push to `main` and every PR.
-- [x] Investigated migrating to Kalshi's official `kalshi_python_async` SDK
+- [x] Migrated fully to Kalshi's official `kalshi_python_async` SDK —
+      **supersedes the "decided against it" finding below the line from
+      earlier the same day.** That finding was real but was an artifact of
+      `pip index versions` silently resolving to a stale, Python-3.11-
+      compatible release (3.2.0) without warning that newer ones existed;
+      every release past 3.2.0 requires Python ≥3.13 and the real latest
+      (3.27.0) matches Kalshi's live API exactly — `get_positions`/
+      `get_fills`/`get_balance`/`get_orders`/`get_exchange_status` and order
+      placement (`create_order_v2`/`cancel_order_v2`) all verified working
+      against the real connected account with zero `ValidationError`s.
+      `Dockerfile` bumped to `python:3.13-slim`; `requirements.txt` pins the
+      exact SDK version and `urllib3==2.7.0` (an undeclared dependency the
+      SDK needs but doesn't list). `services/kalshi_client.py` and
+      `services/kalshi_account_client.py` were rewritten to hand signing,
+      endpoint paths, and request/response schemas entirely to the SDK,
+      keeping the same public method signatures and dict-shaped returns so
+      `main.py` didn't need to change. `_request_timeout` is accepted by
+      `create_order_v2` but rejected outright by every read endpoint and by
+      `cancel_order_v2` — verified by reading each method's generated
+      source, not assumed; get it wrong and every read call throws instead
+      of just being slow. Old note, still true: its own auth code hardcodes
+      the exact same `/trade-api/v2` signed-path prefix this session's
+      earlier hand-rolled-auth fix added — outside confirmation that fix was
+      correct.
+      <details><summary>Original "decided against it" finding (2026-08-07, superseded above)</summary>
+      Investigated migrating to Kalshi's official `kalshi_python_async` SDK
       (async-native, would eliminate hand-rolled request-signing as a bug
-      surface) — **decided against it, and verified why empirically rather
-      than from docs alone.** Installed it, pointed it at the real connected
+      surface) — decided against it, and verified why empirically rather
+      than from docs alone. Installed it, pointed it at the real connected
       account, and `get_positions()`/`get_fills()` both threw Pydantic
       `ValidationError`: the SDK's models require integer fields
       (`position`, `market_exposure`, `count`, `price`, ...) that Kalshi's
@@ -176,21 +201,48 @@ one is the historical record.
       Kalshi's own docs warn "SDKs are updated periodically and may lag the
       API" — this is that, hit directly. Worth re-evaluating once Kalshi
       patches it, but adopting it today would have been a regression, not
-      an improvement. One thing it did independently confirm: its own
-      auth code hardcodes the exact same `/trade-api/v2` signed-path prefix
-      this session's auth fix added — strong outside confirmation the fix
-      was correct.
+      an improvement.
+      </details>
 - [x] Exponential backoff on `429 Too Many Requests`, per Kalshi's own rate
       limit guidance (`docs.kalshi.com/getting_started/rate_limits` — no
       `Retry-After` header is provided, backoff is the documented
-      expectation). `services/http_client.py`'s new `request_with_backoff`
-      is shared by both Kalshi clients; only 429 triggers a retry, every
-      other status is returned immediately for existing `raise_for_status()`
-      handling. 4 new tests, no real network calls or real sleeping.
+      expectation). Originally implemented as `services/http_client.py`'s
+      `request_with_backoff` wrapping raw `httpx` calls; became dead code
+      the moment the SDK migration above landed (Kalshi calls no longer go
+      through raw `httpx` — the SDK owns the request), so it was replaced
+      with `call_with_backoff`, which wraps arbitrary async SDK client
+      methods instead and detects a 429 via the SDK's own exception shape
+      (`.status`). The SDK's own built-in retry support doesn't cover 429 at
+      all (only 5xx/connection errors), so this is still load-bearing, not
+      redundant with the SDK. Only 429 triggers a retry; every other
+      exception re-raises immediately. 5 tests, no real network calls or
+      real sleeping.
 - [x] Surface Kalshi's real exchange open/closed status
       (`GET /exchange/status`, public/unauthenticated) in the dashboard, so
       a quiet signal feed reads as "the market's closed," not "the strategy
       is stuck." Small badge in the header, only visually loud when closed.
+- [x] Fixed the intermittent 403/404 errors on
+      `https://kalshi-whale-poc.ddev.site/` that recurred repeatedly during
+      development — root-caused, not just restarted away. `ddev`'s default
+      (unused, empty-docroot) `web` service and the custom `fastapi` service
+      both auto-register a Traefik router for the exact same hostname
+      (confirmed by reading ddev-router's generated
+      `<project>_merged.yaml` directly: two routers, identical
+      `HostRegexp`, same `https` entrypoint); Traefik's tie-break between
+      two equal-priority routers isn't stable across reloads, so the site
+      would randomly route to `web`'s empty docroot (→ 403) instead of
+      `fastapi`. Clearing `router_http_port`/`router_https_port` in
+      `.ddev/config.yaml` (an earlier fix attempt, `.ddev/config.yaml`'s own
+      comment described the symptom accurately) didn't actually fix this —
+      those only control the ports ddev-router itself listens on, not which
+      services get routers generated for them, which is why the problem
+      kept recurring despite it. Real fix, in
+      `.ddev/docker-compose.web-override.yaml`: blank out `web`'s own
+      `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST` so ddev's router-config
+      generator never creates a `web` router for this hostname at all —
+      verified by re-reading the generated config after a restart (`web`
+      routers: 0, was 3) and 10/10 real external requests through the
+      actual router path returning 200.
 - [ ] Mobile/responsive pass — the Terminal view's 3-column grid is
       desktop-only right now.
 - [ ] Accessibility pass — keyboard navigation, aria labels, and a check
