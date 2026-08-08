@@ -31,5 +31,7 @@ class TemplateProvider(WhaleWatcherProvider):
     def enabled(self) -> bool:
         return False
 
-    async def fetch_signals(self, since_ts: float | None = None) -> list[WhaleSignal]:
+    async def fetch_signals(
+        self, since_ts: float | None = None, market_context: dict | None = None,
+    ) -> list[WhaleSignal]:
         raise NotImplementedError("Copy this file into a real provider before using it")

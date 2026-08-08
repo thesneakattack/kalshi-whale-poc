@@ -1,7 +1,7 @@
 import time
 from datetime import datetime, timedelta, timezone
 
-from services.whale_simulator import WhaleSimulator
+from services.whale_simulator import WhaleSimulator, composite_confidence
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", yes_bid_dollars="0.5", close_time=None, event_ticker=None):
@@ -216,3 +216,27 @@ def test_confidence_higher_for_busiest_market_in_batch():
         sim._score_confidence(quiet, markets, size=50, price=0.5, now=now) for _ in range(200)
     ) / 200
     assert busy_avg > quiet_avg
+
+
+def test_composite_confidence_is_deterministic_no_noise():
+    # The shared, real-provider-facing function (services/whalewatchers/
+    # kalshi_trade_tape.py) must not have WhaleSimulator's synthetic noise
+    # mixed in - a real trade's confidence shouldn't have fake uncertainty
+    # injected into it. Same inputs must always produce the exact same score.
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    scores = {composite_confidence(market, [market], size=5000, price=0.5, now=now) for _ in range(50)}
+    assert len(scores) == 1
+
+
+def test_composite_confidence_matches_score_confidence_shape():
+    # WhaleSimulator._score_confidence should equal composite_confidence
+    # plus noise in [-0.1, 0.1] - confirms the extraction didn't change the
+    # simulator's own behavior.
+    sim = WhaleSimulator()
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    base = composite_confidence(market, [market], size=5000, price=0.5, now=now)
+    scored = [sim._score_confidence(market, [market], size=5000, price=0.5, now=now) for _ in range(200)]
+    assert all(abs(s - base) <= 0.1 + 1e-9 for s in scored)  # noise is always within +/-0.1 of the shared base
+    assert min(scored) < base < max(scored)  # and it actually varies the result, not a no-op

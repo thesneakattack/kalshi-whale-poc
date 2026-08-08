@@ -57,9 +57,11 @@ market_strategy:
   entry_confidence_threshold: 0.5
   take_profit_pct: null
   stop_loss_pct: null
-  exit_on_momentum_reversal: false
+  exit_on_momentum_reversal: true
   max_daily_loss_pct: 1
   kill_switch_enabled: true
+whale_watcher_kalshi:
+  min_notional_usd: 3000
 advisory:
   enabled: false
   min_resolved_trades_per_variant: 30

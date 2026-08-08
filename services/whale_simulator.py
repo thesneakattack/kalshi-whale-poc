@@ -146,52 +146,66 @@ class WhaleSimulator:
     def _score_confidence(
         self, market: dict, markets: list[dict], size: int, price: float, now: float
     ) -> float:
-        """Composite score, matching Polywhaler's stated "Insider Score"
-        shape (see ROADMAP.md) instead of the single size-based number this
-        used to be: trade size relative to market depth, how unusual the
-        price is, proximity to resolution, and broader market context. Each
-        factor normalized to 0-1, weighted-summed, then a little noise -
-        same overall shape as before, just four inputs instead of one."""
-        market_volume = float(market.get("volume_24h_fp") or 0)
-
-        # (1) Size relative to THIS market's own activity - a 20,000-contract
-        # print is unremarkable in a 2M-volume market, huge in a 5,000-volume
-        # one. Capped at 1.0 once a print reaches a whole day's volume.
-        depth_factor = min(size / max(market_volume, 1.0), 1.0)
-
-        # (2) How unusual the price is - closer to a coin-flip (0.5) means the
-        # market's genuinely undecided, so a big directional bet there is more
-        # informationally loaded than one piling onto an already near-certain
-        # 5c/95c market where there's little edge left to have.
-        unusualness_factor = 1.0 - abs(price - 0.5) * 2
-
-        # (3) Proximity to the market's own resolution/close time - no
-        # close_time (or one already past) contributes nothing rather than
-        # guessing.
-        proximity_factor = 0.0
-        close_time = market.get("close_time")
-        if close_time:
-            try:
-                close_ts = datetime.fromisoformat(close_time.replace("Z", "+00:00")).timestamp()
-                seconds_left = close_ts - now
-                if 0 < seconds_left <= _CLOSE_PROXIMITY_WINDOW_SEC:
-                    proximity_factor = 1.0 - (seconds_left / _CLOSE_PROXIMITY_WINDOW_SEC)
-            except (ValueError, AttributeError):
-                pass
-
-        # (4) Broader market context - is this one of the more actively-traded
-        # markets in the current batch, or a thin outlier? A big print in an
-        # already-busy market reads as more credible than the same print in
-        # the quietest one on the list.
-        other_volumes = [float(m.get("volume_24h_fp") or 0) for m in markets]
-        max_volume = max(other_volumes) if other_volumes else 0.0
-        context_factor = (market_volume / max_volume) if max_volume > 0 else 0.5
-
-        base = (
-            0.40 * depth_factor
-            + 0.25 * unusualness_factor
-            + 0.20 * proximity_factor
-            + 0.15 * context_factor
-        )
+        """Composite score plus a little synthetic noise, so repeated
+        simulated prints against the same market don't all land on the exact
+        same number - see composite_confidence() below for the four-factor
+        formula itself, shared with real whale-watcher providers (which
+        report it as-is, with no noise added - a real trade's confidence
+        shouldn't have fake uncertainty injected into it)."""
+        base = composite_confidence(market, markets, size, price, now)
         noise = random.uniform(-0.1, 0.1)
         return min(max(base + noise, 0.0), 1.0)
+
+
+def composite_confidence(
+    market: dict, markets: list[dict], size: float, price: float, now: float
+) -> float:
+    """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md):
+    trade size relative to market depth, how unusual the price is, proximity
+    to resolution, and broader market context. Each factor normalized to
+    0-1, weighted-summed. Pure function of its inputs - no randomness - so
+    it's shared as-is between the simulator (which adds noise on top, see
+    WhaleSimulator._score_confidence) and any real whale-watcher provider
+    scoring an actual trade (services/whalewatchers/kalshi_trade_tape.py)."""
+    market_volume = float(market.get("volume_24h_fp") or 0)
+
+    # (1) Size relative to THIS market's own activity - a 20,000-contract
+    # print is unremarkable in a 2M-volume market, huge in a 5,000-volume
+    # one. Capped at 1.0 once a print reaches a whole day's volume.
+    depth_factor = min(size / max(market_volume, 1.0), 1.0)
+
+    # (2) How unusual the price is - closer to a coin-flip (0.5) means the
+    # market's genuinely undecided, so a big directional bet there is more
+    # informationally loaded than one piling onto an already near-certain
+    # 5c/95c market where there's little edge left to have.
+    unusualness_factor = 1.0 - abs(price - 0.5) * 2
+
+    # (3) Proximity to the market's own resolution/close time - no
+    # close_time (or one already past) contributes nothing rather than
+    # guessing.
+    proximity_factor = 0.0
+    close_time = market.get("close_time")
+    if close_time:
+        try:
+            close_ts = datetime.fromisoformat(close_time.replace("Z", "+00:00")).timestamp()
+            seconds_left = close_ts - now
+            if 0 < seconds_left <= _CLOSE_PROXIMITY_WINDOW_SEC:
+                proximity_factor = 1.0 - (seconds_left / _CLOSE_PROXIMITY_WINDOW_SEC)
+        except (ValueError, AttributeError):
+            pass
+
+    # (4) Broader market context - is this one of the more actively-traded
+    # markets in the current batch, or a thin outlier? A big print in an
+    # already-busy market reads as more credible than the same print in
+    # the quietest one on the list.
+    other_volumes = [float(m.get("volume_24h_fp") or 0) for m in markets]
+    max_volume = max(other_volumes) if other_volumes else 0.0
+    context_factor = (market_volume / max_volume) if max_volume > 0 else 0.5
+
+    base = (
+        0.40 * depth_factor
+        + 0.25 * unusualness_factor
+        + 0.20 * proximity_factor
+        + 0.15 * context_factor
+    )
+    return min(max(base, 0.0), 1.0)

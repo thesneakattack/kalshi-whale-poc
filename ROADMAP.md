@@ -762,9 +762,39 @@ band instead.
 
 ## P2 — Whale-tracking maturity
 
-- [ ] Add at least one more real named whale-watcher provider (beyond the
+- [x] Add at least one more real named whale-watcher provider (beyond the
       `generic_rest` default and the unused `template_provider.py`) with
-      actual, tested setup steps.
+      actual, tested setup steps. Researched first, not assumed: Kalshi has
+      no public trader identity or leaderboard (trades are anonymous
+      member-to-member), so unlike Polymarket's on-chain wallet-based whale
+      trackers (see `docs/simmer-integration-research.md`), a real Kalshi
+      provider can only be size-based. Turned out this app already had the
+      raw data for free — `services/kalshi_client.py`'s public, no-auth
+      `get_trades()`, already fetched every tick for the UI trade tape.
+      New `services/whalewatchers/kalshi_trade_tape.py`: classifies a real
+      trade as a whale print once its side-aware real notional dollar size
+      (`count_fp * yes_price_dollars` or `no_price_dollars` — the same
+      no-side-cost lesson this app already paid for once) clears a
+      configurable threshold (`whale_watcher_kalshi.min_notional_usd`,
+      default $2500). Needs zero credentials and zero extra API calls —
+      reuses each tick's already-fetched market/trade data via a new
+      `market_context` param on `WhaleWatcherProvider.fetch_signals()`.
+      Confidence scoring extracted from `WhaleSimulator._score_confidence`
+      into a shared, noise-free `composite_confidence()` so the real
+      provider reuses the exact same four-factor formula without the
+      simulator's synthetic noise. Verified against real, live trade data
+      (correctly zero signals at the $2500 default against real trades
+      currently under $1,000; correctly produced real signals when
+      temporarily lowered), and end-to-end through a real `ddev restart`
+      and the actual trading loop. Direct follow-up once verified working:
+      "there's no reason to have the simulator enabled by default" — the
+      default provider flipped from `generic_rest` (silently simulator-only
+      with no URL set) to `kalshi_trade_tape`; the Config tab's Whale Signal
+      section split into simulator/real halves, with the inactive one
+      visually grayed out based on which is actually running each tick.
+      13 new tests (`tests/test_whalewatchers_kalshi_trade_tape.py`) plus 2
+      locking in the `composite_confidence()` extraction. Full suite: 275
+      passing (was 262).
 - [x] Improve series/category grouping — "better Kalshi series metadata"
       turned out to already exist and just be unused, confirmed by
       actually querying `get_series_list()` directly rather than assuming

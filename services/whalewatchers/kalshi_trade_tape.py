@@ -1,0 +1,134 @@
+"""
+Real (not simulated) whale-watcher provider — Kalshi has no public trader
+identity or leaderboard (trades are anonymous member-to-member, confirmed
+directly during research, not assumed), so this is strictly size-based whale
+detection: a real trade printed on the exchange whose notional dollar value
+clears a configurable threshold. See docs/kalshi-whale-provider-and-
+strategy-porting-plan.md Part 1 for the full research and design writeup.
+
+Needs no credentials and calls no external API of its own — it classifies
+data this app already fetches every trading-loop tick (main.py's
+_fetch_trade_tape(), already populating state["trade_tape"] before this
+provider runs), passed in via fetch_signals()'s market_context param. Zero
+extra API cost, same "already-fetched, don't fetch again" discipline
+services/market_history.py uses.
+"""
+import time
+from collections import deque
+from datetime import datetime
+
+from services.whale_simulator import WhaleSignal, composite_confidence
+from services.whalewatchers.base import WhaleWatcherProvider
+
+_DEFAULT_MIN_NOTIONAL_USD = 2500.0
+# get_trades(ticker, limit=10) returns the same recent trades tick after
+# tick until they age out of that window — without this, one real trade
+# would re-emit as a fresh whale signal on every poll until it fell off the
+# last-10 list. Bounded so a long-running process doesn't grow this
+# unbounded; old entries age out in insertion order once the cap is hit.
+_MAX_SEEN_TRADE_IDS = 5000
+
+
+def _notional_usd(trade: dict) -> float:
+    """Real dollar size of a trade, side-aware - the same lesson this app
+    already paid for once (ROADMAP.md: open_position charged size * price
+    unconditionally, but a no-side position's real cost is size * (1 -
+    price)). A trade's notional is count * whichever price the taker
+    actually paid, not always the yes price."""
+    count = float(trade.get("count_fp") or 0)
+    taker_side = str(trade.get("taker_side") or "").lower()
+    price_key = "yes_price_dollars" if taker_side == "yes" else "no_price_dollars"
+    price = float(trade.get(price_key) or 0)
+    return count * price
+
+
+def _parse_trade_time(created_time: str | None) -> float | None:
+    if not created_time:
+        return None
+    try:
+        return datetime.fromisoformat(created_time.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+class KalshiTradeTapeProvider(WhaleWatcherProvider):
+    name = "kalshi_trade_tape"
+
+    def __init__(self):
+        self._seen_trade_ids: set[str] = set()
+        self._seen_order: deque[str] = deque()
+
+    @property
+    def enabled(self) -> bool:
+        # No credentials needed - reads this app's own already-fetched
+        # market data, passed in via market_context. Selecting this provider
+        # at all (WHALE_WATCHER_PROVIDER=kalshi_trade_tape in .env) is what
+        # opts in; once selected, it's always ready.
+        return True
+
+    def _mark_seen(self, trade_id: str) -> None:
+        if trade_id in self._seen_trade_ids:
+            return
+        self._seen_trade_ids.add(trade_id)
+        self._seen_order.append(trade_id)
+        while len(self._seen_order) > _MAX_SEEN_TRADE_IDS:
+            oldest = self._seen_order.popleft()
+            self._seen_trade_ids.discard(oldest)
+
+    async def fetch_signals(
+        self, since_ts: float | None = None, market_context: dict | None = None,
+    ) -> list[WhaleSignal]:
+        market_context = market_context or {}
+        markets = market_context.get("markets") or []
+        trade_tape = market_context.get("trade_tape") or []
+        cfg = market_context.get("cfg") or {}
+        min_notional = float((cfg.get("whale_watcher_kalshi") or {}).get(
+            "min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD
+        ))
+
+        markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
+        now = time.time()
+        signals: list[WhaleSignal] = []
+
+        for trade in trade_tape:
+            trade_id = trade.get("trade_id")
+            if not trade_id or trade_id in self._seen_trade_ids:
+                continue
+            self._mark_seen(trade_id)  # evaluated once, regardless of outcome below
+
+            ticker = trade.get("ticker")
+            market = markets_by_ticker.get(ticker)
+            if not market:
+                continue  # can't score confidence without this market's own volume/close_time - skip, don't fabricate
+
+            try:
+                notional = _notional_usd(trade)
+            except (TypeError, ValueError):
+                continue
+            if notional < min_notional:
+                continue
+
+            try:
+                # price is always the yes-side price by convention, same as
+                # every other WhaleSignal in this app (whale_simulator.py,
+                # confirmed in ROADMAP.md) - side carries direction separately.
+                price = float(trade.get("yes_price_dollars") or 0)
+                size = int(round(float(trade.get("count_fp") or 0)))
+            except (TypeError, ValueError):
+                continue
+
+            side = "yes" if str(trade.get("taker_side") or "").lower() == "yes" else "no"
+            confidence = composite_confidence(market, markets, size, price, now)
+            timestamp = _parse_trade_time(trade.get("created_time")) or now
+
+            signals.append(WhaleSignal(
+                id=trade_id,
+                ticker=ticker,
+                side=side,
+                size=size,
+                price=round(price, 2),
+                confidence=round(confidence, 2),
+                timestamp=timestamp,
+            ))
+
+        return signals

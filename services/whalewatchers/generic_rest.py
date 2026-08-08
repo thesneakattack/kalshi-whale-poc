@@ -57,7 +57,9 @@ class GenericRestProvider(WhaleWatcherProvider):
                     return payload[key]
         return []
 
-    async def fetch_signals(self, since_ts: float | None = None) -> list[WhaleSignal]:
+    async def fetch_signals(
+        self, since_ts: float | None = None, market_context: dict | None = None,
+    ) -> list[WhaleSignal]:
         if not self.enabled:
             return []
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}

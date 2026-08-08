@@ -17,5 +17,14 @@ class WhaleWatcherProvider(ABC):
         """Whether this provider has what it needs (API key, URL, ...) to run."""
 
     @abstractmethod
-    async def fetch_signals(self, since_ts: float | None = None) -> list[WhaleSignal]:
-        """Return whatever new whale prints exist since since_ts (or 'recent' if None)."""
+    async def fetch_signals(
+        self, since_ts: float | None = None, market_context: dict | None = None,
+    ) -> list[WhaleSignal]:
+        """Return whatever new whale prints exist since since_ts (or 'recent' if None).
+
+        market_context, when passed, is this tick's already-fetched data —
+        {"markets": [...], "trade_tape": [...], "cfg": {...}} — for a
+        provider that derives signals from data this app already fetched
+        rather than calling an external source (see
+        services/whalewatchers/kalshi_trade_tape.py). Providers that fetch
+        from an independent external API (generic_rest, template) ignore it."""

@@ -620,7 +620,9 @@ async def trading_loop():
             new_signals = []
             if whale_provider.enabled:
                 try:
-                    new_signals = await whale_provider.fetch_signals()
+                    new_signals = await whale_provider.fetch_signals(
+                        market_context={"markets": markets, "trade_tape": trade_tape, "cfg": cfg},
+                    )
                     state["whale_source"] = whale_provider.name
                 except Exception as e:
                     # Provider hiccuped — fall back to the simulator for this

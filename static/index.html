@@ -321,6 +321,16 @@
   .data-badge.new { color: var(--no); background: rgba(249,112,102,0.15); }
   .field .data-badge { margin-left: 8px; }
 
+  /* Whichever whale-signal source (simulator vs. real) isn't the one
+     actually running gets visually de-emphasized rather than just described
+     in prose - set from loadConfig() via lastWhaleSource, not hardcoded,
+     since which one is "inactive" depends on runtime config/.env, not a
+     fixed default anymore. Still fully interactive (fields stay editable -
+     the simulator's config still matters as a same-tick fallback if the
+     real provider's fetch fails), just visually muted. */
+  .config-section.provider-inactive { opacity: 0.5; }
+  .config-section.provider-inactive summary { cursor: pointer; }
+
   button {
     font-family: var(--sans);
     font-size: 12px;
@@ -1107,17 +1117,37 @@
       </div>
     </details>
 
-    <details class="config-section">
-      <summary>Whale Signal <span class="data-badge sim">🧪 sim data</span> <span class="section-desc">— the built-in simulator's own tuning</span></summary>
+    <details class="config-section" id="whale-sim-section">
+      <summary>Whale Signal (simulator) <span class="data-badge sim">🧪 sim data</span> <span class="section-desc" id="whale-sim-section-desc">— fallback only, the real provider below is active by default</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-          Governs the built-in <i>simulator</i> only - a real connected whale-watcher feed
-          (Connected Accounts) ignores every field below and this whole section becomes inert.
+          Governs the built-in <i>simulator</i> only. Since the real Kalshi Trade Tape
+          provider below needs no setup and is active by default, the fields below now only
+          matter as a fallback (used automatically for one tick if the real provider's fetch
+          fails) or if you deliberately switch back to simulator-only mode
+          (<code>WHALE_WATCHER_PROVIDER=generic_rest</code> with no
+          <code>WHALE_WATCHER_API_URL</code>, in <code>.env</code>, plus a restart).
         </p>
         <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
         <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
         <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
         <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE</label></div>
+      </div>
+    </details>
+
+    <details class="config-section" id="whale-real-section" open>
+      <summary>Whale Signal (real — Kalshi Trade Tape) <span class="section-desc">— size-based, from the real public trade feed, active by default</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Kalshi has no public trader identity or leaderboard, so this is strictly
+          size-based: any real trade on the exchange whose dollar size clears the
+          threshold below becomes a whale signal, scored the same way the simulator's
+          confidence is. Active by default (needs no setup) — set
+          <code>WHALE_WATCHER_PROVIDER</code> in <code>.env</code> to something else, plus a
+          restart (<code>ddev restart</code>), to turn it off instead.
+        </p>
+        <div id="whale-provider-status" style="font-size:12px; margin:0 0 12px;"></div>
+        <div class="field"><label>Minimum trade size to count as a whale print ($ notional)</label><input id="cfg-whale-min-notional" type="number" step="100" min="0"></div>
       </div>
     </details>
 
@@ -3360,6 +3390,7 @@ function renderExchangeStatus(status) {
 // exchange-closed badge rather than a silent console.error.
 let lastSuccessfulRefresh = Date.now();
 let consecutiveRefreshFailures = 0;
+let lastWhaleSource = null;  // set from each poll's state.whale_source - see loadConfig()'s real-provider status note
 
 function renderConnectivity() {
   const el = $('connectivity-badge');
@@ -3534,6 +3565,8 @@ async function refresh() {
 
     $('live-dot').classList.toggle('live', state.running);
     $('whale-source').textContent = `· ${sourceLabel(state.whale_source)}`;
+    lastWhaleSource = state.whale_source;
+    updateWhaleProviderStatus(lastWhaleSource);
     renderExchangeStatus(state.exchange_status);
     $('toggle-btn').textContent = state.running ? 'Pause' : 'Resume Loop';
 
@@ -3598,6 +3631,34 @@ async function refresh() {
   }
 }
 
+// Called from refresh() (every poll, so this stays live rather than frozen
+// at whatever it was on page load) and from loadConfig() (so it's correct
+// immediately if the Config tab happens to already be open). Which section
+// is "inactive" depends on runtime config/.env, not a fixed default, so
+// this reads the real current source rather than assuming the simulator.
+function updateWhaleProviderStatus(src) {
+  const statusEl = $('whale-provider-status');
+  const simSection = $('whale-sim-section');
+  const realSection = $('whale-real-section');
+  if (!statusEl || !simSection || !realSection) return;  // Config tab markup not present yet
+  const isRealActive = src != null && src !== 'simulated' && !src.startsWith('simulated (');
+  simSection.classList.toggle('provider-inactive', isRealActive);
+  realSection.classList.toggle('provider-inactive', src != null && !isRealActive);
+  if (src == null) {
+    statusEl.textContent = 'Checking which whale-signal source is active…';
+    statusEl.style.color = 'var(--muted)';
+  } else if (isRealActive) {
+    statusEl.textContent = `📡 Currently active: real data from "${src}"`;
+    statusEl.style.color = 'var(--yes)';
+  } else if (src.startsWith('simulated (')) {
+    statusEl.textContent = `⚠️ Real provider's last fetch failed - using simulator as backup this tick (${src})`;
+    statusEl.style.color = 'var(--no)';
+  } else {
+    statusEl.textContent = '🧪 Currently active: the built-in simulator (no real provider selected)';
+    statusEl.style.color = 'var(--muted)';
+  }
+}
+
 async function loadConfig() {
   const cfg = await fetchJSON('/api/config');
   $('cfg-mode').value = cfg.mode || 'paper';
@@ -3644,6 +3705,8 @@ async function loadConfig() {
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
   $('cfg-whale-live-only').checked = !!cfg.whale_signal.live_markets_only;
+  $('cfg-whale-min-notional').value = (cfg.whale_watcher_kalshi || {}).min_notional_usd ?? 2500;
+  updateWhaleProviderStatus(lastWhaleSource);
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
@@ -3724,6 +3787,9 @@ $('save-config-btn').addEventListener('click', async () => {
       signal_frequency_sec: parseInt($('cfg-freq').value),
       whale_size_range: [parseInt($('cfg-size-min').value), parseInt($('cfg-size-max').value)],
       live_markets_only: $('cfg-whale-live-only').checked,
+    },
+    whale_watcher_kalshi: {
+      min_notional_usd: parseFloat($('cfg-whale-min-notional').value) || 0,
     },
     risk: {
       max_daily_loss_pct: parseFloat($('cfg-max-loss').value),
