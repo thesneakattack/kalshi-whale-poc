@@ -911,6 +911,86 @@ band instead.
       data loss (older rows correctly `factors_json=null`, new ones
       populated), both new routes confirmed correctly gated/dormant. 24
       new tests. Full suite: 297 passing (was 285).
+- [x] Schedule-aware light polling for live-market status, and a broad,
+      incrementally-scanned market catalog — the next direct follow-up in
+      the same live-markets thread, spanning several rounds of correction.
+      Direct request: "no need to check if a market is live... every
+      tick... they should have scheduled open and close times for you to
+      do some light polling to track status but otherwise use the schedule
+      and its previous live status to operate." Investigated
+      `_fetch_live_status` directly and found two real things: it
+      re-derived status from 2 fresh API calls per candidate event on
+      *every* 15s tick with zero memory of prior results, and a genuine
+      pre-existing bug — the window-bounds comment claimed "started up to
+      6h ago, or starting within the next hour" but the actual inequality
+      did the opposite (hand-derived, not assumed).
+
+      Built light polling: new `state["live_status_cache"]` (survives
+      across ticks, unlike `state["live_status"]` itself which stays
+      wholesale-replaced per tick for the current view) — a market is only
+      re-polled after `_LIVE_STATUS_REPOLL_SEC` (5 min, ~20x fewer calls
+      than every tick), a market past its own `close_time` is treated as
+      finished from the schedule alone with no poll, and a terminal status
+      is never polled again for the process's life. Window-bounds bug
+      fixed alongside it. Added a schedule-based fallback per the original
+      request, for when a real poll happens but Kalshi's milestone/live-
+      data system has nothing to say — then tightened after direct
+      correction ("just because a market is open doesn't mean it's live
+      like sports or mentions or award shows — be careful about how you
+      infer"): the fallback only infers "live" for events Kalshi has
+      *confirmed* are milestone-tracked (a real game/mention/show) but
+      whose live-data confirmation didn't come back this tick; a market
+      with no milestone registered at all is left out of the result
+      entirely, never guessed at either way.
+
+      User then pushed back with a real, independent observation:
+      real Kalshi showed 72-86 live markets, almost all sports, while this
+      app's live-only watchlist found ~0. Investigated directly rather than
+      defending the polling logic — ran discovery's actual candidate
+      selection against real data and found the true root cause was
+      upstream of live-status checking entirely: `kalshi.live_markets_only`
+      discovery only ever sampled the top 40 series by 24h volume, and of
+      ~775 real candidates in that sample, only ~30 fell in any plausible
+      live window, 0 confirmed live. A series being high-volume overall and
+      "has a game live right now" are different things.
+
+      Fix, shaped directly by the user ("fetch a complete list of
+      markets... paginate api fetches and populate/store data in a usable
+      manner until all markets are scanned," then scoped down: "maybe it
+      doesn't have to be a FULL catalog... within days or weeks, not 6
+      months or a year from now"): new `services/market_catalog.py`, an
+      incrementally-scanned, near-term-only catalog
+      (`data/market_catalog.db`). `get_series_list()` already returns
+      Kalshi's full ~9,400-series catalog in one call — the actual gap was
+      market-level fetching only ever sampling the top 40. New per-tick
+      `_scan_catalog_batch()` fetches a bounded batch (40 series/tick) of
+      the least-recently-scanned series — self-healing rotation, no
+      fragile cursor — storing only markets within a near-term horizon (1
+      week past through 3 weeks future, `occurrence_datetime`/`close_time`
+      parsed to unix timestamps for cheap SQL range queries) per the
+      explicit scope correction. Gated entirely behind
+      `kalshi.live_markets_only` — zero extra cost for anyone who hasn't
+      opted in. Both `_fetch_markets`' live-only discovery and
+      `GET /api/markets/search`'s `live_only` path rewired to draw from
+      this catalog instead of a fresh top-N-series fetch — a second real
+      bug caught and fixed during search's rewiring: it still truncated to
+      the top-30-by-volume series before checking the catalog, discarding
+      most of the catalog's own breadth whenever search had no text query
+      narrowing things down; fixed to only apply that narrowing when a real
+      `q`/`category` filter is active. New
+      `GET /api/market-catalog/status` debug endpoint.
+
+      Verified live, not just in tests: before this shipped, live-only
+      discovery found 0 confirmed-live markets against real data (the
+      user's exact complaint). After: watched the catalog build in real
+      time (0 → 680+ series scanned, 7,500+ near-term markets across a few
+      minutes) and the live watchlist grow alongside it (0 → 24 confirmed-
+      live real markets — real PGA head-to-head golf matchups, a live CS2
+      esports match, a milestone-tracked MrBeast mention market). Search's
+      `live_only` confirmed working both with and without a query, after
+      the truncation fix. 26 new tests
+      (`tests/test_market_catalog.py`, `tests/test_trading_gate.py`). Full
+      suite: 323 passing (was 297).
 - [x] Improve series/category grouping — "better Kalshi series metadata"
       turned out to already exist and just be unused, confirmed by
       actually querying `get_series_list()` directly rather than assuming

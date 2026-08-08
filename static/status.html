@@ -1733,6 +1733,71 @@
           <code>tests/test_whale_simulator.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 47 · light polling, and a market catalog that finally finds what's live</div>
+        <h4>"They should have scheduled open and close times for you to do some light polling... otherwise use
+          the schedule and its previous live status" - then, after real data proved that wasn't the whole
+          problem: "you really must have done something wrong... i'm seeing 72-86 live markets on Kalshi."</h4>
+        <p>Started as a polling-efficiency request. <code>_fetch_live_status</code> was re-deriving live status
+          from 2 fresh API calls per candidate event on <i>every</i> 15s tick with zero memory of prior results -
+          investigated directly and also found a real, pre-existing bug along the way: the window-bounds comment
+          claimed "started up to 6h ago, or starting within the next hour," but the actual inequality did the
+          opposite (hand-derived, not assumed - included events starting hours in the future, dropped anything
+          that had been running more than about an hour). New <code>state["live_status_cache"]</code> (survives
+          across ticks, unlike <code>state["live_status"]</code> itself, still wholesale-replaced per tick for the
+          current view) - a market is only re-polled after <code>_LIVE_STATUS_REPOLL_SEC</code> (5 min, ~20x fewer
+          calls than every tick), a market past its own <code>close_time</code> is treated as finished from the
+          schedule alone with no poll, and a terminal status is never polled again for the process's life. Window
+          bounds corrected alongside it. A schedule-based fallback was added per the original request, for when a
+          real poll happens but Kalshi's milestone/live-data system has nothing to say - then tightened after a
+          direct correction ("just because a market is open doesn't mean it's live like sports or mentions or
+          award shows - be careful how you infer"): the fallback only infers "live" for events Kalshi has
+          <i>confirmed</i> are milestone-tracked (a real game/mention/show) but whose live-data confirmation
+          didn't land this particular tick; a market with no milestone registered at all is left out of the
+          result entirely, never guessed at either way.</p>
+        <p>Then real-world pushback that turned out to be the actual bug: real Kalshi showed 72-86 live markets,
+          almost all sports, while this app's live-only watchlist found effectively zero. Investigated directly
+          rather than defending the polling logic already shipped - ran discovery's actual candidate selection
+          against real Kalshi data and found the true root cause sat entirely upstream of live-status checking:
+          <code>kalshi.live_markets_only</code> discovery only ever sampled the top 40 series by 24h trading
+          volume, and of ~775 real candidates in that sample, only ~30 fell in any plausible live time window, 0
+          confirmed live. A series being high-volume overall and "has a game live right now" are genuinely
+          different things - volume-ranking the candidate pool was quietly the whole problem.</p>
+        <p>Fix, shaped directly by the user: "fetch a complete list of markets... paginate api fetches and
+          populate/store data in a usable manner until all markets are scanned," then scoped back down once the
+          size of that got named out loud: "maybe it doesn't have to be a FULL catalog... within days or weeks,
+          not 6 months or a year from now." New <code>services/market_catalog.py</code>, an incrementally-scanned,
+          near-term-only catalog (<code>data/market_catalog.db</code>). <code>get_series_list()</code> already
+          returns Kalshi's full ~9,400-series catalog in one call, no pagination problem there - the actual gap
+          was market-level fetching only ever sampling the top 40 of those. New per-tick
+          <code>_scan_catalog_batch()</code> fetches a bounded batch (40 series/tick) of the least-recently-
+          scanned series - a self-healing rotation with no fragile cursor to keep in sync with a series list that
+          itself changes size - storing only markets within a near-term horizon (1 week past through 3 weeks
+          future, <code>occurrence_datetime</code>/<code>close_time</code> parsed to unix timestamps up front for
+          cheap SQL range queries instead of per-row Python parsing on every read) per the explicit scope
+          correction. Gated entirely behind <code>kalshi.live_markets_only</code> - zero extra API cost for
+          anyone who hasn't opted in. Both <code>_fetch_markets</code>' live-only discovery and
+          <code>GET /api/markets/search</code>'s <code>live_only</code> path rewired to draw candidates from this
+          catalog instead of a fresh top-N-series fetch - a second real bug caught and fixed while rewiring
+          search: it still truncated to the top-30-by-volume series before ever checking the catalog, discarding
+          most of the catalog's own breadth advantage whenever search had no text query narrowing anything down;
+          fixed to only apply that narrowing when a real <code>q</code>/<code>category</code> filter is actually
+          active. New <code>GET /api/market-catalog/status</code> debug endpoint.</p>
+        <p>Verified live against the real running app, not just in tests: before this shipped, live-only
+          discovery found 0 confirmed-live markets against real data - the user's exact complaint, reproduced
+          directly. After: watched the catalog build in real time (0 → 680+ series scanned, 7,500+ near-term
+          markets, across a few minutes of real ticks) and the live watchlist grow alongside it (0 → 24
+          confirmed-live real markets - real PGA head-to-head golf matchups, a live CS2 esports match, and a
+          milestone-tracked MrBeast mention market, confirming the milestone-gated fallback correctly covers
+          mention-type markets too, not just sports). Search's <code>live_only</code> confirmed working both with
+          and without a query after the truncation fix. Zero errors in logs throughout. 26 new tests. Full suite:
+          323 passing (was 297).</p>
+        <div class="files"><code>main.py</code> (<code>_fetch_live_status</code> caching/fallback rewrite,
+          <code>_scan_catalog_batch</code>, <code>/api/market-catalog/status</code>) ·
+          <code>services/market_catalog.py</code> (new) ·
+          <code>tests/test_market_catalog.py</code> (new), <code>tests/test_trading_gate.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -1779,7 +1844,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code></td><td class="loc">1553</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code>, schedule-aware light polling for live-market status (<code>live_status_cache</code>, milestone-gated schedule fallback), per-tick incremental market-catalog scan batch, <code>/api/market-catalog/status</code></td><td class="loc">1738</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps</td><td class="loc">253</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
@@ -1800,6 +1865,7 @@
           <tr><td class="mod">services/advisory_engine.py</td><td class="note">rule-based config-tuning recommendation engine — per-variant summaries, within-variant + cross-variant recommendations with a stable id/n/confidence_label, the data-threshold gate enforced inside <code>generate_recommendations()</code> itself. Disabled by default (<code>advisory.enabled</code>)</td><td class="loc">244</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/ml_feed.py</td><td class="note">scaffolding only — <code>build_context_snapshot()</code>, a pure function shaping the bundle a future ML agent would read alongside the advisory engine. Not called from any route yet, only its own test exercises it</td><td class="loc">69</td><td><span class="pill planned">scaffolding, unwired</span></td></tr>
           <tr><td class="mod">services/market_history.py</td><td class="note">real per-market snapshot log (price/spread/volume/time-to-close) + settlement outcomes, logged every tick independent of whale signals — <code>momentum()</code>, <code>compute_hypothetical_trades()</code> (explicitly hypothetical backtest analysis), <code>data/market_history.db</code></td><td class="loc">210</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/market_catalog.py</td><td class="note">incrementally-scanned, near-term-only (1 week past – 3 weeks future) catalog of real markets across far more series than the top-40-by-volume discovery samples — least-recently-scanned-first rotation batched 40 series/tick, powers <code>kalshi.live_markets_only</code> discovery and <code>/api/markets/search</code>'s <code>live_only</code> path, <code>data/market_catalog.db</code>. Gated behind <code>kalshi.live_markets_only</code>, zero cost otherwise</td><td class="loc">218</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/market_strategy.py</td><td class="note"><code>MarketNativeStrategy</code> — a second, fully independent automated paper strategy, momentum continuation gated by price-band/spread/volume/time-to-close filters, zero whale-signal input. Own capital pool (<code>main.py</code>'s <code>market_broker</code>/<code>market_risk</code>). Disabled by default (<code>market_strategy.enabled</code>), backend-only, no dashboard panel yet</td><td class="loc">222</td><td><span class="pill gated">built, disabled by default</span></td></tr>
           <tr><td class="mod">services/title_cache.py</td><td class="note">write-through persistence for market/event titles (<code>data/title_cache.db</code>) — survives <code>uvicorn --reload</code> restarts and watchlist rotation, fixing raw tickers leaking into signal history/clusters/positions</td><td class="loc">110</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>

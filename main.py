@@ -19,6 +19,7 @@ from services import advisory_engine
 from services import auth as auth_service
 from services import confidence_calibration
 from services import config_performance
+from services import market_catalog
 from services import market_history
 from services import signal_log
 from services import title_cache
@@ -100,6 +101,12 @@ state = {
     "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
+    # Survives across ticks (unlike live_status above, still replaced wholesale
+    # every tick for the current-tick view) - event_ticker -> {"status",
+    # "checked_at"}, the memory that lets _fetch_live_status poll lightly
+    # instead of re-deriving every event's status from 2 fresh API calls
+    # every single tick. See _fetch_live_status.
+    "live_status_cache": {},
     "series_cache": {"fetched_at": 0.0, "series": []},  # see _get_top_series
     "series_track_record": {},
     "signal_feed": [],   # most recent first
@@ -179,6 +186,41 @@ async def _get_top_series(client: KalshiClient, top_n: int = 40) -> list[str]:
     return [s["ticker"] for s in series[:top_n]]
 
 
+# Series scanned per tick to build services/market_catalog.py's near-term
+# catalog - similar order of magnitude to what discovery's own top-series
+# fetch already does per tick (_get_top_series' default top_n), a bounded,
+# deliberate increase in per-tick API calls, not unbounded.
+_CATALOG_SCAN_BATCH_SIZE = 40
+
+
+async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
+    """Incrementally builds market_catalog's near-term market catalog, a
+    bounded batch (least-recently-scanned series first, see market_catalog.
+    next_series_to_scan) per tick - see market_catalog.py's own module
+    docstring for the full "why": volume-ranking the top 40 series
+    systematically misses markets that are live right now but sit in a
+    lower-volume series, confirmed directly against real Kalshi data (found
+    ~0 of the real live markets the user could see on Kalshi's own site).
+    Only runs when kalshi.live_markets_only is on - zero extra API cost for
+    anyone who hasn't opted into that feature, same "free for everyone
+    else" precedent as every other opt-in feature in this app."""
+    if not cfg["kalshi"].get("live_markets_only"):
+        return
+    all_series = await _get_series_cache(client)
+    batch = market_catalog.next_series_to_scan(all_series, _CATALOG_SCAN_BATCH_SIZE)
+    if not batch:
+        return
+    results = await asyncio.gather(
+        *(client.get_markets(limit=100, status="open", series_ticker=s["ticker"]) for s in batch),
+        return_exceptions=True,
+    )
+    now = time.time()
+    for s, result in zip(batch, results):
+        if isinstance(result, list):
+            market_catalog.upsert_markets(s["ticker"], s.get("category"), result, updated_at=now)
+    market_catalog.mark_scanned([s["ticker"] for s in batch], scanned_at=now)
+
+
 def _series_meta_map(series_tickers: set[str]) -> dict:
     """series_of()'s ticker prefix (see services/signal_log.py) already
     equals a real series ticker in practice - what's been missing is a real
@@ -246,7 +288,6 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         )
         markets = [m for m in results if isinstance(m, dict)]
     else:
-        top_series = await _get_top_series(client)
         min_volume = cfg["kalshi"].get("min_volume_24h", 0)
         if cfg["kalshi"].get("live_markets_only"):
             # Direct request: discovery itself, not just whether an already-
@@ -255,12 +296,23 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
             # happens *after* filtering here, not before - checking live
             # status only on an already-narrowed watchlist would mean "only
             # live" really meant "only live among whichever 50 happened to
-            # win on volume," which could easily be zero of them. Costs more
-            # per tick (live status checked across the wider candidate pool,
-            # not just the final watchlist) - accepted deliberately, opt-in
-            # only, see docs/kalshi-whale-provider-and-strategy-porting-plan.md's
-            # sibling doc for the same tradeoff discussion applied here.
-            candidates = await client.get_candidate_markets(min_volume=min_volume, series_tickers=top_series)
+            # win on volume," which could easily be zero of them.
+            #
+            # Candidates come from market_catalog (see _scan_catalog_batch),
+            # not a fresh top-40-series fetch - confirmed directly against
+            # real Kalshi data that volume-ranking the candidate pool misses
+            # almost everything actually live right now (a series can be
+            # high-volume overall with nothing airing this exact hour, and
+            # vice versa). The catalog is scanned incrementally in the
+            # background and may be sparse/empty right after this feature is
+            # first turned on - that's an honest, self-correcting transient
+            # state (see market_catalog.py), not backfilled with anything
+            # fabricated.
+            now = time.time()
+            candidates = market_catalog.candidates_in_window(
+                now, lookahead_sec=_LIVE_STATUS_LOOKAHEAD_SEC, lookback_sec=_LIVE_STATUS_LOOKBACK_SEC,
+                min_volume=min_volume,
+            )
             candidate_live_status = await _fetch_live_status(client, candidates)
             live_candidates = [
                 m for m in candidates
@@ -272,6 +324,7 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
             # markets that don't meet the filter someone deliberately turned on.
             markets = KalshiClient.round_robin_select(live_candidates, cfg["kalshi"]["watchlist_size"])
         else:
+            top_series = await _get_top_series(client)
             markets = await client.get_top_volume_markets(
                 cfg["kalshi"]["watchlist_size"], min_volume=min_volume, series_tickers=top_series,
             )
@@ -319,7 +372,18 @@ async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[d
     return trades[:_TRADE_TAPE_TOTAL_CAP]
 
 
-_LIVE_STATUS_WINDOW_SEC = 6 * 3600  # started up to 6h ago, or starting within the next hour
+_LIVE_STATUS_LOOKBACK_SEC = 6 * 3600  # keep tracking an event up to 6h after its scheduled start
+_LIVE_STATUS_LOOKAHEAD_SEC = 3600  # start tracking an event up to 1h before its scheduled start
+# Direct request: once markets/whale data have populated the system, "no
+# need to check if a market is live... every tick... they should have
+# scheduled open and close times for you to do some light polling to track
+# status but otherwise use the schedule and its previous live status to
+# operate." Once an event has been checked at all, don't check it again for
+# at least this long - a ~20x reduction in the 2-API-call milestone/live-
+# data check's frequency versus doing it fresh every 15s tick regardless of
+# whether anything could plausibly have changed.
+_LIVE_STATUS_REPOLL_SEC = 5 * 60
+_LIVE_STATUS_TERMINAL = {"finished", "closed"}  # once genuinely confirmed, never poll this event again
 
 
 async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
@@ -327,47 +391,134 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     actual milestone/live-data system - confirmed directly against a real
     AFL match at its actual start time (status "scheduled"->"inprogress"->
     "closed", widget_status "none"->"live"->"finished"), not inferred from
-    timestamps alone. Only checked for markets whose occurrence_datetime is
-    within a plausible live window - most watchlist markets aren't starting
-    imminently, and this is two extra API calls per event (milestone
-    lookup, then live-data lookup), not something to run unconditionally
-    for every market on every poll tick."""
+    timestamps alone. Reads/writes state["live_status_cache"] directly
+    (same module-global pattern _get_series_cache already uses for its own
+    cache) rather than taking it as a parameter.
+
+    Schedule-gated in two layers now, not one:
+    1. Only markets whose occurrence_datetime falls in a plausible window
+       (up to 1h before the scheduled start through 6h after it) are
+       considered at all - unchanged in spirit from before, but the bounds
+       were actually inverted from what this comment always claimed (a
+       real bug found while touching this: the old condition let events
+       starting hours in the future in but dropped anything that had been
+       running for more than an hour, exactly backwards from "started up
+       to 6h ago, or starting within the next hour"). Fixed here.
+    2. Within that window, an event is only actually re-polled (the 2 real
+       API calls) if it has no cached status yet, or its cached status is
+       older than _LIVE_STATUS_REPOLL_SEC - otherwise the cached value is
+       reused as-is. A market past its own close_time is treated as
+       finished from the schedule alone, no poll needed: trading has
+       already stopped there regardless of what the live-data API would
+       say. Once a status is confirmed terminal (finished/closed), it's
+       never polled again for the rest of this process's life.
+
+    3. When a real poll *is* attempted but Kalshi's milestone/live-data
+       system has nothing for this event (confirmed live in practice: most
+       real candidates get no milestone at all), falls back to inferring
+       from the schedule alone rather than leaving it unknown - started
+       per occurrence_datetime and not yet past close_time (already
+       screened above) means presumed live. See the schedule-fallback
+       block below for the source="schedule" vs "milestone" cache tag."""
     now = time.time()
-    candidates = []
+    cache = state["live_status_cache"]
+    event_occ_ts: dict[str, float] = {}
     for m in markets:
         occ, et = m.get("occurrence_datetime"), m.get("event_ticker")
-        if not occ or not et:
+        if not occ or not et or et in event_occ_ts:
             continue
         try:
             occ_ts = datetime.fromisoformat(occ.replace("Z", "+00:00")).timestamp()
         except ValueError:
             continue
-        if -_LIVE_STATUS_WINDOW_SEC <= (now - occ_ts) <= 3600:
-            candidates.append(et)
-    candidates = list(dict.fromkeys(candidates))  # de-dupe, preserve order
-    if not candidates:
+        if -_LIVE_STATUS_LOOKAHEAD_SEC <= (now - occ_ts) <= _LIVE_STATUS_LOOKBACK_SEC:
+            event_occ_ts[et] = occ_ts
+    if not event_occ_ts:
         return {}
+
+    close_ts_by_ticker = {}
+    for m in markets:
+        et, close_time = m.get("event_ticker"), m.get("close_time")
+        if et in event_occ_ts and close_time and et not in close_ts_by_ticker:
+            try:
+                close_ts_by_ticker[et] = datetime.fromisoformat(close_time.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+
+    result = {}
+    to_poll = []
+    for et in event_occ_ts:
+        cached = cache.get(et)
+        if cached and cached["status"] in _LIVE_STATUS_TERMINAL:
+            result[et] = cached["status"]
+            continue
+        close_ts = close_ts_by_ticker.get(et)
+        if close_ts and now > close_ts:
+            cache[et] = {"status": "finished", "checked_at": now}
+            result[et] = "finished"
+            continue
+        if cached:
+            result[et] = cached["status"]
+            if (now - cached["checked_at"]) < _LIVE_STATUS_REPOLL_SEC:
+                continue  # recently confirmed, not due for a re-check yet
+        to_poll.append(et)
+
+    if not to_poll:
+        return result
 
     milestone_results = await asyncio.gather(
-        *(client.get_milestones_for_event(et) for et in candidates), return_exceptions=True
+        *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
     )
     live_data_tasks, task_events = [], []
-    for et, result in zip(candidates, milestone_results):
-        if isinstance(result, list) and result:
-            ms = result[0]
+    has_milestone = set()
+    for et, ms_result in zip(to_poll, milestone_results):
+        if isinstance(ms_result, list) and ms_result:
+            ms = ms_result[0]
             if ms.get("id") and ms.get("type"):
+                has_milestone.add(et)
                 live_data_tasks.append(client.get_live_data(ms["type"], ms["id"]))
                 task_events.append(et)
-    if not live_data_tasks:
-        return {}
 
-    live_results = await asyncio.gather(*live_data_tasks, return_exceptions=True)
-    status = {}
-    for et, result in zip(task_events, live_results):
-        if isinstance(result, dict):
-            details = (result.get("live_data") or {}).get("details") or {}
-            status[et] = details.get("widget_status")
-    return status
+    confirmed = {}
+    if live_data_tasks:
+        live_results = await asyncio.gather(*live_data_tasks, return_exceptions=True)
+        for et, ld_result in zip(task_events, live_results):
+            if isinstance(ld_result, dict):
+                details = (ld_result.get("live_data") or {}).get("details") or {}
+                status = details.get("widget_status")
+                if status:
+                    confirmed[et] = status
+
+    # Schedule fallback, direct request: "otherwise use the schedule and
+    # its previous live status to operate" - but a direct correction right
+    # after: "just because a market is open doesn't mean it's live like
+    # sports or mentions or award shows - be careful about how you infer
+    # when you can't find live status." A market having no registered
+    # milestone at all isn't the same situation as one that has a milestone
+    # but whose live-data confirmation didn't come back this tick - the
+    # first case likely means this market isn't the kind of discrete,
+    # clocked, real-world event this system can meaningfully call "live" in
+    # the first place (a mention/award-show market can stay open around its
+    # occurrence_datetime with no real in-progress state the way a game
+    # clock has), and guessing "live" there would be fabricating a status
+    # Kalshi never actually confirmed. So the fallback only applies to
+    # events Kalshi *has* confirmed are milestone-tracked - real games this
+    # system already knows have a genuine live/in-progress state - and
+    # simply couldn't get a fresh widget_status for on this particular
+    # tick. Anything with no milestone at all is left out of the result
+    # entirely (not cached, not "none", not "live" - genuinely unknown)
+    # rather than guessed at either way.
+    for et in to_poll:
+        if et in confirmed:
+            status, source = confirmed[et], "milestone"
+        elif et in has_milestone:
+            status = "none" if now < event_occ_ts[et] else "live"
+            source = "schedule"
+        else:
+            continue  # not a milestone-tracked event type - no basis to infer anything
+        cache[et] = {"status": status, "checked_at": now, "source": source}
+        result[et] = status
+    return result
 
 
 _POSITION_FIELDS = ("ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars")
@@ -522,9 +673,10 @@ async def trading_loop():
             # whale-follow one does (see ROADMAP.md - this was a real bug
             # for the whale broker before extra_tickers existed at all).
             open_position_tickers = list(set(broker.positions.keys()) | set(market_broker.positions.keys()))
-            markets, account_snapshot, exchange_status, _ = await asyncio.gather(
+            markets, account_snapshot, exchange_status, _, _ = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client), _check_signal_resolutions(client),
+                _scan_catalog_batch(client, cfg),
             )
             state["account"] = account_snapshot
             if exchange_status is not None:
@@ -1218,6 +1370,18 @@ async def get_market_history_hypothetical_trades():
     return {"trades": market_history.compute_hypothetical_trades()}
 
 
+@app.get("/api/market-catalog/status")
+async def get_market_catalog_status():
+    # Honest progress reporting (same idiom as /api/advisory/status) for
+    # market_catalog.py's incremental background scan - lets the Config tab
+    # or a curl check say "X series scanned, Y near-term markets known"
+    # instead of the catalog being an opaque, silently-filling-in cache.
+    cfg = config_store.get()
+    progress = market_catalog.scan_progress()
+    progress["enabled"] = bool(cfg["kalshi"].get("live_markets_only"))
+    return progress
+
+
 @app.get("/api/markets/search")
 async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50, live_only: bool = False):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
@@ -1259,11 +1423,32 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         # how many markets come back - candidates is already volume-sorted.
         candidate_tickers = [s["ticker"] for s in candidates[:30]]
         if live_only:
-            # Same "filter the wider candidate pool before round-robin cuts
-            # it down" reasoning as _fetch_markets' discovery path above -
-            # see its comment for why checking live status after the fact
-            # isn't the same thing.
-            market_candidates = await client.get_candidate_markets(min_volume=min_volume, series_tickers=candidate_tickers)
+            # Prefer market_catalog (see _scan_catalog_batch) if it already
+            # has near-term data for the matched series - same reasoning as
+            # _fetch_markets' discovery path (volume-ranking a fresh 30-
+            # series fetch misses almost everything actually live right
+            # now). Falls back to a fresh live fetch when the catalog has
+            # nothing for these specific series yet (e.g. the background
+            # scan hasn't reached them, or kalshi.live_markets_only has
+            # never been turned on) - search must still work even before
+            # the catalog's built up, just less completely.
+            now = time.time()
+            catalog_candidates = market_catalog.candidates_in_window(
+                now, lookahead_sec=_LIVE_STATUS_LOOKAHEAD_SEC, lookback_sec=_LIVE_STATUS_LOOKBACK_SEC,
+                min_volume=min_volume,
+            )
+            if q_lower or category_lower:
+                # A real search/category narrowing is active - scope the
+                # catalog to the (untruncated) matched series, not just the
+                # top 30 by volume that candidate_tickers caps at below,
+                # which would otherwise throw away most of the catalog's
+                # own breadth advantage for a search that matched more than
+                # 30 series.
+                matched_series = {s["ticker"] for s in candidates}
+                catalog_candidates = [m for m in catalog_candidates if m.get("series_ticker") in matched_series]
+            market_candidates = catalog_candidates or await client.get_candidate_markets(
+                min_volume=min_volume, series_tickers=candidate_tickers,
+            )
             live_status = await _fetch_live_status(client, market_candidates)
             live_candidates = [
                 m for m in market_candidates
