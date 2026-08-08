@@ -44,11 +44,15 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _series_of(ticker: str) -> str:
+def series_of(ticker: str) -> str:
     """Kalshi tickers encode a series/category prefix before the first hyphen
     (e.g. "KXOSCARBESTPICTURE-26-..."). Grouping by it is a best-effort proxy
     for "this recurring type of market" — good enough for "how have whales done
-    on Oscar-type predictions", not a guarantee every prefix is one clean topic."""
+    on Oscar-type predictions", not a guarantee every prefix is one clean topic.
+    Public (not underscore-prefixed) since strategy_engine.py's manual
+    excluded_series gate needs the exact same series definition the
+    automatic win-rate filter already uses — one definition, not two that
+    could quietly drift apart."""
     return ticker.split("-")[0] if ticker else ticker
 
 
@@ -56,7 +60,7 @@ def log_signal(ticker: str, side: str, size: int, confidence: float, source: str
     with _connect() as conn:
         conn.execute(
             "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ticker, _series_of(ticker), side, size, confidence, source, seen_at or time.time()),
+            (ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time()),
         )
 
 
@@ -85,7 +89,7 @@ def series_stats(ticker: str, days: int = 30) -> dict:
     """Whale accuracy scoped to this market's series/category — e.g. "how have
     whales done on Best Picture predictions", not just "how have they done
     on this one already-mostly-decided market"."""
-    series = _series_of(ticker)
+    series = series_of(ticker)
     since = time.time() - days * 86400
     with _connect() as conn:
         total = conn.execute(

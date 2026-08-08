@@ -26,6 +26,13 @@
     font-family: var(--sans);
     font-size: 14px;
   }
+  /* Thin, semi-transparent scrollbars everywhere - the default OS scrollbar
+     read as heavy/ugly against this app's dark theme, direct request. */
+  * { scrollbar-width: thin; scrollbar-color: rgba(231,235,238,0.18) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background-color: rgba(231,235,238,0.18); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  *::-webkit-scrollbar-thumb:hover { background-color: rgba(231,235,238,0.32); }
   header {
     display: flex;
     align-items: center;
@@ -435,15 +442,14 @@
   }
   .market-card .title { font-size: 13px; font-weight: 600; line-height: 1.4; }
   .market-card .prices { display: flex; gap: 10px; }
-  /* Price-change indicators (ROADMAP.md Phase 0.5) - a brief flash+arrow so
-     a price silently replacing on each poll doesn't go unacknowledged.
-     Fades in via animation each time it's rendered fresh (see priceChangeHTML -
-     it's only emitted at all on a tick where the price actually moved, so a
-     steady price naturally shows nothing rather than flashing every poll). */
-  .price-flash { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 4px; animation: price-flash-in 1.8s ease-out; }
+  /* Price-change indicators (ROADMAP.md Phase 0.5) - persistent, not a
+     transient flash: visible continuously once a per-ticker baseline
+     exists (see priceChangeHTML), updating in place every tick. No
+     animation - a steady badge, not something drawing attention to itself
+     on every single poll. */
+  .price-flash { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
   .price-flash.up { color: var(--yes); background: rgba(45,212,191,0.14); }
   .price-flash.down { color: var(--no); background: rgba(249,112,102,0.14); }
-  @keyframes price-flash-in { 0% { opacity: 0; transform: translateY(-2px); } 15% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; } }
   .price-btn { flex: 1; text-align: center; border-radius: 8px; padding: 10px 8px; font-family: var(--mono); }
   .price-btn.yes { background: rgba(45,212,191,0.1); border: 1px solid var(--yes); }
   .price-btn.no { background: rgba(249,112,102,0.1); border: 1px solid var(--no); }
@@ -698,7 +704,21 @@
 <!-- Markets: a simplified, Kalshi-style read of the current watchlist -->
 <div class="view" id="view-markets">
   <div class="wrap">
-    <div class="panel-title" style="margin-top:0;">Markets <span id="markets-card-count"></span> <span id="markets-toggle" style="float:right;"></span></div>
+    <div class="panel-title" style="margin-top:0;">Search Markets</div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Browse or search the full exchange, independent of the watchlist below — click a result to open its
+      full detail. To also trade a market automatically, pin it (adds it to the watchlist that drives the
+      strategy, same as Config's watchlist manager).
+    </p>
+    <div class="field" style="display:flex; gap:8px; align-items:flex-end; margin-bottom:12px;">
+      <div style="flex:2;"><label>Search (title or ticker)</label><input id="markets-tab-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
+      <div style="flex:1;"><label>Category</label><input id="markets-tab-search-category" type="text" placeholder="Sports"></div>
+      <div><label><input type="checkbox" id="markets-tab-search-dormant"> Include dormant</label></div>
+      <button id="markets-tab-search-btn" style="height:34px;">Search</button>
+    </div>
+    <div id="markets-tab-search-results"></div>
+
+    <div class="panel-title">Watchlist <span id="markets-card-count"></span> <span id="markets-toggle" style="float:right;"></span></div>
     <div id="markets-cards"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
@@ -741,9 +761,15 @@
     <div id="halted-banner-slot"></div>
     <div id="funnel-bar" class="funnel-bar"></div>
     <div class="panel-title">Whale Signals (simulated or live feed)</div>
-    <div id="signal-feed" class="scroll-panel"><div class="empty">Waiting for signals…</div></div>
+    <div id="signal-feed">
+      <div id="signal-feed-filter"></div>
+      <div id="signal-feed-list" class="scroll-panel"><div class="empty">Waiting for signals…</div></div>
+    </div>
     <div class="panel-title" style="margin-top:20px;">Strategy Decisions <span id="decision-toggle"></span></div>
-    <div id="decision-feed" class="scroll-panel"><div class="empty">No decisions yet…</div></div>
+    <div id="decision-feed">
+      <div id="decision-feed-filter"></div>
+      <div id="decision-feed-list" class="scroll-panel"><div class="empty">No decisions yet…</div></div>
+    </div>
   </div>
 
   <!-- Quick operational actions - the detailed settings form moved to the
@@ -792,6 +818,7 @@
       <div class="field"><label>Avoid whales below this win rate (%)</label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
       <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
       <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
+      <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME")</label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
     </div>
 
     <div class="panel-title">Whale Signal (simulated)</div>
@@ -1017,24 +1044,30 @@ function liveBadgeHTML(m) {
   return isLive(m) ? '<span class="live-badge">● LIVE</span>' : '';
 }
 
-// Price-change indicators (ROADMAP.md Phase 0.5) - previousPrices is last
-// poll's state.latest_prices snapshot (updated at the end of refresh(),
-// after every render that needs the OLD value for comparison has already
-// run). Emits nothing at all when the price is unseen, unchanged, or moved
-// by less than half a cent (float noise from repeated 0-1 rounding, not a
-// real visible move) - the flash only shows up on a tick where the price
-// genuinely moved since the last one.
-let previousPrices = {};
+// Price-change indicators (ROADMAP.md Phase 0.5). Originally compared
+// against just the previous poll and only showed up for the one tick a
+// price actually moved on, then vanished - direct correction: "they
+// shouldn't be transient... they should stay visible and update as they
+// change." Redesigned around a persistent per-ticker baseline (the first
+// price seen for that ticker this browser session) instead of the last
+// poll's price - the badge is visible continuously once a baseline
+// exists, and its number updates in place every tick rather than flashing
+// once and disappearing.
+let baselinePrices = {};
 
 function priceChangeHTML(ticker, currentPrice) {
-  const prev = previousPrices[ticker];
-  if (prev === undefined || currentPrice === undefined || currentPrice === null) return '';
-  const deltaCents = Math.round((currentPrice - prev) * 100);
+  if (currentPrice === undefined || currentPrice === null) return '';
+  if (!(ticker in baselinePrices)) {
+    baselinePrices[ticker] = currentPrice;
+    return ''; // nothing to compare against on the very first sighting
+  }
+  const base = baselinePrices[ticker];
+  const deltaCents = Math.round((currentPrice - base) * 100);
   if (deltaCents === 0) return '';
   const up = deltaCents > 0;
-  const pct = prev > 0 ? ((currentPrice - prev) / prev) * 100 : 0;
+  const pct = base > 0 ? ((currentPrice - base) / base) * 100 : 0;
   const arrow = up ? '▲' : '▼';
-  return `<span class="price-flash ${up ? 'up' : 'down'}" title="${up ? '+' : ''}${deltaCents}¢ (${up ? '+' : ''}${pct.toFixed(1)}%) since the last update">${arrow} ${up ? '+' : ''}${deltaCents}¢</span>`;
+  return `<span class="price-flash ${up ? 'up' : 'down'}" title="${up ? '+' : ''}${deltaCents}¢ (${up ? '+' : ''}${pct.toFixed(1)}%) since first seen this session">${arrow} ${up ? '+' : ''}${deltaCents}¢</span>`;
 }
 
 function contextLineHTML(ticker, side) {
@@ -1063,6 +1096,43 @@ function renderMarkets(markets, prices) {
   }).join('');
 }
 
+// Smooth feed updates, direct request ("flicker on every update rather than
+// appending/updating rows smoothly") - a full innerHTML replace on every 5s
+// poll tore down and rebuilt every card even when nothing about it changed,
+// which both flashes visibly and resets scrollTop to 0, making a list that
+// actually is scrollable feel broken (any scroll position gets wiped out
+// within 5 seconds). New/decided/resolved signals and decisions are only
+// ever prepended server-side (main.py inserts at index 0) and only ever
+// fall off the tail once the cap is hit - so the common case is "the same
+// items as last time, plus some new ones in front." When that invariant
+// holds, only the new items' HTML gets inserted; every existing DOM node
+// for an unchanged row is left completely alone (no flash, scroll position
+// naturally preserved). Falls back to a full rebuild whenever it doesn't
+// hold - a filter/sort/grouping change legitimately changes which items
+// are visible or their order, and forcing a "smooth" diff onto that would
+// just be wrong, not smoother.
+const _feedListState = {};
+
+function renderFeedListSmooth(containerId, items, buildCardHtml, getId) {
+  const el = $(containerId);
+  const prevIds = _feedListState[containerId] || [];
+  const newIds = items.map(getId);
+  _feedListState[containerId] = newIds;
+
+  if (prevIds.length && newIds.length >= prevIds.length) {
+    const offset = newIds.length - prevIds.length;
+    let tailMatches = true;
+    for (let i = 0; i < prevIds.length; i++) {
+      if (newIds[i + offset] !== prevIds[i]) { tailMatches = false; break; }
+    }
+    if (tailMatches) {
+      if (offset > 0) el.insertAdjacentHTML('afterbegin', items.slice(0, offset).map(buildCardHtml).join(''));
+      return;
+    }
+  }
+  el.innerHTML = items.map(buildCardHtml).join('');
+}
+
 // Signal feed filters (ROADMAP.md Phase 0.5), matched against Polywhaler's
 // proven set rather than invented from scratch: time range, buy/sell, sort
 // by recency or "impact," a position-grouping toggle. "Impact" isn't a
@@ -1080,8 +1150,7 @@ function signalImpact(s) {
 }
 
 function renderSignals(signals) {
-  const el = $('signal-feed');
-  const filterHtml = `<div class="table-filter-row">
+  $('signal-feed-filter').innerHTML = `<div class="table-filter-row">
     <select onchange="signalFilter.timeRange = this.value; renderSignals(lastSignals);">
       ${Object.keys(SIGNAL_TIME_RANGES).map(k => `<option value="${k}" ${signalFilter.timeRange === k ? 'selected' : ''}>${k === 'all' ? 'All time' : 'Last ' + k}</option>`).join('')}
     </select>
@@ -1098,7 +1167,8 @@ function renderSignals(signals) {
   </div>`;
 
   lastSignals = signals || [];
-  if (!lastSignals.length) { el.innerHTML = filterHtml + '<div class="empty">Waiting for signals…</div>'; return; }
+  const listEl = $('signal-feed-list');
+  if (!lastSignals.length) { listEl.innerHTML = '<div class="empty">Waiting for signals…</div>'; _feedListState['signal-feed-list'] = []; return; }
 
   const rangeSec = SIGNAL_TIME_RANGES[signalFilter.timeRange];
   const cutoff = rangeSec ? (Date.now() / 1000 - rangeSec) : null;
@@ -1108,7 +1178,7 @@ function renderSignals(signals) {
     return true;
   });
 
-  if (!rows.length) { el.innerHTML = filterHtml + '<div class="empty">No signals match these filters.</div>'; return; }
+  if (!rows.length) { listEl.innerHTML = '<div class="empty">No signals match these filters.</div>'; _feedListState['signal-feed-list'] = []; return; }
 
   if (signalFilter.groupByPosition) {
     // One card per ticker+side, aggregating every matching signal into it -
@@ -1147,7 +1217,7 @@ function renderSignals(signals) {
     return rank >= 0.8 ? 'high' : rank >= 0.4 ? 'medium' : 'low';
   };
 
-  const cards = rows.map(s => {
+  const buildSignalCardHtml = (s) => {
     const label = marketLabel(s.ticker);
     const stealthTag = s._printCount > 1
       ? `<span class="cat-tag" title="${s._printCount} separate prints on this market/side, combined">${s._printCount}&times; prints</span> `
@@ -1165,9 +1235,14 @@ function renderSignals(signals) {
       <div class="conf-bar"><div class="conf-fill" style="width:${s.confidence*100}%"></div></div>
     </div>
   `;
-  }).join('');
+  };
 
-  el.innerHTML = filterHtml + cards;
+  // Fast-path smoothness (see renderFeedListSmooth) only actually applies
+  // when rows are in the same append-only order the server produces them
+  // in - true for the default recency sort with no grouping, not for
+  // impact-sorted or grouped views, which legitimately reorder/recompute
+  // every tick and fall back to a full rebuild there on their own.
+  renderFeedListSmooth('signal-feed-list', rows, buildSignalCardHtml, s => s.id);
 }
 
 let lastDecisions = [];
@@ -1192,6 +1267,9 @@ function plainEnglishSkipReason(reason) {
   if (reason === 'market is not currently live') {
     return `Skipped because this market isn't live right now — this strategy is configured to only trade markets currently in progress.`;
   }
+  if ((m = /^series "(.+)" is manually excluded$/.exec(reason))) {
+    return `Skipped — "${m[1]}"-type markets are on your manually excluded list in Config, regardless of confidence.`;
+  }
   if ((m = /^confidence ([\d.]+) below threshold$/.exec(reason))) {
     const pct = Math.round(parseFloat(m[1]) * 100);
     return `Skipped — this whale print only scored ${pct}% confidence, below the minimum needed to act on it.`;
@@ -1212,13 +1290,25 @@ function plainEnglishSkipReason(reason) {
 function renderDecisions(decisions) {
   lastDecisions = decisions || [];
   $('decision-toggle').innerHTML = advToggleHTML('decisions');
-  const el = $('decision-feed');
-  if (!lastDecisions.length) { el.innerHTML = '<div class="empty">No decisions yet…</div>'; return; }
+  const listEl = $('decision-feed-list');
 
-  if (!isAdvanced('decisions')) {
-    el.innerHTML = lastDecisions.map(d => {
-      const label = marketLabel(d.signal.ticker);
-      return `
+  if (isAdvanced('decisions')) {
+    // Advanced's table replaces this container's content wholesale every
+    // render (sorting/filtering already forces that) - reset the smooth-
+    // render tracking for it so a later switch back to Simple doesn't
+    // mistake the table's leftover DOM for an up-to-date card list and
+    // wrongly no-op instead of rebuilding (see renderFeedListSmooth).
+    delete _feedListState['decision-feed-list'];
+    renderDecisionTable();
+    return;
+  }
+
+  $('decision-feed-filter').innerHTML = '';
+  if (!lastDecisions.length) { listEl.innerHTML = '<div class="empty">No decisions yet…</div>'; _feedListState['decision-feed-list'] = []; return; }
+
+  const buildDecisionCardHtml = (d) => {
+    const label = marketLabel(d.signal.ticker);
+    return `
       <div class="decision-card ${d.action}" title="${esc(label.full)}">
         <div class="top-row">
           <span>${esc(label.short)}</span>
@@ -1227,11 +1317,8 @@ function renderDecisions(decisions) {
         <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : esc(plainEnglishSkipReason(d.reason))}</div>
       </div>
     `;
-    }).join('');
-    return;
-  }
-
-  renderDecisionTable();
+  };
+  renderFeedListSmooth('decision-feed-list', lastDecisions, buildDecisionCardHtml, d => d.signal.id);
 }
 
 // Advanced: the same decision data (ROADMAP.md Phase 0.5's "Trade log /
@@ -1239,8 +1326,8 @@ function renderDecisions(decisions) {
 // numbers and every field instead of today's strict reverse-chronological
 // card feed with no sort/filter/search.
 function renderDecisionTable() {
-  const el = $('decision-feed');
-  const filterHtml = `<div class="table-filter-row">
+  const el = $('decision-feed-list');
+  $('decision-feed-filter').innerHTML = `<div class="table-filter-row">
     <label>Ticker: <input type="text" value="${esc(decisionFilter.query)}"
       oninput="decisionFilter.query = this.value; renderDecisionTable();" placeholder="search…" style="width:120px;"></label>
     <label>Action:
@@ -1271,7 +1358,7 @@ function renderDecisionTable() {
   rows = sortRows(rows, decisionFilter.sortKey, decisionFilter.sortDir);
 
   if (!rows.length) {
-    el.innerHTML = filterHtml + '<div class="empty">No decisions match this filter.</div>';
+    el.innerHTML = '<div class="empty">No decisions match this filter.</div>';
     return;
   }
 
@@ -1291,7 +1378,7 @@ function renderDecisionTable() {
     <td>${(r.confidence*100).toFixed(0)}%</td>
   </tr>`).join('');
 
-  el.innerHTML = filterHtml + `<table class="positions-table sortable">
+  el.innerHTML = `<table class="positions-table sortable">
     <thead><tr>${headerHtml}</tr></thead>
     <tbody>${bodyRows}</tbody>
   </table>`;
@@ -2853,10 +2940,6 @@ async function refresh() {
     // The market-detail modal can be open regardless of which tab is behind
     // it, so it isn't covered by the active-tab branches above.
     if (marketDetailTicker) refreshMarketDetail();
-
-    // Baseline for next tick's priceChangeHTML() comparisons - updated last,
-    // after every render above that needed THIS tick's previousPrices.
-    previousPrices = { ...(state.latest_prices || {}) };
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;
@@ -2873,6 +2956,7 @@ async function loadConfig() {
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
   $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
   $('cfg-live-only').checked = !!cfg.strategy.live_markets_only;
+  $('cfg-excluded-series').value = (cfg.strategy.excluded_series || []).join(', ');
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -2916,6 +3000,7 @@ $('save-config-btn').addEventListener('click', async () => {
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
       min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
       live_markets_only: $('cfg-live-only').checked,
+      excluded_series: $('cfg-excluded-series').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),
@@ -2935,6 +3020,76 @@ $('save-config-btn').addEventListener('click', async () => {
   btn.textContent = 'Saved ✓';
   setTimeout(() => btn.textContent = 'Save Config', 1200);
 });
+
+// Search/browse directly in the Markets tab, direct request ("you never
+// included an ability to search or browse markets myself in the markets
+// tab") - distinct purpose from Config's search below, which exists to
+// manage the strategy's watchlist. This one is for looking, not
+// configuring: click any result to open its full detail
+// (openMarketDetail), same modal every other market row in this app opens
+// into. A "+ Pin" button on each result is a bonus bridge into the
+// watchlist-management flow, not the point of this search - reuses the
+// same GET /api/markets/search endpoint and kalshi.markets_watchlist patch
+// Config's search already established.
+let marketsTabSearchResults = [];
+
+async function searchMarketsTab() {
+  const q = $('markets-tab-search-q').value.trim();
+  const category = $('markets-tab-search-category').value.trim();
+  const includeDormant = $('markets-tab-search-dormant').checked;
+  const btn = $('markets-tab-search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+  $('markets-tab-search-results').innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const params = new URLSearchParams({limit: '30'});
+    if (q) params.set('q', q);
+    if (category) params.set('category', category);
+    if (!includeDormant) params.set('min_volume', '1');
+    const resp = await fetchJSON('/api/markets/search?' + params.toString());
+    marketsTabSearchResults = resp.markets || [];
+    Object.assign(marketTitles, resp.market_titles || {});
+    renderMarketsTabSearchResults();
+  } catch (e) {
+    $('markets-tab-search-results').innerHTML = '<div class="empty">Search failed.</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Search';
+  }
+}
+
+function renderMarketsTabSearchResults() {
+  const el = $('markets-tab-search-results');
+  if (!marketsTabSearchResults.length) {
+    el.innerHTML = '<div class="empty">No results. Try a broader query or check "Include dormant."</div>';
+    return;
+  }
+  el.innerHTML = `<div class="scroll-panel" style="max-height:320px; margin-bottom:16px;">` + marketsTabSearchResults.map(m => {
+    const label = marketLabel(m.ticker);
+    const vol = m.volume_24h_fp != null ? Math.round(parseFloat(m.volume_24h_fp)).toLocaleString() : '—';
+    return `<div class="market-row" style="cursor:pointer; display:flex; align-items:center; gap:10px;" title="${esc(label.full)}"
+        onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')">
+      <span class="ticker" style="flex:1;">${esc(label.short)}</span>
+      <span class="price">vol ${vol}</span>
+      <button onclick="event.stopPropagation(); pinSingleMarketToWatchlist('${esc(m.ticker)}', this);" title="Add to watchlist" style="padding:3px 8px; font-size:11px;">+ Pin</button>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+async function pinSingleMarketToWatchlist(ticker, btn) {
+  const cfg = await fetchJSON('/api/config');
+  const current = cfg.kalshi.markets_watchlist || [];
+  if (current.includes(ticker)) { btn.textContent = 'Pinned ✓'; btn.disabled = true; return; }
+  const merged = [...current, ticker];
+  await fetchJSON('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({patch: {kalshi: {markets_watchlist: merged}}}),
+  });
+  btn.textContent = 'Pinned ✓';
+  btn.disabled = true;
+}
+
+$('markets-tab-search-btn').addEventListener('click', searchMarketsTab);
 
 // Market search & pinned-watchlist management (ROADMAP.md Phase 0.5) - the
 // automatic watchlist only surfaces active markets by design (see

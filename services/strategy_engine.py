@@ -28,6 +28,16 @@ class FollowTheWhaleStrategy:
         if strat_cfg.get("live_markets_only") and not is_live:
             return self._skip(signal, "market is not currently live")
 
+        # Manual override on top of the automatic win-rate filter below - for
+        # a series the user has out-of-band reason to distrust before it's
+        # racked up enough resolved signals for the automatic cutoff to ever
+        # trigger. Same series definition as the automatic filter
+        # (signal_log.series_of), not a second one that could drift.
+        excluded_series = strat_cfg.get("excluded_series") or []
+        series = signal_log.series_of(signal.ticker)
+        if series in excluded_series:
+            return self._skip(signal, f'series "{series}" is manually excluded')
+
         if signal.confidence < strat_cfg["entry_threshold"]:
             return self._skip(signal, f"confidence {signal.confidence} below threshold")
 

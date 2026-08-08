@@ -436,6 +436,63 @@ a Simple/Advanced pair using the toggle above:
       class (`max-height: 420px; overflow-y: auto`) applied to all five
       feed panels, which previously rendered their already-capped 25-50 row
       feeds as full-height unscrolled DOM.
+- [x] Follow-up, direct report: Terminal's Whale Signals and Strategy
+      Decisions panels were already scroll-capable (the item above), but a
+      full `innerHTML` teardown-and-rebuild on every 5s poll reset
+      `scrollTop` back to 0 every time, so any scroll position got wiped
+      out within 5 seconds and the panel *felt* broken even though it
+      technically wasn't - and visibly flickered on every update besides.
+      New `renderFeedListSmooth()`: since new items are only ever prepended
+      server-side and only ever fall off the tail once capped, the common
+      case ("same items as last time, plus some new ones in front") is
+      detected directly and only the new items' HTML gets inserted -
+      existing DOM nodes for unchanged rows are never touched, so nothing
+      flashes and the browser's own scroll anchoring keeps whatever was on
+      screen in view. Falls back to a full rebuild whenever that
+      invariant doesn't hold (a filter/sort/grouping change, or switching
+      the Decisions panel between Simple and Advanced — which needed its
+      own guard, since the Advanced table writes into the same container
+      outside the smooth-render path and could otherwise be mistaken for
+      an up-to-date card list on switching back). Split both panels'
+      markup into a stable filter-bar container plus a scrolling list
+      container so filters stay pinned while only the list scrolls, rather
+      than scrolling out of view with the cards. Verified live: existing
+      card DOM nodes survive an update untouched (a planted marker
+      attribute persists), scrollTop is never reset to 0 by new arrivals,
+      and the Simple/Advanced switch (with its own filter bar swap) still
+      behaves correctly in both directions.
+- [x] Thin, semi-transparent scrollbars everywhere, direct request — the
+      default OS scrollbar read as heavy against this app's dark theme.
+      `scrollbar-width`/`scrollbar-color` (Firefox) plus
+      `::-webkit-scrollbar*` (Chrome/Safari), applied globally.
+- [x] Price-change indicators, follow-up correction — the original version
+      (earlier in this same section) compared only against the last
+      poll and vanished again the next tick if the price held steady;
+      direct correction: "they shouldn't be transient... they should stay
+      visible and update as they change." Redesigned around a persistent
+      per-ticker baseline (the first price seen for that ticker this
+      browser session) instead of the last poll's price — the badge is
+      visible continuously once a baseline exists and its number updates
+      in place every tick, rather than flashing once and disappearing.
+      Dropped the fade-in pulse animation that made sense for a one-tick
+      flash but not a steady, continuously-updating badge. Verified live
+      across four synthetic price steps: no badge on first sighting (no
+      baseline to compare against yet), badge appears and stays visible
+      across an unchanged tick (the exact case that used to vanish), and
+      updates correctly when the price moves again.
+- [x] Search/browse markets directly in the Markets tab, direct report
+      ("you never included an ability to search or browse markets myself
+      in the markets tab which i asked you to do") — the existing market
+      search (`GET /api/markets/search`) only lived in the Config tab,
+      scoped to *managing the watchlist*, not general browsing. New search
+      panel at the top of the Markets tab, same endpoint, different
+      purpose: every result is clickable straight into the existing
+      per-market detail modal (`openMarketDetail`), with a secondary
+      "+ Pin" button per result as a bridge into the watchlist-management
+      flow rather than the point of this panel. Verified live: a broad
+      query returns real results, clicking one opens the real detail
+      modal, and the Pin button correctly adds to
+      `kalshi.markets_watchlist`.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)` in
       `static/index.html`) once any Advanced view lands — a live order
       book and trade tape read as much less "live" on a 5s full-state poll
@@ -524,9 +581,25 @@ band instead.
       groups "market type" by ticker-prefix-before-first-hyphen, a
       reasonable proxy but not a real category taxonomy — revisit once
       better Kalshi series metadata is available.
-- [ ] Let a user manually exclude a specific whale/source from the
-      strategy, not just the automatic win-rate cutoff
-      (`min_whale_winrate_pct` / `min_resolved_for_whale_filter`).
+- [x] Let a user manually exclude a specific whale/source from the
+      strategy, not just the automatic win-rate cutoff. Semantics resolved
+      explicitly before building anything (direct instruction: lay out the
+      intermediary design steps first) — Kalshi's trade tape is anonymous,
+      no whale identity exists to exclude by, so "series" (the same
+      grouping the automatic win-rate filter already uses) is the
+      implementable, honest interpretation: a manual denylist on top of
+      the automatic cutoff, for a series distrusted before it's racked up
+      enough resolved signals to trip the automatic filter on its own.
+      `signal_log._series_of` promoted to public `series_of()` so both the
+      automatic filter and this new manual one share one series
+      definition, not two that could quietly drift. New
+      `strategy.excluded_series: []`, checked in both
+      `FollowTheWhaleStrategy.evaluate()` and `ShadowTrader.evaluate()`
+      (same mirroring pattern as `live_markets_only`), a Config tab
+      denylist editor (comma-separated, same UI pattern as the existing
+      category filter), and a `plainEnglishSkipReason()` case. 6 new tests
+      (3 strategy, 2 shadow, plus verifying the public rename didn't break
+      anything).
 - [x] A configurable "live markets only" trading gate, direct request — lets
       the strategy's real-world accuracy be observed in isolation from
       thin/pre-market signal noise. New `strategy.live_markets_only` config

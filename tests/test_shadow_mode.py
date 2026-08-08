@@ -125,6 +125,26 @@ def test_live_markets_only_allows_a_live_market(tmp_path, monkeypatch):
     assert row is not None
 
 
+def test_excluded_series_blocks_a_matching_signal(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(strategy={"excluded_series": ["TICK"]}),
+        reference_bankroll=10000.0, bankroll_source="real_account",
+    )
+    assert row is None
+
+
+def test_excluded_series_allows_a_non_matching_signal(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(strategy={"excluded_series": ["OTHER"]}),
+        reference_bankroll=10000.0, bankroll_source="real_account",
+    )
+    assert row is not None
+
+
 def test_position_size_rounding_to_zero_is_not_logged(tmp_path, monkeypatch):
     trader = _trader(tmp_path, monkeypatch)
     _no_opinion_series_stats(monkeypatch)

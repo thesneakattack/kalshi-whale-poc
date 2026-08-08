@@ -130,3 +130,29 @@ def test_live_markets_only_off_trades_regardless_of_is_live(tmp_path, monkeypatc
         _signal(confidence=0.9, price=0.5), _cfg(live_markets_only=False), is_live=False
     )
     assert decision["action"] == "trade"
+
+
+def test_skip_when_series_manually_excluded(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(excluded_series=["TICK"]),
+    )
+    assert decision["action"] == "skip"
+    assert "TICK" in decision["reason"] and "excluded" in decision["reason"]
+    assert broker.bankroll == 10000.0  # nothing traded
+
+
+def test_trades_when_series_not_in_excluded_list(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(excluded_series=["OTHER"]),
+    )
+    assert decision["action"] == "trade"
+
+
+def test_empty_excluded_series_list_trades_normally(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(excluded_series=[]),
+    )
+    assert decision["action"] == "trade"

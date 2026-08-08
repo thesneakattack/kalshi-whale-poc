@@ -142,6 +142,9 @@ class ShadowTrader:
             return None
         if strat_cfg.get("live_markets_only") and not is_live:
             return None
+        excluded_series = strat_cfg.get("excluded_series") or []
+        if signal_log.series_of(signal.ticker) in excluded_series:
+            return None
         if signal.confidence < strat_cfg["entry_threshold"]:
             return None
 
