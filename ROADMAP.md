@@ -180,15 +180,24 @@ a Simple/Advanced pair using the toggle above:
       signal feed) — faking it wasn't an option. Real "stealth"/
       accumulation detection (same-actor clustering, not just same-
       ticker-same-side grouping) remains the P2 stretch item below.
-- [ ] A real, browsable signal history — not just the aggregate stat cards
-      `renderWhaleTrackRecord` already shows (win rate %, resolved count).
-      WhaleScanr's specific framing is worth copying directly: "every flag
-      and how it settled, misses included" — a trust-building design
-      choice, not just a nice-to-have. `services/signal_log.py` already
-      persists resolved/correct per signal (that's what feeds the win-rate
-      stat today) — the data exists, there's just no UI to browse
-      individual past signals and see what actually happened to each one,
-      wins and misses both, rather than only the rolled-up percentage.
+- [x] A real, browsable signal history — WhaleScanr's framing, copied
+      directly: "every flag and how it settled, misses included," not just
+      `renderWhaleTrackRecord`'s rolled-up win-rate percentage. New
+      `signal_log.recent(limit, offset, resolved_only)` /
+      `signal_log.total_count()` and `GET /api/signals/history` (a separate
+      on-demand/paginated fetch, deliberately *not* part of the
+      `/api/state` poll cycle — a live-updating history table would fight
+      with someone actively paging/sorting through it). New "Signal
+      History" panel on the Whale Watch tab: a "Resolved only" filter,
+      sortable columns (reusing the existing `sortRows`/`toggleSort`/
+      `sortHeaderHTML` helpers), pending/correct/miss outcome column, and
+      Prev/Next pagination. Loads once when the tab opens (`showView()`)
+      and again on filter/sort/page changes, not every 5s, so browsing
+      doesn't reset itself out from under you. 4 new tests
+      (`tests/test_signal_log.py`) for ordering, pagination, and the
+      resolved-only filter. Verified live: real signal_log.db data (100+
+      logged signals) renders and paginates correctly, sort toggling works,
+      zero console errors.
 - [ ] Validated, not a gap: the existing "Betting is N pts more bullish/
       bearish than the market price implies" divergence line
       (`marketCardHTML`) is already the same core framing Upside's Whale

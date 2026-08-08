@@ -116,6 +116,29 @@ def clear_all():
         conn.execute("DELETE FROM signals")
 
 
+def recent(limit: int = 50, offset: int = 0, resolved_only: bool = False) -> list[dict]:
+    """Individual signals, newest first - the browsable signal history
+    (ROADMAP.md Phase 0.5). WhaleScanr's framing, copied directly: "every
+    flag and how it settled, misses included" - not just the rolled-up
+    win-rate percentage `stats()` already provides. `correct` is None for
+    anything not yet resolved (still in flight), not conflated with a
+    resolved-and-wrong 0."""
+    cols = ["id", "ticker", "series", "side", "size", "confidence", "source", "seen_at", "resolved", "correct", "resolved_at"]
+    where = "WHERE resolved = 1 " if resolved_only else ""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM signals {where}ORDER BY seen_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def total_count(resolved_only: bool = False) -> int:
+    where = "WHERE resolved = 1" if resolved_only else ""
+    with _connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM signals {where}").fetchone()[0]
+
+
 def stats(days: int = 30) -> dict:
     since = time.time() - days * 86400
     with _connect() as conn:

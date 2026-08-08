@@ -650,6 +650,9 @@
     </div>
     <p id="whale-track-note" style="font-size:12px; color:var(--muted); margin:-10px 0 24px;"></p>
 
+    <div class="panel-title">Signal History <span id="signal-history-count"></span></div>
+    <div id="signal-history" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <div class="panel-title">Trade Tape <span id="trade-tape-toggle"></span></div>
     <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
 
@@ -1570,6 +1573,96 @@ function renderWhaleTrackRecord(stats, whaleSource) {
   } else {
     note.textContent = `Based on ${stats.resolved} resolved signal${stats.resolved === 1 ? '' : 's'} out of ${stats.total_signals} logged in the last ${stats.window_days} days.`;
   }
+}
+
+// Real, browsable signal history (ROADMAP.md Phase 0.5) - WhaleScanr's
+// framing, copied directly: "every flag and how it settled, misses
+// included," not just renderWhaleTrackRecord's rolled-up percentage above.
+// Backed by GET /api/signals/history, a separate on-demand/paginated fetch
+// (services/signal_log.py's persisted data), not part of the /api/state
+// poll cycle - loaded once when the Whale Watch tab is opened (see
+// showView()) and again on filter/sort/page changes, not every 5s poll,
+// so paging through history doesn't get reset out from under you.
+let signalHistoryRows = [];
+let signalHistoryTotal = 0;
+let signalHistoryFilter = { resolvedOnly: false, sortKey: 'seen_at', sortDir: 'desc', offset: 0, limit: 25 };
+
+async function loadSignalHistory() {
+  const el = $('signal-history');
+  if (!el) return;
+  const params = new URLSearchParams({
+    limit: signalHistoryFilter.limit,
+    offset: signalHistoryFilter.offset,
+    resolved_only: signalHistoryFilter.resolvedOnly,
+  });
+  try {
+    const resp = await fetchJSON(`/api/signals/history?${params}`);
+    signalHistoryRows = resp.signals || [];
+    signalHistoryTotal = resp.total || 0;
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load signal history.</div>';
+    return;
+  }
+  renderSignalHistory();
+}
+
+function renderSignalHistory() {
+  const el = $('signal-history');
+  if (!el) return;
+  $('signal-history-count').textContent = signalHistoryTotal ? `(${signalHistoryTotal})` : '';
+
+  const filterHtml = `<div class="table-filter-row">
+    <label><input type="checkbox" ${signalHistoryFilter.resolvedOnly ? 'checked' : ''}
+      onchange="signalHistoryFilter.resolvedOnly = this.checked; signalHistoryFilter.offset = 0; loadSignalHistory();">
+      Resolved only</label>
+  </div>`;
+
+  if (!signalHistoryRows.length) {
+    el.innerHTML = filterHtml + `<div class="empty">${signalHistoryFilter.resolvedOnly ? 'No resolved signals yet.' : 'No signals logged yet.'}</div>`;
+    return;
+  }
+
+  const rows = sortRows(signalHistoryRows, signalHistoryFilter.sortKey, signalHistoryFilter.sortDir);
+  const rowsHtml = rows.map(r => {
+    const label = marketLabel(r.ticker);
+    const when = new Date(r.seen_at * 1000).toLocaleString();
+    let outcome;
+    if (!r.resolved) outcome = '<span style="color:var(--muted);">pending</span>';
+    else if (r.correct) outcome = '<span style="color:var(--yes); font-weight:700;">✓ correct</span>';
+    else outcome = '<span style="color:var(--no); font-weight:700;">✗ miss</span>';
+    return `<tr title="${esc(label.full)}">
+      <td>${esc(label.short)}</td>
+      <td><span class="side-tag ${r.side}">${esc(r.side)}</span></td>
+      <td>${r.size.toLocaleString()}</td>
+      <td>${(r.confidence * 100).toFixed(0)}%</td>
+      <td>${esc(when)}</td>
+      <td>${outcome}</td>
+    </tr>`;
+  }).join('');
+
+  const totalPages = Math.max(1, Math.ceil(signalHistoryTotal / signalHistoryFilter.limit));
+  const currentPage = Math.floor(signalHistoryFilter.offset / signalHistoryFilter.limit) + 1;
+  const pager = `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:11px; color:var(--muted);">
+    <span>Page ${currentPage} of ${totalPages}</span>
+    <span>
+      <button ${signalHistoryFilter.offset <= 0 ? 'disabled' : ''}
+        onclick="signalHistoryFilter.offset = Math.max(0, signalHistoryFilter.offset - signalHistoryFilter.limit); loadSignalHistory();">← Prev</button>
+      <button ${currentPage >= totalPages ? 'disabled' : ''}
+        onclick="signalHistoryFilter.offset += signalHistoryFilter.limit; loadSignalHistory();">Next →</button>
+    </span>
+  </div>`;
+
+  el.innerHTML = filterHtml + `<table class="positions-table sortable">
+    <thead><tr>
+      ${sortHeaderHTML(signalHistoryFilter, 'ticker', 'Market', "toggleSort(signalHistoryFilter, 'ticker', renderSignalHistory)")}
+      <th>Side</th>
+      ${sortHeaderHTML(signalHistoryFilter, 'size', 'Size', "toggleSort(signalHistoryFilter, 'size', renderSignalHistory)")}
+      ${sortHeaderHTML(signalHistoryFilter, 'confidence', 'Confidence', "toggleSort(signalHistoryFilter, 'confidence', renderSignalHistory)")}
+      ${sortHeaderHTML(signalHistoryFilter, 'seen_at', 'Seen', "toggleSort(signalHistoryFilter, 'seen_at', renderSignalHistory)")}
+      <th>Outcome</th>
+    </tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>` + pager;
 }
 
 // Traditional trading-view element: bankroll trajectory over time, not just
@@ -2694,6 +2787,11 @@ function showView(name) {
     $('tab-btn-' + v).classList.toggle('active', v === name);
   });
   localStorage.setItem('whale-signal-view', name);
+  // Signal history is a separate on-demand fetch, not part of the /api/state
+  // poll cycle (see loadSignalHistory) - load it fresh whenever this tab is
+  // opened, rather than every 5s poll, so paging/sorting doesn't reset
+  // itself out from under someone actively browsing it.
+  if (name === 'whale') loadSignalHistory();
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
 

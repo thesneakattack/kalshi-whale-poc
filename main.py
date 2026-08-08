@@ -746,6 +746,20 @@ async def get_market_detail(ticker: str):
     return detail
 
 
+@app.get("/api/signals/history")
+async def get_signal_history(limit: int = 50, offset: int = 0, resolved_only: bool = False):
+    # Browsable signal history (ROADMAP.md Phase 0.5) - individual signals,
+    # not just the aggregate win-rate stat cards. Pure on-demand read
+    # against signal_log.db, not part of /api/state's poll cycle - a
+    # separate paginated fetch, same pattern as /api/markets/search.
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
+    return {
+        "signals": signal_log.recent(limit=limit, offset=offset, resolved_only=resolved_only),
+        "total": signal_log.total_count(resolved_only=resolved_only),
+    }
+
+
 @app.get("/api/markets/search")
 async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from

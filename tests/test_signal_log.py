@@ -73,3 +73,52 @@ def test_clear_all_wipes_every_signal(tmp_path, monkeypatch):
     stats = log.stats(days=30)
     assert stats["total_signals"] == 0
     assert log.series_stats("TICK-A", days=30)["total_signals"] == 0
+
+
+def test_recent_returns_newest_first(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=now - 100)
+    log.log_signal("TICK-B", "no", 2000, 0.7, "simulated", seen_at=now)
+    rows = log.recent(limit=10)
+    assert [r["ticker"] for r in rows] == ["TICK-B", "TICK-A"]
+
+
+def test_recent_respects_limit_and_offset(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    for i in range(5):
+        log.log_signal(f"TICK-{i}", "yes", 1000, 0.8, "simulated", seen_at=now - i)
+    first_page = log.recent(limit=2, offset=0)
+    second_page = log.recent(limit=2, offset=2)
+    assert [r["ticker"] for r in first_page] == ["TICK-0", "TICK-1"]
+    assert [r["ticker"] for r in second_page] == ["TICK-2", "TICK-3"]
+
+
+def test_recent_resolved_only_excludes_unresolved(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=now - 700)
+    log.log_signal("TICK-B", "no", 2000, 0.7, "simulated", seen_at=now)
+    batch = log.unresolved_batch(limit=10, older_than_sec=600)
+    assert len(batch) == 1
+    log.mark_resolved(batch[0]["id"], correct=True)
+
+    all_rows = log.recent(limit=10)
+    resolved_rows = log.recent(limit=10, resolved_only=True)
+    assert len(all_rows) == 2
+    assert len(resolved_rows) == 1
+    assert resolved_rows[0]["ticker"] == "TICK-A"
+    assert resolved_rows[0]["correct"] == 1
+
+    unresolved_row = next(r for r in all_rows if r["ticker"] == "TICK-B")
+    assert unresolved_row["resolved"] == 0
+    assert unresolved_row["correct"] is None
+
+
+def test_total_count(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated")
+    log.log_signal("TICK-B", "no", 2000, 0.7, "simulated")
+    assert log.total_count() == 2
+    assert log.total_count(resolved_only=True) == 0
