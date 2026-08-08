@@ -615,6 +615,38 @@
           (<code>renderCandlestickHTML</code>, <code>candleClose</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 21 · per-market trades, then a real complaint: stop making me do math</div>
+        <h4>Recent trades finish the drill-down; then direct feedback drove a real terminology + a real bug fix</h4>
+        <p>Started with the next queued item — recent trades for one market in the drill-down, via a new
+          <code>GET /api/markets/{ticker}/trades</code> and <code>get_trades()</code> wrapper. Simpler than the
+          candlestick work: <code>get_trades</code> takes a plain <code>ticker</code> filter, no
+          <code>series_ticker</code> lookup needed. No Simple/Advanced split — a short recent-trades list doesn't
+          have a meaningfully denser "Advanced" form the way the book/chart do.</p>
+        <p>Then direct feedback, mid-session, made the remaining gap concrete: a real example ticker
+          (<code>KXMVESPORTSMULTIGAMEEXTENDED-S2026CDE6FF21DD8-582E1DFB434</code>) that a person shouldn't have to
+          parse, plus contracts-times-price math nobody should have to do in their head. Investigating it surfaced
+          a real bug in the same-day event-title code: it read <code>event.get("subtitle")</code>, which doesn't
+          exist — the real field is <code>sub_title</code> (confirmed directly against a live event: "SD vs AZ
+          (Aug 6)" only came back under that key) — so every event's subtitle had silently been <code>None</code>
+          since it shipped a few phases ago. Fixed, and broadened event fetching from "only multi-sibling groups"
+          to every market's event, since the same data also answers "what sport, who vs who" for a single market,
+          not just grouping. <code>market_titles</code> now carries a small object
+          (<code>{title, yes_sub_title, no_sub_title, event_ticker}</code>) instead of one collapsed string, so a
+          Yes/No position's actual meaning is available, not just a side tag. New <code>marketContext()</code>/
+          <code>contextLineHTML()</code> combine that with <code>event_titles</code> to show category, real
+          matchup, and position meaning on position/trade/fill rows, market cards, and the drill-down title; new
+          <code>costHTML()</code> shows contracts × price as an actual dollar total, next to the existing max-payout
+          figure. Verified through a real Chrome session with realistic clean-market data (an MLB matchup, not the
+          messy combo markets this account's current watchlist happens to favor): a position row correctly read
+          "Sports · SD vs AZ (Aug 6) · Betting: San Diego" plus "$6.20 put in."</p>
+        <div class="files"><code>main.py</code> (<code>/api/markets/{ticker}/trades</code>,
+          <code>_fetch_event_titles</code> fix + broadening, <code>market_titles</code> shape) ·
+          <code>services/kalshi_client.py</code> (<code>get_trades</code>) · <code>static/index.html</code>
+          (<code>marketContext</code>, <code>contextLineHTML</code>, <code>costHTML</code>,
+          <code>renderMarketTradesHTML</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -659,9 +691,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks endpoints, event/outcome grouping</td><td class="loc">650</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades endpoints, event/outcome grouping + context</td><td class="loc">683</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks</td><td class="loc">104</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades</td><td class="loc">108</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -676,10 +708,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick drill-down, potential-payout math, event/outcome grouping</td><td class="loc">1683</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, potential-payout + cost-put-in math, event/outcome grouping + context (category/matchup/position meaning)</td><td class="loc">1799</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~865</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~900</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

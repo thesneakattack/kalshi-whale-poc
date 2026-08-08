@@ -60,7 +60,7 @@ state = {
     "markets": [],
     "latest_prices": {},
     "market_titles": {},
-    "event_titles": {},  # event_ticker -> {"title", "subtitle", "category"} — only fetched for events with >1 sibling market this tick, see _fetch_event_titles
+    "event_titles": {},  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
@@ -139,19 +139,25 @@ async def _fetch_exchange_status(client: KalshiClient) -> dict | None:
 
 
 async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict:
-    """Only fetch an event's own title for events with more than one sibling
-    market in *this* batch - a market whose event has no siblings doesn't
-    need a group header at all, and fetching every market's event
-    individually would mean one extra request per market, every tick, for
-    no dashboard benefit. Cached in state["event_titles"] (accumulates,
-    capped like market_titles) so an event only needs fetching once even as
-    the watchlist rotates."""
-    from collections import Counter
-    counts = Counter(m.get("event_ticker") for m in markets if m.get("event_ticker"))
+    """Fetches every not-yet-cached event's own title/sub_title/category -
+    not just events with sibling markets (an earlier, narrower version of
+    this only fetched for multi-outcome groups; broadened because this data
+    is also what answers "what sport, who vs who" for a *single* market's
+    display, not just grouping). Cached in state["event_titles"]
+    (accumulates, capped like market_titles) so an event only needs
+    fetching once even as the watchlist rotates - a typical watchlist
+    (8-20 markets) means at most that many new lookups on a given tick, and
+    usually zero once the cache is warm.
+
+    event.get("subtitle") looked plausible but was wrong - the real field
+    is sub_title (confirmed directly against a live event: "SD vs AZ (Aug
+    6)" only came back under that key), so this was silently returning None
+    for every event until caught."""
     to_fetch = [
-        et for et, n in counts.items()
-        if n > 1 and et not in state["event_titles"]
+        m["event_ticker"] for m in markets
+        if m.get("event_ticker") and m["event_ticker"] not in state["event_titles"]
     ]
+    to_fetch = list(dict.fromkeys(to_fetch))  # de-dupe, preserve order
     if not to_fetch:
         return {}
     results = await asyncio.gather(*(client.get_event(et) for et in to_fetch), return_exceptions=True)
@@ -161,7 +167,7 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
             event = result.get("event") or {}
             fetched[et] = {
                 "title": event.get("title") or et,
-                "subtitle": event.get("subtitle"),
+                "sub_title": event.get("sub_title"),
                 "category": event.get("category"),
             }
     return fetched
@@ -229,13 +235,23 @@ async def trading_loop():
             state["latest_prices"] = {
                 m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
             }
-            # Human-readable label for a ticker — whale signals/decisions only carry
-            # the raw ticker string, so the dashboard looks this up to show something
-            # a person can actually read instead of e.g. "KXMVESPORTS...-FC34E0243A1".
-            # Accumulates (doesn't overwrite) so a signal from a market that has since
-            # rotated out of the top-volume watchlist still resolves to its title.
+            # Human-readable label for a ticker — whale signals/decisions/positions
+            # only carry the raw ticker string, so the dashboard looks this up to
+            # show something a person can actually read instead of e.g.
+            # "KXMVESPORTS...-FC34E0243A1". yes_sub_title/no_sub_title (not just
+            # title) are kept so the dashboard can say what a Yes or No position
+            # actually *means* ("betting YES = San Diego wins"), not just show a
+            # side tag - previously only a single collapsed title string was kept
+            # here, which lost that. Accumulates (doesn't overwrite) so a signal
+            # from a market that has since rotated out of the top-volume
+            # watchlist still resolves to its title.
             state["market_titles"].update({
-                m["ticker"]: (m.get("title") or m.get("yes_sub_title") or m["ticker"])
+                m["ticker"]: {
+                    "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
+                    "yes_sub_title": m.get("yes_sub_title"),
+                    "no_sub_title": m.get("no_sub_title"),
+                    "event_ticker": m.get("event_ticker"),
+                }
                 for m in markets if m.get("ticker")
             })
             if len(state["market_titles"]) > 300:  # bound unbounded growth over a long-running process
@@ -475,6 +491,23 @@ async def get_candlesticks(ticker: str, event_ticker: str):
         return await client.get_candlesticks(series_ticker, ticker, start_ts, end_ts, period_interval=60)
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await client.close()
+
+
+@app.get("/api/markets/{ticker}/trades")
+async def get_market_trades(ticker: str):
+    # Recent trades for one market, in the drill-down (ROADMAP.md Phase
+    # 0.5) - distinct from the full-exchange trade tape (a separate,
+    # not-yet-built Terminal/Whale-Watch-level feed across every watched
+    # market). No series_ticker complication here, unlike candlesticks -
+    # get_trades takes a plain ticker filter.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        return await client.get_trades(ticker=ticker, limit=15)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     finally:

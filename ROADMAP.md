@@ -208,6 +208,36 @@ this app does that theirs doesn't, in either mode.
       `series_ticker` field on the market object itself, only on its
       event), left for a future pass rather than adding a per-market event
       fetch just for that one line.
+- [x] Follow-up on the above, from direct feedback: still too much raw-
+      ticker/mental-math left in practice — a user shouldn't have to parse
+      `KXMVESPORTSMULTIGAMEEXTENDED-S2026CDE6FF21DD8-582E1DFB434` or
+      multiply contracts by price themselves to know what sport, who's
+      playing, what a Yes/No position means, or how much money is actually
+      in it. Two fixes. First, a real bug caught while investigating: the
+      earlier event-title code read `event.get("subtitle")`, which doesn't
+      exist — the real field is `sub_title` (confirmed directly against a
+      live event: "SD vs AZ (Aug 6)" only came back under that key) — so
+      every event's subtitle had silently been `None` since it shipped.
+      Second, event fetching was previously scoped to only multi-sibling
+      groups; broadened to every market's event, since this data is also
+      what answers "what sport, who vs who" for a *single* market, not
+      just grouping. `market_titles` now carries an object
+      (`{title, yes_sub_title, no_sub_title, event_ticker}`) instead of a
+      single collapsed string, so a Yes/No position's actual meaning
+      ("Betting: San Diego") is available, not just a side tag. New
+      `marketContext()`/`contextLineHTML()` combine this with
+      `event_titles` to show category + real matchup + position meaning on
+      position/trade/fill rows, market cards, and the drill-down modal
+      title. New `costHTML()` shows the actual dollar total put into a
+      position/trade (contracts × price) next to the existing max-payout
+      figure — directly requested, previously required doing that
+      multiplication by hand. Verified end-to-end through a real Chrome
+      session with realistic clean-market data (an MLB matchup, not the
+      messy 7-leg combo markets this account's current watchlist happens
+      to favor): a position row correctly rendered "Sports · SD vs AZ (Aug
+      6) · Betting: San Diego" plus "$6.20 put in," and a market card
+      correctly showed the matchup line and "Sports" in place of the old
+      raw ticker-prefix meta tag.
 
 Concrete gaps against the current 4-tab dashboard (Portfolio, Markets,
 Whale Watch, Terminal — see `static/index.html`), each already framed as
@@ -253,10 +283,14 @@ a Simple/Advanced pair using the toggle above:
       through a real Chrome session against a market with real trading
       history: sparkline rendered, Advanced showed the correct candle/
       volume-bar count matching the real API response exactly.
-- [ ] Recent trades for that one market, also in the drill-down (not the
+- [x] Recent trades for that one market, also in the drill-down (not the
       full-exchange trade tape below, which is a separate, Terminal/Whale-
-      Watch-level feed) — the SDK's `get_trades` accepts a ticker filter,
-      unused today.
+      Watch-level feed) — the SDK's `get_trades` accepts a plain `ticker`
+      filter (no `series_ticker` complication, unlike candlesticks). New
+      `GET /api/markets/{ticker}/trades` and a `get_trades()` wrapper;
+      shows the last 15 trades (taker side, contracts, price, time), no
+      Simple/Advanced split — a short recent-trades list doesn't have a
+      meaningfully denser "Advanced" form the way the book/chart do.
 - [ ] Full-exchange trade tape — distinct from the per-market drill-down
       above, this is a Terminal/Whale-Watch-level feed across every market
       being watched, not one market at a time. Same underlying `get_trades`

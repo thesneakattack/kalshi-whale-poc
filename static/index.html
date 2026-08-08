@@ -126,6 +126,7 @@
   .pnl.pos { color: var(--yes); }
   .pnl.neg { color: var(--no); }
   .payout { font-size: 10px; color: var(--muted); }
+  .cost { font-size: 10px; color: var(--muted); }
 
   .funnel-bar {
     display: flex;
@@ -157,6 +158,12 @@
   .side-tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
   .side-tag.yes { background: rgba(45,212,191,0.15); color: var(--yes); }
   .side-tag.no { background: rgba(249,112,102,0.15); color: var(--no); }
+  /* What sport/category, the real matchup, and what Yes/No actually means -
+     e.g. "Sports · San Diego vs Arizona · Betting: San Diego wins" instead
+     of a bare ticker and a side tag. See marketContext()/contextLineHTML(). */
+  .context-line { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .cat-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--whale); }
+  .position-means { color: var(--text); }
   .conf-bar { height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
   .conf-fill { height: 100%; background: var(--whale); }
   .decision-card.trade { border-left: 3px solid var(--yes); }
@@ -642,6 +649,15 @@ function payoutHTML(count) {
   return `<span class="payout">pays ${fmt(Math.abs(count))} if right</span>`;
 }
 
+// The actual dollar amount put into a position/trade (contracts x price) -
+// requested directly: "the actual money total put into the position," not
+// just contract count and price per contract, which requires doing that
+// multiplication in your head.
+function costHTML(count, price) {
+  if (count == null || price == null || isNaN(count) || isNaN(price)) return '';
+  return `<span class="cost" title="Contracts x price - what was actually paid">${fmt(Math.abs(count) * price)} put in</span>`;
+}
+
 // Shared Simple/Advanced toggle — see ROADMAP.md Phase 0.5. panelId is a
 // short stable key per panel (e.g. "positions", "orderbook-<ticker>"), not
 // tied to which tab it's on, so the choice persists independently per panel.
@@ -679,11 +695,40 @@ function formatTitle(full) {
 // Whale signals/decisions only carry a raw ticker (e.g. "KXMVESPORTS...-FC34E0243A1")
 // — market_titles (from Kalshi's own title/yes_sub_title field) is what makes that
 // mean something to a person. Falls back to the ticker if a title isn't known yet.
+// market_titles[ticker] is an object ({title, yes_sub_title, no_sub_title,
+// event_ticker}), not a bare string - main.py used to collapse it to one
+// string before sending it, which lost yes_sub_title/no_sub_title entirely
+// (there was no way to say what a Yes vs. No position actually meant).
 function marketLabel(ticker) {
-  const raw = marketTitles[ticker] || ticker || 'unknown market';
+  const info = marketTitles[ticker];
+  const raw = (info && info.title) || ticker || 'unknown market';
   const formatted = formatTitle(raw);
   const short = formatted.length > 64 ? formatted.slice(0, 63) + '…' : formatted;
   return { short, full: raw };
+}
+
+// What sport/category this is, the actual matchup (from the event, not the
+// often-messy per-market title), and what a Yes/No position on this specific
+// market means in plain words - e.g. "San Diego wins" rather than just a
+// "yes" tag. Every piece degrades gracefully: a market's event may not be
+// cached yet, or may not have a category/sub_title at all.
+function marketContext(ticker, side) {
+  const info = marketTitles[ticker] || {};
+  const event = info.event_ticker ? eventTitles[info.event_ticker] : null;
+  return {
+    category: event ? event.category : null,
+    matchup: event ? (event.sub_title || event.title) : null,
+    positionMeans: side === 'no' ? info.no_sub_title : info.yes_sub_title,
+  };
+}
+
+function contextLineHTML(ticker, side) {
+  const ctx = marketContext(ticker, side);
+  const bits = [];
+  if (ctx.category) bits.push(`<span class="cat-tag">${esc(ctx.category)}</span>`);
+  if (ctx.matchup) bits.push(esc(ctx.matchup));
+  if (ctx.positionMeans) bits.push(`<span class="position-means">Betting: ${esc(ctx.positionMeans)}</span>`);
+  return bits.length ? `<div class="context-line">${bits.join(' · ')}</div>` : '';
 }
 
 function renderMarkets(markets, prices) {
@@ -755,10 +800,13 @@ function renderPositions(positions, prices) {
     const pnl = direction * (current - p.entry_price) * p.size;
     return `
     <div class="position-row" title="${esc(label.full)}">
-      <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span></div>
+      <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span>
+        ${contextLineHTML(p.ticker, p.side)}
+      </div>
       <div class="nums">
         <span title="Contracts held, entry price, current price">${p.size.toLocaleString()} contracts @ ${(p.entry_price*100).toFixed(0)}¢ entry → ${(current*100).toFixed(0)}¢ now</span>
         <span class="pnl ${pnl >= 0 ? 'pos' : 'neg'}" title="Unrealized profit/loss at the current price">${fmt(pnl)}</span>
+        ${costHTML(p.size, p.entry_price)}
         ${payoutHTML(p.size)}
       </div>
     </div>`;
@@ -778,10 +826,13 @@ function renderTrades(trades) {
     const when = new Date(t.timestamp * 1000).toLocaleTimeString();
     return `
     <div class="trade-row" title="${esc(label.full)}">
-      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span></div>
+      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
+        ${contextLineHTML(t.ticker, t.side)}
+      </div>
       <div class="nums">
         <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
         <span style="color: var(--muted)">${when}</span>
+        ${costHTML(t.size, t.price)}
         ${payoutHTML(t.size)}
       </div>
     </div>`;
@@ -820,9 +871,12 @@ function renderRealPositions(positions) {
     const exposure = p.market_exposure_dollars != null ? fmt(parseFloat(p.market_exposure_dollars)) : null;
     const pnl = p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null;
     const pnlHtml = pnl != null ? ` <span style="color: var(${pnl >= 0 ? '--yes' : '--no'})">${fmt(pnl)} realized</span>` : '';
+    const side = isNaN(qtyNum) ? null : (qtyNum >= 0 ? 'yes' : 'no');  // Kalshi's real convention: signed count, positive = Yes
     return `<div class="position-row" title="${esc(JSON.stringify(p))}">
-      <div class="name">${esc(label.short)}</div>
-      <div class="nums"><span title="Signed contract count - positive is a Yes position, negative is No">${esc(String(qty))} contracts${exposure != null ? ' · ' + exposure + ' at risk' : ''}${pnlHtml}</span>
+      <div class="name">${esc(label.short)}${side ? ` <span class="side-tag ${side}">${side}</span>` : ''}
+        ${side ? contextLineHTML(ticker, side) : ''}
+      </div>
+      <div class="nums"><span title="Signed contract count - positive is a Yes position, negative is No">${esc(String(qty))} contracts${exposure != null ? ' · ' + exposure + ' put in' : ''}${pnlHtml}</span>
         ${payoutHTML(qtyNum)}</div>
     </div>`;
   }).join('') + rawJsonDetails(positions);
@@ -845,11 +899,15 @@ function renderRealFills(fills) {
     const side = f.side || f.action || '';
     const count = f.count_fp ?? '—';
     const countNum = f.count_fp != null ? parseFloat(f.count_fp) : NaN;
-    const priceDollars = f.side === 'no' ? f.no_price_dollars : f.yes_price_dollars;
-    const price = priceDollars != null ? `${(parseFloat(priceDollars) * 100).toFixed(0)}¢` : null;
+    const priceDollarsRaw = f.side === 'no' ? f.no_price_dollars : f.yes_price_dollars;
+    const priceNum = priceDollarsRaw != null ? parseFloat(priceDollarsRaw) : NaN;
+    const price = priceDollarsRaw != null ? `${(priceNum * 100).toFixed(0)}¢` : null;
     return `<div class="trade-row" title="${esc(JSON.stringify(f))}">
-      <div class="name">${esc(label.short)} ${side ? `<span class="side-tag ${esc(side)}">${esc(side)}</span>` : ''}</div>
+      <div class="name">${esc(label.short)} ${side ? `<span class="side-tag ${esc(side)}">${esc(side)}</span>` : ''}
+        ${side ? contextLineHTML(ticker, side) : ''}
+      </div>
       <div class="nums"><span title="Contracts filled at this price">${esc(String(count))} contracts${price != null ? ' @ ' + price + ' fill price' : ''}</span>
+        ${costHTML(countNum, priceNum)}
         ${payoutHTML(countNum)}</div>
     </div>`;
   }).join('') + rawJsonDetails(fills);
@@ -995,15 +1053,25 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
     }
   }
 
+  // Category/matchup context, same lookup the position/trade rows use - a
+  // real "what sport, who vs who" answer instead of a raw ticker fragment.
+  // Falls back to the ticker prefix only if the event hasn't been fetched
+  // yet (or has no category), never leaving the line blank with no context
+  // at all.
+  const ctx = marketContext(m.ticker, null);
+  const metaRight = ctx.category ? esc(ctx.category) : esc(m.ticker.split('-')[0]);
+  const matchupHtml = ctx.matchup ? `<div class="context-line" style="margin:0 0 6px;">${esc(ctx.matchup)}</div>` : '';
+
   return `
   <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
     <div class="title">${esc(label.short)}</div>
+    ${matchupHtml}
     <div class="prices">
       <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div></div>
       <div class="price-btn no"><div class="lbl">No</div><div class="val">${noPrice !== null ? noPrice + '¢' : '—'}</div></div>
     </div>
     <div class="prob-bar"><div class="fill" style="width:${yesPrice ?? 50}%"></div></div>
-    <div class="meta"><span>vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span><span>${esc(m.ticker.split('-')[0])}</span></div>
+    <div class="meta"><span>vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span><span>${metaRight}</span></div>
     ${whaleHtml}
   </div>`;
 }
@@ -1089,8 +1157,7 @@ let marketDetailEventTicker = null;  // needed for the candlesticks endpoint's r
 async function openMarketDetail(ticker, eventTicker) {
   marketDetailTicker = ticker;
   marketDetailEventTicker = eventTicker || null;
-  const label = marketLabel(ticker);
-  $('market-detail-title').textContent = label.short;
+  renderMarketDetailTitle(ticker);
   $('market-detail-backdrop').classList.add('open');
   $('market-detail-body').innerHTML = '<div class="empty">Loading…</div>';
   await refreshMarketDetail();
@@ -1102,10 +1169,26 @@ function closeMarketDetail() {
   $('market-detail-backdrop').classList.remove('open');
 }
 
+// Separate from refreshMarketDetail's body (order book/chart/trades) since
+// this needs to re-run on every poll too, not just on open - the event's
+// category/matchup may not be cached yet the first time a market is opened
+// (event lookups happen once per poll tick, server-side), so the title
+// would otherwise stay stuck without it until the modal is closed and
+// reopened.
+function renderMarketDetailTitle(ticker) {
+  const label = marketLabel(ticker);
+  const ctx = marketContext(ticker, null);
+  const ctxLine = ctx.category || ctx.matchup
+    ? `<div class="context-line" style="margin-top:4px;">${ctx.category ? `<span class="cat-tag">${esc(ctx.category)}</span> · ` : ''}${ctx.matchup ? esc(ctx.matchup) : ''}</div>`
+    : '';
+  $('market-detail-title').innerHTML = `${esc(label.short)}${ctxLine}`;
+}
+
 async function refreshMarketDetail() {
   if (!marketDetailTicker) return;
   const ticker = marketDetailTicker;
   const eventTicker = marketDetailEventTicker;
+  renderMarketDetailTitle(ticker);
 
   let book = null, bookFailed = false;
   try {
@@ -1124,13 +1207,46 @@ async function refreshMarketDetail() {
     }
   }
 
+  let trades = null, tradesFailed = false;
+  try {
+    const resp = await fetchJSON(`/api/markets/${encodeURIComponent(ticker)}/trades`);
+    trades = resp.trades || [];
+  } catch (e) {
+    tradesFailed = true;
+  }
+
   if (marketDetailTicker !== ticker) return; // closed or switched while requests were in flight
 
   const bookHtml = bookFailed ? '<div class="empty">Failed to load order book.</div>' : renderOrderbookHTML(book);
   const chartHtml = !eventTicker
     ? ''  // no event_ticker known (shouldn't normally happen - every call site passes one) - skip rather than guess
     : candlesFailed ? '<div class="empty">Failed to load price history.</div>' : renderCandlestickHTML(candles);
-  $('market-detail-body').innerHTML = chartHtml + '<hr style="border-color: var(--panel-border); margin: 20px 0;">' + bookHtml;
+  const tradesHtml = tradesFailed ? '<div class="empty">Failed to load recent trades.</div>' : renderMarketTradesHTML(trades);
+  const hr = '<hr style="border-color: var(--panel-border); margin: 20px 0;">';
+  $('market-detail-body').innerHTML = chartHtml + hr + bookHtml + hr + tradesHtml;
+}
+
+// Recent trades for this one market - distinct from the full-exchange trade
+// tape (a separate, not-yet-built feed across every watched market, see
+// ROADMAP.md). No Simple/Advanced split here, unlike the book/chart above -
+// a short recent-trades list doesn't have a meaningfully denser "Advanced"
+// form the way a full order book or candlestick history does.
+function renderMarketTradesHTML(trades) {
+  if (!trades || !trades.length) {
+    return '<div class="panel-title" style="margin-top:0;">Recent Trades</div><div class="empty">No recent trades on this market.</div>';
+  }
+  const rows = trades.map(t => {
+    const side = t.taker_side === 'no' ? 'no' : 'yes';
+    const priceDollars = side === 'no' ? t.no_price_dollars : t.yes_price_dollars;
+    const price = priceDollars != null ? (parseFloat(priceDollars) * 100).toFixed(0) + '¢' : '—';
+    const count = t.count_fp != null ? parseFloat(t.count_fp).toLocaleString() : '—';
+    const when = t.created_time ? new Date(t.created_time).toLocaleTimeString() : '';
+    return `<div class="trade-row">
+      <div class="name">Taker bought <span class="side-tag ${side}">${side}</span></div>
+      <div class="nums"><span>${count} contracts @ ${price}</span><span style="color: var(--muted)">${esc(when)}</span></div>
+    </div>`;
+  }).join('');
+  return `<div class="panel-title" style="margin-top:0;">Recent Trades</div><div class="scroll-panel" style="max-height:240px;">${rows}</div>`;
 }
 
 // Kalshi's book is two independent bid ladders (yes_dollars/no_dollars),

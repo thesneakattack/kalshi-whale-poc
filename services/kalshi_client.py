@@ -94,6 +94,10 @@ class KalshiClient:
         )
         return resp.model_dump(mode="json")
 
+    async def get_trades(self, ticker: str | None = None, limit: int = 25) -> dict:
+        resp = await call_with_backoff(self._client.get_trades, ticker=ticker, limit=limit)
+        return resp.model_dump(mode="json")
+
     async def get_exchange_status(self) -> dict:
         """Public, unauthenticated. Real shape includes exchange_active/
         trading_active at top level plus a per-shard exchange_index_statuses
