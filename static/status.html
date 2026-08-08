@@ -590,6 +590,31 @@
           (<code>renderMarketCards</code> grouping, row label wording)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 20 · real candlesticks, hand-rolled, in the drill-down</div>
+        <h4>Price history joins order book in the per-market modal — a real API quirk caught before it shipped wrong</h4>
+        <p>Next item in Phase 0.5's drill-down group. <code>get_market_candlesticks</code> requires a
+          <code>series_ticker</code>, which - checked directly, not assumed - market objects don't carry (only
+          <code>event_ticker</code> does); getting it wrong is a hard API error, not a quietly-off number, so this
+          resolves it with one real <code>get_event()</code> lookup per drill-down open rather than guessing from
+          the ticker string (a naive <code>ticker.split('-')[0]</code> heuristic matched on every sample tried, but
+          "usually true" isn't the bar for a required, strictly-validated field). New
+          <code>GET /api/markets/{ticker}/candlesticks</code> (fixed window: last 7 days, hourly) and a
+          <code>get_candlesticks()</code> wrapper. Simple is a compact sparkline, matching the equity chart's
+          existing hand-rolled inline-SVG approach; Advanced is real OHLC candlesticks with a volume bar per
+          period, same no-library approach, just more of it - wicks, bodies colored by up/down, volume scaled
+          underneath. One data quirk caught by actually reading a real response instead of assuming the shape:
+          candlestick <code>price.*</code> fields come back null for any period with no actual trade (common on
+          thin markets), which would have silently drawn the line dropping to zero - falls back to the yes_bid/
+          yes_ask midpoint, then carries the last known value forward. The chart gets its own Simple/Advanced
+          toggle, independent of the order book's directly below it - verified live in Chrome that toggling one
+          doesn't touch the other, and that Advanced's rendered candle/volume-bar count matches the real API
+          response exactly.</p>
+        <div class="files"><code>main.py</code> (<code>/api/markets/{ticker}/candlesticks</code>) ·
+          <code>services/kalshi_client.py</code> (<code>get_candlesticks</code>) · <code>static/index.html</code>
+          (<code>renderCandlestickHTML</code>, <code>candleClose</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -634,9 +659,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book endpoint, event/outcome grouping</td><td class="loc">618</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks endpoints, event/outcome grouping</td><td class="loc">650</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup</td><td class="loc">89</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks</td><td class="loc">104</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -651,10 +676,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book drill-down, potential-payout math, event/outcome grouping</td><td class="loc">1561</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick drill-down, potential-payout math, event/outcome grouping</td><td class="loc">1683</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~840</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~865</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

@@ -695,7 +695,7 @@ function renderMarkets(markets, prices) {
     const price = prices[m.ticker];
     const vol = m.volume_24h_fp;
     return `
-    <div class="market-row" title="${esc(label.full)}\n${esc(m.ticker)}" onclick="openMarketDetail('${esc(m.ticker)}')" style="cursor:pointer;">
+    <div class="market-row" title="${esc(label.full)}\n${esc(m.ticker)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
       <span class="ticker">${esc(label.short)}</span>
       <span class="price">YES ${price !== undefined ? (price * 100).toFixed(0) : '—'}¢ · vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span>
     </div>
@@ -996,7 +996,7 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   }
 
   return `
-  <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}')" style="cursor:pointer;">
+  <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
     <div class="title">${esc(label.short)}</div>
     <div class="prices">
       <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div></div>
@@ -1084,33 +1084,53 @@ function renderHeaderStrip(broker, account, realBalanceHistory) {
 // until now). A modal, not a card-level toggle: a full depth ladder doesn't
 // fit inline in a grid of market cards.
 let marketDetailTicker = null;
+let marketDetailEventTicker = null;  // needed for the candlesticks endpoint's required series_ticker lookup
 
-async function openMarketDetail(ticker) {
+async function openMarketDetail(ticker, eventTicker) {
   marketDetailTicker = ticker;
+  marketDetailEventTicker = eventTicker || null;
   const label = marketLabel(ticker);
   $('market-detail-title').textContent = label.short;
   $('market-detail-backdrop').classList.add('open');
-  $('market-detail-body').innerHTML = '<div class="empty">Loading order book…</div>';
+  $('market-detail-body').innerHTML = '<div class="empty">Loading…</div>';
   await refreshMarketDetail();
 }
 
 function closeMarketDetail() {
   marketDetailTicker = null;
+  marketDetailEventTicker = null;
   $('market-detail-backdrop').classList.remove('open');
 }
 
 async function refreshMarketDetail() {
   if (!marketDetailTicker) return;
   const ticker = marketDetailTicker;
-  let book;
+  const eventTicker = marketDetailEventTicker;
+
+  let book = null, bookFailed = false;
   try {
     book = await fetchJSON(`/api/markets/${encodeURIComponent(ticker)}/orderbook`);
   } catch (e) {
-    $('market-detail-body').innerHTML = '<div class="empty">Failed to load order book.</div>';
-    return;
+    bookFailed = true;
   }
-  if (marketDetailTicker !== ticker) return; // closed or switched while the request was in flight
-  $('market-detail-body').innerHTML = renderOrderbookHTML(book);
+
+  let candles = null, candlesFailed = false;
+  if (eventTicker) {
+    try {
+      const resp = await fetchJSON(`/api/markets/${encodeURIComponent(ticker)}/candlesticks?event_ticker=${encodeURIComponent(eventTicker)}`);
+      candles = resp.candlesticks || [];
+    } catch (e) {
+      candlesFailed = true;
+    }
+  }
+
+  if (marketDetailTicker !== ticker) return; // closed or switched while requests were in flight
+
+  const bookHtml = bookFailed ? '<div class="empty">Failed to load order book.</div>' : renderOrderbookHTML(book);
+  const chartHtml = !eventTicker
+    ? ''  // no event_ticker known (shouldn't normally happen - every call site passes one) - skip rather than guess
+    : candlesFailed ? '<div class="empty">Failed to load price history.</div>' : renderCandlestickHTML(candles);
+  $('market-detail-body').innerHTML = chartHtml + '<hr style="border-color: var(--panel-border); margin: 20px 0;">' + bookHtml;
 }
 
 // Kalshi's book is two independent bid ladders (yes_dollars/no_dollars),
@@ -1150,6 +1170,108 @@ function renderOrderbookHTML(book) {
   </div>`;
 
   return toggle + summary + ladder;
+}
+
+// Kalshi's candlestick price.*_dollars fields are null for any period with
+// no actual trade (common on thin markets - confirmed on real data) - falls
+// back to the yes_bid/yes_ask midpoint for those periods so the line/chart
+// doesn't just vanish, and carries the last known value forward if even
+// that's unavailable, rather than plotting a misleading gap-to-zero.
+function candleClose(c) {
+  const price = c.price && c.price.close_dollars != null ? parseFloat(c.price.close_dollars) : null;
+  if (price != null) return price;
+  const bid = c.yes_bid && c.yes_bid.close_dollars != null ? parseFloat(c.yes_bid.close_dollars) : null;
+  const ask = c.yes_ask && c.yes_ask.close_dollars != null ? parseFloat(c.yes_ask.close_dollars) : null;
+  if (bid != null && ask != null) return (bid + ask) / 2;
+  return bid ?? ask ?? null;
+}
+
+function renderCandlestickHTML(candles) {
+  const toggle = `<div style="text-align:right; margin-bottom:12px;">${advToggleHTML('price-chart')}</div>`;
+  if (!candles || !candles.length) {
+    return toggle + '<div class="empty">No price history yet for this market.</div>';
+  }
+
+  let lastClose = null;
+  const points = candles.map(c => {
+    let close = candleClose(c);
+    if (close == null) close = lastClose;  // still null on the very first candle - filtered out below
+    lastClose = close;
+    return {
+      ts: c.end_period_ts,
+      close,
+      open: c.price && c.price.open_dollars != null ? parseFloat(c.price.open_dollars) : close,
+      high: c.price && c.price.high_dollars != null ? parseFloat(c.price.high_dollars) : close,
+      low: c.price && c.price.low_dollars != null ? parseFloat(c.price.low_dollars) : close,
+      volume: c.volume_fp != null ? parseFloat(c.volume_fp) : 0,
+    };
+  }).filter(p => p.close != null);
+
+  if (!points.length) {
+    return toggle + '<div class="empty">No price history yet for this market.</div>';
+  }
+
+  if (!isAdvanced('price-chart')) {
+    // Simple: a compact sparkline, same hand-rolled inline-SVG approach as
+    // the Portfolio equity chart (see renderEquityChart) - no library, just
+    // a trend line, no axes.
+    const w = 560, h = 100, pad = 6;
+    const closes = points.map(p => p.close);
+    const min = Math.min(...closes), max = Math.max(...closes);
+    const range = (max - min) || 0.01;
+    const xStep = (w - pad * 2) / (Math.max(points.length - 1, 1));
+    const svgPoints = points.map((p, i) => {
+      const x = pad + i * xStep;
+      const y = pad + (1 - (p.close - min) / range) * (h - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const last = closes[closes.length - 1], first = closes[0];
+    const color = last >= first ? 'var(--yes)' : 'var(--no)';
+    return toggle + `
+      <svg viewBox="0 0 ${w} ${h}" style="width:100%; height:100px; display:block;">
+        <polyline points="${svgPoints}" style="fill:none; stroke:${color}; stroke-width:2;" />
+      </svg>
+      <div style="font-family:var(--mono); font-size:10px; color:var(--muted); display:flex; justify-content:space-between; margin-top:4px;">
+        <span>${(first*100).toFixed(0)}¢ 7d ago</span>
+        <span>${(last*100).toFixed(0)}¢ now</span>
+      </div>`;
+  }
+
+  // Advanced: real OHLC candlesticks + a volume bar per period, hand-rolled
+  // SVG (no charting library, matching this app's existing chart approach).
+  const w = 640, h = 260, volH = 50, pad = 8;
+  const priceH = h - volH - pad * 2;
+  const highs = points.map(p => p.high), lows = points.map(p => p.low);
+  const min = Math.min(...lows), max = Math.max(...highs);
+  const range = (max - min) || 0.01;
+  const volMax = Math.max(...points.map(p => p.volume), 1);
+  const n = points.length;
+  const slotW = (w - pad * 2) / n;
+  const bodyW = Math.max(slotW * 0.6, 1);
+  const yFor = (price) => pad + (1 - (price - min) / range) * priceH;
+
+  const bars = points.map((p, i) => {
+    const x = pad + i * slotW + slotW / 2;
+    const up = p.close >= p.open;
+    const color = up ? 'var(--yes)' : 'var(--no)';
+    const yHigh = yFor(p.high), yLow = yFor(p.low);
+    const yOpen = yFor(p.open), yClose = yFor(p.close);
+    const bodyTop = Math.min(yOpen, yClose), bodyBot = Math.max(yOpen, yClose);
+    const volBarH = (p.volume / volMax) * volH;
+    return `
+      <line x1="${x}" y1="${yHigh.toFixed(1)}" x2="${x}" y2="${yLow.toFixed(1)}" stroke="${color}" stroke-width="1" />
+      <rect x="${(x - bodyW/2).toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${bodyW.toFixed(1)}" height="${Math.max(bodyBot - bodyTop, 1).toFixed(1)}" fill="${color}" />
+      <rect x="${(x - bodyW/2).toFixed(1)}" y="${(h - volBarH).toFixed(1)}" width="${bodyW.toFixed(1)}" height="${volBarH.toFixed(1)}" fill="${color}" opacity="0.35" />
+    `;
+  }).join('');
+
+  return toggle + `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%; height:260px; display:block;">${bars}</svg>
+    <div style="font-family:var(--mono); font-size:10px; color:var(--muted); display:flex; justify-content:space-between; margin-top:4px;">
+      <span>${new Date(points[0].ts*1000).toLocaleDateString()}</span>
+      <span>hourly candles, volume below</span>
+      <span>${new Date(points[points.length-1].ts*1000).toLocaleDateString()}</span>
+    </div>`;
 }
 
 function renderAccount(account) {

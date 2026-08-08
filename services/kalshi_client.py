@@ -79,6 +79,21 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_event, event_ticker)
         return resp.model_dump(mode="json")
 
+    async def get_candlesticks(
+        self, series_ticker: str, ticker: str, start_ts: int, end_ts: int, period_interval: int
+    ) -> dict:
+        """period_interval is minutes - only 1, 60, or 1440 are valid (verified
+        from the SDK's own docstring, not guessed). series_ticker is a
+        required, strictly-validated field Kalshi's market objects don't
+        carry directly (only event_ticker) - callers get it via get_event()
+        first; see main.py's candlesticks endpoint."""
+        resp = await call_with_backoff(
+            self._client.get_market_candlesticks,
+            series_ticker=series_ticker, ticker=ticker,
+            start_ts=start_ts, end_ts=end_ts, period_interval=period_interval,
+        )
+        return resp.model_dump(mode="json")
+
     async def get_exchange_status(self) -> dict:
         """Public, unauthenticated. Real shape includes exchange_active/
         trading_active at top level plus a per-shard exchange_index_statuses

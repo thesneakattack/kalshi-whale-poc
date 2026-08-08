@@ -449,6 +449,38 @@ async def get_market_orderbook(ticker: str):
         await client.close()
 
 
+@app.get("/api/markets/{ticker}/candlesticks")
+async def get_candlesticks(ticker: str, event_ticker: str):
+    # Price history for the per-market drill-down (ROADMAP.md Phase 0.5).
+    # get_market_candlesticks requires series_ticker, which market objects
+    # don't carry directly (only event_ticker) - verified via introspection,
+    # not guessed from the ticker string, since a wrong value here is a hard
+    # API error rather than a silently-wrong display. event_ticker comes
+    # from the caller (the frontend already has it on state.markets) so
+    # this can go straight to the one get_event() lookup it needs rather
+    # than an extra get_market() call first to discover it.
+    #
+    # Fixed window: last 7 days, hourly candles - dense enough for a
+    # meaningful chart, short enough to stay a single fast request. Not
+    # user-configurable yet.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        event = await client.get_event(event_ticker)
+        series_ticker = (event.get("event") or {}).get("series_ticker")
+        if not series_ticker:
+            raise HTTPException(status_code=502, detail="Could not resolve series_ticker for this event")
+        end_ts = int(time.time())
+        start_ts = end_ts - 7 * 24 * 3600
+        return await client.get_candlesticks(series_ticker, ticker, start_ts, end_ts, period_interval=60)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await client.close()
+
+
 @app.get("/api/state")
 async def get_state():
     return {

@@ -231,13 +231,28 @@ a Simple/Advanced pair using the toggle above:
       with an actual resting order (Advanced ladder correctly showed its
       real price/size) — driven through an actual Chrome session via
       ddev's selenium-chrome, not just curl.
-- [ ] Price history in the same drill-down (the app only has one chart
-      total — portfolio equity-over-time, hand-rolled inline SVG). Kalshi's
-      SDK already exposes `get_market_candlesticks` (confirmed via
-      introspection on the real 3.27.0 install) — `kalshi_client.py` has no
-      wrapper for it yet. Simple: a compact sparkline, matching the equity
-      chart's existing inline-SVG approach (no charting library). Advanced:
-      full candlestick chart with volume.
+- [x] Price history in the same drill-down (the app previously had one
+      chart total — portfolio equity-over-time, hand-rolled inline SVG).
+      Kalshi's `get_market_candlesticks` requires a `series_ticker`, which
+      market objects don't carry directly (only `event_ticker`) — verified
+      via the SDK's own docstring rather than guessed, since a wrong value
+      there is a hard API error, not a silently-wrong display; resolved via
+      one `get_event()` lookup per drill-down open, using `event_ticker`
+      the frontend already has on `state.markets`. New `GET
+      /api/markets/{ticker}/candlesticks` (fixed window: last 7 days,
+      hourly) and a `get_candlesticks()` wrapper. Simple: a compact
+      sparkline (hand-rolled inline SVG, same approach as the equity
+      chart). Advanced: real OHLC candlesticks + a volume bar per period,
+      also hand-rolled SVG, no charting library. Candlestick `price.*`
+      fields are null for any period with no actual trade (confirmed on
+      real data, common on thin markets) — falls back to the yes_bid/
+      yes_ask midpoint, then carries the last known value forward, rather
+      than plotting a misleading drop to zero. The chart gets its own
+      Simple/Advanced toggle, independent from the order book's — verified
+      live that toggling one doesn't affect the other. Verified end-to-end
+      through a real Chrome session against a market with real trading
+      history: sparkline rendered, Advanced showed the correct candle/
+      volume-bar count matching the real API response exactly.
 - [ ] Recent trades for that one market, also in the drill-down (not the
       full-exchange trade tape below, which is a separate, Terminal/Whale-
       Watch-level feed) — the SDK's `get_trades` accepts a ticker filter,
