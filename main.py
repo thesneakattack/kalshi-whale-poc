@@ -61,6 +61,7 @@ state = {
     "latest_prices": {},
     "market_titles": {},
     "event_titles": {},  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
+    "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
@@ -102,6 +103,28 @@ async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
         )
         return [m for m in results if isinstance(m, dict)]
     return await client.get_top_volume_markets(cfg["kalshi"]["watchlist_size"])
+
+
+async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[dict]:
+    """Full-exchange trade tape (ROADMAP.md Phase 0.5), scoped to the current
+    watchlist rather than the whole exchange - get_trades with no ticker
+    filter returns trades across every Kalshi market, most of which aren't
+    on anyone's watchlist here and would just be noise next to the
+    whale-signal concept this ties into. One small get_trades() per watched
+    market, concurrently (same pattern _fetch_markets already uses for its
+    explicit-watchlist branch), merged and sorted newest-first."""
+    tickers = [m["ticker"] for m in markets if m.get("ticker")]
+    if not tickers:
+        return []
+    results = await asyncio.gather(
+        *(client.get_trades(ticker=t, limit=5) for t in tickers), return_exceptions=True
+    )
+    trades = []
+    for result in results:
+        if isinstance(result, dict):
+            trades.extend(result.get("trades") or [])
+    trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
+    return trades[:30]
 
 
 async def _fetch_account_snapshot(cfg: dict) -> dict:
@@ -226,9 +249,15 @@ async def trading_loop():
                 state["exchange_status"] = exchange_status
 
             state["markets"] = [_slim_market(m) for m in markets]
-            state["event_titles"].update(await _fetch_event_titles(client, markets))
+            # Both depend on this tick's markets list but not on each other -
+            # fetch concurrently rather than one after the other.
+            event_titles, trade_tape = await asyncio.gather(
+                _fetch_event_titles(client, markets), _fetch_trade_tape(client, markets)
+            )
+            state["event_titles"].update(event_titles)
             if len(state["event_titles"]) > 300:  # bound unbounded growth, same as market_titles below
                 state["event_titles"] = dict(list(state["event_titles"].items())[-300:])
+            state["trade_tape"] = trade_tape
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
             # defaulted every price to 0.5.
@@ -521,6 +550,7 @@ async def get_state():
         "markets": state["markets"],
         "market_titles": state["market_titles"],
         "event_titles": state["event_titles"],
+        "trade_tape": state["trade_tape"],
         "latest_prices": state["latest_prices"],
         "signal_feed": state["signal_feed"],
         "decision_feed": state["decision_feed"],

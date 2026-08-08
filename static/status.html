@@ -647,6 +647,29 @@
           <code>renderMarketTradesHTML</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 22 · a trade tape scoped to what you're actually watching</div>
+        <h4>Whale Watch gets a real trade tape, deliberately not the whole exchange's</h4>
+        <p>Last drill-down-adjacent item in Phase 0.5's list: a full trade tape, distinct from the per-market
+          drill-down's own recent-trades list built two phases ago. <code>get_trades</code> with no ticker filter
+          returns trades across every market on Kalshi, not just the ones this app is watching - most of that
+          would be noise next to the whale-signal concept the tape ties into, so new <code>_fetch_trade_tape()</code>
+          instead fires one <code>get_trades(ticker=X, limit=5)</code> per watched market concurrently (the same
+          pattern <code>_fetch_markets</code> already uses for its own explicit-watchlist branch), merges, and
+          sorts newest-first. Simple shows only the top quartile by size in the current batch, in plain English;
+          Advanced shows the full tape with a minimum-size filter, matched directly against how Polywhaler and
+          WhaleScanr actually let their own users filter a tape (researched earlier this phase, not invented fresh
+          here). New panel in the Whale Watch tab with its own Simple/Advanced toggle. One small real gap caught by
+          testing through an actual browser session instead of just reading the code back: the filter's
+          <code>&lt;input&gt;</code> had no <code>id</code>, so nothing could ever target it programmatically -
+          harmless for a person clicking it directly, but a real oversight; fixed and reverified. Verified live
+          with synthetic trades: Simple correctly surfaced only the two larger of four trades in plain English;
+          Advanced showed all four, and setting the size filter correctly narrowed it back down to just those two.</p>
+        <div class="files"><code>main.py</code> (<code>_fetch_trade_tape</code>, <code>/api/state</code>
+          <code>trade_tape</code>) · <code>static/index.html</code> (<code>renderTradeTape</code>,
+          <code>tradeRowHTML</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -691,7 +714,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades endpoints, event/outcome grouping + context</td><td class="loc">683</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades endpoints, watchlist-scoped trade tape, event/outcome grouping + context</td><td class="loc">713</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades</td><td class="loc">108</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
@@ -708,10 +731,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, potential-payout + cost-put-in math, event/outcome grouping + context (category/matchup/position meaning)</td><td class="loc">1799</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event/outcome grouping + context (category/matchup/position meaning)</td><td class="loc">1860</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~900</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~920</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

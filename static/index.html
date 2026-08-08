@@ -547,6 +547,9 @@
     </div>
     <p id="whale-track-note" style="font-size:12px; color:var(--muted); margin:-10px 0 24px;"></p>
 
+    <div class="panel-title">Trade Tape <span id="trade-tape-toggle"></span></div>
+    <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
+
     <div class="panel-title">Whale Watch — market view + how whales are betting</div>
     <div id="whale-cards" class="cards-grid"><div class="empty">Loading markets…</div></div>
   </div>
@@ -922,6 +925,63 @@ function renderFunnel(stats) {
     <span>→ <b>${stats.trades_placed}</b> trades placed</span>
     <span>→ <b>${stats.skipped}</b> skipped (below confidence threshold, cooldown, or halted)</span>
   `;
+}
+
+// Full-exchange trade tape, scoped to the current watchlist (see
+// _fetch_trade_tape in main.py) - distinct from the per-market drill-down's
+// own recent-trades list. Ties into this app's whale concept: a big trade
+// on the tape and a whale print are close to the same idea.
+let lastTradeTape = [];
+let tradeTapeMinSize = 0;
+
+function tradeRowHTML(t, plainEnglish) {
+  const label = marketLabel(t.ticker);
+  const side = t.taker_side === 'no' ? 'no' : 'yes';
+  const priceDollars = side === 'no' ? t.no_price_dollars : t.yes_price_dollars;
+  const price = priceDollars != null ? (parseFloat(priceDollars) * 100).toFixed(0) + '¢' : '—';
+  const count = t.count_fp != null ? Math.round(parseFloat(t.count_fp)).toLocaleString() : '—';
+  const when = t.created_time ? new Date(t.created_time).toLocaleTimeString() : '';
+  const name = plainEnglish
+    ? `Someone bought <b>${count}</b> <span class="side-tag ${side}">${side}</span> on ${esc(label.short)}`
+    : `${esc(label.short)} <span class="side-tag ${side}">${side}</span>`;
+  return `<div class="trade-row" title="${esc(label.full)}">
+    <div class="name">${name}</div>
+    <div class="nums"><span>${count} ct @ ${price}</span><span style="color: var(--muted)">${esc(when)}</span></div>
+  </div>`;
+}
+
+function renderTradeTape(trades) {
+  lastTradeTape = trades || [];
+  $('trade-tape-toggle').innerHTML = advToggleHTML('trade-tape');
+  const el = $('trade-tape');
+  if (!lastTradeTape.length) {
+    el.innerHTML = '<div class="empty">No recent trades on watched markets.</div>';
+    return;
+  }
+
+  if (!isAdvanced('trade-tape')) {
+    // Simple: only the notably large prints (top quartile by size in this
+    // batch), described in plain English rather than a raw table.
+    const sizes = lastTradeTape.map(t => parseFloat(t.count_fp) || 0).sort((a, b) => b - a);
+    const cutoff = sizes[Math.floor(sizes.length * 0.25)] || 0;
+    const big = cutoff > 0 ? lastTradeTape.filter(t => (parseFloat(t.count_fp) || 0) >= cutoff) : lastTradeTape;
+    el.innerHTML = big.slice(0, 8).map(t => tradeRowHTML(t, true)).join('');
+    return;
+  }
+
+  // Advanced: the full tape, filterable by minimum size - matches how
+  // dedicated whale-tracker products (Polywhaler, WhaleScanr) let you filter
+  // their tape, researched directly rather than invented (see ROADMAP.md).
+  const filterHtml = `<div style="margin-bottom:10px;">
+    <label style="font-size:11px; color:var(--muted);">Min size (contracts):
+      <input type="number" id="trade-tape-min-size" min="0" step="1" value="${tradeTapeMinSize}" style="width:80px; margin-left:6px; background:var(--panel); border:1px solid var(--panel-border); color:var(--text); padding:4px 6px; border-radius:4px; font-family:var(--mono);"
+        onchange="tradeTapeMinSize = parseFloat(this.value) || 0; renderTradeTape(lastTradeTape);">
+    </label>
+  </div>`;
+  const filtered = lastTradeTape.filter(t => (parseFloat(t.count_fp) || 0) >= tradeTapeMinSize);
+  el.innerHTML = filterHtml + (filtered.length
+    ? filtered.map(t => tradeRowHTML(t, false)).join('')
+    : '<div class="empty">No trades at or above this size.</div>');
 }
 
 // Real, persisted history (services/signal_log.py) — not derived from the
@@ -1699,6 +1759,7 @@ async function refresh() {
       renderMarketCards('markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
     } else if (active === 'whale') {
       renderWhaleTrackRecord(state.whale_track_record, state.whale_source);
+      renderTradeTape(state.trade_tape);
       renderMarketCards('whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || [], state.series_track_record || {});
     }
 

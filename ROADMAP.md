@@ -291,16 +291,28 @@ a Simple/Advanced pair using the toggle above:
       shows the last 15 trades (taker side, contracts, price, time), no
       Simple/Advanced split — a short recent-trades list doesn't have a
       meaningfully denser "Advanced" form the way the book/chart do.
-- [ ] Full-exchange trade tape — distinct from the per-market drill-down
-      above, this is a Terminal/Whale-Watch-level feed across every market
-      being watched, not one market at a time. Same underlying `get_trades`
-      SDK method, called without a ticker filter. Simple: the last handful
-      of notably large trades, described in plain English ("someone bought
-      500 YES at 62¢"). Advanced: the full continuous tape, filterable by
-      size/market, Kalshi Pro-style. Ties into this app's own whale concept
-      either way: a "big trade" on the tape and a "whale print" signal are
-      close to the same idea — filtering the tape for size could become
-      another whale-detection input, not just a display feature.
+- [x] Full-exchange trade tape — distinct from the per-market drill-down
+      above, a Whale Watch-level feed across every market being watched,
+      not one at a time. Scoped to the current watchlist rather than the
+      literal whole exchange: `get_trades` with no ticker filter returns
+      trades across every Kalshi market, most of which aren't on anyone's
+      watchlist here and would just be noise next to the whale-signal
+      concept this ties into — new `_fetch_trade_tape()` instead fires one
+      `get_trades(ticker=X, limit=5)` per watched market concurrently
+      (same pattern `_fetch_markets` already uses for its explicit-
+      watchlist branch), merges, sorts newest-first, caps at 30. Simple:
+      the top quartile by size in the current batch, plain English
+      ("Someone bought 500 YES on..."). Advanced: the full tape with a
+      minimum-size filter — matched against how Polywhaler/WhaleScanr
+      actually let you filter their tape (researched directly, not
+      invented) rather than designing one from scratch. New panel in the
+      Whale Watch tab, its own Simple/Advanced toggle. One real gap caught
+      by testing through an actual browser rather than just reading the
+      code: the filter `<input>` had no `id`, so nothing (a test, or any
+      future script) could target it — added. Verified live: Simple
+      correctly showed only the larger of four synthetic trades in plain
+      English; Advanced showed all four with working size filtering down
+      to just the ones at or above the threshold.
 - [ ] Trade log / decision feed. The Simple side of this already exists —
       the Portfolio "Betting vs. Likelihood vs. Risk vs. Whales" plain-
       English pattern, and P1's item to extend it to Strategy Decisions'
