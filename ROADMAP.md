@@ -795,6 +795,52 @@ band instead.
       13 new tests (`tests/test_whalewatchers_kalshi_trade_tape.py`) plus 2
       locking in the `composite_confidence()` extraction. Full suite: 275
       passing (was 262).
+- [x] Widened market coverage and made "live markets only" filterable at
+      discovery/search time, not just at the strategy/simulator level.
+      Direct report: "you're not looking at trades from nearly enough
+      markets even with the round robin... you should be monitoring closer
+      to 50." `kalshi.watchlist_size` 20 → 50, with the dependent caps that
+      scale with it bumped in tandem (same pattern as the earlier 8 → 20
+      change): `_get_top_series`'s candidate-series pool 30 → 40, and
+      `_fetch_trade_tape`'s total cap 50 → 100 (promoted to a named
+      `_TRADE_TAPE_TOTAL_CAP`) — this cap is now the entire input to the
+      real whale provider above, not just cosmetic for the UI panel, so
+      widening the watchlist without widening this too would have quietly
+      capped whale-detection coverage right back down.
+      Direct follow-up: "for market discovery and watchlist i want to have
+      the option to only include LIVE markets" — a third, distinct gate
+      from the two that already existed (`strategy.live_markets_only` gates
+      whether the strategy *acts* on a signal; `whale_signal.live_markets_only`
+      is simulator-only); this one filters which markets get selected into
+      the watchlist/candidate pool in the first place. Two real design
+      forks resolved directly before building, not assumed: fallback
+      behavior when too few markets are live (chosen: shrink the watchlist,
+      even to zero, never backfill with non-live markets to hit
+      `watchlist_size`) and the cost/latency tradeoff of checking live
+      status across the *wider candidate pool* before round-robin selection
+      rather than just the final watchlist after the fact (accepted —
+      checking only the already-narrowed watchlist would have meant "only
+      live" really meant "only live among whichever markets already won on
+      volume," which could easily be zero of them). `services/kalshi_client.py`'s
+      `get_top_volume_markets()` split into two composable, independently
+      testable pieces: `get_candidate_markets()` (fetch/filter/sort, no
+      cutoff) and a new static `round_robin_select()` (the existing
+      selection logic, now a pure function of its input, callable on a
+      pre-filtered subset) — `get_top_volume_markets()` itself becomes both
+      composed together, fully behavior-preserving. New
+      `kalshi.live_markets_only` config (default `false`); when on,
+      `main.py`'s `_fetch_markets()` fetches the full candidate pool, checks
+      live status across all of it, filters to live-only, then round-robins
+      the final watchlist from that subset. Extended to
+      `GET /api/markets/search` too, direct request ("same for market
+      search") — a new `live_only` query param, same candidate-then-filter-
+      then-select approach, reused in both search UIs (the Markets tab
+      browse panel and the Config tab's watchlist-management search).
+      Verified live across several ticks: watchlist correctly shrank to 6,
+      then 12 markets with the flag on (100% actually live each time, per
+      `state.live_status`), back to 50 with it off; search's `live_only=true`
+      returned 12 real, currently-live results. 6 new tests
+      (`tests/test_kalshi_client.py`). Full suite: 281 passing (was 275).
 - [x] Improve series/category grouping — "better Kalshi series metadata"
       turned out to already exist and just be unused, confirmed by
       actually querying `get_series_list()` directly rather than assuming

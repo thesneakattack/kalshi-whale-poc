@@ -844,6 +844,7 @@
       <div style="flex:2;"><label>Search (title or ticker)</label><input id="markets-tab-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
       <div style="flex:1;"><label>Category</label><input id="markets-tab-search-category" type="text" placeholder="Sports"></div>
       <div><label><input type="checkbox" id="markets-tab-search-dormant"> Include dormant</label></div>
+      <div><label><input type="checkbox" id="markets-tab-search-live-only"> LIVE only</label></div>
       <button id="markets-tab-search-btn" style="height:34px;">Search</button>
     </div>
     <div id="markets-tab-search-results"></div>
@@ -1173,6 +1174,12 @@
         </p>
         <div class="field"><label>Minimum 24h volume (contracts) to be considered active</label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
         <div class="field"><label>Default category filter for search below (comma-separated, blank = all)</label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-discovery-live-only"> Only include markets currently flagged LIVE</label></div>
+        <p style="font-size:12px; color:var(--muted); margin:8px 0 0;">
+          Checks live status across the full candidate pool before picking the watchlist, not just after -
+          costs more per tick (more markets checked), and the watchlist can end up smaller than the size
+          above (down to zero) rather than getting padded with non-live markets to hit that number.
+        </p>
       </div>
     </details>
 
@@ -1191,6 +1198,7 @@
           <div style="flex:2;"><label>Search (title or ticker)</label><input id="market-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
           <div style="flex:1;"><label>Category</label><input id="market-search-category" type="text" placeholder="Sports"></div>
           <div><label><input type="checkbox" id="market-search-dormant"> Include dormant</label></div>
+          <div><label><input type="checkbox" id="market-search-live-only"> LIVE only</label></div>
           <button id="market-search-btn" style="height:34px;">Search</button>
         </div>
         <div id="market-search-results" style="margin-top:12px;"></div>
@@ -3737,6 +3745,7 @@ async function loadConfig() {
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
+  $('cfg-discovery-live-only').checked = !!cfg.kalshi.live_markets_only;
   if (!$('market-search-category').value) $('market-search-category').value = (cfg.kalshi.categories || [])[0] || '';
   renderPinnedWatchlist(cfg.kalshi.markets_watchlist || []);
 }
@@ -3824,6 +3833,7 @@ $('save-config-btn').addEventListener('click', async () => {
     kalshi: {
       min_volume_24h: parseFloat($('cfg-min-volume').value) || 0,
       categories: $('cfg-categories').value.split(',').map(s => s.trim()).filter(Boolean),
+      live_markets_only: $('cfg-discovery-live-only').checked,
     },
   };
   await fetchJSON('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({patch})});
@@ -3848,6 +3858,7 @@ async function searchMarketsTab() {
   const q = $('markets-tab-search-q').value.trim();
   const category = $('markets-tab-search-category').value.trim();
   const includeDormant = $('markets-tab-search-dormant').checked;
+  const liveOnly = $('markets-tab-search-live-only').checked;
   const btn = $('markets-tab-search-btn');
   btn.disabled = true;
   btn.textContent = 'Searching…';
@@ -3857,6 +3868,7 @@ async function searchMarketsTab() {
     if (q) params.set('q', q);
     if (category) params.set('category', category);
     if (!includeDormant) params.set('min_volume', '1');
+    if (liveOnly) params.set('live_only', 'true');
     const resp = await fetchJSON('/api/markets/search?' + params.toString());
     marketsTabSearchResults = resp.markets || [];
     Object.assign(marketTitles, resp.market_titles || {});
@@ -3872,7 +3884,7 @@ async function searchMarketsTab() {
 function renderMarketsTabSearchResults() {
   const el = $('markets-tab-search-results');
   if (!marketsTabSearchResults.length) {
-    el.innerHTML = '<div class="empty">No results. Try a broader query or check "Include dormant."</div>';
+    el.innerHTML = '<div class="empty">No results. Try a broader query, check "Include dormant," or uncheck "LIVE only."</div>';
     return;
   }
   el.innerHTML = `<div class="scroll-panel" style="max-height:320px; margin-bottom:16px;">` + marketsTabSearchResults.map(m => {
@@ -3913,6 +3925,7 @@ async function searchMarkets() {
   const q = $('market-search-q').value.trim();
   const category = $('market-search-category').value.trim();
   const includeDormant = $('market-search-dormant').checked;
+  const liveOnly = $('market-search-live-only').checked;
   const btn = $('market-search-btn');
   btn.disabled = true;
   btn.textContent = 'Searching…';
@@ -3922,6 +3935,7 @@ async function searchMarkets() {
     if (q) params.set('q', q);
     if (category) params.set('category', category);
     if (!includeDormant) params.set('min_volume', '1');
+    if (liveOnly) params.set('live_only', 'true');
     const resp = await fetchJSON('/api/markets/search?' + params.toString());
     lastSearchResults = resp.markets || [];
     Object.assign(marketTitles, resp.market_titles || {});
@@ -3937,7 +3951,7 @@ async function searchMarkets() {
 function renderSearchResults() {
   const el = $('market-search-results');
   if (!lastSearchResults.length) {
-    el.innerHTML = '<div class="empty">No results. Try a broader query or check "Include dormant."</div>';
+    el.innerHTML = '<div class="empty">No results. Try a broader query, check "Include dormant," or uncheck "LIVE only."</div>';
     updateWatchlistAddButton();
     return;
   }

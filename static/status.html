@@ -1601,6 +1601,68 @@
           <code>tests/test_whale_simulator.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 45 · wider coverage, and LIVE-only filtering pushed upstream</div>
+        <h4>"You're not looking at trades from nearly enough markets even with the round robin... you should be
+          monitoring closer to 50."</h4>
+        <p>Direct report following straight from phase 44's real whale provider - more markets watched means more
+          real trade-tape coverage for it to actually classify. <code>kalshi.watchlist_size</code> 20 → 50, with the
+          dependent caps that scale with it bumped in tandem, same discipline as the earlier 8 → 20 change:
+          <code>_get_top_series</code>'s candidate-series pool 30 → 40 (series diversity feeding the round-robin, not
+          just more slots from the same handful), and <code>_fetch_trade_tape</code>'s total cap 50 → 100 (promoted to
+          a named <code>_TRADE_TAPE_TOTAL_CAP</code>) - this cap stopped being just cosmetic for the UI panel once
+          phase 44 shipped, since it's now the entire input to the real whale classifier too. Verified live across
+          several ticks: 50 distinct markets, 100-entry trade tape, no errors, no 429s.</p>
+        <p>Two direct corrections to phase 44's "gray out the inactive whale-signal section" work, caught by real
+          usage: "by gray out that section... I also mean disable it from any input/selection" (opacity alone still
+          left the simulator's fields editable while the real provider was running - new
+          <code>setSectionInputsDisabled()</code>, called from the same per-tick <code>updateWhaleProviderStatus()</code>,
+          actually disables them, leaving only the accordion's own expand/collapse clickable) and "update the badges
+          on the config page to reflect current status" (the Strategy section's seven "sim data" badges were
+          hardcoded regardless of which whale-signal source was actually active, stale ever since a real provider
+          became the default - now a shared <code>whale-dependent-badge</code> class hidden live whenever a real
+          provider is confirmed active).</p>
+        <p>Then a real, separate gap surfaced by direct testing: "even if I set the whale threshold low to say, 100,
+          I'm not seeing any signals show up." Investigated live rather than assumed - signals were actually flowing
+          fine (196 seen); the real blockers were two independent downstream gates doing exactly what they were
+          built to do (<code>strategy.live_markets_only</code> skipping non-live markets, <code>strategy.entry_threshold</code>
+          sitting well above what real trade-derived confidence scores were producing) plus <code>whale_watcher_kalshi.min_notional_usd</code>
+          having drifted to 0 during testing, admitting literally every real trade as a "whale." Cleared via
+          <code>POST /api/reset</code>'s <code>signal_log</code> domain once confirmed directly, paper/shadow
+          untouched.</p>
+        <p>Which led to the actual new feature: "for market discovery and watchlist I want to have the option to
+          only include LIVE markets" - a third, genuinely different gate from the two that already existed
+          (<code>strategy.live_markets_only</code> only gates whether the strategy acts on a signal;
+          <code>whale_signal.live_markets_only</code> is simulator-only); this one filters which markets get
+          selected into the watchlist/candidate pool in the first place. Two real design forks resolved directly
+          before writing any code: fallback behavior when too few markets are live (shrink the watchlist, even to
+          zero, never backfill with non-live markets to hit <code>watchlist_size</code>) and the cost/latency
+          tradeoff of checking live status across the *wider candidate pool* before round-robin selection rather
+          than only the final watchlist afterward (accepted - checking just the already-narrowed watchlist would
+          have meant "only live" really meant "only live among whichever markets already won on volume," which
+          could easily be zero of them). <code>services/kalshi_client.py</code>'s <code>get_top_volume_markets()</code>
+          split into two composable, independently-testable pieces - <code>get_candidate_markets()</code> (fetch,
+          filter, sort, no cutoff) and a new static <code>round_robin_select()</code> (the existing selection logic,
+          now a pure function of its input) - with <code>get_top_volume_markets()</code> itself becoming both
+          composed together, fully behavior-preserving. New <code>kalshi.live_markets_only</code> config (default
+          <code>false</code>); when on, <code>main.py</code>'s <code>_fetch_markets()</code> fetches the full
+          candidate pool, checks live status across all of it, filters to live-only, then round-robins the final
+          watchlist from that subset. Extended to <code>GET /api/markets/search</code> too, direct request ("same
+          for market search") - a new <code>live_only</code> query param, reused by both search UIs (the Markets
+          tab browse panel and the Config tab's watchlist-management search).</p>
+        <p>Verified live across several ticks: watchlist correctly shrank to 6, then 12 markets with the flag on
+          (100% actually live each time, per <code>state.live_status</code>), back to 50 with it off; search's
+          <code>live_only=true</code> returned 12 real, currently-live results; all three new checkboxes render
+          correctly via Selenium, zero console errors. 6 new tests (<code>tests/test_kalshi_client.py</code>). Full
+          suite: 281 passing (was 275).</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_candidate_markets</code>,
+          <code>round_robin_select</code>) · <code>main.py</code> (<code>_fetch_markets</code> live-only branch,
+          <code>/api/markets/search</code> <code>live_only</code> param, <code>_TRADE_TAPE_TOTAL_CAP</code>,
+          <code>_get_top_series</code> default) · <code>config/settings.yaml</code> (<code>kalshi.watchlist_size</code>,
+          <code>kalshi.live_markets_only</code>) · <code>static/index.html</code> (discovery checkbox, two search-UI
+          checkboxes, disabled-input + badge-visibility fixes) · <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -1647,9 +1709,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider</td><td class="loc">1479</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code></td><td class="loc">1523</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection</td><td class="loc">233</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps</td><td class="loc">253</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code> + paginated <code>recent()</code>/<code>total_count()</code> for the browsable history panel + public <code>series_of()</code> shared with the manual-exclusion filter + <code>find_clusters()</code> probable-same-actor accumulation detection, <code>data/signal_log.db</code></td><td class="loc">236</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -1672,7 +1734,7 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, Advisory Recommendations panel, paginated trade log with dollar cost/payout), <b>Config</b> — rebuilt as a collapsible accordion control panel with a 🧪/📉/🆕 data-quality badge legend (search/pin markets + settings, position-management/exit config, excluded-series denylist, Advisory Engine controls, Market-Native Strategy controls, selectable-domain Danger Zone reset, a real Kalshi Trade Tape whale-provider section alongside the simulator's, whichever one isn't actually running visually grayed out live via <code>updateWhaleProviderStatus()</code>), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions)</td><td class="loc">4038</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, Advisory Recommendations panel, paginated trade log with dollar cost/payout), <b>Config</b> — rebuilt as a collapsible accordion control panel with a 🧪/📉/🆕 data-quality badge legend (search/pin markets + settings, position-management/exit config, excluded-series denylist, Advisory Engine controls, Market-Native Strategy controls, selectable-domain Danger Zone reset, a real Kalshi Trade Tape whale-provider section alongside the simulator's, whichever one isn't actually running visually grayed out live via <code>updateWhaleProviderStatus()</code>), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions), LIVE-only checkboxes on watchlist discovery and both market-search panels</td><td class="loc">4079</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1800</td><td><span class="pill good">done</span></td></tr>
@@ -1735,6 +1797,7 @@
       <div class="cfg-cell"><span class="p">kalshi.poll_interval_sec</span><span class="v">15s</span></div>
       <div class="cfg-cell"><span class="p">kalshi.watchlist_size</span><span class="v">top 50 by volume (round-robin)</span></div>
       <div class="cfg-cell"><span class="p">kalshi.markets_watchlist</span><span class="v">[] (auto)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.live_markets_only</span><span class="v">false</span></div>
       <div class="cfg-cell"><span class="p">whale_signal.signal_frequency_sec</span><span class="v">~12s avg</span></div>
       <div class="cfg-cell"><span class="p">whale_signal.whale_size_range</span><span class="v">5,000–50,000</span></div>
       <div class="cfg-cell"><span class="p">whale_signal.bias</span><span class="v">random</span></div>

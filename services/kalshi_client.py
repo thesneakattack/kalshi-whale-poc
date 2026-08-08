@@ -100,14 +100,21 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_market_orderbook, ticker)
         return resp.model_dump(mode="json")
 
-    async def get_top_volume_markets(self, n: int, min_volume: float, series_tickers: list[str]) -> list[dict]:
+    async def get_candidate_markets(self, min_volume: float, series_tickers: list[str]) -> list[dict]:
         """Given a list of already-known-active series (see get_series_list
         and main.py's cached _get_top_series - deliberately not fetched in
         here, since the series list is ~12,500 entries and expensive enough
         (~1s) to need caching across poll ticks, which belongs in main.py's
         persistent state, not a client that's reconstructed fresh every
-        tick), fetch each series' open markets concurrently and return the
-        top n by 24h volume.
+        tick), fetch each series' open markets concurrently, volume-filter,
+        and sort by 24h volume descending - the full candidate pool, no
+        cutoff. Split out from what used to be get_top_volume_markets's own
+        first half specifically so a caller needing to filter the pool
+        further before final selection (main.py's live-markets-only
+        discovery needs live status checked across the whole candidate pool,
+        not just whatever round-robin would have already cut it down to -
+        see round_robin_select below) can do so on real candidates, not an
+        already-truncated top n.
 
         This replaced an earlier approach (browse individual markets
         directly, sorted/filtered after the fact) that turned out
@@ -119,25 +126,7 @@ class KalshiClient:
         problem entirely rather than trying to filter around it: real
         series (KXMLBGAME, KXBTCD, KXATPMATCH, ...) reliably return clean,
         real, well-titled markets when queried directly - verified, not
-        assumed.
-
-        Selection is round-robin across distinct events, not a flat top-n-
-        by-volume sort - confirmed live as a real gap, not hypothetical: a
-        single high-volume multi-outcome event (an 8-market golf tournament)
-        can have every one of its own sub-markets individually rank in the
-        global top N, silently monopolizing the entire watchlist and
-        crowding out every other series even when dozens of other markets
-        are trading, some of them actually live, right now. A flat per-event
-        cap (tried first, replaced here) fixes that but creates the mirror
-        problem - it can needlessly truncate a genuinely multi-outcome
-        event's sub-markets even when nothing else is competing for the
-        slots. Round-robin self-sizes instead: within each event, markets
-        are still taken highest-volume-first, but one from every event
-        before a second one from any - so the effective "per-event share"
-        naturally shrinks as more distinct events compete for the same n
-        slots, and naturally grows toward n when few or one event
-        dominates the real candidate pool, without a hardcoded number
-        tuned for one scenario at the expense of the other."""
+        assumed."""
         if not series_tickers:
             return []
         results = await asyncio.gather(
@@ -150,7 +139,31 @@ class KalshiClient:
                 markets.extend(r)
         markets = [m for m in markets if float(m.get("volume_24h_fp") or 0) >= min_volume]
         markets.sort(key=lambda m: float(m.get("volume_24h_fp") or 0), reverse=True)
+        return markets
 
+    @staticmethod
+    def round_robin_select(markets: list[dict], n: int) -> list[dict]:
+        """Round-robin across distinct events, not a flat top-n-by-volume
+        sort - confirmed live as a real gap, not hypothetical: a single
+        high-volume multi-outcome event (an 8-market golf tournament) can
+        have every one of its own sub-markets individually rank in the
+        global top N, silently monopolizing the entire watchlist and
+        crowding out every other series even when dozens of other markets
+        are trading, some of them actually live, right now. A flat per-event
+        cap (tried first, replaced here) fixes that but creates the mirror
+        problem - it can needlessly truncate a genuinely multi-outcome
+        event's sub-markets even when nothing else is competing for the
+        slots. Round-robin self-sizes instead: within each event, markets
+        are still taken highest-volume-first, but one from every event
+        before a second one from any - so the effective "per-event share"
+        naturally shrinks as more distinct events compete for the same n
+        slots, and naturally grows toward n when few or one event
+        dominates the real candidate pool, without a hardcoded number
+        tuned for one scenario at the expense of the other. Takes markets
+        already volume-sorted (see get_candidate_markets); returns fewer
+        than n, never padded, if the pool itself has fewer real candidates -
+        same "never fabricate to hit a number" idiom as everywhere else in
+        this app."""
         groups: dict[str, list[dict]] = {}
         event_order: list[str] = []
         for m in markets:
@@ -175,6 +188,13 @@ class KalshiClient:
                 break  # every event's markets exhausted before filling n
             round_idx += 1
         return selected
+
+    async def get_top_volume_markets(self, n: int, min_volume: float, series_tickers: list[str]) -> list[dict]:
+        """Fetch the full candidate pool then round-robin-select the top n -
+        see get_candidate_markets and round_robin_select for what each half
+        actually does and why each is its own piece now."""
+        candidates = await self.get_candidate_markets(min_volume, series_tickers)
+        return self.round_robin_select(candidates, n)
 
     async def get_event(self, event_ticker: str) -> dict:
         """The event's own title/subtitle/category — distinct from, and

@@ -246,9 +246,34 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         markets = [m for m in results if isinstance(m, dict)]
     else:
         top_series = await _get_top_series(client)
-        markets = await client.get_top_volume_markets(
-            cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series,
-        )
+        min_volume = cfg["kalshi"].get("min_volume_24h", 0)
+        if cfg["kalshi"].get("live_markets_only"):
+            # Direct request: discovery itself, not just whether an already-
+            # selected market's signal gets acted on, should be able to only
+            # ever pick currently-live markets. Round-robin's usual top-n cut
+            # happens *after* filtering here, not before - checking live
+            # status only on an already-narrowed watchlist would mean "only
+            # live" really meant "only live among whichever 50 happened to
+            # win on volume," which could easily be zero of them. Costs more
+            # per tick (live status checked across the wider candidate pool,
+            # not just the final watchlist) - accepted deliberately, opt-in
+            # only, see docs/kalshi-whale-provider-and-strategy-porting-plan.md's
+            # sibling doc for the same tradeoff discussion applied here.
+            candidates = await client.get_candidate_markets(min_volume=min_volume, series_tickers=top_series)
+            candidate_live_status = await _fetch_live_status(client, candidates)
+            live_candidates = [
+                m for m in candidates
+                if candidate_live_status.get(m.get("event_ticker")) == "live"
+            ]
+            # Never backfilled with non-live markets to hit watchlist_size -
+            # direct choice: the watchlist shrinks (down to zero, if nothing
+            # real is live right now) rather than quietly padding it with
+            # markets that don't meet the filter someone deliberately turned on.
+            markets = KalshiClient.round_robin_select(live_candidates, cfg["kalshi"]["watchlist_size"])
+        else:
+            markets = await client.get_top_volume_markets(
+                cfg["kalshi"]["watchlist_size"], min_volume=min_volume, series_tickers=top_series,
+            )
 
     # A currently-open paper position must keep getting a fresh price/title
     # every tick even if its market has rotated out of the top-volume
@@ -1164,7 +1189,7 @@ async def get_market_history_hypothetical_trades():
 
 
 @app.get("/api/markets/search")
-async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
+async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50, live_only: bool = False):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
     # the automatic watchlist selection (_fetch_markets), which stays
     # volume-filtered by config default (kalshi.min_volume_24h). Defaults to
@@ -1203,7 +1228,20 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         # Caps how many series to fan out to (a network request each), not
         # how many markets come back - candidates is already volume-sorted.
         candidate_tickers = [s["ticker"] for s in candidates[:30]]
-        markets = await client.get_top_volume_markets(limit, min_volume=min_volume, series_tickers=candidate_tickers)
+        if live_only:
+            # Same "filter the wider candidate pool before round-robin cuts
+            # it down" reasoning as _fetch_markets' discovery path above -
+            # see its comment for why checking live status after the fact
+            # isn't the same thing.
+            market_candidates = await client.get_candidate_markets(min_volume=min_volume, series_tickers=candidate_tickers)
+            live_status = await _fetch_live_status(client, market_candidates)
+            live_candidates = [
+                m for m in market_candidates
+                if live_status.get(m.get("event_ticker")) == "live"
+            ]
+            markets = KalshiClient.round_robin_select(live_candidates, limit)
+        else:
+            markets = await client.get_top_volume_markets(limit, min_volume=min_volume, series_tickers=candidate_tickers)
         results = markets
         # Opportunistically cache titles/events for whatever this search
         # touched, same shape _fetch_markets already populates - so a result
