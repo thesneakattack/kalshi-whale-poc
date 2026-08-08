@@ -34,6 +34,38 @@ def test_upsert_and_candidates_in_window(tmp_path, monkeypatch):
     assert result[0]["ticker"] == "TICK-A"
 
 
+def test_candidates_in_window_carries_real_display_titles(tmp_path, monkeypatch):
+    # Direct regression report: "the long string (KXLPLMATCH-...) is back
+    # again. i want readable titles remember." Catalog rows were missing
+    # title/yes_sub_title/no_sub_title entirely, so main.py's title-building
+    # (m.get("title") or m.get("yes_sub_title") or m["ticker"]) fell all the
+    # way through to the raw ticker for anything sourced via the catalog.
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _market("TICK-A", "EVT-A", occurrence_offset_sec=-300)
+    m["title"] = "Liverpool vs Chelsea"
+    m["yes_sub_title"] = "Liverpool wins"
+    m["no_sub_title"] = "Liverpool doesn't win"
+    cat.upsert_markets("SER-A", "Sports", [m], updated_at=now)
+    result = cat.candidates_in_window(now, lookahead_sec=3600, lookback_sec=21600)
+    assert result[0]["title"] == "Liverpool vs Chelsea"
+    assert result[0]["yes_sub_title"] == "Liverpool wins"
+    assert result[0]["no_sub_title"] == "Liverpool doesn't win"
+
+
+def test_upsert_overwrites_title_on_conflict(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m1 = _market("TICK-A", "EVT-A", occurrence_offset_sec=-300)
+    m1["title"] = "Old Title"
+    cat.upsert_markets("SER-A", "Sports", [m1], updated_at=now)
+    m2 = _market("TICK-A", "EVT-A", occurrence_offset_sec=-300)
+    m2["title"] = "New Title"
+    cat.upsert_markets("SER-A", "Sports", [m2], updated_at=now + 10)
+    result = cat.candidates_in_window(now + 10, lookahead_sec=3600, lookback_sec=21600)
+    assert result[0]["title"] == "New Title"
+
+
 def test_candidates_in_window_excludes_markets_outside_bounds(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     now = time.time()

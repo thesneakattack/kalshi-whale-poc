@@ -49,6 +49,17 @@ _MAX_PAST_HORIZON_SEC = 7 * 24 * 3600  # 1 week
 _MAX_FUTURE_HORIZON_SEC = 21 * 24 * 3600  # 3 weeks
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/market_catalog.db is a live file the running dev server reads/
+    # writes (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a
+    # column to an existing table with existing rows, so a new column needs
+    # an explicit, idempotent ALTER TABLE guarded by a check - same pattern
+    # services/paper_broker.py/signal_log.py already established.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -69,6 +80,15 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_occurrence ON markets (occurrence_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_series ON markets (series_ticker)")
+    # Real display text - direct report of a regression caught live: catalog-
+    # sourced markets were missing these entirely, so main.py's title-
+    # building (`m.get("title") or m.get("yes_sub_title") or m["ticker"]`)
+    # fell all the way through to the raw ticker for anything discovered via
+    # the catalog instead of a fresh per-tick fetch. Added after the table
+    # above already had live rows, hence the guarded ALTER TABLE.
+    _add_column_if_missing(conn, "markets", "title", "TEXT")
+    _add_column_if_missing(conn, "markets", "yes_sub_title", "TEXT")
+    _add_column_if_missing(conn, "markets", "no_sub_title", "TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS series_scan_state (
@@ -137,6 +157,7 @@ def upsert_markets(series_ticker: str, category: str | None, markets: list[dict]
             ticker, m.get("event_ticker"), series_ticker, category,
             float(m.get("volume_24h_fp") or 0), occurrence_ts,
             _parse_ts(m.get("close_time")), m.get("status"), updated_at,
+            m.get("title"), m.get("yes_sub_title"), m.get("no_sub_title"),
         ))
     if not rows:
         return
@@ -144,12 +165,14 @@ def upsert_markets(series_ticker: str, category: str | None, markets: list[dict]
         conn.executemany(
             """
             INSERT INTO markets
-                (ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status, updated_at,
+                 title, yes_sub_title, no_sub_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticker) DO UPDATE SET
                 event_ticker=excluded.event_ticker, category=excluded.category,
                 volume_24h_fp=excluded.volume_24h_fp, occurrence_ts=excluded.occurrence_ts,
-                close_ts=excluded.close_ts, status=excluded.status, updated_at=excluded.updated_at
+                close_ts=excluded.close_ts, status=excluded.status, updated_at=excluded.updated_at,
+                title=excluded.title, yes_sub_title=excluded.yes_sub_title, no_sub_title=excluded.no_sub_title
             """,
             rows,
         )
@@ -172,7 +195,8 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     with _connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status
+            SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
+                   title, yes_sub_title, no_sub_title
             FROM markets
             WHERE occurrence_ts IS NOT NULL AND occurrence_ts BETWEEN ? AND ?
               AND volume_24h_fp >= ?
@@ -181,7 +205,10 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
             """,
             (lo, hi, min_volume),
         ).fetchall()
-    cols = ("ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status")
+    cols = (
+        "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",
+        "title", "yes_sub_title", "no_sub_title",
+    )
     results = []
     for r in rows:
         d = dict(zip(cols, r))
