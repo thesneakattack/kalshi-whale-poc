@@ -23,6 +23,7 @@ import asyncio
 import kalshi_python_async as kpa
 
 from services.http_client import call_with_backoff
+from services.signal_log import series_of
 
 # self.timeout is intentionally unused below except where noted. The SDK's
 # read-endpoint methods (get_markets/get_market/get_market_orderbook/
@@ -142,59 +143,71 @@ class KalshiClient:
         return markets
 
     @staticmethod
-    def round_robin_select(markets: list[dict], n: int) -> list[dict]:
-        """Round-robin across distinct events, not a flat top-n-by-volume
-        sort - confirmed live as a real gap, not hypothetical: a single
-        high-volume multi-outcome event (an 8-market golf tournament) can
-        have every one of its own sub-markets individually rank in the
-        global top N, silently monopolizing the entire watchlist and
-        crowding out every other series even when dozens of other markets
-        are trading, some of them actually live, right now. A flat per-event
-        cap (tried first, replaced here) fixes that but creates the mirror
-        problem - it can needlessly truncate a genuinely multi-outcome
-        event's sub-markets even when nothing else is competing for the
-        slots. Round-robin self-sizes instead: within each event, markets
-        are still taken highest-volume-first, but one from every event
-        before a second one from any - so the effective "per-event share"
-        naturally shrinks as more distinct events compete for the same n
-        slots, and naturally grows toward n when few or one event
-        dominates the real candidate pool, without a hardcoded number
-        tuned for one scenario at the expense of the other. Takes markets
-        already volume-sorted (see get_candidate_markets); returns fewer
-        than n, never padded, if the pool itself has fewer real candidates -
-        same "never fabricate to hit a number" idiom as everywhere else in
-        this app."""
+    def round_robin_select(markets: list[dict], n: int, max_children_per_parent: int | None = None) -> list[dict]:
+        """Selects up to n *parent series* (e.g. "KXPGAH2H" - see
+        services/signal_log.series_of, the same ticker-prefix definition
+        used everywhere else in this app rather than a second one that
+        could drift), then includes every child market of each selected
+        series - every event/pairing under it, every ticker on each - highest-
+        volume first, capped at max_children_per_parent if set (None =
+        unlimited, direct choice: "i want the ability to cap but for now i
+        want every child").
+
+        Direct, explicit instruction settled this after two earlier
+        attempts: grouping at event_ticker crowded the whole watchlist with
+        one tournament's individual pairings (confirmed live: 42 of 47 real
+        slots were one PGA tournament's head-to-head matchups, each its own
+        event_ticker); grouping at event_ticker with series-level round-
+        robin fairness matched Kalshi's own documented hierarchy (Category >
+        Series > Event > Market, no tournament level - confirmed against
+        Kalshi's API docs) but still let two *different*, concurrently-live
+        matches sharing one series (two separate Dota2 games, both under
+        "KXDOTA2MAP") each count separately against the watchlist size -
+        confirmed live, and rejected: "i dont want those pairings to count
+        against the watchlist count, only the parent series." Series-level
+        grouping is what's shipped: a whole series, however many concurrent
+        events it happens to have live right now, costs exactly one slot -
+        the explicit, known tradeoff being that two unrelated same-series
+        matches are watched together as one "parent" rather than counted as
+        two, which is what the direct instruction above asked for.
+
+        n means distinct *series*, not individual markets - a single
+        selected series can contribute many more than 1 market to the
+        result if it has many events/children, which is the explicit point.
+        Series are ranked by their own best (highest-volume) child -
+        markets is already volume-sorted on input (see
+        get_candidate_markets), so a series's first child is its best one.
+        Never padded - fewer than n series (or fewer children than
+        max_children_per_parent) if the real candidate pool doesn't have
+        that many, same "never fabricate to hit a number" idiom as
+        everywhere else in this app."""
         groups: dict[str, list[dict]] = {}
-        event_order: list[str] = []
+        parent_order: list[str] = []
         for m in markets:
-            key = m.get("event_ticker") or m.get("ticker")
+            ticker = m.get("ticker") or ""
+            key = series_of(ticker) if ticker else (m.get("event_ticker") or ticker)
             if key not in groups:
                 groups[key] = []
-                event_order.append(key)
+                parent_order.append(key)
             groups[key].append(m)
 
-        selected = []
-        round_idx = 0
-        while len(selected) < n:
-            took_any = False
-            for key in event_order:
-                group = groups[key]
-                if round_idx < len(group):
-                    selected.append(group[round_idx])
-                    took_any = True
-                    if len(selected) >= n:
-                        break
-            if not took_any:
-                break  # every event's markets exhausted before filling n
-            round_idx += 1
+        selected: list[dict] = []
+        for key in parent_order[:n]:
+            children = groups[key]
+            if max_children_per_parent is not None:
+                children = children[:max_children_per_parent]
+            selected.extend(children)
         return selected
 
-    async def get_top_volume_markets(self, n: int, min_volume: float, series_tickers: list[str]) -> list[dict]:
-        """Fetch the full candidate pool then round-robin-select the top n -
-        see get_candidate_markets and round_robin_select for what each half
-        actually does and why each is its own piece now."""
+    async def get_top_volume_markets(
+        self, n: int, min_volume: float, series_tickers: list[str], max_children_per_parent: int | None = None,
+    ) -> list[dict]:
+        """Fetch the full candidate pool then round-robin-select up to n
+        parent markets (see round_robin_select for what "parent" means and
+        why) - see get_candidate_markets and round_robin_select for what
+        each half actually does and why each is its own piece now."""
         candidates = await self.get_candidate_markets(min_volume, series_tickers)
-        return self.round_robin_select(candidates, n)
+        return self.round_robin_select(candidates, n, max_children_per_parent)
 
     async def get_event(self, event_ticker: str) -> dict:
         """The event's own title/subtitle/category — distinct from, and

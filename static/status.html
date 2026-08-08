@@ -1798,6 +1798,56 @@
           <code>tests/test_market_catalog.py</code> (new), <code>tests/test_trading_gate.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 48 · what "parent market" actually means, and a detour through Kalshi's own docs to find out</div>
+        <h4>"I don't mean each individual position as a 'market' - I mean the overall parent market - ex: Wyndham
+          Championship... only parent markets should count against the watchlist."</h4>
+        <p>Confirmed live before building anything: 42 of 47 real watchlist slots (89%) were individual
+          <code>KXPGAH2H</code> golf head-to-head pairings. <code>round_robin_select()</code> grouped candidates by
+          <code>event_ticker</code>, and each pairing has its own distinct <code>event_ticker</code> - round-robin's
+          "one per group before a second from any" fairness never noticed all 23 pairings were one tournament.</p>
+        <p>Two designs were tried and rejected before this shipped, each for a real reason. First, grouping by
+          ticker prefix (series) directly - fixed the golf case cleanly, but live-verifying it (rather than
+          trusting the synthetic tests, which happened not to catch this) surfaced a real regression: two
+          genuinely different, concurrently-live matches sharing one series - two separate Dota2 games, both under
+          <code>KXDOTA2MAP</code> - got merged into one inflated fake "parent." Rather than guess at a third
+          heuristic, went to Kalshi's own API documentation directly, per direct instruction ("please review the
+          kalshi API documentation thoroughly and revisit"). Confirmed Kalshi's real hierarchy is only Category →
+          Series → Event → Market - no tournament/competition/bracket level exists - and that Event is explicitly
+          documented as "the basic unit that members should interact with." Checked whether <code>get_event()</code>'s
+          <code>product_metadata.competition</code> field could substitute for a real "tournament" field - it's
+          tournament-specific for golf ("Wyndham Championship") but sport-generic for esports ("Dota 2", identical
+          for both unrelated matches, confirmed live) - not usable as a universal grouping key. Second design,
+          shaped by that research: kept <i>event</i> as the selection unit (matching Kalshi's documented model
+          exactly) but round-robinned across <i>series</i> to decide which events filled the watchlist - correct
+          by the book, and it did stop golf from crowding everyone else out, but it still let those two different
+          Dota2 matches each cost their own separate watchlist slot. Direct override once that tradeoff was named
+          out loud: "i dont want those pairings to count against the watchlist count, only the parent series."</p>
+        <p>Shipped design: <code>series</code> (<code>services/signal_log.series_of</code>'s ticker-prefix
+          definition, already used everywhere else in this app) is the parent/watchlist unit - the top-most level
+          of Kalshi's own hierarchy that still represents one cohesive market, one below the broader Category
+          grouping that spans unrelated market types entirely. Once a series is selected, every event and market
+          under it - an entire tournament's worth of pairings - is included for free and doesn't count separately
+          against <code>kalshi.watchlist_size</code>, highest-volume child first (direct request: "I want the
+          ability to cap but for now i want every child, and i want these children markets prioritized by
+          volume"), optionally capped by new <code>kalshi.max_children_per_parent</code> (default <code>null</code>
+          = unlimited). The known, explicitly-accepted tradeoff: two unrelated matches sharing one series are
+          watched together under that series's single slot rather than counted as two - a deliberate choice this
+          time, not an oversight. Threaded through both <code>_fetch_markets</code> branches and both
+          <code>GET /api/markets/search</code> branches; new Config tab field ("Max markets watched per parent
+          series").</p>
+        <p>Verified live: <code>KXPGAH2H</code>'s 23 real pairings no longer individually dominate the watchlist -
+          the whole tournament now costs one slot, and real series diversity holds alongside it. 13 tests in
+          <code>tests/test_kalshi_client.py</code>, including a direct regression mirroring the real Wyndham
+          scenario and one confirming same-series concurrent matches are watched together by design. Full suite:
+          326 passing.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>round_robin_select</code>,
+          <code>get_top_volume_markets</code>) · <code>main.py</code> (<code>_fetch_markets</code>,
+          <code>search_markets</code>) · <code>config/settings.yaml</code>
+          (<code>kalshi.max_children_per_parent</code>) · <code>static/index.html</code> (Config tab field) ·
+          <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -1844,9 +1894,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code>, schedule-aware light polling for live-market status (<code>live_status_cache</code>, milestone-gated schedule fallback), per-tick incremental market-catalog scan batch, <code>/api/market-catalog/status</code></td><td class="loc">1738</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code>, schedule-aware light polling for live-market status (<code>live_status_cache</code>, milestone-gated schedule fallback), per-tick incremental market-catalog scan batch, <code>/api/market-catalog/status</code></td><td class="loc">1747</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps</td><td class="loc">253</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps. <code>round_robin_select()</code> groups by <i>series</i> (the parent/watchlist unit — Kalshi's Series → Event → Market hierarchy, one level below the broader Category grouping), so a whole tournament's worth of events/markets costs exactly one watchlist slot, every child included by default, optionally capped via <code>max_children_per_parent</code></td><td class="loc">266</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code> + paginated <code>recent()</code>/<code>total_count()</code> for the browsable history panel + public <code>series_of()</code> shared with the manual-exclusion filter + <code>find_clusters()</code> probable-same-actor accumulation detection + nullable <code>factors_json</code> column (idempotent migration) + <code>recent_sides_for_ticker()</code>/<code>resolved_signals_with_factors()</code> for confidence calibration, <code>data/signal_log.db</code></td><td class="loc">305</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -1932,7 +1982,8 @@
     <div class="cfg-grid">
       <div class="cfg-cell"><span class="p">mode</span><span class="v">paper</span></div>
       <div class="cfg-cell"><span class="p">kalshi.poll_interval_sec</span><span class="v">15s</span></div>
-      <div class="cfg-cell"><span class="p">kalshi.watchlist_size</span><span class="v">top 50 by volume (round-robin)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.watchlist_size</span><span class="v">50 parent series (round-robin)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.max_children_per_parent</span><span class="v">null (unlimited)</span></div>
       <div class="cfg-cell"><span class="p">kalshi.markets_watchlist</span><span class="v">[] (auto)</span></div>
       <div class="cfg-cell"><span class="p">kalshi.live_markets_only</span><span class="v">false</span></div>
       <div class="cfg-cell"><span class="p">whale_signal.signal_frequency_sec</span><span class="v">~12s avg</span></div>

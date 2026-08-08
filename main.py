@@ -322,11 +322,15 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
             # direct choice: the watchlist shrinks (down to zero, if nothing
             # real is live right now) rather than quietly padding it with
             # markets that don't meet the filter someone deliberately turned on.
-            markets = KalshiClient.round_robin_select(live_candidates, cfg["kalshi"]["watchlist_size"])
+            markets = KalshiClient.round_robin_select(
+                live_candidates, cfg["kalshi"]["watchlist_size"],
+                max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
+            )
         else:
             top_series = await _get_top_series(client)
             markets = await client.get_top_volume_markets(
                 cfg["kalshi"]["watchlist_size"], min_volume=min_volume, series_tickers=top_series,
+                max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
             )
 
     # A currently-open paper position must keep getting a fresh price/title
@@ -1454,9 +1458,14 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
                 m for m in market_candidates
                 if live_status.get(m.get("event_ticker")) == "live"
             ]
-            markets = KalshiClient.round_robin_select(live_candidates, limit)
+            markets = KalshiClient.round_robin_select(
+                live_candidates, limit, max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
+            )
         else:
-            markets = await client.get_top_volume_markets(limit, min_volume=min_volume, series_tickers=candidate_tickers)
+            markets = await client.get_top_volume_markets(
+                limit, min_volume=min_volume, series_tickers=candidate_tickers,
+                max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
+            )
         results = markets
         # Opportunistically cache titles/events for whatever this search
         # touched, same shape _fetch_markets already populates - so a result

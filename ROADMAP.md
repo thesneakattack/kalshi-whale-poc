@@ -1250,6 +1250,50 @@ band instead.
       endpoint checks against the real running app confirmed
       `market_history` was already logging real snapshots within seconds
       of the reload.
+- [x] Fixed the watchlist's parent/child grouping, direct report
+      (2026-08-08): "when you have markets in the watchlist, i dont mean
+      each individual position as a 'market' - i mean the overall parent
+      market - ex: Wyndham Championship... only parent markets should count
+      against the watchlist." Confirmed live before touching anything: 42
+      of 47 real watchlist slots (89%) were individual `KXPGAH2H` golf
+      head-to-head pairings, because `round_robin_select()` grouped
+      candidates by `event_ticker`, and each pairing has its own distinct
+      `event_ticker` — round-robin's "one per group before a second from
+      any" fairness therefore never noticed they were all one tournament.
+      Two earlier designs were tried and rejected before this shipped, each
+      for a real, confirmed reason: grouping by `event_ticker` with
+      series-level round-robin fairness matched Kalshi's own documented
+      hierarchy exactly (`docs.kalshi.com/getting_started/terms`, checked
+      directly per instruction to "review the kalshi API documentation
+      thoroughly" — Category → Series → Event → Market, no tournament
+      level, Event documented as "the basic unit that members should
+      interact with") but still counted two *different*, concurrently-live
+      matches sharing one series (two separate Dota2 games, both under
+      `KXDOTA2MAP`) as two separate watchlist slots — rejected by direct
+      instruction: "i dont want those pairings to count against the
+      watchlist count, only the parent series." Shipped design: `series`
+      (`services/signal_log.series_of`'s ticker-prefix definition, already
+      used everywhere else in this app) is the parent/watchlist unit —
+      "series" here means the top-most level of Kalshi's own hierarchy that
+      still represents one cohesive market, one below the broader Category
+      grouping that spans unrelated market types entirely. Once a series is
+      selected, every event and market under it — an entire tournament's
+      worth of pairings — is included for free and doesn't count separately
+      against `watchlist_size`, highest-volume child first (direct request:
+      "I want the ability to cap but for now i want every child. and i want
+      these children markets prioritized by volume"), optionally capped by
+      new `kalshi.max_children_per_parent` (default `null` = unlimited).
+      Known, explicitly-accepted tradeoff: two unrelated matches sharing one
+      series are watched together under that series's single slot rather
+      than counted as two — a deliberate choice, not an oversight. Threaded
+      through both `main.py::_fetch_markets` branches and both
+      `GET /api/markets/search` branches; new Config tab field ("Max markets
+      watched per parent series"). 13 tests in `tests/test_kalshi_client.py`,
+      including a direct regression mirroring the real Wyndham scenario (a
+      23-pairing tournament costs exactly one slot) and one confirming
+      same-series concurrent matches are watched together by design.
+      Verified live: `KXPGAH2H`'s pairings no longer individually dominate
+      the watchlist, real series diversity holds. Full suite: 326 passing.
 
 ## P3 — Reliability & engineering hygiene
 

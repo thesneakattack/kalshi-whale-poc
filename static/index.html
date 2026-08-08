@@ -1203,6 +1203,15 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
           costs more per tick (more markets checked), and the watchlist can end up smaller than the size
           above (down to zero) rather than getting padded with non-live markets to hit that number.
         </p>
+        <div class="field"><label>Max markets watched per parent series (blank = every market)</label><input id="cfg-max-children-per-parent" type="number" step="1" min="1" placeholder="unlimited"></div>
+        <p style="font-size:12px; color:var(--muted); margin:8px 0 0;">
+          The watchlist size above now counts distinct <i>parent series</i> (the top-most level of Kalshi's own
+          Series → Event → Market hierarchy that still represents one market — e.g. "PGA Head-to-Head Matchups",
+          which covers a whole tournament like Wyndham Championship), not individual markets — once a series is
+          selected, every event and market under it is watched by default, highest-volume first. A tournament
+          with 20+ live pairings costs exactly one watchlist slot. Set a cap here if one very active series is
+          crowding out watchlist variety you'd rather keep.
+        </p>
       </div>
     </details>
 
@@ -3769,6 +3778,7 @@ async function loadConfig() {
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
   $('cfg-discovery-live-only').checked = !!cfg.kalshi.live_markets_only;
+  $('cfg-max-children-per-parent').value = cfg.kalshi.max_children_per_parent ?? '';
   if (!$('market-search-category').value) $('market-search-category').value = (cfg.kalshi.categories || [])[0] || '';
   renderPinnedWatchlist(cfg.kalshi.markets_watchlist || []);
 }
@@ -3857,6 +3867,7 @@ $('save-config-btn').addEventListener('click', async () => {
       min_volume_24h: parseFloat($('cfg-min-volume').value) || 0,
       categories: $('cfg-categories').value.split(',').map(s => s.trim()).filter(Boolean),
       live_markets_only: $('cfg-discovery-live-only').checked,
+      max_children_per_parent: $('cfg-max-children-per-parent').value === '' ? null : parseInt($('cfg-max-children-per-parent').value),
     },
   };
   await fetchJSON('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({patch})});
