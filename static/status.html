@@ -1848,6 +1848,47 @@
           <code>tests/test_kalshi_client.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 49 · the dashboard catches up to what "parent" now means</div>
+        <h4>"The UI presentation needs to be updated to reflect these groupings across all the tabs and sections
+          as necessary. For example in the terminal under market these markets are grouped the same way but
+          should be [grouped by series]."</h4>
+        <p>Phase 48 changed what the watchlist <i>selects</i> and counts, but shipped with no matching change to
+          how the dashboard <i>displays</i> it. Terminal's compact Markets list (<code>renderMarkets</code>) was a
+          flat row per individual ticker with no grouping at all - a whole tournament's 42 markets still showed as
+          42 disconnected rows. Markets/Whale Watch's card view (<code>renderMarketCards</code>) already grouped
+          by <code>event_ticker</code> (one pairing) but not a level higher, so those same 42 markets rendered as
+          ~23 separate, unrelated-looking cards with nothing tying them together as one series.</p>
+        <p>New shared <code>seriesOf()</code>/<code>seriesLabel()</code> JS helpers - <code>seriesOf()</code>
+          mirrors <code>services/signal_log.series_of</code>'s exact ticker-prefix definition, kept textually
+          identical rather than a second one that could drift; <code>seriesLabel()</code> looks up the real title
+          via <code>series_meta</code> (already sent by <code>main.py</code> from an earlier phase) instead of
+          showing a raw ticker prefix. <code>renderMarkets</code> now inserts a <code>.series-header</code>
+          divider (title, market count, total volume) above a run of same-series rows - relies on
+          <code>state.markets</code> already arriving grouped consecutively by series (see
+          <code>round_robin_select</code>), so this is just a "series changed since the last row" check, no
+          client-side re-sorting. <code>renderMarketCards</code> nests a series' event-cards inside a new
+          <code>.series-section</code> wrapper the same way, but only when that series actually has more than one
+          event - a series with a single live event (the common case) renders exactly as it did before, no added
+          clutter, matching the precedent <code>eventGroupCardHTML</code> already set for the event-vs-solo-card
+          split. The Advanced screener table (shared by all three panels) isn't nested the same way - grouping
+          would fight its whole reason for existing, flexible column sorting - so it gained a new sortable
+          "Series" column instead, alongside the existing "Category" one.</p>
+        <p>No browser was available in this sandbox to drive Selenium directly, so verified differently:
+          extracted the real render functions verbatim out of <code>static/index.html</code> and executed them in
+          Node against a live <code>/api/state</code> snapshot with minimal DOM stubs (a fake
+          <code>document.getElementById</code> capturing <code>innerHTML</code>). Confirmed all 69 real markets
+          rendered with the correct row/card count, the real Wyndham series collapsed to one "23 events · 42
+          markets" header instead of 42 disconnected rows, and only the three series that actually had multiple
+          concurrent events at the time (WTA Set Winner, PGA Head-to-Head Matchups, BTTS) got a visible
+          <code>.series-section</code> wrapper - every single-event series rendered as a plain card/row,
+          unchanged, confirmed by diffing card/row counts against the raw market count.</p>
+        <div class="files"><code>static/index.html</code> (<code>seriesOf</code>, <code>seriesLabel</code>,
+          <code>renderMarkets</code>, <code>renderMarketCards</code>, <code>screenerRowData</code>,
+          <code>renderScreenerTableFromState</code>, <code>.series-header</code>/<code>.series-section</code>
+          CSS)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1921,7 +1962,7 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, Advisory Recommendations panel, paginated trade log with dollar cost/payout), <b>Config</b> — rebuilt as a collapsible accordion control panel with a 🧪/📉/🆕 data-quality badge legend (search/pin markets + settings, position-management/exit config, excluded-series denylist, Advisory Engine controls, Market-Native Strategy controls, selectable-domain Danger Zone reset, a real Kalshi Trade Tape whale-provider section alongside the simulator's, whichever one isn't actually running visually grayed out live via <code>updateWhaleProviderStatus()</code>), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions), LIVE-only checkboxes on watchlist discovery and both market-search panels</td><td class="loc">4079</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, Advisory Recommendations panel, paginated trade log with dollar cost/payout), <b>Config</b> — rebuilt as a collapsible accordion control panel with a 🧪/📉/🆕 data-quality badge legend (search/pin markets + settings, position-management/exit config, excluded-series denylist, Advisory Engine controls, Market-Native Strategy controls, selectable-domain Danger Zone reset, a real Kalshi Trade Tape whale-provider section alongside the simulator's, whichever one isn't actually running visually grayed out live via <code>updateWhaleProviderStatus()</code>), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), series-level grouping in the Terminal list and Markets/Whale Watch cards (a whole tournament collapses under one header/section instead of showing as N disconnected rows/cards) + a sortable Series column on the Advanced table, shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions), LIVE-only checkboxes on watchlist discovery and both market-search panels</td><td class="loc">4225</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1800</td><td><span class="pill good">done</span></td></tr>

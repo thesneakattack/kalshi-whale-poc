@@ -132,6 +132,38 @@
   .market-row .ticker { color: var(--text); font-weight: 600; }
   .market-row .price { color: var(--muted); }
 
+  /* The watchlist now selects/counts by parent series, not individual
+     markets (ROADMAP.md) - a whole tournament's pairings shouldn't just
+     appear as N disconnected rows with no indication they're all one
+     series. Only shown for a series with more than one market - a
+     one-market series (the common case) renders exactly as before, no
+     added clutter. */
+  .series-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 10px 4px 4px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .series-header:first-child { padding-top: 0; }
+  .series-header .count { font-family: var(--mono); font-weight: 400; text-transform: none; letter-spacing: normal; }
+  .series-section {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .series-section-header {
+    display: flex; align-items: baseline; gap: 8px; justify-content: space-between;
+    padding: 0 4px;
+  }
+  .series-section-title { font-size: 13px; font-weight: 700; }
+  .series-section-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  .series-section .cards-grid { margin: 0; }
+
   .position-row, .trade-row {
     display: flex;
     justify-content: space-between;
@@ -1388,6 +1420,20 @@ function marketLabel(ticker) {
   return { short, full: raw };
 }
 
+// The watchlist's real "parent" unit as of the round_robin_select redesign
+// (ROADMAP.md) - a whole tournament/series costs one watchlist slot, not
+// each of its individual events/pairings. Mirrors
+// services/signal_log.series_of's exact ticker-prefix definition (kept
+// textually identical rather than a second one that could drift) so the UI
+// groups things exactly the way the backend already selected them.
+function seriesOf(ticker) {
+  return ticker ? ticker.split('-')[0] : ticker;
+}
+function seriesLabel(seriesTicker) {
+  const meta = seriesMeta[seriesTicker];
+  return (meta && meta.title) ? meta.title : seriesTicker;
+}
+
 // What sport/category this is, the actual matchup (from the event, not the
 // often-messy per-market title), and what a Yes/No position on this specific
 // market means in plain words - e.g. "San Diego wins" rather than just a
@@ -1456,21 +1502,52 @@ function contextLineHTML(ticker, side) {
   return bits.length ? `<div class="context-line">${bits.join(' · ')}</div>` : '';
 }
 
-function renderMarkets(markets, prices) {
-  const el = $('markets-list');
-  $('market-count').textContent = markets.length ? `(${markets.length})` : '';
-  if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
-  el.innerHTML = markets.map(m => {
-    const label = marketLabel(m.ticker);
-    const price = prices[m.ticker];
-    const vol = m.volume_24h_fp;
-    return `
+function marketRowHTML(m, prices) {
+  const label = marketLabel(m.ticker);
+  const price = prices[m.ticker];
+  const vol = m.volume_24h_fp;
+  return `
     <div class="market-row" title="${esc(label.full)}\n${esc(m.ticker)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
       <span class="ticker">${esc(label.short)}</span>
       <span class="price">YES ${price !== undefined ? (price * 100).toFixed(0) : '—'}¢ ${priceChangeHTML(m.ticker, price)} · vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span>
     </div>
   `;
-  }).join('');
+}
+
+function renderMarkets(markets, prices) {
+  const el = $('markets-list');
+  $('market-count').textContent = markets.length ? `(${markets.length})` : '';
+  if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+
+  // markets arrives already grouped consecutively by parent series (see
+  // KalshiClient.round_robin_select - every market under a selected series
+  // is appended together before the next series starts), so a "series
+  // changed since the last row" check reproduces that grouping without
+  // re-sorting or re-bucketing anything client-side. A header only shows
+  // for a series with more than one market - a lone market renders exactly
+  // as a plain row, same as before this grouping existed.
+  let html = '';
+  let currentSeries = null;
+  let group = [];
+  const flush = () => {
+    if (!group.length) return;
+    if (group.length > 1) {
+      const vol = group.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
+      html += `<div class="series-header"><span>${esc(seriesLabel(currentSeries))}</span><span class="count">${group.length} markets · vol ${Math.round(vol).toLocaleString()}</span></div>`;
+    }
+    html += group.map(m => marketRowHTML(m, prices)).join('');
+  };
+  markets.forEach(m => {
+    const s = seriesOf(m.ticker);
+    if (s !== currentSeries) {
+      flush();
+      currentSeries = s;
+      group = [];
+    }
+    group.push(m);
+  });
+  flush();
+  el.innerHTML = html;
 }
 
 // Smooth feed updates, direct request ("flicker on every update rather than
@@ -2757,18 +2834,50 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
   if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
 
-  const groups = new Map();  // event_ticker (or a per-market unique key) -> markets[]
+  // markets arrives already grouped consecutively by parent series (see
+  // KalshiClient.round_robin_select) - split into consecutive series runs
+  // first so a whole tournament (many events under one series) visually
+  // nests under one section instead of each event appearing as an
+  // unrelated top-level card, matching how the backend now treats series
+  // as the real watchlist "parent" unit, not the event.
+  const seriesRuns = [];
+  let currentSeries = null, run = null;
   markets.forEach(m => {
-    const key = m.event_ticker || ('__solo__' + m.ticker);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(m);
+    const s = seriesOf(m.ticker);
+    if (s !== currentSeries) {
+      currentSeries = s;
+      run = { series: s, markets: [] };
+      seriesRuns.push(run);
+    }
+    run.markets.push(m);
   });
 
-  el.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
-    if (group.length === 1) {
-      return marketCardHTML(group[0], prices, includeWhale, signals, seriesTrackRecord);
-    }
-    return eventGroupCardHTML(group, eventTitles[key], prices);
+  el.innerHTML = seriesRuns.map(run => {
+    // Within one series, still group by event_ticker - siblings sharing an
+    // event are outcomes of the same real-world question (see
+    // eventGroupCardHTML), a finer-grained relationship than "same series."
+    const eventGroups = new Map();  // event_ticker (or a per-market unique key) -> markets[]
+    run.markets.forEach(m => {
+      const key = m.event_ticker || ('__solo__' + m.ticker);
+      if (!eventGroups.has(key)) eventGroups.set(key, []);
+      eventGroups.get(key).push(m);
+    });
+    const cardsHtml = Array.from(eventGroups.entries()).map(([key, group]) => {
+      return group.length === 1
+        ? marketCardHTML(group[0], prices, includeWhale, signals, seriesTrackRecord)
+        : eventGroupCardHTML(group, eventTitles[key], prices);
+    }).join('');
+
+    if (eventGroups.size === 1) return cardsHtml;  // one event - nothing to nest, render exactly as before
+
+    const totalVol = run.markets.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
+    return `<div class="series-section">
+      <div class="series-section-header">
+        <span class="series-section-title">${esc(seriesLabel(run.series))}</span>
+        <span class="series-section-meta">${eventGroups.size} events · ${run.markets.length} markets · vol ${Math.round(totalVol).toLocaleString()}</span>
+      </div>
+      <div class="cards-grid">${cardsHtml}</div>
+    </div>`;
   }).join('');
 }
 
@@ -2807,6 +2916,7 @@ function screenerRowData(m, prices, signals) {
   const lean = signals ? computeWhaleLean(m.ticker, signals) : null;
   return {
     ticker: m.ticker,
+    series: seriesLabel(seriesOf(m.ticker)),  // the real watchlist "parent" unit - see round_robin_select
     volume_24h_fp: parseFloat(m.volume_24h_fp) || 0,
     yesBid: yesBid ?? null,
     spread,
@@ -2850,6 +2960,7 @@ function renderScreenerTableFromState(panelKey, containerId, countId) {
       : '<td style="color:var(--muted);">—</td>';
     return `<tr title="${esc(label.full)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')">
       <td style="text-align:left;">${esc(label.short)} ${liveBadgeHTML(m)}</td>
+      <td style="text-align:left;">${esc(r.series)}</td>
       <td>${category}</td>
       <td>${yesPrice != null ? yesPrice + '¢' : '—'} ${priceChangeHTML(m.ticker, r.yesBid)}</td>
       <td>${noPrice != null ? noPrice + '¢' : '—'}</td>
@@ -2863,6 +2974,7 @@ function renderScreenerTableFromState(panelKey, containerId, countId) {
   el.innerHTML = `<table class="positions-table sortable">
     <thead><tr>
       ${sortHeaderHTML(st, 'ticker', 'Market', sortCall('ticker'))}
+      ${sortHeaderHTML(st, 'series', 'Series', sortCall('series'))}
       <th>Category</th>
       ${sortHeaderHTML(st, 'yesBid', 'Yes', sortCall('yesBid'))}
       <th>No</th>

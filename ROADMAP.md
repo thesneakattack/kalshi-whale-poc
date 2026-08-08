@@ -1294,8 +1294,44 @@ band instead.
       same-series concurrent matches are watched together by design.
       Verified live: `KXPGAH2H`'s pairings no longer individually dominate
       the watchlist, real series diversity holds. Full suite: 326 passing.
-
-## P3 — Reliability & engineering hygiene
+- [x] Reflected the series-level grouping above in the dashboard itself,
+      direct follow-up (2026-08-08): "the UI presentation needs to be
+      updated to reflect these groupings across all the tabs and sections
+      as necessary. for example in the terminal under market these markets
+      are grouped the same way but should be [grouped by series]." The
+      backend selection change shipped without any matching UI change —
+      Terminal's compact Markets list (`renderMarkets`) was a flat row per
+      individual ticker with no grouping at all, and Markets/Whale Watch's
+      card view (`renderMarketCards`) only grouped by `event_ticker` (one
+      pairing), so a whole tournament like Wyndham Championship still
+      showed as 20+ visually disconnected cards/rows with nothing tying
+      them to one series. New shared `seriesOf()`/`seriesLabel()` JS
+      helpers (mirror `services/signal_log.series_of` exactly, plus
+      `series_meta` for a real title instead of the raw ticker prefix).
+      `renderMarkets` now inserts a `.series-header` divider (title, market
+      count, total volume) above a run of same-series rows — relies on
+      `state.markets` already arriving grouped consecutively by series
+      (see `round_robin_select`), so no client-side re-sorting needed, just
+      a "series changed since the last row" check. `renderMarketCards`
+      nests a series' event-cards inside a new `.series-section` wrapper
+      the same way, but only when that series actually has more than one
+      event — a series with a single live event (the common case) renders
+      exactly as it did before, no added clutter, matching the existing
+      precedent `eventGroupCardHTML` already set for the event-vs-solo-card
+      split. Advanced screener table (`renderScreenerTableFromState`,
+      shared by Terminal/Markets/Whale Watch) gained a new sortable
+      "Series" column alongside the existing "Category" one, since a flat
+      sortable table can't be nested the same way without breaking sorting.
+      No browser was available in this sandbox to drive Selenium directly,
+      so verified differently: extracted the real render functions
+      verbatim from `static/index.html` and executed them in Node against
+      a live `/api/state` snapshot with minimal DOM stubs — confirmed all
+      69 real markets rendered with the correct row/card count, the real
+      Wyndham series collapsed to one 23-event/42-market header instead of
+      42 disconnected rows, and only the three series that actually had
+      multiple concurrent events (WTA Set Winner, PGA Head-to-Head
+      Matchups, BTTS) got a visible `.series-section` wrapper — everything
+      else rendered as a plain card/row, unchanged.
 
 - [x] Automated test suite — 35+ tests in `tests/` covering
       `paper_broker.py`, `risk_manager.py`, `strategy_engine.py`, and
