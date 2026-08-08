@@ -322,14 +322,19 @@
   .field .data-badge { margin-left: 8px; }
 
   /* Whichever whale-signal source (simulator vs. real) isn't the one
-     actually running gets visually de-emphasized rather than just described
-     in prose - set from loadConfig() via lastWhaleSource, not hardcoded,
+     actually running gets grayed out AND its inputs disabled (see
+     setSectionInputsDisabled in the JS) - not just described in prose.
+     Set from loadConfig()/refresh() via lastWhaleSource, not hardcoded,
      since which one is "inactive" depends on runtime config/.env, not a
-     fixed default anymore. Still fully interactive (fields stay editable -
-     the simulator's config still matters as a same-tick fallback if the
-     real provider's fetch fails), just visually muted. */
+     fixed default. The accordion itself (<summary>) stays clickable either
+     way - collapsing/expanding to read an inactive section's values is
+     still allowed, only editing them is blocked. A transient fetch-failure
+     fallback (the real provider is selected but this tick's fetch failed)
+     deliberately leaves both sections enabled - see updateWhaleProviderStatus. */
   .config-section.provider-inactive { opacity: 0.5; }
   .config-section.provider-inactive summary { cursor: pointer; }
+  .config-section.provider-inactive input:disabled,
+  .config-section.provider-inactive select:disabled { cursor: not-allowed; }
 
   button {
     font-family: var(--sans);
@@ -1003,9 +1008,10 @@
          plain-English, rather than re-explained at every badge. -->
     <div id="config-badge-legend" style="font-size:12px; color:var(--muted); background:var(--panel); border:1px solid var(--panel-border); border-radius:8px; padding:12px 14px; margin-bottom:14px;">
       Settings below are grouped into sections you can expand one at a time. A few are tagged:
-      <span class="data-badge sim" style="margin-left:6px;">🧪 sim data</span> means it's tuned against
-      the built-in <i>simulated</i> whale signal, not a real feed — still worth setting, just less proven
-      until a real whale-watcher is connected. <span class="data-badge hist" style="margin-left:6px;">📉 needs history</span>
+      <span class="data-badge sim" style="margin-left:6px;">🧪 sim data</span> means it's currently tuned
+      against the built-in <i>simulated</i> whale signal, not a real feed — appears/disappears live as the
+      active whale-signal source changes, since a real one (Kalshi Trade Tape) is connected by default now.
+      <span class="data-badge hist" style="margin-left:6px;">📉 needs history</span>
       means it needs more of your own resolved trades before its output can be trusted.
       <span class="data-badge new" style="margin-left:6px;">🆕 new</span> means the feature itself is
       brand new with no track record yet, independent of any data quality question.
@@ -1030,10 +1036,10 @@
         <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
         <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
-        <div class="field"><label>Avoid whales below this win rate (%) <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
-        <div class="field"><label>...but only after this many resolved signals <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+        <div class="field"><label>Avoid whales below this win rate (%) <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
+        <div class="field"><label>...but only after this many resolved signals <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
         <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
-        <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
+        <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
       </div>
     </details>
 
@@ -1047,7 +1053,7 @@
         </p>
         <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
         <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side <span class="data-badge sim">🧪 sim data</span></label></div>
+        <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label></div>
         <div class="field"><label>...requires at least this many recent prints on the ticker</label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
         <div class="field"><label>...leaning against the position by at least this much (%)</label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
 
@@ -1062,11 +1068,11 @@
         </p>
         <div class="field"><label>Exit confidence threshold (0–1)</label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>P&amp;L factor weight</label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
-        <div class="field"><label>Whale sentiment factor weight <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
-        <div class="field"><label>Signal-staleness factor weight <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Whale sentiment factor weight <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Signal-staleness factor weight <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
         <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
         <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
-        <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
       </div>
     </details>
 
@@ -3636,14 +3642,35 @@ async function refresh() {
 // immediately if the Config tab happens to already be open). Which section
 // is "inactive" depends on runtime config/.env, not a fixed default, so
 // this reads the real current source rather than assuming the simulator.
+function setSectionInputsDisabled(section, disabled) {
+  section.querySelectorAll('.section-body input, .section-body select, .section-body textarea')
+    .forEach(el => { el.disabled = disabled; });
+}
+
 function updateWhaleProviderStatus(src) {
   const statusEl = $('whale-provider-status');
   const simSection = $('whale-sim-section');
   const realSection = $('whale-real-section');
   if (!statusEl || !simSection || !realSection) return;  // Config tab markup not present yet
   const isRealActive = src != null && src !== 'simulated' && !src.startsWith('simulated (');
+  const isSimulatorPrimary = src === 'simulated';  // not "any non-real state" - a transient
+  // fetch-failure fallback still means the real provider is selected and its config still
+  // matters for when it recovers, so that case leaves both sections alone rather than
+  // disabling either one.
   simSection.classList.toggle('provider-inactive', isRealActive);
-  realSection.classList.toggle('provider-inactive', src != null && !isRealActive);
+  setSectionInputsDisabled(simSection, isRealActive);
+  realSection.classList.toggle('provider-inactive', isSimulatorPrimary);
+  setSectionInputsDisabled(realSection, isSimulatorPrimary);
+  // The Strategy section's whale-filter/exit fields aren't simulator-only
+  // mechanics (unlike whale_signal.* above) - they apply to whichever
+  // signal source is actually feeding them, real or simulated. Their "sim
+  // data" badges should only show while the simulator is genuinely the
+  // one supplying data, matching the legend's own "appears/disappears
+  // live" wording - not disabled inputs, just a badge, since the fields
+  // themselves stay fully meaningful either way.
+  document.querySelectorAll('.whale-dependent-badge').forEach(el => {
+    el.style.display = isRealActive ? 'none' : '';
+  });
   if (src == null) {
     statusEl.textContent = 'Checking which whale-signal source is active…';
     statusEl.style.color = 'var(--muted)';

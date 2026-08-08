@@ -173,7 +173,7 @@ async def _get_series_cache(client: KalshiClient) -> list[dict]:
     return cache["series"]
 
 
-async def _get_top_series(client: KalshiClient, top_n: int = 30) -> list[str]:
+async def _get_top_series(client: KalshiClient, top_n: int = 40) -> list[str]:
     series = await _get_series_cache(client)
     return [s["ticker"] for s in series[:top_n]]
 
@@ -265,6 +265,12 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     return markets
 
 
+_TRADE_TAPE_TOTAL_CAP = 100  # scales with kalshi.watchlist_size - this is also
+# services/whalewatchers/kalshi_trade_tape.py's entire input now, not just the
+# UI panel's; too tight a cap here silently shrinks real whale-detection
+# coverage back down even if the watchlist itself is wide.
+
+
 async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[dict]:
     """Full-exchange trade tape (ROADMAP.md Phase 0.5), scoped to the current
     watchlist rather than the whole exchange - get_trades with no ticker
@@ -284,7 +290,7 @@ async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[d
         if isinstance(result, dict):
             trades.extend(result.get("trades") or [])
     trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
-    return trades[:50]
+    return trades[:_TRADE_TAPE_TOTAL_CAP]
 
 
 _LIVE_STATUS_WINDOW_SEC = 6 * 3600  # started up to 6h ago, or starting within the next hour
