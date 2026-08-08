@@ -7,8 +7,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -552,33 +551,10 @@ async def disconnect_account(provider: str):
     return {"ok": True}
 
 
-# ---- static dashboard --------------------------------------------------
-# Every page here is a thin, entirely inline HTML/CSS/JS shell that re-fetches
-# its own data every few seconds — there's no separate .js/.css bundle to
-# version, and no benefit to caching the shell itself. FileResponse's default
-# (ETag + Last-Modified, no Cache-Control) lets browsers heuristically cache
-# without even revalidating, which is exactly what caused an already-shipped
-# panel to silently not appear after an edit. no-store makes that impossible.
-NO_CACHE_HEADERS = {"Cache-Control": "no-store, must-revalidate"}
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-@app.get("/")
-async def dashboard():
-    return FileResponse("static/index.html", headers=NO_CACHE_HEADERS)
-
-
-@app.get("/status")
-async def build_status():
-    return FileResponse("static/status.html", headers=NO_CACHE_HEADERS)
-
-
-@app.get("/login")
-async def login_page():
-    return FileResponse("static/login.html", headers=NO_CACHE_HEADERS)
-
-
-@app.get("/accounts")
-async def accounts_page():
-    return FileResponse("static/accounts.html", headers=NO_CACHE_HEADERS)
+# Dashboard/status/login/accounts pages used to be served here via
+# FileResponse/StaticFiles. Moved to ddev's "web" (nginx) container serving
+# static/ directly, with /api/ and /auth/ reverse-proxied back to this
+# service (see .ddev/nginx/kalshi-proxy.conf) — main.py is API-only now, so
+# a separate frontend can be built against it without this process also
+# owning page-serving. nginx replicates the same no-cache intent that used
+# to live in NO_CACHE_HEADERS here (see that config's comment for why).

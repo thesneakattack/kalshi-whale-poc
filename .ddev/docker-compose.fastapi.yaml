@@ -1,6 +1,16 @@
 # DDEV picks up any docker-compose.*.yaml file in .ddev/ and merges it into the project.
-# HTTP_EXPOSE / HTTPS_EXPOSE are DDEV's convention for telling ddev-router to proxy
-# a container's port under https://kalshi-whale-poc.ddev.site
+#
+# Deliberately NOT publicly exposed (no HTTP_EXPOSE/HTTPS_EXPOSE/VIRTUAL_HOST
+# here) - this is an internal-only API service, reachable from other
+# containers on the project network as "fastapi:8000" and nowhere else.
+# ddev's "web" (nginx) container is the one public entrypoint and reverse-
+# proxies /api/ and /auth/ back to it (.ddev/nginx/kalshi-proxy.conf); static
+# pages are served directly by nginx. This used to be reversed - fastapi
+# itself claimed the public hostname and "web" sat there unused, which
+# caused ddev-router to register two competing routers for the same
+# hostname (see ROADMAP.md for the 403 saga). Splitting frontend/API onto
+# separate services, with only one of them public, both fixes that
+# structurally and means a separate frontend could call this API directly.
 
 services:
   fastapi:
@@ -9,15 +19,20 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: "no"
-    environment:
-      - HTTP_EXPOSE=8000:8000
-      - HTTPS_EXPOSE=443:8000
-      - VIRTUAL_HOST=$DDEV_HOSTNAME
     volumes:
       - "../:/app"
       - ".:/mnt/ddev_config:ro"
     working_dir: /app
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # --proxy-headers/--forwarded-allow-ips: this now sits behind two hops
+    # (ddev-router -> nginx -> here), so uvicorn needs to trust nginx's
+    # X-Forwarded-Proto/Host to get request.url_for() (used by the OAuth
+    # redirect_uri) right, rather than resolving to plain http://fastapi:8000.
+    # "*" is safe here specifically because this service has no public
+    # exposure at all - only other containers on this project's docker
+    # network can reach it, so there's no way for an external client to
+    # reach it directly and spoof those headers.
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload",
+              "--proxy-headers", "--forwarded-allow-ips=*"]
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}
       com.ddev.approot: $DDEV_APPROOT

@@ -498,8 +498,42 @@
           own <code>HTTP_EXPOSE</code>/<code>HTTPS_EXPOSE</code>/<code>VIRTUAL_HOST</code> so ddev's router-config
           generator never creates a <code>web</code> router for this hostname in the first place. Verified two
           ways post-restart: re-read the generated config (<code>web</code> routers for this host: 0, was 3), and
-          10/10 real external HTTPS requests through the actual router path returned 200.</p>
-        <div class="files"><code>.ddev/docker-compose.web-override.yaml</code> (new)</div>
+          10/10 real external HTTPS requests through the actual router path returned 200. <em>Superseded by phase
+          17, immediately after — this fix worked, but left <code>web</code> sitting there unused; the next phase
+          gave it an actual job instead.</em></p>
+        <div class="files"><code>.ddev/docker-compose.web-override.yaml</code> (superseded, removed next phase)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 17 · a real frontend/backend split, not just a router fix</div>
+        <h4>main.py is API-only now — nginx serves the dashboard, fastapi has no public URL at all</h4>
+        <p>Explaining phase 16's fix prompted a fair question: why keep an idle, empty <code>web</code> container
+          around at all instead of actually using it? Turned out <code>main.py</code> was serving the dashboard's
+          HTML directly (<code>FileResponse</code>/<code>StaticFiles</code>) from the same process as the API —
+          not a "frontend service" in any real sense, just one process wearing two hats. Split it for real: removed
+          the <code>/</code>, <code>/status</code>, <code>/login</code>, <code>/accounts</code> routes and the
+          <code>/static</code> mount from <code>main.py</code> entirely, gave <code>web</code> (nginx,
+          <code>docroot: static</code>) the job of serving those pages directly, and had it reverse-proxy
+          <code>/api/</code> and <code>/auth/</code> back to <code>fastapi</code>
+          (<code>.ddev/nginx/kalshi-proxy.conf</code>). <code>fastapi</code> dropped its
+          <code>HTTP_EXPOSE</code>/<code>HTTPS_EXPOSE</code>/<code>VIRTUAL_HOST</code> entirely — no public URL of
+          its own anymore, reachable only inside the project's docker network as <code>fastapi:8000</code>. That
+          doesn't just avoid phase 16's router collision, it makes it structurally impossible: there's exactly one
+          service left that could ever register a router for this hostname. It also means the actual thing asked
+          for is now true — a separate frontend could be built against this API later without touching
+          <code>main.py</code> at all. One real correctness catch along the way: nginx's
+          <code>try_files &lt;file&gt; =404</code> serves a matched file from within its own location block rather
+          than re-entering location matching, so the old <code>NO_CACHE_HEADERS</code> behavior (added earlier
+          after a shipped panel silently failed to appear until a hard refresh) had to be set directly on each
+          page's <code>location</code> block, not inherited from one shared regex block — caught by actually
+          curling each route and checking headers, not assumed. Also added
+          <code>--proxy-headers --forwarded-allow-ips=*</code> to uvicorn, since <code>request.url_for()</code>
+          (the OAuth <code>redirect_uri</code>) now needs to trust a second proxy hop (nginx, in front of
+          ddev-router) to resolve the right scheme/host.</p>
+        <div class="files"><code>main.py</code> (removed page routes) ·
+          <code>.ddev/nginx/kalshi-proxy.conf</code> (new) · <code>.ddev/config.yaml</code>
+          (<code>docroot: static</code>) · <code>.ddev/docker-compose.fastapi.yaml</code> (dropped exposure,
+          added proxy headers) · <code>CLAUDE.md</code></div>
       </div>
 
     </div>
@@ -546,7 +580,8 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, trading loop, 20 routes, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch</td><td class="loc">571</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch</td><td class="loc">560</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status</td><td class="loc">80</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
@@ -565,7 +600,7 @@
           <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge</td><td class="loc">1291</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~550</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~780</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

@@ -1,15 +1,16 @@
 name: kalshi-whale-poc
 type: generic
-docroot: ""
-# Empty on purpose: this project runs entirely through the additional "fastapi"
-# service defined in .ddev/docker-compose.fastapi.yaml, which claims the main
-# hostname itself via HTTP_EXPOSE/HTTPS_EXPOSE. Leaving router_http_port/
-# router_https_port set to 80/443 here made the default (unused) web container
-# ALSO claim the same hostname/port 443 — ddev-router's tie-break between the
-# two was non-deterministic across restarts, occasionally routing the site to
-# the empty default nginx container instead of fastapi. Clearing these two
-# stops the default web container from competing for the hostname at all.
-router_http_port: ""
-router_https_port: ""
+# The public entrypoint: serves static/ (dashboard/status/login/accounts
+# pages) directly and reverse-proxies /api/ + /auth/ to the "fastapi"
+# service (see .ddev/nginx/kalshi-proxy.conf and
+# .ddev/docker-compose.fastapi.yaml). fastapi has no public exposure of its
+# own - "web" is now the only container that claims the project hostname,
+# which is also what fixed the intermittent 403s from two containers
+# racing to register a router for the same hostname (see ROADMAP.md). An
+# earlier attempt at that fix cleared router_http_port/router_https_port
+# below, believing it controlled which service wins that race - it didn't
+# (those only set which ports ddev-router itself listens on, globally,
+# not which services get routers registered), so that's gone now too.
+docroot: static
 use_dns_when_possible: true
 web_environment: []

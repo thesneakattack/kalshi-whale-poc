@@ -223,26 +223,58 @@ one is the historical record.
       is stuck." Small badge in the header, only visually loud when closed.
 - [x] Fixed the intermittent 403/404 errors on
       `https://kalshi-whale-poc.ddev.site/` that recurred repeatedly during
-      development — root-caused, not just restarted away. `ddev`'s default
-      (unused, empty-docroot) `web` service and the custom `fastapi` service
-      both auto-register a Traefik router for the exact same hostname
-      (confirmed by reading ddev-router's generated
+      development, and, in the same pass, actually separated the frontend
+      from the API rather than papering over the symptom. Root cause:
+      `ddev`'s default (unused, empty-docroot) `web` service and the custom
+      `fastapi` service both auto-register a Traefik router for the exact
+      same hostname (confirmed by reading ddev-router's generated
       `<project>_merged.yaml` directly: two routers, identical
       `HostRegexp`, same `https` entrypoint); Traefik's tie-break between
       two equal-priority routers isn't stable across reloads, so the site
       would randomly route to `web`'s empty docroot (→ 403) instead of
       `fastapi`. Clearing `router_http_port`/`router_https_port` in
-      `.ddev/config.yaml` (an earlier fix attempt, `.ddev/config.yaml`'s own
+      `.ddev/config.yaml` (an earlier fix attempt, that config's own
       comment described the symptom accurately) didn't actually fix this —
       those only control the ports ddev-router itself listens on, not which
-      services get routers generated for them, which is why the problem
-      kept recurring despite it. Real fix, in
-      `.ddev/docker-compose.web-override.yaml`: blank out `web`'s own
-      `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST` so ddev's router-config
+      services get routers generated for them.
+      <details><summary>First real fix (superseded below): blank out web's exposure</summary>
+      Blanked out `web`'s own `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST`
+      via `.ddev/docker-compose.web-override.yaml` so ddev's router-config
       generator never creates a `web` router for this hostname at all —
       verified by re-reading the generated config after a restart (`web`
       routers: 0, was 3) and 10/10 real external requests through the
-      actual router path returning 200.
+      actual router path returning 200. Worked, but left `web` sitting
+      there unused and the "fix" was a container-level workaround rather
+      than addressing why `main.py` was serving the dashboard AND the API
+      out of one process in the first place.
+      </details>
+      Real fix: `main.py` is API-only now — the `/`, `/status`, `/login`,
+      `/accounts` FileResponse routes and the `/static` mount were removed
+      entirely. `web` (nginx, `docroot: static` in `.ddev/config.yaml`) is
+      now the one and only public entrypoint, serving `static/*.html`
+      directly and reverse-proxying `/api/` + `/auth/` back to `fastapi`
+      (`.ddev/nginx/kalshi-proxy.conf`); `fastapi` dropped its
+      `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST` entirely and is reachable
+      only inside the project's docker network as `fastapi:8000` — it has
+      no public URL of its own anymore. This doesn't just avoid the router
+      collision, it makes it structurally impossible: there is now exactly
+      one service ddev-router can register for this hostname. Also means
+      a separate frontend could genuinely be built against this API later,
+      hitting `/api/*` directly, without touching `main.py`. Uvicorn picked
+      up `--proxy-headers --forwarded-allow-ips=*` since it now sits behind
+      two hops (ddev-router → nginx → fastapi) instead of one, so
+      `request.url_for()` (the OAuth `redirect_uri`) still resolves the
+      right scheme/host — safe to trust from any IP here specifically
+      because `fastapi` has no public exposure at all, only other
+      containers on this project's network can reach it. Verified: every
+      page (`/`, `/status`, `/login`, `/accounts`), `/api/*` and `/auth/*`
+      proxying, the `Cache-Control: no-store` behavior the old
+      `NO_CACHE_HEADERS` used to provide (a real regression risk — nginx's
+      `try_files <file> =404` serves a matched file within its own
+      location block rather than re-entering location matching, so the
+      header had to be set directly on each page's location block, not
+      inherited from a shared regex block), and the full test suite, all
+      against the real running ddev project, not just reasoned about.
 - [ ] Mobile/responsive pass — the Terminal view's 3-column grid is
       desktop-only right now.
 - [ ] Accessibility pass — keyboard navigation, aria labels, and a check

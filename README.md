@@ -13,9 +13,12 @@ cp .env.example .env      # optional — fill in real API keys later, blank is f
 ddev start
 ```
 
-DDEV builds the app from the included `Dockerfile` as an additional service
-(see `.ddev/docker-compose.fastapi.yaml`) — the default PHP webserver isn't
-used. Once it's up:
+DDEV builds the API from the included `Dockerfile` as an additional,
+internal-only `fastapi` service (see `.ddev/docker-compose.fastapi.yaml`).
+The default webserver container isn't unused this time — it's the actual
+public entrypoint: it serves the dashboard (`static/*.html`) directly and
+reverse-proxies `/api/`+`/auth/` to `fastapi` (`.ddev/nginx/kalshi-proxy.conf`).
+Once it's up:
 
 ```bash
 ddev launch
@@ -28,6 +31,11 @@ To stop: `ddev stop`. To rebuild after changing `requirements.txt` or the
 
 ## Run it without DDEV
 
+`main.py` is API-only (no dashboard HTML) — DDEV's nginx container is what
+serves the dashboard and proxies it to the API, see above, so this path is
+mainly useful for hitting the API directly or for backend development
+without the frontend:
+
 ```bash
 cd kalshi-whale-poc
 python -m venv venv && source venv/bin/activate
@@ -36,9 +44,13 @@ cp .env.example .env
 uvicorn main:app --reload
 ```
 
-Open **http://localhost:8000**.
+`GET http://localhost:8000/api/state` now works; **http://localhost:8000/**
+does not serve the dashboard this way — the dashboard's JS calls `/api/...`
+with relative paths that only resolve correctly when served from the same
+origin as the API, which is exactly what DDEV's nginx proxy sets up. Use
+DDEV for the full dashboard experience.
 
-Or with plain Docker:
+Or with plain Docker (same API-only caveat):
 
 ```bash
 docker build -t whale-poc .

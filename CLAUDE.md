@@ -38,16 +38,29 @@ the existing phases' tone and structure.
 
 - `ddev describe` — check whether it's running (it usually already is; don't
   assume you need `python -m venv` / `pip install`).
+- Two services split frontend from API — `main.py` is API-only, it does not
+  serve any HTML. `web` (ddev's default nginx container, `docroot: static`)
+  is the one public entrypoint: it serves `static/*.html` directly and
+  reverse-proxies `/api/` + `/auth/` to `fastapi`
+  (`.ddev/nginx/kalshi-proxy.conf`). `fastapi` has **no public URL of its
+  own** — no `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST` — it's reachable
+  only inside the project's docker network as `fastapi:8000`. This is a
+  deliberate fix for a real, recurring bug (see `ROADMAP.md`): when both
+  containers had a public router registered for the same hostname,
+  Traefik's tie-break between them wasn't stable across restarts.
 - The `fastapi` service runs `uvicorn --reload` — edits to `.py` files take
   effect in ~1-2s automatically. No manual restart needed for normal
-  iteration.
-- `ddev logs -s fastapi` — tail logs, e.g. to watch reload events or errors.
+  iteration. Editing `.ddev/nginx/*.conf` or any `.ddev/*.yaml` does need a
+  `ddev restart` to take effect, unlike `.py` files.
+- `ddev logs -s fastapi` / `ddev logs -s web` — tail logs, e.g. to watch
+  reload events, errors, or nginx's access/error log.
 - `ddev exec -s fastapi <cmd>` — run one-off commands inside the container
   (working dir `/app`, same layout as the repo root). Prefer this over raw
   `docker exec`.
-- App: `https://kalshi-whale-poc.ddev.site`. `GET /api/state` is the fastest
-  way to check live state (bankroll, positions, risk halt status, etc.)
-  without opening the dashboard.
+- App: `https://kalshi-whale-poc.ddev.site` (served by `web`).
+  `GET /api/state` is the fastest way to check live state (bankroll,
+  positions, risk halt status, etc.) without opening the dashboard — same
+  hostname, nginx proxies it to `fastapi` transparently.
 - To test something that depends on a **real process restart** (not just
   `--reload`'s in-process reimport) — e.g. verifying persistence survives a
   restart — use a full `ddev restart`. A file save alone won't exercise that
@@ -106,11 +119,15 @@ concern, consistent with how the rest of the app is factored.
 
 ## Quick file map
 
-- `main.py` — FastAPI app, routes, the trading loop.
+- `main.py` — FastAPI app, API/auth routes only (no HTML), the trading loop.
 - `services/` — one module per concern (client, strategy, risk, broker,
   persistence, auth, accounts store, whale-watcher provider library).
-- `static/` — dashboard + status page + login/accounts pages. Plain inline
+- `static/` — dashboard + status page + login/accounts pages, served
+  directly by ddev's `web` container, not by `main.py`. Plain inline
   HTML/CSS/JS per page, no build step, no bundler.
+- `.ddev/nginx/kalshi-proxy.conf` — `web`'s reverse-proxy rules
+  (`/api/`, `/auth/` → `fastapi:8000`) and the extension-less page aliases
+  (`/status`, `/login`, `/accounts`).
 - `config/settings.yaml` — non-secret, live-reloadable tuning (thresholds,
   position sizing, risk limits). Committed to git (once this becomes a git
   repo), editable live from the dashboard's Controls panel.
