@@ -55,6 +55,27 @@ def test_logs_an_intended_trade_when_conditions_met(tmp_path, monkeypatch):
     assert trader.recent(10)[0]["id"] == row["id"]
 
 
+def test_no_side_sizes_off_inverted_price(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    # price is always the yes price - a NO print's real unit cost is
+    # (1-price), same fix as strategy_engine.evaluate()/paper_broker.open_position.
+    row = trader.evaluate(_signal(side="no", confidence=0.8, price=0.2), _cfg(), reference_bankroll=10000.0, bankroll_source="real_account")
+    assert row is not None
+    assert row["size"] == int(10000.0 * 0.05 / 0.8)
+
+
+def test_does_not_log_when_market_already_resolved(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(confidence=0.8, price=0.5), _cfg(), reference_bankroll=10000.0,
+        bankroll_source="real_account", market_results={"TICK-A": "no"},
+    )
+    assert row is None
+    assert trader.stats()["total_shadow_trades"] == 0
+
+
 def test_does_not_log_below_confidence_threshold(tmp_path, monkeypatch):
     trader = _trader(tmp_path, monkeypatch)
     _no_opinion_series_stats(monkeypatch)

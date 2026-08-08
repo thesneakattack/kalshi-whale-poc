@@ -227,8 +227,10 @@
   .conf-fill { height: 100%; background: var(--whale); }
   .decision-card.trade { border-left: 3px solid var(--yes); }
   .decision-card.skip { border-left: 3px solid var(--panel-border); opacity: 0.7; }
+  .decision-card.close { border-left: 3px solid var(--whale); }
   .action-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
   .action-tag.trade { color: var(--yes); }
+  .action-tag.close { color: var(--whale); }
   .action-tag.skip { color: var(--muted); }
 
   /* Advanced sortable/filterable tables - Trade Log and Strategy Decisions
@@ -660,6 +662,7 @@
   <button class="tab-btn" id="tab-btn-markets" onclick="showView('markets'); refresh();">Markets</button>
   <button class="tab-btn" id="tab-btn-whale" onclick="showView('whale'); refresh();">Whale Watch</button>
   <button class="tab-btn" id="tab-btn-terminal" onclick="showView('terminal'); refresh();">Terminal</button>
+  <button class="tab-btn" id="tab-btn-history" onclick="showView('history'); refresh();">History</button>
   <button class="tab-btn" id="tab-btn-config" onclick="showView('config'); refresh();">Config</button>
 </div>
 
@@ -854,6 +857,53 @@
 </div>
 </div>
 
+<!-- History: closed-trade record + win/loss breakdown by what closed each
+     position, so a position that was actively managed (take-profit/
+     stop-loss/sentiment-reversal/auto-exit) or settled at resolution can be
+     told apart from each other, plus sample-size-hedged hints about which
+     config knob a pattern might argue for adjusting. Direct request: "a
+     trading history tab that shows graphs, positions made, win loss rates,
+     times auto management changed positions or sold at a price less than
+     what a full win would provide... with relevant whale data and relevant
+     config metadata." Backed by GET /api/trading-history, a separate
+     on-demand fetch (services/trade_analytics.py derives all of this from
+     the existing trade log's reason strings - no new persistence), loaded
+     when this tab opens, same pattern as loadSignalHistory. -->
+<div class="view" id="view-history">
+  <div class="wrap">
+    <div class="panel-title" style="margin-top:0;">Summary</div>
+    <div class="stat-cards" id="history-summary-cards">
+      <div class="cell"><div class="lbl">Closed Trades</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Win Rate</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Total Capital Deployed</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Total Realized P&amp;L</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Left on Table (early exits)</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Avg Hold Time</div><div class="val">—</div></div>
+    </div>
+
+    <div class="panel-title">Cumulative Realized P&amp;L</div>
+    <div id="history-pnl-chart"><div class="empty">Not enough closed trades yet</div></div>
+
+    <div class="panel-title">By Close Type</div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      What actually closed each position — a hard rule (take-profit/stop-loss/sentiment-reversal/
+      auto-exit) or the market simply resolving with nothing ever actively exiting it.
+    </p>
+    <div id="history-close-type-breakdown" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
+    <div class="panel-title">Config Tuning Hints <span id="history-insights-count"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Descriptive patterns in the trade history above, not a recommendation engine — each one names the
+      config field it's about, how many trades it's based on, and a confidence label (low/moderate/higher)
+      so you can judge how much to trust it before acting. Never changes config itself.
+    </p>
+    <div id="history-insights" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
+    <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
+    <div id="history-trades"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
 <!-- Config: settings you set occasionally, not every-poll operational
      actions (those stay in Terminal's Controls column) -->
 <div class="view" id="view-config">
@@ -878,6 +928,36 @@
       <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
       <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
       <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME")</label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
+    </div>
+
+    <div class="panel-title">Position Management (Exits)</div>
+    <div class="config-group">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+        Kalshi lets you sell before settlement instead of only holding to $1/$0 - these
+        actively manage positions already opened, closing them at the current market price
+        instead of leaving every trade to sit untouched until resolution. All off by default.
+      </p>
+      <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
+      <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
+      <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side</label></div>
+      <div class="field"><label>...requires at least this many recent prints on the ticker</label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
+      <div class="field"><label>...leaning against the position by at least this much (%)</label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
+
+      <div class="field" style="margin-top:8px;"><label><input type="checkbox" id="cfg-auto-exit-enabled"> <b>Automated exit algorithm</b> - close based on a tweakable composite confidence score</label></div>
+      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+        A fourth, independent layer on top of the hard rules above: blends unrealized P&amp;L
+        magnitude, whale-sentiment reversal strength, and how long whale interest in this
+        ticker has gone quiet into one 0–1 "exit confidence" score, the same mental model
+        signal.confidence already uses on the entry side. Only evaluated when none of the
+        hard rules above already closed the position this tick.
+      </p>
+      <div class="field"><label>Exit confidence threshold (0–1)</label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
+      <div class="field"><label>P&amp;L factor weight</label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
+      <div class="field"><label>Whale sentiment factor weight</label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
+      <div class="field"><label>Signal-staleness factor weight</label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+      <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
+      <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
+      <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor</label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
     </div>
 
     <div class="panel-title">Whale Signal (simulated)</div>
@@ -1284,7 +1364,10 @@ function renderSignals(signals) {
       : '';
     const tier = impactTier(s);
     const impactTag = `<span class="impact-tag ${tier}" title="Impact tier relative to what's currently on the feed (size x confidence)">${tier}</span>`;
-    const dollarSize = s.price != null ? fmt(s.size * s.price) : null;
+    // price is always the yes price (see whale_simulator.py) - a "no" print's
+    // real dollar size is size*(1-price), not size*price, same convention
+    // as PaperBroker.cost_basis/open_position's unit_cost.
+    const dollarSize = s.price != null ? fmt(s.size * (s.side === 'yes' ? s.price : (1 - s.price))) : null;
     return `
     <div class="signal-card" title="${esc(label.full)}">
       <div class="top-row">
@@ -1340,6 +1423,9 @@ function plainEnglishSkipReason(reason) {
     return `Skipped — whales have only been right ${m[2]}% of the time recently on "${seriesName}"-type markets `
       + `(out of ${m[3]} resolved signals), below the ${m[4]}% bar this strategy requires before trusting them here.`;
   }
+  if (reason === 'position already open on this market') {
+    return `Skipped — this strategy already has an open position on this market and won't open a second one until the first closes.`;
+  }
   if (reason === 'cooldown active for this market') {
     return `Skipped — this strategy already traded this market recently and is waiting out its cooldown before trading it again.`;
   }
@@ -1369,18 +1455,27 @@ function renderDecisions(decisions) {
   if (!lastDecisions.length) { listEl.innerHTML = '<div class="empty">No decisions yet…</div>'; _feedListState['decision-feed-list'] = []; return; }
 
   const buildDecisionCardHtml = (d) => {
-    const label = marketLabel(d.signal.ticker);
+    const ticker = d.action === 'close' ? d.ticker : d.signal.ticker;
+    const label = marketLabel(ticker);
+    let detail;
+    if (d.action === 'trade') {
+      detail = `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢`;
+    } else if (d.action === 'close') {
+      detail = `Closed ${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢ — ${esc(d.reason)}`;
+    } else {
+      detail = esc(plainEnglishSkipReason(d.reason));
+    }
     return `
       <div class="decision-card ${d.action}" title="${esc(label.full)}">
         <div class="top-row">
           <span>${esc(label.short)}</span>
           <span class="action-tag ${d.action}">${d.action}</span>
         </div>
-        <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : esc(plainEnglishSkipReason(d.reason))}</div>
+        <div style="color: var(--muted)">${detail}</div>
       </div>
     `;
   };
-  renderFeedListSmooth('decision-feed-list', lastDecisions, buildDecisionCardHtml, d => d.signal.id);
+  renderFeedListSmooth('decision-feed-list', lastDecisions, buildDecisionCardHtml, d => d.action === 'close' ? d.trade.id : d.signal.id);
 }
 
 // Advanced: the same decision data (ROADMAP.md Phase 0.5's "Trade log /
@@ -1397,6 +1492,7 @@ function renderDecisionTable() {
         <option value="" ${decisionFilter.action === '' ? 'selected' : ''}>all</option>
         <option value="trade" ${decisionFilter.action === 'trade' ? 'selected' : ''}>trade</option>
         <option value="skip" ${decisionFilter.action === 'skip' ? 'selected' : ''}>skip</option>
+        <option value="close" ${decisionFilter.action === 'close' ? 'selected' : ''}>close</option>
       </select>
     </label>
   </div>`;
@@ -1404,18 +1500,33 @@ function renderDecisionTable() {
   const q = decisionFilter.query.trim().toLowerCase();
   let rows = lastDecisions.filter(d => {
     if (decisionFilter.action && d.action !== decisionFilter.action) return false;
-    if (q && !d.signal.ticker.toLowerCase().includes(q)) return false;
+    const ticker = d.action === 'close' ? d.ticker : d.signal.ticker;
+    if (q && !ticker.toLowerCase().includes(q)) return false;
     return true;
-  }).map(d => ({
-    timestamp: d.signal.timestamp,
-    ticker: d.signal.ticker,
-    action: d.action,
-    side: d.action === 'trade' ? d.trade.side : d.signal.side,
-    size: d.action === 'trade' ? d.trade.size : d.signal.size,
-    price: d.action === 'trade' ? d.trade.price : d.signal.price,
-    confidence: d.signal.confidence,
-    reason: d.action === 'trade' ? d.trade.reason : d.reason,
-  }));
+  }).map(d => {
+    if (d.action === 'close') {
+      return {
+        timestamp: d.trade.timestamp,
+        ticker: d.ticker,
+        action: d.action,
+        side: d.trade.side,
+        size: d.trade.size,
+        price: d.trade.price,
+        confidence: null,
+        reason: d.trade.reason,
+      };
+    }
+    return {
+      timestamp: d.signal.timestamp,
+      ticker: d.signal.ticker,
+      action: d.action,
+      side: d.action === 'trade' ? d.trade.side : d.signal.side,
+      size: d.action === 'trade' ? d.trade.size : d.signal.size,
+      price: d.action === 'trade' ? d.trade.price : d.signal.price,
+      confidence: d.signal.confidence,
+      reason: d.action === 'trade' ? d.trade.reason : d.reason,
+    };
+  });
 
   rows = sortRows(rows, decisionFilter.sortKey, decisionFilter.sortDir);
 
@@ -1437,7 +1548,7 @@ function renderDecisionTable() {
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
     <td>${r.size.toLocaleString()}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
-    <td>${(r.confidence*100).toFixed(0)}%</td>
+    <td>${r.confidence === null ? '—' : (r.confidence*100).toFixed(0) + '%'}</td>
   </tr>`).join('');
 
   el.innerHTML = `<table class="positions-table sortable">
@@ -1479,7 +1590,10 @@ function reasonDetailsHTML(ticker, recentTrades) {
   // stopPropagation - this sits inside a <tr onclick="openMarketDetail(...)">
   // (see renderPositions); without it, opening/reading this disclosure
   // also opened the market-detail modal underneath it, direct report.
-  return `<details class="whale-reason" onclick="event.stopPropagation()"><summary title="Why this position was opened" aria-label="Why this position was opened">🐋</summary><div class="whale-reason-body">${items}</div></details>`;
+  // data-ticker lets renderPositions restore this element's open/closed
+  // state across a rebuild (see there) - direct report: it was silently
+  // snapping shut on every poll refresh, same class of bug the modal one was.
+  return `<details class="whale-reason" data-ticker="${esc(ticker)}" onclick="event.stopPropagation()"><summary title="Why this position was opened" aria-label="Why this position was opened">🐋</summary><div class="whale-reason-body">${items}</div></details>`;
 }
 
 // The actual answer to "where did my money go": every open position,
@@ -1495,6 +1609,15 @@ function renderPositions(positions, prices, recentTrades, signals) {
     el.innerHTML = '<div class="empty">No open positions — nothing has been bought yet</div>';
     return;
   }
+
+  // This whole table is rebuilt from scratch below (innerHTML wholesale) on
+  // every poll - fine for the table itself, but it was also silently
+  // discarding any manually-opened whale-reason <details> disclosure in the
+  // process, so it snapped shut on the next refresh, direct report. Capture
+  // which tickers were open beforehand and restore them after the rebuild.
+  const openWhaleReasonTickers = new Set(
+    Array.from(el.querySelectorAll('details.whale-reason[open]')).map(d => d.dataset.ticker)
+  );
 
   // Grouped by event_ticker (same underlying question - e.g. two different
   // outcomes of the same election both held) via marketTitles, not by
@@ -1521,8 +1644,13 @@ function renderPositions(positions, prices, recentTrades, signals) {
 
     const positionRows = group.map(p => {
       const current = prices[p.ticker] ?? p.entry_price;
-      const cost = p.size * p.entry_price;
-      const value = p.size * current;
+      // cost_basis comes from the backend (PaperBroker.cost_basis) rather
+      // than being recomputed here - it's side-aware (a "no" position's
+      // real cost is size*(1-entry_price), not size*entry_price) and this
+      // way there's exactly one place that math can be wrong, not two.
+      // value follows the same side-aware convention for the same reason.
+      const cost = p.cost_basis ?? (p.size * p.entry_price);
+      const value = p.side === 'yes' ? p.size * current : p.size * (1 - current);
       const ret = value - cost;
       const retPct = cost ? (ret / cost * 100) : 0;
       totalContracts += p.size; totalCost += cost; totalValue += value;
@@ -1569,6 +1697,12 @@ function renderPositions(positions, prices, recentTrades, signals) {
     </tr></thead>
     <tbody>${bodyRows}</tbody>
   </table>`;
+
+  if (openWhaleReasonTickers.size) {
+    el.querySelectorAll('details.whale-reason').forEach(d => {
+      if (openWhaleReasonTickers.has(d.dataset.ticker)) d.open = true;
+    });
+  }
 }
 
 // Every fill that's actually happened to the paper bankroll, in order — the
@@ -1598,7 +1732,7 @@ function renderTrades(trades, prices) {
         <div class="nums">
           <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
           <span style="color: var(--muted)">${when}</span>
-          ${costHTML(t.size, t.price)}
+          ${costHTML(t.size, t.side === 'yes' ? t.price : (1 - t.price))}
           ${payoutHTML(t.size)}
         </div>
       </div>`;
@@ -1630,7 +1764,11 @@ function renderTradeLogTable() {
     return true;
   }).map(t => {
     const current = lastTradeLogPrices[t.ticker] ?? t.price;
-    const pnl = (current - t.price) * t.size;
+    // direction-aware, same as PaperBroker.mark_to_market - without it a
+    // "no" row's gain/loss showed with the sign flipped (a no position
+    // gaining when price falls read as a loss here, and vice versa).
+    const direction = t.side === 'yes' ? 1 : -1;
+    const pnl = direction * (current - t.price) * t.size;
     return Object.assign({}, t, { pnl, confidence: parseConfidence(t.reason) });
   });
 
@@ -1853,6 +1991,11 @@ async function loadSignalHistory() {
     const resp = await fetchJSON(`/api/signals/history?${params}`);
     signalHistoryRows = resp.signals || [];
     signalHistoryTotal = resp.total || 0;
+    // Older/resolved signals often reference tickers that have long since
+    // rotated off the live watchlist and won't be in /api/state's scoped
+    // market_titles - the backend enriches this response with titles for
+    // exactly the tickers on this page, merged in the same way.
+    Object.assign(marketTitles, resp.market_titles || {});
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load signal history.</div>';
     return;
@@ -1932,6 +2075,7 @@ async function loadSignalClusters() {
   if (!el) return;
   try {
     const resp = await fetchJSON('/api/signals/clusters?hours=24');
+    Object.assign(marketTitles, resp.market_titles || {});
     renderSignalClusters(resp.clusters || []);
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load.</div>';
@@ -1961,15 +2105,170 @@ function renderSignalClusters(clusters) {
   }).join('');
 }
 
+// History tab (direct request) - closed-trade record, win/loss rates, what
+// closed each position, and sample-size-hedged tuning hints. Backed by
+// GET /api/trading-history, a separate on-demand/paginated fetch (like
+// loadSignalHistory above), loaded when this tab opens.
+let historyTrades = [];
+let historyTotal = 0;
+let historyFilter = { offset: 0, limit: 25 };
+
+async function loadTradingHistory() {
+  const el = $('history-trades');
+  if (!el) return;
+  const params = new URLSearchParams({ limit: historyFilter.limit, offset: historyFilter.offset });
+  try {
+    const resp = await fetchJSON(`/api/trading-history?${params}`);
+    historyTrades = resp.trades || [];
+    historyTotal = resp.total || 0;
+    Object.assign(marketTitles, resp.market_titles || {});
+    renderHistorySummary(resp.summary);
+    renderHistoryPnlChart(resp.cumulative_pnl_curve || []);
+    renderHistoryCloseTypeBreakdown((resp.summary || {}).by_close_type || {});
+    renderHistoryInsights(resp.insights || []);
+    renderHistoryTrades();
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
+  }
+}
+
+function historyDurationHTML(sec) {
+  if (sec === null || sec === undefined) return '—';
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${(sec / 3600).toFixed(1)}h`;
+  return `${(sec / 86400).toFixed(1)}d`;
+}
+
+const HISTORY_CLOSE_TYPE_LABELS = {
+  take_profit: 'Take-Profit', stop_loss: 'Stop-Loss', sentiment_reversal: 'Sentiment Reversal',
+  auto_exit: 'Auto-Exit', settled_win: 'Settled (Won)', settled_loss: 'Settled (Lost)', unknown: 'Unknown',
+};
+
+function renderHistorySummary(summary) {
+  summary = summary || {};
+  const winRate = summary.win_rate_pct !== null && summary.win_rate_pct !== undefined ? `${summary.win_rate_pct.toFixed(0)}%` : '—';
+  const pnl = summary.total_realized_pnl ?? 0;
+  const pnlColor = pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)');
+  $('history-summary-cards').innerHTML = `
+    <div class="cell"><div class="lbl">Closed Trades</div><div class="val">${summary.total_closed ?? 0}</div></div>
+    <div class="cell"><div class="lbl">Win Rate</div><div class="val">${winRate}</div></div>
+    <div class="cell"><div class="lbl">Total Capital Deployed</div><div class="val">${fmt(summary.total_capital_deployed ?? 0)}</div></div>
+    <div class="cell"><div class="lbl">Total Realized P&amp;L</div><div class="val" style="color:${pnlColor}">${fmt(pnl)}</div></div>
+    <div class="cell"><div class="lbl">Left on Table (early exits)</div><div class="val">${fmt(summary.total_left_on_table ?? 0)}</div></div>
+    <div class="cell"><div class="lbl">Avg Hold Time</div><div class="val">${historyDurationHTML(summary.avg_hold_sec)}</div></div>
+  `;
+}
+
+function renderHistoryPnlChart(curve) {
+  renderEquityChart(curve, 0, 'cumulative_pnl', 'breakeven', 'history-pnl-chart');
+}
+
+function renderHistoryCloseTypeBreakdown(byCloseType) {
+  const el = $('history-close-type-breakdown');
+  const keys = Object.keys(byCloseType);
+  if (!keys.length) {
+    el.innerHTML = '<div class="empty">No closed trades yet.</div>';
+    return;
+  }
+  const rows = keys.map(key => {
+    const c = byCloseType[key];
+    const avgColor = (c.avg_pnl ?? 0) > 0 ? 'var(--yes)' : ((c.avg_pnl ?? 0) < 0 ? 'var(--no)' : 'var(--text)');
+    return `<tr>
+      <td>${esc(HISTORY_CLOSE_TYPE_LABELS[key] || key)}</td>
+      <td>${c.count}</td>
+      <td>${c.wins}/${c.count}</td>
+      <td>${c.total_pnl !== null ? fmt(c.total_pnl) : '—'}</td>
+      <td style="color:${avgColor}">${c.avg_pnl !== null ? fmt(c.avg_pnl) : '—'}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="positions-table">
+    <thead><tr><th>Close Type</th><th>Count</th><th>Wins</th><th>Total P&amp;L</th><th>Avg P&amp;L</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+const HISTORY_CONFIDENCE_COLOR = { low: 'var(--muted)', moderate: 'var(--whale)', higher: 'var(--yes)' };
+
+function renderHistoryInsights(insights) {
+  const el = $('history-insights');
+  $('history-insights-count').textContent = insights.length ? `(${insights.length})` : '';
+  if (!insights.length) {
+    el.innerHTML = '<div class="empty">Not enough closed trades yet for any tuning hints.</div>';
+    return;
+  }
+  el.innerHTML = insights.map(i => `
+    <div class="signal-card">
+      <div class="top-row">
+        <span style="font-family:var(--mono); font-size:11px; color:var(--muted);">strategy.${esc(i.topic)}</span>
+        <span style="color:${HISTORY_CONFIDENCE_COLOR[i.confidence] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(i.confidence)} confidence · n=${i.n}</span>
+      </div>
+      <div>${esc(i.text)}</div>
+    </div>
+  `).join('');
+}
+
+function renderHistoryTrades() {
+  const el = $('history-trades');
+  $('history-trades-count').textContent = historyTotal ? `(${historyTotal})` : '';
+  if (!historyTrades.length) {
+    el.innerHTML = '<div class="empty">No closed trades yet — once a position is closed (take-profit, stop-loss, sentiment reversal, auto-exit, or settlement) it will show up here.</div>';
+    return;
+  }
+  const rows = historyTrades.map(t => {
+    const label = marketLabel(t.ticker);
+    const pnl = t.realized_pnl;
+    const pnlColor = pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)');
+    const closeTypeLabel = HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type || 'unknown';
+    const conf = t.entry_confidence !== null && t.entry_confidence !== undefined ? `${(t.entry_confidence * 100).toFixed(0)}%` : '—';
+    const title = `Entry: ${t.entry_reason || 'unknown'}\nExit: ${t.exit_reason}`;
+    return `<tr title="${esc(title)}">
+      <td>${esc(label.short)}</td>
+      <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>
+      <td>${t.size.toLocaleString()}</td>
+      <td>${t.entry_price !== null ? (t.entry_price * 100).toFixed(0) + '¢' : '—'}</td>
+      <td>${(t.exit_price * 100).toFixed(0)}¢</td>
+      <td>${t.cost_basis !== null && t.cost_basis !== undefined ? fmt(t.cost_basis) : '—'}</td>
+      <td>${fmt(t.cash_back ?? 0)}</td>
+      <td>${esc(closeTypeLabel)}</td>
+      <td>${historyDurationHTML(t.hold_sec)}</td>
+      <td>${conf}</td>
+      <td style="color:${pnlColor}">${pnl !== null ? fmt(pnl) : '—'}</td>
+      <td>${t.left_on_table ? fmt(t.left_on_table) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const totalPages = Math.max(1, Math.ceil(historyTotal / historyFilter.limit));
+  const currentPage = Math.floor(historyFilter.offset / historyFilter.limit) + 1;
+  const pager = `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:11px; color:var(--muted);">
+    <span>Page ${currentPage} of ${totalPages}</span>
+    <span>
+      <button ${historyFilter.offset <= 0 ? 'disabled' : ''}
+        onclick="historyFilter.offset = Math.max(0, historyFilter.offset - historyFilter.limit); loadTradingHistory();">← Prev</button>
+      <button ${currentPage >= totalPages ? 'disabled' : ''}
+        onclick="historyFilter.offset += historyFilter.limit; loadTradingHistory();">Next →</button>
+    </span>
+  </div>`;
+
+  el.innerHTML = `<table class="positions-table sortable">
+    <thead><tr>
+      <th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Exit</th>
+      <th title="Dollar amount actually paid at entry">Cost</th><th title="Dollar amount actually received at exit">Payout</th>
+      <th>Closed By</th><th>Held</th><th title="Whale confidence at entry">Entry Conf.</th>
+      <th>Realized P&amp;L</th><th title="Hypothetical: size*(1-exit price) for yes / size*exit price for no - what a full $1 win would have paid beyond what this early exit actually banked">Left on Table</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>` + pager;
+}
+
 // Traditional trading-view element: bankroll trajectory over time, not just
 // the current number. Plain inline SVG, no charting library.
 // Shared by both the paper equity curve and the real-balance curve — valueKey
 // picks which field each point uses ("equity" vs "balance"), baselineLabel
 // just changes the caption underneath.
-function renderEquityChart(history, baseline, valueKey, baselineLabel) {
+function renderEquityChart(history, baseline, valueKey, baselineLabel, elId) {
   valueKey = valueKey || 'equity';
   baselineLabel = baselineLabel || 'starting bankroll';
-  const el = $('equity-chart');
+  const el = $(elId || 'equity-chart');
   if (!history || history.length < 2 || baseline === undefined || baseline === null) {
     el.innerHTML = '<div class="empty">Not enough history yet — check back in a minute</div>';
     return;
@@ -2889,7 +3188,7 @@ function renderDummiesPanel(positions, prices, signals, startingBankroll) {
     const sideClass = p.side === 'yes' ? 'hl-yes' : 'hl-no';
     const currentYes = prices[p.ticker] ?? p.entry_price;
     const likelihood = Math.round((p.side === 'yes' ? currentYes : (1 - currentYes)) * 100);
-    const capitalAtRisk = p.size * p.entry_price;
+    const capitalAtRisk = p.cost_basis ?? (p.size * p.entry_price);
     const riskPct = startingBankroll ? (capitalAtRisk / startingBankroll * 100) : 0;
     const lean = computeWhaleLean(p.ticker, signals);
 
@@ -3016,8 +3315,15 @@ async function refresh() {
     const broker = state.broker;
     renderHeaderStrip(broker, state.account, state.real_balance_history || []);
 
-    marketTitles = state.market_titles || {};
-    eventTitles = state.event_titles || {};
+    // Merge, don't replace - /api/state's market_titles/event_titles are
+    // scoped to what's currently relevant (see _build_state_body) to keep
+    // the payload bounded, not the full accumulated history. A title
+    // learned once (here, or via loadSignalHistory/loadSignalClusters
+    // merging their own responses in below) should stay known for the rest
+    // of this browser session even after its ticker drops out of scope,
+    // instead of disappearing the next time this wholesale-replaced.
+    Object.assign(marketTitles, state.market_titles || {});
+    Object.assign(eventTitles, state.event_titles || {});
     seriesMeta = state.series_meta || {};
     liveStatus = state.live_status || {};
     renderRealMoneyBanner(state.account); // always visible, above everything
@@ -3077,6 +3383,19 @@ async function loadConfig() {
   $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
   $('cfg-live-only').checked = !!cfg.strategy.live_markets_only;
   $('cfg-excluded-series').value = (cfg.strategy.excluded_series || []).join(', ');
+  $('cfg-take-profit').value = cfg.strategy.take_profit_pct ?? '';
+  $('cfg-stop-loss').value = cfg.strategy.stop_loss_pct ?? '';
+  $('cfg-exit-sentiment-reversal').checked = !!cfg.strategy.exit_on_sentiment_reversal;
+  $('cfg-exit-sentiment-min-signals').value = cfg.strategy.exit_sentiment_min_signals ?? 3;
+  $('cfg-exit-sentiment-lean-pct').value = cfg.strategy.exit_sentiment_lean_pct ?? 65;
+  $('cfg-auto-exit-enabled').checked = !!cfg.strategy.auto_exit_enabled;
+  $('cfg-auto-exit-threshold').value = cfg.strategy.auto_exit_threshold ?? 0.6;
+  $('cfg-auto-exit-pnl-weight').value = cfg.strategy.auto_exit_pnl_weight ?? 1.0;
+  $('cfg-auto-exit-sentiment-weight').value = cfg.strategy.auto_exit_sentiment_weight ?? 1.0;
+  $('cfg-auto-exit-staleness-weight').value = cfg.strategy.auto_exit_staleness_weight ?? 0.5;
+  $('cfg-auto-exit-gain-ref').value = cfg.strategy.auto_exit_gain_reference_pct ?? 0.5;
+  $('cfg-auto-exit-loss-ref').value = cfg.strategy.auto_exit_loss_reference_pct ?? 0.3;
+  $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -3121,6 +3440,19 @@ $('save-config-btn').addEventListener('click', async () => {
       min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
       live_markets_only: $('cfg-live-only').checked,
       excluded_series: $('cfg-excluded-series').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
+      take_profit_pct: $('cfg-take-profit').value === '' ? null : parseFloat($('cfg-take-profit').value),
+      stop_loss_pct: $('cfg-stop-loss').value === '' ? null : parseFloat($('cfg-stop-loss').value),
+      exit_on_sentiment_reversal: $('cfg-exit-sentiment-reversal').checked,
+      exit_sentiment_min_signals: parseInt($('cfg-exit-sentiment-min-signals').value),
+      exit_sentiment_lean_pct: parseFloat($('cfg-exit-sentiment-lean-pct').value),
+      auto_exit_enabled: $('cfg-auto-exit-enabled').checked,
+      auto_exit_threshold: parseFloat($('cfg-auto-exit-threshold').value),
+      auto_exit_pnl_weight: parseFloat($('cfg-auto-exit-pnl-weight').value),
+      auto_exit_sentiment_weight: parseFloat($('cfg-auto-exit-sentiment-weight').value),
+      auto_exit_staleness_weight: parseFloat($('cfg-auto-exit-staleness-weight').value),
+      auto_exit_gain_reference_pct: parseFloat($('cfg-auto-exit-gain-ref').value),
+      auto_exit_loss_reference_pct: parseFloat($('cfg-auto-exit-loss-ref').value),
+      auto_exit_stale_after_sec: parseInt($('cfg-auto-exit-stale-sec').value),
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),
@@ -3332,18 +3664,20 @@ async function loadSession() {
   }
 }
 
-const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'config'];
+const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'history', 'config'];
 function showView(name) {
   VIEWS.forEach(v => {
     $('view-' + v).classList.toggle('active', v === name);
     $('tab-btn-' + v).classList.toggle('active', v === name);
   });
   localStorage.setItem('whale-signal-view', name);
-  // Signal history is a separate on-demand fetch, not part of the /api/state
-  // poll cycle (see loadSignalHistory) - load it fresh whenever this tab is
-  // opened, rather than every 5s poll, so paging/sorting doesn't reset
-  // itself out from under someone actively browsing it.
+  // Signal history / trading history are separate on-demand fetches, not
+  // part of the /api/state poll cycle (see loadSignalHistory,
+  // loadTradingHistory) - load fresh whenever the tab is opened, rather
+  // than every 5s poll, so paging/sorting doesn't reset itself out from
+  // under someone actively browsing it.
   if (name === 'whale') { loadSignalHistory(); loadSignalClusters(); }
+  if (name === 'history') { loadTradingHistory(); }
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
 

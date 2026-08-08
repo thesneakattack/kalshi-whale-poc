@@ -38,6 +38,50 @@ def test_open_position_cost_capped_at_bankroll(tmp_path, monkeypatch):
     assert trade.size == int(10.0 / 0.5)
 
 
+def test_open_position_no_side_charges_inverted_price(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    # price is always the yes price - a NO contract at yes-price 0.3 really
+    # costs (1-0.3)=0.7/contract, not 0.3/contract.
+    trade = broker.open_position("TICK-A", "no", size=100, price=0.3, reason="test")
+    assert broker.bankroll == 1000.0 - 100 * 0.7
+    assert trade.size == 100
+    assert trade.price == 0.3  # still stored in yes-price terms
+
+
+def test_open_position_no_side_cost_capped_at_bankroll(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=7.0)
+    # unit cost = 1-0.3 = 0.7/contract; size*0.7 = 1000*0.7 = 700, far more
+    # than the $7 available - the fill should shrink to fit at the true
+    # NO-side unit cost, not the yes-price.
+    trade = broker.open_position("TICK-A", "no", size=1000, price=0.3, reason="test")
+    assert broker.bankroll == 0.0
+    assert trade.size == int(7.0 / 0.7)
+
+
+def test_cost_basis_yes_side(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
+    assert broker.cost_basis("TICK-A") == 50.0
+
+
+def test_cost_basis_no_side(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "no", size=100, price=0.3, reason="test")
+    assert broker.cost_basis("TICK-A") == 70.0
+
+
+def test_cost_basis_no_open_position_is_zero(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    assert broker.cost_basis("NOPE") == 0.0
+
+
+def test_state_positions_include_cost_basis(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "no", size=100, price=0.3, reason="test")
+    state = broker.state({})
+    assert state["positions"][0]["cost_basis"] == 70.0
+
+
 def test_can_trade_respects_cooldown(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="test")
@@ -126,3 +170,57 @@ def test_reset_wipes_state_and_persists_the_wipe(tmp_path, monkeypatch):
     assert resumed.bankroll == 500.0
     assert resumed.positions == {}
     assert resumed.trade_log == []
+
+
+def test_close_position_yes_side_realizes_profit(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950
+    trade = broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
+    assert trade is not None
+    assert trade.side == "yes"
+    assert trade.size == 100
+    assert trade.price == 0.75
+    assert "closed:" in trade.reason and "take-profit" in trade.reason
+    # cash back = 100 * 0.75 = 75; bankroll = 950 + 75 = 1025 (net +25 profit)
+    assert broker.bankroll == 1025.0
+    assert "TICK-A" not in broker.positions
+    assert len(broker.trade_log) == 2  # the open, and the close
+
+
+def test_close_position_yes_side_realizes_loss(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950
+    broker.close_position("TICK-A", exit_price=0.3, reason="stop-loss")
+    # cash back = 100 * 0.3 = 30; bankroll = 950 + 30 = 980 (net -20 loss)
+    assert broker.bankroll == 980.0
+
+
+def test_close_position_no_side_uses_inverted_price(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    # NO position entered when yes-price was 0.4, so the NO side really costs
+    # (1-0.4)=0.6/contract - open_position charges that, even though
+    # entry_price is still stored in yes-price terms (see mark_to_market).
+    broker.open_position("TICK-A", "no", size=100, price=0.4, reason="entry")  # cost = 100*0.6 = 60, bankroll -> 940
+    broker.close_position("TICK-A", exit_price=0.2, reason="whale sentiment reversed")
+    # yes price dropped 0.4 -> 0.2, so the NO side gained: cash back = 100 * (1 - 0.2) = 80
+    assert broker.bankroll == 1020.0  # 940 + 80
+
+
+def test_close_position_returns_none_for_no_open_position(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    result = broker.close_position("TICK-NOPE", exit_price=0.5, reason="n/a")
+    assert result is None
+    assert broker.bankroll == 1000.0
+
+
+def test_close_position_persists_across_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "paper_broker.db"
+    monkeypatch.setattr(pb, "DB_PATH", db_path)
+    broker = pb.PaperBroker(starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
+
+    resumed = pb.PaperBroker(starting_bankroll=999999.0)
+    assert resumed.bankroll == 1025.0
+    assert "TICK-A" not in resumed.positions
+    assert len(resumed.trade_log) == 2

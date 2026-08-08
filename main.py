@@ -17,6 +17,8 @@ load_dotenv()  # reads .env if present; every var is optional, see .env.example
 from services import accounts_store
 from services import auth as auth_service
 from services import signal_log
+from services import title_cache
+from services import trade_analytics
 from services.config_store import config_store
 from services.http_client import close_client
 from services.kalshi_client import KalshiClient
@@ -60,8 +62,13 @@ state = {
     "running": True,
     "markets": [],
     "latest_prices": {},
-    "market_titles": {},
-    "event_titles": {},  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
+    # Seeded from data/title_cache.db (see services/title_cache.py) rather
+    # than {} - these two accumulate over the app's whole lifetime, not just
+    # since the last uvicorn --reload restart, so a ticker/event learned
+    # once keeps its title even after it rotates off the top-volume
+    # watchlist or the dev server reloads.
+    "market_titles": title_cache.load_market_titles(),
+    "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
     "series_cache": {"fetched_at": 0.0, "series": []},  # see _get_top_series
@@ -172,7 +179,35 @@ def _series_meta_map(series_tickers: set[str]) -> dict:
     }
 
 
-async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
+def _relevant_tickers() -> set[str]:
+    """Every ticker actually shown on this tick's /api/state response -
+    current watchlist, open positions, and whatever's still in the capped
+    signal/decision feeds. state["market_titles"]/state["event_titles"]
+    themselves accumulate unbounded for the app's whole lifetime now (see
+    services/title_cache.py) so history/clusters can still resolve an old
+    ticker's title on their own separately-scoped requests, but /api/state
+    itself must stay scoped to this same small set - same reasoning, same
+    ~1MB regression risk, as _series_meta_map above."""
+    tickers = {m["ticker"] for m in state["markets"] if m.get("ticker")}
+    tickers |= set(broker.positions.keys())
+    tickers |= {s["ticker"] for s in state["signal_feed"] if s.get("ticker")}
+    for d in state["decision_feed"]:
+        t = d.get("ticker") or (d.get("signal") or {}).get("ticker")
+        if t:
+            tickers.add(t)
+    return tickers
+
+
+def _scoped_market_titles(tickers: set[str]) -> dict:
+    return {t: state["market_titles"][t] for t in tickers if t in state["market_titles"]}
+
+
+def _scoped_event_titles(market_titles: dict) -> dict:
+    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
+    return {et: state["event_titles"][et] for et in event_tickers if et in state["event_titles"]}
+
+
+async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[str] | None = None) -> list[dict]:
     watchlist = cfg["kalshi"]["markets_watchlist"]
     if watchlist:
         # One ticker at a time, sequentially, meant 8 round trips paid back-to-back —
@@ -180,11 +215,26 @@ async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
         results = await asyncio.gather(
             *(client.get_market(ticker) for ticker in watchlist), return_exceptions=True
         )
-        return [m for m in results if isinstance(m, dict)]
-    top_series = await _get_top_series(client)
-    return await client.get_top_volume_markets(
-        cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series,
-    )
+        markets = [m for m in results if isinstance(m, dict)]
+    else:
+        top_series = await _get_top_series(client)
+        markets = await client.get_top_volume_markets(
+            cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series,
+        )
+
+    # A currently-open paper position must keep getting a fresh price/title
+    # every tick even if its market has rotated out of the top-volume
+    # watchlist selection above - otherwise state["latest_prices"] silently
+    # stops updating for it, which freezes mark_to_market and breaks
+    # check_exits' take-profit/stop-loss/auto-exit triggers for a position
+    # nobody's actively watching anymore even though real money (paper or
+    # not) is still on the line.
+    have = {m["ticker"] for m in markets if m.get("ticker")}
+    missing = [t for t in (extra_tickers or []) if t not in have]
+    if missing:
+        results = await asyncio.gather(*(client.get_market(t) for t in missing), return_exceptions=True)
+        markets.extend(m for m in results if isinstance(m, dict))
+    return markets
 
 
 async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[dict]:
@@ -400,13 +450,21 @@ async def trading_loop():
             # Market data, account data, exchange status, and resolution-checking
             # don't depend on each other — fetch/run all four concurrently.
             markets, account_snapshot, exchange_status, _ = await asyncio.gather(
-                _fetch_markets(client, cfg), _fetch_account_snapshot(cfg),
+                _fetch_markets(client, cfg, extra_tickers=list(broker.positions.keys())), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client), _check_signal_resolutions(client),
             )
             state["account"] = account_snapshot
             if exchange_status is not None:
                 state["exchange_status"] = exchange_status
 
+            # Straight from Kalshi's market.result field ("yes"/"no"/"" -
+            # empty until the market settles) - used unconditionally by
+            # check_exits to close out any open position on a market that's
+            # actually resolved, regardless of exit config. Built from the
+            # full (pre-_slim_market) markets list since result isn't one of
+            # _MARKET_FIELDS (that trimming is only for the /api/state
+            # payload, not internal use).
+            market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
             state["markets"] = [_slim_market(m) for m in markets]
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
@@ -415,8 +473,7 @@ async def trading_loop():
                 _fetch_live_status(client, markets),
             )
             state["event_titles"].update(event_titles)
-            if len(state["event_titles"]) > 500:  # bound unbounded growth, same as market_titles below
-                state["event_titles"] = dict(list(state["event_titles"].items())[-500:])
+            title_cache.save_event_titles(event_titles)  # event_titles here is already just this tick's new entries, see _fetch_event_titles
             state["trade_tape"] = trade_tape
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
@@ -434,8 +491,15 @@ async def trading_loop():
             # side tag - previously only a single collapsed title string was kept
             # here, which lost that. Accumulates (doesn't overwrite) so a signal
             # from a market that has since rotated out of the top-volume
-            # watchlist still resolves to its title.
-            state["market_titles"].update({
+            # watchlist still resolves to its title - kept unbounded in memory
+            # and write-through persisted to data/title_cache.db (see
+            # services/title_cache.py) rather than capped at 500 by insertion
+            # order, which used to silently evict exactly the older entries
+            # signal history/clusters/positions need most. _build_state_body
+            # scopes what's actually sent over /api/state, so this growing
+            # unbounded server-side doesn't reintroduce the payload-size
+            # regression that scoping was built to fix.
+            new_market_titles = {
                 m["ticker"]: {
                     "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
                     "yes_sub_title": m.get("yes_sub_title"),
@@ -443,9 +507,9 @@ async def trading_loop():
                     "event_ticker": m.get("event_ticker"),
                 }
                 for m in markets if m.get("ticker")
-            })
-            if len(state["market_titles"]) > 500:  # bound unbounded growth over a long-running process
-                state["market_titles"] = dict(list(state["market_titles"].items())[-500:])
+            }
+            state["market_titles"].update(new_market_titles)
+            title_cache.save_market_titles(new_market_titles)
             # Computed once per poll tick (not per /api/state request, which is polled
             # more often) since it's the same until the next tick anyway.
             state["series_track_record"] = {
@@ -522,7 +586,7 @@ async def trading_loop():
                 event_ticker = market_info.get("event_ticker")
                 is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
 
-                decision = strategy.evaluate(signal, cfg, is_live=is_live)
+                decision = strategy.evaluate(signal, cfg, is_live=is_live, market_results=market_results)
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
@@ -531,7 +595,17 @@ async def trading_loop():
                 # the same question against real-account-sized bankroll,
                 # and only ever logs, never executes. See services/shadow_mode.py.
                 if shadow_active:
-                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source, is_live=is_live)
+                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source, is_live=is_live, market_results=market_results)
+
+            # Active position management - runs every tick regardless of
+            # whether any new signal came in this tick, since a position can
+            # need closing (take-profit/stop-loss/sentiment-reversal) purely
+            # because the market moved or whale flow shifted, not because a
+            # fresh signal arrived. See FollowTheWhaleStrategy.check_exits.
+            for close_decision in strategy.check_exits(state["latest_prices"], state["signal_feed"], cfg, market_results):
+                state["decision_feed"].insert(0, close_decision)
+                state["decision_feed"] = state["decision_feed"][:50]
+                state["stats"]["trades_placed"] += 1
 
         except Exception as e:
             state["error"] = str(e)
@@ -800,9 +874,16 @@ async def get_signal_history(limit: int = 50, offset: int = 0, resolved_only: bo
     # separate paginated fetch, same pattern as /api/markets/search.
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
+    signals = signal_log.recent(limit=limit, offset=offset, resolved_only=resolved_only)
     return {
-        "signals": signal_log.recent(limit=limit, offset=offset, resolved_only=resolved_only),
+        "signals": signals,
         "total": signal_log.total_count(resolved_only=resolved_only),
+        # Resolved/older signals routinely reference tickers that have long
+        # since rotated off the live watchlist and won't be in /api/state's
+        # scoped market_titles - state["market_titles"] itself is unbounded
+        # for the app's lifetime (see services/title_cache.py), so this page
+        # of signals can still resolve its own titles independently.
+        "market_titles": _scoped_market_titles({s["ticker"] for s in signals if s.get("ticker")}),
     }
 
 
@@ -812,7 +893,45 @@ async def get_signal_clusters(hours: int = 24):
     # same-actor accumulation groups, inferred from timing/size similarity
     # on the persisted signal log, not a live/poll-cycle concern.
     hours = min(max(hours, 1), 24 * 30)
-    return {"clusters": signal_log.find_clusters(hours=hours)}
+    clusters = signal_log.find_clusters(hours=hours)
+    return {
+        "clusters": clusters,
+        "market_titles": _scoped_market_titles({c["ticker"] for c in clusters if c.get("ticker")}),
+    }
+
+
+@app.get("/api/trading-history")
+async def get_trading_history(limit: int = 50, offset: int = 0):
+    # The History tab (direct request): win/loss record, what closed each
+    # position (take-profit/stop-loss/sentiment-reversal/auto-exit/settled),
+    # and sample-size-hedged hints about which config knob a pattern might
+    # argue for adjusting. All derived from the trade log's existing reason
+    # strings (see services/trade_analytics.py) - no new persistence.
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
+
+    # broker.trade_log is already chronological ascending (append-only at
+    # runtime, ORDER BY timestamp ASC on load) - exactly what
+    # build_trade_history expects and what a cumulative P&L curve needs.
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+
+    cumulative_pnl_curve = []
+    running = 0.0
+    for r in all_rows:
+        if r["realized_pnl"] is not None:
+            running += r["realized_pnl"]
+        cumulative_pnl_curve.append({"t": r["exit_timestamp"], "cumulative_pnl": round(running, 2)})
+
+    newest_first = list(reversed(all_rows))
+    page = newest_first[offset:offset + limit]
+    return {
+        "trades": page,
+        "total": len(all_rows),
+        "summary": trade_analytics.compute_summary(all_rows),
+        "insights": trade_analytics.compute_insights(all_rows),
+        "cumulative_pnl_curve": cumulative_pnl_curve,
+        "market_titles": _scoped_market_titles({r["ticker"] for r in page}),
+    }
 
 
 @app.get("/api/markets/search")
@@ -860,7 +979,7 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         # Opportunistically cache titles/events for whatever this search
         # touched, same shape _fetch_markets already populates - so a result
         # added to the watchlist afterward already has a label, no gap.
-        state["market_titles"].update({
+        searched_titles = {
             m["ticker"]: {
                 "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
                 "yes_sub_title": m.get("yes_sub_title"),
@@ -868,7 +987,9 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
                 "event_ticker": m.get("event_ticker"),
             }
             for m in results if m.get("ticker")
-        })
+        }
+        state["market_titles"].update(searched_titles)
+        title_cache.save_market_titles(searched_titles)
         _bump_generation()  # market_titles changed - invalidate the cached /api/state body, see _build_state_body
         return {
             "markets": [_slim_market(m) for m in results],
@@ -894,11 +1015,12 @@ def _build_state_body() -> dict:
     # that would change the response actually happened, see _bump_generation.
     if _state_body_cache["generation"] == state["generation"]:
         return _state_body_cache["body"]
+    scoped_market_titles = _scoped_market_titles(_relevant_tickers())
     body = {
         "running": state["running"],
         "markets": state["markets"],
-        "market_titles": state["market_titles"],
-        "event_titles": state["event_titles"],
+        "market_titles": scoped_market_titles,
+        "event_titles": _scoped_event_titles(scoped_market_titles),
         "trade_tape": state["trade_tape"],
         "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],

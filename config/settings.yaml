@@ -23,6 +23,19 @@ strategy:
   min_resolved_for_whale_filter: 5
   live_markets_only: true
   excluded_series: []
+  take_profit_pct: null
+  stop_loss_pct: null
+  exit_on_sentiment_reversal: false
+  exit_sentiment_min_signals: 3
+  exit_sentiment_lean_pct: 65
+  auto_exit_enabled: false
+  auto_exit_threshold: 0.6
+  auto_exit_pnl_weight: 1
+  auto_exit_sentiment_weight: 1
+  auto_exit_staleness_weight: 0.5
+  auto_exit_gain_reference_pct: 0.5
+  auto_exit_loss_reference_pct: 0.3
+  auto_exit_stale_after_sec: 1800
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 1

@@ -117,9 +117,17 @@ class PaperBroker:
         return last is None or (time.time() - last) >= cooldown_sec
 
     def open_position(self, ticker: str, side: str, size: int, price: float, reason: str) -> Trade:
-        cost = size * price
+        # price is always the YES price (see module docstring/mark_to_market) -
+        # a NO contract's real per-unit cost is (1 - price), not price itself.
+        # This used to charge `size * price` unconditionally, which silently
+        # undercharged every NO entry (e.g. a NO position on a 0.1 YES price
+        # should cost 0.9/contract, not 0.1) and manufactured phantom profit
+        # on any NO position that never even moved - confirmed directly
+        # against live trade history, not assumed.
+        unit_cost = price if side == "yes" else (1 - price)
+        cost = size * unit_cost
         cost = min(cost, self.bankroll)          # never go negative in the POC
-        actual_size = int(cost / price) if price > 0 else 0
+        actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
 
         self.bankroll -= cost
         self.positions[ticker] = Position(
@@ -143,6 +151,45 @@ class PaperBroker:
                 "INSERT OR REPLACE INTO positions (ticker, side, size, entry_price, opened_at) VALUES (?, ?, ?, ?, ?)",
                 (ticker, side, actual_size, price, self.positions[ticker].opened_at),
             )
+            conn.execute(
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp),
+            )
+        return trade
+
+    def close_position(self, ticker: str, exit_price: float, reason: str) -> Trade | None:
+        """Sells an open position back at exit_price instead of holding it
+        to settlement - direct request: this app had zero exit mechanism at
+        all before this. A YES holder selling at the current market gets
+        exit_price per contract back; a NO holder gets (1 - exit_price) per
+        contract, since exit_price is always expressed in YES-price terms
+        throughout this app (see mark_to_market/latest_prices). Returns
+        None if there's no open position on this ticker - a no-op, not an
+        error, since a poll tick's exit check racing a position that
+        already closed this same tick shouldn't crash the loop."""
+        pos = self.positions.get(ticker)
+        if not pos:
+            return None
+
+        cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
+        realized_pnl = self.mark_to_market(ticker, exit_price)
+        self.bankroll += cash_back
+
+        trade = Trade(
+            id=str(uuid.uuid4())[:8],
+            ticker=ticker,
+            side=pos.side,  # the position's side, not a new "close" side - keeps existing side-tag styling/logic working unchanged
+            size=pos.size,
+            price=exit_price,
+            reason=f"closed: {reason} (realized {realized_pnl:+.2f})",
+            timestamp=time.time(),
+        )
+        self.trade_log.append(trade)
+        del self.positions[ticker]
+
+        with _connect() as conn:
+            conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
+            conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
                 "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp),
@@ -174,6 +221,20 @@ class PaperBroker:
         direction = 1 if pos.side == "yes" else -1
         return direction * (current_price - pos.entry_price) * pos.size
 
+    def cost_basis(self, ticker: str) -> float:
+        """The real dollar amount tied up in this position - size *
+        entry_price for yes, size * (1 - entry_price) for no, same
+        yes-price-always convention as entry_price/mark_to_market/
+        open_position's unit_cost. Single source of truth so strategy_engine
+        (pnl_pct for take-profit/stop-loss/auto-exit) and the dashboard
+        (Cost/Payout columns, capital-at-risk) can't each reimplement this
+        and drift out of sync with each other or with what open_position
+        actually charged."""
+        pos = self.positions.get(ticker)
+        if not pos:
+            return 0.0
+        return pos.size * (pos.entry_price if pos.side == "yes" else (1 - pos.entry_price))
+
     def total_unrealized_pnl(self, latest_prices: dict[str, float]) -> float:
         return sum(
             self.mark_to_market(ticker, latest_prices.get(ticker, pos.entry_price))
@@ -188,6 +249,8 @@ class PaperBroker:
             "bankroll": round(self.bankroll, 2),
             "equity": self.equity(latest_prices),
             "starting_bankroll": self.starting_bankroll,
-            "positions": [asdict(p) for p in self.positions.values()],
+            "positions": [
+                {**asdict(p), "cost_basis": round(self.cost_basis(p.ticker), 2)} for p in self.positions.values()
+            ],
             "recent_trades": [t.to_dict() for t in self.trade_log[-25:][::-1]],
         }

@@ -127,7 +127,8 @@ class ShadowTrader:
         self.reset_day(current_bankroll)
 
     def evaluate(
-        self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str, is_live: bool | None = None
+        self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str,
+        is_live: bool | None = None, market_results: dict | None = None,
     ) -> dict | None:
         """Mirrors FollowTheWhaleStrategy.evaluate's gates (same order, same
         thresholds) but against reference_bankroll instead of the paper
@@ -139,6 +140,9 @@ class ShadowTrader:
         risk_cfg = cfg["risk"]
 
         if not self.check_daily_loss(reference_bankroll, risk_cfg["max_daily_loss_pct"], risk_cfg["kill_switch_enabled"]):
+            return None
+        result = ((market_results or {}).get(signal.ticker) or "").strip().lower()
+        if result in ("yes", "no"):
             return None
         if strat_cfg.get("live_markets_only") and not is_live:
             return None
@@ -158,7 +162,12 @@ class ShadowTrader:
             return None
 
         max_size = reference_bankroll * strat_cfg["max_position_pct"]
-        contracts = int(max_size / signal.price) if signal.price > 0 else 0
+        # signal.price is always the YES price - a NO print's real
+        # per-contract cost is (1 - price), same fix as
+        # strategy_engine.evaluate(); shadow mode should size trades the
+        # same way the real paper broker would.
+        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+        contracts = int(max_size / unit_cost) if unit_cost > 0 else 0
         if contracts <= 0:
             return None
 

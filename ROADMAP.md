@@ -505,13 +505,183 @@ a Simple/Advanced pair using the toggle above:
       considered and deferred there) rather than payload waste anymore.
 
 Scope boundary, decided explicitly rather than left implicit: this app has
-zero manual/discretionary trading anywhere today — no order entry, no way
-to close a position early, paper or real; every trade is placed by the
-automated whale-follow strategy. Kalshi Pro is fundamentally a manual
-trading terminal with automation as an assist, the opposite emphasis.
-Confirmed staying automated-only for Phase 0.5 — this stays a terminal for
-*observing* the strategy, not a general manual trading UI. Worth
-revisiting only if the goal of the app itself changes.
+zero *manual* trading anywhere today — no order entry UI; every position is
+still opened by the automated whale-follow strategy, never a person
+clicking "buy." Kalshi Pro is fundamentally a manual trading terminal with
+automation as an assist, the opposite emphasis. Confirmed staying
+automated-only for Phase 0.5 — this stays a terminal for *observing* the
+strategy, not a general manual trading UI. Worth revisiting only if the
+goal of the app itself changes. (Exit management below is still
+automated — config-driven rules and an algorithm decide when a position
+closes, not a person clicking "sell" — so this boundary still holds; what
+changed is that positions are no longer left open unmanaged after entry.)
+
+## Active position management & Trading History
+
+Direct request: "once positions are opened they are never monitored/
+changed to better reflect whale trends and minimize potential losses/
+maximize gains as confidence/whale positions change... kalshi lets you set
+sell prices so if say you open a position at 50c you can set to cash out
+at 75c instead of 99c and profit." Before this, `PaperBroker` had no exit
+mechanism at all — a position sat untouched from entry until the process
+happened to notice it later; "unrealized P&L" never became realized, gains
+were never locked in, losing positions were never cut, and a position on a
+market that had already settled just stayed open forever with no realized
+outcome.
+
+- [x] `PaperBroker.close_position(ticker, exit_price, reason)` — sells a
+      position back at a given price instead of only holding to $1/$0
+      settlement, same side-aware cash-back math (`price` for yes,
+      `1-price` for no) `mark_to_market` already used. Reuses the existing
+      `trades` table exactly (no schema change) — a close is a trade whose
+      `reason` starts with `"closed: "`, `side` stays the position's
+      original side so existing side-tag styling/logic works unchanged.
+- [x] `FollowTheWhaleStrategy.check_exits(latest_prices, signal_feed, cfg,
+      market_results)`, run every trading-loop tick regardless of whether a
+      new signal arrived. Checked in priority order per open position:
+      1. **Market settlement** (unconditional, not opt-in) — closes at the
+         terminal $1/$0 price the instant `market.result` is set,
+         regardless of any other config. This is the correctness fix for
+         the "left open forever" gap above.
+      2. **`take_profit_pct`** (opt-in, default `null`) — close once
+         unrealized gain reaches this fraction of cost basis.
+      3. **`stop_loss_pct`** (opt-in, default `null`) — same, for a loss.
+      4. **`exit_on_sentiment_reversal`** (opt-in, default `false`) — close
+         if whale sentiment on this ticker (`_whale_lean`, same math as the
+         dashboard's `computeWhaleLean`) has flipped decisively against the
+         held side, once enough recent signals exist
+         (`exit_sentiment_min_signals`/`exit_sentiment_lean_pct`).
+      5. **`auto_exit_enabled`** (opt-in, default `false`) — an automated,
+         tweakable multi-factor "exit confidence" algorithm, a further
+         direct request ("automated, using another tweakable algorithm
+         based on sensible factors from kalshi and whale watch data").
+         `_exit_confidence()` blends three independently-weighted 0-1
+         factors into one composite score, closing once it crosses
+         `auto_exit_threshold`: unrealized P&L magnitude (scaled against
+         configurable `auto_exit_gain_reference_pct`/
+         `auto_exit_loss_reference_pct`), whale-sentiment reversal strength
+         (same `_whale_lean`), and staleness (time since the last whale
+         print on this ticker, `auto_exit_stale_after_sec`) — the same 0-1
+         "confidence" mental model the entry side already uses. A factor
+         with no data (e.g. no whale prints at all) is omitted from the
+         average, not scored as zero, so missing data never gets treated
+         as agreement or disagreement.
+      All five checks (2-5 are the tunable layer; 1 is a hard rail) are
+      independently unit-tested — 30 new tests across
+      `tests/test_paper_broker.py`/`tests/test_strategy_engine.py`.
+- [x] `main.py` wiring: `check_exits()` called once per tick with a
+      `market_results` dict built from this tick's already-fetched markets
+      (`{ticker: market.result}`), decisions appended into
+      `state["decision_feed"]` the same as a normal trade/skip. `_fetch_markets`
+      now always includes every currently-open position's ticker even if
+      it's rotated out of the top-volume watchlist selection, so
+      `latest_prices`/titles never go stale for a position that's actually
+      still held — without this, a position that fell out of the watchlist
+      would silently stop getting price updates and its exit triggers would
+      never fire. Config tab gets a new "Position Management (Exits)"
+      section for all twelve new `strategy.*` fields.
+- [x] New Trading History tab, direct request: "a trading history tab that
+      shows graphs, positions made, win loss rates, times auto management
+      changed positions or sold at a price less than what a full win would
+      provide..., with relevant whale data and relevant config metadata
+      that will help inform me on how to change management config, whale
+      config, etc." New `services/trade_analytics.py` (pure functions, no
+      new persistence): classifies each closed trade's `close_type`
+      (take_profit/stop_loss/sentiment_reversal/auto_exit/settled_win/
+      settled_loss) by parsing the reason-string conventions
+      `close_position`/`check_exits` already write, pairs each close back
+      to its entry trade, and computes `cost_basis`/`cash_back` (actual
+      dollars in/out, side-aware), `hold_sec`, and `left_on_table` — the
+      "sold at 75c instead of $1" number from the request, computed only
+      for a genuine early profit-take (take-profit/auto-exit/sentiment-
+      reversal with positive realized P&L), explicitly framed as a
+      hypothetical ("if this had gone on to fully resolve your way"), never
+      a claim about what would actually have happened. New
+      `GET /api/trading-history` (paginated) returns per-trade rows, an
+      aggregate summary (win rate, total capital deployed, total realized
+      P&L, total left on table, avg hold time, per-close-type breakdown), a
+      cumulative realized-P&L curve, and **insights**: sample-size-hedged
+      heuristic hints about which config knob a pattern in the trade
+      history might argue for adjusting (e.g. win rate by entry-confidence
+      bucket → `entry_threshold`; average left-on-table on take-profit
+      closes → `take_profit_pct`), each tagged with the trade count it's
+      based on and a low/moderate/higher confidence label. Explicitly
+      **not** a recommendation engine and never writes config — resolved
+      directly with the user rather than assumed: full config-versioned
+      performance tracking (the still-open P2 item below) and any
+      auto-generated tuning *recommendation* are deliberately out of scope
+      until there's enough real trade volume for that to be trustworthy;
+      this ships the descriptive layer plus clearly-hedged heuristic hints,
+      not an advisory system. 18 new tests in `tests/test_trade_analytics.py`.
+      New History tab in `static/index.html`: summary cards, a cumulative
+      P&L chart (existing `renderEquityChart` generalized to take a target
+      element id), a by-close-type breakdown table, an insights panel, and
+      a paginated trade table with per-row dollar cost/payout alongside
+      price/side/close-type/hold-time/entry-confidence/realized-P&L —
+      verified live via Selenium with synthetic data covering every
+      close_type and zero console errors.
+- [x] Found and fixed, via direct live-data investigation (not
+      hypothetical): a real bug in the settlement code above itself —
+      `terminal_price` was computed as `1.0 if won else 0.0` (won =
+      does the result match the held side), which for a **no** position
+      double-applies `close_position`'s own side inversion and silently
+      pays $0 on an actual win. Caught by a failing test before it could
+      spread, but had already run live for a few ticks and mis-paid 2 real
+      trades — corrected live via the two independent fixes below.
+- [x] Found and fixed, while tracing the bug above: a significant
+      pre-existing bug (not introduced this session) in
+      `PaperBroker.open_position()` — it charged `size * price`
+      unconditionally, but `price` is always the *yes* price by convention
+      (confirmed in `whale_simulator.py`); a **no** position's real cost is
+      `size * (1 - price)`. This under-charged every no-side entry the app
+      has ever opened and manufactured phantom profit on any no position
+      that never even moved. Fixed in `open_position` (plus its
+      `actual_size` bankroll-capping math, which had the same unit-cost
+      bug), and the identical bug in `FollowTheWhaleStrategy.evaluate()`'s
+      and `ShadowTrader.evaluate()`'s position-sizing (mis-sizing a no-side
+      trade there also silently blew past the intended
+      `max_position_pct` risk cap, since `open_position` caps spend at
+      whatever bankroll remains, not at the intended size). New
+      `PaperBroker.cost_basis(ticker)` is now the single source of truth
+      for "real dollars in this position," used by `check_exits`' pnl_pct
+      math and exposed on every position in `broker.state()` so the
+      dashboard doesn't reimplement it. User's explicit decision on
+      remediation (asked directly, not assumed): fix the code and reset the
+      paper account (`POST /api/reset`) rather than try to retroactively
+      correct historical no-side trades.
+- [x] Found and fixed, via a deep-scan review requested directly after the
+      above ("do a deep scan of your math and logic regarding market data,
+      whale data, positions, management... to make sure you're not missing
+      any gaps or errors"):
+      - `evaluate()` had no check for a ticker that already had an open
+        position — only cooldown was checked, so a signal on a ticker whose
+        earlier position was never closed could silently overwrite it in
+        `self.positions[ticker]`, discarding its cost basis with zero
+        accounting trail. Confirmed this had actually happened in live
+        trade history (not hypothetical). Now an explicit skip: "position
+        already open on this market."
+      - `evaluate()`/`ShadowTrader.evaluate()` never checked whether a
+        market had already resolved before opening a new position on it —
+        a narrow but real window (a market settling between polls, or only
+        appearing in this tick's markets list because an unrelated open
+        position pulled it in). Now skipped via the same `market_results`
+        data `check_exits` already uses: "market has already resolved."
+      - Four separate frontend instances of the same no-side dollar-math
+        bug class: the Positions panel's Cost/Value/Return columns, the
+        Explain-Like-I'm-5 panel's "capital at risk," the whale signal
+        card's dollar-size display, the paper Trade Log's "put in" cost
+        figure, and — a distinct sign-flip variant, not just a missing
+        inversion — the Advanced Trade Log table's per-row P&L, which had
+        no `direction` term at all and showed a no-side trade's gain/loss
+        with the sign flipped.
+      - The whale-print "why this position was opened" `<details>`
+        disclosure was silently snapping shut on every dashboard refresh
+        (`renderPositions` rebuilds the whole table's `innerHTML` every
+        poll) — same class of bug as the market-detail-modal one Phase 0.5
+        fixed, direct report. Now captures which tickers were expanded
+        before the rebuild and restores them after.
+      All fixed and covered by new/updated tests. Full suite: 171 passing
+      (was 127 immediately before this batch of work).
 
 Three existing items elsewhere in this file overlap enough with this phase
 that they're worth sequencing deliberately rather than doing twice by
@@ -674,7 +844,15 @@ band instead.
       per-config instead of per-series; (4) the actual ML/advisory consumer
       of this data is explicitly out of scope for this item — this is the
       data-collection groundwork only, so "which config performed best" is
-      answerable later without needing to backfill from scratch.
+      answerable later without needing to backfill from scratch. Still
+      genuinely open — the Trading History tab's `compute_insights()`
+      (see "Active position management & Trading History" above) covers
+      adjacent ground with a much lighter approach (parses the specific
+      threshold embedded in each close's existing reason string, e.g.
+      "target 50%", rather than a real fingerprinted config-variant log),
+      resolved directly with the user as the right scope for now rather
+      than building the fingerprinting/variant-tracking system this item
+      actually describes.
 - [x] Whale-size threshold relative to each market, not a flat number —
       `whale_simulator.py`'s half, direct request ("more accurately reflect
       real-world behavior and volatility"). Was a flat configured
