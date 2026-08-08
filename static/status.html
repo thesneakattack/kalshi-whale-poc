@@ -915,6 +915,39 @@
           the backdrop's mousedown/click handlers)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 29 · whale simulator: relative sizing, volume-weighted selection, composite confidence</div>
+        <h4>"More accurately reflect real-world behavior and volatility" - built from research already on file</h4>
+        <p>Direct request, pointed explicitly at reusing research already sitting in ROADMAP.md from an
+          earlier pass rather than re-deriving it: two long-open P2 items had already confirmed, by reading
+          real Kalshi/Polymarket whale-tracker products directly, that (1) WhaleScanr sizes a "whale" relative
+          to each market's own trade-size distribution - "roughly the top few percent of that market's own
+          trades, plus an absolute dollar floor" - not one flat number across every market, and (2)
+          Polywhaler's "Insider Score" is a composite of trade size relative to market depth, how unusual the
+          price/timing is, proximity to resolution, and broader market context, not a single factor. Both
+          items had already flagged <code>whale_simulator.py</code>'s flat <code>size_range</code> pick and
+          single size-based confidence score as exactly the gap.</p>
+        <p>Implemented both, scoped to the simulator only (the request named "the fake whale watcher service"
+          specifically - <code>whalewatchers/generic_rest.py</code>'s matching single-factor score is real-
+          provider code, left as its own still-open item). New <code>_pick_market()</code> weights market
+          selection by <code>volume_24h_fp</code> instead of a flat <code>random.choice</code>, so simulated
+          whale attention concentrates where a market actually has liquidity and price action - the
+          "volatility" half of the request. New <code>_size_for()</code> draws log-normal (real large-trade
+          sizes cluster with a heavy right tail, not uniformly) centered on 3% of the chosen market's own 24h
+          volume, with the configured <code>size_range</code> reinterpreted as an absolute floor/cap rather
+          than a flat pick range. New <code>_score_confidence()</code> replaces the single size-based number
+          with Polywhaler's four weighted factors (depth 40%, price-unusualness 25%, close-time proximity
+          20%, market-context 15%) plus noise. Verified against the live app, not just unit tests: real
+          near-resolved markets (3&cent;/90&cent; prices) now correctly score low confidence (0.11-0.18)
+          despite large sizes, where the old size-only version would have scored a big print on a foregone
+          conclusion the same as one on a genuine toss-up. 12 new tests in
+          <code>tests/test_whale_simulator.py</code>, one per factor plus edge cases (zero-volume markets,
+          missing/malformed <code>close_time</code>) - this module had no dedicated tests before.</p>
+        <div class="files"><code>services/whale_simulator.py</code> (<code>_pick_market</code>,
+          <code>_size_for</code>, <code>_score_confidence</code>) · new
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -965,7 +998,7 @@
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code>, <code>data/signal_log.db</code></td><td class="loc">136</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
-          <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, now priced off real market data</td><td class="loc">78</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, priced off real market data — volume-weighted market selection, log-normal size relative to each market's own volume, composite (depth/unusualness/proximity/context) confidence scoring</td><td class="loc">176</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements</td><td class="loc">21</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">35</td><td><span class="pill planned">not registered</span></td></tr>
@@ -980,7 +1013,7 @@
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1160</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">tests/*.py</td><td class="note">73 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">996</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">tests/*.py</td><td class="note">85 tests across 9 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), whale_simulator (relative sizing, weighted market selection, composite confidence) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">1167</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
           <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none, mirrors the live-markets-only gate, self-serve <code>clear()</code> — <code>data/shadow_mode.db</code></td><td class="loc">194</td><td><span class="pill good">done</span></td></tr>

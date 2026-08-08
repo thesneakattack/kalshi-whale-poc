@@ -445,26 +445,42 @@ band instead.
       of this data is explicitly out of scope for this item — this is the
       data-collection groundwork only, so "which config performed best" is
       answerable later without needing to backfill from scratch.
-- [ ] Whale-size threshold relative to each market, not a flat number.
-      Confirmed by reading the actual detection code, not assumed: both
-      `whale_simulator.py` (a flat configured `size_range` tuple) and
-      `whalewatchers/generic_rest.py` (`confidence: min(size / 50000,
-      1.0)` — its own comment already calls this "naive... tune once you
-      see real data") use one absolute size cutoff across every market
-      regardless of that market's typical trade size. Dedicated Kalshi/
-      Polymarket whale trackers (WhaleScanr, researched directly) don't do
-      this — their methodology is relative: "roughly the size only the top
-      few percent of [that market's] trades reach, plus an absolute dollar
-      floor." A print that's huge for a thin market can be unremarkable
-      for a liquid one; a flat threshold treats both the same.
-- [ ] Composite confidence scoring, same source comparison. Polywhaler's
-      "Insider Score" weighs four factors: trade size relative to market
-      depth, how unusual the price/timing is, proximity to the market's
-      resolution/close time, and broader market context — this app's
-      `confidence` is currently a single factor (size only, in both the
-      simulator and the real provider). Worth enriching once the relative-
-      sizing item above lands, since "unusual for this market" is the
-      shared prerequisite for most of Polywhaler's other factors too.
+- [x] Whale-size threshold relative to each market, not a flat number —
+      `whale_simulator.py`'s half, direct request ("more accurately reflect
+      real-world behavior and volatility"). Was a flat configured
+      `size_range` tuple picked uniformly regardless of which market got
+      chosen; WhaleScanr's real methodology (researched directly) is
+      relative — "roughly the size only the top few percent of [that
+      market's] trades reach, plus an absolute dollar floor." New
+      `_size_for()`: log-normal (real large-trade sizes cluster with a
+      heavy right tail, not uniformly) centered on 3% of the chosen
+      market's own `volume_24h_fp`, with `size_range`'s two configured
+      numbers reinterpreted as an absolute floor/cap rather than a flat
+      pick range. Market selection itself also changed — `_pick_market()`
+      now weights by `volume_24h_fp` instead of `random.choice`, so
+      simulated whale attention concentrates where a real market actually
+      has liquidity and price action, the "volatility" half of the
+      request — rather than spreading evenly across quiet and busy markets
+      alike. `whalewatchers/generic_rest.py`'s matching `min(size/50000,
+      1.0)` is real-provider code, out of scope for this pass (nothing
+      "fake" to tune there) — still flat, still open.
+- [x] Composite confidence scoring, `whale_simulator.py`'s half, same
+      request. Was a single factor (size only, linear + noise). New
+      `_score_confidence()` implements Polywhaler's stated "Insider Score"
+      shape (researched directly) as a weighted composite: trade size
+      relative to the chosen market's own depth (40%), how unusual the
+      price is — closer to a coinflip reads as more informationally live
+      than an already near-certain 5¢/95¢ market (25%), proximity to the
+      market's own `close_time`, within a ~48h window (20%), and how busy
+      this market is relative to the rest of the current watchlist (15%) —
+      plus noise, same overall shape as before. Verified live: real
+      near-resolved markets (3¢/90¢ prices) now correctly score low
+      confidence (0.11-0.18) despite large sizes, instead of the old
+      version's size-only score treating a big print on a foregone
+      conclusion the same as one on a genuine toss-up. 12 new tests in
+      `tests/test_whale_simulator.py`, one per factor plus edge cases
+      (zero volume, missing/malformed `close_time`). `generic_rest.py`'s
+      matching single-factor score is real-provider code, still open.
 - [ ] (Stretch) Persistent flow clustering. WhaleScanr's approach to a
       genuine constraint this app already respects — Kalshi's real trade
       tape is anonymous, no usernames or account data, confirmed directly
