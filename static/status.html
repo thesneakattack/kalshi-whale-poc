@@ -982,6 +982,33 @@
           <code>renderConnectivity</code>, <code>priceChangeHTML</code>, <code>previousPrices</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 31 · signal feed filters, sort, grouping, and card enrichment</div>
+        <h4>Continuing the self-directed roadmap pass</h4>
+        <p><code>renderSignals</code>/the Terminal signal feed had zero filter or sort controls and a thin
+          card (ticker &middot; side &middot; size &middot; confidence%). Matched against Polywhaler's proven
+          set rather than invented from scratch (researched directly, same research already on file from the
+          whale-simulator pass): a filter bar (reusing the existing <code>.table-filter-row</code> styling)
+          for time range (1h/6h/24h/7d/30d/all) and side (Yes/No), a sort toggle between recency and
+          "impact," and a position-grouping checkbox. "Impact" isn't a field this app tracks - defined as
+          <code>size &times; confidence</code>, tiered low/medium/high <i>relative to the currently visible
+          feed</i> rather than a flat cutoff, the same relative-not-flat lesson the whale-simulator sizing fix
+          just applied one phase earlier. Position-grouping combines every signal on the same ticker+side into
+          one card with a "N&times; prints" tag - a light, client-side, non-persisted taste of real
+          accumulation detection, explicitly not a replacement for the P2 stretch item's actual same-actor
+          clustering.</p>
+        <p>Card enrichment, same pass: added position size in both $ (new) and contracts (already shown)
+          alongside the new impact tag. Deliberately skipped 24h price change, not silently - this app has no
+          per-ticker historical price data available in bulk (candlesticks are fetched on-demand per market in
+          the drill-down modal, one API call per ticker, not something to fan out across every ticker on a
+          live feed), so faking that number wasn't an option. Verified live via synthetic signals spanning old/
+          new timestamps and both sides: time-range and side filters correctly excluded what they should,
+          impact sort correctly ordered highest-impact first, and group-by-market correctly combined two
+          same-ticker signals into one 2&times;-prints card, zero console errors throughout.</p>
+        <div class="files"><code>static/index.html</code> (<code>renderSignals</code> rewrite,
+          <code>signalFilter</code>, <code>signalImpact</code>, <code>.impact-tag</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1043,10 +1070,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, price-change flash indicators, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2617</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, price-change flash indicators, filterable/sortable/groupable signal feed with impact tags, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2713</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1230</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1260</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">85 tests across 9 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), whale_simulator (relative sizing, weighted market selection, composite confidence) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">1167</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

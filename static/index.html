@@ -164,6 +164,13 @@
   .context-line { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .cat-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--whale); }
   .position-means { color: var(--text); }
+  /* Signal card "impact" tag (ROADMAP.md Phase 0.5) - low/medium/high,
+     relative to the currently visible feed, matched against Polywhaler's
+     per-print impact tagging. */
+  .impact-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+  .impact-tag.low { color: var(--muted); background: rgba(148,163,184,0.12); }
+  .impact-tag.medium { color: var(--whale); background: rgba(245,185,66,0.15); }
+  .impact-tag.high { color: var(--danger); background: rgba(229,72,77,0.15); }
 
   /* Portfolio positions table - grouped per market/event with a Total row,
      matching real Kalshi's own positions-table column structure (Market,
@@ -987,22 +994,111 @@ function renderMarkets(markets, prices) {
   }).join('');
 }
 
+// Signal feed filters (ROADMAP.md Phase 0.5), matched against Polywhaler's
+// proven set rather than invented from scratch: time range, buy/sell, sort
+// by recency or "impact," a position-grouping toggle. "Impact" isn't a
+// field this app tracks directly - defined here as size x confidence, a
+// reasonable proxy for "how much this print should matter to you" that
+// rewards neither a huge-but-low-confidence print nor a tiny-but-certain
+// one on its own.
+let signalFilter = { timeRange: 'all', side: '', sortKey: 'timestamp', sortDir: 'desc', groupByPosition: false };
+let lastSignals = [];
+
+const SIGNAL_TIME_RANGES = { 'all': null, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 7 * 86400, '30d': 30 * 86400 };
+
+function signalImpact(s) {
+  return s.size * s.confidence;
+}
+
 function renderSignals(signals) {
   const el = $('signal-feed');
-  if (!signals.length) { el.innerHTML = '<div class="empty">Waiting for signals…</div>'; return; }
-  el.innerHTML = signals.map(s => {
+  const filterHtml = `<div class="table-filter-row">
+    <select onchange="signalFilter.timeRange = this.value; renderSignals(lastSignals);">
+      ${Object.keys(SIGNAL_TIME_RANGES).map(k => `<option value="${k}" ${signalFilter.timeRange === k ? 'selected' : ''}>${k === 'all' ? 'All time' : 'Last ' + k}</option>`).join('')}
+    </select>
+    <select onchange="signalFilter.side = this.value; renderSignals(lastSignals);">
+      <option value="" ${signalFilter.side === '' ? 'selected' : ''}>Yes + No</option>
+      <option value="yes" ${signalFilter.side === 'yes' ? 'selected' : ''}>Yes only</option>
+      <option value="no" ${signalFilter.side === 'no' ? 'selected' : ''}>No only</option>
+    </select>
+    <select onchange="signalFilter.sortKey = this.value; renderSignals(lastSignals);">
+      <option value="timestamp" ${signalFilter.sortKey === 'timestamp' ? 'selected' : ''}>Sort: recency</option>
+      <option value="impact" ${signalFilter.sortKey === 'impact' ? 'selected' : ''}>Sort: impact</option>
+    </select>
+    <label><input type="checkbox" ${signalFilter.groupByPosition ? 'checked' : ''} onchange="signalFilter.groupByPosition = this.checked; renderSignals(lastSignals);"> Group by market</label>
+  </div>`;
+
+  lastSignals = signals || [];
+  if (!lastSignals.length) { el.innerHTML = filterHtml + '<div class="empty">Waiting for signals…</div>'; return; }
+
+  const rangeSec = SIGNAL_TIME_RANGES[signalFilter.timeRange];
+  const cutoff = rangeSec ? (Date.now() / 1000 - rangeSec) : null;
+  let rows = lastSignals.filter(s => {
+    if (cutoff !== null && s.timestamp < cutoff) return false;
+    if (signalFilter.side && s.side !== signalFilter.side) return false;
+    return true;
+  });
+
+  if (!rows.length) { el.innerHTML = filterHtml + '<div class="empty">No signals match these filters.</div>'; return; }
+
+  if (signalFilter.groupByPosition) {
+    // One card per ticker+side, aggregating every matching signal into it -
+    // "how many separate prints built this" is the same accumulation
+    // question WhaleScanr's clustering answers, just without the
+    // statistical same-actor inference (see the P2 stretch item).
+    const groups = new Map();
+    rows.forEach(s => {
+      const key = `${s.ticker}::${s.side}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    });
+    rows = Array.from(groups.values()).map(g => {
+      const latest = g.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+      const totalSize = g.reduce((sum, s) => sum + s.size, 0);
+      const avgConfidence = g.reduce((sum, s) => sum + s.confidence, 0) / g.length;
+      return { ...latest, size: totalSize, confidence: avgConfidence, _printCount: g.length };
+    });
+  }
+
+  rows = rows.slice().sort((a, b) => {
+    const av = signalFilter.sortKey === 'impact' ? signalImpact(a) : a.timestamp;
+    const bv = signalFilter.sortKey === 'impact' ? signalImpact(b) : b.timestamp;
+    return bv - av; // both recency and impact read best-first descending
+  });
+
+  // Impact tag tiers are relative to THIS batch of visible signals, not a
+  // flat cutoff - the same lesson learned tuning the whale simulator's own
+  // sizing (see ROADMAP.md): what counts as "high impact" depends on what
+  // else is on the feed right now, not one fixed number good for every
+  // config/market mix.
+  const impactValues = rows.map(signalImpact).sort((a, b) => a - b);
+  const impactTier = (s) => {
+    if (!impactValues.length) return 'low';
+    const rank = impactValues.filter(v => v <= signalImpact(s)).length / impactValues.length;
+    return rank >= 0.8 ? 'high' : rank >= 0.4 ? 'medium' : 'low';
+  };
+
+  const cards = rows.map(s => {
     const label = marketLabel(s.ticker);
+    const stealthTag = s._printCount > 1
+      ? `<span class="cat-tag" title="${s._printCount} separate prints on this market/side, combined">${s._printCount}&times; prints</span> `
+      : '';
+    const tier = impactTier(s);
+    const impactTag = `<span class="impact-tag ${tier}" title="Impact tier relative to what's currently on the feed (size x confidence)">${tier}</span>`;
+    const dollarSize = s.price != null ? fmt(s.size * s.price) : null;
     return `
     <div class="signal-card" title="${esc(label.full)}">
       <div class="top-row">
-        <span>${esc(label.short)} <span class="side-tag ${s.side}">${s.side}</span></span>
-        <span style="color: var(--whale)">${s.size.toLocaleString()} ct</span>
+        <span>${stealthTag}${esc(label.short)} <span class="side-tag ${s.side}">${s.side}</span></span>
+        <span style="color: var(--whale)">${s.size.toLocaleString()} ct${dollarSize ? ' · ' + dollarSize : ''}</span>
       </div>
-      <div style="color: var(--muted)">@ ${(s.price*100).toFixed(0)}¢ · confidence ${(s.confidence*100).toFixed(0)}%</div>
+      <div style="color: var(--muted)">@ ${(s.price*100).toFixed(0)}¢ · confidence ${(s.confidence*100).toFixed(0)}% ${impactTag}</div>
       <div class="conf-bar"><div class="conf-fill" style="width:${s.confidence*100}%"></div></div>
     </div>
   `;
   }).join('');
+
+  el.innerHTML = filterHtml + cards;
 }
 
 let lastDecisions = [];

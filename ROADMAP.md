@@ -150,26 +150,36 @@ a Simple/Advanced pair using the toggle above:
       Chrome session with synthetic data: correct P&L math, correct sort
       order and direction toggling, and both filters (min-size on trades,
       action on decisions) actually excluding the rows they should.
-- [ ] Signal feed filters, matched against dedicated Kalshi/Polymarket
-      whale-tracker products (Polywhaler, WhaleScanr — researched directly,
-      not assumed, since these are literally the same category of tool this
-      tab is trying to be). `renderSignals`/the Terminal signal feed has
-      zero filter or sort controls today. Polywhaler's proven set: time
-      range (1h/6h/24h/7d/30d), buy/sell, sort by recency or "impact," a
-      position-grouping toggle. Worth matching rather than inventing our
-      own from scratch — this category has already converged on what's
-      useful here.
-- [ ] Signal card enrichment, same source. Today's card
-      (`ticker · side · size · confidence%`) is thin next to what these
-      tools surface per print: Polywhaler shows market probability + 24h
-      change, position size in both $ and contracts, an "impact" tag
-      (low/medium/high), and a "stealth" count — how many separate trades
-      built this position, i.e. one big print vs. a whale quietly
-      accumulating over several smaller ones. The impact tag and price-
-      change context are cheap UI additions on data this app already has;
-      "stealth"/accumulation detection needs a backend change (grouping
-      related signals over a time window) — see the matching P2 item below
-      rather than treating it as pure UI.
+- [x] Signal feed filters, matched against Polywhaler/WhaleScanr's proven
+      set (researched directly, see the P2 whale-simulator items for the
+      same research applied elsewhere) rather than invented from scratch:
+      time range (1h/6h/24h/7d/30d/all), buy/sell (Yes/No), sort by
+      recency or "impact," and a position-grouping toggle. "Impact" isn't
+      a field this app tracks — defined as `size x confidence`, and tiered
+      low/medium/high *relative to the currently visible feed* rather than
+      a flat cutoff (same relative-not-flat lesson as the whale simulator's
+      own sizing fix above). Position-grouping combines every signal on
+      the same ticker+side into one card with a "N× prints" tag — a light,
+      client-side, non-persisted taste of the P2 stretch item's
+      accumulation detection, not a replacement for it. New `signalFilter`
+      state + filter bar reusing the existing `.table-filter-row` styling.
+      Verified live via synthetic signals spanning old/new timestamps and
+      both sides: time-range and side filters correctly exclude what they
+      should, impact sort correctly orders highest-impact first,
+      group-by-market correctly combines two same-ticker signals into one
+      2×-prints card.
+- [x] Signal card enrichment, same pass, same source comparison. Did the
+      two "cheap UI addition" pieces the item called out — an impact tag
+      (low/medium/high, see above) and position size in both $ (new,
+      `size x price`) and contracts (already shown) — plus the "stealth"
+      print-count tag via the grouping toggle above. Skipped 24h price
+      change on purpose, not silently: this app has no per-ticker
+      historical-price data available in bulk (candlesticks are fetched
+      on-demand per-market in the drill-down modal only, one API call per
+      ticker — not something to fan out across every ticker on a live
+      signal feed) — faking it wasn't an option. Real "stealth"/
+      accumulation detection (same-actor clustering, not just same-
+      ticker-same-side grouping) remains the P2 stretch item below.
 - [ ] A real, browsable signal history — not just the aggregate stat cards
       `renderWhaleTrackRecord` already shows (win rate %, resolved count).
       WhaleScanr's specific framing is worth copying directly: "every flag
