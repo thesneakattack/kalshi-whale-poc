@@ -25,6 +25,7 @@ class Position:
     size: int
     entry_price: float
     opened_at: float
+    config_fingerprint: str | None = None
 
 
 @dataclass
@@ -36,14 +37,25 @@ class Trade:
     price: float
     reason: str
     timestamp: float
+    config_fingerprint: str | None = None
 
     def to_dict(self):
         return asdict(self)
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/paper_broker.db is a live file the running dev server reads/writes
+    # (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a column to
+    # an existing table with existing rows, so new columns need an explicit,
+    # idempotent ALTER TABLE guarded by a check, not just the CREATE above.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS broker_meta (
@@ -77,16 +89,29 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # Config-variant fingerprinting (docs/advisory-engine-plan.md) - added
+    # after both tables above already shipped and have live rows, hence the
+    # guarded ALTER TABLE rather than a column in the CREATE statements.
+    _add_column_if_missing(conn, "positions", "config_fingerprint", "TEXT")
+    _add_column_if_missing(conn, "trades", "config_fingerprint", "TEXT")
     return conn
 
 
 class PaperBroker:
-    def __init__(self, starting_bankroll: float):
+    def __init__(self, starting_bankroll: float, db_path: Path | None = None):
+        # db_path defaults to the module-level DB_PATH, resolved at call
+        # time (not import time) so existing tests' `monkeypatch.setattr(pb,
+        # "DB_PATH", ...)` pattern keeps working unchanged. Pass an explicit
+        # db_path to run a second, fully independent paper account (e.g.
+        # services/market_strategy.py's own capital pool) - each instance
+        # gets its own file, so two brokers never share (and can't corrupt)
+        # each other's broker_meta/positions/trades tables.
+        self.db_path = db_path or DB_PATH
         self.positions: dict[str, Position] = {}   # keyed by ticker
         self.trade_log: list[Trade] = []
         self.last_trade_time: dict[str, float] = {}  # ticker -> timestamp
 
-        with _connect() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT bankroll, starting_bankroll FROM broker_meta WHERE id = 1"
             ).fetchone()
@@ -102,21 +127,27 @@ class PaperBroker:
                 # Resuming — the persisted account wins over whatever
                 # config/settings.yaml's starting_bankroll says right now.
                 self.bankroll, self.starting_bankroll = row
-                for ticker, side, size, entry_price, opened_at in conn.execute(
-                    "SELECT ticker, side, size, entry_price, opened_at FROM positions"
+                for ticker, side, size, entry_price, opened_at, fp in conn.execute(
+                    "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint FROM positions"
                 ):
-                    self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at)
-                for tid, ticker, side, size, price, reason, timestamp in conn.execute(
-                    "SELECT id, ticker, side, size, price, reason, timestamp FROM trades ORDER BY timestamp ASC"
+                    self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp)
+                for tid, ticker, side, size, price, reason, timestamp, fp in conn.execute(
+                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint FROM trades ORDER BY timestamp ASC"
                 ):
-                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp))
+                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
+
+    def _connect(self) -> sqlite3.Connection:
+        return _connect(self.db_path)
 
     def can_trade(self, ticker: str, cooldown_sec: float) -> bool:
         last = self.last_trade_time.get(ticker)
         return last is None or (time.time() - last) >= cooldown_sec
 
-    def open_position(self, ticker: str, side: str, size: int, price: float, reason: str) -> Trade:
+    def open_position(
+        self, ticker: str, side: str, size: int, price: float, reason: str,
+        config_fingerprint: str | None = None,
+    ) -> Trade:
         # price is always the YES price (see module docstring/mark_to_market) -
         # a NO contract's real per-unit cost is (1 - price), not price itself.
         # This used to charge `size * price` unconditionally, which silently
@@ -131,7 +162,8 @@ class PaperBroker:
 
         self.bankroll -= cost
         self.positions[ticker] = Position(
-            ticker=ticker, side=side, size=actual_size, entry_price=price, opened_at=time.time()
+            ticker=ticker, side=side, size=actual_size, entry_price=price, opened_at=time.time(),
+            config_fingerprint=config_fingerprint,
         )
         trade = Trade(
             id=str(uuid.uuid4())[:8],
@@ -141,19 +173,23 @@ class PaperBroker:
             price=price,
             reason=reason,
             timestamp=time.time(),
+            config_fingerprint=config_fingerprint,
         )
         self.trade_log.append(trade)
         self.last_trade_time[ticker] = trade.timestamp
 
-        with _connect() as conn:
+        with self._connect() as conn:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute(
-                "INSERT OR REPLACE INTO positions (ticker, side, size, entry_price, opened_at) VALUES (?, ?, ?, ?, ?)",
-                (ticker, side, actual_size, price, self.positions[ticker].opened_at),
+                "INSERT OR REPLACE INTO positions "
+                "(ticker, side, size, entry_price, opened_at, config_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+                (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint),
             )
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp),
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
+                 config_fingerprint),
             )
         return trade
 
@@ -183,16 +219,24 @@ class PaperBroker:
             price=exit_price,
             reason=f"closed: {reason} (realized {realized_pnl:+.2f})",
             timestamp=time.time(),
+            # Inherited from the position being closed, not recomputed from
+            # whatever config is active right now - a round-trip's entry and
+            # close rows always carry the same fingerprint (the one active
+            # at entry), even if strategy.* changed while the position was
+            # held. See services/config_performance.py's module docstring.
+            config_fingerprint=pos.config_fingerprint,
         )
         self.trade_log.append(trade)
         del self.positions[ticker]
 
-        with _connect() as conn:
+        with self._connect() as conn:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp),
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
+                 trade.config_fingerprint),
             )
         return trade
 
@@ -205,7 +249,7 @@ class PaperBroker:
         self.positions.clear()
         self.trade_log.clear()
         self.last_trade_time.clear()
-        with _connect() as conn:
+        with self._connect() as conn:
             conn.execute("DELETE FROM positions")
             conn.execute("DELETE FROM trades")
             conn.execute(

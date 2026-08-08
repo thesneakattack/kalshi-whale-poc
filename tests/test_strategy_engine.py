@@ -499,3 +499,20 @@ def test_check_exits_settlement_defaults_to_no_market_results(tmp_path, monkeypa
     decisions = strategy.check_exits({"TICK-A": 0.5}, [], _cfg())
     assert decisions == []
     assert "TICK-A" in broker.positions
+
+
+# --- config_fingerprint passthrough (docs/advisory-engine-plan.md) ---------
+
+def test_evaluate_threads_config_fingerprint_into_open_position(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg(), config_fingerprint="fp-abc")
+    assert decision["action"] == "trade"
+    assert broker.positions["TICK-A"].config_fingerprint == "fp-abc"
+    assert broker.trade_log[0].config_fingerprint == "fp-abc"
+
+
+def test_evaluate_config_fingerprint_defaults_to_none(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg())
+    assert decision["action"] == "trade"
+    assert broker.positions["TICK-A"].config_fingerprint is None

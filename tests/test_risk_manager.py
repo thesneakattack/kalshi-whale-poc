@@ -89,3 +89,33 @@ def test_persistence_across_restart_without_halt(tmp_path, monkeypatch):
     resumed = rm.RiskManager(starting_bankroll=1.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
     assert resumed.halted is False
     assert resumed.day_start_bankroll == 1000.0
+
+
+# --- per-instance db_path (services/market_strategy.py's own kill switch) ---
+
+def test_explicit_db_path_overrides_module_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "should-not-be-used" / "risk_state.db")
+    explicit_path = tmp_path / "explicit" / "market_risk_state.db"
+    risk = rm.RiskManager(starting_bankroll=500.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, db_path=explicit_path)
+    risk.manual_halt("test")
+    assert explicit_path.exists()
+    assert not (tmp_path / "should-not-be-used").exists()
+
+
+def test_two_risk_manager_instances_with_different_db_paths_do_not_collide(tmp_path, monkeypatch):
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_a.db")
+    risk_a = rm.RiskManager(starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    risk_b = rm.RiskManager(
+        starting_bankroll=5000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, db_path=tmp_path / "risk_b.db",
+    )
+    risk_a.manual_halt("halted a")
+
+    assert risk_a.halted is True
+    assert risk_b.halted is False
+
+    resumed_a = rm.RiskManager(starting_bankroll=999999.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    resumed_b = rm.RiskManager(
+        starting_bankroll=999999.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, db_path=tmp_path / "risk_b.db",
+    )
+    assert resumed_a.halted is True
+    assert resumed_b.halted is False

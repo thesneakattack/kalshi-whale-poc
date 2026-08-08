@@ -224,3 +224,119 @@ def test_close_position_persists_across_restart(tmp_path, monkeypatch):
     assert resumed.bankroll == 1025.0
     assert "TICK-A" not in resumed.positions
     assert len(resumed.trade_log) == 2
+
+
+# --- config_fingerprint (docs/advisory-engine-plan.md) ----------------------
+
+def test_open_position_stores_config_fingerprint(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    trade = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry", config_fingerprint="fp1")
+    assert trade.config_fingerprint == "fp1"
+    assert broker.positions["TICK-A"].config_fingerprint == "fp1"
+
+
+def test_open_position_config_fingerprint_defaults_to_none(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    trade = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    assert trade.config_fingerprint is None
+
+
+def test_close_position_inherits_entry_fingerprint_even_if_cfg_changed(tmp_path, monkeypatch):
+    # A position stays open while the user tweaks config mid-hold - the
+    # close trade must still carry the *entry-time* fingerprint, not
+    # whatever fingerprint is "current" now, so a round-trip is always
+    # attributed to one variant (see config_performance.py's module
+    # docstring on this exact limitation).
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry", config_fingerprint="fp-old")
+    trade = broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
+    assert trade.config_fingerprint == "fp-old"
+
+
+def test_config_fingerprint_persists_across_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "paper_broker.db"
+    monkeypatch.setattr(pb, "DB_PATH", db_path)
+    broker = pb.PaperBroker(starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry", config_fingerprint="fp1")
+    broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
+
+    resumed = pb.PaperBroker(starting_bankroll=999999.0)
+    assert [t.config_fingerprint for t in resumed.trade_log] == ["fp1", "fp1"]
+
+
+def test_migration_adds_config_fingerprint_column_to_pre_existing_db(tmp_path, monkeypatch):
+    # data/paper_broker.db is a live file (CLAUDE.md) - config_fingerprint
+    # was added to the trades/positions tables after both already had real
+    # rows in production, so the migration must work against a db that
+    # predates the column entirely, not just a fresh one.
+    import sqlite3
+    db_path = tmp_path / "paper_broker.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE broker_meta (id INTEGER PRIMARY KEY CHECK (id = 1), bankroll REAL NOT NULL, starting_bankroll REAL NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE positions (ticker TEXT PRIMARY KEY, side TEXT NOT NULL, size INTEGER NOT NULL, "
+        "entry_price REAL NOT NULL, opened_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE trades (id TEXT PRIMARY KEY, ticker TEXT NOT NULL, side TEXT NOT NULL, size INTEGER NOT NULL, "
+        "price REAL NOT NULL, reason TEXT NOT NULL, timestamp REAL NOT NULL)"
+    )
+    conn.execute("INSERT INTO broker_meta (id, bankroll, starting_bankroll) VALUES (1, 900.0, 1000.0)")
+    conn.execute(
+        "INSERT INTO positions (ticker, side, size, entry_price, opened_at) VALUES ('TICK-A', 'yes', 100, 0.5, 123.0)"
+    )
+    conn.execute(
+        "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp) "
+        "VALUES ('t1', 'TICK-A', 'yes', 100, 0.5, 'whale print 5000 @ 0.5 (conf 0.7)', 123.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(pb, "DB_PATH", db_path)
+    broker = pb.PaperBroker(starting_bankroll=999999.0)
+    # Pre-existing data survived the migration, untouched.
+    assert broker.bankroll == 900.0
+    assert "TICK-A" in broker.positions
+    assert broker.positions["TICK-A"].config_fingerprint is None
+    assert broker.trade_log[0].config_fingerprint is None
+    # And the broker still works normally afterward.
+    broker.open_position("TICK-B", "yes", size=10, price=0.5, reason="entry", config_fingerprint="fp2")
+    assert broker.positions["TICK-B"].config_fingerprint == "fp2"
+
+
+# --- per-instance db_path (services/market_strategy.py's own capital pool) --
+
+def test_explicit_db_path_overrides_module_default(tmp_path, monkeypatch):
+    # Module DB_PATH deliberately left pointed at something that would
+    # error if ever touched, to prove the explicit db_path argument is what
+    # actually gets used - not a fallback that silently still reads it.
+    monkeypatch.setattr(pb, "DB_PATH", tmp_path / "should-not-be-used" / "paper_broker.db")
+    explicit_path = tmp_path / "explicit" / "market_broker.db"
+    broker = pb.PaperBroker(starting_bankroll=500.0, db_path=explicit_path)
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    assert explicit_path.exists()
+    assert not (tmp_path / "should-not-be-used").exists()
+
+
+def test_two_broker_instances_with_different_db_paths_do_not_collide(tmp_path, monkeypatch):
+    monkeypatch.setattr(pb, "DB_PATH", tmp_path / "broker_a.db")
+    broker_a = pb.PaperBroker(starting_bankroll=1000.0)
+    broker_b = pb.PaperBroker(starting_bankroll=5000.0, db_path=tmp_path / "broker_b.db")
+
+    broker_a.open_position("TICK-A", "yes", size=100, price=0.5, reason="a")
+    broker_b.open_position("TICK-B", "yes", size=200, price=0.5, reason="b")
+
+    assert broker_a.bankroll == 1000.0 - 50.0
+    assert broker_b.bankroll == 5000.0 - 100.0
+    assert list(broker_a.positions.keys()) == ["TICK-A"]
+    assert list(broker_b.positions.keys()) == ["TICK-B"]
+
+    # Reload both from disk - each must resume its own state, not the other's.
+    resumed_a = pb.PaperBroker(starting_bankroll=999999.0)
+    resumed_b = pb.PaperBroker(starting_bankroll=999999.0, db_path=tmp_path / "broker_b.db")
+    assert resumed_a.bankroll == broker_a.bankroll
+    assert list(resumed_a.positions.keys()) == ["TICK-A"]
+    assert resumed_b.bankroll == broker_b.bankroll
+    assert list(resumed_b.positions.keys()) == ["TICK-B"]

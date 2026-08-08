@@ -260,6 +260,67 @@
   }
   .field input:focus, .field select:focus { outline: none; border-color: var(--whale); }
 
+  /* Config tab as a multi-section control panel, direct request ("hard to
+     make sense of for a like-I'm-5 user... more of a multi-section control
+     panel") - each settings group becomes a collapsible <details>, not one
+     long flat scroll. Native <details>/<summary> rather than a hand-rolled
+     JS accordion - free keyboard support, no extra state to track. */
+  .config-section {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    background: var(--panel);
+  }
+  .config-section > summary {
+    cursor: pointer;
+    padding: 12px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  .config-section > summary::-webkit-details-marker { display: none; }
+  .config-section > summary::before {
+    content: '▸';
+    color: var(--muted);
+    font-size: 11px;
+    transition: transform 0.15s ease;
+    flex-shrink: 0;
+  }
+  .config-section[open] > summary::before { transform: rotate(90deg); }
+  .config-section > summary .section-desc {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  .config-section .section-body { padding: 4px 14px 16px; }
+
+  /* Data-quality badges - flags config that isn't "fully baked" yet
+     because of what it's calibrated against, direct request: "highlight
+     config options that aren't fully baked yet due to data limitations
+     (like not real/complete whale watch data or lack of trade history)."
+     Meanings spelled out once in #config-badge-legend rather than repeated
+     inline everywhere a badge appears. */
+  .data-badge {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  .data-badge.sim { color: var(--whale); background: rgba(245,185,66,0.15); }
+  .data-badge.hist { color: var(--muted); background: rgba(124,135,148,0.18); }
+  .data-badge.new { color: var(--no); background: rgba(249,112,102,0.15); }
+  .field .data-badge { margin-left: 8px; }
+
   button {
     font-family: var(--sans);
     font-size: 12px;
@@ -899,6 +960,24 @@
     </p>
     <div id="history-insights" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Advisory Recommendations (docs/advisory-engine-plan.md) - the
+         actionable layer next to the descriptive Config Tuning Hints above,
+         not a replacement for it. Deliberately never shows a real
+         recommendation until advisory.enabled is on AND the current config
+         has cleared its own per-variant minimum-resolved-trades floor - see
+         loadAdvisory(). Concrete suggested values, each with an explicit
+         "Apply to config" click; nothing here ever writes config on its
+         own. -->
+    <div class="panel-title">Advisory Recommendations <span id="advisory-status-badge"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Concrete suggested config values, derived the same way as the hints above but scoped to trades
+      placed under the exact config currently running, plus comparisons against past configs once
+      each has enough resolved trades. Disabled by default; even when enabled, stays empty until the
+      current config has enough resolved trades to trust. Rule-based, not machine learning — see
+      docs/advisory-engine-plan.md for why. Never applies anything without an explicit click.
+    </p>
+    <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
     <div id="history-trades"><div class="empty">Loading…</div></div>
   </div>
@@ -908,118 +987,200 @@
      actions (those stay in Terminal's Controls column) -->
 <div class="view" id="view-config">
   <div class="wrap">
-    <div class="panel-title" style="margin-top:0;">Mode</div>
-    <div class="config-group">
-      <div class="field"><label>Trading mode</label>
-        <select id="cfg-mode">
-          <option value="paper">Paper (default)</option>
-          <option value="shadow">Shadow — logs intended real trades, executes none</option>
-          <option value="live">Live — same logging, real orders still require the confirmation gate above</option>
-        </select>
+    <!-- Badge legend, direct request: "highlight config options that aren't
+         fully baked yet due to data limitations (like not real/complete
+         whale watch data or lack of trade history)." Explained once here,
+         plain-English, rather than re-explained at every badge. -->
+    <div id="config-badge-legend" style="font-size:12px; color:var(--muted); background:var(--panel); border:1px solid var(--panel-border); border-radius:8px; padding:12px 14px; margin-bottom:14px;">
+      Settings below are grouped into sections you can expand one at a time. A few are tagged:
+      <span class="data-badge sim" style="margin-left:6px;">🧪 sim data</span> means it's tuned against
+      the built-in <i>simulated</i> whale signal, not a real feed — still worth setting, just less proven
+      until a real whale-watcher is connected. <span class="data-badge hist" style="margin-left:6px;">📉 needs history</span>
+      means it needs more of your own resolved trades before its output can be trusted.
+      <span class="data-badge new" style="margin-left:6px;">🆕 new</span> means the feature itself is
+      brand new with no track record yet, independent of any data quality question.
+    </div>
+
+    <details class="config-section" open>
+      <summary>Mode</summary>
+      <div class="section-body config-group">
+        <div class="field"><label>Trading mode</label>
+          <select id="cfg-mode">
+            <option value="paper">Paper (default)</option>
+            <option value="shadow">Shadow — logs intended real trades, executes none</option>
+            <option value="live">Live — same logging, real orders still require the confirmation gate above</option>
+          </select>
+        </div>
       </div>
-    </div>
+    </details>
 
-    <div class="panel-title">Strategy</div>
-    <div class="config-group">
-      <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
-      <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
-      <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
-      <div class="field"><label>Avoid whales below this win rate (%)</label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
-      <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
-      <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
-      <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME")</label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
-    </div>
-
-    <div class="panel-title">Position Management (Exits)</div>
-    <div class="config-group">
-      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-        Kalshi lets you sell before settlement instead of only holding to $1/$0 - these
-        actively manage positions already opened, closing them at the current market price
-        instead of leaving every trade to sit untouched until resolution. All off by default.
-      </p>
-      <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
-      <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
-      <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side</label></div>
-      <div class="field"><label>...requires at least this many recent prints on the ticker</label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
-      <div class="field"><label>...leaning against the position by at least this much (%)</label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
-
-      <div class="field" style="margin-top:8px;"><label><input type="checkbox" id="cfg-auto-exit-enabled"> <b>Automated exit algorithm</b> - close based on a tweakable composite confidence score</label></div>
-      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-        A fourth, independent layer on top of the hard rules above: blends unrealized P&amp;L
-        magnitude, whale-sentiment reversal strength, and how long whale interest in this
-        ticker has gone quiet into one 0–1 "exit confidence" score, the same mental model
-        signal.confidence already uses on the entry side. Only evaluated when none of the
-        hard rules above already closed the position this tick.
-      </p>
-      <div class="field"><label>Exit confidence threshold (0–1)</label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
-      <div class="field"><label>P&amp;L factor weight</label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
-      <div class="field"><label>Whale sentiment factor weight</label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
-      <div class="field"><label>Signal-staleness factor weight</label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
-      <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
-      <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
-      <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor</label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
-    </div>
-
-    <div class="panel-title">Whale Signal (simulated)</div>
-    <div class="config-group">
-      <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
-      <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
-      <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
-      <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE</label></div>
-    </div>
-
-    <div class="panel-title">Risk</div>
-    <div class="config-group">
-      <div class="field"><label>Max daily loss (% of bankroll)</label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
-    </div>
-
-    <div class="panel-title">Market Discovery</div>
-    <div class="config-group">
-      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-        Governs the <i>automatic</i> watchlist only (used when no markets are pinned below). Pinned markets
-        always show regardless of these thresholds.
-      </p>
-      <div class="field"><label>Minimum 24h volume (contracts) to be considered active</label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
-      <div class="field"><label>Default category filter for search below (comma-separated, blank = all)</label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
-    </div>
-
-    <button class="primary" id="save-config-btn" style="width:100%;">Save Config</button>
-
-    <div class="panel-title" style="margin-top:32px;">Market Search &amp; Watchlist</div>
-    <div class="config-group">
-      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-        The automatic watchlist above only surfaces active markets by design (see ROADMAP.md — a flat,
-        unfiltered browse of Kalshi's catalog can be almost entirely zero-volume combo markets). Search
-        here for anything, dormant markets included, and pin specific ones to always watch them regardless
-        of activity.
-      </p>
-      <div class="field" style="display:flex; gap:8px; align-items:flex-end;">
-        <div style="flex:2;"><label>Search (title or ticker)</label><input id="market-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
-        <div style="flex:1;"><label>Category</label><input id="market-search-category" type="text" placeholder="Sports"></div>
-        <div><label><input type="checkbox" id="market-search-dormant"> Include dormant</label></div>
-        <button id="market-search-btn" style="height:34px;">Search</button>
+    <details class="config-section" open>
+      <summary>Strategy <span class="section-desc">— what the whale-follow strategy trades on</span></summary>
+      <div class="section-body config-group">
+        <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Avoid whales below this win rate (%) <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
+        <div class="field"><label>...but only after this many resolved signals <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
+        <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
       </div>
-      <div id="market-search-results" style="margin-top:12px;"></div>
-      <div class="btn-row" style="margin-top:10px;">
-        <button class="primary" id="watchlist-add-btn" disabled>Add Selected to Watchlist</button>
+    </details>
+
+    <details class="config-section">
+      <summary>Position Management (Exits) <span class="section-desc">— selling before settlement</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Kalshi lets you sell before settlement instead of only holding to $1/$0 - these
+          actively manage positions already opened, closing them at the current market price
+          instead of leaving every trade to sit untouched until resolution. All off by default.
+        </p>
+        <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side <span class="data-badge sim">🧪 sim data</span></label></div>
+        <div class="field"><label>...requires at least this many recent prints on the ticker</label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
+        <div class="field"><label>...leaning against the position by at least this much (%)</label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
+
+        <div class="field" style="margin-top:8px;"><label><input type="checkbox" id="cfg-auto-exit-enabled"> <b>Automated exit algorithm</b> - close based on a tweakable composite confidence score</label></div>
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          A fourth, independent layer on top of the hard rules above: blends unrealized P&amp;L
+          magnitude, whale-sentiment reversal strength, and how long whale interest in this
+          ticker has gone quiet into one 0–1 "exit confidence" score, the same mental model
+          signal.confidence already uses on the entry side. Only evaluated when none of the
+          hard rules above already closed the position this tick. The sentiment and staleness
+          factors below are whale-data-driven; the P&amp;L factor is plain market price, not.
+        </p>
+        <div class="field"><label>Exit confidence threshold (0–1)</label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>P&amp;L factor weight</label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Whale sentiment factor weight <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Signal-staleness factor weight <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
+        <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
+        <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="data-badge sim">🧪 sim data</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
       </div>
+    </details>
 
-      <div class="panel-title" style="margin-top:24px;">Pinned Watchlist <span id="pinned-watchlist-count"></span></div>
-      <div id="pinned-watchlist-list"><div class="empty">Nothing pinned — using automatic discovery above.</div></div>
-    </div>
+    <details class="config-section">
+      <summary>Advisory Engine <span class="data-badge hist">📉 needs history</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Rule-based config-tuning recommendations, scoped per exact config variant (see the
+          Trading History tab). Disabled by default — even once enabled, a recommendation only
+          appears once the current config has enough of its own resolved trades to trust. See
+          docs/advisory-engine-plan.md for the full design, including opt-in auto-apply, which
+          is not wired up yet on purpose (ships as its own follow-up, gated behind a confirmation
+          step, after the manual "Apply" path above has run for a while).
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-advisory-enabled"> Enable advisory recommendations</label></div>
+        <div class="field"><label>Minimum resolved trades (per config variant) before recommendations activate</label><input id="cfg-advisory-min-resolved" type="number" step="1" min="1"></div>
+      </div>
+    </details>
 
-    <div class="panel-title" style="margin-top:32px;">Danger Zone</div>
-    <div class="config-group">
-      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-        Wipes selected data clean, in place, so you don't have to ask for it every time you want a clean
-        slate to test against. Each domain persists independently and is normally kept across resets on
-        purpose — pick only what you actually want gone.
-      </p>
-      <div class="field"><label><input type="checkbox" id="reset-cb-paper" checked> Paper account — bankroll, positions, trade log, daily-loss baseline, and the in-memory signal/decision feed</label></div>
-      <div class="field"><label><input type="checkbox" id="reset-cb-shadow"> Shadow trades — logged intended real-bankroll trades and shadow daily-loss baseline</label></div>
-      <div class="field"><label><input type="checkbox" id="reset-cb-signal-log"> Whale track record — every logged signal and its resolved win/loss outcome (the "real" accuracy history)</label></div>
-      <button class="danger" id="config-reset-btn" style="margin-top:8px;">Reset Selected</button>
-    </div>
+    <details class="config-section">
+      <summary>Market-Native Strategy <span class="data-badge new">🆕 new</span> <span class="section-desc">— a second, whale-independent paper strategy</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          A second, fully independent automated paper-trading strategy, off by default - trades
+          purely on real Kalshi market data (price, spread, volume, momentum), no whale signal
+          input at all. Its own bankroll and trade log (see GET /api/market-strategy/state), so it
+          never mixes with the whale-follow account above. Exists to start building a real,
+          whale-independent trade-history dataset now, while the whale feed is still simulated -
+          see docs/advisory-engine-plan.md. No dashboard panel yet (backend-only for now); this
+          is the only place to configure or enable it.
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-enabled"> Enable market-native strategy</label></div>
+        <div class="field"><label>Starting bankroll ($, its own capital pool)</label><input id="cfg-market-strategy-bankroll" type="number" step="100" min="0"></div>
+        <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-market-strategy-position-pct" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-market-strategy-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Price band: only trade markets priced between...</label><input id="cfg-market-strategy-min-price" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>...and</label><input id="cfg-market-strategy-max-price" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Max bid/ask spread to trade</label><input id="cfg-market-strategy-max-spread" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Minimum 24h volume (contracts)</label><input id="cfg-market-strategy-min-volume" type="number" step="50" min="0"></div>
+        <div class="field"><label>Momentum lookback window (seconds)</label><input id="cfg-market-strategy-momentum-lookback" type="number" step="60" min="60"></div>
+        <div class="field"><label>Minimum price movement over that window to count as momentum</label><input id="cfg-market-strategy-min-momentum" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Minimum time-to-close required to enter (seconds)</label><input id="cfg-market-strategy-min-seconds-to-close" type="number" step="60" min="0"></div>
+        <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-market-strategy-confidence" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Take-profit (0–1, blank = off)</label><input id="cfg-market-strategy-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label>Stop-loss (0–1, blank = off)</label><input id="cfg-market-strategy-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side</label></div>
+        <div class="field"><label>Max daily loss (% of its own bankroll)</label><input id="cfg-market-strategy-max-loss" type="number" step="0.01" min="0" max="1"></div>
+      </div>
+    </details>
+
+    <details class="config-section">
+      <summary>Whale Signal <span class="data-badge sim">🧪 sim data</span> <span class="section-desc">— the built-in simulator's own tuning</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Governs the built-in <i>simulator</i> only - a real connected whale-watcher feed
+          (Connected Accounts) ignores every field below and this whole section becomes inert.
+        </p>
+        <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
+        <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
+        <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE</label></div>
+      </div>
+    </details>
+
+    <details class="config-section">
+      <summary>Risk</summary>
+      <div class="section-body config-group">
+        <div class="field"><label>Max daily loss (% of bankroll)</label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
+      </div>
+    </details>
+
+    <details class="config-section">
+      <summary>Market Discovery <span class="section-desc">— the automatic watchlist</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Governs the <i>automatic</i> watchlist only (used when no markets are pinned below). Pinned markets
+          always show regardless of these thresholds.
+        </p>
+        <div class="field"><label>Minimum 24h volume (contracts) to be considered active</label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
+        <div class="field"><label>Default category filter for search below (comma-separated, blank = all)</label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
+      </div>
+    </details>
+
+    <button class="primary" id="save-config-btn" style="width:100%; margin-top:4px;">Save Config</button>
+
+    <details class="config-section" style="margin-top:24px;">
+      <summary>Market Search &amp; Watchlist</summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          The automatic watchlist above only surfaces active markets by design (see ROADMAP.md — a flat,
+          unfiltered browse of Kalshi's catalog can be almost entirely zero-volume combo markets). Search
+          here for anything, dormant markets included, and pin specific ones to always watch them regardless
+          of activity.
+        </p>
+        <div class="field" style="display:flex; gap:8px; align-items:flex-end;">
+          <div style="flex:2;"><label>Search (title or ticker)</label><input id="market-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
+          <div style="flex:1;"><label>Category</label><input id="market-search-category" type="text" placeholder="Sports"></div>
+          <div><label><input type="checkbox" id="market-search-dormant"> Include dormant</label></div>
+          <button id="market-search-btn" style="height:34px;">Search</button>
+        </div>
+        <div id="market-search-results" style="margin-top:12px;"></div>
+        <div class="btn-row" style="margin-top:10px;">
+          <button class="primary" id="watchlist-add-btn" disabled>Add Selected to Watchlist</button>
+        </div>
+
+        <div class="panel-title" style="margin-top:24px;">Pinned Watchlist <span id="pinned-watchlist-count"></span></div>
+        <div id="pinned-watchlist-list"><div class="empty">Nothing pinned — using automatic discovery above.</div></div>
+      </div>
+    </details>
+
+    <details class="config-section" style="margin-top:10px;">
+      <summary>Danger Zone</summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Wipes selected data clean, in place, so you don't have to ask for it every time you want a clean
+          slate to test against. Each domain persists independently and is normally kept across resets on
+          purpose — pick only what you actually want gone.
+        </p>
+        <div class="field"><label><input type="checkbox" id="reset-cb-paper" checked> Paper account — bankroll, positions, trade log, daily-loss baseline, and the in-memory signal/decision feed</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-shadow"> Shadow trades — logged intended real-bankroll trades and shadow daily-loss baseline</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-signal-log"> Whale track record — every logged signal and its resolved win/loss outcome (the "real" accuracy history)</label></div>
+        <button class="danger" id="config-reset-btn" style="margin-top:8px;">Reset Selected</button>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -2127,6 +2288,7 @@ async function loadTradingHistory() {
     renderHistoryCloseTypeBreakdown((resp.summary || {}).by_close_type || {});
     renderHistoryInsights(resp.insights || []);
     renderHistoryTrades();
+    loadAdvisory();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -2141,7 +2303,8 @@ function historyDurationHTML(sec) {
 
 const HISTORY_CLOSE_TYPE_LABELS = {
   take_profit: 'Take-Profit', stop_loss: 'Stop-Loss', sentiment_reversal: 'Sentiment Reversal',
-  auto_exit: 'Auto-Exit', settled_win: 'Settled (Won)', settled_loss: 'Settled (Lost)', unknown: 'Unknown',
+  momentum_reversal: 'Momentum Reversal', auto_exit: 'Auto-Exit', settled_win: 'Settled (Won)',
+  settled_loss: 'Settled (Lost)', unknown: 'Unknown',
 };
 
 function renderHistorySummary(summary) {
@@ -2205,6 +2368,68 @@ function renderHistoryInsights(insights) {
       <div>${esc(i.text)}</div>
     </div>
   `).join('');
+}
+
+// Advisory Recommendations (docs/advisory-engine-plan.md) - loaded
+// alongside the rest of the History tab whenever it opens (showView). Two
+// separate fetches: /api/advisory/status (always safe, reports progress
+// toward the data threshold even while disabled/gated) and
+// /api/advisory/recommendations (empty + gated_reason until the current
+// config's own resolved-trade count clears advisory.min_resolved_trades_per_variant,
+// enforced server-side in services/advisory_engine.py, not just hidden here).
+async function loadAdvisory() {
+  const badge = $('advisory-status-badge');
+  const el = $('advisory-recommendations');
+  try {
+    const status = await fetchJSON('/api/advisory/status');
+    if (!status.enabled) {
+      badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
+      el.innerHTML = '<div class="empty">Advisory recommendations are disabled — enable them in Config → Advisory Engine.</div>';
+      return;
+    }
+    const resp = await fetchJSON('/api/advisory/recommendations');
+    const recs = resp.recommendations || [];
+    badge.innerHTML = recs.length
+      ? `<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">${recs.length} active</span>`
+      : '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">enabled</span>';
+    if (!recs.length) {
+      el.innerHTML = `<div class="empty">${esc(resp.gated_reason || 'No recommendations yet.')}</div>`;
+      return;
+    }
+    el.innerHTML = recs.map(r => `
+      <div class="signal-card">
+        <div class="top-row">
+          <span style="font-family:var(--mono); font-size:11px; color:var(--muted);">${esc(r.config_path)}</span>
+          <span style="color:${HISTORY_CONFIDENCE_COLOR[r.confidence_label] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(r.confidence_label)} confidence · n=${r.n}</span>
+        </div>
+        <div style="margin:4px 0;"><b>${esc(String(r.current_value))}</b> → <b style="color:var(--whale);">${esc(String(r.suggested_value))}</b></div>
+        <div style="color:var(--muted); font-size:13px;">${esc(r.rationale)}</div>
+        <button class="advisory-apply-btn" data-rec-id="${esc(r.id)}" style="margin-top:8px;">Apply to config</button>
+      </div>
+    `).join('');
+    el.querySelectorAll('.advisory-apply-btn').forEach(btn => {
+      btn.addEventListener('click', () => applyAdvisoryRecommendation(btn.dataset.recId, btn));
+    });
+  } catch (e) {
+    badge.innerHTML = '';
+    el.innerHTML = '<div class="empty">Failed to load advisory recommendations.</div>';
+  }
+}
+
+async function applyAdvisoryRecommendation(id, btn) {
+  if (!confirm('Apply this suggested value to the live strategy config? This takes effect on the next trading-loop tick.')) return;
+  btn.disabled = true;
+  try {
+    await fetchJSON('/api/advisory/recommendations/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
+    });
+    btn.textContent = 'Applied ✓';
+    loadConfig();
+    setTimeout(loadAdvisory, 800);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Apply failed — retry';
+  }
 }
 
 function renderHistoryTrades() {
@@ -3396,6 +3621,25 @@ async function loadConfig() {
   $('cfg-auto-exit-gain-ref').value = cfg.strategy.auto_exit_gain_reference_pct ?? 0.5;
   $('cfg-auto-exit-loss-ref').value = cfg.strategy.auto_exit_loss_reference_pct ?? 0.3;
   $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
+  $('cfg-advisory-enabled').checked = !!(cfg.advisory && cfg.advisory.enabled);
+  $('cfg-advisory-min-resolved').value = (cfg.advisory && cfg.advisory.min_resolved_trades_per_variant) ?? 30;
+  const ms = cfg.market_strategy || {};
+  $('cfg-market-strategy-enabled').checked = !!ms.enabled;
+  $('cfg-market-strategy-bankroll').value = ms.starting_bankroll ?? 10000;
+  $('cfg-market-strategy-position-pct').value = ms.max_position_pct ?? 0.05;
+  $('cfg-market-strategy-cooldown').value = ms.cooldown_sec ?? 300;
+  $('cfg-market-strategy-min-price').value = ms.min_price ?? 0.15;
+  $('cfg-market-strategy-max-price').value = ms.max_price ?? 0.85;
+  $('cfg-market-strategy-max-spread').value = ms.max_spread ?? 0.05;
+  $('cfg-market-strategy-min-volume').value = ms.min_volume_24h ?? 500;
+  $('cfg-market-strategy-momentum-lookback').value = ms.momentum_lookback_sec ?? 1800;
+  $('cfg-market-strategy-min-momentum').value = ms.min_momentum_delta ?? 0.03;
+  $('cfg-market-strategy-min-seconds-to-close').value = ms.min_seconds_to_close ?? 3600;
+  $('cfg-market-strategy-confidence').value = ms.entry_confidence_threshold ?? 0.5;
+  $('cfg-market-strategy-take-profit').value = ms.take_profit_pct ?? '';
+  $('cfg-market-strategy-stop-loss').value = ms.stop_loss_pct ?? '';
+  $('cfg-market-strategy-momentum-reversal').checked = !!ms.exit_on_momentum_reversal;
+  $('cfg-market-strategy-max-loss').value = ms.max_daily_loss_pct ?? 1;
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -3453,6 +3697,28 @@ $('save-config-btn').addEventListener('click', async () => {
       auto_exit_gain_reference_pct: parseFloat($('cfg-auto-exit-gain-ref').value),
       auto_exit_loss_reference_pct: parseFloat($('cfg-auto-exit-loss-ref').value),
       auto_exit_stale_after_sec: parseInt($('cfg-auto-exit-stale-sec').value),
+    },
+    advisory: {
+      enabled: $('cfg-advisory-enabled').checked,
+      min_resolved_trades_per_variant: parseInt($('cfg-advisory-min-resolved').value),
+    },
+    market_strategy: {
+      enabled: $('cfg-market-strategy-enabled').checked,
+      starting_bankroll: parseFloat($('cfg-market-strategy-bankroll').value),
+      max_position_pct: parseFloat($('cfg-market-strategy-position-pct').value),
+      cooldown_sec: parseInt($('cfg-market-strategy-cooldown').value),
+      min_price: parseFloat($('cfg-market-strategy-min-price').value),
+      max_price: parseFloat($('cfg-market-strategy-max-price').value),
+      max_spread: parseFloat($('cfg-market-strategy-max-spread').value),
+      min_volume_24h: parseFloat($('cfg-market-strategy-min-volume').value),
+      momentum_lookback_sec: parseInt($('cfg-market-strategy-momentum-lookback').value),
+      min_momentum_delta: parseFloat($('cfg-market-strategy-min-momentum').value),
+      min_seconds_to_close: parseInt($('cfg-market-strategy-min-seconds-to-close').value),
+      entry_confidence_threshold: parseFloat($('cfg-market-strategy-confidence').value),
+      take_profit_pct: $('cfg-market-strategy-take-profit').value === '' ? null : parseFloat($('cfg-market-strategy-take-profit').value),
+      stop_loss_pct: $('cfg-market-strategy-stop-loss').value === '' ? null : parseFloat($('cfg-market-strategy-stop-loss').value),
+      exit_on_momentum_reversal: $('cfg-market-strategy-momentum-reversal').checked,
+      max_daily_loss_pct: parseFloat($('cfg-market-strategy-max-loss').value),
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),

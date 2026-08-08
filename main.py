@@ -15,7 +15,10 @@ from starlette.middleware.sessions import SessionMiddleware
 load_dotenv()  # reads .env if present; every var is optional, see .env.example
 
 from services import accounts_store
+from services import advisory_engine
 from services import auth as auth_service
+from services import config_performance
+from services import market_history
 from services import signal_log
 from services import title_cache
 from services import trade_analytics
@@ -25,6 +28,7 @@ from services.kalshi_client import KalshiClient
 from services.kalshi_account_client import KalshiAccountClient
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
+from services.market_strategy import MarketNativeStrategy
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.shadow_mode import ShadowTrader
@@ -41,6 +45,30 @@ risk = RiskManager(
 )
 strategy = FollowTheWhaleStrategy(broker, risk)
 shadow = ShadowTrader(default_bankroll=cfg["risk"]["starting_bankroll"])
+
+# MarketNativeStrategy (docs/advisory-engine-plan.md §9-adjacent, direct
+# request 2026-08-08: "start storing and analyzing market data now") - a
+# second, independent automated paper strategy with its own capital pool
+# and its own data/*.db files, so its performance is cleanly measurable on
+# its own and never contaminates the whale-follow broker/risk state above.
+# Off by default (market_strategy.enabled) - see services/market_strategy.py.
+# db_path is derived from broker.db_path/risk.db_path (not a fresh
+# Path(__file__) lookup) specifically so tests that redirect those two
+# instances' DB_PATH before importing main (see tests/test_trading_gate.py)
+# transparently redirect these two as well - constructing a real
+# PaperBroker/RiskManager at import time must never be able to reach the
+# live data/*.db files no matter what a test does.
+market_broker = PaperBroker(
+    starting_bankroll=cfg["market_strategy"]["starting_bankroll"],
+    db_path=broker.db_path.parent / "market_broker.db",
+)
+market_risk = RiskManager(
+    starting_bankroll=cfg["market_strategy"]["starting_bankroll"],
+    max_daily_loss_pct=cfg["market_strategy"]["max_daily_loss_pct"],
+    kill_switch_enabled=cfg["market_strategy"]["kill_switch_enabled"],
+    db_path=risk.db_path.parent / "market_risk_state.db",
+)
+market_strategy = MarketNativeStrategy(market_broker, market_risk)
 whale_sim = WhaleSimulator(
     size_range=tuple(cfg["whale_signal"]["whale_size_range"]),
     bias=cfg["whale_signal"]["bias"],
@@ -445,12 +473,25 @@ async def trading_loop():
             continue
         client = None
         try:
+            # Config-variant fingerprint (docs/advisory-engine-plan.md) -
+            # computed once per tick, same cfg snapshot every trade decision
+            # below is made against. record_variant is a cheap idempotent
+            # upsert, safe to call every tick even when nothing changed.
+            config_fp = config_performance.fingerprint(cfg)
+            config_performance.record_variant(config_fp, cfg)
+
             client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
 
             # Market data, account data, exchange status, and resolution-checking
             # don't depend on each other — fetch/run all four concurrently.
+            # extra_tickers includes both brokers' open positions - a market-
+            # native position that rotates out of the top-volume watchlist
+            # needs price updates for its own exit checks just as much as a
+            # whale-follow one does (see ROADMAP.md - this was a real bug
+            # for the whale broker before extra_tickers existed at all).
+            open_position_tickers = list(set(broker.positions.keys()) | set(market_broker.positions.keys()))
             markets, account_snapshot, exchange_status, _ = await asyncio.gather(
-                _fetch_markets(client, cfg, extra_tickers=list(broker.positions.keys())), _fetch_account_snapshot(cfg),
+                _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client), _check_signal_resolutions(client),
             )
             state["account"] = account_snapshot
@@ -466,6 +507,45 @@ async def trading_loop():
             # payload, not internal use).
             market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
             state["markets"] = [_slim_market(m) for m in markets]
+
+            # Real market data logging (docs/advisory-engine-plan.md §9,
+            # direct request: "start storing and analyzing market data
+            # now") - independent of whale signals, independent of whether
+            # either strategy ever trades a given market. Same real fields
+            # already fetched above, zero extra API cost.
+            tick_now = time.time()
+            market_history.record_snapshots(
+                [
+                    {
+                        "ticker": m["ticker"],
+                        "yes_price": float(m.get("yes_bid_dollars") or 0.5),
+                        "spread": max(
+                            float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
+                        ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
+                        "volume_24h": float(m.get("volume_24h_fp") or 0.0),
+                        "time_to_close_sec": market_history.seconds_to_close(m.get("close_time"), tick_now),
+                    }
+                    for m in markets if m.get("ticker")
+                ],
+                timestamp=tick_now,
+            )
+            for m in markets:
+                result = (m.get("result") or "").strip().lower()
+                if result in ("yes", "no") and m.get("ticker"):
+                    market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
+
+            # MarketNativeStrategy (services/market_strategy.py) - runs every
+            # tick alongside the whale-follow strategy below, entirely off
+            # its own real-market-data heuristic. No-op (returns []) when
+            # market_strategy.enabled is false, same disabled-by-default
+            # precedent as the rest of this app's opt-in automation.
+            # Intentionally NOT appended to state["decision_feed"] - that
+            # feed is the whale-follow strategy's own record; blending the
+            # two would defeat the point of each strategy's performance
+            # being cleanly, independently measurable (see the plan doc).
+            market_strategy.evaluate_all(markets, tick_now, cfg, market_results)
+            markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
+            market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results)
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
             event_titles, trade_tape, live_status = await asyncio.gather(
@@ -586,7 +666,9 @@ async def trading_loop():
                 event_ticker = market_info.get("event_ticker")
                 is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
 
-                decision = strategy.evaluate(signal, cfg, is_live=is_live, market_results=market_results)
+                decision = strategy.evaluate(
+                    signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
+                )
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
@@ -714,6 +796,10 @@ async def auth_logout(request: Request):
 
 class ConfigPatch(BaseModel):
     patch: dict
+
+
+class ApplyRecommendationBody(BaseModel):
+    id: str
 
 
 # kalshi_account.trading_enabled is the one config value that turns on real
@@ -934,6 +1020,141 @@ async def get_trading_history(limit: int = 50, offset: int = 0):
     }
 
 
+@app.get("/api/advisory/status")
+async def get_advisory_status():
+    # Honest progress reporting even while gated (docs/advisory-engine-plan.md
+    # §3, layer 2) - this never leaks a real recommendation early, but it's
+    # useful to show "18/30 resolved trades" while waiting, same real-data-
+    # or-honest-fallback idiom as the rest of this app.
+    adv_cfg = config_store.get()["advisory"]
+    cfg = config_store.get()
+    current_fp = config_performance.fingerprint(cfg)
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    summaries = advisory_engine.variant_summaries(all_rows)
+    known_variants = config_performance.all_variants()
+    min_resolved = adv_cfg["min_resolved_trades_per_variant"]
+    variants_out = []
+    for v in known_variants:
+        fp = v["fingerprint"]
+        resolved = summaries.get(fp, {}).get("total_closed", 0)
+        variants_out.append({
+            "fingerprint": fp,
+            "first_seen_at": v["first_seen_at"],
+            "resolved_count": resolved,
+            "ready": resolved >= min_resolved,
+            "is_current": fp == current_fp,
+        })
+    return {
+        "enabled": adv_cfg["enabled"],
+        "min_resolved_trades_per_variant": min_resolved,
+        "auto_apply_enabled": adv_cfg["auto_apply_enabled"],
+        "current_fingerprint": current_fp,
+        "variants": variants_out,
+    }
+
+
+@app.get("/api/advisory/recommendations")
+async def get_advisory_recommendations():
+    # Always safe to call regardless of advisory.enabled - the per-variant
+    # data-threshold gate lives inside advisory_engine.generate_recommendations
+    # itself (docs/advisory-engine-plan.md §3, layer 2), not here, so there's
+    # no route-level check that could accidentally be the only thing standing
+    # between an under-sampled variant and a real recommendation.
+    adv_cfg = config_store.get()["advisory"]
+    if not adv_cfg["enabled"]:
+        return {"recommendations": [], "gated_reason": "advisory engine is disabled", "resolved_count": None}
+
+    cfg = config_store.get()
+    current_fp = config_performance.fingerprint(cfg)
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+    result = advisory_engine.generate_recommendations(
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
+    )
+    return result
+
+
+@app.post("/api/advisory/recommendations/apply")
+async def apply_advisory_recommendation(body: ApplyRecommendationBody):
+    # Manual apply path (docs/advisory-engine-plan.md §4) - always available
+    # regardless of auto_apply_enabled, always a human-initiated click.
+    # Recommendations are recomputed fresh here rather than trusting
+    # whatever the request body claims a value should be - only a
+    # recommendation this call just derived itself can ever be applied.
+    adv_cfg = config_store.get()["advisory"]
+    if not adv_cfg["enabled"]:
+        raise HTTPException(status_code=400, detail="advisory engine is disabled")
+
+    cfg = config_store.get()
+    current_fp = config_performance.fingerprint(cfg)
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+    result = advisory_engine.generate_recommendations(
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
+    )
+    match = next((r for r in result["recommendations"] if r["id"] == body.id), None)
+    if match is None:
+        raise HTTPException(
+            status_code=404,
+            detail="recommendation not found - it may be stale (config or trade history changed since it was fetched)",
+        )
+
+    field = match["config_path"].removeprefix("strategy.")
+    config_store.update({"strategy": {field: match["suggested_value"]}})
+    new_fp = config_performance.fingerprint(config_store.get())
+    config_performance.log_applied_change(
+        config_path=match["config_path"], old_value=match["current_value"], new_value=match["suggested_value"],
+        rationale=match["rationale"], trade_count=match["n"],
+        fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False,
+    )
+    _bump_generation()
+    return {"applied": match, "new_config": config_store.get()["strategy"]}
+
+
+@app.get("/api/advisory/applied-changes")
+async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
+    return {
+        "changes": config_performance.recent_applied_changes(limit=limit, offset=offset),
+        "total": config_performance.applied_changes_count(),
+    }
+
+
+@app.get("/api/market-strategy/state")
+async def get_market_strategy_state():
+    # Backend-only for now (docs/advisory-engine-plan.md §9-adjacent,
+    # direct request 2026-08-08) - no dedicated dashboard panel yet, but a
+    # real, inspectable endpoint so this data pipeline can't silently
+    # drift unnoticed while nothing in the UI reads it. Reuses
+    # trade_analytics as-is (strategy-agnostic - it only ever reads Trade
+    # dicts) rather than reimplementing summary stats for a second broker.
+    market_cfg = config_store.get()["market_strategy"]
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+    return {
+        "enabled": market_cfg["enabled"],
+        "broker": market_broker.state(state["latest_prices"]),
+        "summary": trade_analytics.compute_summary(all_rows),
+    }
+
+
+@app.get("/api/market-history/summary")
+async def get_market_history_summary():
+    return {
+        "tracked_tickers": market_history.tracked_ticker_count(),
+        "total_snapshots": market_history.snapshot_count(),
+        "resolved_outcomes": market_history.outcome_count(),
+    }
+
+
+@app.get("/api/market-history/hypothetical-trades")
+async def get_market_history_hypothetical_trades():
+    # Retrospective, explicitly hypothetical (see market_history.py's
+    # docstring) - never a claim about a real position. Computed on demand
+    # from logged snapshots/outcomes, not separately persisted.
+    return {"trades": market_history.compute_hypothetical_trades()}
+
+
 @app.get("/api/markets/search")
 async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
@@ -1105,6 +1326,15 @@ async def update_config(body: ConfigPatch):
                 "kalshi_account.trading_enabled can't be changed through /api/config — "
                 "use POST /api/trading/enable (requires a connected account and a typed "
                 "confirmation phrase) or POST /api/trading/disable."
+            ),
+        )
+    if "advisory" in body.patch and "auto_apply_enabled" in (body.patch.get("advisory") or {}):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "advisory.auto_apply_enabled can't be changed through /api/config — "
+                "use POST /api/advisory/auto-apply/enable (requires a typed confirmation "
+                "phrase) or POST /api/advisory/auto-apply/disable."
             ),
         )
     new_cfg = config_store.update(body.patch)

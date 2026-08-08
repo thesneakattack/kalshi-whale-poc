@@ -7,8 +7,35 @@ import time
 
 from services import signal_log
 from services.whale_simulator import WhaleSignal
-from services.paper_broker import PaperBroker
+from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
+
+
+def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
+    """Shared by every strategy's check_exits (FollowTheWhaleStrategy below,
+    and services/market_strategy.py's MarketNativeStrategy) - closes a
+    position at the terminal price the instant its market has actually
+    settled, regardless of any other exit config. Extracted here rather
+    than left inline/duplicated so this stays the single place this math
+    lives: terminal_price = 1.0 if result == "yes" else 0.0, NOT "1.0 if
+    won else 0.0" - the latter double-applies close_position's own side
+    inversion for a "no" position and silently zeros out a winning "no"
+    position's payout (a real bug this app shipped and fixed once already,
+    see ROADMAP.md - reusing this function is what keeps a second strategy
+    from reintroducing it). Returns None if the market hasn't resolved, or
+    if the position was already gone by the time this ran (a poll tick's
+    exit check racing a position that closed this same tick shouldn't
+    crash the loop)."""
+    result = (result or "").strip().lower()
+    if result not in ("yes", "no"):
+        return None
+    won = result == pos.side
+    terminal_price = 1.0 if result == "yes" else 0.0
+    reason = f"market settled {result.upper()} - position {'won' if won else 'lost'}"
+    trade = broker.close_position(ticker, terminal_price, reason)
+    if trade is None:
+        return None
+    return {"action": "close", "ticker": ticker, "trade": trade.to_dict(), "reason": reason}
 
 
 class FollowTheWhaleStrategy:
@@ -18,6 +45,7 @@ class FollowTheWhaleStrategy:
 
     def evaluate(
         self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None, market_results: dict | None = None,
+        config_fingerprint: str | None = None,
     ) -> dict:
         """Returns a decision dict describing what happened (trade or skip + why).
         is_live comes from main.py's milestone/live-data lookup (see
@@ -100,6 +128,7 @@ class FollowTheWhaleStrategy:
             size=contracts,
             price=signal.price,
             reason=f"whale print {signal.size} @ {signal.price} (conf {signal.confidence})",
+            config_fingerprint=config_fingerprint,
         )
         return {
             "action": "trade",
@@ -178,16 +207,9 @@ class FollowTheWhaleStrategy:
         for ticker, pos in list(self.broker.positions.items()):
             result = (market_results.get(ticker) or "").strip().lower()
             if result in ("yes", "no"):
-                won = result == pos.side
-                # terminal_price is the settled YES price (close_position
-                # already applies the side inversion for a "no" position) -
-                # NOT 1.0-if-won, which would double-apply that inversion
-                # and silently zero out a winning "no" position's payout.
-                terminal_price = 1.0 if result == "yes" else 0.0
-                reason = f"market settled {result.upper()} - position {'won' if won else 'lost'}"
-                trade = self.broker.close_position(ticker, terminal_price, reason)
-                if trade is not None:
-                    decisions.append({"action": "close", "ticker": ticker, "trade": trade.to_dict(), "reason": reason})
+                closed = close_if_settled(self.broker, ticker, pos, result)
+                if closed is not None:
+                    decisions.append(closed)
                 continue  # settled - the opt-in checks below no longer apply to this position
 
             current_price = latest_prices.get(ticker, pos.entry_price)

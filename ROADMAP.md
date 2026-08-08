@@ -741,6 +741,24 @@ band instead.
       ENABLED" only once real orders are genuinely possible — loud
       specifically when it needs to be, not crying wolf the rest of the
       time. Verified live in both states.
+- [x] Config tab rebuilt as a genuine multi-section control panel, direct
+      report: "the config tab is hard to make sense of for a like-I'm-5
+      user." Was one long flat scroll of every field at once; now ten
+      collapsible `<details class="config-section">` accordions (Mode and
+      Strategy open by default, the rest collapsed), each with a one-line
+      plain-English subtitle. New data-quality badge system, direct
+      request ("highlight config options that aren't fully baked yet due
+      to data limitations"): 🧪 sim data (fields calibrated against the
+      built-in whale *simulator*, not a real feed — the whale win-rate
+      filter fields, the sentiment-reversal exit block, the auto-exit
+      sentiment/staleness weights, the whole Whale Signal section), 📉
+      needs history (the Advisory Engine section), 🆕 new (the
+      Market-Native Strategy section below — a brand-new feature with no
+      track record yet, a different concern from data quality). Explained
+      once in a legend box at the top of the tab rather than repeated
+      inline. Verified live via Selenium: all ten sections render and
+      expand/collapse, every badge type present, Save Config still
+      round-trips correctly through `/api/config`.
 
 ## P2 — Whale-tracking maturity
 
@@ -823,36 +841,60 @@ band instead.
       behaves as off. Verified live: toggled via the Config tab, confirmed
       round-tripped through `/api/config` correctly, reverted after
       testing.
-- [ ] Config-versioned performance tracking, to eventually feed a
-      machine-learning advisory service — requirement only, not yet
-      implemented (direct request: "just add in the requirement for now").
-      Every distinct combination of the strategy config fields that
-      actually govern trade decisions (`entry_threshold`,
-      `max_position_pct`, `cooldown_sec`, `min_whale_winrate_pct`,
-      `min_resolved_for_whale_filter`, `live_markets_only`, ...) should get
-      its own tracked "config variant" — changing any one of those fields
-      starts a new tracker instead of blending results into the previous
-      config's numbers. Needs: (1) a stable fingerprint/hash of just the
-      relevant strategy-config subset, not the whole `settings.yaml`
-      (`poll_interval_sec`/`whale_signal.*` etc. shouldn't fragment
-      tracking that has nothing to do with them); (2) a new persisted log
-      (same one-file-per-concern SQLite pattern as
-      `services/signal_log.py`) recording each trade's outcome (win/loss
-      once resolved, size, P&L) tagged with the config-variant fingerprint
-      active when it was placed; (3) an aggregate success rate per variant,
-      comparable to `signal_log.py`'s existing win-rate math but scoped
-      per-config instead of per-series; (4) the actual ML/advisory consumer
-      of this data is explicitly out of scope for this item — this is the
-      data-collection groundwork only, so "which config performed best" is
-      answerable later without needing to backfill from scratch. Still
-      genuinely open — the Trading History tab's `compute_insights()`
-      (see "Active position management & Trading History" above) covers
-      adjacent ground with a much lighter approach (parses the specific
-      threshold embedded in each close's existing reason string, e.g.
-      "target 50%", rather than a real fingerprinted config-variant log),
-      resolved directly with the user as the right scope for now rather
-      than building the fingerprinting/variant-tracking system this item
-      actually describes.
+- [x] Config-versioned performance tracking. Implemented as
+      `services/config_performance.py`: `fingerprint()` hashes `strategy.*`
+      minus `name` (so a newly added tunable field joins the fingerprint
+      automatically, no code change needed), `config_variants` +
+      `applied_changes` tables in `data/config_performance.db`.
+      `services/paper_broker.py`'s `Position`/`Trade` gained
+      `config_fingerprint` (idempotent `ALTER TABLE` migration on the live
+      db); a closed position always inherits the fingerprint active at
+      *entry*, even if config changed mid-hold — a documented, deliberate
+      limitation, not a bug. Superseded by, and built as the direct
+      foundation for, the advisory engine item below.
+- [x] The advisory/recommendation engine itself, direct request
+      (2026-08-08): "I want a recommendation engine/advisory system... keep
+      it disabled until that data threshold has been reached." Full design
+      in `docs/advisory-engine-plan.md`, then built: `services/advisory_engine.py`
+      (`variant_summaries()`, `generate_recommendations()` — within-variant
+      heuristics upgraded from `compute_insights()`'s hedged prose into a
+      concrete suggested value, plus cross-variant comparison once two
+      variants each clear the threshold). Rule-based, not ML, decided
+      directly rather than assumed. The per-variant minimum-resolved-trades
+      gate is enforced *inside* `generate_recommendations()` itself, not the
+      route or UI — no code path can leak an under-sampled recommendation.
+      New `advisory.*` config (`enabled` default `false`), routes
+      (`GET /api/advisory/status`, `GET /api/advisory/recommendations`,
+      `POST /api/advisory/recommendations/apply` — manual-click-only,
+      re-validates fresh and writes an audit row, `GET
+      /api/advisory/applied-changes`), and a `POST /api/config` rejection
+      guard for `advisory.auto_apply_enabled` (same shape as
+      `kalshi_account.trading_enabled`'s existing guard). New "Advisory
+      Recommendations" panel on the Trading History tab, next to (not
+      replacing) "Config Tuning Hints". Opt-in auto-apply's actual
+      `POST /api/advisory/auto-apply/enable` confirmation-phrase endpoint is
+      deliberately **not** built yet — ships as a separate, later, more
+      carefully reviewed follow-up once the manual-apply path has run for a
+      while; the data model (`applied_changes`, the two-flag design) is
+      already in place for it. New `tests/test_config_performance.py`,
+      `tests/test_advisory_engine.py`, extensions to
+      `tests/test_paper_broker.py`/`tests/test_strategy_engine.py`/
+      `tests/test_trading_gate.py` (including a full seed-trades →
+      fetch-recommendation → apply → verify-audit-log integration test).
+      Verified live via Selenium against the real running app, both the
+      disabled and enabled/gated states.
+- [x] Scaffolding for a future ML agent to work *alongside* (not replace)
+      the rule-based advisory engine above, direct request (2026-08-08):
+      "feed this heuristic suggestion data, market data, historical data,
+      portfolio data, recommendation engine data, to a machine-learning
+      agent... let's not pursue that until the project is already
+      finished." `services/ml_feed.py`'s `build_context_snapshot()` is the
+      shape of that future export — a pure function assembling one bundle
+      out of data every existing service already produces, not wired into
+      any route or called from anywhere yet (`docs/advisory-engine-plan.md`
+      §9). The scaffolding itself is done; deliberately nothing beyond it:
+      no model, no training pipeline, no route. Revisit only once the rest
+      of this app is otherwise done.
 - [x] Whale-size threshold relative to each market, not a flat number —
       `whale_simulator.py`'s half, direct request ("more accurately reflect
       real-world behavior and volatility"). Was a flat configured
@@ -915,6 +957,73 @@ band instead.
       simulated signal log: real multi-print clusters detected (16 prints/
       408,645 contracts/95% confidence on one real market), clicking one
       opens the real detail modal.
+- [x] Real market-data storage + a second, whale-independent paper strategy,
+      direct request (2026-08-08): "market data is real, the whale data is
+      fake... there's no reason why I shouldn't start storing and analyzing
+      market data now... when whale watch data becomes available... those
+      personal trades and whale watch data should then be incorporated."
+      Asked directly rather than assumed which shape this should take
+      (passive logging only, vs. a real second automated strategy) — the
+      user chose the latter, backend-only for now (no dashboard panel yet).
+      New `services/market_history.py`: a real per-market snapshot log
+      (price/spread/volume/time-to-close, `data/market_history.db`)
+      populated every trading-loop tick from the market data already
+      fetched for the whale-follow strategy — zero extra API cost,
+      completely independent of whale signals or of whether either
+      strategy trades a given market. `momentum()` computes real price
+      movement over a trailing window, with a minimum-window-coverage
+      guard so a ticker with only seconds of history can't report a
+      confident-looking "30-minute momentum" reading off noise.
+      `compute_hypothetical_trades()` — explicitly labeled
+      retrospective/hypothetical, never a claim about a real position —
+      characterizes what a simple "buy the side the price already
+      favored" entry would have returned, per lookback window, from real
+      settlement outcomes. New `services/market_strategy.py`:
+      `MarketNativeStrategy`, a second, fully independent automated paper
+      strategy — momentum continuation gated by a price band, spread,
+      volume, and time-to-close filters, composite entry confidence
+      blending momentum/liquidity/spread (same weighted-factor mental
+      model as `whale_simulator._score_confidence`). Zero whale-signal
+      input. Off by default (`market_strategy.enabled: false`).
+      Needed a real architecture fix to do this safely: `PaperBroker` and
+      `RiskManager` both gained an optional per-instance `db_path`
+      (backward compatible — existing tests' `monkeypatch.setattr(...,
+      "DB_PATH", ...)` pattern still works unchanged), so `main.py`'s new
+      `market_broker`/`market_risk` pair (own `data/market_broker.db` +
+      `data/market_risk_state.db`) runs its own capital pool without
+      colliding with the whale-follow broker's tables — `main.py` derives
+      the second pair's path from the first pair's already-redirectable
+      `db_path` attribute specifically so test isolation
+      (`tests/test_trading_gate.py`'s real-file-safety redirect) still
+      holds. `strategy_engine.py`'s settlement-closing math (the
+      `terminal_price = 1.0 if result == "yes" else 0.0` fix from the
+      Active Position Management section above — real bug, previously
+      shipped) was extracted into a shared `close_if_settled()` so a
+      second strategy can't silently reintroduce it by duplicating the old
+      inline logic. `trade_analytics.py` gained a `momentum_reversal`
+      close-type pattern, the market-native analog of `sentiment_reversal`.
+      `main.py`'s market fetch now includes both brokers' open positions in
+      `extra_tickers` (the same "a held position shouldn't go stale after
+      rotating off the watchlist" fix this file already records for the
+      whale broker, applied proactively here too); new debug endpoints
+      `GET /api/market-strategy/state`, `GET /api/market-history/summary`,
+      `GET /api/market-history/hypothetical-trades`. New Config-tab
+      section ("Market-Native Strategy", 🆕 badge) with all its fields.
+      New `tests/test_market_history.py`, `tests/test_market_strategy.py`
+      (13 + 24 tests), `db_path`-isolation tests added to
+      `tests/test_paper_broker.py`/`tests/test_risk_manager.py`, route
+      smoke tests added to `tests/test_trading_gate.py`. Caught and fixed a
+      real bug during this work: `market_history.py`'s `_connect()`
+      originally defaulted its `db_path` parameter at function-definition
+      time (`db_path: Path = DB_PATH`), which silently broke test-path
+      redirection — monkeypatching `DB_PATH` afterward had no effect since
+      Python binds default argument values once, at `def` time, not per
+      call. Fixed by requiring an explicit argument and having every
+      caller pass the module-level name (resolved dynamically at call
+      time instead). Full suite: 262 passing. Verified live: `curl`/direct
+      endpoint checks against the real running app confirmed
+      `market_history` was already logging real snapshots within seconds
+      of the reload.
 
 ## P3 — Reliability & engineering hygiene
 

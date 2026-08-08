@@ -18,9 +18,9 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "risk_state.db"
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def _connect(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS risk_meta (
@@ -35,12 +35,22 @@ def _connect() -> sqlite3.Connection:
 
 
 class RiskManager:
-    def __init__(self, starting_bankroll: float, max_daily_loss_pct: float, kill_switch_enabled: bool):
+    def __init__(
+        self, starting_bankroll: float, max_daily_loss_pct: float, kill_switch_enabled: bool,
+        db_path: Path | None = None,
+    ):
+        # Same per-instance db_path pattern as services/paper_broker.py's
+        # PaperBroker - defaults to the module-level DB_PATH (resolved at
+        # call time, so existing tests' monkeypatch.setattr(rm, "DB_PATH",
+        # ...) keeps working), or pass an explicit path to run a second,
+        # independent risk tracker (e.g. services/market_strategy.py's own
+        # kill switch) without colliding with another instance's risk_meta row.
+        self.db_path = db_path or DB_PATH
         self.starting_bankroll = starting_bankroll
         self.max_daily_loss_pct = max_daily_loss_pct
         self.kill_switch_enabled = kill_switch_enabled
 
-        with _connect() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT day_start_bankroll, halted, halt_reason FROM risk_meta WHERE id = 1"
             ).fetchone()
@@ -56,8 +66,11 @@ class RiskManager:
                 self.day_start_bankroll, halted, self.halt_reason = row
                 self.halted = bool(halted)
 
+    def _connect(self) -> sqlite3.Connection:
+        return _connect(self.db_path)
+
     def _persist(self):
-        with _connect() as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE risk_meta SET day_start_bankroll = ?, halted = ?, halt_reason = ? WHERE id = 1",
                 (self.day_start_bankroll, int(self.halted), self.halt_reason),

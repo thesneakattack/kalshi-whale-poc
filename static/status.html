@@ -1393,6 +1393,153 @@
           <code>renderPositions</code> disclosure-state fix)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 41 · a rule-based advisory engine, and the config-fingerprinting it needed first</div>
+        <h4>"I want a recommendation engine/advisory system... keep it disabled until that data threshold has been reached"</h4>
+        <p>Phase 40's Trading History tab shipped <code>compute_insights()</code> as deliberately descriptive-only
+          - hedged prose, never a suggested value, never scoped per config. This phase built the real thing on top
+          of it, in two steps requested and confirmed directly: rule-based, not ML (explainable, no training
+          pipeline needed for a POC's data volume), and it must not surface a real recommendation until there's
+          enough data to trust it - not as a UI nicety, but as a property of the function itself.</p>
+        <p>Step one: new <code>services/config_performance.py</code> - <code>fingerprint()</code> hashes
+          <code>strategy.*</code> minus <code>name</code> (so a newly added tunable field joins the fingerprint
+          with zero code change here), <code>config_variants</code>/<code>applied_changes</code> tables in
+          <code>data/config_performance.db</code>. <code>services/paper_broker.py</code>'s <code>Position</code>/
+          <code>Trade</code> gained <code>config_fingerprint</code> via an idempotent <code>ALTER TABLE</code>
+          migration (the trades/positions tables already had live rows). A closed position always inherits the
+          fingerprint active at <i>entry</i>, even if config changed mid-hold - a documented limitation, not a bug,
+          since the entry gates are what a variant comparison is actually about.</p>
+        <p>Step two: new <code>services/advisory_engine.py</code> - <code>variant_summaries()</code> groups
+          resolved trades by fingerprint (reusing <code>trade_analytics.compute_summary()</code>, not
+          reimplementing it); <code>generate_recommendations()</code> upgrades <code>compute_insights()</code>'s
+          hedged prose into a concrete suggested value (e.g. the actual confidence-bucket boundary for
+          <code>entry_threshold</code>, an adjusted <code>take_profit_pct</code>/<code>stop_loss_pct</code> from
+          observed left-on-table/overshoot), plus cross-variant comparison once two variants each individually
+          clear the threshold. The gate lives inside this function, not the route or the UI - there is no code
+          path that can hand back a real recommendation for an under-sampled variant. New <code>advisory.*</code>
+          config (<code>enabled</code> default <code>false</code>), <code>GET /api/advisory/status</code>,
+          <code>GET /api/advisory/recommendations</code>, <code>POST /api/advisory/recommendations/apply</code>
+          (always a human click, re-validates fresh against a freshly recomputed list rather than trusting the
+          request body, writes an audit row), <code>GET /api/advisory/applied-changes</code>, and a
+          <code>POST /api/config</code> rejection guard for <code>advisory.auto_apply_enabled</code> - same shape
+          as the existing <code>kalshi_account.trading_enabled</code> guard, since opt-in auto-apply's actual
+          confirmation-phrase <i>enable</i> endpoint was deliberately left unbuilt, a separate and more carefully
+          reviewed follow-up once the manual-apply path has run for a while. New "Advisory Recommendations" panel
+          on the Trading History tab, directly below "Config Tuning Hints" (left unchanged - the permanent
+          descriptive layer, not replaced).</p>
+        <p>Direct follow-up in the same session, added deliberately as scaffolding rather than built out: "eventually
+          I want to be able to feed this heuristic suggestion data, market data, historical data, portfolio data,
+          recommendation engine data, to a machine-learning agent that will work WITH these things, not as a
+          replacement... let's not pursue that until the project is already finished." New
+          <code>services/ml_feed.py</code> - one pure, dependency-free function,
+          <code>build_context_snapshot()</code>, assembling exactly that bundle out of data every existing service
+          already produces. Not wired into any route or called from anywhere in the app; only
+          <code>tests/test_ml_feed.py</code> exercises it, specifically so it can't silently drift out of sync
+          with the shapes it wraps while nothing else calls it.</p>
+        <div class="files"><code>services/config_performance.py</code> (new) ·
+          <code>services/advisory_engine.py</code> (new) · <code>services/ml_feed.py</code> (new, scaffolding) ·
+          <code>services/paper_broker.py</code> (<code>config_fingerprint</code>) ·
+          <code>services/strategy_engine.py</code> (fingerprint threading) ·
+          <code>services/trade_analytics.py</code> (<code>config_fingerprint</code> on rows,
+          <code>confidence_label</code> made public) · <code>main.py</code> (<code>/api/advisory/*</code>,
+          config guard) · <code>config/settings.yaml</code> (<code>advisory.*</code>) ·
+          <code>static/index.html</code> (Advisory Recommendations panel) ·
+          <code>docs/advisory-engine-plan.md</code> (new, full design) ·
+          <code>tests/test_config_performance.py</code>, <code>tests/test_advisory_engine.py</code>,
+          <code>tests/test_ml_feed.py</code> (all new)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 42 · the Config tab becomes an actual control panel</div>
+        <h4>"The config tab is hard to make sense of for a like-I'm-5 user"</h4>
+        <p>Direct report: every setting in the app lived on one long flat scroll, all expanded at once regardless
+          of how often it's actually touched - the opposite of the app's own dummy-proof guiding principle applied
+          to its own settings screen. Rebuilt as ten collapsible <code>&lt;details class="config-section"&gt;</code>
+          accordions (native, not a hand-rolled JS toggle - free keyboard support) - Mode and Strategy open by
+          default, the rest collapsed, each with a one-line plain-English subtitle instead of a bare heading.</p>
+        <p>Second half of the same report: "highlight config options that aren't fully baked yet due to data
+          limitations (like not real/complete whale watch data or lack of trade history)." New three-badge system,
+          explained once in a legend box at the top of the tab rather than repeated inline: 🧪 sim data (tuned
+          against the built-in whale <i>simulator</i>, not a real feed - the whale win-rate filter fields, the
+          sentiment-reversal exit block, the auto-exit sentiment/staleness weights, the whole Whale Signal section);
+          📉 needs history (the Advisory Engine section from phase 41 - needs more of a user's own resolved trades
+          before its output is trustworthy); 🆕 new (the Market-Native Strategy section from phase 43 below - a
+          brand-new feature with zero track record yet, a different concern from data quality entirely). Verified
+          live via Selenium: all ten sections present and expand/collapse correctly, all three badge types render,
+          Save Config still round-trips every field through <code>/api/config</code> unchanged.</p>
+        <div class="files"><code>static/index.html</code> (Config tab restructure, accordion + badge CSS,
+          <code>#config-badge-legend</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 43 · real market data, logged now, and a second strategy that never touches whale data</div>
+        <h4>"Market data is real, the whale data is fake... there's no reason why I shouldn't start storing and analyzing market data now"</h4>
+        <p>Direct request, with a stated longer-term plan: start building a real, whale-independent dataset from
+          this app's real Kalshi market data today, and once a real whale-watcher feed is connected, incorporate
+          those genuinely-real whale-driven trades alongside it rather than waiting. Asked directly which shape
+          "storing and analyzing" should take rather than assumed: passive logging only, or an actual second live
+          automated strategy - the answer was the latter, kept backend-only for now (no dashboard panel yet).</p>
+        <p>New <code>services/market_history.py</code>: a real per-market snapshot log
+          (price/spread/volume/time-to-close, <code>data/market_history.db</code>) populated every trading-loop
+          tick from the market data already fetched for the whale-follow strategy - zero extra API cost, and
+          completely independent of whale signals or of whether either strategy ever trades a given market.
+          <code>momentum()</code> computes real price movement over a trailing window, with a minimum-window-
+          coverage guard so a ticker with only seconds of logged history can't report a confident-looking
+          "30-minute momentum" reading computed from noise. <code>compute_hypothetical_trades()</code> - explicitly
+          labeled retrospective/hypothetical, never a claim about a real position - characterizes what a simple
+          "buy the side the price already favored" entry would have returned, per lookback window, against real
+          settlement outcomes.</p>
+        <p>New <code>services/market_strategy.py</code>: <code>MarketNativeStrategy</code>, a second, fully
+          independent automated paper strategy - momentum continuation gated by a price band, a max spread, a
+          minimum volume floor, and a minimum time-to-close, composite entry confidence blending
+          momentum/liquidity/spread (same weighted-factor mental model as <code>whale_simulator._score_confidence</code>
+          and phase 40's <code>_exit_confidence</code>). Zero whale-signal input anywhere in it. Off by default
+          (<code>market_strategy.enabled: false</code>), same ship-disabled precedent as phase 41's
+          <code>advisory.enabled</code>.</p>
+        <p>Running a second strategy safely needed a real architecture fix first: <code>PaperBroker</code> and
+          <code>RiskManager</code> both only supported one hardcoded module-level <code>DB_PATH</code> each - a
+          second live instance would have silently shared (and corrupted) the whale-follow broker's own
+          <code>broker_meta</code>/<code>positions</code>/<code>trades</code> rows. Both gained an optional
+          per-instance <code>db_path</code>, resolved at call time so existing tests'
+          <code>monkeypatch.setattr(..., "DB_PATH", ...)</code> pattern keeps working unchanged; <code>main.py</code>
+          derives the new <code>market_broker</code>/<code>market_risk</code> pair's paths from the whale-follow
+          pair's own already-redirectable <code>db_path</code> attribute (not a fresh path lookup of their own)
+          specifically so <code>tests/test_trading_gate.py</code>'s real-file-safety guarantee still holds for the
+          second pair too. Also extracted <code>strategy_engine.py</code>'s settlement-closing math - the
+          <code>terminal_price = 1.0 if result == "yes" else 0.0</code> fix from phase 40, a real bug that shipped
+          and was fixed once already - into a shared <code>close_if_settled()</code>, so a second strategy
+          couldn't silently reintroduce that exact bug class by duplicating the old inline version.
+          <code>trade_analytics.py</code> gained a <code>momentum_reversal</code> close-type pattern, the
+          market-native analog of <code>sentiment_reversal</code>. <code>main.py</code>'s market fetch now
+          includes both brokers' open positions in <code>extra_tickers</code>, the same "a held position shouldn't
+          go stale after rotating off the top-volume watchlist" fix phase 40 already made for the whale broker,
+          applied proactively here before it could recur.</p>
+        <p>Caught and fixed a real bug while writing this phase's own tests, not hypothetical:
+          <code>market_history.py</code>'s <code>_connect()</code> originally defaulted its <code>db_path</code>
+          parameter at function-definition time (<code>db_path: Path = DB_PATH</code>) - Python binds a default
+          argument value once, when the function is defined, not per call, so monkeypatching <code>DB_PATH</code>
+          afterward in a test had no effect at all and every write silently went to whatever path was live at
+          import time. Fixed by requiring an explicit argument and having every internal caller pass the
+          module-level name (resolved dynamically, at call time, the same way <code>PaperBroker</code>/
+          <code>RiskManager</code>'s own default already worked correctly). New
+          <code>tests/test_market_history.py</code>, <code>tests/test_market_strategy.py</code> (13 + 24 tests),
+          <code>db_path</code>-isolation tests added to <code>tests/test_paper_broker.py</code>/
+          <code>tests/test_risk_manager.py</code>, route smoke tests added to <code>tests/test_trading_gate.py</code>.
+          Full suite: 262 passing. Verified live: <code>curl</code> against the real running app confirmed
+          <code>market_history</code> was already logging real snapshots (21 tickers, 120 rows) within seconds of
+          the reload.</p>
+        <div class="files"><code>services/market_history.py</code> (new) ·
+          <code>services/market_strategy.py</code> (new) · <code>services/paper_broker.py</code> (per-instance
+          <code>db_path</code>) · <code>services/risk_manager.py</code> (per-instance <code>db_path</code>) ·
+          <code>services/strategy_engine.py</code> (<code>close_if_settled()</code> extracted) ·
+          <code>services/trade_analytics.py</code> (<code>momentum_reversal</code>) · <code>main.py</code>
+          (<code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring,
+          <code>/api/market-strategy/state</code>, <code>/api/market-history/summary</code>,
+          <code>/api/market-history/hypothetical-trades</code>) · <code>config/settings.yaml</code>
+          (<code>market_strategy.*</code>) · <code>static/index.html</code> (Market-Native Strategy Config
+          section) · <code>tests/test_market_history.py</code>, <code>tests/test_market_strategy.py</code> (new)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1439,7 +1586,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist, write-through title-cache persistence</td><td class="loc">1247</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints</td><td class="loc">1477</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection</td><td class="loc">233</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
@@ -1450,19 +1597,24 @@
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">35</td><td><span class="pill planned">not registered</span></td></tr>
           <tr><td class="mod">services/whalewatchers/__init__.py</td><td class="note">provider registry, selects active one via env var</td><td class="loc">22</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic, including the optional live-markets-only gate, manual excluded-series denylist, already-open/already-resolved guards; <code>check_exits</code> (settlement + take-profit/stop-loss/sentiment-reversal/auto-exit) and the <code>_exit_confidence</code> composite scoring algorithm</td><td class="loc">312</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/risk_manager.py</td><td class="note">daily loss cap, kill switch, manual halt — day_start_bankroll/halt state persisted to <code>data/risk_state.db</code></td><td class="loc">95</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/paper_broker.py</td><td class="note">simulated fills, positions (side-aware cost basis for no-side entries), <code>close_position</code>, trade log, P&amp;L — persisted to <code>data/paper_broker.db</code>, survives restarts</td><td class="loc">256</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/trade_analytics.py</td><td class="note">Trading History tab's backend — closed-trade classification/pairing, cost/payout/left-on-table math, aggregate summary stats, sample-size-hedged config-tuning insights. Pure functions, no new persistence</td><td class="loc">271</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic (now threads <code>config_fingerprint</code> into <code>open_position</code>), including the optional live-markets-only gate, manual excluded-series denylist, already-open/already-resolved guards; <code>check_exits</code> (settlement via the shared <code>close_if_settled()</code> + take-profit/stop-loss/sentiment-reversal/auto-exit) and the <code>_exit_confidence</code> composite scoring algorithm. <code>close_if_settled()</code> is module-level, shared with <code>market_strategy.py</code>'s own <code>check_exits</code></td><td class="loc">334</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/risk_manager.py</td><td class="note">daily loss cap, kill switch, manual halt — day_start_bankroll/halt state persisted to <code>data/risk_state.db</code> by default, or an explicit per-instance <code>db_path</code> (used by <code>main.py</code>'s second, market-native <code>market_risk</code> instance)</td><td class="loc">108</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/paper_broker.py</td><td class="note">simulated fills, positions (side-aware cost basis for no-side entries, <code>config_fingerprint</code> tagging), <code>close_position</code>, trade log, P&amp;L — persisted to <code>data/paper_broker.db</code> by default, or an explicit per-instance <code>db_path</code> (used by <code>main.py</code>'s second, market-native <code>market_broker</code> instance, its own capital pool), survives restarts</td><td class="loc">300</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/trade_analytics.py</td><td class="note">Trading History tab's backend — closed-trade classification/pairing (incl. <code>momentum_reversal</code>), cost/payout/left-on-table math, aggregate summary stats, sample-size-hedged config-tuning insights, public <code>confidence_label()</code> (shared with <code>advisory_engine.py</code>), rows now carry <code>config_fingerprint</code>. Pure functions, no new persistence</td><td class="loc">282</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/config_performance.py</td><td class="note">config-variant fingerprinting (<code>strategy.*</code> minus <code>name</code>) for the advisory engine — <code>config_variants</code>/<code>applied_changes</code> tables, <code>data/config_performance.db</code></td><td class="loc">147</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/advisory_engine.py</td><td class="note">rule-based config-tuning recommendation engine — per-variant summaries, within-variant + cross-variant recommendations with a stable id/n/confidence_label, the data-threshold gate enforced inside <code>generate_recommendations()</code> itself. Disabled by default (<code>advisory.enabled</code>)</td><td class="loc">244</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/ml_feed.py</td><td class="note">scaffolding only — <code>build_context_snapshot()</code>, a pure function shaping the bundle a future ML agent would read alongside the advisory engine. Not called from any route yet, only its own test exercises it</td><td class="loc">69</td><td><span class="pill planned">scaffolding, unwired</span></td></tr>
+          <tr><td class="mod">services/market_history.py</td><td class="note">real per-market snapshot log (price/spread/volume/time-to-close) + settlement outcomes, logged every tick independent of whale signals — <code>momentum()</code>, <code>compute_hypothetical_trades()</code> (explicitly hypothetical backtest analysis), <code>data/market_history.db</code></td><td class="loc">210</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/market_strategy.py</td><td class="note"><code>MarketNativeStrategy</code> — a second, fully independent automated paper strategy, momentum continuation gated by price-band/spread/volume/time-to-close filters, zero whale-signal input. Own capital pool (<code>main.py</code>'s <code>market_broker</code>/<code>market_risk</code>). Disabled by default (<code>market_strategy.enabled</code>), backend-only, no dashboard panel yet</td><td class="loc">222</td><td><span class="pill gated">built, disabled by default</span></td></tr>
           <tr><td class="mod">services/title_cache.py</td><td class="note">write-through persistence for market/event titles (<code>data/title_cache.db</code>) — survives <code>uvicorn --reload</code> restarts and watchlist rotation, fixing raw tickers leaking into signal history/clusters/positions</td><td class="loc">110</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, paginated trade log with dollar cost/payout), Config (search/pin markets + settings, position-management/exit config, excluded-series denylist, selectable-domain Danger Zone reset), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions)</td><td class="loc">3706</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">6-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), <b>History</b> (win/loss by close-type, cumulative realized P&amp;L chart, config-tuning insights, Advisory Recommendations panel, paginated trade log with dollar cost/payout), <b>Config</b> — rebuilt as a ten-section collapsible accordion control panel with a 🧪/📉/🆕 data-quality badge legend (search/pin markets + settings, position-management/exit config, excluded-series denylist, Advisory Engine controls, Market-Native Strategy controls, selectable-domain Danger Zone reset), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math (side-aware), event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table (side-aware cost/value, persists whale-reason disclosure state across refresh) with whale-confidence badge + reason drill-down, sortable/filterable Trade Log (direction-aware P&amp;L) + Strategy Decisions tables (handles close-type decisions)</td><td class="loc">3972</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1650</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">tests/*.py</td><td class="note">171 tests across 11 files: paper_broker (incl. no-side cost basis, close_position, settlement), risk_manager, strategy_engine (incl. excluded-series, check_exits' five exit triggers, already-open/already-resolved guards), trade_analytics (close-type classification, dollar math, insights), signal_log (incl. paginated history, flow clustering), shadow_mode (incl. excluded-series, no-side sizing, already-resolved guard), trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), kalshi_client (round-robin watchlist selection), whale_simulator (relative sizing, weighted market selection, composite confidence, live-only generation gate) — each isolates its own SQLite file (or mocks the SDK client directly), never touches real <code>data/*.db</code></td><td class="loc">2201</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1800</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">tests/*.py</td><td class="note">262 tests across 16 files: paper_broker (incl. no-side cost basis, close_position, settlement, config_fingerprint, per-instance db_path isolation), risk_manager (incl. per-instance db_path isolation), strategy_engine (incl. excluded-series, check_exits' five exit triggers, already-open/already-resolved guards, config_fingerprint threading), trade_analytics (close-type classification incl. momentum_reversal, dollar math, insights), signal_log (incl. paginated history, flow clustering), shadow_mode (incl. excluded-series, no-side sizing, already-resolved guard), trading_gate (incl. advisory routes/config guard, market-strategy/market-history debug endpoints), http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), kalshi_client (round-robin watchlist selection), whale_simulator (relative sizing, weighted market selection, composite confidence, live-only generation gate), config_performance (fingerprint stability, variant/applied-change persistence), advisory_engine (within/cross-variant recommendations, the data-threshold gate), ml_feed (snapshot shape), market_history (snapshots, outcomes, momentum window-coverage guard, hypothetical trades), market_strategy (entry gating, exits, momentum reversal) — each isolates its own SQLite file (or mocks the SDK client directly), never touches real <code>data/*.db</code></td><td class="loc">3339</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
           <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll (side-aware sizing), executes none, mirrors the live-markets-only gate, excluded-series denylist, and already-resolved-market guard, self-serve <code>clear()</code> — <code>data/shadow_mode.db</code></td><td class="loc">206</td><td><span class="pill good">done</span></td></tr>
@@ -1496,6 +1648,13 @@
           <tr><td class="mod">GET</td><td class="mod">/api/trading-history</td><td class="note">if configured</td><td class="note">paginated closed-trade log + summary stats + config-tuning insights for the History tab</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/trading/enable</td><td class="note">if configured</td><td class="note">flip real trading on — requires a connected account + typed confirmation phrase</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/trading/disable</td><td class="note">if configured</td><td class="note">flip real trading off — always allowed, no confirmation</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/status</td><td class="note">if configured</td><td class="note">per-variant resolved-trade progress toward the recommendation threshold</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/recommendations</td><td class="note">if configured</td><td class="note">current recommendations, or a gated_reason if under threshold / disabled</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/advisory/recommendations/apply</td><td class="note">if configured</td><td class="note">apply one recommendation by id — always a human click, re-validates fresh, writes an audit row</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/applied-changes</td><td class="note">if configured</td><td class="note">paginated audit log of applied recommendations</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-strategy/state</td><td class="note">if configured</td><td class="note">MarketNativeStrategy's own broker state + summary — no dashboard panel yet, debug-only</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-history/summary</td><td class="note">if configured</td><td class="note">tracked-ticker/snapshot/resolved-outcome counts</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-history/hypothetical-trades</td><td class="note">if configured</td><td class="note">retrospective, explicitly-hypothetical entry-outcome analysis from logged market data</td></tr>
           <tr><td class="mod">GET</td><td class="mod">/api/accounts</td><td class="note">if configured</td><td class="note">connected-account status per provider</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/accounts/connect</td><td class="note">if configured</td><td class="note">save encrypted provider credentials</td></tr>
           <tr><td class="mod">POST</td><td class="mod">/api/accounts/{provider}/disconnect</td><td class="note">if configured</td><td class="note">remove stored credentials</td></tr>
@@ -1528,6 +1687,10 @@
       <div class="cfg-cell"><span class="p">risk.max_daily_loss_pct</span><span class="v">10%</span></div>
       <div class="cfg-cell"><span class="p">risk.kill_switch_enabled</span><span class="v">true</span></div>
       <div class="cfg-cell"><span class="p">kalshi_account.trading_enabled</span><span class="v" style="color:var(--danger);">false</span></div>
+      <div class="cfg-cell"><span class="p">advisory.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">advisory.min_resolved_trades_per_variant</span><span class="v">30</span></div>
+      <div class="cfg-cell"><span class="p">market_strategy.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">market_strategy.starting_bankroll</span><span class="v">$10,000</span></div>
     </div>
 
     <p class="lede" style="margin-top:24px;"><code style="color:var(--whale); font-family:var(--mono);">.env</code> — secrets and URLs, gitignored, every variable optional:</p>

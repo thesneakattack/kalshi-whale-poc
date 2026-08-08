@@ -26,6 +26,11 @@ _CLOSE_TYPE_PATTERNS = [
     ("stop_loss", re.compile(r"^closed: stop-loss hit")),
     ("sentiment_reversal", re.compile(r"^closed: whale sentiment reversed")),
     ("auto_exit", re.compile(r"^closed: auto-exit")),
+    # market_strategy.py's whale-independent analog to sentiment_reversal -
+    # same "close if the signal this position was entered on has flipped
+    # against the held side" idea, using real price momentum instead of
+    # whale prints.
+    ("momentum_reversal", re.compile(r"^closed: momentum reversed")),
 ]
 
 _ENTRY_CONF_RE = re.compile(r"\(conf ([\d.]+)\)")
@@ -34,7 +39,7 @@ _REALIZED_RE = re.compile(r"\(realized ([+-][\d.]+)\)")
 # Close types that represent a deliberate profit-taking exit ahead of
 # settlement - the only ones "left on the table" is a meaningful, honest
 # number for (see build_trade_history).
-_EARLY_PROFIT_TYPES = ("take_profit", "auto_exit", "sentiment_reversal")
+_EARLY_PROFIT_TYPES = ("take_profit", "auto_exit", "sentiment_reversal", "momentum_reversal")
 
 
 def classify_close_type(reason: str) -> str | None:
@@ -116,6 +121,12 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
             "left_on_table": left_on_table,
             "cost_basis": cost_basis,
             "cash_back": cash_back,
+            # Which strategy config was active when this position was opened
+            # (see services/config_performance.py) - sourced from the entry
+            # trade specifically, though the close trade carries the same
+            # value by construction (PaperBroker.close_position inherits it
+            # from the position being closed).
+            "config_fingerprint": entry.get("config_fingerprint") if entry else None,
         })
     return rows
 
@@ -158,7 +169,7 @@ def compute_summary(rows: list[dict]) -> dict:
     }
 
 
-def _confidence_label(n: int) -> str:
+def confidence_label(n: int) -> str:
     """Sample-size-only hedge, not a statistical test - just says how much
     weight a human should put on the insight before acting on it."""
     if n < 5:
@@ -200,7 +211,7 @@ def compute_insights(rows: list[dict]) -> list[dict]:
                     f"vs {win_rates[best_key]:.0f}% at {best_key} confidence - raising strategy.entry_threshold "
                     f"may filter out the weaker end."
                 ),
-                "n": n, "confidence": _confidence_label(n),
+                "n": n, "confidence": confidence_label(n),
             })
 
     # 2. Per-close-type outcomes -> which exit mechanism is helping/hurting.
@@ -218,7 +229,7 @@ def compute_insights(rows: list[dict]) -> list[dict]:
                 f"stop_loss closed {n} position(s), avg realized {avg_pnl:+.2f}. If similar setups often "
                 f"recovered afterward, stop_loss_pct may be too tight; if losses kept deepening, it's doing its job."
             ),
-            "n": n, "confidence": _confidence_label(n),
+            "n": n, "confidence": confidence_label(n),
         })
 
     take_profit_group = by_type.get("take_profit", [])
@@ -233,7 +244,7 @@ def compute_insights(rows: list[dict]) -> list[dict]:
                 f"take_profit closed {n} position(s), avg realized {avg_pnl:+.2f}, averaging {avg_left:.1f}c/contract "
                 f"left on the table versus a full $1 win. Consider raising take_profit_pct if this feels too eager."
             ),
-            "n": n, "confidence": _confidence_label(n),
+            "n": n, "confidence": confidence_label(n),
         })
 
     auto_exit_group = by_type.get("auto_exit", [])
@@ -248,7 +259,7 @@ def compute_insights(rows: list[dict]) -> list[dict]:
         insights.append({
             "topic": "auto_exit_threshold",
             "text": f"auto_exit closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
-            "n": n, "confidence": _confidence_label(n),
+            "n": n, "confidence": confidence_label(n),
         })
 
     # 3. Settled-only (never actively exited) vs actively-managed win rate.
@@ -265,7 +276,7 @@ def compute_insights(rows: list[dict]) -> list[dict]:
                 f"actively-managed exits (take-profit/stop-loss/reversal/auto-exit) won {managed_wr:.0f}% "
                 f"of the time (n={len(managed)})."
             ),
-            "n": n, "confidence": _confidence_label(n),
+            "n": n, "confidence": confidence_label(n),
         })
 
     return insights
