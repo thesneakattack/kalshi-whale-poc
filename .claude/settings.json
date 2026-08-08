@@ -33,6 +33,12 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_py_syntax.py\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_tests.py\"",
+            "timeout": 30,
+            "statusMessage": "Running tests..."
           }
         ]
       }

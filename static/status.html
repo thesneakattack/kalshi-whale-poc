@@ -777,6 +777,45 @@
           <code>renderPositions</code>, <code>whaleConfidenceBadgeHTML</code>, <code>reasonDetailsHTML</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 26 · sortable trade/decision tables, an observe-live-only gate, and a self-serve reset</div>
+        <h4>Three separate direct requests, all shipped and tested in one pass</h4>
+        <p>Trade Log and Strategy Decisions both got an Advanced mode: <code>renderTrades</code>/
+          <code>renderDecisions</code> now offer a real sortable, filterable table alongside the existing
+          plain-English card feed, reusing the same Simple/Advanced toggle every other panel already uses.
+          Trade Log's table adds a P&amp;L column (current price vs. fill price, the same math
+          <code>renderPositions</code> already does) and a Confidence column pulled out of
+          <code>Trade.reason</code>'s formatted text via a new <code>parseConfidence()</code> - that number
+          had only ever existed embedded in a sentence, never its own field. Strategy Decisions' table adds
+          an action filter (trade/skip). Both share new small <code>sortRows</code>/<code>toggleSort</code>/
+          <code>sortHeaderHTML</code> helpers - click a column header to sort by it, click again to reverse.
+          Verified through a real Chrome session with synthetic data: correct P&amp;L math, correct sort
+          order and direction toggling, and both filters actually excluding the rows they should.</p>
+        <p>Second request: a configurable "live markets only" trading gate, so real-world strategy accuracy
+          can be observed in isolation from thin/pre-market signal noise. New
+          <code>strategy.live_markets_only</code> config field (off by default) makes both
+          <code>FollowTheWhaleStrategy.evaluate()</code> and <code>ShadowTrader.evaluate()</code> skip/decline
+          any signal on a market that isn't currently live - deliberately reusing the exact same live-status
+          lookup the LIVE badge already shows (<code>state["live_status"]</code>) rather than inventing a
+          second definition of "live." <code>main.py</code>'s trading loop resolves ticker &rarr;
+          event_ticker &rarr; live status once per signal and passes it to both evaluators. Config tab gets a
+          matching checkbox; 5 new tests cover on/off and live/not-live for both evaluators.</p>
+        <p>Third request: a self-serve "Reset Paper Account &amp; Logs" button in a new Config tab Danger
+          Zone group - the exact same <code>POST /api/reset</code> Terminal's Controls button already calls
+          (paper bankroll/positions/trade log, daily-loss baseline, in-memory signal/decision feed; persisted
+          whale track record and shadow trades are deliberately untouched, since those track long-run
+          accuracy across resets), just reachable without asking for it every time. No new endpoint needed.
+          Also folded in: a project-scoped Claude Code hook (<code>.claude/hooks/run_tests.py</code>) that
+          runs the test suite automatically after editing <code>main.py</code> or any <code>services/*.py</code>
+          file, and a pass condensing this file's sibling, <code>ROADMAP.md</code>, down from ~820 lines to
+          keep completed-item narrative from crowding out the still-open to-do list - the full detail for
+          every condensed item is still exactly this page, plus <code>git log</code> for anything committed.</p>
+        <div class="files"><code>services/strategy_engine.py</code>, <code>services/shadow_mode.py</code>
+          (<code>live_markets_only</code> gate) · <code>main.py</code> (is_live resolution, <code>/api/reset</code>
+          already existed) · <code>static/index.html</code> (Advanced trade/decision tables, sort helpers,
+          Danger Zone) · <code>tests/test_strategy_engine.py</code>, <code>tests/test_shadow_mode.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -821,7 +860,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context, real live-market status via milestone/live-data lookup</td><td class="loc">867</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context, real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate</td><td class="loc">876</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>)</td><td class="loc">191</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
@@ -832,20 +871,20 @@
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">35</td><td><span class="pill planned">not registered</span></td></tr>
           <tr><td class="mod">services/whalewatchers/__init__.py</td><td class="note">provider registry, selects active one via env var</td><td class="loc">22</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic</td><td class="loc">48</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic, including the optional live-markets-only gate</td><td class="loc">69</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/risk_manager.py</td><td class="note">daily loss cap, kill switch, manual halt — day_start_bankroll/halt state persisted to <code>data/risk_state.db</code></td><td class="loc">95</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/paper_broker.py</td><td class="note">simulated fills, positions, trade log, P&amp;L — persisted to <code>data/paper_broker.db</code>, survives restarts</td><td class="loc">193</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down</td><td class="loc">2232</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2441</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~985</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
-          <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none — <code>data/shadow_mode.db</code></td><td class="loc">179</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none, mirrors the live-markets-only gate — <code>data/shadow_mode.db</code></td><td class="loc">183</td><td><span class="pill good">done</span></td></tr>
         </tbody>
       </table>
     </div>

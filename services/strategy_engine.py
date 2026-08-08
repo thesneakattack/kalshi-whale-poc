@@ -14,12 +14,19 @@ class FollowTheWhaleStrategy:
         self.broker = broker
         self.risk = risk
 
-    def evaluate(self, signal: WhaleSignal, cfg: dict) -> dict:
-        """Returns a decision dict describing what happened (trade or skip + why)."""
+    def evaluate(self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None) -> dict:
+        """Returns a decision dict describing what happened (trade or skip + why).
+        is_live comes from main.py's milestone/live-data lookup (see
+        _fetch_live_status) - None/False means "not currently live" (either
+        confirmed finished/scheduled, or no live-status data for this market
+        at all, e.g. it's not a live-event-style market)."""
         strat_cfg = cfg["strategy"]
 
         if not self.risk.check_daily_loss(self.broker.equity({})):
             return self._skip(signal, f"halted: {self.risk.halt_reason}")
+
+        if strat_cfg.get("live_markets_only") and not is_live:
+            return self._skip(signal, "market is not currently live")
 
         if signal.confidence < strat_cfg["entry_threshold"]:
             return self._skip(signal, f"confidence {signal.confidence} below threshold")

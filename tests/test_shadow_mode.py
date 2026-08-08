@@ -105,6 +105,26 @@ def test_whale_winrate_filter_blocks_a_bad_series(tmp_path, monkeypatch):
     assert row is None
 
 
+def test_live_markets_only_blocks_a_non_live_market(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(confidence=0.9, price=0.5), _cfg(strategy={"live_markets_only": True}),
+        reference_bankroll=10000.0, bankroll_source="real_account", is_live=False,
+    )
+    assert row is None
+
+
+def test_live_markets_only_allows_a_live_market(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(confidence=0.9, price=0.5), _cfg(strategy={"live_markets_only": True}),
+        reference_bankroll=10000.0, bankroll_source="real_account", is_live=True,
+    )
+    assert row is not None
+
+
 def test_position_size_rounding_to_zero_is_not_logged(tmp_path, monkeypatch):
     trader = _trader(tmp_path, monkeypatch)
     _no_opinion_series_stats(monkeypatch)

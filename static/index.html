@@ -217,6 +217,17 @@
   .action-tag.trade { color: var(--yes); }
   .action-tag.skip { color: var(--muted); }
 
+  /* Advanced sortable/filterable tables - Trade Log and Strategy Decisions
+     (ROADMAP.md Phase 0.5's "Trade log / decision feed" item). Reuses
+     .positions-table's look; click a header to sort by that column. */
+  .positions-table.sortable th.sortable { cursor: pointer; user-select: none; }
+  .positions-table.sortable th.sortable:hover { color: var(--text); }
+  .table-filter-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 11px; color: var(--muted); }
+  .table-filter-row input, .table-filter-row select {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    padding: 4px 6px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
+  }
+
   .config-group { margin-bottom: 20px; }
   .config-group h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; margin: 0 0 10px 0; }
   .field { margin-bottom: 10px; }
@@ -578,7 +589,7 @@
     <div class="panel-title" style="margin-top:24px;"><span id="positions-title-text">Open Positions</span> <span id="position-count"></span></div>
     <div id="positions-list" class="scroll-panel"><div class="empty">No open positions</div></div>
 
-    <div class="panel-title" style="margin-top:24px;"><span id="tradelog-title-text">Trade Log</span></div>
+    <div class="panel-title" style="margin-top:24px;"><span id="tradelog-title-text">Trade Log</span> <span id="tradelog-toggle"></span></div>
     <div id="trades-list" class="scroll-panel"><div class="empty">No trades placed yet</div></div>
 
     <div class="panel-title" style="margin-top:24px;"><span id="shadow-title-text">Shadow Trades</span> <span id="shadow-count"></span></div>
@@ -638,7 +649,7 @@
     <div id="funnel-bar" class="funnel-bar"></div>
     <div class="panel-title">Whale Signals (simulated or live feed)</div>
     <div id="signal-feed" class="scroll-panel"><div class="empty">Waiting for signals…</div></div>
-    <div class="panel-title" style="margin-top:20px;">Strategy Decisions</div>
+    <div class="panel-title" style="margin-top:20px;">Strategy Decisions <span id="decision-toggle"></span></div>
     <div id="decision-feed" class="scroll-panel"><div class="empty">No decisions yet…</div></div>
   </div>
 
@@ -687,6 +698,7 @@
       <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
       <div class="field"><label>Avoid whales below this win rate (%)</label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
       <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+      <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
     </div>
 
     <div class="panel-title">Whale Signal (simulated)</div>
@@ -734,6 +746,18 @@
 
       <div class="panel-title" style="margin-top:24px;">Pinned Watchlist <span id="pinned-watchlist-count"></span></div>
       <div id="pinned-watchlist-list"><div class="empty">Nothing pinned — using automatic discovery above.</div></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:32px;">Danger Zone</div>
+    <div class="config-group">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+        Wipes the paper account clean, in place — same effect as Terminal's Reset button, self-serve here
+        so you don't have to ask for it every time you want a clean slate to test against. Clears the paper
+        bankroll/positions/trade log, the daily-loss baseline, and the in-memory signal/decision feed.
+        Persisted whale track record (win rate) and shadow trades are untouched — those track long-run
+        accuracy across resets, not this run's test data.
+      </p>
+      <button class="danger" id="config-reset-btn">Reset Paper Account &amp; Logs</button>
     </div>
   </div>
 </div>
@@ -791,6 +815,48 @@ function toggleAdvanced(panelId) {
 function advToggleHTML(panelId) {
   const on = isAdvanced(panelId);
   return `<button class="adv-toggle ${on ? 'on' : ''}" onclick="toggleAdvanced('${esc(panelId)}')" title="Switch between a simple summary and full detail">${on ? 'Advanced' : 'Simple'}</button>`;
+}
+
+// Shared sortable-table-header infrastructure - used by the Trade Log and
+// Strategy Decisions Advanced tables (ROADMAP.md Phase 0.5). state is a
+// small {sortKey, sortDir} object owned by the calling render function;
+// onclickCall is literal JS source (e.g. "toggleSort(tradeLogFilter,'ticker',renderTradeLogTable)")
+// since this has to end up as an onclick="..." attribute, not a live reference.
+function sortRows(rows, key, dir) {
+  const sorted = rows.slice().sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (typeof av === 'string') { av = av.toLowerCase(); bv = (bv || '').toLowerCase(); }
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av < bv) return -1;
+    if (av > bv) return 1;
+    return 0;
+  });
+  if (dir === 'desc') sorted.reverse();
+  return sorted;
+}
+function toggleSort(state, key, rerenderFn) {
+  if (state.sortKey === key) {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.sortKey = key;
+    state.sortDir = 'desc';
+  }
+  rerenderFn();
+}
+function sortHeaderHTML(state, key, label, onclickCall) {
+  const active = state.sortKey === key;
+  const arrow = active ? (state.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+  return `<th class="sortable" onclick="${onclickCall}">${esc(label)}${arrow}</th>`;
+}
+
+// Trade.reason is a formatted string ("whale print 5230 @ 0.62 (conf 0.78)"),
+// not a separate field - services/strategy_engine.py's exact format
+// (verified directly, not guessed). Pulled out here so the Advanced trade
+// table can sort/show it as its own numeric column instead of a text blob.
+function parseConfidence(reason) {
+  const m = /\(conf ([\d.]+)\)/.exec(reason || '');
+  return m ? parseFloat(m[1]) : null;
 }
 
 // Kalshi's real title for a combo/parlay market is a flat comma list like
@@ -900,21 +966,95 @@ function renderSignals(signals) {
   }).join('');
 }
 
+let lastDecisions = [];
+let decisionFilter = { query: '', action: '', sortKey: 'timestamp', sortDir: 'desc' };
+
 function renderDecisions(decisions) {
+  lastDecisions = decisions || [];
+  $('decision-toggle').innerHTML = advToggleHTML('decisions');
   const el = $('decision-feed');
-  if (!decisions.length) { el.innerHTML = '<div class="empty">No decisions yet…</div>'; return; }
-  el.innerHTML = decisions.map(d => {
-    const label = marketLabel(d.signal.ticker);
-    return `
-    <div class="decision-card ${d.action}" title="${esc(label.full)}">
-      <div class="top-row">
-        <span>${esc(label.short)}</span>
-        <span class="action-tag ${d.action}">${d.action}</span>
+  if (!lastDecisions.length) { el.innerHTML = '<div class="empty">No decisions yet…</div>'; return; }
+
+  if (!isAdvanced('decisions')) {
+    el.innerHTML = lastDecisions.map(d => {
+      const label = marketLabel(d.signal.ticker);
+      return `
+      <div class="decision-card ${d.action}" title="${esc(label.full)}">
+        <div class="top-row">
+          <span>${esc(label.short)}</span>
+          <span class="action-tag ${d.action}">${d.action}</span>
+        </div>
+        <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : d.reason}</div>
       </div>
-      <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : d.reason}</div>
-    </div>
-  `;
-  }).join('');
+    `;
+    }).join('');
+    return;
+  }
+
+  renderDecisionTable();
+}
+
+// Advanced: the same decision data (ROADMAP.md Phase 0.5's "Trade log /
+// decision feed" item) as a sortable/filterable table - raw confidence
+// numbers and every field instead of today's strict reverse-chronological
+// card feed with no sort/filter/search.
+function renderDecisionTable() {
+  const el = $('decision-feed');
+  const filterHtml = `<div class="table-filter-row">
+    <label>Ticker: <input type="text" value="${esc(decisionFilter.query)}"
+      oninput="decisionFilter.query = this.value; renderDecisionTable();" placeholder="search…" style="width:120px;"></label>
+    <label>Action:
+      <select onchange="decisionFilter.action = this.value; renderDecisionTable();">
+        <option value="" ${decisionFilter.action === '' ? 'selected' : ''}>all</option>
+        <option value="trade" ${decisionFilter.action === 'trade' ? 'selected' : ''}>trade</option>
+        <option value="skip" ${decisionFilter.action === 'skip' ? 'selected' : ''}>skip</option>
+      </select>
+    </label>
+  </div>`;
+
+  const q = decisionFilter.query.trim().toLowerCase();
+  let rows = lastDecisions.filter(d => {
+    if (decisionFilter.action && d.action !== decisionFilter.action) return false;
+    if (q && !d.signal.ticker.toLowerCase().includes(q)) return false;
+    return true;
+  }).map(d => ({
+    timestamp: d.signal.timestamp,
+    ticker: d.signal.ticker,
+    action: d.action,
+    side: d.action === 'trade' ? d.trade.side : d.signal.side,
+    size: d.action === 'trade' ? d.trade.size : d.signal.size,
+    price: d.action === 'trade' ? d.trade.price : d.signal.price,
+    confidence: d.signal.confidence,
+    reason: d.action === 'trade' ? d.trade.reason : d.reason,
+  }));
+
+  rows = sortRows(rows, decisionFilter.sortKey, decisionFilter.sortDir);
+
+  if (!rows.length) {
+    el.innerHTML = filterHtml + '<div class="empty">No decisions match this filter.</div>';
+    return;
+  }
+
+  const cols = [['timestamp', 'Time'], ['ticker', 'Ticker'], ['action', 'Action'], ['side', 'Side'],
+    ['size', 'Size'], ['price', 'Price'], ['confidence', 'Confidence']];
+  const headerHtml = cols.map(([key, label]) =>
+    sortHeaderHTML(decisionFilter, key, label, `toggleSort(decisionFilter,'${key}',renderDecisionTable)`)
+  ).join('');
+
+  const bodyRows = rows.map(r => `<tr title="${esc(r.reason || '')}">
+    <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
+    <td>${esc(marketLabel(r.ticker).short)}</td>
+    <td><span class="action-tag ${r.action}">${r.action}</span></td>
+    <td><span class="side-tag ${r.side}">${r.side}</span></td>
+    <td>${r.size.toLocaleString()}</td>
+    <td>${(r.price*100).toFixed(0)}¢</td>
+    <td>${(r.confidence*100).toFixed(0)}%</td>
+  </tr>`).join('');
+
+  el.innerHTML = filterHtml + `<table class="positions-table sortable">
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
 }
 
 // How whales are leaning on this specific position's market, and whether
@@ -1041,28 +1181,94 @@ function renderPositions(positions, prices, recentTrades, signals) {
 
 // Every fill that's actually happened to the paper bankroll, in order — the
 // receipt trail behind the Bankroll/Equity numbers up top.
-function renderTrades(trades) {
+let lastTradeLog = [];
+let lastTradeLogPrices = {};
+let tradeLogFilter = { query: '', minSize: 0, sortKey: 'timestamp', sortDir: 'desc' };
+
+function renderTrades(trades, prices) {
+  lastTradeLog = trades || [];
+  lastTradeLogPrices = prices || {};
+  $('tradelog-toggle').innerHTML = advToggleHTML('trade-log');
   const el = $('trades-list');
-  if (!trades.length) {
+  if (!lastTradeLog.length) {
     el.innerHTML = '<div class="empty">No trades placed yet — check Strategy Decisions below to see why signals are being skipped</div>';
     return;
   }
-  el.innerHTML = trades.map(t => {
-    const label = marketLabel(t.ticker);
-    const when = new Date(t.timestamp * 1000).toLocaleTimeString();
-    return `
-    <div class="trade-row" title="${esc(label.full)}">
-      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
-        ${contextLineHTML(t.ticker, t.side)}
-      </div>
-      <div class="nums">
-        <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
-        <span style="color: var(--muted)">${when}</span>
-        ${costHTML(t.size, t.price)}
-        ${payoutHTML(t.size)}
-      </div>
-    </div>`;
-  }).join('');
+  if (!isAdvanced('trade-log')) {
+    el.innerHTML = lastTradeLog.map(t => {
+      const label = marketLabel(t.ticker);
+      const when = new Date(t.timestamp * 1000).toLocaleTimeString();
+      return `
+      <div class="trade-row" title="${esc(label.full)}">
+        <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
+          ${contextLineHTML(t.ticker, t.side)}
+        </div>
+        <div class="nums">
+          <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
+          <span style="color: var(--muted)">${when}</span>
+          ${costHTML(t.size, t.price)}
+          ${payoutHTML(t.size)}
+        </div>
+      </div>`;
+    }).join('');
+    return;
+  }
+  renderTradeLogTable();
+}
+
+// Advanced: sortable/filterable table over the same trade data (ROADMAP.md
+// Phase 0.5's "Trade log / decision feed" item) - ticker/side/size/price
+// plus unrealized P&L (same current-vs-entry-price math as renderPositions,
+// current price from state.latest_prices) and the raw confidence number
+// that triggered the trade, pulled out of Trade.reason's formatted text
+// (see parseConfidence) instead of a text blob.
+function renderTradeLogTable() {
+  const el = $('trades-list');
+  const filterHtml = `<div class="table-filter-row">
+    <label>Ticker: <input type="text" value="${esc(tradeLogFilter.query)}"
+      oninput="tradeLogFilter.query = this.value; renderTradeLogTable();" placeholder="search…" style="width:120px;"></label>
+    <label>Min size: <input type="number" min="0" step="1" value="${tradeLogFilter.minSize}"
+      onchange="tradeLogFilter.minSize = parseFloat(this.value) || 0; renderTradeLogTable();" style="width:80px;"></label>
+  </div>`;
+
+  const q = tradeLogFilter.query.trim().toLowerCase();
+  let rows = lastTradeLog.filter(t => {
+    if (q && !t.ticker.toLowerCase().includes(q)) return false;
+    if (t.size < tradeLogFilter.minSize) return false;
+    return true;
+  }).map(t => {
+    const current = lastTradeLogPrices[t.ticker] ?? t.price;
+    const pnl = (current - t.price) * t.size;
+    return Object.assign({}, t, { pnl, confidence: parseConfidence(t.reason) });
+  });
+
+  rows = sortRows(rows, tradeLogFilter.sortKey, tradeLogFilter.sortDir);
+
+  if (!rows.length) {
+    el.innerHTML = filterHtml + '<div class="empty">No trades match this filter.</div>';
+    return;
+  }
+
+  const cols = [['timestamp', 'Time'], ['ticker', 'Ticker'], ['side', 'Side'], ['size', 'Size'],
+    ['price', 'Price'], ['confidence', 'Confidence'], ['pnl', 'P&L']];
+  const headerHtml = cols.map(([key, label]) =>
+    sortHeaderHTML(tradeLogFilter, key, label, `toggleSort(tradeLogFilter,'${key}',renderTradeLogTable)`)
+  ).join('');
+
+  const bodyRows = rows.map(r => `<tr title="${esc(marketLabel(r.ticker).full)}">
+    <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
+    <td>${esc(marketLabel(r.ticker).short)}</td>
+    <td><span class="side-tag ${r.side}">${r.side}</span></td>
+    <td>${r.size.toLocaleString()}</td>
+    <td>${(r.price*100).toFixed(0)}¢</td>
+    <td>${r.confidence != null ? (r.confidence*100).toFixed(0) + '%' : '—'}</td>
+    <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${fmt(r.pnl)}</td>
+  </tr>`).join('');
+
+  el.innerHTML = filterHtml + `<table class="positions-table sortable">
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
 }
 
 function rawJsonDetails(data) {
@@ -1940,7 +2146,7 @@ function renderPortfolio(state, broker) {
     $('positions-title-text').textContent = 'Open Positions';
     $('tradelog-title-text').textContent = 'Trade Log';
     renderPositions(broker.positions || [], state.latest_prices || {}, broker.recent_trades || [], state.signal_feed || []);
-    renderTrades(broker.recent_trades || []);
+    renderTrades(broker.recent_trades || [], state.latest_prices || {});
     renderEquityChart(state.equity_history, broker.starting_bankroll, 'equity', 'starting bankroll');
   }
 
@@ -2041,6 +2247,7 @@ async function loadConfig() {
   $('cfg-cooldown').value = cfg.strategy.cooldown_sec;
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
   $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
+  $('cfg-live-only').checked = !!cfg.strategy.live_markets_only;
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -2053,6 +2260,7 @@ async function loadConfig() {
 
 $('toggle-btn').addEventListener('click', async () => { await fetchJSON('/api/toggle', {method:'POST'}); refresh(); });
 $('reset-btn').addEventListener('click', async () => { await fetchJSON('/api/reset', {method:'POST'}); refresh(); });
+$('config-reset-btn').addEventListener('click', async () => { await fetchJSON('/api/reset', {method:'POST'}); refresh(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && marketDetailTicker) closeMarketDetail(); });
 $('halt-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/halt', {method:'POST'}); refresh(); });
 $('resume-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/resume', {method:'POST'}); refresh(); });
@@ -2066,6 +2274,7 @@ $('save-config-btn').addEventListener('click', async () => {
       cooldown_sec: parseInt($('cfg-cooldown').value),
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
       min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
+      live_markets_only: $('cfg-live-only').checked,
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),

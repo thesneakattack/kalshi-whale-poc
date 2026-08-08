@@ -20,6 +20,7 @@ strategy:
   cooldown_sec: 300
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 5
+  live_markets_only: false
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 1

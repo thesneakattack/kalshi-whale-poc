@@ -20,6 +20,7 @@ def _cfg(**overrides):
     strategy = dict(
         name="follow_the_whale", entry_threshold=0.65, max_position_pct=0.05,
         cooldown_sec=300, min_whale_winrate_pct=40, min_resolved_for_whale_filter=5,
+        live_markets_only=False,
     )
     strategy.update(overrides)
     return {"strategy": strategy}
@@ -103,3 +104,29 @@ def test_skip_when_position_size_rounds_to_zero(tmp_path, monkeypatch):
     decision = strategy.evaluate(_signal(confidence=0.9, price=0.99), _cfg(max_position_pct=0.05))
     assert decision["action"] == "skip"
     assert "zero" in decision["reason"]
+
+
+def test_skip_when_live_markets_only_and_market_not_live(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.5), _cfg(live_markets_only=True), is_live=False
+    )
+    assert decision["action"] == "skip"
+    assert "live" in decision["reason"]
+    assert broker.bankroll == 10000.0  # nothing traded
+
+
+def test_trade_when_live_markets_only_and_market_is_live(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.5), _cfg(live_markets_only=True), is_live=True
+    )
+    assert decision["action"] == "trade"
+
+
+def test_live_markets_only_off_trades_regardless_of_is_live(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.5), _cfg(live_markets_only=False), is_live=False
+    )
+    assert decision["action"] == "trade"

@@ -115,7 +115,9 @@ class ShadowTrader:
         self.halt_reason = None
         self._persist_risk()
 
-    def evaluate(self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str) -> dict | None:
+    def evaluate(
+        self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str, is_live: bool | None = None
+    ) -> dict | None:
         """Mirrors FollowTheWhaleStrategy.evaluate's gates (same order, same
         thresholds) but against reference_bankroll instead of the paper
         broker's, and only ever logs - never executes. Returns the logged
@@ -126,6 +128,8 @@ class ShadowTrader:
         risk_cfg = cfg["risk"]
 
         if not self.check_daily_loss(reference_bankroll, risk_cfg["max_daily_loss_pct"], risk_cfg["kill_switch_enabled"]):
+            return None
+        if strat_cfg.get("live_markets_only") and not is_live:
             return None
         if signal.confidence < strat_cfg["entry_threshold"]:
             return None

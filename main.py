@@ -435,7 +435,16 @@ async def trading_loop():
                     state["whale_source"], signal.timestamp,
                 )
 
-                decision = strategy.evaluate(signal, cfg)
+                # Same live-status lookup the LIVE badge uses (state["live_status"],
+                # keyed by event_ticker, see _fetch_live_status) - reused here so
+                # "live markets only" (config: strategy.live_markets_only) means
+                # the exact same thing the dashboard's LIVE badge already shows,
+                # not a second, possibly-inconsistent definition of "live."
+                market_info = state["market_titles"].get(signal.ticker) or {}
+                event_ticker = market_info.get("event_ticker")
+                is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
+
+                decision = strategy.evaluate(signal, cfg, is_live=is_live)
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
@@ -444,7 +453,7 @@ async def trading_loop():
                 # the same question against real-account-sized bankroll,
                 # and only ever logs, never executes. See services/shadow_mode.py.
                 if shadow_active:
-                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source)
+                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source, is_live=is_live)
 
         except Exception as e:
             state["error"] = str(e)
