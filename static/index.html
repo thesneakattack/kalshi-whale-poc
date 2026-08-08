@@ -79,6 +79,25 @@
     justify-content: space-between;
     align-items: center;
   }
+  /* Native title-attribute tooltip, matching every other hover-explainer in
+     this app (e.g. the whale-confidence badge, the impact tag) rather than
+     a custom popover component - no build step, plain HTML/CSS/JS. */
+  .info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    font-size: 10px;
+    font-style: normal;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: help;
+    margin-left: 6px;
+  }
   /* Shared Simple/Advanced per-panel toggle — one pattern reused by every
      panel that has a denser "Advanced" view, instead of each panel
      inventing its own. Defaults to Simple; choice persists per panel via
@@ -899,7 +918,11 @@
   <div class="col">
     <div id="halted-banner-slot"></div>
     <div id="funnel-bar" class="funnel-bar"></div>
-    <div class="panel-title">Whale Signals (simulated or live feed)</div>
+    <div class="panel-title">Whale Signals (simulated or live feed) <span class="info-icon" title="HOW IT WORKS: a whale signal is either a real trade from Kalshi's own public trade tape whose dollar size clears a threshold (default $2,500 - side-aware, since Kalshi has no public trader identity, only size), or a simulated print if no real feed is available.
+
+TRADE DECISION: a signal becomes an actual trade once its confidence clears the entry threshold (0.65 default), the market/series isn't in cooldown, manually excluded, or auto-filtered by a poor whale win-rate track record, and (if enabled) the market is currently live.
+
+CONFIDENCE: a weighted blend of how large the print is relative to that market's own volume (40%), how close the price is to a coin flip vs. already-decided (25%), how close the market is to resolving (20%), and how active this market is relative to others being watched (15%).">ⓘ</span></div>
     <div id="signal-feed">
       <div id="signal-feed-filter"></div>
       <div id="signal-feed-list" class="scroll-panel"><div class="empty">Waiting for signals…</div></div>
