@@ -256,6 +256,85 @@ a Simple/Advanced pair using the toggle above:
       are untouched by design, since those track long-run accuracy across
       resets), just reachable without asking for it. No new endpoint
       needed. Verified live: click actually reset the running account.
+- [x] Follow-up, direct request: the Danger Zone reset was paper-only with
+      no way to also wipe shadow/whale-track-record data short of asking for
+      it — `POST /api/reset` now takes a JSON body (`{paper, shadow,
+      signal_log}`, each independently optional, `paper` defaulting `true`
+      to keep the Terminal button's old no-body behavior unchanged) and
+      returns which domains it actually cleared. New `ShadowTrader.clear()`
+      (wipes `shadow_trades`, resets the shadow daily-loss baseline) and
+      `signal_log.clear_all()` (wipes the whale track record). Config tab
+      now shows three checkboxes (Paper checked by default, Shadow/Whale
+      track record opt-in) plus a confirm() prompt before firing. Verified:
+      new unit tests for both `clear()` methods, plus live `curl` proving
+      each flag combination reports back exactly the domains it cleared.
+- [x] Open Positions → full market-detail modal, direct request ("essentially
+      all the data on the market landing page on Kalshi itself"). The
+      per-market drill-down modal above already existed but wasn't reachable
+      from Portfolio, and only showed order book/chart/trades — no event
+      context, prices, volume, or sibling outcomes. New
+      `GET /api/markets/{ticker}/detail` bundles `get_market()` +
+      `get_event()` in one call (siblings come back "for free" as part of
+      the event payload, no per-sibling round trip); Open Positions' group
+      title and each position row are now clickable into it. New
+      `renderMarketInfoHTML()` renders category/title/subtitle, current
+      Yes/No prices with a 24h change indicator, 24h volume/open interest/
+      status/close time, the rules text, and — for multi-outcome events — an
+      "Other Outcomes In This Event" list (reusing the existing
+      `.outcome-row` styling from `eventGroupCardHTML`), each row clickable
+      to jump the modal to that sibling. Verified live against a real
+      multi-outcome event (an ITF tennis match), including the sibling-jump
+      and zero console errors.
+- [x] `/api/state` data-efficiency pass, direct request ("data consumption...
+      hyper-efficient" but "keeping polling intervals as short as possible" —
+      i.e. cut waste, don't trade away freshness). Measured first rather than
+      guessed: `data/*.db` turned out trivially small (332KB total, and most
+      of that was empty SQLite freelist pages left over from testing the
+      reset-domains feature above, not real growth — confirmed via `PRAGMA
+      freelist_count`) — not the actual pressure point. The real one:
+      `/api/state` was 43.8KB per fetch, polled every 5s regardless of
+      whether the backend's own `poll_interval_sec` (15s default) had
+      actually produced anything new, so ~2 of every 3 polls re-sent and
+      re-parsed byte-for-byte identical data. Fixed with a generation
+      counter (`state["generation"]`, bumped once at the end of each poll
+      tick and by every control endpoint that mutates state outside the
+      loop — toggle/halt/resume/reset/config/trading-enable-disable/market-
+      search) used as `/api/state`'s ETag: an unchanged poll now costs a
+      304's worth of headers, not 43.8KB re-fetched and re-parsed for
+      nothing. The response body itself is also memoized per generation, so
+      `signal_log.stats()`/`shadow.recent()`/`shadow.stats()` (real SQLite
+      queries) run once per actual change instead of once per HTTP request.
+      Separately, `account.fills`/`account.positions` — full raw Kalshi
+      objects, 13.4KB of the 43.8KB, mostly serving debug tooltips/raw-JSON
+      detail rather than the rendered rows — got the same `_slim_market`-style
+      trim (new `_slim_position`/`_slim_fill`, field names taken from the
+      exact ones `renderRealPositions`/`renderRealFills` already read, not
+      guessed), cutting fills to well under 2KB per fetch. WebSockets were
+      considered and deliberately deferred: the dominant latency source is
+      `poll_interval_sec` itself (backend's own Kalshi-fetch cadence), not
+      the polling transport, so the marginal latency win didn't clear the
+      complexity bar (reconnect/backoff, multi-tab fanout, an nginx Upgrade-
+      handshake config change) yet — revisit if 15s-granularity updates
+      still feel slow after this pass.
+      Caught and fixed two real bugs during this work, both confirmed live
+      via Selenium, not assumed: (1) a regression from the new caching
+      itself — `GET /api/markets/search` mutates `state["market_titles"]`
+      but wasn't bumping the generation counter, so a freshly-searched
+      market's title wouldn't show up anywhere else in the UI (Open
+      Positions, the detail modal) until the next real poll tick caught up,
+      reported live as titles "reverting" to raw tickers — fixed by adding
+      the missing bump; (2) a pre-existing bug surfaced during the same live
+      testing, unrelated to the caching work — the market-detail modal's
+      "click outside to dismiss" handler only checked the click event's
+      final target, but `refreshMarketDetail()` replaces the modal body's
+      `innerHTML` on every poll tick while it's open, so a mousedown-then-
+      mouseup that straddled one of those replacements got its click event
+      retargeted by the browser to the backdrop itself, silently closing the
+      modal mid-interaction — fixed by also requiring mousedown to have
+      started on the backdrop itself (`__backdropMouseDownOnSelf`), verified
+      with a real mousedown → DOM-swap → mouseup race via Selenium
+      ActionChains (modal stayed open) and a genuine outside click (still
+      closes it).
 - [ ] Reassess the Markets vs. Whale Watch split now that both share
       `renderMarketCards` — give them a genuinely distinct job (e.g. Whale
       Watch leans into the trade-tape/screener angle, Markets becomes the
@@ -273,7 +352,10 @@ a Simple/Advanced pair using the toggle above:
       than Kalshi Pro's presumably-pushed updates. Not blocking for the
       items above, but likely the next bottleneck once they're in, and
       probably an Advanced-mode-only concern (Simple panels don't need
-      sub-5s freshness).
+      sub-5s freshness). Partially addressed by the ETag/304 pass above —
+      the interval itself is unchanged, but an unchanged poll is now nearly
+      free, so this item is really about push-vs-poll latency (WebSockets,
+      considered and deferred there) rather than payload waste anymore.
 
 Scope boundary, decided explicitly rather than left implicit: this app has
 zero manual/discretionary trading anywhere today — no order entry, no way

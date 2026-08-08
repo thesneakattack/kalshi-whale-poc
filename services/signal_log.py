@@ -107,6 +107,15 @@ def series_stats(ticker: str, days: int = 30) -> dict:
     }
 
 
+def clear_all():
+    """Wipes the entire whale track record - every logged signal and its
+    resolution outcome. Only ever triggered deliberately (Config tab's Danger
+    Zone): this is the "how have whales actually done on real markets" history,
+    normally kept intact across paper/shadow resets on purpose."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM signals")
+
+
 def stats(days: int = 30) -> dict:
     since = time.time() - days * 86400
     with _connect() as conn:

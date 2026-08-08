@@ -156,3 +156,25 @@ def test_reset_day_clears_halt(tmp_path, monkeypatch):
     trader.reset_day(7000.0)
     assert trader.halted is False
     assert trader.day_start_bankroll == 7000.0
+
+
+def test_clear_wipes_trades_and_resets_baseline(tmp_path, monkeypatch):
+    trader = _trader(tmp_path, monkeypatch, default_bankroll=10000.0)
+    _no_opinion_series_stats(monkeypatch)
+    trader.evaluate(_signal(confidence=0.9, price=0.5), _cfg(), reference_bankroll=10000.0, bankroll_source="real_account")
+    assert trader.stats()["total_shadow_trades"] == 1
+
+    trader.halted = True
+    trader.halt_reason = "testing"
+    trader.clear(7000.0)
+
+    assert trader.stats()["total_shadow_trades"] == 0
+    assert trader.recent(10) == []
+    assert trader.halted is False
+    assert trader.day_start_bankroll == 7000.0
+
+    # a fresh instance re-reading the same DB should see the wipe too, not
+    # just this in-memory trader
+    resumed = sm.ShadowTrader(default_bankroll=999999.0)
+    assert resumed.stats()["total_shadow_trades"] == 0
+    assert resumed.day_start_bankroll == 7000.0

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -79,7 +79,19 @@ state = {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,
         "error": None, "trading_enabled": account.trading_enabled,
     },
+    # Bumped on every real change to anything /api/state reports - a poll
+    # tick completing, or one of the handful of control endpoints that
+    # mutate state outside the loop (toggle/halt/resume/reset/config/
+    # trading-enable-disable). GET /api/state uses this as an ETag so a
+    # poll that lands between real changes costs a conditional-GET's worth
+    # of headers, not the full ~40KB body re-fetched and re-parsed for
+    # nothing - see get_state()/_build_state_body().
+    "generation": 0,
 }
+
+
+def _bump_generation():
+    state["generation"] += 1
 
 
 # Kalshi's full market object carries 40+ fields (rules text, combo-leg
@@ -214,6 +226,24 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     return status
 
 
+_POSITION_FIELDS = ("ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars")
+_FILL_FIELDS = ("ticker", "market_ticker", "side", "action", "count_fp", "yes_price_dollars", "no_price_dollars")
+# Same trim as _slim_market: keep only what renderRealPositions/renderRealFills
+# actually read (field names confirmed against a real connected account, not
+# guessed — see the comment above renderRealPositions for why that mattered).
+# event_positions/cursor/fill_id/order_id/... are real fields, just not
+# currently rendered anywhere. Cut fills from ~13.4KB to well under 2KB for a
+# 25-fill page, the single largest piece of /api/state's payload.
+
+
+def _slim_position(p: dict) -> dict:
+    return {k: p.get(k) for k in _POSITION_FIELDS}
+
+
+def _slim_fill(f: dict) -> dict:
+    return {k: f.get(k) for k in _FILL_FIELDS}
+
+
 async def _fetch_account_snapshot(cfg: dict) -> dict:
     account.trading_enabled = cfg["kalshi_account"]["trading_enabled"]
     if not account.enabled:
@@ -227,6 +257,8 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
         balance, positions, fills = await asyncio.gather(
             account.get_balance(), account.get_positions(), account.get_fills(limit=25)
         )
+        positions = {"market_positions": [_slim_position(p) for p in (positions.get("market_positions") or [])]}
+        fills = {"fills": [_slim_fill(f) for f in (fills.get("fills") or [])]}
         return {
             "connected": True, "balance": balance, "positions": positions, "fills": fills,
             "error": None, "trading_enabled": account.trading_enabled,
@@ -465,6 +497,7 @@ async def trading_loop():
             if client is not None:
                 await client.close()
 
+        _bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
 
@@ -641,6 +674,78 @@ async def get_market_trades(ticker: str):
         await client.close()
 
 
+def _dollars(v) -> float | None:
+    return float(v) if v not in (None, "") else None
+
+
+def _slim_detail_market(m: dict) -> dict:
+    return {
+        "ticker": m.get("ticker"),
+        "title": m.get("title"),
+        "subtitle": m.get("subtitle"),
+        "yes_sub_title": m.get("yes_sub_title"),
+        "no_sub_title": m.get("no_sub_title"),
+        "status": m.get("status"),
+        "yes_bid": _dollars(m.get("yes_bid_dollars")),
+        "yes_ask": _dollars(m.get("yes_ask_dollars")),
+        "no_bid": _dollars(m.get("no_bid_dollars")),
+        "no_ask": _dollars(m.get("no_ask_dollars")),
+        "last_price": _dollars(m.get("last_price_dollars")),
+        "previous_price": _dollars(m.get("previous_price_dollars")),
+        "volume": _dollars(m.get("volume_fp")),
+        "volume_24h": _dollars(m.get("volume_24h_fp")),
+        "open_interest": _dollars(m.get("open_interest_fp")),
+        "liquidity": _dollars(m.get("liquidity_dollars")),
+        "close_time": m.get("close_time"),
+        "open_time": m.get("open_time"),
+    }
+
+
+@app.get("/api/markets/{ticker}/detail")
+async def get_market_detail(ticker: str):
+    # Everything one whole-market "landing page" view needs in one call
+    # (ROADMAP.md, Open Positions -> full market detail): the market's own
+    # full object plus, when it belongs to a multi-outcome event, every
+    # sibling market in that event (get_event's own `markets` list already
+    # includes them with live prices - no per-sibling get_market() round
+    # trip needed) so the modal can show the same kind of outcome table
+    # Kalshi's own market page shows, not just this one ticker in isolation.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        try:
+            market = await client.get_market(ticker)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        event_ticker = market.get("event_ticker")
+        event_info, siblings = None, []
+        if event_ticker:
+            try:
+                ev = await client.get_event(event_ticker)
+                event_info = ev.get("event")
+                siblings = [m for m in (ev.get("markets") or []) if m.get("ticker") != ticker]
+            except Exception:
+                pass  # event context is a bonus, not core to the ticker's own detail
+    finally:
+        await client.close()
+
+    detail = _slim_detail_market(market)
+    detail["rules_primary"] = market.get("rules_primary")
+    detail["rules_secondary"] = market.get("rules_secondary")
+    detail["event_ticker"] = event_ticker
+    detail["event"] = {
+        "title": event_info.get("title"),
+        "sub_title": event_info.get("sub_title"),
+        "category": event_info.get("category"),
+    } if event_info else None
+    detail["siblings"] = sorted(
+        (_slim_detail_market(m) for m in siblings),
+        key=lambda m: m["volume_24h"] or 0, reverse=True,
+    )
+    return detail
+
+
 @app.get("/api/markets/search")
 async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
@@ -695,6 +800,7 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
             }
             for m in results if m.get("ticker")
         })
+        _bump_generation()  # market_titles changed - invalidate the cached /api/state body, see _build_state_body
         return {
             "markets": [_slim_market(m) for m in results],
             "market_titles": {m["ticker"]: state["market_titles"][m["ticker"]] for m in results if m.get("ticker")},
@@ -705,9 +811,21 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         await client.close()
 
 
-@app.get("/api/state")
-async def get_state():
-    return {
+_state_body_cache = {"generation": None, "body": None}  # see get_state()
+
+
+def _build_state_body() -> dict:
+    # Rebuilding this means running signal_log.stats()/shadow.recent()/
+    # shadow.stats() (each a real SQLite query) plus broker.state() - real
+    # but small work, and completely pointless to repeat for two requests
+    # that land inside the same poll-tick generation (two browser tabs, or a
+    # conditional GET that still needs the body because the client had no
+    # prior ETag). Memoized on state["generation"] rather than a time-based
+    # TTL so it's exact, not approximate: invalidated exactly when something
+    # that would change the response actually happened, see _bump_generation.
+    if _state_body_cache["generation"] == state["generation"]:
+        return _state_body_cache["body"]
+    body = {
         "running": state["running"],
         "markets": state["markets"],
         "market_titles": state["market_titles"],
@@ -731,6 +849,41 @@ async def get_state():
         "exchange_status": state["exchange_status"],
         "shadow": _shadow_state(),
     }
+    _state_body_cache["generation"] = state["generation"]
+    _state_body_cache["body"] = body
+    return body
+
+
+def _if_none_match_hits(header_value: str | None, etag: str) -> bool:
+    # nginx's gzip module rewrites a strong ETag to weak (adds a "W/" prefix)
+    # on the way out - confirmed directly, not assumed (a real curl round
+    # trip through the ddev proxy came back "W/\"2\"" for an origin-set
+    # `"2"`). Per RFC 7232's weak-comparison rule, "W/" is ignorable for
+    # revalidation purposes, so strip it from whatever the client echoes
+    # back rather than requiring an exact byte match that this proxy chain
+    # will never actually send.
+    if not header_value:
+        return False
+    incoming = header_value.strip()
+    if incoming.startswith("W/"):
+        incoming = incoming[2:]
+    return incoming == etag
+
+
+@app.get("/api/state")
+async def get_state(request: Request, response: Response):
+    # ETag is just the generation counter - cheap to compute, and exact
+    # (bumped only on a real change, see _bump_generation/state["generation"]).
+    # A poll that lands between real changes (the common case at a 5s
+    # frontend interval against a 15s backend poll_interval_sec) costs a
+    # conditional request's worth of headers instead of the full ~40KB body,
+    # re-fetched and re-parsed for data the dashboard already has.
+    etag = f'"{state["generation"]}"'
+    if _if_none_match_hits(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"  # always revalidate via If-None-Match, never assume freshness
+    return _build_state_body()
 
 
 def _shadow_state() -> dict:
@@ -763,6 +916,7 @@ async def update_config(body: ConfigPatch):
             ),
         )
     new_cfg = config_store.update(body.patch)
+    _bump_generation()
     return new_cfg
 
 
@@ -781,6 +935,7 @@ async def enable_trading(body: EnableTradingBody):
         )
     config_store.update({"kalshi_account": {"trading_enabled": True}})
     account.trading_enabled = True  # take effect immediately, not on the next poll tick
+    _bump_generation()
     return {"trading_enabled": True}
 
 
@@ -790,39 +945,63 @@ async def disable_trading():
     # is never the dangerous direction.
     config_store.update({"kalshi_account": {"trading_enabled": False}})
     account.trading_enabled = False
+    _bump_generation()
     return {"trading_enabled": False}
 
 
 @app.post("/api/toggle")
 async def toggle_running():
     state["running"] = not state["running"]
+    _bump_generation()
     return {"running": state["running"]}
 
 
 @app.post("/api/risk/halt")
 async def halt_trading():
     risk.manual_halt("Manually halted from dashboard")
+    _bump_generation()
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
 
 
 @app.post("/api/risk/resume")
 async def resume_trading():
     risk.resume()
+    _bump_generation()
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
 
 
+class ResetBody(BaseModel):
+    # Each flag wipes an independently-persisted domain — see the Danger Zone
+    # panel in the Config tab. Paper defaults on (matches the button's
+    # original, sole behavior); shadow/signal_log default off since they're
+    # long-run track records that normally survive a paper reset on purpose.
+    paper: bool = True
+    shadow: bool = False
+    signal_log: bool = False
+
+
 @app.post("/api/reset")
-async def reset_broker():
+async def reset_broker(body: ResetBody = ResetBody()):
     cfg = config_store.get()
-    # In-place reset (not reassigning `broker`) so this also wipes the
-    # persisted account in data/paper_broker.db — see PaperBroker.reset().
-    broker.reset(cfg["risk"]["starting_bankroll"])
-    risk.reset_day(cfg["risk"]["starting_bankroll"])
-    state["signal_feed"] = []
-    state["decision_feed"] = []
-    state["stats"] = {"signals_seen": 0, "trades_placed": 0, "skipped": 0}
-    state["equity_history"] = []
-    return {"ok": True}
+    cleared = []
+    if body.paper:
+        # In-place reset (not reassigning `broker`) so this also wipes the
+        # persisted account in data/paper_broker.db — see PaperBroker.reset().
+        broker.reset(cfg["risk"]["starting_bankroll"])
+        risk.reset_day(cfg["risk"]["starting_bankroll"])
+        state["signal_feed"] = []
+        state["decision_feed"] = []
+        state["stats"] = {"signals_seen": 0, "trades_placed": 0, "skipped": 0}
+        state["equity_history"] = []
+        cleared.append("paper")
+    if body.shadow:
+        shadow.clear(cfg["risk"]["starting_bankroll"])
+        cleared.append("shadow")
+    if body.signal_log:
+        signal_log.clear_all()
+        cleared.append("signal_log")
+    _bump_generation()
+    return {"ok": True, "cleared": cleared}
 
 
 # ---- connected accounts -----------------------------------------------

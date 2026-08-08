@@ -63,3 +63,13 @@ def test_window_days_excludes_old_signals(tmp_path, monkeypatch):
     log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=now - 40 * 86400)  # 40 days ago
     stats = log.stats(days=30)
     assert stats["total_signals"] == 0
+
+
+def test_clear_all_wipes_every_signal(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated")
+    log.log_signal("TICK-B", "no", 2000, 0.7, "simulated")
+    log.clear_all()
+    stats = log.stats(days=30)
+    assert stats["total_signals"] == 0
+    assert log.series_stats("TICK-A", days=30)["total_signals"] == 0

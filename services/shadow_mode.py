@@ -115,6 +115,17 @@ class ShadowTrader:
         self.halt_reason = None
         self._persist_risk()
 
+    def clear(self, current_bankroll: float):
+        """Full wipe: deletes every logged shadow trade and resets the daily-loss
+        baseline/halt, same as a fresh ShadowTrader. Unlike reset_day (called
+        automatically alongside the paper broker's own reset), this is only ever
+        triggered deliberately - it destroys the long-run shadow track record,
+        which normally survives paper resets on purpose."""
+        with _connect() as conn:
+            conn.execute("DELETE FROM shadow_trades")
+        self.last_trade_time = {}
+        self.reset_day(current_bankroll)
+
     def evaluate(
         self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str, is_live: bool | None = None
     ) -> dict | None:

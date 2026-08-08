@@ -816,6 +816,105 @@
           Danger Zone) · <code>tests/test_strategy_engine.py</code>, <code>tests/test_shadow_mode.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 27 · selectable-domain reset, and Open Positions &rarr; full market detail</div>
+        <h4>Two more direct requests</h4>
+        <p>First: phase 26's Danger Zone reset was paper-only, with shadow trades and the whale track record
+          deliberately untouched - useful as a default, but there was no way to also wipe those short of
+          asking for it. <code>POST /api/reset</code> now takes an optional JSON body
+          (<code>{paper, shadow, signal_log}</code>, each independently toggleable, <code>paper</code>
+          defaulting <code>true</code> so the Terminal Controls button's old no-body call still behaves
+          exactly as before) and reports back which domains it actually cleared. New
+          <code>ShadowTrader.clear()</code> wipes every logged shadow trade and resets the shadow daily-loss
+          baseline; new <code>signal_log.clear_all()</code> wipes the whale track record. The Config tab's
+          Danger Zone is now three checkboxes (Paper checked by default, Shadow and Whale track record
+          opt-in) behind a single "Reset Selected" button, with a <code>confirm()</code> prompt naming exactly
+          what's about to be wiped. Verified: new unit tests for both <code>clear()</code> methods (including
+          that a fresh instance re-reading the same on-disk DB sees the wipe, not just the in-memory object),
+          plus live <code>curl</code> proving each flag combination reports back the right domain list.</p>
+        <p>Second: "essentially all the data on the market landing page on Kalshi itself," reachable by
+          clicking a market straight from Open Positions - previously the per-market drill-down modal (phase
+          19-ish: order book, price chart, recent trades) existed but wasn't wired up from Portfolio at all,
+          and even where it was reachable it never showed event context, current prices, volume, or sibling
+          outcomes the way Kalshi's own market page does. New <code>GET /api/markets/{ticker}/detail</code>
+          bundles one <code>get_market()</code> call with one <code>get_event()</code> call - for a
+          multi-outcome event, every sibling market's own live price comes back as part of that same event
+          payload, no per-sibling round trip needed. Open Positions' group-title row and every individual
+          position row are now clickable into the modal. New <code>renderMarketInfoHTML()</code> renders a
+          category tag, event title/subtitle, current Yes/No prices with a 24h change arrow, 24h volume/open
+          interest/status/close time, the rules text, and - for multi-outcome events - an "Other Outcomes In
+          This Event" list (reusing the existing <code>.outcome-row</code> styling from
+          <code>eventGroupCardHTML</code>), each row clickable to jump the modal straight to that sibling.
+          Verified live against a real multi-outcome event (an ITF tennis match) via a synthetic paper
+          position: the group title opened the modal, the sibling row's price/name matched the real
+          exchange, clicking it re-fetched into that sibling, and no console errors at any step.</p>
+        <div class="files"><code>main.py</code> (<code>ResetBody</code>, <code>/api/markets/{ticker}/detail</code>,
+          <code>_slim_detail_market</code>) · <code>services/shadow_mode.py</code> (<code>clear()</code>) ·
+          <code>services/signal_log.py</code> (<code>clear_all()</code>) · <code>static/index.html</code>
+          (Danger Zone checkboxes, <code>renderPositions</code> click-through, <code>renderMarketInfoHTML</code>)
+          · <code>tests/test_shadow_mode.py</code>, <code>tests/test_signal_log.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 28 · /api/state efficiency pass, plus two real bugs caught live along the way</div>
+        <h4>"Make data consumption, storage, and retrieval hyper-efficient" - measured before touching anything</h4>
+        <p>Direct request, but deliberately investigated before implementing anything - the request named
+          "storage" as a concern, and <code>data/*.db</code> turned out to be a red herring: 332KB total, and
+          <code>PRAGMA freelist_count</code> showed most of even <code>signal_log.db</code>'s share was empty
+          pages left over from testing phase 27's reset-domains feature minutes earlier, not organic growth.
+          The real weight was <code>GET /api/state</code> itself: 43.8KB per fetch, polled every 5s
+          (<code>setInterval(refresh, 5000)</code>) regardless of whether the backend's own
+          <code>poll_interval_sec</code> (15s default) had produced anything new - meaning roughly two of
+          every three polls re-sent and re-parsed byte-for-byte identical data. Follow-up clarification from
+          the requester ("keeping polling intervals as short as possible... it's data latency I'm concerned
+          about, not space") ruled out the tempting-but-wrong fix (just slow the frontend poll down) in favor
+          of making an unchanged poll cheap instead of infrequent.</p>
+        <p>Fix: a <code>state["generation"]</code> counter, bumped once at the end of every trading-loop poll
+          tick and by every control endpoint that mutates state outside the loop (<code>/api/toggle</code>,
+          <code>/api/risk/halt</code>, <code>/api/risk/resume</code>, <code>/api/reset</code>,
+          <code>/api/config</code>, <code>/api/trading/enable</code>, <code>/api/trading/disable</code>, and -
+          caught by audit, see the bug below - <code>GET /api/markets/search</code>), used as
+          <code>/api/state</code>'s ETag. An unchanged poll now gets a 304 with no body instead of 43.8KB
+          re-fetched and re-parsed; live <code>curl</code> confirmed a real 304 round trip. The response body
+          itself is memoized per generation too, so <code>signal_log.stats()</code>/<code>shadow.recent()</code>/
+          <code>shadow.stats()</code> - real SQLite queries - now run once per actual change instead of once
+          per HTTP request. One real-environment wrinkle caught live, not assumed: nginx's gzip module
+          rewrites a strong ETag to weak (<code>"2"</code> &rarr; <code>W/"2"</code>) on the way out, which
+          silently broke a first, naive exact-string comparison - fixed with an RFC-7232-style weak comparison
+          that strips a <code>W/</code> prefix before comparing. Separately, <code>account.fills</code>/
+          <code>account.positions</code> - full raw Kalshi objects, 13.4KB of the 43.8KB, mostly serving debug
+          tooltips and the raw-JSON detail view rather than the rendered rows themselves - got the same
+          <code>_slim_market</code>-style trim (new <code>_slim_position</code>/<code>_slim_fill</code>, field
+          names taken from exactly what <code>renderRealPositions</code>/<code>renderRealFills</code> already
+          read, not re-guessed). WebSockets came up as an alternative and were deliberately deferred: the
+          dominant latency source here is <code>poll_interval_sec</code> itself, not the polling transport, so
+          the marginal win didn't clear the added complexity (reconnect/backoff, multi-tab fanout, an nginx
+          Upgrade-handshake config change) - worth revisiting only if 15s-granularity updates still feel slow
+          after this pass.</p>
+        <p>Two real bugs turned up during live verification of the above, both confirmed via Selenium, not
+          assumed fixed from reading the diff. First, a genuine regression from the new caching itself:
+          <code>GET /api/markets/search</code> writes into <code>state["market_titles"]</code> but wasn't
+          bumping the new generation counter, so a freshly-searched market's resolved title wouldn't
+          propagate to <code>/api/state</code> - and therefore to Open Positions or the detail modal - until
+          the next real poll tick caught up some 15s later, reported live as titles "reverting" to raw
+          tickers like <code>KXITFMATCH-26AUG08PLEPAP-PAP</code>. Fixed by adding the missing bump. Second, a
+          pre-existing bug, unrelated to this pass but surfaced during the same live testing: the market-
+          detail modal's "click outside to dismiss" backdrop handler only checked the click event's final
+          target, but <code>refreshMarketDetail()</code> replaces the modal body's <code>innerHTML</code> on
+          every poll tick while the modal is open - so a mousedown-then-mouseup that straddled one of those
+          replacements got its click event retargeted by the browser to the backdrop itself (the nearest
+          ancestor still in the DOM), silently closing the modal mid-interaction. Reported live as "refresh
+          forces closing of modals while I'm trying to examine them." Fixed by also requiring mousedown to
+          have started on the backdrop itself (new <code>__backdropMouseDownOnSelf</code> flag) before a click
+          counts as "outside" - verified with a real mousedown &rarr; DOM-swap &rarr; mouseup race via
+          Selenium ActionChains (modal stayed open) alongside a genuine outside click (still closes it, so the
+          fix didn't just disable the feature).</p>
+        <div class="files"><code>main.py</code> (<code>state["generation"]</code>, <code>_bump_generation</code>,
+          <code>_build_state_body</code>, <code>_if_none_match_hits</code>, <code>_slim_position</code>,
+          <code>_slim_fill</code>) · <code>static/index.html</code> (<code>__backdropMouseDownOnSelf</code> +
+          the backdrop's mousedown/click handlers)</div>
+      </div>
+
     </div>
   </section>
 
@@ -860,11 +959,11 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context, real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate</td><td class="loc">876</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context, real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate, selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions</td><td class="loc">1055</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>)</td><td class="loc">191</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code>, <code>data/signal_log.db</code></td><td class="loc">136</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
           <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, now priced off real market data</td><td class="loc">78</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements</td><td class="loc">21</td><td><span class="pill good">done</span></td></tr>
@@ -877,14 +976,14 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2441</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2537</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~985</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1160</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">tests/*.py</td><td class="note">73 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">996</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
-          <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none, mirrors the live-markets-only gate — <code>data/shadow_mode.db</code></td><td class="loc">183</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none, mirrors the live-markets-only gate, self-serve <code>clear()</code> — <code>data/shadow_mode.db</code></td><td class="loc">194</td><td><span class="pill good">done</span></td></tr>
         </tbody>
       </table>
     </div>
