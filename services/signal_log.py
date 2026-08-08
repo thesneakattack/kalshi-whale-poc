@@ -143,6 +143,79 @@ def total_count(resolved_only: bool = False) -> int:
         return conn.execute(f"SELECT COUNT(*) FROM signals {where}").fetchone()[0]
 
 
+def _size_ratio_ok(a: float, b: float, max_ratio: float) -> bool:
+    lo, hi = min(a, b), max(a, b)
+    return lo > 0 and (hi / lo) <= max_ratio
+
+
+def _summarize_cluster(signals: list[dict]) -> dict:
+    total_size = sum(s["size"] for s in signals)
+    avg_confidence = sum(s["confidence"] for s in signals) / len(signals)
+    span_sec = signals[-1]["seen_at"] - signals[0]["seen_at"]
+    # More prints, tighter timing = more likely one actor accumulating, not
+    # coincidence - capped well under 1.0 since this is inference on
+    # anonymous data, never a claim of verified identity.
+    cluster_confidence = 0.3 + 0.15 * (len(signals) - 1) - min(span_sec / 3600 * 0.1, 0.3)
+    cluster_confidence = round(min(max(cluster_confidence, 0.1), 0.95), 2)
+    return {
+        "ticker": signals[0]["ticker"],
+        "side": signals[0]["side"],
+        "print_count": len(signals),
+        "total_size": total_size,
+        "avg_confidence": round(avg_confidence, 2),
+        "cluster_confidence": cluster_confidence,
+        "span_sec": round(span_sec),
+        "first_seen": signals[0]["seen_at"],
+        "last_seen": signals[-1]["seen_at"],
+    }
+
+
+def find_clusters(hours: int = 24, time_window_min: int = 30, max_size_ratio: float = 4.0) -> list[dict]:
+    """Groups recent signals into probable-same-actor "clusters" using
+    statistical/behavioral similarity, WhaleScanr's real approach
+    (researched directly, see ROADMAP.md) to a genuine constraint this app
+    already respects: Kalshi's real trade tape is anonymous, no usernames
+    or account data exists, confirmed directly on their site. So this never
+    claims verified identity - `cluster_confidence` is capped at 0.95 and
+    is inference on top of already-good data, nothing more.
+
+    A cluster is a same-ticker, same-side run of signals where each one is
+    within time_window_min of the previous one AND within max_size_ratio of
+    it (so a lone 500-contract print doesn't get lumped in with an
+    unrelated 50,000-contract one just because they share a ticker/side).
+    Single, non-clustered signals aren't returned - a "cluster" of one
+    print isn't accumulation, it's just a print."""
+    since = time.time() - hours * 3600
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, ticker, side, size, confidence, seen_at FROM signals "
+            "WHERE seen_at >= ? ORDER BY ticker, side, seen_at",
+            (since,),
+        ).fetchall()
+    cols = ["id", "ticker", "side", "size", "confidence", "seen_at"]
+    signals = [dict(zip(cols, r)) for r in rows]
+
+    clusters = []
+    current: list[dict] = []
+    for s in signals:
+        if current and (
+            s["ticker"] == current[-1]["ticker"]
+            and s["side"] == current[-1]["side"]
+            and (s["seen_at"] - current[-1]["seen_at"]) <= time_window_min * 60
+            and _size_ratio_ok(s["size"], current[-1]["size"], max_size_ratio)
+        ):
+            current.append(s)
+        else:
+            if len(current) > 1:
+                clusters.append(_summarize_cluster(current))
+            current = [s]
+    if len(current) > 1:
+        clusters.append(_summarize_cluster(current))
+
+    clusters.sort(key=lambda c: c["total_size"], reverse=True)
+    return clusters
+
+
 def stats(days: int = 30) -> dict:
     since = time.time() - days * 86400
     with _connect() as conn:

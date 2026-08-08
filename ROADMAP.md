@@ -577,10 +577,29 @@ band instead.
 - [ ] Add at least one more real named whale-watcher provider (beyond the
       `generic_rest` default and the unused `template_provider.py`) with
       actual, tested setup steps.
-- [ ] Improve series/category grouping. `services/signal_log.py` currently
-      groups "market type" by ticker-prefix-before-first-hyphen, a
-      reasonable proxy but not a real category taxonomy — revisit once
-      better Kalshi series metadata is available.
+- [x] Improve series/category grouping — "better Kalshi series metadata"
+      turned out to already exist and just be unused, confirmed by
+      actually querying `get_series_list()` directly rather than assuming
+      it was still unavailable: real titles ("ITF Women's Match") and a
+      real, clean 18-category taxonomy (via `category`, e.g. "Sports")
+      plus finer tags (e.g. "Tennis") per series. The grouping *key* itself
+      (`services/signal_log.series_of`'s ticker-prefix heuristic) turned
+      out fine as-is — every prefix checked matched a real series ticker
+      exactly — what was actually missing was a human name for it. New
+      `main.py:_series_meta_map()` builds a ticker→{title, category, tags}
+      lookup from the series list already cached hourly for the watchlist/
+      search (zero extra API cost), exposed as `state["series_meta"]`.
+      Caught and fixed a real mistake before it shipped: the first version
+      dumped the *entire* ~9,400-entry cache into every `/api/state`
+      response, ballooning it from ~30-50KB to over 1MB in one line —
+      confirmed by actually measuring, not assumed safe. Fixed by scoping
+      to just the series on the current watchlist
+      (`state["series_track_record"]`'s own `series` values), which is how
+      it shipped. Now used in the whale win-rate block ("ITF Women's Match
+      (Tennis)-type markets" instead of `"KXITFWMATCH"`) and the matching
+      plain-English skip reason, both falling back to the raw ticker
+      whenever a series isn't in the scoped map yet, same as this app's
+      other real-data-or-honest-fallback patterns.
 - [x] Let a user manually exclude a specific whale/source from the
       strategy, not just the automatic win-rate cutoff. Semantics resolved
       explicitly before building anything (direct instruction: lay out the
@@ -692,7 +711,7 @@ band instead.
       `tests/test_whale_simulator.py`, one per factor plus edge cases
       (zero volume, missing/malformed `close_time`). `generic_rest.py`'s
       matching single-factor score is real-provider code, still open.
-- [ ] (Stretch) Persistent flow clustering. WhaleScanr's approach to a
+- [x] (Stretch) Persistent flow clustering. WhaleScanr's approach to a
       genuine constraint this app already respects — Kalshi's real trade
       tape is anonymous, no usernames or account data, confirmed directly
       on their site — is to group trades into probable-same-actor
@@ -701,11 +720,23 @@ band instead.
       confidence score, without ever claiming verified identity. Validates
       this app's current anonymous-by-design signal model rather than
       contradicting it (there's no "whale identity" field to add — Kalshi
-      genuinely doesn't expose one). Clustering repeated signals into "this
-      looks like one actor accumulating" is the concrete version of the
-      Phase 0.5 "stealth" card item above; lower priority than the two
-      items above it since it's inference on top of already-good data, not
-      a correctness fix.
+      genuinely doesn't expose one). Built against the persisted signal log
+      (not just the ephemeral, in-memory position-grouping toggle the
+      signal feed already had — this is the real, lasting version): new
+      `signal_log.find_clusters()` walks same-ticker/same-side signals
+      ordered by time and greedily joins consecutive ones within a time
+      window (30min default) *and* a size-similarity ratio (4x default) —
+      a lone 500-contract print doesn't get lumped in with an unrelated
+      50,000-contract one just because they share a ticker/side. Cluster
+      confidence scales with print count and tightness of timing, capped
+      at 0.95 — inference, never a claim of verified identity. New `GET
+      /api/signals/clusters` and a "Possible Accumulation" panel on Whale
+      Watch, next to Signal History. 7 new tests covering grouping,
+      time-gap and size-mismatch splitting, cross-ticker/side isolation,
+      confidence scaling, and sort order. Verified live against the real
+      simulated signal log: real multi-print clusters detected (16 prints/
+      408,645 contracts/95% confidence on one real market), clicking one
+      opens the real detail modal.
 
 ## P3 — Reliability & engineering hygiene
 

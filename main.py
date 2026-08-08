@@ -143,6 +143,35 @@ async def _get_top_series(client: KalshiClient, top_n: int = 30) -> list[str]:
     return [s["ticker"] for s in series[:top_n]]
 
 
+def _series_meta_map(series_tickers: set[str]) -> dict:
+    """series_of()'s ticker prefix (see services/signal_log.py) already
+    equals a real series ticker in practice - what's been missing is a real
+    name for it. This is the "better Kalshi series metadata" ROADMAP.md's
+    series/category grouping item was waiting on: get_series_list (already
+    fetched and cached hourly for the watchlist/search, see
+    _get_series_cache) carries a real title and a real, clean 18-category
+    taxonomy (via `category`) plus finer tags (e.g. "Tennis", "Soccer") per
+    series - zero extra API cost to expose, just data that was already
+    being fetched and then discarded. Lets the dashboard show "ITF Women's
+    Match" / "Sports · Tennis" instead of a raw ticker prefix like
+    "KXITFWMATCH" wherever a whale-accuracy series is surfaced.
+
+    Scoped to series_tickers (the series actually relevant right now, from
+    state["series_track_record"]) rather than the full cache - confirmed
+    directly, not assumed, that dumping the whole thing was a real mistake:
+    the full series_cache is ~9,400 entries and ballooned /api/state from
+    ~30KB to over 1MB, undoing the entire earlier efficiency pass in one
+    line. A handful of entries (however many distinct series are on the
+    current watchlist) costs nothing by comparison."""
+    if not series_tickers:
+        return {}
+    return {
+        s["ticker"]: {"title": s.get("title"), "category": s.get("category"), "tags": s.get("tags") or []}
+        for s in state["series_cache"]["series"]
+        if s["ticker"] in series_tickers
+    }
+
+
 async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
     watchlist = cfg["kalshi"]["markets_watchlist"]
     if watchlist:
@@ -777,6 +806,15 @@ async def get_signal_history(limit: int = 50, offset: int = 0, resolved_only: bo
     }
 
 
+@app.get("/api/signals/clusters")
+async def get_signal_clusters(hours: int = 24):
+    # Persistent flow clustering (ROADMAP.md P2 stretch item) - probable-
+    # same-actor accumulation groups, inferred from timing/size similarity
+    # on the persisted signal log, not a live/poll-cycle concern.
+    hours = min(max(hours, 1), 24 * 30)
+    return {"clusters": signal_log.find_clusters(hours=hours)}
+
+
 @app.get("/api/markets/search")
 async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
@@ -871,6 +909,7 @@ def _build_state_body() -> dict:
         "real_balance_history": state["real_balance_history"],
         "whale_track_record": signal_log.stats(days=30),
         "series_track_record": state["series_track_record"],
+        "series_meta": _series_meta_map({r["series"] for r in state["series_track_record"].values()}),
         "last_poll": state["last_poll"],
         "error": state["error"],
         "whale_source": state["whale_source"],

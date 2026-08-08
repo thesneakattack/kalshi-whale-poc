@@ -122,3 +122,81 @@ def test_total_count(tmp_path, monkeypatch):
     log.log_signal("TICK-B", "no", 2000, 0.7, "simulated")
     assert log.total_count() == 2
     assert log.total_count(resolved_only=True) == 0
+
+
+def test_find_clusters_groups_close_similar_prints(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "simulated", seen_at=now - 600)
+    log.log_signal("TICK-A", "yes", 6000, 0.75, "simulated", seen_at=now - 300)
+    log.log_signal("TICK-A", "yes", 5500, 0.8, "simulated", seen_at=now)
+    clusters = log.find_clusters(hours=24, time_window_min=30, max_size_ratio=4.0)
+    assert len(clusters) == 1
+    c = clusters[0]
+    assert c["ticker"] == "TICK-A"
+    assert c["side"] == "yes"
+    assert c["print_count"] == 3
+    assert c["total_size"] == 16500
+
+
+def test_find_clusters_ignores_lone_signals(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "simulated")
+    log.log_signal("TICK-B", "no", 3000, 0.6, "simulated")
+    clusters = log.find_clusters(hours=24)
+    assert clusters == []
+
+
+def test_find_clusters_splits_on_time_gap(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "simulated", seen_at=now - 7200)  # 2h ago
+    log.log_signal("TICK-A", "yes", 5200, 0.7, "simulated", seen_at=now)  # now - way outside a 30min window
+    clusters = log.find_clusters(hours=24, time_window_min=30)
+    assert clusters == []  # each print is alone in its own would-be cluster
+
+
+def test_find_clusters_splits_on_size_mismatch(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 500, 0.7, "simulated", seen_at=now - 60)
+    log.log_signal("TICK-A", "yes", 50000, 0.7, "simulated", seen_at=now)  # same ticker/side/timing, wildly different size
+    clusters = log.find_clusters(hours=24, time_window_min=30, max_size_ratio=4.0)
+    assert clusters == []
+
+
+def test_find_clusters_keeps_different_tickers_and_sides_separate(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "simulated", seen_at=now - 60)
+    log.log_signal("TICK-A", "no", 5100, 0.7, "simulated", seen_at=now - 30)  # same ticker, different side
+    log.log_signal("TICK-B", "yes", 5200, 0.7, "simulated", seen_at=now)  # different ticker
+    clusters = log.find_clusters(hours=24)
+    assert clusters == []
+
+
+def test_find_clusters_confidence_increases_with_more_prints(tmp_path, monkeypatch):
+    now = time.time()
+
+    monkeypatch.setattr(sl, "DB_PATH", tmp_path / "two_prints.db")
+    for i in range(2):
+        sl.log_signal("TICK-A", "yes", 5000, 0.7, "simulated", seen_at=now - (60 * i))
+    two_print_conf = sl.find_clusters(hours=24)[0]["cluster_confidence"]
+
+    monkeypatch.setattr(sl, "DB_PATH", tmp_path / "five_prints.db")
+    for i in range(5):
+        sl.log_signal("TICK-A", "yes", 5000, 0.7, "simulated", seen_at=now - (60 * i))
+    five_print_conf = sl.find_clusters(hours=24)[0]["cluster_confidence"]
+
+    assert five_print_conf > two_print_conf
+
+
+def test_find_clusters_sorted_by_total_size_descending(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-SMALL", "yes", 1000, 0.7, "simulated", seen_at=now - 60)
+    log.log_signal("TICK-SMALL", "yes", 1100, 0.7, "simulated", seen_at=now)
+    log.log_signal("TICK-BIG", "no", 40000, 0.7, "simulated", seen_at=now - 60)
+    log.log_signal("TICK-BIG", "no", 42000, 0.7, "simulated", seen_at=now)
+    clusters = log.find_clusters(hours=24)
+    assert [c["ticker"] for c in clusters] == ["TICK-BIG", "TICK-SMALL"]

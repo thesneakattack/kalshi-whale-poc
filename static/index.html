@@ -738,6 +738,14 @@
     <div class="panel-title">Signal History <span id="signal-history-count"></span></div>
     <div id="signal-history" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <div class="panel-title">Possible Accumulation <span id="signal-clusters-count"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Groups of same-ticker, same-side prints close together in time and size — a possible sign of one actor
+      accumulating over several smaller prints instead of one big one. Kalshi's real trade tape has no
+      account/identity data, so this is statistical inference, never a claim of verified identity.
+    </p>
+    <div id="signal-clusters" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <div class="panel-title">Trade Tape <span id="trade-tape-toggle"></span></div>
     <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
 
@@ -895,6 +903,7 @@ async function fetchJSON(url, opts) {
 
 let marketTitles = {};
 let eventTitles = {};  // event_ticker -> {title, subtitle, category} — see renderMarketCards' grouping
+let seriesMeta = {};  // series ticker -> {title, category, tags} — real Kalshi series metadata, see main.py's _series_meta_map
 let accountMode = localStorage.getItem('whale-signal-account-mode') || 'paper'; // 'paper' | 'real' — Portfolio view toggle
 
 function esc(str) {
@@ -1275,7 +1284,9 @@ function plainEnglishSkipReason(reason) {
     return `Skipped — this whale print only scored ${pct}% confidence, below the minimum needed to act on it.`;
   }
   if ((m = /^whale win rate for "(.+)"-type markets is ([\d.]+)% over (\d+) resolved signals \(below ([\d.]+)% minimum\) — avoiding$/.exec(reason))) {
-    return `Skipped — whales have only been right ${m[2]}% of the time recently on "${m[1]}"-type markets `
+    const seriesMetaEntry = seriesMeta[m[1]];
+    const seriesName = seriesMetaEntry && seriesMetaEntry.title ? seriesMetaEntry.title : m[1];
+    return `Skipped — whales have only been right ${m[2]}% of the time recently on "${seriesName}"-type markets `
       + `(out of ${m[3]} resolved signals), below the ${m[4]}% bar this strategy requires before trusting them here.`;
   }
   if (reason === 'cooldown active for this market') {
@@ -1854,6 +1865,48 @@ function renderSignalHistory() {
   </table>` + pager;
 }
 
+// Persistent flow clustering (ROADMAP.md P2 stretch item) - WhaleScanr's
+// real approach to a genuine constraint this app already respects:
+// Kalshi's trade tape is anonymous, no account/identity data exists, so
+// this groups same-ticker/same-side prints close in time and size into
+// probable-same-actor "clusters," never claiming verified identity.
+// Backed by GET /api/signals/clusters, the persisted signal log - same
+// separate-on-demand-fetch pattern as loadSignalHistory above, loaded
+// once when the Whale Watch tab opens.
+async function loadSignalClusters() {
+  const el = $('signal-clusters');
+  if (!el) return;
+  try {
+    const resp = await fetchJSON('/api/signals/clusters?hours=24');
+    renderSignalClusters(resp.clusters || []);
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load.</div>';
+  }
+}
+
+function renderSignalClusters(clusters) {
+  const el = $('signal-clusters');
+  $('signal-clusters-count').textContent = clusters.length ? `(${clusters.length})` : '';
+  if (!clusters.length) {
+    el.innerHTML = '<div class="empty">No probable accumulation detected in the last 24h.</div>';
+    return;
+  }
+  el.innerHTML = clusters.map(c => {
+    const label = marketLabel(c.ticker);
+    const spanMin = Math.max(1, Math.round(c.span_sec / 60));
+    const pct = Math.round(c.cluster_confidence * 100);
+    return `<div class="signal-card" style="cursor:pointer;"
+        title="${esc(label.full)} — inferred from timing/size similarity, not verified identity"
+        onclick="openMarketDetail('${esc(c.ticker)}', '')">
+      <div class="top-row">
+        <span>${esc(label.short)} <span class="side-tag ${c.side}">${c.side}</span></span>
+        <span style="color: var(--whale)">${c.total_size.toLocaleString()} ct total</span>
+      </div>
+      <div style="color: var(--muted)">${c.print_count} prints over ${spanMin} min · ~${pct}% cluster confidence</div>
+    </div>`;
+  }).join('');
+}
+
 // Traditional trading-view element: bankroll trajectory over time, not just
 // the current number. Plain inline SVG, no charting library.
 // Shared by both the paper equity curve and the real-balance curve — valueKey
@@ -1920,8 +1973,20 @@ function winRateBlockHTML(ticker, seriesTrackRecord) {
   return `<div class="winrate-block">
     <div class="winrate-label">🐋 Whale win rate for this type of market (30d)</div>
     <div class="whale-bar"><div class="yes-seg" style="width:${wr}%; background:${color};"></div><div class="no-seg" style="width:${100 - wr}%"></div></div>
-    <div class="sub">${wr.toFixed(0)}% correct · ${rec.resolved} resolved signal${rec.resolved === 1 ? '' : 's'} on "${esc(rec.series)}"-type markets</div>
+    <div class="sub">${wr.toFixed(0)}% correct · ${rec.resolved} resolved signal${rec.resolved === 1 ? '' : 's'} on ${seriesLabelHTML(rec.series)}</div>
   </div>`;
+}
+
+// Real Kalshi series metadata (ROADMAP.md P2 - "not a real category
+// taxonomy" until now) instead of a raw ticker prefix like "KXITFWMATCH" -
+// falls back to the raw ticker, quoted, exactly like before, whenever this
+// series isn't in seriesMeta yet (not every series a whale has printed on
+// is necessarily still in the current watchlist's scoped series_meta).
+function seriesLabelHTML(seriesTicker) {
+  const meta = seriesMeta[seriesTicker];
+  if (!meta || !meta.title) return `"${esc(seriesTicker)}"-type markets`;
+  const tag = meta.tags && meta.tags.length ? ` (${esc(meta.tags[0])})` : '';
+  return `<span title="${esc(seriesTicker)}">${esc(meta.title)}${tag}</span>-type markets`;
 }
 
 function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
@@ -2899,6 +2964,7 @@ async function refresh() {
 
     marketTitles = state.market_titles || {};
     eventTitles = state.event_titles || {};
+    seriesMeta = state.series_meta || {};
     liveStatus = state.live_status || {};
     renderRealMoneyBanner(state.account); // always visible, above everything
     renderAccount(state.account); // always visible, above the tabs
@@ -3223,7 +3289,7 @@ function showView(name) {
   // poll cycle (see loadSignalHistory) - load it fresh whenever this tab is
   // opened, rather than every 5s poll, so paging/sorting doesn't reset
   // itself out from under someone actively browsing it.
-  if (name === 'whale') loadSignalHistory();
+  if (name === 'whale') { loadSignalHistory(); loadSignalClusters(); }
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
 

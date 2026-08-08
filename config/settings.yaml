@@ -16,7 +16,7 @@ whale_signal:
   live_markets_only: true
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.65
+  entry_threshold: 0.05
   max_position_pct: 0.05
   cooldown_sec: 300
   min_whale_winrate_pct: 40
