@@ -1110,6 +1110,85 @@
           <code>tests/test_whale_simulator.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 35 · watchlist diversification: round-robin across events, not a flat volume sort</div>
+        <h4>A real bug caught live via direct report: "the only market that shows up isn't even live"</h4>
+        <p>Reported directly against the running app: only one market visible, and it wasn't even live, despite
+          Kalshi itself showing 50 live markets at the time. Diagnosed against real data, not guessed - the
+          entire 8-market watchlist turned out to be every sub-market of one Wyndham Championship golf
+          tournament, starting in ~15 hours (well outside the live-detection window), while
+          <code>live_status</code> came back completely empty. Root cause: <code>get_top_volume_markets</code>
+          (phase "market discovery" a while back) fixed <i>what</i> gets browsed but still picked the final
+          watchlist via a flat top-n-by-volume sort with zero diversification - one high-volume multi-outcome
+          event, every sub-market individually ranking in the global top 8, can silently fill the entire
+          watchlist and crowd out every other series, confirmed live, not hypothetical.</p>
+        <p>First fix tried and explicitly replaced before shipping: a flat per-event cap (max 2 markets per
+          event). It solves the crowding-out case but creates the mirror problem - a genuinely multi-outcome
+          event's own legitimate sub-markets get needlessly truncated to 2 even when nothing else is competing
+          for the remaining slots, caught by the requester asking "would there be a way to dynamically adjust
+          caps... to avoid cutoffs." Shipped instead: round-robin selection across distinct events (still
+          highest-volume-first <i>within</i> each event) - no hardcoded per-event number at all. The effective
+          share per event self-sizes: it shrinks automatically as more distinct events compete for the same n
+          slots, and grows toward the full watchlist size when one event genuinely has no real competition.
+          Verified directly against the live Kalshi API (not just unit tests): the watchlist went from 1
+          distinct event / 0 confirmed-live markets to 20 distinct events (tennis, MLB, Bitcoin, UFC, WNBA)
+          / 4 confirmed-live. 6 new tests in a first dedicated <code>tests/test_kalshi_client.py</code> (this
+          module had none before) - including the "only one real event available" case explicitly, so the
+          round-robin behavior doesn't regress back toward either extreme.</p>
+        <p>Same pass, direct follow-up request ("increase the caps throughout the API to something more
+          sensible"): audited every numeric limit in the poll loop and bumped the ones sized for an 8-market
+          watchlist that hadn't been revisited since - <code>watchlist_size</code> 8&rarr;20, top-series
+          candidates 15&rarr;30, per-market trade-tape fetch 5&rarr;10 (total tape cap 30&rarr;50),
+          unresolved-signal-resolution batch 3&rarr;10 per tick (and switched that function from sequential to
+          concurrent fetching in the same change, so the bigger batch doesn't stack up round-trip latency
+          within one poll tick), real-account fills page size 25&rarr;50, the long-run
+          <code>market_titles</code>/<code>event_titles</code> caps 300&rarr;500, and
+          <code>equity_history</code>/<code>real_balance_history</code> 200&rarr;500 points.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_top_volume_markets</code>
+          round-robin rewrite) · <code>main.py</code> (cap bumps,
+          <code>_check_signal_resolutions</code> concurrency) ·
+          <code>config/settings.yaml</code> (<code>watchlist_size</code>) · new
+          <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 36 · P1 closed out: Help modal, plain-English skip reasons, a real-money banner</div>
+        <h4>"A first-timer understands what's happening" - all five P1 items, one pass</h4>
+        <p>First-run walkthrough, persistent glossary, and a "how prediction markets work" explainer were three
+          separate roadmap bullets but really the same job - built as one combined Help modal instead of three
+          surfaces. New <code>#help-backdrop</code> reuses the market-detail modal's exact chrome and
+          mousedown-guard outside-click fix (phase 30-ish) rather than a new pattern: a plain-English
+          prediction-markets primer (what a price means as a probability, why Yes + No &asymp; 100&cent;, what
+          settlement means) plus an 11-term glossary written in terms of how <i>this app</i> actually uses each
+          word, not textbook definitions pulled from nowhere. Auto-opens once on a genuinely fresh browser
+          (a <code>localStorage</code> flag set the same way whether it opened itself or someone clicked the
+          new util-bar "Help" link), never reopens itself automatically after that. Deliberately scoped down
+          from "walkthrough" in the step-by-step-guided-tour sense - highlighting individual UI elements one at
+          a time needs real positioning/overlay machinery this app doesn't have; reading one reference page
+          once is an honest, smaller bar, not the full ask. Verified live with real localStorage clearing: opens
+          fresh, stays closed after being dismissed once, reopens on demand.</p>
+        <p>Plain-English skip reasons: <code>strategy_engine.py</code>'s <code>_skip()</code> reasons stayed
+          exactly as they were (concise technical strings, correct for logs and Advanced mode) - a new
+          <code>plainEnglishSkipReason()</code> pattern-matches all five real shapes into full sentences for
+          Simple mode client-side, the same Simple/Advanced split as every other panel in this app. Falls back
+          to the raw string for anything unrecognized rather than hiding or guessing at it, verified directly
+          alongside the five known shapes.</p>
+        <p>The real-money indicator: today's PAPER tag lives inside the header's equity strip, easy to miss
+          amid everything else there, and the account-connection bar only speaks to connection status, not
+          real-order risk. New full-width, sticky <code>#real-money-banner</code> above the util-bar - the
+          very top of the page, impossible to scroll past unnoticed. Exactly two states, keyed off
+          <code>account.trading_enabled</code> specifically (the field that actually gates whether
+          <code>create_order</code> can ever fire, confirmed by reading
+          <code>kalshi_account_client.py</code>'s <code>_require_trading_enabled</code> - not "is an account
+          connected," which is still fully safe on its own under this app's architecture): calm green by
+          default, a pulsing red warning only once real orders are genuinely possible. Loud specifically when
+          it needs to be, not desensitizing by crying wolf the rest of the time. Verified live in both states
+          via a synthetic <code>trading_enabled</code> flip.</p>
+        <div class="files"><code>static/index.html</code> (<code>#help-backdrop</code>, <code>openHelp</code>/
+          <code>closeHelp</code>, <code>GLOSSARY_TERMS</code>, <code>plainEnglishSkipReason</code>,
+          <code>#real-money-banner</code>, <code>renderRealMoneyBanner</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1154,9 +1233,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions</td><td class="loc">1080</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking</td><td class="loc">1086</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>)</td><td class="loc">191</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection</td><td class="loc">233</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code> + paginated <code>recent()</code>/<code>total_count()</code> for the browsable history panel, <code>data/signal_log.db</code></td><td class="loc">159</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -1171,11 +1250,11 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, price-change flash indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, shared dense sortable screener table (Terminal/Markets/Whale Watch), Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2932</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, price-change flash indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, shared dense sortable screener table (Terminal/Markets/Whale Watch), Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">3097</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1360</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">tests/*.py</td><td class="note">93 tests across 9 files: paper_broker, risk_manager, strategy_engine, signal_log (incl. paginated history), shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), whale_simulator (relative sizing, weighted market selection, composite confidence, live-only generation gate) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">1263</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1440</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">tests/*.py</td><td class="note">99 tests across 10 files: paper_broker, risk_manager, strategy_engine, signal_log (incl. paginated history), shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), kalshi_client (round-robin watchlist selection), whale_simulator (relative sizing, weighted market selection, composite confidence, live-only generation gate) — each isolates its own SQLite file (or mocks the SDK client directly), never touches real <code>data/*.db</code></td><td class="loc">1364</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
           <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll, executes none, mirrors the live-markets-only gate, self-serve <code>clear()</code> — <code>data/shadow_mode.db</code></td><td class="loc">194</td><td><span class="pill good">done</span></td></tr>

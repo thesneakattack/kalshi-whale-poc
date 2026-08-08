@@ -113,6 +113,38 @@ this app does that theirs doesn't, in either mode.
       series. Also fixed an SDK gotcha: passing `mve_filter=None`
       explicitly (vs. omitting it) silently changed the result set. Search
       rebuilt on the same series-based approach.
+- [x] Follow-up, a real bug caught live via direct report ("the only market
+      that shows up is Wyndham Championship, which isn't even live... Kalshi
+      itself is showing 50 live markets right now"). Root cause: series-based
+      discovery above fixed *what* gets browsed, but `get_top_volume_markets`
+      still picked the final watchlist via a flat top-n-by-volume sort across
+      every candidate market with no diversification — confirmed directly,
+      not assumed: a single 8-market golf tournament, every sub-market
+      individually high-volume, filled all 8 watchlist slots and crowded out
+      every other series entirely, even with dozens of other markets
+      trading (some genuinely live) at the time. A flat per-event cap was
+      tried first and replaced before shipping — it fixes the crowding-out
+      case but creates the mirror problem, needlessly truncating a
+      genuinely multi-outcome event's own sub-markets when nothing else is
+      competing for slots. Shipped instead: round-robin selection across
+      distinct events (still highest-volume-first *within* each event) —
+      self-sizes with no hardcoded number, so the effective per-event share
+      shrinks automatically as more distinct events compete and grows
+      toward the full watchlist size when one genuinely dominates. Also
+      bumped several related caps that were tuned for an 8-market watchlist
+      and hadn't been revisited since: `watchlist_size` 8→20,
+      `_get_top_series` top_n 15→30, per-market trade-tape fetch 5→10
+      trades (total tape cap 30→50), unresolved-signal-resolution batch
+      3→10 per tick (switched from sequential to concurrent fetching in the
+      same pass, so a bigger batch doesn't stack up round-trip latency),
+      real-account fills page size 25→50, `market_titles`/`event_titles`
+      long-run caps 300→500, `equity_history`/`real_balance_history`
+      300→500 points. Verified live against the real Kalshi API, not just
+      unit tests: the watchlist went from 1 distinct event / 0 live markets
+      to 20 distinct events / 4 confirmed live. 6 new tests in the first
+      dedicated `tests/test_kalshi_client.py` (this module had none before)
+      covering the round-robin behavior directly, including the "only one
+      real event available" case explicitly.
 
 Concrete gaps against the current 4-tab dashboard (Portfolio, Markets,
 Whale Watch, Terminal — see `static/index.html`), each already framed as
@@ -438,24 +470,50 @@ band instead.
 
 ## P1 — Actually dummy-proof (a first-timer understands what's happening)
 
-- [ ] First-run walkthrough. There is currently zero onboarding — a new
-      user lands directly on a 4-tab dashboard with no explanation of what
-      Portfolio/Markets/Whale Watch/Terminal even mean.
-- [ ] A persistent glossary/help layer (tooltips or a dedicated Help panel)
-      for every piece of jargon still in use: confidence, cooldown, kill
-      switch, series, combo/parlay market, implied probability, basis
-      points, whale "lean," etc.
-- [ ] Extend the plain-English pattern from the Portfolio "Betting vs.
-      Likelihood vs. Risk vs. Whales" panel to Strategy Decisions too —
-      skip reasons are still raw strings like "confidence 0.34 below
-      threshold" instead of a sentence a beginner would understand.
-- [ ] A basic "how prediction markets work" explainer: what a price means
-      as a probability, why Yes + No ≈ 100¢, what "settlement" means. The
-      whole app currently assumes this prior knowledge.
-- [ ] A global, impossible-to-miss "this is not real money" indicator.
-      Today that's the header's PAPER tag plus a separate red account bar
-      — clear once you know to look, but not loud enough for a total
-      beginner, especially after a real account is connected.
+- [x] First-run walkthrough + persistent glossary/help layer + "how
+      prediction markets work" explainer — built as one combined Help
+      modal rather than three separate surfaces, since all three are
+      really the same "get a first-timer oriented" job. New
+      `#help-backdrop` (same modal chrome/mousedown-guard pattern as the
+      market-detail modal): a plain-English prediction-markets primer
+      (what a price means as a probability, why Yes + No ≈ 100¢, what
+      settlement means) plus an 11-term glossary (confidence, whale
+      "lean," cooldown, kill switch, implied probability, basis points,
+      series, combo/parlay market, shadow mode, paper trading, live
+      market) written in terms of how *this app* actually uses each term,
+      not textbook definitions. Auto-opens once on a brand-new browser
+      (`localStorage` flag), always reachable afterward via a new "Help"
+      link in the util-bar. Deliberately scoped as a reference panel to
+      read once, not a step-by-step guided tour that highlights individual
+      UI elements — that would need real positioning/overlay machinery
+      this app doesn't have, and a first-timer reading one page is a
+      reasonable bar to clear before building that. Verified live: a
+      cleared-localStorage session auto-opens it, closing sets the flag so
+      a reload doesn't reopen it, and the util-bar link reopens it
+      manually afterward.
+- [x] Extended the plain-English pattern from the Portfolio "Betting vs.
+      Likelihood vs. Risk vs. Whales" panel to Strategy Decisions. New
+      `plainEnglishSkipReason()` pattern-matches `strategy_engine.py`'s
+      `_skip()` reason strings (left unchanged at the source — they're
+      fine, concise technical strings for logs/Advanced mode) into full
+      sentences for Simple mode, same Simple/Advanced split as everywhere
+      else: Advanced still shows the exact raw string. Falls back to the
+      raw string for anything it doesn't recognize rather than hiding or
+      guessing at it. Verified live against all 5 real skip-reason shapes
+      this file actually produces, including the unrecognized-string
+      fallback.
+- [x] A global, impossible-to-miss "this is not real money" indicator. New
+      full-width, sticky `#real-money-banner` above the util-bar — not
+      buried in the header strip, which was the actual complaint. Exactly
+      two states, keyed off `account.trading_enabled` (the field that
+      genuinely gates whether a real order can ever be placed, per
+      `kalshi_account_client.py`'s `_require_trading_enabled` — not just
+      "is an account connected," which is still 100% safe on its own under
+      this app's architecture): a calm green "🧪 PAPER TRADING — no real
+      money is at risk" by default, and a pulsing red "⚠️ REAL TRADING IS
+      ENABLED" only once real orders are genuinely possible — loud
+      specifically when it needs to be, not crying wolf the rest of the
+      time. Verified live in both states.
 
 ## P2 — Whale-tracking maturity
 

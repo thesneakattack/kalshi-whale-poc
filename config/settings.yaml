@@ -2,7 +2,7 @@ mode: paper
 kalshi:
   base_url: https://api.elections.kalshi.com/trade-api/v2
   markets_watchlist: []
-  watchlist_size: 8
+  watchlist_size: 20
   min_volume_24h: 1
   categories: []
   poll_interval_sec: 15
@@ -21,7 +21,7 @@ strategy:
   cooldown_sec: 300
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 5
-  live_markets_only: false
+  live_markets_only: true
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 1

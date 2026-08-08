@@ -554,13 +554,32 @@
     font-size: 12px;
     margin-bottom: 12px;
   }
+
+  /* Global, impossible-to-miss "is this real money" indicator (ROADMAP.md
+     P1) - the header's PAPER/REAL tag and the account-connection bar are
+     both easy to miss for a total beginner, especially once a real account
+     is connected. This is a full-width, sticky banner above everything
+     else, in one of exactly two states - reassuring by default, loud only
+     when real trading is genuinely enabled - so it's not crying wolf the
+     rest of the time. */
+  .real-money-banner {
+    position: sticky; top: 0; z-index: 200; width: 100%;
+    text-align: center; padding: 7px 12px; font-weight: 700; font-size: 12.5px;
+    letter-spacing: 0.02em; font-family: var(--mono);
+  }
+  .real-money-banner.safe { background: var(--yes); color: #04231c; }
+  .real-money-banner.danger { background: var(--danger); color: #fff; animation: real-money-pulse 1.6s ease-in-out infinite; }
+  @keyframes real-money-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
 </style>
 </head>
 <body>
 
+<div id="real-money-banner" class="real-money-banner safe">🧪 PAPER TRADING — no real money is at risk right now</div>
+
 <div class="util-bar">
   <div class="tools">
     <span class="label">Tools</span>
+    <a href="#" onclick="openHelp(); return false;">Help</a>
     <a href="/accounts">Connected Accounts</a>
     <a href="/status">Build Status</a>
   </div>
@@ -597,6 +616,52 @@
       <button onclick="closeMarketDetail()" title="Close">✕</button>
     </div>
     <div id="market-detail-body"><div class="empty">Loading order book…</div></div>
+  </div>
+</div>
+
+<!-- Help / first-run walkthrough (ROADMAP.md P1) - a first-timer's "what am
+     I looking at" layer: how prediction markets work, plus a glossary of
+     every piece of jargon this app uses. Auto-opens once on a brand new
+     browser (see the first-run check near showView() below), always
+     reachable afterward via the util-bar's Help link. Deliberately scoped
+     as a reference panel, not a step-by-step guided tour that highlights
+     individual UI elements - that would need real positioning/overlay
+     machinery this app doesn't have yet; a first-timer gets oriented by
+     reading this once, not by being walked click-by-click through five tabs. -->
+<div id="help-backdrop" class="market-detail-backdrop" onmousedown="__backdropMouseDownOnSelf = (event.target === this)" onclick="if (event.target === this && __backdropMouseDownOnSelf) closeHelp()">
+  <div class="market-detail-panel">
+    <div class="market-detail-header">
+      <div class="market-detail-title">Welcome — here's what you're looking at</div>
+      <button onclick="closeHelp()" title="Close">✕</button>
+    </div>
+    <div class="halted-banner" style="background: rgba(45,212,191,0.1); border-color: var(--yes); color: var(--yes);">
+      🧪 Everything on this page uses <b>fake money</b> by default. No real trade is ever placed unless real
+      trading is explicitly enabled and confirmed — see the Danger Zone note at the bottom of Config.
+    </div>
+
+    <div class="panel-title" style="margin-top:16px;">How prediction markets work</div>
+    <p style="font-size:13px; line-height:1.6;">
+      A prediction market lets you trade on the outcome of a real-world event — "will X happen by date Y?"
+      Every market has two sides, <b>Yes</b> and <b>No</b>, each priced between 1¢ and 99¢.
+    </p>
+    <p style="font-size:13px; line-height:1.6;">
+      <b>A price is a probability.</b> If Yes is trading at 62¢, the market thinks there's roughly a
+      <b>62% chance</b> the event happens — that's what "implied probability" means: just the price, read as a
+      percent chance instead of a dollar amount.
+    </p>
+    <p style="font-size:13px; line-height:1.6;">
+      <b>Yes + No always add up to about 100¢</b> because they're two sides of the same bet — if something is
+      nearly certain to happen, Yes trades near 99¢ and No trades near 1¢, and vice versa.
+    </p>
+    <p style="font-size:13px; line-height:1.6;">
+      <b>Settlement</b> is what happens once the real-world event is actually decided: the market "settles,"
+      and every contract on the correct side pays out <b>$1</b>, every contract on the wrong side pays out
+      <b>$0</b>. There's no partial credit — a position's value is whatever you paid for it until the moment
+      it settles to either $1 or $0.
+    </p>
+
+    <div class="panel-title" style="margin-top:20px;">Glossary</div>
+    <div id="help-glossary" style="font-size:13px; line-height:1.6;"></div>
   </div>
 </div>
 
@@ -1108,6 +1173,42 @@ function renderSignals(signals) {
 let lastDecisions = [];
 let decisionFilter = { query: '', action: '', sortKey: 'timestamp', sortDir: 'desc' };
 
+// Plain-English skip reasons (ROADMAP.md P1) - strategy_engine.py's _skip()
+// reasons are concise technical strings by design (fine for logs/Advanced
+// mode), not sentences a first-timer would understand ("confidence 0.34
+// below threshold"). Pattern-matched here rather than changed at the
+// source, same Simple/Advanced split as everywhere else in this app:
+// Advanced still shows the exact raw string (see renderDecisionTable),
+// Simple gets a translated sentence. Falls back to the raw string for
+// anything unrecognized rather than hiding or guessing at it - a reason
+// this doesn't know how to translate yet should still be visible, not
+// silently dropped.
+function plainEnglishSkipReason(reason) {
+  if (!reason) return 'Skipped for an unspecified reason.';
+  let m;
+  if ((m = /^halted: (.+)$/.exec(reason))) {
+    return `Trading is currently paused — ${m[1]}`;
+  }
+  if (reason === 'market is not currently live') {
+    return `Skipped because this market isn't live right now — this strategy is configured to only trade markets currently in progress.`;
+  }
+  if ((m = /^confidence ([\d.]+) below threshold$/.exec(reason))) {
+    const pct = Math.round(parseFloat(m[1]) * 100);
+    return `Skipped — this whale print only scored ${pct}% confidence, below the minimum needed to act on it.`;
+  }
+  if ((m = /^whale win rate for "(.+)"-type markets is ([\d.]+)% over (\d+) resolved signals \(below ([\d.]+)% minimum\) — avoiding$/.exec(reason))) {
+    return `Skipped — whales have only been right ${m[2]}% of the time recently on "${m[1]}"-type markets `
+      + `(out of ${m[3]} resolved signals), below the ${m[4]}% bar this strategy requires before trusting them here.`;
+  }
+  if (reason === 'cooldown active for this market') {
+    return `Skipped — this strategy already traded this market recently and is waiting out its cooldown before trading it again.`;
+  }
+  if (reason === 'position size rounds to zero') {
+    return `Skipped — the bankroll is too small (or the price too high) to afford even one contract at the configured position size.`;
+  }
+  return reason;
+}
+
 function renderDecisions(decisions) {
   lastDecisions = decisions || [];
   $('decision-toggle').innerHTML = advToggleHTML('decisions');
@@ -1123,7 +1224,7 @@ function renderDecisions(decisions) {
           <span>${esc(label.short)}</span>
           <span class="action-tag ${d.action}">${d.action}</span>
         </div>
-        <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : d.reason}</div>
+        <div style="color: var(--muted)">${d.action === 'trade' ? `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢` : esc(plainEnglishSkipReason(d.reason))}</div>
       </div>
     `;
     }).join('');
@@ -2039,6 +2140,41 @@ function closeMarketDetail() {
   $('market-detail-backdrop').classList.remove('open');
 }
 
+// Glossary (ROADMAP.md P1) - every piece of jargon this app actually uses,
+// defined in terms of how THIS app uses it, not a generic textbook
+// definition. "Basis points" is included for general prediction-market
+// literacy even though nothing in this UI currently displays a number in
+// bps - listed explicitly in the roadmap item this addresses, so covered
+// here rather than silently dropped for not (yet) appearing on screen.
+const GLOSSARY_TERMS = [
+  ['Confidence', 'A 0-100% score this app assigns to each whale print, estimating how likely it is to be a real, informed trade rather than noise. The strategy only acts on prints above a configured confidence threshold.'],
+  ['Whale "lean"', 'Which side - Yes or No - recent large trades have mostly been betting on, and by how much. This is the core signal this app follows: when whales lean hard one way, the strategy considers following them.'],
+  ['Cooldown', 'How long the strategy waits before trading the same market again after already trading it once, so one whale print doesn\'t turn into repeatedly piling into the same market.'],
+  ['Kill switch', 'An automatic pause that halts all new trades for the day once losses cross a configured percentage of the starting bankroll - a safety net that fires on its own, not a strategy decision.'],
+  ['Implied probability', 'What a market\'s price says about the odds, restated as a percent chance - a market trading at 30¢ implies roughly a 30% chance of the event happening.'],
+  ['Basis points (bps)', 'A unit equal to 0.01 percentage points (100 bps = 1 percentage point) - a finer-grained way to talk about small probability/price moves than whole percent.'],
+  ['Series', 'Kalshi\'s term for a recurring template of similar markets (e.g. "will it rain in NYC tomorrow" repeats daily as its own series). This app groups whale accuracy by series so "how have whales done on this type of market" means something, instead of judging a whale off one single market.'],
+  ['Combo / parlay market', 'A market whose outcome depends on more than one underlying event at once (e.g. "Team A wins AND scores over 100"). Kalshi auto-generates these in bulk - they vastly outnumber single-outcome markets and rarely have real trading activity, so this app filters them out of automatic market discovery.'],
+  ['Shadow mode', 'Runs the exact same trading logic this app would use for real, sized against what a connected real account\'s money would allow, and logs what it would have done - without ever placing a real order. The step to trust before ever enabling real trading.'],
+  ['Paper trading', 'Trading with fake money against real, live market prices - the default mode this app runs in, so a strategy can be tested with zero financial risk.'],
+  ['Live market', 'A market tied to a real-world event that\'s currently in progress right now (a game being played, etc.), as opposed to one that hasn\'t started yet or has already finished. Shown with a LIVE badge.'],
+];
+
+function renderHelpGlossary() {
+  $('help-glossary').innerHTML = GLOSSARY_TERMS.map(([term, def]) =>
+    `<p style="margin:0 0 10px;"><b>${esc(term)}</b> — ${esc(def)}</p>`
+  ).join('');
+}
+
+function openHelp() {
+  renderHelpGlossary();
+  $('help-backdrop').classList.add('open');
+  localStorage.setItem('whale-signal-seen-intro', '1');
+}
+function closeHelp() {
+  $('help-backdrop').classList.remove('open');
+}
+
 // Separate from refreshMarketDetail's body (order book/chart/trades) since
 // this needs to re-run on every poll too, not just on open - the event's
 // category/matchup may not be cached yet the first time a market is opened
@@ -2328,6 +2464,24 @@ function renderCandlestickHTML(candles) {
       <span>hourly candles, volume below</span>
       <span>${new Date(points[points.length-1].ts*1000).toLocaleDateString()}</span>
     </div>`;
+}
+
+// Global "is this real money" banner (ROADMAP.md P1) - real orders can only
+// ever be placed when kalshi_account.trading_enabled is true (see
+// services/kalshi_account_client.py's _require_trading_enabled), so that
+// flag - not just "is a real account connected" - is the genuinely correct
+// signal for "real money is actually at risk right now." A connected-but-
+// not-enabled account is still 100% safe under this app's architecture.
+function renderRealMoneyBanner(account) {
+  const el = $('real-money-banner');
+  const tradingEnabled = !!(account && account.trading_enabled);
+  if (tradingEnabled) {
+    el.className = 'real-money-banner danger';
+    el.textContent = '⚠️ REAL TRADING IS ENABLED — real orders can be placed with real money';
+  } else {
+    el.className = 'real-money-banner safe';
+    el.textContent = '🧪 PAPER TRADING — no real money is at risk right now';
+  }
 }
 
 function renderAccount(account) {
@@ -2659,6 +2813,7 @@ async function refresh() {
     marketTitles = state.market_titles || {};
     eventTitles = state.event_titles || {};
     liveStatus = state.live_status || {};
+    renderRealMoneyBanner(state.account); // always visible, above everything
     renderAccount(state.account); // always visible, above the tabs
 
     // Only build the DOM for whichever view is actually on screen — the other
@@ -2747,6 +2902,7 @@ $('config-reset-btn').addEventListener('click', async () => {
   refresh();
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && marketDetailTicker) closeMarketDetail(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('help-backdrop').classList.contains('open')) closeHelp(); });
 $('halt-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/halt', {method:'POST'}); refresh(); });
 $('resume-btn').addEventListener('click', async () => { await fetchJSON('/api/risk/resume', {method:'POST'}); refresh(); });
 
@@ -2915,6 +3071,15 @@ function showView(name) {
   if (name === 'whale') loadSignalHistory();
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
+
+// First-run walkthrough (ROADMAP.md P1) - auto-opens the Help modal once,
+// on a browser that's never seen this app before (localStorage flag set by
+// openHelp() itself, so both the automatic and manual paths mark it seen
+// the same way). Never reopens itself automatically after that - reachable
+// anytime afterward via the util-bar's Help link.
+if (!localStorage.getItem('whale-signal-seen-intro')) {
+  openHelp();
+}
 
 function setAccountMode(mode) {
   accountMode = mode;

@@ -119,7 +119,25 @@ class KalshiClient:
         problem entirely rather than trying to filter around it: real
         series (KXMLBGAME, KXBTCD, KXATPMATCH, ...) reliably return clean,
         real, well-titled markets when queried directly - verified, not
-        assumed."""
+        assumed.
+
+        Selection is round-robin across distinct events, not a flat top-n-
+        by-volume sort - confirmed live as a real gap, not hypothetical: a
+        single high-volume multi-outcome event (an 8-market golf tournament)
+        can have every one of its own sub-markets individually rank in the
+        global top N, silently monopolizing the entire watchlist and
+        crowding out every other series even when dozens of other markets
+        are trading, some of them actually live, right now. A flat per-event
+        cap (tried first, replaced here) fixes that but creates the mirror
+        problem - it can needlessly truncate a genuinely multi-outcome
+        event's sub-markets even when nothing else is competing for the
+        slots. Round-robin self-sizes instead: within each event, markets
+        are still taken highest-volume-first, but one from every event
+        before a second one from any - so the effective "per-event share"
+        naturally shrinks as more distinct events compete for the same n
+        slots, and naturally grows toward n when few or one event
+        dominates the real candidate pool, without a hardcoded number
+        tuned for one scenario at the expense of the other."""
         if not series_tickers:
             return []
         results = await asyncio.gather(
@@ -132,7 +150,31 @@ class KalshiClient:
                 markets.extend(r)
         markets = [m for m in markets if float(m.get("volume_24h_fp") or 0) >= min_volume]
         markets.sort(key=lambda m: float(m.get("volume_24h_fp") or 0), reverse=True)
-        return markets[:n]
+
+        groups: dict[str, list[dict]] = {}
+        event_order: list[str] = []
+        for m in markets:
+            key = m.get("event_ticker") or m.get("ticker")
+            if key not in groups:
+                groups[key] = []
+                event_order.append(key)
+            groups[key].append(m)
+
+        selected = []
+        round_idx = 0
+        while len(selected) < n:
+            took_any = False
+            for key in event_order:
+                group = groups[key]
+                if round_idx < len(group):
+                    selected.append(group[round_idx])
+                    took_any = True
+                    if len(selected) >= n:
+                        break
+            if not took_any:
+                break  # every event's markets exhausted before filling n
+            round_idx += 1
+        return selected
 
     async def get_event(self, event_ticker: str) -> dict:
         """The event's own title/subtitle/category — distinct from, and

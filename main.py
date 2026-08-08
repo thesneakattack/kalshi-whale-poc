@@ -138,7 +138,7 @@ async def _get_series_cache(client: KalshiClient) -> list[dict]:
     return cache["series"]
 
 
-async def _get_top_series(client: KalshiClient, top_n: int = 15) -> list[str]:
+async def _get_top_series(client: KalshiClient, top_n: int = 30) -> list[str]:
     series = await _get_series_cache(client)
     return [s["ticker"] for s in series[:top_n]]
 
@@ -154,7 +154,7 @@ async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
         return [m for m in results if isinstance(m, dict)]
     top_series = await _get_top_series(client)
     return await client.get_top_volume_markets(
-        cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series
+        cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series,
     )
 
 
@@ -170,14 +170,14 @@ async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[d
     if not tickers:
         return []
     results = await asyncio.gather(
-        *(client.get_trades(ticker=t, limit=5) for t in tickers), return_exceptions=True
+        *(client.get_trades(ticker=t, limit=10) for t in tickers), return_exceptions=True
     )
     trades = []
     for result in results:
         if isinstance(result, dict):
             trades.extend(result.get("trades") or [])
     trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
-    return trades[:30]
+    return trades[:50]
 
 
 _LIVE_STATUS_WINDOW_SEC = 6 * 3600  # started up to 6h ago, or starting within the next hour
@@ -260,7 +260,7 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
         # balance, positions, and fills are independent reads — fetch all three
         # at once instead of one after another.
         balance, positions, fills = await asyncio.gather(
-            account.get_balance(), account.get_positions(), account.get_fills(limit=25)
+            account.get_balance(), account.get_positions(), account.get_fills(limit=50)
         )
         positions = {"market_positions": [_slim_position(p) for p in (positions.get("market_positions") or [])]}
         fills = {"fills": [_slim_fill(f) for f in (fills.get("fills") or [])]}
@@ -322,16 +322,22 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
 
 async def _check_signal_resolutions(client: KalshiClient):
     """Pick a small batch of old-enough unresolved logged signals and see if
-    their markets have settled yet. Small batch + shared connection-pooled
-    client keeps this cheap even though it runs every poll tick."""
-    for item in signal_log.unresolved_batch(limit=3, older_than_sec=600):
-        try:
-            market = await client.get_market(item["ticker"])
-            result = (market.get("result") or "").strip().lower()
-            if result in ("yes", "no"):
-                signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
-        except Exception:
+    their markets have settled yet. Fetched concurrently (bumped from 3 to
+    10 per tick to keep pace with a larger watchlist generating more
+    signals) rather than one-at-a-time, so a bigger batch doesn't stack up
+    sequential round-trip latency within a single poll tick."""
+    items = signal_log.unresolved_batch(limit=10, older_than_sec=600)
+    if not items:
+        return
+    results = await asyncio.gather(
+        *(client.get_market(item["ticker"]) for item in items), return_exceptions=True
+    )
+    for item, market in zip(items, results):
+        if not isinstance(market, dict):
             continue  # market may be gone/renamed — leave unresolved, retry next time
+        result = (market.get("result") or "").strip().lower()
+        if result in ("yes", "no"):
+            signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
 
 
 def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float, str]:
@@ -380,8 +386,8 @@ async def trading_loop():
                 _fetch_live_status(client, markets),
             )
             state["event_titles"].update(event_titles)
-            if len(state["event_titles"]) > 300:  # bound unbounded growth, same as market_titles below
-                state["event_titles"] = dict(list(state["event_titles"].items())[-300:])
+            if len(state["event_titles"]) > 500:  # bound unbounded growth, same as market_titles below
+                state["event_titles"] = dict(list(state["event_titles"].items())[-500:])
             state["trade_tape"] = trade_tape
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
@@ -409,8 +415,8 @@ async def trading_loop():
                 }
                 for m in markets if m.get("ticker")
             })
-            if len(state["market_titles"]) > 300:  # bound unbounded growth over a long-running process
-                state["market_titles"] = dict(list(state["market_titles"].items())[-300:])
+            if len(state["market_titles"]) > 500:  # bound unbounded growth over a long-running process
+                state["market_titles"] = dict(list(state["market_titles"].items())[-500:])
             # Computed once per poll tick (not per /api/state request, which is polled
             # more often) since it's the same until the next tick anyway.
             state["series_track_record"] = {
@@ -419,7 +425,7 @@ async def trading_loop():
             state["last_poll"] = time.time()
             state["error"] = None
             state["equity_history"].append({"t": state["last_poll"], "equity": broker.equity(state["latest_prices"])})
-            state["equity_history"] = state["equity_history"][-200:]
+            state["equity_history"] = state["equity_history"][-500:]
 
             # "balance" (cash, in cents) verified against a real account 2026-08-07
             # — see ROADMAP.md/status.html. Still guarded rather than assumed,
