@@ -249,6 +249,10 @@
     color: var(--yes); border: 1px solid var(--yes); padding: 3px 7px; border-radius: 4px; align-self: center;
   }
 
+  #exchange-status-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #exchange-status-badge.open { color: var(--muted); }
+  #exchange-status-badge.closed { color: var(--whale); background: rgba(245,185,66,0.15); }
+
   .tab-bar {
     display: flex;
     gap: 4px;
@@ -372,7 +376,7 @@
 </div>
 
 <header>
-  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span></h1>
+  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span></h1>
   <div class="equity-strip">
     <span class="mode-tag">PAPER</span>
     <div class="item"><div class="label">Bankroll</div><div class="value" id="bankroll">—</div></div>
@@ -1002,6 +1006,23 @@ function sourceLabel(raw) {
   return `signal: live feed (${raw})`;
 }
 
+// Distinguishes "the real Kalshi exchange is closed" from "the strategy just
+// hasn't found anything" - otherwise those look identical from the outside.
+// GET /exchange/status is public/unauthenticated, so this is always
+// available regardless of whether a real account is connected.
+function renderExchangeStatus(status) {
+  const el = $('exchange-status-badge');
+  if (!status) { el.textContent = ''; el.className = ''; return; }
+  if (status.trading_active) {
+    el.textContent = '● exchange open';
+    el.className = 'open';
+  } else {
+    el.textContent = '● exchange closed';
+    el.className = 'closed';
+    el.title = 'Kalshi\'s real exchange is not currently accepting trades — paper trading is unaffected, but a quiet signal feed may just mean the market is shut, not that the strategy is stuck.';
+  }
+}
+
 function renderHalted(risk) {
   const slot = $('halted-banner-slot');
   slot.innerHTML = risk.halted
@@ -1146,6 +1167,7 @@ async function refresh() {
     const state = await fetchJSON('/api/state');
     $('live-dot').classList.toggle('live', state.running);
     $('whale-source').textContent = `· ${sourceLabel(state.whale_source)}`;
+    renderExchangeStatus(state.exchange_status);
     $('toggle-btn').textContent = state.running ? 'Pause' : 'Resume Loop';
 
     const broker = state.broker;

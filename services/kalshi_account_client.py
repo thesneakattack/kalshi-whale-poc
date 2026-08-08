@@ -70,7 +70,7 @@ from urllib.parse import urlsplit
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from services.http_client import get_client
+from services.http_client import request_with_backoff
 
 
 class KalshiAccountClient:
@@ -130,7 +130,7 @@ class KalshiAccountClient:
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         if not self.enabled:
             raise RuntimeError("Kalshi account client is not configured (see .env.example)")
-        resp = await get_client().request(
+        resp = await request_with_backoff(
             method, f"{self.base_url}{path}", headers=self._headers(method, path), timeout=self.timeout, **kwargs
         )
         resp.raise_for_status()

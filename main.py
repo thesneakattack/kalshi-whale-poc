@@ -67,6 +67,7 @@ state = {
     "stats": {"signals_seen": 0, "trades_placed": 0, "skipped": 0},
     "equity_history": [],  # [{"t": unix_ts, "equity": float}, ...], capped, for the Portfolio view's chart
     "real_balance_history": [],  # same shape, for the real-account toggle — only grows if a real account is connected
+    "exchange_status": None,  # {"exchange_active": bool, "trading_active": bool, ...} — see _fetch_exchange_status
     "last_poll": None,
     "error": None,
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
@@ -125,6 +126,16 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
         }
 
 
+async def _fetch_exchange_status(client: KalshiClient) -> dict | None:
+    # A transient hiccup here shouldn't take down the whole poll tick the way
+    # a markets/account failure would (nothing downstream depends on it) —
+    # swallow and keep the last known status rather than clearing it.
+    try:
+        return await client.get_exchange_status()
+    except Exception:
+        return None
+
+
 async def _check_signal_resolutions(client: KalshiClient):
     """Pick a small batch of old-enough unresolved logged signals and see if
     their markets have settled yet. Small batch + shared connection-pooled
@@ -166,12 +177,15 @@ async def trading_loop():
         try:
             client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
 
-            # Market data, account data, and resolution-checking don't depend on
-            # each other — fetch/run all three concurrently.
-            markets, account_snapshot, _ = await asyncio.gather(
-                _fetch_markets(client, cfg), _fetch_account_snapshot(cfg), _check_signal_resolutions(client)
+            # Market data, account data, exchange status, and resolution-checking
+            # don't depend on each other — fetch/run all four concurrently.
+            markets, account_snapshot, exchange_status, _ = await asyncio.gather(
+                _fetch_markets(client, cfg), _fetch_account_snapshot(cfg),
+                _fetch_exchange_status(client), _check_signal_resolutions(client),
             )
             state["account"] = account_snapshot
+            if exchange_status is not None:
+                state["exchange_status"] = exchange_status
 
             state["markets"] = [_slim_market(m) for m in markets]
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
@@ -386,6 +400,7 @@ async def get_state():
         "risk": {"halted": risk.halted, "halt_reason": risk.halt_reason},
         "broker": broker.state(state["latest_prices"]),
         "account": state["account"],
+        "exchange_status": state["exchange_status"],
         "shadow": _shadow_state(),
     }
 

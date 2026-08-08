@@ -1,8 +1,8 @@
 """
 Verifies the request shape create_order/cancel_order build against Kalshi's
-real API - services.http_client.get_client() is monkeypatched to a fake that
-never touches the network, and no real private key is ever loaded, so
-nothing here can place or cancel a real order even by accident.
+real API - services.http_client.request_with_backoff() is monkeypatched to a
+fake that never touches the network, and no real private key is ever loaded,
+so nothing here can place or cancel a real order even by accident.
 """
 import asyncio
 import re
@@ -43,7 +43,7 @@ class _FakeAsyncClient:
 
 def _client(monkeypatch, trading_enabled=True):
     fake = _FakeAsyncClient()
-    monkeypatch.setattr(kac_module, "get_client", lambda: fake)
+    monkeypatch.setattr(kac_module, "request_with_backoff", fake.request)
     c = kac_module.KalshiAccountClient(
         base_url="https://example.test/trade-api/v2", request_timeout_sec=5, trading_enabled=trading_enabled
     )
@@ -114,7 +114,7 @@ def test_signed_message_includes_the_trade_api_v2_prefix(monkeypatch):
 
 def test_base_path_derived_from_base_url_not_hardcoded(monkeypatch):
     fake = _FakeAsyncClient()
-    monkeypatch.setattr(kac_module, "get_client", lambda: fake)
+    monkeypatch.setattr(kac_module, "request_with_backoff", fake.request)
     c = kac_module.KalshiAccountClient(
         base_url="https://external-api.demo.kalshi.co/trade-api/v2", request_timeout_sec=5, trading_enabled=True
     )

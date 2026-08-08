@@ -160,6 +160,37 @@ one is the historical record.
       confirming the right test failed, then reverting.
 - [x] Basic CI. `.github/workflows/tests.yml` runs the suite via GitHub
       Actions on every push to `main` and every PR.
+- [x] Investigated migrating to Kalshi's official `kalshi_python_async` SDK
+      (async-native, would eliminate hand-rolled request-signing as a bug
+      surface) — **decided against it, and verified why empirically rather
+      than from docs alone.** Installed it, pointed it at the real connected
+      account, and `get_positions()`/`get_fills()` both threw Pydantic
+      `ValidationError`: the SDK's models require integer fields
+      (`position`, `market_exposure`, `count`, `price`, ...) that Kalshi's
+      live API no longer returns, only the `_fp`/`_dollars` string variants
+      this project's own hand-rolled client already handles correctly
+      (confirmed by reading the raw HTTP response through the SDK's own
+      `_without_preload_content` escape hatch). `get_balance` and
+      `get_exchange_status` work fine through the SDK; positions and fills
+      don't, at the latest available version (3.2.0) as of 2026-08-07.
+      Kalshi's own docs warn "SDKs are updated periodically and may lag the
+      API" — this is that, hit directly. Worth re-evaluating once Kalshi
+      patches it, but adopting it today would have been a regression, not
+      an improvement. One thing it did independently confirm: its own
+      auth code hardcodes the exact same `/trade-api/v2` signed-path prefix
+      this session's auth fix added — strong outside confirmation the fix
+      was correct.
+- [x] Exponential backoff on `429 Too Many Requests`, per Kalshi's own rate
+      limit guidance (`docs.kalshi.com/getting_started/rate_limits` — no
+      `Retry-After` header is provided, backoff is the documented
+      expectation). `services/http_client.py`'s new `request_with_backoff`
+      is shared by both Kalshi clients; only 429 triggers a retry, every
+      other status is returned immediately for existing `raise_for_status()`
+      handling. 4 new tests, no real network calls or real sleeping.
+- [x] Surface Kalshi's real exchange open/closed status
+      (`GET /exchange/status`, public/unauthenticated) in the dashboard, so
+      a quiet signal feed reads as "the market's closed," not "the strategy
+      is stuck." Small badge in the header, only visually loud when closed.
 - [ ] Mobile/responsive pass — the Terminal view's 3-column grid is
       desktop-only right now.
 - [ ] Accessibility pass — keyboard navigation, aria labels, and a check
