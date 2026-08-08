@@ -920,7 +920,7 @@
     <div id="funnel-bar" class="funnel-bar"></div>
     <div class="panel-title">Whale Signals (simulated or live feed) <span class="info-icon" title="HOW IT WORKS: a whale signal is either a real trade from Kalshi's own public trade tape whose dollar size clears a threshold (default $2,500 - side-aware, since Kalshi has no public trader identity, only size), or a simulated print if no real feed is available.
 
-TRADE DECISION: a signal becomes an actual trade once its confidence clears the entry threshold (0.65 default), the market/series isn't in cooldown, manually excluded, or auto-filtered by a poor whale win-rate track record, and (if enabled) the market is currently live.
+TRADE DECISION: a signal becomes an actual trade once its confidence clears the entry threshold (0.65 default), the market/series isn't in cooldown, manually excluded, or auto-filtered because that market's series has a poor whale-signal win-rate track record (Kalshi is anonymous, so this is tracked per market type, not per trader), and (if enabled) the market is currently live.
 
 CONFIDENCE: a weighted blend of how large the print is relative to that market's own volume (40%), how close the price is to a coin flip vs. already-decided (25%), how close the market is to resolving (20%), and how active this market is relative to others being watched (15%).">ⓘ</span></div>
     <div id="signal-feed">
@@ -1060,8 +1060,8 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
         <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
         <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
-        <div class="field"><label>Avoid whales below this win rate (%) <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
-        <div class="field"><label>...but only after this many resolved signals <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+        <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
+        <div class="field"><label>...but only once that market's series has this many resolved signals <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
         <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
         <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
       </div>
