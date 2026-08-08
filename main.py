@@ -218,11 +218,16 @@ async def trading_loop():
             # "balance" (cash, in cents) verified against a real account 2026-08-07
             # — see ROADMAP.md/status.html. Still guarded rather than assumed,
             # since a disconnected/errored account has no balance dict at all.
+            # Divided by 100 here to store dollars, matching every consumer of
+            # this history (the equity chart, the header strip) - this used to
+            # store the raw cents value directly, a real bug found while
+            # wiring the header strip to it: a $1,000.00 real balance would
+            # have silently rendered as "$100,000.00".
             real_balance = (account_snapshot.get("balance") or {}) if account_snapshot.get("connected") else {}
             real_balance_value = real_balance.get("balance") if isinstance(real_balance, dict) else None
             if real_balance_value is not None:
                 try:
-                    state["real_balance_history"].append({"t": state["last_poll"], "balance": float(real_balance_value)})
+                    state["real_balance_history"].append({"t": state["last_poll"], "balance": float(real_balance_value) / 100.0})
                     state["real_balance_history"] = state["real_balance_history"][-200:]
                 except (TypeError, ValueError):
                     pass
@@ -390,6 +395,23 @@ TRADING_CONFIRMATION_PHRASE = "ENABLE REAL TRADING"
 
 class EnableTradingBody(BaseModel):
     confirmation_phrase: str
+
+
+@app.get("/api/markets/{ticker}/orderbook")
+async def get_market_orderbook(ticker: str):
+    # Per-market drill-down (ROADMAP.md Phase 0.5) - on-demand, not part of
+    # the poll loop, so it gets its own short-lived client rather than
+    # waiting for the next tick. Matches trading_loop()'s own construct/use/
+    # close pattern (see its `finally: await client.close()`), just fired
+    # from a request instead of a timer.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        return await client.get_orderbook(ticker)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await client.close()
 
 
 @app.get("/api/state")

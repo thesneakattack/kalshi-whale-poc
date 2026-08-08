@@ -536,6 +536,35 @@
           added proxy headers) · <code>CLAUDE.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 18 · Phase 0.5 kickoff — Simple/Advanced toggle, a real drill-down, two real bugs</div>
+        <h4>First slice of the Kalshi Pro-inspired dashboard overhaul, plus two bugs found along the way</h4>
+        <p>Researched Kalshi Pro's actual feature set and several dedicated Kalshi/Polymarket whale-tracking
+          products directly (not from memory) before writing a word of code — see ROADMAP.md's Phase 0.5 for the
+          full research trail. First concrete slice, chosen for being self-contained and independently verifiable
+          rather than trying to land the whole phase at once: a shared Simple/Advanced toggle
+          (<code>isAdvanced</code>/<code>toggleAdvanced</code>/<code>advToggleHTML</code>, persisted per panel via
+          <code>localStorage</code>); a genuine architectural call, not just a UI tweak — order book depth and price
+          charts don't fit an in-card toggle (can't show a full depth ladder for 20 markets in a grid at once), so
+          they get a dedicated per-market drill-down modal instead, closer to Kalshi Pro's Canvas; that drill-down's
+          first tenant, order book depth, via a new <code>GET /api/markets/{ticker}/orderbook</code>
+          wrapping <code>get_orderbook()</code> (implemented since the SDK migration, never actually called until
+          now) — verified against both an empty real book and one with an actual resting order, driven through a
+          real Chrome session via ddev's selenium-chrome, not just curl; potential-payout math (Kalshi contracts
+          settle to $1 or $0, so max payout is just the contract count) added to every position/trade/fill row,
+          Simple tier; and bounded-height scroll containers on every list panel that didn't have one, so a capped
+          25-50-row feed scrolls internally instead of making the page enormous.</p>
+        <p>Two real bugs turned up while wiring the header strip to follow Portfolio's paper/real account toggle
+          (which itself was a bug: the header used to always show paper numbers under a static "PAPER" tag
+          regardless of which account was selected below it). Fixing that surfaced a second, previously-unknown one
+          in the same code path: <code>main.py</code>'s <code>real_balance_history</code> was appending the real
+          account's balance in raw cents instead of dividing by 100 — every consumer of that history expects
+          dollars, so a real $1,000.00 balance would have silently rendered as "$100,000.00." Fixed at the source.</p>
+        <div class="files"><code>static/index.html</code> (toggle component, header strip, drill-down modal,
+          payout math, scroll panels) · <code>main.py</code> (<code>/api/markets/{ticker}/orderbook</code>,
+          <code>real_balance_history</code> fix)</div>
+      </div>
+
     </div>
   </section>
 
@@ -580,7 +609,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch</td><td class="loc">560</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book endpoint</td><td class="loc">582</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status</td><td class="loc">80</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
@@ -597,10 +626,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge</td><td class="loc">1291</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book drill-down, potential-payout math</td><td class="loc">1515</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~780</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~810</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

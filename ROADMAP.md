@@ -112,6 +112,305 @@ one is the historical record.
       confirmed the dashboard renders it, reverted back to `paper`
       afterward).
 
+## Phase 0.5 — Dashboard & UX overhaul, Kalshi Pro-inspired
+
+Kalshi shipped its own professional trading terminal, **Kalshi Pro**, as a
+public beta on 2026-07-13 — a genuinely useful reference for what "robust,
+informative, easy to navigate" looks like at this exact kind of app (real
+Kalshi market data, order books, positions, order management). Researched
+directly (news.kalshi.com's launch post, kalshi.com/pro's help docs, and a
+detailed third-party review) rather than assumed from memory, since it's a
+mid-2026 product and specifics matter here. Its actual feature set:
+
+- **Canvas** — a customizable multi-market workspace. Pull several markets
+  onto one screen at once, each with its own order book, chart, and order
+  panel; arrange and save as named layouts.
+- **Order book depth, per market**, with resting orders manageable directly
+  on it — drag to reprice, sortable/filterable order tables, inline amends,
+  batch cancel, bulk edit ("the way a trading desk would manage them").
+- **Active Markets Screener** — ~2,000 markets ranked live by price,
+  spread, depth, and rolling 5-minute volume. The reviewer calls this "a
+  genuine discovery engine."
+- **Continuous trade tape** — every public trade on the exchange, live,
+  filterable for big trades or live events.
+- **Per-market charting** (TradingView-caliber for perpetuals) with
+  take-profit/stop-loss orderable directly on the chart, reduce-only
+  orders, a max-slippage guard, proactive margin-risk alerts.
+- Built explicitly for "speed, density, and order-management depth" —
+  someone watching a dozen+ markets at once, not a first-time user.
+
+That last point is a real tension with this roadmap's own guiding
+principle above (dummy-proof, beginner-first) — Kalshi Pro is deliberately
+the opposite of that. Resolution: not a tab-level split, a **panel-level**
+one — every relevant panel/section gets its own Simple/Advanced toggle,
+defaulting to Simple, rather than segregating beginner vs. professional
+users into different tabs. A first-timer never has to leave Portfolio to
+get a plain-English read; someone who wants Kalshi Pro-style density clicks
+"Advanced" on the one panel they care about (order book, trade tape,
+decision feed, ...) without the rest of the app changing under them. Also
+worth keeping in mind, per the same review: Kalshi Pro's screener "shows
+you what's moving, not whether it's mispriced" — this app's whale-follow
+signal *is* a what's-mispriced opinion, which Kalshi Pro has none of.
+Borrow their layout and density; don't accidentally bury the one thing
+this app does that theirs doesn't, in either mode.
+
+- [x] A shared Simple/Advanced toggle pattern — one small, reusable
+      component (a per-panel header button + a bit of client state) so
+      every panel below implements the same interaction instead of five
+      one-off toggles. Decide once whether the choice persists (e.g.
+      `localStorage`) or resets each session before building the rest on
+      top of it. Shipped: `isAdvanced`/`toggleAdvanced`/`advToggleHTML` in
+      `static/index.html`, choice persists per panel via `localStorage`.
+      First consumer is the order book drill-down below.
+- [x] Navigation decision: Simple/Advanced toggles are the right fit for
+      panels that show the *same list* at different density (trade log,
+      market cards, signal feed) — they're not the right fit for order
+      book depth or a price chart, which are inherently per-market and too
+      space-hungry to cram into a card grid (can't show a full depth
+      ladder + candlestick for 20 markets inline at once). Resolution: a
+      new per-market drill-down view — click any market to open a
+      dedicated detail panel with its order book, chart, and recent trades
+      together, closer to Kalshi Pro's Canvas than an in-card toggle.
+      Simple/Advanced stays the pattern for same-data-different-density
+      panels; the drill-down is the pattern for space-hungry per-market
+      detail. The two items below are written against the drill-down, not
+      a card-level toggle.
+- [ ] Kalshi-accurate terminology + real Event/outcome grouping —
+      foundational, do this before or alongside the panels below rather
+      than after, since it changes what those panels are describing. Two
+      distinct problems, confirmed by reading a real raw market object
+      (not assumed): (1) rows across the app under-describe what they show
+      — e.g. a position row today is just `500 ct @ 62¢ → 65¢`, with no
+      label saying that's contract count, entry price, and current price,
+      let alone which market/prediction/side it's for beyond a truncated
+      title. (2) `event_ticker` — the field that would let the UI show "this
+      market is one of N possible outcomes of the same underlying
+      question" — is fetched from Kalshi but dropped immediately in
+      `main.py`'s `_slim_market()` (only keeps `ticker`/`volume_24h_fp`)
+      and never reaches the frontend. Every market renders as a fully
+      independent Yes/No card today, even when it's actually one outcome
+      of a real multi-outcome event (confirmed on a live market: a single
+      `event_ticker` grouping several combo-style outcome markets, each
+      with its own `yes_sub_title`). Fix: carry `event_ticker`
+      (+ `title`/`subtitle`/`yes_sub_title` already used, `close_time`,
+      `strike_type`) through to the frontend, group sibling markets by
+      event wherever they're listed, and audit every panel's labels
+      against Kalshi's own vocabulary — Market/Event/Series, Contract,
+      Position, Order (resting vs. filled), Fill, Settlement, Strike —
+      rather than this app's own shorthand.
+
+Concrete gaps against the current 4-tab dashboard (Portfolio, Markets,
+Whale Watch, Terminal — see `static/index.html`), each already framed as
+a Simple/Advanced pair using the toggle above:
+
+- [x] Per-market drill-down modal + order book depth (chart and per-market
+      trades below are separate, not done yet — this shipped the modal
+      shell and its first tenant). Click any market — a card or a Terminal
+      watchlist row — to open a dedicated detail panel, not an inline card
+      toggle. `services/kalshi_client.py` already had `get_orderbook()`
+      (`get_market_orderbook` under the hood), implemented and unused;
+      wired up via a new `GET /api/markets/{ticker}/orderbook`. Simple:
+      best Yes bid/ask + spread, derived from the book itself (best Yes
+      bid = highest resting Yes-bid price; best Yes ask = 1 − highest
+      resting No-bid price). Advanced: the full two-sided depth ladder,
+      shown in Kalshi's own bid/bid terms (Yes bids, No bids) rather than
+      converted to a single Yes bid/ask ladder, so a conversion mistake
+      can't silently hide inside the display. Verified against real
+      Kalshi data two ways: a thin market with an empty book (both sides
+      correctly show "no resting bids" instead of breaking), and a market
+      with an actual resting order (Advanced ladder correctly showed its
+      real price/size) — driven through an actual Chrome session via
+      ddev's selenium-chrome, not just curl.
+- [ ] Price history in the same drill-down (the app only has one chart
+      total — portfolio equity-over-time, hand-rolled inline SVG). Kalshi's
+      SDK already exposes `get_market_candlesticks` (confirmed via
+      introspection on the real 3.27.0 install) — `kalshi_client.py` has no
+      wrapper for it yet. Simple: a compact sparkline, matching the equity
+      chart's existing inline-SVG approach (no charting library). Advanced:
+      full candlestick chart with volume.
+- [ ] Recent trades for that one market, also in the drill-down (not the
+      full-exchange trade tape below, which is a separate, Terminal/Whale-
+      Watch-level feed) — the SDK's `get_trades` accepts a ticker filter,
+      unused today.
+- [ ] Full-exchange trade tape — distinct from the per-market drill-down
+      above, this is a Terminal/Whale-Watch-level feed across every market
+      being watched, not one market at a time. Same underlying `get_trades`
+      SDK method, called without a ticker filter. Simple: the last handful
+      of notably large trades, described in plain English ("someone bought
+      500 YES at 62¢"). Advanced: the full continuous tape, filterable by
+      size/market, Kalshi Pro-style. Ties into this app's own whale concept
+      either way: a "big trade" on the tape and a "whale print" signal are
+      close to the same idea — filtering the tape for size could become
+      another whale-detection input, not just a display feature.
+- [ ] Trade log / decision feed. The Simple side of this already exists —
+      the Portfolio "Betting vs. Likelihood vs. Risk vs. Whales" plain-
+      English pattern, and P1's item to extend it to Strategy Decisions'
+      skip reasons — extend it, don't replace it. Advanced: the same
+      underlying data (`renderTrades`/`renderDecisions`) as a sortable/
+      filterable table — ticker, side, size, price, P&L, raw confidence
+      numbers — instead of today's strict reverse-chronological feed with
+      no sort, filter, or search.
+- [ ] Signal feed filters, matched against dedicated Kalshi/Polymarket
+      whale-tracker products (Polywhaler, WhaleScanr — researched directly,
+      not assumed, since these are literally the same category of tool this
+      tab is trying to be). `renderSignals`/the Terminal signal feed has
+      zero filter or sort controls today. Polywhaler's proven set: time
+      range (1h/6h/24h/7d/30d), buy/sell, sort by recency or "impact," a
+      position-grouping toggle. Worth matching rather than inventing our
+      own from scratch — this category has already converged on what's
+      useful here.
+- [ ] Signal card enrichment, same source. Today's card
+      (`ticker · side · size · confidence%`) is thin next to what these
+      tools surface per print: Polywhaler shows market probability + 24h
+      change, position size in both $ and contracts, an "impact" tag
+      (low/medium/high), and a "stealth" count — how many separate trades
+      built this position, i.e. one big print vs. a whale quietly
+      accumulating over several smaller ones. The impact tag and price-
+      change context are cheap UI additions on data this app already has;
+      "stealth"/accumulation detection needs a backend change (grouping
+      related signals over a time window) — see the matching P2 item below
+      rather than treating it as pure UI.
+- [ ] A real, browsable signal history — not just the aggregate stat cards
+      `renderWhaleTrackRecord` already shows (win rate %, resolved count).
+      WhaleScanr's specific framing is worth copying directly: "every flag
+      and how it settled, misses included" — a trust-building design
+      choice, not just a nice-to-have. `services/signal_log.py` already
+      persists resolved/correct per signal (that's what feeds the win-rate
+      stat today) — the data exists, there's just no UI to browse
+      individual past signals and see what actually happened to each one,
+      wins and misses both, rather than only the rolled-up percentage.
+- [ ] Validated, not a gap: the existing "Betting is N pts more bullish/
+      bearish than the market price implies" divergence line
+      (`marketCardHTML`) is already the same core framing Upside's Whale
+      Watch is built entirely around (comparing sharp/whale signal against
+      a reference price to find the gap) — confirms this app's central
+      idea is aimed at the right thing already. Worth leaning into further
+      as the other items above land (e.g. sorting/filtering by divergence
+      size, not just recency or raw whale size), not replacing it.
+- [x] Potential payout, on every position/trade/fill row — Simple tier
+      shipped (the Advanced full breakdown — cost, mark-to-market,
+      breakeven — is still open, a separate follow-up, not blocking).
+      Kalshi contracts settle to $1 or $0 per contract, so max payout if
+      correct is just the contract count in dollars — cheap to compute,
+      was simply never shown. New shared `payoutHTML()` helper, wired into
+      all four row renderers (`renderPositions`, `renderTrades`,
+      `renderRealPositions`, `renderRealFills`), including the real-account
+      rows where the count comes as a fixed-point string (`position_fp`/
+      `count_fp`) that needs parsing first.
+- [ ] Market search and browse. Confirmed via the SDK's real method
+      signature (`get_markets(event_ticker, series_ticker, tickers,
+      status, cursor, ...)`) — there's solid support for filtering/paging
+      through markets by series, event, or ticker, but no free-text
+      keyword-search endpoint (a dedicated `SearchApi` exists but only
+      exposes sport filters and category tags, not title search). Right
+      now the dashboard only ever shows the top-volume watchlist — no way
+      to find anything outside it. Two features, not one: (1) search —
+      substring-match against already-fetched market titles client-side to
+      start (zero new API calls); (2) browse — a real category/series
+      explorer using `get_series_list`/`get_tags_for_series_categories` +
+      `series_ticker` filtering + cursor pagination, to reach markets
+      outside today's watchlist entirely.
+- [ ] Markets / Whale Watch cards. Simple: today's card view
+      (`renderMarketCards`). Advanced: a dense, sortable table — price,
+      spread, depth, 5-minute volume, whale lean — as an alternate
+      rendering of the same underlying data, screener-style. Build it once
+      and reuse it for Terminal's watchlist too — there are currently
+      *three* separate market-list renderers (`renderMarkets` for
+      Terminal's compact column, `renderMarketCards` for Markets/Whale
+      Watch, and nothing shared between them), and Terminal's is the
+      thinnest of the three (ticker, YES price, volume — no whale lean, no
+      price movement). One shared, configurable renderer instead of three
+      diverging ones.
+- [ ] Price-change indicators. Every price in the app (market rows, cards,
+      positions) silently replaces on each 5s poll with no acknowledgment
+      that it moved — no up/down arrow, no color flash, no delta. Every
+      real trading UI (Kalshi Pro included, via its rolling 5-minute-volume
+      ranking) treats "did this just move" as first-class information, not
+      an afterthought. Simple: a brief color flash + arrow on change.
+      Advanced: an explicit delta (¢ and %) since last poll or over a
+      rolling window, feeding the same screener-style table above.
+- [ ] Visible staleness/connectivity state. `refresh()`'s catch block
+      today only does `console.error('refresh failed', e)` — if
+      `/api/state` starts failing (network blip, backend restart,
+      ddev-router hiccup), the dashboard just silently stops updating with
+      no visible signal to the person watching it. For an app whose whole
+      premise is "watch this and trust what it shows you," a stale/dead
+      connection should be as loud as the exchange-closed badge already is
+      (`renderExchangeStatus`) — same pattern, applied to connectivity
+      itself: a visible "data may be stale, last updated Ns ago" state
+      once a poll fails or a response is overdue.
+- [x] Header equity-strip doesn't follow the Portfolio account-mode
+      toggle — a real inconsistency, not a hypothetical: `refresh()`
+      unconditionally set the header's Bankroll/Equity/Unrealized P&L
+      (and the static `PAPER` tag) from `broker.*` every poll, regardless
+      of `accountMode`. Switching Portfolio to "💰 Real Kalshi Account"
+      correctly showed real balance/positions/fills in the tab body while
+      the header above the tabs kept showing paper numbers under a
+      `PAPER` label the whole time. Fixed via a new `renderHeaderStrip()`
+      that follows `accountMode` — Cash Balance/Portfolio Value/session
+      change and a `REAL` tag when real mode is active and connected,
+      Bankroll/Equity/Unrealized P&L under `PAPER` otherwise. Fixing this
+      surfaced a second, previously-unknown bug in the same code path:
+      `main.py`'s `real_balance_history` was appending the raw cents value
+      instead of dividing by 100 — every consumer of that history (the
+      real-mode equity chart, and now this header) expects dollars, so a
+      real $1,000.00 balance would have silently rendered as
+      "$100,000.00." Fixed at the source in `trading_loop()`.
+- [ ] A real watchlist / pinned-markets concept. Markets and Whale Watch
+      currently both render the exact same top-volume market list
+      (`renderMarketCards`, shared between the two views via an
+      `includeWhale` flag) — there's no way to pin specific markets you
+      care about and see them consistently across views. Orthogonal to
+      Simple/Advanced (useful in both modes), and a prerequisite for
+      anything Canvas-like (multiple pinned markets, each with its own
+      book/chart) later.
+- [ ] Reassess the Markets vs. Whale Watch split now that both share
+      `renderMarketCards` — give them a genuinely distinct job (e.g. Whale
+      Watch leans into the trade-tape/screener angle, Markets becomes the
+      per-market book+chart view) or fold them into one tab with a filter,
+      rather than two tabs showing near-identical cards today. Simple/
+      Advanced modes reduce some of the pressure to split by density, but
+      they're still duplicated content either way.
+- [x] Bounded-height, scrollable list panels. Not a data problem — the
+      backend already caps every feed sent to the frontend (paper trades
+      to 25, decisions to 50, shadow trades to 25) — it was purely a
+      layout one: none of `.trades-list`/`.positions-list`/`.shadow-list`/
+      `#signal-feed`/`#decision-feed` had any `max-height`/`overflow`, so
+      even a capped 25-50-row feed rendered as 25-50 full-height DOM rows
+      stacked directly in the page flow. Fixed with a new shared
+      `.scroll-panel` class (`max-height: 420px; overflow-y: auto`),
+      applied to all five — same pattern the codebase already used for
+      `.col`/`.raw-json`, just not yet applied here. Pagination/"load
+      more" remains a reasonable stretch on top, not required for this.
+- [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)` in
+      `static/index.html`) once any Advanced view lands — a live order
+      book and trade tape read as much less "live" on a 5s full-state poll
+      than Kalshi Pro's presumably-pushed updates. Not blocking for the
+      items above, but likely the next bottleneck once they're in, and
+      probably an Advanced-mode-only concern (Simple panels don't need
+      sub-5s freshness).
+
+Scope boundary, decided explicitly rather than left implicit: this app has
+zero manual/discretionary trading anywhere today — no order entry, no way
+to close a position early, paper or real; every trade is placed by the
+automated whale-follow strategy. Kalshi Pro is fundamentally a manual
+trading terminal with automation as an assist, the opposite emphasis.
+Confirmed staying automated-only for Phase 0.5 — this stays a terminal for
+*observing* the strategy, not a general manual trading UI. Worth
+revisiting only if the goal of the app itself changes.
+
+Three existing items elsewhere in this file overlap enough with this phase
+that they're worth sequencing deliberately rather than doing twice by
+accident: P3's mobile/responsive pass and accessibility pass (keyboard
+nav, aria labels, colorblind-safe yes/no) both touch every panel this
+phase is about to redesign — do them *after* Phase 0.5's layout settles,
+not before, or they'll need redoing. P4's notification item (real trades,
+kill-switch trips, a whale's win rate crossing the avoidance threshold) is
+thematically a Phase 0.5 concern too, given this phase's own "visible
+staleness/connectivity state" item just above — worth reconsidering
+whether it's actually P4-nice-to-have or belongs in this phase's priority
+band instead.
+
 ## P1 — Actually dummy-proof (a first-timer understands what's happening)
 
 - [ ] First-run walkthrough. There is currently zero onboarding — a new
@@ -145,6 +444,40 @@ one is the historical record.
 - [ ] Let a user manually exclude a specific whale/source from the
       strategy, not just the automatic win-rate cutoff
       (`min_whale_winrate_pct` / `min_resolved_for_whale_filter`).
+- [ ] Whale-size threshold relative to each market, not a flat number.
+      Confirmed by reading the actual detection code, not assumed: both
+      `whale_simulator.py` (a flat configured `size_range` tuple) and
+      `whalewatchers/generic_rest.py` (`confidence: min(size / 50000,
+      1.0)` — its own comment already calls this "naive... tune once you
+      see real data") use one absolute size cutoff across every market
+      regardless of that market's typical trade size. Dedicated Kalshi/
+      Polymarket whale trackers (WhaleScanr, researched directly) don't do
+      this — their methodology is relative: "roughly the size only the top
+      few percent of [that market's] trades reach, plus an absolute dollar
+      floor." A print that's huge for a thin market can be unremarkable
+      for a liquid one; a flat threshold treats both the same.
+- [ ] Composite confidence scoring, same source comparison. Polywhaler's
+      "Insider Score" weighs four factors: trade size relative to market
+      depth, how unusual the price/timing is, proximity to the market's
+      resolution/close time, and broader market context — this app's
+      `confidence` is currently a single factor (size only, in both the
+      simulator and the real provider). Worth enriching once the relative-
+      sizing item above lands, since "unusual for this market" is the
+      shared prerequisite for most of Polywhaler's other factors too.
+- [ ] (Stretch) Persistent flow clustering. WhaleScanr's approach to a
+      genuine constraint this app already respects — Kalshi's real trade
+      tape is anonymous, no usernames or account data, confirmed directly
+      on their site — is to group trades into probable-same-actor
+      "clusters" using statistical/behavioral similarity (same ticker/
+      side, similar size, similar timing pattern), labeled with a
+      confidence score, without ever claiming verified identity. Validates
+      this app's current anonymous-by-design signal model rather than
+      contradicting it (there's no "whale identity" field to add — Kalshi
+      genuinely doesn't expose one). Clustering repeated signals into "this
+      looks like one actor accumulating" is the concrete version of the
+      Phase 0.5 "stealth" card item above; lower priority than the two
+      items above it since it's inference on top of already-good data, not
+      a correctness fix.
 
 ## P3 — Reliability & engineering hygiene
 
