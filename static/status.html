@@ -132,6 +132,9 @@
   .check .box { flex: 0 0 auto; width: 14px; height: 14px; border: 1.5px solid var(--muted); border-radius: 3px; margin-top: 2px; }
   .check .txt { font-size: 12px; }
   .check .txt .why { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .check.done { border-left-color: var(--yes); }
+  .check.done .box { border-color: var(--yes); background: var(--yes); position: relative; }
+  .check.done .box::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #06231F; font-weight: 700; }
 
   /* config grid */
   .cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
@@ -339,6 +342,32 @@
           <code>tests/test_trading_gate.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 11 · the schema was actually wrong</div>
+        <h4>Order-placement request rewritten to Kalshi's current API</h4>
+        <p>The one open question flagged since before this session — "re-verify the order schema before ever
+          flipping <code>trading_enabled</code>" — turned out to have a real answer, and it wasn't reassuring.
+          Fetched docs.kalshi.com directly (not a changelog, the live pages) and found the implementation targeted
+          Kalshi's <i>legacy</i> order surface: <code>POST /portfolio/orders</code> with
+          <code>action</code>+<code>side("yes"/"no")</code>+integer-cents <code>yes_price</code>/
+          <code>no_price</code>. Current docs show the endpoint moved to
+          <code>POST /portfolio/events/orders</code>, collapsed <code>action</code>+<code>side</code> into one
+          <code>side</code> field (<code>"bid"</code>/<code>"ask"</code> — there's no <code>"no"</code> value;
+          selling YES and buying NO are the same order-book trade), switched <code>count</code>/<code>price</code>
+          to strings instead of integer cents, and added two newly-<i>required</i> fields
+          (<code>time_in_force</code>, <code>self_trade_prevention_type</code>) with no equivalent in the old
+          shape. Kalshi's own docs note the legacy endpoint's migration deadline was "no earlier than May 6,
+          2026" — already past by the time this was checked — meaning the old code could have been silently
+          rejected the first time it was ever actually used. Read endpoints (balance/positions/fills) were also
+          checked against current docs and are unchanged. Rewrote <code>create_order</code>/<code>cancel_order</code>
+          to the current shape; 4 new tests verify the exact request (path, method, every body field) against a
+          faked HTTP client — no network call, no real credentials, and <code>trading_enabled</code> stays
+          <code>false</code> throughout. Still true, and still worth repeating: no live order has ever actually
+          been placed with this code.</p>
+        <div class="files"><code>services/kalshi_account_client.py</code> ·
+          <code>tests/test_kalshi_account_client.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -383,7 +412,7 @@
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client (public, unauthenticated)</td><td class="loc">46</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note">shared, connection-pooled httpx client used by the Kalshi clients</td><td class="loc">25</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">RSA-PSS signed client for your real account</td><td class="loc">155</td><td><span class="pill good">reads done</span> <span class="pill gated">writes gated</span></td></tr>
+          <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">RSA-PSS signed client for your real account — order schema rewritten to Kalshi's current V2 shape</td><td class="loc">182</td><td><span class="pill good">reads done</span> <span class="pill gated">writes gated</span></td></tr>
           <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, now priced off real market data</td><td class="loc">78</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements</td><td class="loc">21</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">default provider: configurable REST + field mapping</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
@@ -492,11 +521,19 @@
         but that's the ceiling on readability given the actual data, not a partial fix.</div>
     </div>
     <div class="limitation">
-      <div class="h">Order-placement request schema is unverified against Kalshi's current docs</div>
-      <div class="b">Research surfaced more than one order-placement API shape on Kalshi's side (this targets the
-        classic prediction-markets shape, not their separate perpetuals/margin product). Irrelevant while
-        <code>trading_enabled: false</code>, but re-verify the exact request body in
-        <code>services/kalshi_account_client.py</code> before ever flipping that switch.</div>
+      <div class="h">Order-placement request schema was wrong — now fixed (verified 2026-08-07)</div>
+      <div class="b">This used to be an open question; it turned out the original implementation targeted Kalshi's
+        <i>legacy</i> order shape (<code>POST /portfolio/orders</code>, integer-cents <code>yes_price</code>/
+        <code>no_price</code>). Fetched docs.kalshi.com directly and found the endpoint moved to
+        <code>POST /portfolio/events/orders</code>, with <code>action</code>+<code>side(yes/no)</code> collapsed
+        into one <code>side</code> field (<code>"bid"</code>/<code>"ask"</code>), string-typed
+        <code>count</code>/<code>price</code> instead of integer cents, and two newly-required fields
+        (<code>time_in_force</code>, <code>self_trade_prevention_type</code>) with no old equivalent. Kalshi's own
+        docs note the legacy endpoint's migration deadline was "no earlier than May 6, 2026" — already past — so
+        the old code could have failed outright the first time it was ever used. Rewritten and covered by 4 tests
+        that verify the exact request shape against a faked HTTP client (no network, no real credentials). Still
+        true: no live order has ever actually been placed with this code, and Kalshi's docs can move again — don't
+        treat this as a permanent guarantee.</div>
     </div>
     <div class="limitation">
       <div class="h">No "close position" flow</div>
@@ -537,10 +574,10 @@
 
   <section id="checklist">
     <p class="eyebrow">gates before real capital</p>
-    <h3>Nothing here is done yet — and that's correct for a POC</h3>
+    <h3>One of these is done — the rest correctly aren't yet, for a POC</h3>
     <div class="checklist">
-      <div class="check"><div class="box"></div><div class="txt">Re-verify the order-placement request schema against Kalshi's current API reference.
-        <span class="why">Why: flagged above as unverified — the one piece of this build with real ambiguity.</span></div></div>
+      <div class="check done"><div class="box"></div><div class="txt">Re-verify the order-placement request schema against Kalshi's current API reference.
+        <span class="why">Done 2026-08-07 — see Known Limitations above. Found and fixed a real, outdated schema; still worth re-checking again before ever going live, since Kalshi's docs can move again.</span></div></div>
       <div class="check"><div class="box"></div><div class="txt">Build shadow mode: logs intended trades, executes none.
         <span class="why">Why: the required step before ever flipping to live.</span></div></div>
       <div class="check"><div class="box"></div><div class="txt">Run shadow mode against a live whale feed and compare decisions to what you'd actually have wanted.

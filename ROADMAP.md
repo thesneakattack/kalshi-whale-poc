@@ -18,11 +18,30 @@ one is the historical record.
       Portfolio "Real Kalshi Account" mode are best-effort guesses at the
       response shape right now (raw JSON is always shown alongside as a
       safety net, but the formatted fields could be wrong).
-- [ ] Verify the `create_order`/`cancel_order` request schema against
-      Kalshi's *current* docs before `kalshi_account.trading_enabled` is
-      ever flipped to `true` for real. Flagged with real uncertainty in
-      `/status` Known Limitations — this is the one piece of the whole app
-      with a genuine correctness question mark.
+- [x] Verify the `create_order`/`cancel_order` request schema against
+      Kalshi's *current* docs. **The concern was justified — the original
+      implementation was wrong.** It targeted Kalshi's legacy order shape
+      (`POST /portfolio/orders`, `action`+`side(yes/no)`+`count`+
+      `{yes,no}_price` in cents). Current docs (verified 2026-08-07 by
+      fetching docs.kalshi.com directly) show the endpoint moved to
+      `POST /portfolio/events/orders` / `DELETE
+      /portfolio/events/orders/{order_id}`, `action`+`side` collapsed into
+      one `side` field (`"bid"`/`"ask"`, no `"no"` value — selling YES and
+      buying NO are the same order-book trade), `count`/`price` are now
+      *strings* (contracts and dollars, not integer cents), and
+      `time_in_force`/`self_trade_prevention_type` are newly *required*
+      fields with no old equivalent. Kalshi's docs note migration off the
+      legacy endpoint "no earlier than May 6, 2026" — today is past that,
+      so the old code could already have been rejected outright, silently,
+      the first time it was ever used. `services/kalshi_account_client.py`
+      is rewritten to the current shape; read endpoints (balance/positions/
+      fills) were also checked and are unchanged. 4 new tests
+      (`tests/test_kalshi_account_client.py`) verify the exact request
+      shape sent (path, method, body fields) against a faked HTTP client —
+      no network call, no real credentials. The balance/position/fill
+      *response* field-name item right below this one is still open — that
+      one needs a real connected account to verify, which is out of scope
+      for this pass.
 - [x] Add an in-app confirmation step before real trading can be enabled.
       `POST /api/config` now structurally refuses to touch
       `kalshi_account.trading_enabled` at all — the only path is

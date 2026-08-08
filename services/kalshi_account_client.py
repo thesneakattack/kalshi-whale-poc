@@ -24,13 +24,32 @@ but every call checks `trading_enabled` first and refuses unless
 "ready to enable" switch: flipping it doesn't require writing any code, only
 deciding you're ready to.
 
-One honesty flag: Kalshi has more than one order-placement API surface (this
-POC targets prediction markets, not their perpetuals/margin product), and
-that surface has been evolving. The request body below matches the
-classic ticker/action/side/count/{yes,no}_price shape used consistently
-across the read endpoints' sibling docs — re-verify it against
-docs.kalshi.com's current order reference before ever setting
-trading_enabled: true.
+Order schema verified against docs.kalshi.com on 2026-08-07 (previously an
+open question — see ROADMAP.md/status.html). The original implementation
+targeted a ticker/action/side(yes,no)/count/{yes,no}_price shape at
+POST /portfolio/orders — that was Kalshi's *legacy* order surface. Current
+docs (create-order-v2/cancel-order-v2) show:
+  - Endpoint moved to POST /portfolio/events/orders (create) and
+    DELETE /portfolio/events/orders/{order_id} (cancel) — not /portfolio/orders.
+  - "action" (buy/sell) + "side" (yes/no) collapsed into a single `side`
+    field: "bid" (buy YES) or "ask" (sell YES). There is no "no" value —
+    selling YES and buying NO are the same trade from Kalshi's order-book
+    perspective.
+  - `count` and `price` are both *strings*, not numbers — count is contracts
+    with 0-2 decimals (e.g. "10.00"), price is dollars with up to 6 decimals
+    (e.g. "0.5600"), not the old integer-cents yes_price/no_price pair.
+  - `time_in_force` and `self_trade_prevention_type` are newly *required*
+    enums with no equivalent in the old shape — this implementation defaults
+    them (immediate_or_cancel / taker_at_cross) but callers can override.
+  - No explicit market-vs-limit `type` field exists anymore; a market-style
+    fill is expressed via time_in_force="immediate_or_cancel" instead.
+  - Kalshi's own docs note migration off the legacy /portfolio/orders
+    endpoint "no earlier than May 6, 2026" — today is well past that, so the
+    old shape this file used to send could already be rejected outright.
+This was verified by fetching docs.kalshi.com's own pages directly, not
+inferred from a changelog — but re-check before ever flipping
+trading_enabled: true for real money regardless; Kalshi's docs can move
+again, and no live order has ever actually been placed against this code.
 """
 import base64
 import os
@@ -127,29 +146,37 @@ class KalshiAccountClient:
     async def create_order(
         self,
         ticker: str,
-        action: str,       # "buy" | "sell"
-        side: str,          # "yes" | "no"
-        count: int,
-        order_type: str = "limit",   # "limit" | "market"
-        yes_price: int | None = None,   # cents, 1-99
-        no_price: int | None = None,    # cents, 1-99
+        side: str,                    # "bid" (buy YES) | "ask" (sell YES) — see module docstring
+        count: str,                    # FixedPointCount string, e.g. "10.00" — contracts, 0-2 decimals
+        price: str,                    # FixedPointDollars string, e.g. "0.5600" — dollars, up to 6 decimals
+        time_in_force: str = "immediate_or_cancel",   # "fill_or_kill" | "good_till_canceled" | "immediate_or_cancel"
+        self_trade_prevention_type: str = "taker_at_cross",   # "taker_at_cross" | "maker"
         client_order_id: str | None = None,
+        expiration_time: int | None = None,     # unix seconds; pairs with time_in_force="good_till_canceled"
+        post_only: bool | None = None,
+        cancel_order_on_pause: bool | None = None,
+        reduce_only: bool | None = None,
     ) -> dict:
         self._require_trading_enabled()
         body = {
             "ticker": ticker,
-            "action": action,
             "side": side,
             "count": count,
-            "type": order_type,
+            "price": price,
+            "time_in_force": time_in_force,
+            "self_trade_prevention_type": self_trade_prevention_type,
             "client_order_id": client_order_id or f"kwp-{int(time.time() * 1000)}",
         }
-        if yes_price is not None:
-            body["yes_price"] = yes_price
-        if no_price is not None:
-            body["no_price"] = no_price
-        return await self._request("POST", "/portfolio/orders", json=body)
+        if expiration_time is not None:
+            body["expiration_time"] = expiration_time
+        if post_only is not None:
+            body["post_only"] = post_only
+        if cancel_order_on_pause is not None:
+            body["cancel_order_on_pause"] = cancel_order_on_pause
+        if reduce_only is not None:
+            body["reduce_only"] = reduce_only
+        return await self._request("POST", "/portfolio/events/orders", json=body)
 
     async def cancel_order(self, order_id: str) -> dict:
         self._require_trading_enabled()
-        return await self._request("DELETE", f"/portfolio/orders/{order_id}")
+        return await self._request("DELETE", f"/portfolio/events/orders/{order_id}")
