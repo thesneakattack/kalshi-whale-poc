@@ -215,14 +215,28 @@ a Simple/Advanced pair using the toggle above:
       thinnest of the three (ticker, YES price, volume — no whale lean, no
       price movement). One shared, configurable renderer instead of three
       diverging ones.
-- [ ] Price-change indicators. Every price in the app (market rows, cards,
-      positions) silently replaces on each 5s poll with no acknowledgment
-      that it moved — no up/down arrow, no color flash, no delta. Every
-      real trading UI (Kalshi Pro included, via its rolling 5-minute-volume
-      ranking) treats "did this just move" as first-class information, not
-      an afterthought. Simple: a brief color flash + arrow on change.
-      Advanced: an explicit delta (¢ and %) since last poll or over a
-      rolling window, feeding the same screener-style table above.
+- [x] Price-change indicators. Was a silent replace on every 5s poll with no
+      acknowledgment a price moved. New shared `priceChangeHTML(ticker,
+      price)`: compares against `previousPrices` (last poll's
+      `state.latest_prices`, updated at the end of `refresh()` after every
+      render that needed the old value), emits nothing when unseen/
+      unchanged/sub-cent noise, otherwise a brief flash + arrow + ¢/% delta
+      that naturally disappears again once the price stops moving (only
+      rendered at all on the tick where it actually changed — no timer
+      needed). Wired into the three highest-value spots: Terminal's compact
+      market list, Markets/Whale Watch cards, and Portfolio's positions
+      table "Now" column. Simplified from the original Simple/brief-flash
+      vs. Advanced/full-delta split into one universal compact format
+      (arrow + ¢, e.g. "▲ +12¢") rather than duplicating both tiers across
+      four separate render paths — the Advanced tier's real destination
+      (the not-yet-built dense screener table below) doesn't exist yet;
+      revisit expanding it once that table lands. Not added to
+      `eventGroupCardHTML`'s compact outcome rows (already dense
+      multi-outcome lists — a flashing badge per row read as clutter, not
+      signal). Verified live via three synthetic price-change sequences
+      (up, down, and a repeat-unchanged tick) across all three render
+      paths — correct arrow/delta, correct disappearance, zero console
+      errors.
 - [x] A real "LIVE" badge — not a timestamp proxy. Kalshi's live status is
       powered by a separate milestone/live-data system
       (`get_milestones(related_event_ticker=...)` → `get_live_data()`); a
@@ -231,16 +245,20 @@ a Simple/Advanced pair using the toggle above:
       "finished") is the real signal, confirmed against a real AFL match
       going live at its scheduled start. Checked only within a plausible
       live time window, replaced wholesale each poll tick.
-- [ ] Visible staleness/connectivity state. `refresh()`'s catch block
-      today only does `console.error('refresh failed', e)` — if
-      `/api/state` starts failing (network blip, backend restart,
-      ddev-router hiccup), the dashboard just silently stops updating with
-      no visible signal to the person watching it. For an app whose whole
-      premise is "watch this and trust what it shows you," a stale/dead
-      connection should be as loud as the exchange-closed badge already is
-      (`renderExchangeStatus`) — same pattern, applied to connectivity
-      itself: a visible "data may be stale, last updated Ns ago" state
-      once a poll fails or a response is overdue.
+- [x] Visible staleness/connectivity state. Was a silent
+      `console.error('refresh failed', e)` and nothing else. New
+      `#connectivity-badge` in the header, same loud-badge pattern as the
+      exchange-status badge: tracks consecutive `refresh()` failures and
+      seconds since the last real success, shows a pulsing "⚠ CONNECTION
+      LOST · Ns" once anything fails, clears itself on the next success.
+      `refresh()`'s own `/api/state` fetch also switched off the shared
+      `fetchJSON` helper to add an explicit `res.ok` check — `fetchJSON`
+      doesn't check status, so a 500 with a valid-JSON error body (FastAPI's
+      default unhandled-exception shape) would otherwise parse
+      "successfully" and be silently treated as a real update instead of
+      the connectivity failure it actually is. Verified live via Selenium:
+      a simulated network failure, a simulated 500-with-JSON-body, and
+      recovery back to a clean badge — all three behave correctly.
 - [x] Fixed the header equity strip ignoring the Portfolio account-mode
       toggle (`renderHeaderStrip()` now follows `accountMode`) — also
       surfaced and fixed a real bug in the same path: `real_balance_history`

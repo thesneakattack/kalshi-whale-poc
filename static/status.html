@@ -948,6 +948,40 @@
           <code>tests/test_whale_simulator.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 30 · connectivity/staleness badge and price-change indicators</div>
+        <h4>Working through ROADMAP.md's remaining Phase 0.5 items in order, autonomously</h4>
+        <p>First of a self-directed pass through the roadmap's still-open items, in the order they already
+          appear in the file. Visible staleness/connectivity state: <code>refresh()</code>'s catch block used
+          to be a silent <code>console.error</code> and nothing else - for an app whose whole premise is
+          "watch this and trust what it shows you," a dead connection deserved the same loud treatment the
+          exchange-open/closed badge already gets. New <code>#connectivity-badge</code> in the header tracks
+          consecutive <code>refresh()</code> failures and seconds since the last real success, shows a
+          pulsing "&#9888; CONNECTION LOST &middot; Ns" once anything fails, clears on the next success. Along
+          the way, switched <code>refresh()</code>'s own <code>/api/state</code> fetch off the shared
+          <code>fetchJSON</code> helper to add an explicit <code>res.ok</code> check -
+          <code>fetchJSON</code> doesn't check status, so a 500 with a valid-JSON error body (FastAPI's
+          default unhandled-exception shape) would otherwise parse "successfully" and silently masquerade as
+          a real update. Verified live via Selenium: a simulated network failure, a simulated
+          500-with-JSON-body, and recovery back to a clean badge.</p>
+        <p>Price-change indicators: every price in the app used to silently replace on each 5s poll with zero
+          acknowledgment it moved. New shared <code>priceChangeHTML(ticker, price)</code> compares against
+          <code>previousPrices</code> (last poll's snapshot, updated at the end of <code>refresh()</code>
+          only after every render that needed the old value has run) and emits a brief flash + arrow + &cent;
+          /% delta - but only on the tick where the price actually changed, so it disappears again on its own
+          once the price settles, no separate timer needed. Wired into the three highest-value spots -
+          Terminal's compact list, Markets/Whale Watch cards, and Portfolio's positions "Now" column -
+          deliberately simplified from the roadmap item's original Simple-flash/Advanced-delta split into one
+          universal compact format, since the Advanced tier's real destination (the screener table further
+          down this same roadmap section) doesn't exist yet. Skipped the compact multi-outcome
+          <code>eventGroupCardHTML</code> rows on purpose - already dense, a flashing badge per row read as
+          clutter rather than signal. Verified live: three synthetic price sequences (up, down, unchanged)
+          across all three render paths, confirming the correct arrow/delta and correct disappearance, zero
+          console errors.</p>
+        <div class="files"><code>static/index.html</code> (<code>#connectivity-badge</code>,
+          <code>renderConnectivity</code>, <code>priceChangeHTML</code>, <code>previousPrices</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1009,10 +1043,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2537</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings, selectable-domain Danger Zone reset), real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, price-change flash indicators, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">2617</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1160</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1230</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">85 tests across 9 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), whale_simulator (relative sizing, weighted market selection, composite confidence) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">1167</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

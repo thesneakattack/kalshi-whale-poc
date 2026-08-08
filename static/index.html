@@ -339,6 +339,14 @@
   #exchange-status-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
   #exchange-status-badge.open { color: var(--muted); }
   #exchange-status-badge.closed { color: var(--whale); background: rgba(245,185,66,0.15); }
+  /* Visible staleness/connectivity state (ROADMAP.md Phase 0.5) - same
+     loud-badge pattern as exchange-status-badge above, applied to "can the
+     dashboard actually reach the server" instead of "is the exchange open."
+     A silent console.error on a failed poll isn't enough for an app whose
+     whole premise is "watch this and trust what it shows you." */
+  #connectivity-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #connectivity-badge.stale { color: var(--danger); background: rgba(229,72,77,0.15); animation: connectivity-pulse 1.6s ease-in-out infinite; }
+  @keyframes connectivity-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   /* "Live" the way Kalshi's own UI badges it - see isLive()'s comment for
      what this is actually based on (occurrence_datetime + status), not
      Kalshi's real live-sports-data integration. */
@@ -420,6 +428,15 @@
   }
   .market-card .title { font-size: 13px; font-weight: 600; line-height: 1.4; }
   .market-card .prices { display: flex; gap: 10px; }
+  /* Price-change indicators (ROADMAP.md Phase 0.5) - a brief flash+arrow so
+     a price silently replacing on each poll doesn't go unacknowledged.
+     Fades in via animation each time it's rendered fresh (see priceChangeHTML -
+     it's only emitted at all on a tick where the price actually moved, so a
+     steady price naturally shows nothing rather than flashing every poll). */
+  .price-flash { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 4px; animation: price-flash-in 1.8s ease-out; }
+  .price-flash.up { color: var(--yes); background: rgba(45,212,191,0.14); }
+  .price-flash.down { color: var(--no); background: rgba(249,112,102,0.14); }
+  @keyframes price-flash-in { 0% { opacity: 0; transform: translateY(-2px); } 15% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; } }
   .price-btn { flex: 1; text-align: center; border-radius: 8px; padding: 10px 8px; font-family: var(--mono); }
   .price-btn.yes { background: rgba(45,212,191,0.1); border: 1px solid var(--yes); }
   .price-btn.no { background: rgba(249,112,102,0.1); border: 1px solid var(--no); }
@@ -513,6 +530,7 @@
 
   .book-ladder { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-family: var(--mono); font-size: 12px; }
   .book-ladder .side h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; }
+  .book-ladder .levels { max-height: 240px; overflow-y: auto; padding-right: 2px; }
   .book-ladder .level { display: flex; justify-content: space-between; padding: 4px 8px; border-radius: 4px; margin-bottom: 2px; }
   .book-ladder .side.yes .level { background: rgba(45,212,191,0.08); }
   .book-ladder .side.no .level { background: rgba(249,112,102,0.08); }
@@ -543,7 +561,7 @@
 </div>
 
 <header>
-  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span></h1>
+  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span> <span id="connectivity-badge"></span></h1>
   <div class="equity-strip">
     <span class="mode-tag" id="header-mode-tag">PAPER</span>
     <div class="item"><div class="label" id="header-bankroll-label">Bankroll</div><div class="value" id="bankroll">—</div></div>
@@ -923,6 +941,26 @@ function liveBadgeHTML(m) {
   return isLive(m) ? '<span class="live-badge">● LIVE</span>' : '';
 }
 
+// Price-change indicators (ROADMAP.md Phase 0.5) - previousPrices is last
+// poll's state.latest_prices snapshot (updated at the end of refresh(),
+// after every render that needs the OLD value for comparison has already
+// run). Emits nothing at all when the price is unseen, unchanged, or moved
+// by less than half a cent (float noise from repeated 0-1 rounding, not a
+// real visible move) - the flash only shows up on a tick where the price
+// genuinely moved since the last one.
+let previousPrices = {};
+
+function priceChangeHTML(ticker, currentPrice) {
+  const prev = previousPrices[ticker];
+  if (prev === undefined || currentPrice === undefined || currentPrice === null) return '';
+  const deltaCents = Math.round((currentPrice - prev) * 100);
+  if (deltaCents === 0) return '';
+  const up = deltaCents > 0;
+  const pct = prev > 0 ? ((currentPrice - prev) / prev) * 100 : 0;
+  const arrow = up ? '▲' : '▼';
+  return `<span class="price-flash ${up ? 'up' : 'down'}" title="${up ? '+' : ''}${deltaCents}¢ (${up ? '+' : ''}${pct.toFixed(1)}%) since the last update">${arrow} ${up ? '+' : ''}${deltaCents}¢</span>`;
+}
+
 function contextLineHTML(ticker, side) {
   const ctx = marketContext(ticker, side);
   const bits = [];
@@ -943,7 +981,7 @@ function renderMarkets(markets, prices) {
     return `
     <div class="market-row" title="${esc(label.full)}\n${esc(m.ticker)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
       <span class="ticker">${esc(label.short)}</span>
-      <span class="price">YES ${price !== undefined ? (price * 100).toFixed(0) : '—'}¢ · vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span>
+      <span class="price">YES ${price !== undefined ? (price * 100).toFixed(0) : '—'}¢ ${priceChangeHTML(m.ticker, price)} · vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span>
     </div>
   `;
   }).join('');
@@ -1147,7 +1185,7 @@ function renderPositions(positions, prices, recentTrades, signals) {
         </td>
         <td>${p.size.toLocaleString()}</td>
         <td>${(p.entry_price*100).toFixed(0)}¢</td>
-        <td>${(current*100).toFixed(0)}¢</td>
+        <td>${(current*100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
         <td>${fmt(cost)}</td>
         <td>${fmt(p.size)}</td>
         <td>${fmt(value)}</td>
@@ -1557,7 +1595,7 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
     <div class="title">${esc(label.short)} ${liveBadgeHTML(m)}</div>
     ${matchupHtml}
     <div class="prices">
-      <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div></div>
+      <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div>${priceChangeHTML(m.ticker, yesBid)}</div>
       <div class="price-btn no"><div class="lbl">No</div><div class="val">${noPrice !== null ? noPrice + '¢' : '—'}</div></div>
     </div>
     <div class="prob-bar"><div class="fill" style="width:${yesPrice ?? 50}%"></div></div>
@@ -1890,8 +1928,8 @@ function renderOrderbookHTML(book) {
 
   const levelHTML = (l) => `<div class="level"><span class="price">${(l.price*100).toFixed(0)}¢</span><span class="size">${l.size.toLocaleString()} ct</span></div>`;
   const ladder = `<div class="book-ladder">
-    <div class="side yes"><h4>Yes bids</h4>${yesLevels.length ? yesLevels.map(levelHTML).join('') : '<div class="empty">No resting Yes bids</div>'}</div>
-    <div class="side no"><h4>No bids</h4>${noLevels.length ? noLevels.map(levelHTML).join('') : '<div class="empty">No resting No bids</div>'}</div>
+    <div class="side yes"><h4>Yes bids</h4><div class="levels">${yesLevels.length ? yesLevels.map(levelHTML).join('') : '<div class="empty">No resting Yes bids</div>'}</div></div>
+    <div class="side no"><h4>No bids</h4><div class="levels">${noLevels.length ? noLevels.map(levelHTML).join('') : '<div class="empty">No resting No bids</div>'}</div></div>
   </div>`;
 
   return toggle + summary + ladder;
@@ -2139,6 +2177,30 @@ function renderExchangeStatus(status) {
   }
 }
 
+// Visible staleness/connectivity state (ROADMAP.md Phase 0.5) - tracks
+// consecutive refresh() failures and how long it's been since the last one
+// that actually succeeded, so a dead connection is as loud as the
+// exchange-closed badge rather than a silent console.error.
+let lastSuccessfulRefresh = Date.now();
+let consecutiveRefreshFailures = 0;
+
+function renderConnectivity() {
+  const el = $('connectivity-badge');
+  if (!el) return;
+  if (consecutiveRefreshFailures === 0) {
+    el.textContent = '';
+    el.className = '';
+    el.title = '';
+    return;
+  }
+  const secsAgo = Math.max(0, Math.round((Date.now() - lastSuccessfulRefresh) / 1000));
+  el.textContent = `⚠ CONNECTION LOST · ${secsAgo}s`;
+  el.className = 'stale';
+  el.title = `The dashboard hasn't been able to reach the server in ${secsAgo}s `
+    + `(${consecutiveRefreshFailures} failed attempt${consecutiveRefreshFailures === 1 ? '' : 's'}) — `
+    + `what you're seeing may be out of date. This is a connectivity problem, not a sign the strategy is stuck.`;
+}
+
 function renderHalted(risk) {
   const slot = $('halted-banner-slot');
   slot.innerHTML = risk.halted
@@ -2280,7 +2342,19 @@ function renderShadow(shadow) {
 
 async function refresh() {
   try {
-    const state = await fetchJSON('/api/state');
+    // Not fetchJSON here on purpose - fetchJSON doesn't check res.ok, so a
+    // 500 with a valid-JSON error body (FastAPI's default unhandled-
+    // exception response is exactly that shape) would otherwise parse
+    // "successfully" and be treated as a real update instead of the
+    // connectivity failure it actually is.
+    const res = await fetch('/api/state');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const state = await res.json();
+
+    lastSuccessfulRefresh = Date.now();
+    consecutiveRefreshFailures = 0;
+    renderConnectivity();
+
     $('live-dot').classList.toggle('live', state.running);
     $('whale-source').textContent = `· ${sourceLabel(state.whale_source)}`;
     renderExchangeStatus(state.exchange_status);
@@ -2316,8 +2390,14 @@ async function refresh() {
     // The market-detail modal can be open regardless of which tab is behind
     // it, so it isn't covered by the active-tab branches above.
     if (marketDetailTicker) refreshMarketDetail();
+
+    // Baseline for next tick's priceChangeHTML() comparisons - updated last,
+    // after every render above that needed THIS tick's previousPrices.
+    previousPrices = { ...(state.latest_prices || {}) };
   } catch (e) {
     console.error('refresh failed', e);
+    consecutiveRefreshFailures++;
+    renderConnectivity();
   }
 }
 
