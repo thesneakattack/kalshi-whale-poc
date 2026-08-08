@@ -1,4 +1,4 @@
-mode: shadow
+mode: paper
 kalshi:
   base_url: https://api.elections.kalshi.com/trade-api/v2
   markets_watchlist: []
@@ -13,6 +13,7 @@ whale_signal:
   - 5000
   - 50000
   bias: random
+  live_markets_only: false
 strategy:
   name: follow_the_whale
   entry_threshold: 0.65

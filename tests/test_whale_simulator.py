@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 from services.whale_simulator import WhaleSimulator
 
 
-def _market(ticker="TICK-A", volume_24h_fp="10000", yes_bid_dollars="0.5", close_time=None):
+def _market(ticker="TICK-A", volume_24h_fp="10000", yes_bid_dollars="0.5", close_time=None, event_ticker=None):
     m = {"ticker": ticker, "volume_24h_fp": volume_24h_fp, "yes_bid_dollars": yes_bid_dollars}
     if close_time is not None:
         m["close_time"] = close_time
+    if event_ticker is not None:
+        m["event_ticker"] = event_ticker
     return m
 
 
@@ -42,6 +44,51 @@ def test_pacing_suppresses_immediate_repeat_calls(monkeypatch):
     monkeypatch.setattr("random.expovariate", lambda _: 9999.0)  # second call: not due yet
     second = sim.maybe_generate([_market()], avg_interval_sec=1)
     assert second is None
+
+
+def test_live_only_restricts_generation_to_live_markets(monkeypatch):
+    sim = WhaleSimulator()
+    monkeypatch.setattr("random.expovariate", lambda _: 0.0)
+    quiet = _market(ticker="QUIET", event_ticker="EVT-QUIET")
+    live = _market(ticker="LIVE", event_ticker="EVT-LIVE")
+    live_status = {"EVT-QUIET": "none", "EVT-LIVE": "live"}
+
+    for _ in range(20):
+        sig = sim.maybe_generate(
+            [quiet, live], avg_interval_sec=1, live_status=live_status, live_only=True,
+        )
+        assert sig is not None
+        assert sig.ticker == "LIVE"
+        sim._last_emit = 0.0  # force "due" again for the next draw
+
+
+def test_live_only_with_no_live_markets_emits_nothing(monkeypatch):
+    sim = WhaleSimulator()
+    monkeypatch.setattr("random.expovariate", lambda _: 0.0)
+    quiet = _market(ticker="QUIET", event_ticker="EVT-QUIET")
+    live_status = {"EVT-QUIET": "none"}
+
+    sig = sim.maybe_generate([quiet], avg_interval_sec=1, live_status=live_status, live_only=True)
+    assert sig is None
+
+
+def test_live_only_off_ignores_live_status(monkeypatch):
+    sim = WhaleSimulator()
+    monkeypatch.setattr("random.expovariate", lambda _: 0.0)
+    quiet = _market(ticker="QUIET", event_ticker="EVT-QUIET")
+    live_status = {"EVT-QUIET": "none"}
+
+    sig = sim.maybe_generate([quiet], avg_interval_sec=1, live_status=live_status, live_only=False)
+    assert sig is not None
+    assert sig.ticker == "QUIET"
+
+
+def test_live_only_defaults_to_off_when_live_status_omitted(monkeypatch):
+    sim = WhaleSimulator()
+    monkeypatch.setattr("random.expovariate", lambda _: 0.0)
+    market = _market(event_ticker="EVT-A")
+    sig = sim.maybe_generate([market], avg_interval_sec=1)
+    assert sig is not None
 
 
 def test_size_is_relative_to_market_volume_not_flat():

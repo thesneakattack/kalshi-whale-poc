@@ -633,8 +633,8 @@
 <!-- Markets: a simplified, Kalshi-style read of the current watchlist -->
 <div class="view" id="view-markets">
   <div class="wrap">
-    <div class="panel-title" style="margin-top:0;">Markets <span id="markets-card-count"></span></div>
-    <div id="markets-cards" class="cards-grid"><div class="empty">Loading markets…</div></div>
+    <div class="panel-title" style="margin-top:0;">Markets <span id="markets-card-count"></span> <span id="markets-toggle" style="float:right;"></span></div>
+    <div id="markets-cards"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
 
@@ -656,8 +656,8 @@
     <div class="panel-title">Trade Tape <span id="trade-tape-toggle"></span></div>
     <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
 
-    <div class="panel-title">Whale Watch — market view + how whales are betting</div>
-    <div id="whale-cards" class="cards-grid"><div class="empty">Loading markets…</div></div>
+    <div class="panel-title">Whale Watch — market view + how whales are betting <span id="whale-cards-toggle" style="float:right;"></span></div>
+    <div id="whale-cards"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
 
@@ -667,7 +667,7 @@
 
   <!-- Markets being watched -->
   <div class="col">
-    <div class="panel-title">Watchlist <span id="market-count"></span></div>
+    <div class="panel-title">Watchlist <span id="market-count"></span> <span id="markets-list-toggle" style="float:right;"></span></div>
     <div id="markets-list"><div class="empty">Loading markets…</div></div>
   </div>
 
@@ -734,6 +734,7 @@
       <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
       <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
       <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
+      <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE</label></div>
     </div>
 
     <div class="panel-title">Risk</div>
@@ -1845,6 +1846,7 @@ function eventGroupCardHTML(group, eventInfo, prices) {
 
 function renderMarketCards(containerId, countId, markets, prices, includeWhale, signals, seriesTrackRecord) {
   const el = $(containerId);
+  el.classList.add('cards-grid'); // shares its container with the Advanced screener table (renderScreenerTableFromState), which needs this class off
   if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
 
@@ -1861,6 +1863,108 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
     }
     return eventGroupCardHTML(group, eventTitles[key], prices);
   }).join('');
+}
+
+// Dense, sortable screener table (ROADMAP.md Phase 0.5) - one shared,
+// configurable renderer instead of three diverging market-list renderers
+// (renderMarkets for Terminal's compact column, renderMarketCards for
+// Markets/Whale Watch, nothing shared between them). Kalshi Pro-inspired:
+// price/spread/volume/whale-lean in one sortable table rather than a card
+// grid. Columns actually available without adding new per-tick API calls:
+// spread comes from yes_ask_dollars (already fetched on every market
+// object, just not previously exposed - see _MARKET_FIELDS) minus the
+// existing yes-bid price; "5-minute volume" from Kalshi Pro's own screener
+// was deliberately NOT faked - _fetch_trade_tape only pulls 5 trades per
+// market capped at 30 total across the whole watchlist, nowhere near
+// enough to compute a real rolling 5-minute figure, so 24h volume (already
+// reliable) is shown instead rather than a number that would quietly be
+// wrong on any market busier than a handful of trades. True order-book
+// depth would need one extra API call per market per poll tick - not
+// added here for the same reason the earlier /api/state efficiency pass
+// avoided widening the poll loop's request fan-out.
+// One independent sort/render-cache state object per panel that embeds
+// this table (Terminal/Markets/Whale Watch), same pattern as
+// tradeLogFilter/decisionFilter above - each panel remembers its own sort
+// choice and its own last-rendered dataset, so a header click can
+// re-render without needing the caller to pass everything through again.
+let screenerState = {
+  'markets-list': { markets: [], prices: {}, signals: [], includeWhale: false, sortKey: 'volume_24h_fp', sortDir: 'desc' },
+  'markets':      { markets: [], prices: {}, signals: [], includeWhale: false, sortKey: 'volume_24h_fp', sortDir: 'desc' },
+  'whale-cards':  { markets: [], prices: {}, signals: [], includeWhale: true,  sortKey: 'volume_24h_fp', sortDir: 'desc' },
+};
+
+function screenerRowData(m, prices, signals) {
+  const yesBid = prices[m.ticker];
+  const yesAsk = m.yes_ask_dollars != null && m.yes_ask_dollars !== '' ? parseFloat(m.yes_ask_dollars) : null;
+  const spread = (yesBid != null && yesAsk != null) ? Math.max(0, yesAsk - yesBid) : null;
+  const lean = signals ? computeWhaleLean(m.ticker, signals) : null;
+  return {
+    ticker: m.ticker,
+    volume_24h_fp: parseFloat(m.volume_24h_fp) || 0,
+    yesBid: yesBid ?? null,
+    spread,
+    leanPct: lean ? lean.yesPct : null,
+    leanCount: lean ? lean.count : 0,
+    m,
+  };
+}
+
+function renderScreenerTable(panelKey, containerId, countId, markets, prices, includeWhale, signals) {
+  const st = screenerState[panelKey];
+  st.markets = markets || [];
+  st.prices = prices || {};
+  st.signals = signals || [];
+  st.includeWhale = includeWhale;
+  renderScreenerTableFromState(panelKey, containerId, countId);
+}
+
+function renderScreenerTableFromState(panelKey, containerId, countId) {
+  const st = screenerState[panelKey];
+  const el = $(containerId);
+  el.classList.remove('cards-grid');
+  if (countId) $(countId).textContent = st.markets.length ? `(${st.markets.length})` : '';
+  if (!st.markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+
+  let rows = st.markets.map(m => screenerRowData(m, st.prices, st.signals));
+  rows = sortRows(rows, st.sortKey, st.sortDir);
+
+  const rerender = `renderScreenerTableFromState('${panelKey}', '${containerId}', ${countId ? `'${countId}'` : 'null'})`;
+  const bodyRows = rows.map(r => {
+    const m = r.m;
+    const label = marketLabel(m.ticker);
+    const ctx = marketContext(m.ticker, null);
+    const category = ctx.category ? esc(ctx.category) : esc(m.ticker.split('-')[0]);
+    const yesPrice = r.yesBid != null ? Math.round(r.yesBid * 100) : null;
+    const noPrice = yesPrice != null ? 100 - yesPrice : null;
+    const spreadStr = r.spread != null ? (r.spread * 100).toFixed(0) + '¢' : '—';
+    const volStr = r.volume_24h_fp ? Math.round(r.volume_24h_fp).toLocaleString() : '—';
+    const leanCell = !st.includeWhale ? '' : r.leanCount
+      ? `<td><span class="side-tag ${r.leanPct >= 50 ? 'yes' : 'no'}">${r.leanPct >= 50 ? 'YES' : 'NO'} ${Math.round(r.leanPct >= 50 ? r.leanPct : 100 - r.leanPct)}%</span> <span style="color:var(--muted);">(${r.leanCount})</span></td>`
+      : '<td style="color:var(--muted);">—</td>';
+    return `<tr title="${esc(label.full)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')">
+      <td style="text-align:left;">${esc(label.short)} ${liveBadgeHTML(m)}</td>
+      <td>${category}</td>
+      <td>${yesPrice != null ? yesPrice + '¢' : '—'} ${priceChangeHTML(m.ticker, r.yesBid)}</td>
+      <td>${noPrice != null ? noPrice + '¢' : '—'}</td>
+      <td>${spreadStr}</td>
+      <td>${volStr}</td>
+      ${leanCell}
+    </tr>`;
+  }).join('');
+
+  const sortCall = (key) => `toggleSort(screenerState['${panelKey}'], '${key}', () => ${rerender})`;
+  el.innerHTML = `<table class="positions-table sortable">
+    <thead><tr>
+      ${sortHeaderHTML(st, 'ticker', 'Market', sortCall('ticker'))}
+      <th>Category</th>
+      ${sortHeaderHTML(st, 'yesBid', 'Yes', sortCall('yesBid'))}
+      <th>No</th>
+      ${sortHeaderHTML(st, 'spread', 'Spread', sortCall('spread'))}
+      ${sortHeaderHTML(st, 'volume_24h_fp', '24h Vol', sortCall('volume_24h_fp'))}
+      ${st.includeWhale ? sortHeaderHTML(st, 'leanPct', 'Whale Lean', sortCall('leanPct')) : ''}
+    </tr></thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
 }
 
 // Fixed a real bug: this used to unconditionally show paper broker numbers
@@ -2561,7 +2665,12 @@ async function refresh() {
     // three don't need fresh HTML every poll if nobody's looking at them.
     const active = VIEWS.find(v => $('view-' + v).classList.contains('active'));
     if (active === 'terminal') {
-      renderMarkets(state.markets, state.latest_prices || {});
+      $('markets-list-toggle').innerHTML = advToggleHTML('markets-list');
+      if (isAdvanced('markets-list')) {
+        renderScreenerTable('markets-list', 'markets-list', 'market-count', state.markets, state.latest_prices || {}, false, []);
+      } else {
+        renderMarkets(state.markets, state.latest_prices || {});
+      }
       renderFunnel(state.stats);
       renderSignals(state.signal_feed);
       renderDecisions(state.decision_feed);
@@ -2569,11 +2678,21 @@ async function refresh() {
     } else if (active === 'portfolio') {
       renderPortfolio(state, broker);
     } else if (active === 'markets') {
-      renderMarketCards('markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
+      $('markets-toggle').innerHTML = advToggleHTML('markets');
+      if (isAdvanced('markets')) {
+        renderScreenerTable('markets', 'markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
+      } else {
+        renderMarketCards('markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
+      }
     } else if (active === 'whale') {
       renderWhaleTrackRecord(state.whale_track_record, state.whale_source);
       renderTradeTape(state.trade_tape);
-      renderMarketCards('whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || [], state.series_track_record || {});
+      $('whale-cards-toggle').innerHTML = advToggleHTML('whale-cards');
+      if (isAdvanced('whale-cards')) {
+        renderScreenerTable('whale-cards', 'whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || []);
+      } else {
+        renderMarketCards('whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || [], state.series_track_record || {});
+      }
     }
 
     // The market-detail modal can be open regardless of which tab is behind
@@ -2602,6 +2721,7 @@ async function loadConfig() {
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
+  $('cfg-whale-live-only').checked = !!cfg.whale_signal.live_markets_only;
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
@@ -2644,6 +2764,7 @@ $('save-config-btn').addEventListener('click', async () => {
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),
       whale_size_range: [parseInt($('cfg-size-min').value), parseInt($('cfg-size-max').value)],
+      live_markets_only: $('cfg-whale-live-only').checked,
     },
     risk: {
       max_daily_loss_pct: parseFloat($('cfg-max-loss').value),

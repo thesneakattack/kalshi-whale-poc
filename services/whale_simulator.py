@@ -58,15 +58,36 @@ class WhaleSimulator:
         self.bias = bias
         self._last_emit = 0.0
 
-    def maybe_generate(self, markets: list[dict], avg_interval_sec: float) -> WhaleSignal | None:
-        """Randomly emits at most one signal per call, paced by avg_interval_sec."""
+    def maybe_generate(
+        self,
+        markets: list[dict],
+        avg_interval_sec: float,
+        live_status: dict | None = None,
+        live_only: bool = False,
+    ) -> WhaleSignal | None:
+        """Randomly emits at most one signal per call, paced by avg_interval_sec.
+
+        live_only (whale_signal.live_markets_only in config) restricts which
+        markets can generate a print at all to ones currently flagged live —
+        a stronger, upstream version of strategy.live_markets_only, which
+        only gates whether a *signal that already exists* gets acted on.
+        With this on, a quiet/pre-market/settled market never produces a
+        whale print in the first place, not just never gets traded on.
+        live_status is the same event_ticker -> "live"/"finished"/"none"
+        mapping the LIVE badge and strategy.live_markets_only both already
+        use (state["live_status"], see main.py's _fetch_live_status) -
+        reused here rather than a second definition of "live"."""
         now = time.time()
         if now - self._last_emit < random.expovariate(1 / max(avg_interval_sec, 1)):
             return None
-        if not markets:
+        candidates = markets
+        if live_only:
+            live_status = live_status or {}
+            candidates = [m for m in markets if live_status.get(m.get("event_ticker")) == "live"]
+        if not candidates:
             return None
 
-        market = self._pick_market(markets)
+        market = self._pick_market(candidates)
         side = self._pick_side(market)
         # yes_bid_dollars is Kalshi's real field (already 0-1) — "yes_bid" (cents)
         # doesn't exist on the live API, so this used to silently always fall
@@ -74,7 +95,7 @@ class WhaleSimulator:
         yes_bid = float(market.get("yes_bid_dollars") or 0)
         price = yes_bid if yes_bid > 0 else random.uniform(0.05, 0.95)
         size = self._size_for(market)
-        confidence = self._score_confidence(market, markets, size, price, now)
+        confidence = self._score_confidence(market, candidates, size, price, now)
 
         signal = WhaleSignal(
             id=str(uuid.uuid4())[:8],

@@ -100,8 +100,13 @@ def _bump_generation():
 # strike_type added for Phase 0.5's event/outcome grouping - previously
 # dropped here entirely, so the dashboard had no way to know two markets
 # were siblings under one event even though Kalshi sends that relationship
-# on every market object already.
-_MARKET_FIELDS = ("ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type", "occurrence_datetime", "status")
+# on every market object already. yes_ask_dollars added for the screener
+# table's Spread column (ROADMAP.md) - already present on every market
+# object _fetch_markets gets back, so exposing it costs nothing extra.
+_MARKET_FIELDS = (
+    "ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type",
+    "occurrence_datetime", "status", "yes_ask_dollars",
+)
 
 
 def _slim_market(m: dict) -> dict:
@@ -444,13 +449,19 @@ async def trading_loop():
                     state["error"] = f"whale-watcher fetch failed, using simulator: {e}"
                     whale_sim.size_range = tuple(cfg["whale_signal"]["whale_size_range"])
                     whale_sim.bias = cfg["whale_signal"]["bias"]
-                    sig = whale_sim.maybe_generate(markets, cfg["whale_signal"]["signal_frequency_sec"])
+                    sig = whale_sim.maybe_generate(
+                        markets, cfg["whale_signal"]["signal_frequency_sec"],
+                        live_status=state["live_status"], live_only=cfg["whale_signal"].get("live_markets_only", False),
+                    )
                     new_signals = [sig] if sig else []
                     state["whale_source"] = f"simulated ({whale_provider.name} fallback)"
             else:
                 whale_sim.size_range = tuple(cfg["whale_signal"]["whale_size_range"])
                 whale_sim.bias = cfg["whale_signal"]["bias"]
-                sig = whale_sim.maybe_generate(markets, cfg["whale_signal"]["signal_frequency_sec"])
+                sig = whale_sim.maybe_generate(
+                    markets, cfg["whale_signal"]["signal_frequency_sec"],
+                    live_status=state["live_status"], live_only=cfg["whale_signal"].get("live_markets_only", False),
+                )
                 new_signals = [sig] if sig else []
                 state["whale_source"] = "simulated"
 

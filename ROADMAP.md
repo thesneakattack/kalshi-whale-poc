@@ -223,17 +223,30 @@ a Simple/Advanced pair using the toggle above:
       `kalshi.markets_watchlist` via the existing `/api/config` patch.
       Category taxonomy is still a plain text field (a real dropdown is a
       follow-up).
-- [ ] Markets / Whale Watch cards. Simple: today's card view
-      (`renderMarketCards`). Advanced: a dense, sortable table — price,
-      spread, depth, 5-minute volume, whale lean — as an alternate
-      rendering of the same underlying data, screener-style. Build it once
-      and reuse it for Terminal's watchlist too — there are currently
-      *three* separate market-list renderers (`renderMarkets` for
-      Terminal's compact column, `renderMarketCards` for Markets/Whale
-      Watch, and nothing shared between them), and Terminal's is the
-      thinnest of the three (ticker, YES price, volume — no whale lean, no
-      price movement). One shared, configurable renderer instead of three
-      diverging ones.
+- [x] Markets / Whale Watch cards. Simple: unchanged card view
+      (`renderMarketCards`). Advanced: new dense, sortable
+      `renderScreenerTable`/`renderScreenerTableFromState` — Market/
+      Category/Yes/No/Spread/24h Volume, plus a Whale Lean column when
+      `includeWhale` is on — one shared, configurable renderer reused
+      across all three former call sites (`renderMarkets` for Terminal's
+      compact column, `renderMarketCards` for Markets/Whale Watch), each
+      with its own independent sort state (`screenerState`, keyed by panel
+      id, same pattern as `tradeLogFilter`/`decisionFilter`). Two columns
+      from Kalshi Pro's own screener were deliberately *not* faked: real
+      order-book depth would cost one extra API call per market per poll
+      tick (the same request-fan-out growth the `/api/state` efficiency
+      pass earlier avoided); "5-minute volume" would need far more trade
+      data than `_fetch_trade_tape` actually pulls (5 trades/market, 30
+      total across the whole watchlist — nowhere near enough for a real
+      rolling figure), so 24h volume is shown instead of a number that
+      would quietly be wrong on any market busier than a handful of
+      trades. Spread comes for free — `yes_ask_dollars` was already on
+      every market object `_fetch_markets` fetches, just not previously
+      exposed (`_MARKET_FIELDS`). Verified live across all three panels:
+      Advanced shows the sortable table, a header click re-sorts, toggling
+      back to Simple correctly restores the original card/list view, and
+      the Whale Lean column appears only on Whale Watch's table, not
+      Markets'.
 - [x] Price-change indicators. Was a silent replace on every 5s poll with no
       acknowledgment a price moved. New shared `priceChangeHTML(ticker,
       price)`: compares against `previousPrices` (last poll's
@@ -372,13 +385,21 @@ a Simple/Advanced pair using the toggle above:
       with a real mousedown → DOM-swap → mouseup race via Selenium
       ActionChains (modal stayed open) and a genuine outside click (still
       closes it).
-- [ ] Reassess the Markets vs. Whale Watch split now that both share
-      `renderMarketCards` — give them a genuinely distinct job (e.g. Whale
-      Watch leans into the trade-tape/screener angle, Markets becomes the
-      per-market book+chart view) or fold them into one tab with a filter,
-      rather than two tabs showing near-identical cards today. Simple/
-      Advanced modes reduce some of the pressure to split by density, but
-      they're still duplicated content either way.
+- [x] Reassess the Markets vs. Whale Watch split. Resolved as "give them a
+      genuinely distinct job," not "fold them into one tab with a filter"
+      — the merge option would have meant cramming Whale Watch's now-
+      substantial whale-specific content (Track Record stat cards, the
+      new browsable Signal History panel, Trade Tape) alongside general
+      market browsing behind a filter toggle, awkward for both jobs at
+      once. Distinct jobs instead: Markets stayed pure market discovery
+      (cards/screener table, whale-neutral, `includeWhale=false`); Whale
+      Watch keeps its three whale-specific sections *and* its own
+      cards/screener render whale-annotated (`includeWhale=true` — whale-
+      lean blocks in Simple, a Whale Lean column in Advanced). The shared
+      screener table above already made this concrete: same renderer, same
+      code, genuinely different output per tab, not just a different tab
+      label over identical content. Verified live: the Whale Lean column
+      renders on Whale Watch's Advanced table and is absent from Markets'.
 - [x] Bounded-height, scrollable list panels — new shared `.scroll-panel`
       class (`max-height: 420px; overflow-y: auto`) applied to all five
       feed panels, which previously rendered their already-capped 25-50 row
@@ -460,6 +481,28 @@ band instead.
       `signal.ticker` → `event_ticker` → live status once per signal and
       passes it to both evaluators. Config tab gets a matching checkbox.
       5 new tests (3 strategy, 2 shadow) cover on/off and live/not-live.
+- [x] Follow-up, direct request: a matching toggle one level upstream, on
+      the simulator itself rather than the strategy's trade-decision gate.
+      `strategy.live_markets_only` above only decides whether a signal that
+      already exists gets *acted on*; this new `whale_signal.live_markets_only`
+      (default `false`) decides whether the simulator *generates a print at
+      all* for a non-live market in the first place — a quiet/pre-market/
+      settled market produces zero simulated whale activity, not just
+      activity that then gets skipped downstream. `WhaleSimulator.maybe_generate()`
+      takes `live_status`/`live_only` params, filters candidate markets to
+      `live_status.get(event_ticker) == "live"` before picking one (same
+      `state["live_status"]` lookup, no second definition of "live"); if
+      the filtered set is empty, no signal fires that tick rather than
+      falling back to a non-live market. `_score_confidence()`'s "market
+      context" factor also now compares against the same filtered
+      candidate set, not the full unfiltered watchlist, so "how busy is
+      this market relative to the others" stays an apples-to-apples
+      comparison once live-only is on. Config tab gets a matching checkbox
+      under Whale Signal (simulated). 4 new tests cover on/off, no-live-
+      markets-available, and that the default (`live_status` omitted)
+      behaves as off. Verified live: toggled via the Config tab, confirmed
+      round-tripped through `/api/config` correctly, reverted after
+      testing.
 - [ ] Config-versioned performance tracking, to eventually feed a
       machine-learning advisory service — requirement only, not yet
       implemented (direct request: "just add in the requirement for now").
