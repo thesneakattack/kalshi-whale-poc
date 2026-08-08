@@ -62,6 +62,7 @@ state = {
     "market_titles": {},
     "event_titles": {},  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
+    "series_cache": {"fetched_at": 0.0, "series": []},  # see _get_top_series
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
@@ -93,6 +94,36 @@ def _slim_market(m: dict) -> dict:
     return {k: m.get(k) for k in _MARKET_FIELDS}
 
 
+_SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
+# change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
+
+
+async def _get_series_cache(client: KalshiClient) -> list[dict]:
+    """All series with nonzero lifetime volume (~9,400 of Kalshi's ~12,500
+    total, as of 2026-08-08), sorted by volume_fp descending, cached in
+    state["series_cache"] and refreshed at most once per
+    _SERIES_CACHE_TTL_SEC. See get_series_list's docstring for why this
+    (series-level volume, then query real series directly) replaced
+    browsing individual markets - a flat browse can be 100% dead combo
+    markets even across tens of thousands of entries, confirmed directly,
+    repeatedly. Shared by both the automatic watchlist (_get_top_series,
+    just the top N) and market search (search_markets, which also needs
+    the long tail to text-match against)."""
+    cache = state["series_cache"]
+    if time.time() - cache["fetched_at"] > _SERIES_CACHE_TTL_SEC or not cache["series"]:
+        series = await client.get_series_list()
+        series = [s for s in series if float(s.get("volume_fp") or 0) > 0]
+        series.sort(key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
+        cache["series"] = series
+        cache["fetched_at"] = time.time()
+    return cache["series"]
+
+
+async def _get_top_series(client: KalshiClient, top_n: int = 15) -> list[str]:
+    series = await _get_series_cache(client)
+    return [s["ticker"] for s in series[:top_n]]
+
+
 async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
     watchlist = cfg["kalshi"]["markets_watchlist"]
     if watchlist:
@@ -102,7 +133,10 @@ async def _fetch_markets(client: KalshiClient, cfg: dict) -> list[dict]:
             *(client.get_market(ticker) for ticker in watchlist), return_exceptions=True
         )
         return [m for m in results if isinstance(m, dict)]
-    return await client.get_top_volume_markets(cfg["kalshi"]["watchlist_size"])
+    top_series = await _get_top_series(client)
+    return await client.get_top_volume_markets(
+        cfg["kalshi"]["watchlist_size"], min_volume=cfg["kalshi"].get("min_volume_24h", 0), series_tickers=top_series
+    )
 
 
 async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[dict]:
@@ -537,6 +571,70 @@ async def get_market_trades(ticker: str):
     client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         return await client.get_trades(ticker=ticker, limit=15)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await client.close()
+
+
+@app.get("/api/markets/search")
+async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50):
+    # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
+    # the automatic watchlist selection (_fetch_markets), which stays
+    # volume-filtered by config default (kalshi.min_volume_24h). Defaults to
+    # min_volume=0 - full catalog access, dormant markets included - so a
+    # market being excluded from the automatic watchlist never means it's
+    # unreachable, only that it's not the default view.
+    #
+    # Series-based, same as the automatic watchlist and for the same
+    # reason: an early version of this endpoint browsed individual markets
+    # directly (even paginating 5000+ of them for a text query) and that
+    # turned out fundamentally unreliable - confirmed directly, repeatedly,
+    # with real numbers - Kalshi's combo/MVE markets are generated in such
+    # bulk that a flat browse of even tens of thousands of markets can
+    # still contain zero real matches. Text-matching against ~9,400
+    # series (title/tags/category), a much smaller and cleanly-labeled
+    # set, then querying only the matching series directly, is what
+    # actually works.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        all_series = await _get_series_cache(client)  # already sorted by volume_fp desc
+        q_lower = q.strip().lower()
+        category_lower = category.strip().lower()
+        candidates = all_series
+        if q_lower:
+            candidates = [
+                s for s in candidates
+                if q_lower in (s.get("title") or "").lower()
+                or q_lower in " ".join(s.get("tags") or []).lower()
+                or q_lower in (s.get("category") or "").lower()
+                or q_lower in (s.get("ticker") or "").lower()
+            ]
+        if category_lower:
+            candidates = [s for s in candidates if (s.get("category") or "").lower() == category_lower]
+
+        # Caps how many series to fan out to (a network request each), not
+        # how many markets come back - candidates is already volume-sorted.
+        candidate_tickers = [s["ticker"] for s in candidates[:30]]
+        markets = await client.get_top_volume_markets(limit, min_volume=min_volume, series_tickers=candidate_tickers)
+        results = markets
+        # Opportunistically cache titles/events for whatever this search
+        # touched, same shape _fetch_markets already populates - so a result
+        # added to the watchlist afterward already has a label, no gap.
+        state["market_titles"].update({
+            m["ticker"]: {
+                "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
+                "yes_sub_title": m.get("yes_sub_title"),
+                "no_sub_title": m.get("no_sub_title"),
+                "event_ticker": m.get("event_ticker"),
+            }
+            for m in results if m.get("ticker")
+        })
+        return {
+            "markets": [_slim_market(m) for m in results],
+            "market_titles": {m["ticker"]: state["market_titles"][m["ticker"]] for m in results if m.get("ticker")},
+        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     finally:

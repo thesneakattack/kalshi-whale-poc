@@ -183,8 +183,8 @@
   <section aria-label="headline status">
     <div class="stats">
       <div class="stat"><div class="k">Total surface</div><div class="v">5,189 lines</div><div class="n">29 .py/.html files, 0 stubs left unimplemented</div></div>
-      <div class="stat"><div class="k">API routes</div><div class="v">20</div><div class="n">4 pages, 4 auth/session, 12 trading/config</div></div>
-      <div class="stat"><div class="k">Dashboard views</div><div class="v">4</div><div class="n">Portfolio, Markets, Whale Watch, Terminal</div></div>
+      <div class="stat"><div class="k">API routes</div><div class="v">20</div><div class="n">4 auth/session, 4 on-demand market (book/chart/trades/search), 12 state/trading/config — pages moved to nginx, see phase 17</div></div>
+      <div class="stat"><div class="k">Dashboard views</div><div class="v">5</div><div class="n">Portfolio, Markets, Whale Watch, Terminal, Config</div></div>
       <div class="stat"><div class="k">Real money moved</div><div class="v">$0</div><div class="n">no order-execution path exists — by design</div></div>
     </div>
   </section>
@@ -670,6 +670,74 @@
           <code>tradeRowHTML</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 23 · the watchlist was showing garbage, and it took three rounds to actually fix it</div>
+        <h4>Market discovery was fundamentally broken — not under-filtered, broken</h4>
+        <p>Started from real, provided screenshots of actual Kalshi UI and a direct correction: "you're wrong about
+          the multi-level parlay markets being all that's open." Investigating that assumption instead of defending
+          it led somewhere much bigger than a display bug. Confirmed directly, repeatedly, with real numbers: a
+          flat browse of Kalshi's open markets — even paginating 50,000+ of them via cursor — can return
+          <b>zero</b> with any real trading volume, because Kalshi auto-generates a huge number of "MVE"
+          (multivariate/combo) markets that vastly outnumber real ones in the API's default ordering.
+          <code>get_top_volume_markets</code> had been sorting a 100-market page that was itself already dead.</p>
+        <p>Three rounds, each correcting the last based on real data rather than reasoning from assumptions: (1)
+          tried <code>mve_filter="exclude"</code> — worked, but "you shouldn't be filtering out markets at all if
+          possible" was fair pushback, since a combo market with real activity is still a real market. (2) Switched
+          to a pure volume filter, "only filter out markets with 0 volume" — correct in principle, but empirically
+          a full unfiltered 1000-market sample had <i>zero</i> markets with any volume at that moment, confirmed
+          three times in a row, not a fluke: combos are numerous enough that even a large unfiltered sample can be
+          entirely dead. (3) The actual fix, verified rather than assumed at every step per an explicit instruction
+          not to guess at Kalshi's data model: <code>get_series_list(include_volume=True)</code> returns all
+          ~12,500 series (a series is a recurring-event template — "Pro Basketball Game," confirmed via the SDK's
+          own docstring) with real lifetime volume in one ~1.1s call. Querying
+          <code>get_markets(series_ticker=...)</code> against just the highest-volume currently-active series
+          reliably returns clean, real, well-titled markets — verified directly against KXMLBGAME, KXPGATOUR,
+          KXBTCD, and KXATPMATCH. One more real SDK gotcha caught along the way: passing <code>mve_filter=None</code>
+          explicitly (instead of omitting the kwarg) silently changed the result set at the wire level — 271 real
+          markets found vs. 0. Cached in <code>state["series_cache"]</code>, refreshed hourly rather than every
+          15s poll tick, since the full series fetch is too expensive to repeat that often. The watchlist now
+          reliably surfaces things like PGA Tour and Bitcoin markets instead of
+          <code>KXMVESPORTSMULTIGAMEEXTENDED-*</code> tickers — verified repeatedly against live data, not declared
+          fixed after one good result.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_series_list</code>,
+          rewritten <code>get_top_volume_markets</code>) · <code>main.py</code> (<code>_get_series_cache</code>,
+          <code>_get_top_series</code>) · <code>config/settings.yaml</code> (<code>min_volume_24h</code>,
+          <code>categories</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 24 · a Config tab, real market search, and outcome rows instead of duplicate cards</div>
+        <h4>Search and pin anything (dormant included), and multi-outcome events finally look like Kalshi's own</h4>
+        <p>Two more fixes building directly on phase 23's series-based discovery. First, a new Config tab (5th tab)
+          — the Terminal column's settings form (strategy/risk/whale-signal/mode) moved there, Terminal keeps just
+          the frequently-used operational buttons (Pause/Reset/Kill Switch/Resume). Second, real market search:
+          <code>GET /api/markets/search</code> reuses phase 23's series cache — an earlier version of this
+          endpoint browsed markets directly (even cursor-paginating 5,000+ for one text query) and hit the exact
+          same reliability wall, confirmed directly rather than assumed fixed; text-matching against series
+          title/tags/category first, then querying only matching series, is what actually works. Defaults to
+          full, dormant-inclusive access (<code>min_volume=0</code>) — a market missing from the automatic
+          watchlist was never supposed to mean unreachable, only "not the default view." Results are
+          checkbox-multi-selectable; "Add Selected to Watchlist" merges picks into the already-existing
+          <code>kalshi.markets_watchlist</code> config field via the existing <code>/api/config</code> endpoint —
+          it already preferred pinned markets over automatic discovery, it just had no UI besides hand-editing
+          <code>settings.yaml</code> until now.</p>
+        <p>Third, prompted by the same real Kalshi screenshots: multi-outcome events (the earlier event/outcome-
+          grouping work) were rendering as N full cards side by side under one header — better than N disconnected
+          cards, but still not how real Kalshi shows it, and still "a clear lack of data for any market in
+          particular." The screenshots showed the real pattern directly: one card, a compact list of outcome rows
+          (name + Yes/No price), not duplicate cards. Rebuilt to match exactly that, each row clickable straight
+          into that specific outcome's drill-down. Also cleared a stale paper position left over from earlier in
+          the session (from back when the watchlist was still combo-dominated) via the app's own
+          <code>POST /api/reset</code> rather than touching <code>data/paper_broker.db</code> directly. Verified
+          end-to-end through real Chrome sessions: searched "golf," multi-selected two Wyndham Championship
+          outcomes, added them to the pinned watchlist, removed one and confirmed it; separately confirmed an
+          event card renders the right category/title/sorted-rows and that clicking a row opens the correct
+          outcome's drill-down.</p>
+        <div class="files"><code>main.py</code> (<code>/api/markets/search</code>, Config tab wiring) ·
+          <code>static/index.html</code> (Config tab, <code>searchMarkets</code>, <code>renderPinnedWatchlist</code>,
+          <code>eventGroupCardHTML</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -714,9 +782,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades endpoints, watchlist-scoped trade tape, event/outcome grouping + context</td><td class="loc">713</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context</td><td class="loc">811</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades</td><td class="loc">108</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>)</td><td class="loc">172</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -731,10 +799,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">4-view dashboard: Portfolio, Markets, Whale Watch, Terminal, real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event/outcome grouping + context (category/matchup/position meaning)</td><td class="loc">1860</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning)</td><td class="loc">2064</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~920</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~985</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">66 tests across 8 files: paper_broker, risk_manager, strategy_engine, signal_log, shadow_mode, trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape) — each isolates its own SQLite file, never touches real <code>data/*.db</code></td><td class="loc">917</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

@@ -3,6 +3,8 @@ kalshi:
   base_url: https://api.elections.kalshi.com/trade-api/v2
   markets_watchlist: []
   watchlist_size: 8
+  min_volume_24h: 1
+  categories: []
   poll_interval_sec: 15
   request_timeout_sec: 10
 whale_signal:

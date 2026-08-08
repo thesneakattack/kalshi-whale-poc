@@ -238,6 +238,63 @@ this app does that theirs doesn't, in either mode.
       6) · Betting: San Diego" plus "$6.20 put in," and a market card
       correctly showed the matchup line and "Sports" in place of the old
       raw ticker-prefix meta tag.
+- [x] Second follow-up, also from direct feedback with real reference
+      screenshots of actual Kalshi UI provided: the multi-sibling
+      `.event-group` wrapper (from the original event/outcome-grouping
+      work) rendered N *full* `marketCardHTML()` cards side by side under
+      one header — better than N disconnected cards, but still "a clear
+      lack of data for any market in particular," and nothing like how
+      real Kalshi actually shows a multi-outcome event. The screenshots
+      showed the real pattern directly: one card, a compact list of
+      outcome rows (name + price), not N duplicate cards. Rebuilt
+      `eventGroupCardHTML()` to match exactly that — category badge, event
+      title, then each sibling as one row (outcome name from
+      `yes_sub_title`, Yes/No price pills), sorted highest-probability
+      first, each row clickable straight into the per-market drill-down.
+      Verified through a real Chrome session: correct category/title,
+      correctly-sorted rows, and clicking a row opened the right specific
+      outcome's drill-down with the right context line.
+- [x] Market discovery was fundamentally broken, not just under-filtered —
+      found via direct pushback ("you're wrong that combo markets are all
+      that's open") on the assumption that the watchlist reflected real
+      market conditions, and root-caused properly rather than patched.
+      Kalshi auto-generates a huge number of "MVE" (multivariate event /
+      combo) markets, and confirmed directly, repeatedly, with real
+      numbers: a flat browse of even 50,000+ open markets (the API's own
+      cursor pagination, run to that depth) can return **zero** with any
+      real trading volume, because combos vastly outnumber real markets in
+      the API's default ordering. `get_top_volume_markets` used to browse
+      a 100-market page and sort it — both too shallow a sample and
+      sorting a mostly-dead sample doesn't help. Two real SDK gotchas
+      caught along the way, neither guessed: passing `mve_filter=None`
+      explicitly (instead of omitting the kwarg) silently changed the
+      result set at the wire level (271 real markets found vs. 0); and the
+      real fix isn't excluding combos by type at all — per direct
+      correction ("you shouldn't be filtering out markets... only filter
+      out markets with 0 volume") — it's querying by **series** instead of
+      browsing individual markets. `get_series_list(include_volume=True)`
+      returns all ~12,500 series (a series is a recurring-event template —
+      "Pro Basketball Game," "Bitcoin price up/down" — confirmed via the
+      SDK's own docstring) with real lifetime volume in one ~1.1s call;
+      querying `get_markets(series_ticker=...)` against just the
+      highest-volume *currently active* series (KXMLBGAME, KXPGATOUR,
+      KXBTCD, KXATPMATCH all verified directly) reliably returns clean,
+      real, well-titled markets. Cached in `state["series_cache"]`
+      (refreshed hourly, not every 15s poll tick — a full series fetch is
+      too expensive to repeat that often) via new `_get_series_cache()`/
+      `_get_top_series()`. `kalshi.min_volume_24h` (config, default 1) and
+      `kalshi.categories` are the resulting configurable criteria for what
+      counts as "active enough" for the automatic watchlist — pinned
+      markets (see the watchlist item below) always show regardless.
+      Search (below) reuses the same series-based approach for the same
+      reason: an early version of it browsed markets directly (even
+      cursor-paginating 5,000+ for a text query) and that was just as
+      unreliable — text-matching against series title/tags/category
+      first, then querying only matching series, is what actually works.
+      Verified repeatedly against live data, not assumed fixed after one
+      good result — the watchlist now reliably surfaces things like PGA
+      Tour and Bitcoin markets instead of `KXMVESPORTSMULTIGAMEEXTENDED-*`
+      combo tickers.
 
 Concrete gaps against the current 4-tab dashboard (Portfolio, Markets,
 Whale Watch, Terminal — see `static/index.html`), each already framed as
@@ -368,19 +425,26 @@ a Simple/Advanced pair using the toggle above:
       `renderRealPositions`, `renderRealFills`), including the real-account
       rows where the count comes as a fixed-point string (`position_fp`/
       `count_fp`) that needs parsing first.
-- [ ] Market search and browse. Confirmed via the SDK's real method
-      signature (`get_markets(event_ticker, series_ticker, tickers,
-      status, cursor, ...)`) — there's solid support for filtering/paging
-      through markets by series, event, or ticker, but no free-text
-      keyword-search endpoint (a dedicated `SearchApi` exists but only
-      exposes sport filters and category tags, not title search). Right
-      now the dashboard only ever shows the top-volume watchlist — no way
-      to find anything outside it. Two features, not one: (1) search —
-      substring-match against already-fetched market titles client-side to
-      start (zero new API calls); (2) browse — a real category/series
-      explorer using `get_series_list`/`get_tags_for_series_categories` +
-      `series_ticker` filtering + cursor pagination, to reach markets
-      outside today's watchlist entirely.
+- [x] Market search and browse. Shipped as one combined tool (search text +
+      category filter + include-dormant toggle, not two separate features
+      as originally scoped) in the new Config tab. New
+      `GET /api/markets/search` — series-based, same approach and same
+      reason as the market-discovery fix above (text-matches
+      title/tags/category against the cached series list, then queries
+      only matching series) — defaults to `min_volume=0` (dormant markets
+      included) so a market being excluded from the automatic watchlist
+      never means it's unreachable. Results are checkbox-multi-selectable;
+      "Add Selected to Watchlist" merges the picks into
+      `kalshi.markets_watchlist` via the existing `/api/config` patch
+      endpoint (no new endpoint needed — `ConfigStore.update()`'s shallow
+      per-key merge already does the right thing). Verified end-to-end
+      through a real Chrome session: searched "golf," multi-selected two
+      Wyndham Championship outcome markets, added them, confirmed they
+      appeared in the pinned list, removed one, confirmed the removal.
+      Category taxonomy is a plain text field for now (Kalshi's
+      `get_tags_for_series_categories` endpoint, for a real dropdown of
+      valid categories, wasn't explored this pass) — a reasonable
+      follow-up, not required for this to be useful today.
 - [ ] Markets / Whale Watch cards. Simple: today's card view
       (`renderMarketCards`). Advanced: a dense, sortable table — price,
       spread, depth, 5-minute volume, whale lean — as an alternate
@@ -427,14 +491,17 @@ a Simple/Advanced pair using the toggle above:
       real-mode equity chart, and now this header) expects dollars, so a
       real $1,000.00 balance would have silently rendered as
       "$100,000.00." Fixed at the source in `trading_loop()`.
-- [ ] A real watchlist / pinned-markets concept. Markets and Whale Watch
-      currently both render the exact same top-volume market list
-      (`renderMarketCards`, shared between the two views via an
-      `includeWhale` flag) — there's no way to pin specific markets you
-      care about and see them consistently across views. Orthogonal to
-      Simple/Advanced (useful in both modes), and a prerequisite for
-      anything Canvas-like (multiple pinned markets, each with its own
-      book/chart) later.
+- [x] A real watchlist / pinned-markets concept — shipped together with
+      market search above (same Config tab section), since pinning is
+      what the search results' multi-select feeds into.
+      `kalshi.markets_watchlist` already existed as a config field and
+      `_fetch_markets` already preferred it over automatic discovery when
+      non-empty — it just had no UI, only hand-editing `settings.yaml`.
+      Now Markets and Whale Watch both show pinned markets consistently
+      (they already shared `renderMarketCards`, so this required no
+      rendering changes, only the config-editing UI). Still a prerequisite
+      for anything Canvas-like (multiple pinned markets, each with its own
+      book/chart) later, as originally noted.
 - [ ] Reassess the Markets vs. Whale Watch split now that both share
       `renderMarketCards` — give them a genuinely distinct job (e.g. Whale
       Watch leans into the trade-tape/screener angle, Markets becomes the

@@ -18,6 +18,8 @@ responses, and the test suite unchanged; the SDK's real, verified field
 names flow through as-is either way, since Pydantic's field names already
 match the wire JSON.
 """
+import asyncio
+
 import kalshi_python_async as kpa
 
 from services.http_client import call_with_backoff
@@ -49,9 +51,46 @@ class KalshiClient:
         long-running process."""
         await self._client.close()
 
-    async def get_markets(self, limit: int = 20, status: str = "open") -> list[dict]:
-        resp = await call_with_backoff(self._client.get_markets, limit=limit, status=status)
+    async def get_markets(
+        self, limit: int = 20, status: str = "open", mve_filter: str | None = None, series_ticker: str | None = None
+    ) -> list[dict]:
+        # Optional kwargs (mve_filter, series_ticker) are only passed
+        # through when actually set - passing mve_filter explicitly as
+        # None (instead of omitting the kwarg) silently changed the result
+        # set versus not passing it at all (271 markets with nonzero 24h
+        # volume in a 1000-market sample vs. 0 - confirmed directly): the
+        # SDK's generated client treats "explicitly None" and "not
+        # provided" differently at the wire level. Not verified for
+        # series_ticker specifically, but the same omit-when-unset pattern
+        # costs nothing and sidesteps the risk.
+        kwargs = {"limit": limit, "status": status}
+        if mve_filter is not None:
+            kwargs["mve_filter"] = mve_filter
+        if series_ticker is not None:
+            kwargs["series_ticker"] = series_ticker
+        resp = await call_with_backoff(self._client.get_markets, **kwargs)
         return [m.model_dump(mode="json") for m in resp.markets]
+
+    async def get_series_list(self, category: str | None = None) -> list[dict]:
+        """All of Kalshi's series (~12,500 as of 2026-08-08) with each one's
+        own lifetime volume_fp and category - a series is a template for
+        recurring events ("Pro Basketball Game", "Bitcoin price up/down"),
+        confirmed via the SDK's own docstring. This is the real fix for
+        market discovery: browsing individual markets directly (even a
+        full 1000-market page, even paging through 50,000+) can be
+        entirely combo markets at zero volume, confirmed repeatedly -
+        Kalshi's combo/MVE markets are generated in bulk and vastly
+        outnumber real ones in that flat ordering. Series-level volume
+        doesn't have that problem and is one call, not thousands - then
+        get_markets(series_ticker=...) against just the real, currently
+        active series returns clean single-outcome markets directly
+        (verified: KXMLBGAME, KXBTCD, KXATPMATCH all returned real,
+        well-titled, actively-trading markets this way)."""
+        resp = await call_with_backoff(self._client.get_series_list, include_volume=True)
+        series = [s.model_dump(mode="json") for s in resp.series]
+        if category:
+            series = [s for s in series if (s.get("category") or "").lower() == category.lower()]
+        return series
 
     async def get_market(self, ticker: str) -> dict:
         resp = await call_with_backoff(self._client.get_market, ticker)
@@ -61,12 +100,37 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_market_orderbook, ticker)
         return resp.model_dump(mode="json")
 
-    async def get_top_volume_markets(self, n: int = 8) -> list[dict]:
-        markets = await self.get_markets(limit=100, status="open")
-        # Kalshi's real field is volume_24h_fp (a float-shaped string), not
-        # "volume" — sorting by a field that doesn't exist silently sorted
-        # nothing, surfacing whatever the API happened to return first
-        # (often obscure combo markets).
+    async def get_top_volume_markets(self, n: int, min_volume: float, series_tickers: list[str]) -> list[dict]:
+        """Given a list of already-known-active series (see get_series_list
+        and main.py's cached _get_top_series - deliberately not fetched in
+        here, since the series list is ~12,500 entries and expensive enough
+        (~1s) to need caching across poll ticks, which belongs in main.py's
+        persistent state, not a client that's reconstructed fresh every
+        tick), fetch each series' open markets concurrently and return the
+        top n by 24h volume.
+
+        This replaced an earlier approach (browse individual markets
+        directly, sorted/filtered after the fact) that turned out
+        fundamentally unreliable: Kalshi auto-generates a huge number of
+        "MVE" (combo) markets, and confirmed directly - repeatedly, with
+        real numbers - a flat browse of even 50,000+ markets can still
+        return zero with any real volume, because combos vastly outnumber
+        real markets in that ordering. Querying by series sidesteps the
+        problem entirely rather than trying to filter around it: real
+        series (KXMLBGAME, KXBTCD, KXATPMATCH, ...) reliably return clean,
+        real, well-titled markets when queried directly - verified, not
+        assumed."""
+        if not series_tickers:
+            return []
+        results = await asyncio.gather(
+            *(self.get_markets(limit=100, status="open", series_ticker=t) for t in series_tickers),
+            return_exceptions=True,
+        )
+        markets = []
+        for r in results:
+            if isinstance(r, list):
+                markets.extend(r)
+        markets = [m for m in markets if float(m.get("volume_24h_fp") or 0) >= min_volume]
         markets.sort(key=lambda m: float(m.get("volume_24h_fp") or 0), reverse=True)
         return markets[:n]
 

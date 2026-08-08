@@ -313,25 +313,38 @@
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 14px;
   }
-  /* Markets sharing an event_ticker are outcomes of the same underlying
-     question, not unrelated markets - previously rendered as fully
-     disconnected cards with no indication of that relationship. Spans the
-     full grid width so the group reads as one unit, with its own nested
-     grid of outcome cards inside. */
-  .event-group {
-    grid-column: 1 / -1;
+  /* Markets sharing an event_ticker are outcomes of one underlying question
+     (e.g. "who wins the Wyndham Championship" -> one row per golfer), not
+     unrelated markets - previously rendered as either fully disconnected
+     cards (no indication of the relationship) or, briefly, as N full cards
+     awkwardly grouped under one header. Real Kalshi lists each outcome as
+     a compact row (name + price) inside one card, confirmed directly
+     against real Kalshi screenshots, not designed from guesswork - this
+     matches that pattern instead of inventing a different one. */
+  .event-card {
+    grid-column: span 2;
+    background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 10px;
-    padding: 12px;
-    background: rgba(245,185,66,0.03);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
-  .event-group .event-group-header {
-    font-size: 12px; font-weight: 600; color: var(--whale);
-    margin-bottom: 10px; padding: 0 4px;
-    display: flex; align-items: center; gap: 8px;
+  .event-card-header { display: flex; align-items: baseline; gap: 8px; }
+  .event-card-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+  .outcome-rows { display: flex; flex-direction: column; gap: 4px; }
+  .outcome-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px;
   }
-  .event-group .event-group-header .cat { font-size: 10px; font-weight: 400; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-  .event-group .cards-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .outcome-row:hover { background: var(--bg); }
+  .outcome-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 10px; }
+  .outcome-prices { display: flex; gap: 6px; flex-shrink: 0; }
+  .mini-price { padding: 3px 8px; border-radius: 6px; font-weight: 700; min-width: 34px; text-align: center; }
+  .mini-price.yes { background: rgba(45,212,191,0.1); color: var(--yes); }
+  .mini-price.no { background: rgba(249,112,102,0.1); color: var(--no); }
   .market-card {
     background: var(--panel);
     border: 1px solid var(--panel-border);
@@ -482,6 +495,7 @@
   <button class="tab-btn" id="tab-btn-markets" onclick="showView('markets'); refresh();">Markets</button>
   <button class="tab-btn" id="tab-btn-whale" onclick="showView('whale'); refresh();">Whale Watch</button>
   <button class="tab-btn" id="tab-btn-terminal" onclick="showView('terminal'); refresh();">Terminal</button>
+  <button class="tab-btn" id="tab-btn-config" onclick="showView('config'); refresh();">Config</button>
 </div>
 
 <!-- Per-market drill-down (ROADMAP.md Phase 0.5) - opened from any market
@@ -575,7 +589,10 @@
     <div id="decision-feed" class="scroll-panel"><div class="empty">No decisions yet…</div></div>
   </div>
 
-  <!-- Config + context -->
+  <!-- Quick operational actions - the detailed settings form moved to the
+       Config tab (ROADMAP.md Phase 0.5), these stay here since they're used
+       frequently while actively watching, unlike settings you set once and
+       rarely touch. -->
   <div class="col">
     <div class="panel-title">Controls</div>
     <div class="btn-row">
@@ -586,9 +603,21 @@
       <button class="danger" id="halt-btn">Kill Switch</button>
       <button id="resume-btn">Resume</button>
     </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:16px;">
+      Strategy, risk, whale-signal, and market-discovery settings live in the
+      <a href="#" onclick="showView('config'); refresh(); return false;" style="color:var(--whale);">Config</a> tab.
+    </p>
+  </div>
 
-    <div class="config-group" style="margin-top:24px;">
-      <h3>Mode</h3>
+</div>
+</div>
+
+<!-- Config: settings you set occasionally, not every-poll operational
+     actions (those stay in Terminal's Controls column) -->
+<div class="view" id="view-config">
+  <div class="wrap">
+    <div class="panel-title" style="margin-top:0;">Mode</div>
+    <div class="config-group">
       <div class="field"><label>Trading mode</label>
         <select id="cfg-mode">
           <option value="paper">Paper (default)</option>
@@ -598,8 +627,8 @@
       </div>
     </div>
 
+    <div class="panel-title">Strategy</div>
     <div class="config-group">
-      <h3>Strategy</h3>
       <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
       <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
       <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
@@ -607,22 +636,53 @@
       <div class="field"><label>...but only after this many resolved signals</label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
     </div>
 
+    <div class="panel-title">Whale Signal (simulated)</div>
     <div class="config-group">
-      <h3>Whale Signal (simulated)</h3>
       <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
       <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
       <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
     </div>
 
+    <div class="panel-title">Risk</div>
     <div class="config-group">
-      <h3>Risk</h3>
       <div class="field"><label>Max daily loss (% of bankroll)</label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
     </div>
 
-    <button class="primary" id="save-config-btn" style="width:100%;">Save Config</button>
-  </div>
+    <div class="panel-title">Market Discovery</div>
+    <div class="config-group">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+        Governs the <i>automatic</i> watchlist only (used when no markets are pinned below). Pinned markets
+        always show regardless of these thresholds.
+      </p>
+      <div class="field"><label>Minimum 24h volume (contracts) to be considered active</label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
+      <div class="field"><label>Default category filter for search below (comma-separated, blank = all)</label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
+    </div>
 
-</div>
+    <button class="primary" id="save-config-btn" style="width:100%;">Save Config</button>
+
+    <div class="panel-title" style="margin-top:32px;">Market Search &amp; Watchlist</div>
+    <div class="config-group">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+        The automatic watchlist above only surfaces active markets by design (see ROADMAP.md — a flat,
+        unfiltered browse of Kalshi's catalog can be almost entirely zero-volume combo markets). Search
+        here for anything, dormant markets included, and pin specific ones to always watch them regardless
+        of activity.
+      </p>
+      <div class="field" style="display:flex; gap:8px; align-items:flex-end;">
+        <div style="flex:2;"><label>Search (title or ticker)</label><input id="market-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
+        <div style="flex:1;"><label>Category</label><input id="market-search-category" type="text" placeholder="Sports"></div>
+        <div><label><input type="checkbox" id="market-search-dormant"> Include dormant</label></div>
+        <button id="market-search-btn" style="height:34px;">Search</button>
+      </div>
+      <div id="market-search-results" style="margin-top:12px;"></div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="primary" id="watchlist-add-btn" disabled>Add Selected to Watchlist</button>
+      </div>
+
+      <div class="panel-title" style="margin-top:24px;">Pinned Watchlist <span id="pinned-watchlist-count"></span></div>
+      <div id="pinned-watchlist-list"><div class="empty">Nothing pinned — using automatic discovery above.</div></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1141,6 +1201,47 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
 // unrelated markets that happen to be in the same watchlist. Groups of 1
 // render exactly as before (a standalone card); groups of >1 get wrapped
 // under one event header instead of appearing as N disconnected cards.
+// One outcome row per sibling market - name, Yes/No price, click to open the
+// drill-down for that specific outcome. Matches real Kalshi's own pattern
+// for a multi-outcome event (confirmed directly against real Kalshi
+// screenshots), not designed from guesswork: one card, N compact rows,
+// rather than N full cards awkwardly grouped under one header (an earlier
+// version of this did that; a real, well-founded complaint that the
+// group-of-full-cards version still showed "a clear lack of data for any
+// market in particular" and a raw ticker feel is what prompted this).
+function eventGroupCardHTML(group, eventInfo, prices) {
+  const title = eventInfo ? eventInfo.title : (group[0].event_ticker || 'Related markets');
+  const category = eventInfo ? eventInfo.category : null;
+  const totalVol = group.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
+
+  const rows = group.slice()
+    .sort((a, b) => (prices[b.ticker] ?? -1) - (prices[a.ticker] ?? -1))  // most-likely outcome first
+    .map(m => {
+      const label = marketLabel(m.ticker);
+      const info = marketTitles[m.ticker];
+      const outcomeName = (info && info.yes_sub_title) || label.short;
+      const yesBid = prices[m.ticker];
+      const yesPrice = yesBid !== undefined ? Math.round(yesBid * 100) : null;
+      const noPrice = yesPrice !== null ? 100 - yesPrice : null;
+      return `<div class="outcome-row" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" title="${esc(label.full)}">
+        <span class="outcome-name">${esc(outcomeName)}</span>
+        <span class="outcome-prices">
+          <span class="mini-price yes">${yesPrice !== null ? yesPrice + '¢' : '—'}</span>
+          <span class="mini-price no">${noPrice !== null ? noPrice + '¢' : '—'}</span>
+        </span>
+      </div>`;
+    }).join('');
+
+  return `<div class="event-card">
+    <div class="event-card-header">
+      ${category ? `<span class="cat-tag">${esc(category)}</span>` : ''}
+      <span class="event-card-title">${esc(title)}</span>
+    </div>
+    <div class="outcome-rows">${rows}</div>
+    <div class="meta"><span>vol ${Math.round(totalVol).toLocaleString()}</span><span>${group.length} markets</span></div>
+  </div>`;
+}
+
 function renderMarketCards(containerId, countId, markets, prices, includeWhale, signals, seriesTrackRecord) {
   const el = $(containerId);
   if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
@@ -1157,14 +1258,7 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
     if (group.length === 1) {
       return marketCardHTML(group[0], prices, includeWhale, signals, seriesTrackRecord);
     }
-    const eventInfo = eventTitles[key];
-    const title = eventInfo ? eventInfo.title : key;
-    const catHtml = eventInfo && eventInfo.category ? `<span class="cat">${esc(eventInfo.category)}</span>` : '';
-    const cards = group.map(m => marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord)).join('');
-    return `<div class="event-group">
-      <div class="event-group-header">🔗 ${esc(title)} — ${group.length} related markets ${catHtml}</div>
-      <div class="cards-grid">${cards}</div>
-    </div>`;
+    return eventGroupCardHTML(group, eventTitles[key], prices);
   }).join('');
 }
 
@@ -1783,6 +1877,10 @@ async function loadConfig() {
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
+  $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
+  $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
+  if (!$('market-search-category').value) $('market-search-category').value = (cfg.kalshi.categories || [])[0] || '';
+  renderPinnedWatchlist(cfg.kalshi.markets_watchlist || []);
 }
 
 $('toggle-btn').addEventListener('click', async () => { await fetchJSON('/api/toggle', {method:'POST'}); refresh(); });
@@ -1808,12 +1906,118 @@ $('save-config-btn').addEventListener('click', async () => {
     risk: {
       max_daily_loss_pct: parseFloat($('cfg-max-loss').value),
     },
+    kalshi: {
+      min_volume_24h: parseFloat($('cfg-min-volume').value) || 0,
+      categories: $('cfg-categories').value.split(',').map(s => s.trim()).filter(Boolean),
+    },
   };
   await fetchJSON('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({patch})});
   const btn = $('save-config-btn');
   btn.textContent = 'Saved ✓';
   setTimeout(() => btn.textContent = 'Save Config', 1200);
 });
+
+// Market search & pinned-watchlist management (ROADMAP.md Phase 0.5) - the
+// automatic watchlist only surfaces active markets by design (see
+// GET /api/markets/search's docstring for why a flat browse can't be
+// trusted to do that reliably); this is the escape hatch to find and pin
+// anything else, dormant markets included.
+let lastSearchResults = [];
+
+async function searchMarkets() {
+  const q = $('market-search-q').value.trim();
+  const category = $('market-search-category').value.trim();
+  const includeDormant = $('market-search-dormant').checked;
+  const btn = $('market-search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+  $('market-search-results').innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const params = new URLSearchParams({limit: '30'});
+    if (q) params.set('q', q);
+    if (category) params.set('category', category);
+    if (!includeDormant) params.set('min_volume', '1');
+    const resp = await fetchJSON('/api/markets/search?' + params.toString());
+    lastSearchResults = resp.markets || [];
+    Object.assign(marketTitles, resp.market_titles || {});
+    renderSearchResults();
+  } catch (e) {
+    $('market-search-results').innerHTML = '<div class="empty">Search failed.</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Search';
+  }
+}
+
+function renderSearchResults() {
+  const el = $('market-search-results');
+  if (!lastSearchResults.length) {
+    el.innerHTML = '<div class="empty">No results. Try a broader query or check "Include dormant."</div>';
+    updateWatchlistAddButton();
+    return;
+  }
+  el.innerHTML = `<div class="scroll-panel" style="max-height:320px;">` + lastSearchResults.map(m => {
+    const label = marketLabel(m.ticker);
+    const vol = m.volume_24h_fp != null ? Math.round(parseFloat(m.volume_24h_fp)).toLocaleString() : '—';
+    return `<label class="market-row" style="cursor:pointer; display:flex; align-items:center; gap:10px;" title="${esc(label.full)}">
+      <input type="checkbox" class="search-result-check" value="${esc(m.ticker)}" onchange="updateWatchlistAddButton()">
+      <span class="ticker" style="flex:1;">${esc(label.short)}</span>
+      <span class="price">vol ${vol}</span>
+    </label>`;
+  }).join('') + `</div>`;
+  updateWatchlistAddButton();
+}
+
+function updateWatchlistAddButton() {
+  const checked = document.querySelectorAll('.search-result-check:checked').length;
+  const btn = $('watchlist-add-btn');
+  btn.disabled = checked === 0;
+  btn.textContent = checked ? `Add ${checked} Selected to Watchlist` : 'Add Selected to Watchlist';
+}
+
+async function addSelectedToWatchlist() {
+  const selected = Array.from(document.querySelectorAll('.search-result-check:checked')).map(el => el.value);
+  if (!selected.length) return;
+  const cfg = await fetchJSON('/api/config');
+  const current = cfg.kalshi.markets_watchlist || [];
+  const merged = Array.from(new Set([...current, ...selected]));
+  await fetchJSON('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({patch: {kalshi: {markets_watchlist: merged}}}),
+  });
+  document.querySelectorAll('.search-result-check:checked').forEach(el => el.checked = false);
+  updateWatchlistAddButton();
+  renderPinnedWatchlist(merged);
+}
+
+async function removeFromWatchlist(ticker) {
+  const cfg = await fetchJSON('/api/config');
+  const remaining = (cfg.kalshi.markets_watchlist || []).filter(t => t !== ticker);
+  await fetchJSON('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({patch: {kalshi: {markets_watchlist: remaining}}}),
+  });
+  renderPinnedWatchlist(remaining);
+}
+
+function renderPinnedWatchlist(tickers) {
+  $('pinned-watchlist-count').textContent = tickers.length ? `(${tickers.length})` : '';
+  const el = $('pinned-watchlist-list');
+  if (!tickers.length) {
+    el.innerHTML = '<div class="empty">Nothing pinned — using automatic discovery above.</div>';
+    return;
+  }
+  el.innerHTML = tickers.map(t => {
+    const label = marketLabel(t);
+    return `<div class="market-row" title="${esc(label.full)}">
+      <span class="ticker">${esc(label.short)}</span>
+      <button class="danger" style="padding:4px 8px; font-size:11px;" onclick="removeFromWatchlist('${esc(t)}')">Remove</button>
+    </div>`;
+  }).join('');
+}
+
+$('market-search-btn').addEventListener('click', searchMarkets);
+$('watchlist-add-btn').addEventListener('click', addSelectedToWatchlist);
 
 async function loadSession() {
   const el = $('session-info');
@@ -1834,7 +2038,7 @@ async function loadSession() {
   }
 }
 
-const VIEWS = ['portfolio', 'markets', 'whale', 'terminal'];
+const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'config'];
 function showView(name) {
   VIEWS.forEach(v => {
     $('view-' + v).classList.toggle('active', v === name);
