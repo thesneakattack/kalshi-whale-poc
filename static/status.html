@@ -1259,6 +1259,40 @@
           <code>#signal-clusters</code> panel) · <code>tests/test_signal_log.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 39 · mobile/responsive pass, a partial accessibility pass, and a modal-bubbling bug</div>
+        <h4>P3 closed out, plus a direct bug report caught in the same pass</h4>
+        <p>This app had zero <code>@media</code> breakpoints before this - the Terminal view's fixed 3-column
+          grid in particular was unusable on a phone. New <code>@media (max-width: 860px)</code>: <code>.layout</code>
+          stacks into one naturally-scrolling column instead of three independently-scrolling panes pinned to
+          <code>calc(100vh - 57px)</code> - itself a desktop-only assumption, since mobile browser chrome
+          resizes the visible viewport as you scroll and fights a fixed vh height. Header, util-bar, and the
+          equity strip wrap instead of overflowing; wide sortable tables get their own horizontal scroll
+          instead of taking the whole page sideways with them. Verified live at real narrow viewports
+          (375-500px) by measuring <code>document.body.scrollWidth</code> directly, not read off the CSS and
+          assumed correct - which caught two genuine overflow bugs neither look at the CSS alone would have
+          surfaced: a classic flexbox gotcha (a flex item's default <code>min-width: auto</code> refusing to
+          let <code>.account-bar .msg</code> shrink/wrap below its own unbroken text width) and one
+          <code>white-space: nowrap</code> status tag simply too wide for a narrow screen. Both fixed and
+          re-verified at zero horizontal overflow across Portfolio, Terminal, Markets, and Config.</p>
+        <p>Accessibility pass, deliberately scoped and reported as partial rather than overclaimed:
+          <code>aria-label</code>s added to icon-only controls (modal close buttons, the &#128040; "why this
+          position was opened" disclosure). Colorblind fallback checked, not assumed adequate - every yes/no
+          indicator in this app already pairs color with a "YES"/"NO" text label, confirmed by reading every
+          call site, not just the CSS variables. Full keyboard navigation for the many clickable
+          <code>&lt;div onclick=...&gt;</code> cards/rows across this app (no <code>tabindex</code> or keydown
+          handling today) is a real, larger gap - left open rather than claimed done off a handful of
+          <code>aria-label</code> additions.</p>
+        <p>Direct bug report caught in the same pass: the &#128040; disclosure sits inside a
+          <code>&lt;tr onclick="openMarketDetail(...)"&gt;</code> (see <code>renderPositions</code>) -
+          expanding it also opened the market-detail modal underneath, since the click bubbled up to the row.
+          Fixed with <code>event.stopPropagation()</code> on the <code>&lt;details&gt;</code> element. Verified
+          live: the icon expands without opening the modal; the row itself still opens it as before.</p>
+        <div class="files"><code>static/index.html</code> (<code>@media (max-width: 860px)</code>,
+          <code>.account-bar .msg</code>/<code>.tag</code> fixes, <code>reasonDetailsHTML</code>
+          <code>stopPropagation</code>, <code>aria-label</code>s)</div>
+      </div>
+
     </div>
   </section>
 
@@ -1320,10 +1354,10 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), Config (search/pin markets + settings, excluded-series denylist, selectable-domain Danger Zone reset), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">3318</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets (+ standalone search/browse), Whale Watch, Terminal (smooth, scrollable, flicker-free signal/decision feeds), Config (search/pin markets + settings, excluded-series denylist, selectable-domain Danger Zone reset), global real-money-risk banner, first-run Help modal + glossary, plain-English skip reasons, real-trading confirmation gate, Shadow Trades panel, exchange status badge, connectivity/staleness badge, persistent price-change indicators, filterable/sortable/groupable signal feed with impact tags, browsable/paginated signal history, persistent flow clustering ("Possible Accumulation"), real series metadata (friendly names instead of raw ticker prefixes), shared dense sortable screener table (Terminal/Markets/Whale Watch), thin/semi-transparent scrollbars, mobile-responsive layout, Simple/Advanced toggle, per-market drill-down modal (full Kalshi-landing-page-style info header + sibling outcomes + order book + candlestick + trades, reachable from Markets/Whale Watch/Open Positions alike, robust against refresh mid-interaction), watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down, sortable/filterable Trade Log + Strategy Decisions tables</td><td class="loc">3371</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1510</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1545</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">111 tests across 10 files: paper_broker, risk_manager, strategy_engine (incl. excluded-series), signal_log (incl. paginated history, flow clustering), shadow_mode (incl. excluded-series), trading_gate, http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), kalshi_client (round-robin watchlist selection), whale_simulator (relative sizing, weighted market selection, composite confidence, live-only generation gate) — each isolates its own SQLite file (or mocks the SDK client directly), never touches real <code>data/*.db</code></td><td class="loc">1488</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>

@@ -290,7 +290,13 @@
   .account-bar.disconnected .tag { color: var(--muted); }
   .account-bar .field { color: var(--text); }
   .account-bar .field .label { color: var(--muted); margin-right: 4px; }
-  .account-bar .msg { color: var(--muted); }
+  /* min-width: 0 overrides the flex-item default of min-width: auto, which
+     otherwise refuses to let this text shrink/wrap below its own unbroken
+     content width even inside a flex-wrap container - a classic flexbox
+     overflow gotcha, confirmed live: this exact rule was the real cause of
+     a page-wide horizontal scrollbar on a narrow viewport, not the .msg
+     text itself being too long to wrap. */
+  .account-bar .msg { color: var(--muted); min-width: 0; }
   .account-bar details { margin-left: auto; }
   .account-bar summary { cursor: pointer; color: var(--muted); }
   .account-bar pre { max-height: 200px; overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; margin: 6px 0 0; font-size: 11px; }
@@ -576,6 +582,50 @@
   .real-money-banner.safe { background: var(--yes); color: #04231c; }
   .real-money-banner.danger { background: var(--danger); color: #fff; animation: real-money-pulse 1.6s ease-in-out infinite; }
   @keyframes real-money-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+
+  /* Mobile/responsive pass (ROADMAP.md P3) - this app had zero @media
+     breakpoints before this; the Terminal view's fixed 3-column grid in
+     particular (.layout, grid-template-columns: 1.3fr 1.2fr 1fr) was
+     unusable on a phone, and several fixed-height/fixed-gap elements
+     (header, equity strip, util-bar, tab-bar) didn't wrap. Verified live
+     against real narrow-viewport renders (390px and 768px), not just
+     read off the CSS - see status.html for what was actually checked. */
+  @media (max-width: 860px) {
+    .wrap { padding: 14px; }
+    header { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; }
+    header h1 { font-size: 13px; flex-wrap: wrap; }
+    .equity-strip { flex-wrap: wrap; gap: 16px; width: 100%; }
+    .util-bar { flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 14px; }
+    .tab-bar { padding: 0 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab-btn { padding: 10px 10px; font-size: 11px; white-space: nowrap; }
+
+    /* The dense 3-column trading-terminal layout doesn't fit a phone
+       screen at any font size - stack into one column and let the page
+       scroll normally instead of each column independently scrolling a
+       fixed viewport-height box (calc(100vh - 57px) is itself a desktop-
+       only assumption: mobile browser chrome resizes the visible viewport
+       as you scroll, which fights a fixed vh height). */
+    .layout { display: block; height: auto; background: none; gap: 0; }
+    .col { overflow-y: visible; padding: 14px; border-bottom: 1px solid var(--panel-border); }
+
+    .cards-grid { grid-template-columns: 1fr; }
+    .stat-cards { grid-template-columns: repeat(2, 1fr); }
+    .book-ladder { grid-template-columns: 1fr; }
+
+    /* Wide sortable tables (screener, trade log, signal history, ...)
+       would otherwise force the whole page to scroll sideways - contain
+       the overflow to just the table itself, same idea as .scroll-panel's
+       vertical scroll but horizontal. */
+    .positions-table { display: block; max-width: 100%; overflow-x: auto; white-space: nowrap; }
+
+    .market-detail-backdrop, #help-backdrop { padding: 10px; }
+    .market-detail-panel { padding: 14px; max-height: 90vh; }
+
+    .table-filter-row { gap: 8px; }
+    .config-group .field[style*="flex"] { flex-wrap: wrap; }
+    .account-bar { padding: 8px 14px; }
+    .account-bar .tag { white-space: normal; }
+  }
 </style>
 </head>
 <body>
@@ -619,7 +669,7 @@
   <div class="market-detail-panel">
     <div class="market-detail-header">
       <div class="market-detail-title" id="market-detail-title">—</div>
-      <button onclick="closeMarketDetail()" title="Close">✕</button>
+      <button onclick="closeMarketDetail()" title="Close" aria-label="Close">✕</button>
     </div>
     <div id="market-detail-body"><div class="empty">Loading order book…</div></div>
   </div>
@@ -638,7 +688,7 @@
   <div class="market-detail-panel">
     <div class="market-detail-header">
       <div class="market-detail-title">Welcome — here's what you're looking at</div>
-      <button onclick="closeHelp()" title="Close">✕</button>
+      <button onclick="closeHelp()" title="Close" aria-label="Close">✕</button>
     </div>
     <div class="halted-banner" style="background: rgba(45,212,191,0.1); border-color: var(--yes); color: var(--yes);">
       🧪 Everything on this page uses <b>fake money</b> by default. No real trade is ever placed unless real
@@ -1425,7 +1475,10 @@ function reasonDetailsHTML(ticker, recentTrades) {
     const when = new Date(t.timestamp * 1000).toLocaleString();
     return `<div>${esc(t.reason)} <span style="color:var(--muted)">— ${esc(when)}</span></div>`;
   }).join('');
-  return `<details class="whale-reason"><summary title="Why this position was opened">🐋</summary><div class="whale-reason-body">${items}</div></details>`;
+  // stopPropagation - this sits inside a <tr onclick="openMarketDetail(...)">
+  // (see renderPositions); without it, opening/reading this disclosure
+  // also opened the market-detail modal underneath it, direct report.
+  return `<details class="whale-reason" onclick="event.stopPropagation()"><summary title="Why this position was opened" aria-label="Why this position was opened">🐋</summary><div class="whale-reason-body">${items}</div></details>`;
 }
 
 // The actual answer to "where did my money go": every open position,

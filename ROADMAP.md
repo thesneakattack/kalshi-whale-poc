@@ -766,11 +766,40 @@ band instead.
       sole public entrypoint serving `static/*` and reverse-proxying
       `/api/`+`/auth/` to `fastapi`, which has no public exposure of its
       own — structurally impossible for the collision to recur.
-- [ ] Mobile/responsive pass — the Terminal view's 3-column grid is
-      desktop-only right now.
-- [ ] Accessibility pass — keyboard navigation, aria labels, and a check
-      that the heavy green/red (yes/no) coding has a non-color fallback
-      for colorblind users.
+- [x] Mobile/responsive pass — this app had zero `@media` breakpoints
+      before this. New `@media (max-width: 860px)`: Terminal's fixed
+      3-column `.layout` grid stacks into one naturally-scrolling column
+      instead of three independently-scrolling fixed-viewport-height
+      panes (the old `calc(100vh - 57px)` was itself a desktop-only
+      assumption — mobile browser chrome resizes the visible viewport as
+      you scroll, fighting a fixed vh height); header/util-bar/equity-strip
+      wrap instead of overflowing; wide sortable tables get their own
+      horizontal scroll instead of forcing the whole page sideways.
+      Verified live at real narrow viewports (375-500px), not just read
+      off the CSS — and caught two genuine overflow bugs doing it, not
+      hypothetical: a classic flexbox gotcha (`min-width: auto` on a flex
+      item refusing to shrink/wrap below its own unbroken text width,
+      `.account-bar .msg`) and one `white-space: nowrap` status tag too
+      wide for a narrow screen (`.account-bar .tag`) — both fixed and
+      confirmed with `document.body.scrollWidth` measured directly at
+      several viewport widths, not assumed fixed.
+- [x] Accessibility pass, partial and honestly scoped as such — added
+      `aria-label`s to icon-only controls (modal close buttons, the 🐋
+      "why this position was opened" disclosure). Colorblind fallback
+      checked, not assumed: every yes/no indicator in this app already
+      pairs color with a "YES"/"NO" text label, never color alone. Full
+      keyboard navigation for every clickable card/row (`<div onclick=...>`
+      elements have no `tabindex`/keydown handling today, so a keyboard-
+      only user can't activate them at all) is a real, larger gap still
+      open — didn't want to claim it done via a handful of `aria-label`
+      additions.
+- [x] Follow-up bug, direct report: the 🐋 "why this position was opened"
+      disclosure sits inside a `<tr onclick="openMarketDetail(...)">` (see
+      `renderPositions`) — clicking it to expand also opened the
+      market-detail modal underneath, since the click bubbled up to the
+      row. Fixed with `event.stopPropagation()` on the `<details>` element.
+      Verified live: clicking the icon expands it without opening the
+      modal; clicking the row itself still opens the modal as before.
 
 ## P4 — Nice-to-haves
 
