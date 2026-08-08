@@ -306,6 +306,25 @@
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 14px;
   }
+  /* Markets sharing an event_ticker are outcomes of the same underlying
+     question, not unrelated markets - previously rendered as fully
+     disconnected cards with no indication of that relationship. Spans the
+     full grid width so the group reads as one unit, with its own nested
+     grid of outcome cards inside. */
+  .event-group {
+    grid-column: 1 / -1;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 12px;
+    background: rgba(245,185,66,0.03);
+  }
+  .event-group .event-group-header {
+    font-size: 12px; font-weight: 600; color: var(--whale);
+    margin-bottom: 10px; padding: 0 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .event-group .event-group-header .cat { font-size: 10px; font-weight: 400; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .event-group .cards-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
   .market-card {
     background: var(--panel);
     border: 1px solid var(--panel-border);
@@ -606,6 +625,7 @@ async function fetchJSON(url, opts) {
 }
 
 let marketTitles = {};
+let eventTitles = {};  // event_ticker -> {title, subtitle, category} — see renderMarketCards' grouping
 let accountMode = localStorage.getItem('whale-signal-account-mode') || 'paper'; // 'paper' | 'real' — Portfolio view toggle
 
 function esc(str) {
@@ -737,8 +757,8 @@ function renderPositions(positions, prices) {
     <div class="position-row" title="${esc(label.full)}">
       <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span></div>
       <div class="nums">
-        <span>${p.size.toLocaleString()} ct @ ${(p.entry_price*100).toFixed(0)}¢ → ${(current*100).toFixed(0)}¢</span>
-        <span class="pnl ${pnl >= 0 ? 'pos' : 'neg'}">${fmt(pnl)}</span>
+        <span title="Contracts held, entry price, current price">${p.size.toLocaleString()} contracts @ ${(p.entry_price*100).toFixed(0)}¢ entry → ${(current*100).toFixed(0)}¢ now</span>
+        <span class="pnl ${pnl >= 0 ? 'pos' : 'neg'}" title="Unrealized profit/loss at the current price">${fmt(pnl)}</span>
         ${payoutHTML(p.size)}
       </div>
     </div>`;
@@ -760,7 +780,7 @@ function renderTrades(trades) {
     <div class="trade-row" title="${esc(label.full)}">
       <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span></div>
       <div class="nums">
-        <span>${t.size.toLocaleString()} ct @ ${(t.price*100).toFixed(0)}¢</span>
+        <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
         <span style="color: var(--muted)">${when}</span>
         ${payoutHTML(t.size)}
       </div>
@@ -802,7 +822,7 @@ function renderRealPositions(positions) {
     const pnlHtml = pnl != null ? ` <span style="color: var(${pnl >= 0 ? '--yes' : '--no'})">${fmt(pnl)} realized</span>` : '';
     return `<div class="position-row" title="${esc(JSON.stringify(p))}">
       <div class="name">${esc(label.short)}</div>
-      <div class="nums"><span>qty ${esc(String(qty))}${exposure != null ? ' · exposure ' + exposure : ''}${pnlHtml}</span>
+      <div class="nums"><span title="Signed contract count - positive is a Yes position, negative is No">${esc(String(qty))} contracts${exposure != null ? ' · ' + exposure + ' at risk' : ''}${pnlHtml}</span>
         ${payoutHTML(qtyNum)}</div>
     </div>`;
   }).join('') + rawJsonDetails(positions);
@@ -829,7 +849,7 @@ function renderRealFills(fills) {
     const price = priceDollars != null ? `${(parseFloat(priceDollars) * 100).toFixed(0)}¢` : null;
     return `<div class="trade-row" title="${esc(JSON.stringify(f))}">
       <div class="name">${esc(label.short)} ${side ? `<span class="side-tag ${esc(side)}">${esc(side)}</span>` : ''}</div>
-      <div class="nums"><span>${esc(String(count))} ct${price != null ? ' @ ' + price : ''}</span>
+      <div class="nums"><span title="Contracts filled at this price">${esc(String(count))} contracts${price != null ? ' @ ' + price + ' fill price' : ''}</span>
         ${payoutHTML(countNum)}</div>
     </div>`;
   }).join('') + rawJsonDetails(fills);
@@ -988,11 +1008,36 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   </div>`;
 }
 
+// Markets sharing an event_ticker are outcomes of the same underlying
+// question (confirmed on real data - see ROADMAP.md Phase 0.5), not
+// unrelated markets that happen to be in the same watchlist. Groups of 1
+// render exactly as before (a standalone card); groups of >1 get wrapped
+// under one event header instead of appearing as N disconnected cards.
 function renderMarketCards(containerId, countId, markets, prices, includeWhale, signals, seriesTrackRecord) {
   const el = $(containerId);
   if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
-  el.innerHTML = markets.map(m => marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord)).join('');
+
+  const groups = new Map();  // event_ticker (or a per-market unique key) -> markets[]
+  markets.forEach(m => {
+    const key = m.event_ticker || ('__solo__' + m.ticker);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  });
+
+  el.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
+    if (group.length === 1) {
+      return marketCardHTML(group[0], prices, includeWhale, signals, seriesTrackRecord);
+    }
+    const eventInfo = eventTitles[key];
+    const title = eventInfo ? eventInfo.title : key;
+    const catHtml = eventInfo && eventInfo.category ? `<span class="cat">${esc(eventInfo.category)}</span>` : '';
+    const cards = group.map(m => marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord)).join('');
+    return `<div class="event-group">
+      <div class="event-group-header">🔗 ${esc(title)} — ${group.length} related markets ${catHtml}</div>
+      <div class="cards-grid">${cards}</div>
+    </div>`;
+  }).join('');
 }
 
 // Fixed a real bug: this used to unconditionally show paper broker numbers
@@ -1398,6 +1443,7 @@ async function refresh() {
     renderHeaderStrip(broker, state.account, state.real_balance_history || []);
 
     marketTitles = state.market_titles || {};
+    eventTitles = state.event_titles || {};
     renderAccount(state.account); // always visible, above the tabs
 
     // Only build the DOM for whichever view is actually on screen — the other

@@ -60,6 +60,7 @@ state = {
     "markets": [],
     "latest_prices": {},
     "market_titles": {},
+    "event_titles": {},  # event_ticker -> {"title", "subtitle", "category"} — only fetched for events with >1 sibling market this tick, see _fetch_event_titles
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
@@ -77,12 +78,14 @@ state = {
 }
 
 
-# The dashboard only ever reads m.ticker and m.volume_24h_fp off a raw market
-# object — title and price are already looked up separately via market_titles/
-# latest_prices. Kalshi's full market object carries 40+ fields (rules text,
-# combo-leg lists, ...); trimming to what's actually used cuts the /api/state
-# payload for 8 markets from ~34KB to well under 1KB.
-_MARKET_FIELDS = ("ticker", "volume_24h_fp")
+# Kalshi's full market object carries 40+ fields (rules text, combo-leg
+# lists, ...); trimming to what's actually used cuts the /api/state payload
+# for 8 markets from ~34KB to well under 1KB. event_ticker/close_time/
+# strike_type added for Phase 0.5's event/outcome grouping - previously
+# dropped here entirely, so the dashboard had no way to know two markets
+# were siblings under one event even though Kalshi sends that relationship
+# on every market object already.
+_MARKET_FIELDS = ("ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type")
 
 
 def _slim_market(m: dict) -> dict:
@@ -133,6 +136,35 @@ async def _fetch_exchange_status(client: KalshiClient) -> dict | None:
         return await client.get_exchange_status()
     except Exception:
         return None
+
+
+async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict:
+    """Only fetch an event's own title for events with more than one sibling
+    market in *this* batch - a market whose event has no siblings doesn't
+    need a group header at all, and fetching every market's event
+    individually would mean one extra request per market, every tick, for
+    no dashboard benefit. Cached in state["event_titles"] (accumulates,
+    capped like market_titles) so an event only needs fetching once even as
+    the watchlist rotates."""
+    from collections import Counter
+    counts = Counter(m.get("event_ticker") for m in markets if m.get("event_ticker"))
+    to_fetch = [
+        et for et, n in counts.items()
+        if n > 1 and et not in state["event_titles"]
+    ]
+    if not to_fetch:
+        return {}
+    results = await asyncio.gather(*(client.get_event(et) for et in to_fetch), return_exceptions=True)
+    fetched = {}
+    for et, result in zip(to_fetch, results):
+        if isinstance(result, dict):
+            event = result.get("event") or {}
+            fetched[et] = {
+                "title": event.get("title") or et,
+                "subtitle": event.get("subtitle"),
+                "category": event.get("category"),
+            }
+    return fetched
 
 
 async def _check_signal_resolutions(client: KalshiClient):
@@ -188,6 +220,9 @@ async def trading_loop():
                 state["exchange_status"] = exchange_status
 
             state["markets"] = [_slim_market(m) for m in markets]
+            state["event_titles"].update(await _fetch_event_titles(client, markets))
+            if len(state["event_titles"]) > 300:  # bound unbounded growth, same as market_titles below
+                state["event_titles"] = dict(list(state["event_titles"].items())[-300:])
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
             # defaulted every price to 0.5.
@@ -420,6 +455,7 @@ async def get_state():
         "running": state["running"],
         "markets": state["markets"],
         "market_titles": state["market_titles"],
+        "event_titles": state["event_titles"],
         "latest_prices": state["latest_prices"],
         "signal_feed": state["signal_feed"],
         "decision_feed": state["decision_feed"],

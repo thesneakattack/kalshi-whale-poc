@@ -70,6 +70,15 @@ class KalshiClient:
         markets.sort(key=lambda m: float(m.get("volume_24h_fp") or 0), reverse=True)
         return markets[:n]
 
+    async def get_event(self, event_ticker: str) -> dict:
+        """The event's own title/subtitle/category — distinct from, and
+        often more useful than, any one sibling market's own title (a
+        multi-outcome event's individual markets often carry a long
+        combo-leg title, not a clean event name). Used to label grouped
+        markets in the dashboard (ROADMAP.md Phase 0.5)."""
+        resp = await call_with_backoff(self._client.get_event, event_ticker)
+        return resp.model_dump(mode="json")
+
     async def get_exchange_status(self) -> dict:
         """Public, unauthenticated. Real shape includes exchange_active/
         trading_active at top level plus a per-shard exchange_index_statuses

@@ -175,29 +175,39 @@ this app does that theirs doesn't, in either mode.
       panels; the drill-down is the pattern for space-hungry per-market
       detail. The two items below are written against the drill-down, not
       a card-level toggle.
-- [ ] Kalshi-accurate terminology + real Event/outcome grouping —
-      foundational, do this before or alongside the panels below rather
-      than after, since it changes what those panels are describing. Two
+- [x] Kalshi-accurate terminology + real Event/outcome grouping. Two
       distinct problems, confirmed by reading a real raw market object
-      (not assumed): (1) rows across the app under-describe what they show
-      — e.g. a position row today is just `500 ct @ 62¢ → 65¢`, with no
-      label saying that's contract count, entry price, and current price,
-      let alone which market/prediction/side it's for beyond a truncated
-      title. (2) `event_ticker` — the field that would let the UI show "this
-      market is one of N possible outcomes of the same underlying
-      question" — is fetched from Kalshi but dropped immediately in
-      `main.py`'s `_slim_market()` (only keeps `ticker`/`volume_24h_fp`)
-      and never reaches the frontend. Every market renders as a fully
-      independent Yes/No card today, even when it's actually one outcome
-      of a real multi-outcome event (confirmed on a live market: a single
-      `event_ticker` grouping several combo-style outcome markets, each
-      with its own `yes_sub_title`). Fix: carry `event_ticker`
-      (+ `title`/`subtitle`/`yes_sub_title` already used, `close_time`,
-      `strike_type`) through to the frontend, group sibling markets by
-      event wherever they're listed, and audit every panel's labels
-      against Kalshi's own vocabulary — Market/Event/Series, Contract,
-      Position, Order (resting vs. filled), Fill, Settlement, Strike —
-      rather than this app's own shorthand.
+      (not assumed): (1) rows across the app under-described what they
+      showed — e.g. a position row was just `500 ct @ 62¢ → 65¢`, no label
+      saying that's contract count, entry price, and current price. (2)
+      `event_ticker` — the field that would let the UI show "this market
+      is one of N possible outcomes of the same underlying question" —
+      was fetched from Kalshi but dropped immediately in `main.py`'s
+      `_slim_market()`, never reaching the frontend, so sibling outcome
+      markets rendered as fully disconnected cards. Both shipped: (1)
+      position/trade/fill rows across `renderPositions`/`renderTrades`/
+      `renderRealPositions`/`renderRealFills` now say "N contracts @ X¢
+      entry → Y¢ now" / "fill price" instead of bare `ct`/`qty` shorthand,
+      with tooltips explaining each figure. (2) `_slim_market()` now keeps
+      `event_ticker`/`close_time`/`strike_type`; a new `_fetch_event_titles()`
+      fetches each event's own title/category via a new `get_event()`
+      wrapper — but only for events with more than one sibling market in
+      the current watchlist batch, cached like `market_titles` so a
+      solo-outcome market never pays for an unnecessary lookup.
+      `renderMarketCards` groups sibling markets under one event header
+      (`.event-group`) instead of N disconnected cards; groups of one
+      render exactly as before. Verified two ways: the backend grouping
+      logic directly against a real 200-market batch with confirmed real
+      sibling events, and the frontend rendering via an injected synthetic
+      state through a real Chrome session (ddev's selenium-chrome) showing
+      correct group/solo separation. Narrower than originally scoped: the
+      full "audit every panel's labels against Kalshi's vocabulary" is
+      ongoing, applied incrementally as each panel is touched, not a single
+      one-shot pass over the whole app — the market-card "meta" line's raw
+      ticker-prefix-as-category still isn't a real series name (no
+      `series_ticker` field on the market object itself, only on its
+      event), left for a future pass rather than adding a per-market event
+      fetch just for that one line.
 
 Concrete gaps against the current 4-tab dashboard (Portfolio, Markets,
 Whale Watch, Terminal — see `static/index.html`), each already framed as
