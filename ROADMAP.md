@@ -425,6 +425,38 @@ a Simple/Advanced pair using the toggle above:
       `renderRealPositions`, `renderRealFills`), including the real-account
       rows where the count comes as a fixed-point string (`position_fp`/
       `count_fp`) that needs parsing first.
+- [x] Follow-up, direct request with a real screenshot of Kalshi's own
+      positions table: `renderPositions` rewritten from one flat line item
+      per position into a real grouped table — positions sharing an
+      `event_ticker` (e.g. two different outcomes of the same election
+      both held) grouped under one market header with a Total row, exact
+      column structure confirmed against the screenshot (Position,
+      Contracts, Entry, Now, Cost, Payout if right, Value, Return) rather
+      than invented. Two more things folded in from the same request
+      round: a whale-confidence badge per position (`🐋 78%`, reusing
+      `computeWhaleLean` — already built for Whale Watch's market cards,
+      just never applied to Portfolio) showing whether whale prints on
+      that market agree or disagree with the side actually held; and a
+      🐋 icon that expands to show *why* a position was opened —
+      `services/paper_broker.py`'s `Trade.reason` (e.g. "whale print 5230
+      @ 0.62 (conf 0.78)") was already being computed, persisted, and sent
+      to the frontend in `broker.recent_trades`, just never displayed
+      anywhere — no backend change needed, only surfacing data that
+      already existed. Also looked into whether Kalshi exposes a "largest
+      open positions on this market" dataset, direct request — confirmed,
+      three independent ways (SDK method introspection across every API
+      class, Kalshi's own API reference endpoint index, and Kalshi's
+      LLM-oriented docs index, which states outright: "No endpoints exist
+      for leaderboards, largest traders, market holders, or public
+      position rankings") that this data genuinely isn't exposed — the
+      "Kalshi Leaderboard" that does exist ranks overall trader P&L/
+      performance, unrelated to per-market position size. Not built, since
+      the underlying data doesn't exist to build it from; `open_interest_fp`
+      (aggregate, not per-holder) is the closest real substitute, noted
+      but not implemented this pass. Verified end-to-end through a real
+      Chrome session: correct grouping, a Total row only on the multi-
+      position group (not the solo one), correct sums, and the reason
+      details expanding to show real trade data on click.
 - [x] Market search and browse. Shipped as one combined tool (search text +
       category filter + include-dormant toggle, not two separate features
       as originally scoped) in the new Config tab. New
@@ -464,6 +496,32 @@ a Simple/Advanced pair using the toggle above:
       an afterthought. Simple: a brief color flash + arrow on change.
       Advanced: an explicit delta (¢ and %) since last poll or over a
       rolling window, feeding the same screener-style table above.
+- [x] A real "LIVE" badge, direct request, built properly rather than
+      settled for a proxy — an explicit instruction to spend the effort
+      and not guess paid off: the first attempt was a timestamp-only
+      heuristic (`occurrence_datetime` passed + market still open), openly
+      flagged as not the same guarantee as Kalshi's real signal. Pushed
+      further and found the real one. Kalshi's live status is powered by a
+      milestone/live-data system (`MilestoneApi`/`LiveDataApi`), not
+      exposed on the market or event object directly — the missing link is
+      `get_milestones(related_event_ticker=...)`, which returns the actual
+      scheduled game/match (id, type, start_date) tied to an event; that
+      milestone's `id`/`type` then feed `get_live_data()` for the real
+      status. Confirmed empirically, not from docs alone: a milestone's
+      `end_date` stays `null` forever, even for a fully settled game — that
+      hypothesis was tested and killed before it shipped. The real signal
+      is `details.widget_status`, confirmed directly by watching a real AFL
+      match go live at its actual scheduled start time:
+      "none" (scheduled) → "live" (in progress) → "finished" (over). New
+      `get_milestones_for_event()`/`get_live_data()` wrappers and
+      `_fetch_live_status()`, checked only for markets whose
+      `occurrence_datetime` falls in a plausible live window (most
+      watchlist markets aren't starting imminently, so this is rarely two
+      wasted API calls) — replaced wholesale every poll tick, not
+      accumulated, since a stale "live" would be actively wrong, not just
+      incomplete. Verified against real, live production data: a genuine
+      in-progress tennis match was correctly flagged live in the running
+      app, not just in a synthetic test.
 - [ ] Visible staleness/connectivity state. `refresh()`'s catch block
       today only does `console.error('refresh failed', e)` — if
       `/api/state` starts failing (network blip, backend restart,

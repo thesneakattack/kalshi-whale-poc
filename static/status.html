@@ -738,6 +738,45 @@
           <code>eventGroupCardHTML</code>)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 25 · a real LIVE badge (not a guess), and Portfolio finally looks like Kalshi's own</div>
+        <h4>Chasing down the actual milestone/live-data system, then a full positions-table rewrite</h4>
+        <p>A direct instruction to spend the effort and not guess on the "LIVE" badge paid off. First attempt was a
+          timestamp-only heuristic - openly flagged as not the same guarantee as Kalshi's real signal - and pushed
+          further instead of stopping there. Kalshi's live status turned out to be powered by a separate milestone/
+          live-data system, not exposed on the market or event object at all: <code>get_milestones
+          (related_event_ticker=...)</code> is the missing link, returning the actual scheduled game/match tied to
+          an event, whose id/type then feed <code>get_live_data()</code> for the real status. One hypothesis tested
+          and killed before it shipped: a milestone's <code>end_date</code> stays null forever, even for a fully
+          settled game, so it can't be used as a live-window boundary. The real signal, confirmed by watching a
+          real AFL match go live at its actual scheduled start time: <code>details.widget_status</code> goes
+          "none" → "live" → "finished." New <code>_fetch_live_status()</code> checks this only for markets whose
+          <code>occurrence_datetime</code> falls in a plausible live window, replaced wholesale every poll tick
+          rather than accumulated (a stale "live" is actively wrong, not just incomplete). Verified against real
+          production data mid-build: a genuine in-progress tennis match was correctly flagged live in the running
+          app, not just a synthetic test.</p>
+        <p>Second half of the same request round, with a real screenshot of Kalshi's own positions table:
+          <code>renderPositions</code> rewritten from one flat line item per position into a real grouped table -
+          positions sharing an event grouped under one market header with a Total row, matching the screenshot's
+          exact columns (Position, Contracts, Entry, Now, Cost, Payout if right, Value, Return) rather than
+          invented ones. Added a whale-confidence badge per position (reusing <code>computeWhaleLean</code>,
+          already built for Whale Watch's cards, never applied to Portfolio) and a 🐋 icon expanding to show
+          <i>why</i> a position was opened - <code>Trade.reason</code> had already been computed, persisted, and
+          sent to the frontend in <code>broker.recent_trades</code> the whole time, just never displayed. Also
+          investigated, on request, whether Kalshi exposes a "largest open positions on this market" dataset -
+          confirmed three independent ways (SDK method introspection, Kalshi's own API reference endpoint index,
+          and Kalshi's LLM-oriented docs index, which states outright that no such endpoint exists) that this data
+          genuinely isn't public; the real "Kalshi Leaderboard" ranks overall trader performance, unrelated to
+          per-market position size. Not built, since there's no data to build it from -
+          <code>open_interest_fp</code> (aggregate, not per-holder) is the closest real substitute, noted for
+          later. Verified end-to-end through a real Chrome session: correct grouping, a Total row only on the
+          multi-position group, correct sums, and the reason details expanding to real trade data on click.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_milestones_for_event</code>,
+          <code>get_live_data</code>) · <code>main.py</code> (<code>_fetch_live_status</code>) ·
+          <code>static/index.html</code> (<code>isLive</code>, <code>liveBadgeHTML</code>, rewritten
+          <code>renderPositions</code>, <code>whaleConfidenceBadgeHTML</code>, <code>reasonDetailsHTML</code>)</div>
+      </div>
+
     </div>
   </section>
 
@@ -782,9 +821,9 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context</td><td class="loc">811</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + search endpoints, watchlist-scoped trade tape, series-based market discovery, event/outcome grouping + context, real live-market status via milestone/live-data lookup</td><td class="loc">867</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>)</td><td class="loc">172</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>)</td><td class="loc">191</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking, <code>data/signal_log.db</code></td><td class="loc">127</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
@@ -799,7 +838,7 @@
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/accounts_store.py</td><td class="note">encrypted local SQLite store for connected-account credentials</td><td class="loc">83</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning)</td><td class="loc">2064</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">static/index.html</td><td class="note">5-view dashboard: Portfolio, Markets, Whale Watch, Terminal, Config (search/pin markets + settings), real-trading confirmation gate, Shadow Trades panel, exchange status badge, Simple/Advanced toggle, per-market order book + candlestick + trades drill-down, watchlist-scoped trade tape, potential-payout + cost-put-in math, event cards with outcome rows, context (category/matchup/position meaning), real LIVE badge, grouped Portfolio positions table with whale-confidence badge + reason drill-down</td><td class="loc">2232</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/login.html</td><td class="note">Google sign-in page</td><td class="loc">114</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~985</td><td><span class="pill good">done</span></td></tr>

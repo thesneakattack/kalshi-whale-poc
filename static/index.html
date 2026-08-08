@@ -164,6 +164,51 @@
   .context-line { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .cat-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--whale); }
   .position-means { color: var(--text); }
+
+  /* Portfolio positions table - grouped per market/event with a Total row,
+     matching real Kalshi's own positions-table column structure (Market,
+     Contracts, Avg price, Cost, Payout if right, Market value, Total
+     return), confirmed directly against real Kalshi screenshots rather
+     than invented. Replaced the earlier one-position-per-line-item
+     div layout. */
+  .positions-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  .positions-table th {
+    text-align: right; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--panel-border);
+    position: sticky; top: 0; background: var(--bg);
+  }
+  .positions-table th:first-child, .positions-table td:first-child { text-align: left; }
+  .positions-table td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+  .positions-table tr.group-header td {
+    text-align: left; font-weight: 600; padding-top: 14px; padding-bottom: 6px;
+    border-bottom: none; font-family: var(--sans);
+  }
+  .positions-table tr.total-row td { font-weight: 700; border-top: 1px solid var(--panel-border); }
+  .positions-table td.pos { color: var(--yes); }
+  .positions-table td.neg { color: var(--no); }
+
+  /* Whale confidence badge - how whales are leaning on this specific
+     position's market, and whether that agrees with the side actually
+     held. Reuses computeWhaleLean(), already built for the Whale Watch
+     tab's market cards. */
+  .whale-conf { font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: 4px; white-space: nowrap; }
+  .whale-conf.aligned { background: rgba(45,212,191,0.12); color: var(--yes); }
+  .whale-conf.against { background: rgba(249,112,102,0.12); color: var(--no); }
+
+  /* Why this position was opened - the whale print (size/price/confidence)
+     that triggered it, from the trade's own already-persisted `reason`
+     field (services/paper_broker.py's Trade.reason) - real data that was
+     already being sent to the frontend and simply never displayed. */
+  .whale-reason { display: inline; margin-left: 4px; }
+  .whale-reason summary { display: inline; cursor: pointer; list-style: none; font-size: 12px; }
+  .whale-reason summary::-webkit-details-marker { display: none; }
+  .whale-reason-body {
+    font-family: var(--sans); font-size: 11px; color: var(--text); text-align: left;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 8px 10px; margin-top: 6px; white-space: normal;
+  }
+  .whale-reason-body div { margin-bottom: 4px; }
+  .whale-reason-body div:last-child { margin-bottom: 0; }
   .conf-bar { height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
   .conf-fill { height: 100%; background: var(--whale); }
   .decision-card.trade { border-left: 3px solid var(--yes); }
@@ -283,6 +328,14 @@
   #exchange-status-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
   #exchange-status-badge.open { color: var(--muted); }
   #exchange-status-badge.closed { color: var(--whale); background: rgba(245,185,66,0.15); }
+  /* "Live" the way Kalshi's own UI badges it - see isLive()'s comment for
+     what this is actually based on (occurrence_datetime + status), not
+     Kalshi's real live-sports-data integration. */
+  .live-badge {
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+    color: white; background: var(--danger); padding: 1px 6px; border-radius: 4px;
+    animation: pulse 1.6s infinite;
+  }
 
   .tab-bar {
     display: flex;
@@ -785,6 +838,24 @@ function marketContext(ticker, side) {
   };
 }
 
+// "Live" the way Kalshi's own UI shows it - the real signal, not a
+// timestamp guess. Backed by Kalshi's actual milestone/live-data system
+// (main.py's _fetch_live_status): confirmed directly against a real AFL
+// match at its actual live start time that widget_status goes
+// "none" -> "live" -> "finished", not assumed from field names. Only
+// populated for markets whose occurrence_datetime was recently plausible
+// (see _fetch_live_status's window) - most won't have an entry at all,
+// which correctly means "not live," not "unknown."
+let liveStatus = {};  // event_ticker -> "live" | "finished" | "none" | undefined
+
+function isLive(m) {
+  return m.event_ticker ? liveStatus[m.event_ticker] === 'live' : false;
+}
+
+function liveBadgeHTML(m) {
+  return isLive(m) ? '<span class="live-badge">● LIVE</span>' : '';
+}
+
 function contextLineHTML(ticker, side) {
   const ctx = marketContext(ticker, side);
   const bits = [];
@@ -846,34 +917,126 @@ function renderDecisions(decisions) {
   }).join('');
 }
 
-// The actual answer to "where did my money go": every open position, what it
-// cost, what it's worth now, and the running gain/loss on it specifically —
-// not just the aggregate P&L number in the header.
-function renderPositions(positions, prices) {
+// How whales are leaning on this specific position's market, and whether
+// that agrees with the side actually held - reuses computeWhaleLean (built
+// for the Whale Watch tab's market cards, same underlying signal_feed
+// data). Confidence here means "how one-sided the whale prints are," not a
+// statistical measure - same meaning as everywhere else this app uses the
+// word.
+function whaleConfidenceBadgeHTML(ticker, side, signals) {
+  const lean = computeWhaleLean(ticker, signals || []);
+  if (!lean) return '';
+  const leanDir = lean.yesPct >= 50 ? 'yes' : 'no';
+  const pct = leanDir === 'yes' ? lean.yesPct : 100 - lean.yesPct;
+  const aligned = leanDir === side;
+  return `<span class="whale-conf ${aligned ? 'aligned' : 'against'}" title="Whales are leaning ${leanDir.toUpperCase()} at ${pct.toFixed(0)}% (${lean.count} recent print${lean.count === 1 ? '' : 's'}) - ${aligned ? 'same side as this position' : 'opposite this position'}">🐋 ${pct.toFixed(0)}%</span>`;
+}
+
+// Why this position was opened - the whale print (size/price/confidence)
+// that triggered the strategy's decision, straight from the trade's own
+// `reason` field (services/paper_broker.py's Trade.reason, e.g. "whale
+// print 5230 @ 0.62 (conf 0.78)"). Real data already being sent to the
+// frontend in broker.recent_trades and simply never displayed anywhere -
+// no backend change needed. A position can be built from more than one
+// trade (added to over time), so this shows every matching trade, not
+// just the first.
+function reasonDetailsHTML(ticker, recentTrades) {
+  const reasons = (recentTrades || []).filter(t => t.ticker === ticker);
+  if (!reasons.length) return '';
+  const items = reasons.map(t => {
+    const when = new Date(t.timestamp * 1000).toLocaleString();
+    return `<div>${esc(t.reason)} <span style="color:var(--muted)">— ${esc(when)}</span></div>`;
+  }).join('');
+  return `<details class="whale-reason"><summary title="Why this position was opened">🐋</summary><div class="whale-reason-body">${items}</div></details>`;
+}
+
+// The actual answer to "where did my money go": every open position,
+// grouped per market (not one flat line item per position - real Kalshi's
+// own positions table groups this way too, confirmed directly against a
+// real screenshot, with a Total row per group), what it cost, what it's
+// worth now, and the running gain/loss - not just the aggregate P&L number
+// in the header.
+function renderPositions(positions, prices, recentTrades, signals) {
   const el = $('positions-list');
   $('position-count').textContent = positions.length ? `(${positions.length})` : '';
   if (!positions.length) {
     el.innerHTML = '<div class="empty">No open positions — nothing has been bought yet</div>';
     return;
   }
-  el.innerHTML = positions.map(p => {
-    const label = marketLabel(p.ticker);
-    const current = prices[p.ticker] ?? p.entry_price;
-    const direction = p.side === 'yes' ? 1 : -1;
-    const pnl = direction * (current - p.entry_price) * p.size;
-    return `
-    <div class="position-row" title="${esc(label.full)}">
-      <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span>
-        ${contextLineHTML(p.ticker, p.side)}
-      </div>
-      <div class="nums">
-        <span title="Contracts held, entry price, current price">${p.size.toLocaleString()} contracts @ ${(p.entry_price*100).toFixed(0)}¢ entry → ${(current*100).toFixed(0)}¢ now</span>
-        <span class="pnl ${pnl >= 0 ? 'pos' : 'neg'}" title="Unrealized profit/loss at the current price">${fmt(pnl)}</span>
-        ${costHTML(p.size, p.entry_price)}
-        ${payoutHTML(p.size)}
-      </div>
-    </div>`;
+
+  // Grouped by event_ticker (same underlying question - e.g. two different
+  // outcomes of the same election both held) via marketTitles, not by
+  // ticker itself (paper positions are already one-per-ticker). Falls back
+  // to a solo group when the event isn't known yet or has no other open
+  // positions among its siblings.
+  const groups = new Map();
+  positions.forEach(p => {
+    const info = marketTitles[p.ticker];
+    const et = info && info.event_ticker;
+    const key = et || ('__solo__' + p.ticker);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  });
+
+  const bodyRows = Array.from(groups.values()).map(group => {
+    const first = group[0];
+    const firstInfo = marketTitles[first.ticker];
+    const et = firstInfo && firstInfo.event_ticker;
+    const groupTitle = (et && eventTitles[et]) ? eventTitles[et].title : marketLabel(first.ticker).short;
+    const liveMarker = et ? liveBadgeHTML({event_ticker: et}) : '';
+
+    let totalContracts = 0, totalCost = 0, totalValue = 0;
+
+    const positionRows = group.map(p => {
+      const current = prices[p.ticker] ?? p.entry_price;
+      const cost = p.size * p.entry_price;
+      const value = p.size * current;
+      const ret = value - cost;
+      const retPct = cost ? (ret / cost * 100) : 0;
+      totalContracts += p.size; totalCost += cost; totalValue += value;
+
+      const ctx = marketContext(p.ticker, p.side);
+      const positionLabel = ctx.positionMeans ? `${p.side} · ${ctx.positionMeans}` : p.side;
+      const label = marketLabel(p.ticker);
+
+      return `<tr title="${esc(label.full)}">
+        <td><span class="side-tag ${p.side}">${esc(positionLabel)}</span>
+          ${whaleConfidenceBadgeHTML(p.ticker, p.side, signals)}
+          ${reasonDetailsHTML(p.ticker, recentTrades)}
+        </td>
+        <td>${p.size.toLocaleString()}</td>
+        <td>${(p.entry_price*100).toFixed(0)}¢</td>
+        <td>${(current*100).toFixed(0)}¢</td>
+        <td>${fmt(cost)}</td>
+        <td>${fmt(p.size)}</td>
+        <td>${fmt(value)}</td>
+        <td class="${ret >= 0 ? 'pos' : 'neg'}">${fmt(ret)} (${retPct.toFixed(0)}%)</td>
+      </tr>`;
+    }).join('');
+
+    const totalReturn = totalValue - totalCost;
+    const totalReturnPct = totalCost ? (totalReturn / totalCost * 100) : 0;
+    const totalRow = group.length > 1 ? `<tr class="total-row">
+      <td>Total</td>
+      <td>${totalContracts.toLocaleString()}</td>
+      <td></td><td></td>
+      <td>${fmt(totalCost)}</td>
+      <td></td>
+      <td>${fmt(totalValue)}</td>
+      <td class="${totalReturn >= 0 ? 'pos' : 'neg'}">${fmt(totalReturn)} (${totalReturnPct.toFixed(0)}%)</td>
+    </tr>` : '';
+
+    return `<tr class="group-header"><td colspan="8">${esc(groupTitle)} ${liveMarker}</td></tr>${positionRows}${totalRow}`;
   }).join('');
+
+  el.innerHTML = `<table class="positions-table">
+    <thead><tr>
+      <th>Position</th><th>Contracts</th><th>Entry</th><th>Now</th>
+      <th>Cost</th><th title="Max payout if this resolves your way">Payout if right</th>
+      <th>Value</th><th>Return</th>
+    </tr></thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
 }
 
 // Every fill that's actually happened to the paper bankroll, in order — the
@@ -1184,7 +1347,7 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
 
   return `
   <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
-    <div class="title">${esc(label.short)}</div>
+    <div class="title">${esc(label.short)} ${liveBadgeHTML(m)}</div>
     ${matchupHtml}
     <div class="prices">
       <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div></div>
@@ -1232,10 +1395,14 @@ function eventGroupCardHTML(group, eventInfo, prices) {
       </div>`;
     }).join('');
 
+  // Live status is per-event, not per-outcome (every sibling here is the
+  // same underlying game/match) - shown once on the card header, matching
+  // where real Kalshi shows it.
   return `<div class="event-card">
     <div class="event-card-header">
       ${category ? `<span class="cat-tag">${esc(category)}</span>` : ''}
       <span class="event-card-title">${esc(title)}</span>
+      ${liveBadgeHTML(group[0])}
     </div>
     <div class="outcome-rows">${rows}</div>
     <div class="meta"><span>vol ${Math.round(totalVol).toLocaleString()}</span><span>${group.length} markets</span></div>
@@ -1772,7 +1939,7 @@ function renderPortfolio(state, broker) {
     $('equity-title-text').textContent = 'Equity over time (paper)';
     $('positions-title-text').textContent = 'Open Positions';
     $('tradelog-title-text').textContent = 'Trade Log';
-    renderPositions(broker.positions || [], state.latest_prices || {});
+    renderPositions(broker.positions || [], state.latest_prices || {}, broker.recent_trades || [], state.signal_feed || []);
     renderTrades(broker.recent_trades || []);
     renderEquityChart(state.equity_history, broker.starting_bankroll, 'equity', 'starting bankroll');
   }
@@ -1836,6 +2003,7 @@ async function refresh() {
 
     marketTitles = state.market_titles || {};
     eventTitles = state.event_titles || {};
+    liveStatus = state.live_status || {};
     renderAccount(state.account); // always visible, above the tabs
 
     // Only build the DOM for whichever view is actually on screen — the other

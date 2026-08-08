@@ -143,6 +143,25 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_event, event_ticker)
         return resp.model_dump(mode="json")
 
+    async def get_milestones_for_event(self, event_ticker: str, limit: int = 5) -> list[dict]:
+        """The real-world scheduled thing (a specific game/match) tied to an
+        event - id/type/start_date, needed to then ask get_live_data for the
+        actual live/finished status. Confirmed via the SDK's own docstring
+        that related_event_ticker is a real, supported filter, not guessed."""
+        resp = await call_with_backoff(self._client.get_milestones, limit=limit, related_event_ticker=event_ticker)
+        return [m.model_dump(mode="json") for m in resp.milestones]
+
+    async def get_live_data(self, milestone_type: str, milestone_id: str) -> dict:
+        """The actual live/scheduled/finished status for one milestone.
+        details.widget_status is the real, verified signal - confirmed
+        directly against a real AFL match at its actual live start time:
+        "none" before it starts, "live" while in progress, "finished" once
+        over (details.status mirrors this as "scheduled"/"inprogress"/
+        "closed"). Not documented anywhere as an enum - caught by actually
+        watching a real match go live, not assumed from the field name."""
+        resp = await call_with_backoff(self._client.get_live_data, type=milestone_type, milestone_id=milestone_id)
+        return resp.model_dump(mode="json")
+
     async def get_candlesticks(
         self, series_ticker: str, ticker: str, start_ts: int, end_ts: int, period_interval: int
     ) -> dict:

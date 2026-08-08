@@ -3,6 +3,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -62,6 +63,7 @@ state = {
     "market_titles": {},
     "event_titles": {},  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
+    "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
     "series_cache": {"fetched_at": 0.0, "series": []},  # see _get_top_series
     "series_track_record": {},
     "signal_feed": [],   # most recent first
@@ -87,7 +89,7 @@ state = {
 # dropped here entirely, so the dashboard had no way to know two markets
 # were siblings under one event even though Kalshi sends that relationship
 # on every market object already.
-_MARKET_FIELDS = ("ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type")
+_MARKET_FIELDS = ("ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type", "occurrence_datetime", "status")
 
 
 def _slim_market(m: dict) -> dict:
@@ -159,6 +161,57 @@ async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[d
             trades.extend(result.get("trades") or [])
     trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
     return trades[:30]
+
+
+_LIVE_STATUS_WINDOW_SEC = 6 * 3600  # started up to 6h ago, or starting within the next hour
+
+
+async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
+    """The real live/scheduled/finished status per event, via Kalshi's
+    actual milestone/live-data system - confirmed directly against a real
+    AFL match at its actual start time (status "scheduled"->"inprogress"->
+    "closed", widget_status "none"->"live"->"finished"), not inferred from
+    timestamps alone. Only checked for markets whose occurrence_datetime is
+    within a plausible live window - most watchlist markets aren't starting
+    imminently, and this is two extra API calls per event (milestone
+    lookup, then live-data lookup), not something to run unconditionally
+    for every market on every poll tick."""
+    now = time.time()
+    candidates = []
+    for m in markets:
+        occ, et = m.get("occurrence_datetime"), m.get("event_ticker")
+        if not occ or not et:
+            continue
+        try:
+            occ_ts = datetime.fromisoformat(occ.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if -_LIVE_STATUS_WINDOW_SEC <= (now - occ_ts) <= 3600:
+            candidates.append(et)
+    candidates = list(dict.fromkeys(candidates))  # de-dupe, preserve order
+    if not candidates:
+        return {}
+
+    milestone_results = await asyncio.gather(
+        *(client.get_milestones_for_event(et) for et in candidates), return_exceptions=True
+    )
+    live_data_tasks, task_events = [], []
+    for et, result in zip(candidates, milestone_results):
+        if isinstance(result, list) and result:
+            ms = result[0]
+            if ms.get("id") and ms.get("type"):
+                live_data_tasks.append(client.get_live_data(ms["type"], ms["id"]))
+                task_events.append(et)
+    if not live_data_tasks:
+        return {}
+
+    live_results = await asyncio.gather(*live_data_tasks, return_exceptions=True)
+    status = {}
+    for et, result in zip(task_events, live_results):
+        if isinstance(result, dict):
+            details = (result.get("live_data") or {}).get("details") or {}
+            status[et] = details.get("widget_status")
+    return status
 
 
 async def _fetch_account_snapshot(cfg: dict) -> dict:
@@ -283,15 +336,17 @@ async def trading_loop():
                 state["exchange_status"] = exchange_status
 
             state["markets"] = [_slim_market(m) for m in markets]
-            # Both depend on this tick's markets list but not on each other -
-            # fetch concurrently rather than one after the other.
-            event_titles, trade_tape = await asyncio.gather(
-                _fetch_event_titles(client, markets), _fetch_trade_tape(client, markets)
+            # All three depend on this tick's markets list but not on each
+            # other - fetch concurrently rather than one after the other.
+            event_titles, trade_tape, live_status = await asyncio.gather(
+                _fetch_event_titles(client, markets), _fetch_trade_tape(client, markets),
+                _fetch_live_status(client, markets),
             )
             state["event_titles"].update(event_titles)
             if len(state["event_titles"]) > 300:  # bound unbounded growth, same as market_titles below
                 state["event_titles"] = dict(list(state["event_titles"].items())[-300:])
             state["trade_tape"] = trade_tape
+            state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
             # defaulted every price to 0.5.
@@ -649,6 +704,7 @@ async def get_state():
         "market_titles": state["market_titles"],
         "event_titles": state["event_titles"],
         "trade_tape": state["trade_tape"],
+        "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],
         "signal_feed": state["signal_feed"],
         "decision_feed": state["decision_feed"],
