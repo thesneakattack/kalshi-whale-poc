@@ -13,7 +13,11 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Must match Dockerfile's python:3.13-slim - kalshi-python-async
+          # requires Python >=3.13 (every release past the stale 3.2.0
+          # does), so this was left behind when the Dockerfile was bumped
+          # and CI started failing to even install requirements.txt.
+          python-version: "3.13"
           cache: "pip"
           cache-dependency-path: requirements-dev.txt
 
