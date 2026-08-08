@@ -1663,6 +1663,76 @@
           checkboxes, disabled-input + badge-visibility fixes) · <code>tests/test_kalshi_client.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 46 · hardened confidence scoring, and a gated calibration tool</div>
+        <h4>"The confidence level algorithm is decent i guess, a bit basic... id also like an agent to study whale
+          prints and their actual outcomes so as to create a more accurate formula."</h4>
+        <p>Two tracks, both confirmed directly (<code>AskUserQuestion</code>) before writing anything - "more
+          robust" and "an agent to learn from outcomes" are genuinely different problems with different
+          prerequisites, so they got separated rather than bundled into one vague pass.</p>
+        <p><b>Track 1</b> hardened <code>services/whale_simulator.py</code>'s <code>composite_confidence</code> in
+          the three specific ways named as real weaknesses up front, not a general rewrite. The depth factor's hard
+          cap (<code>min(size/volume, 1.0)</code>) meant a print of exactly one day's volume and one 100x bigger
+          scored identically - replaced with exponential saturation (<code>1 - e^(-k·ratio)</code>) that still lands
+          at ~0.9 for one day's volume (preserving roughly where the old cap used to bind) but never plateaus beyond
+          it. The context factor's raw ratio against the single busiest market in the batch was fragile to one
+          outlier crushing every other market's score toward zero - replaced with percentile rank among the batch,
+          robust to that by construction. A new fifth factor, agreement (15% weight): do recent real whale prints on
+          this *same market* agree with this one - independent same-direction prints plausibly share a real
+          catalyst, the same thesis behind
+          <code>docs/kalshi-whale-provider-and-strategy-porting-plan.md</code> Part 2's whale-consensus idea, folded
+          into the base score itself. Computed by the caller via a new
+          <code>signal_log.recent_sides_for_ticker()</code> query (6h lookback) since the scoring function itself
+          has no access to signal history; neutral 0.5 (not agreement or disagreement) when there's no recent print
+          to compare against, or for the simulator, which has no real history to check. Weights rebalanced (depth
+          40→35%, unusualness 25→20%, proximity 20→15%, context unchanged 15%, agreement new at 15%). New
+          <code>composite_confidence_breakdown()</code> returns every factor plus the final score;
+          <code>composite_confidence()</code> itself kept its existing plain-float contract as a thin wrapper, so
+          the simulator and every existing caller/test needed zero changes.</p>
+        <p><b>Track 2</b> re-confirmed the exact rule-based-over-ML reasoning
+          <code>docs/advisory-engine-plan.md</code> made at the very start of this whole advisory-engine effort - but
+          checked live with real numbers this time before deciding, not just by analogy: 5,738 real signals seen,
+          only 9 resolved. Nowhere near enough to fit anything. New
+          <code>services/confidence_calibration.py</code> needed a real data-model addition first -
+          <code>signal_log</code>'s <code>signals</code> table gained a nullable <code>factors_json</code> column
+          (idempotent <code>ALTER TABLE</code>, the same migration pattern <code>paper_broker.py</code>'s
+          <code>config_fingerprint</code> already used) so individual factor values persist per signal, not just the
+          blended number that was already there - there'd be nothing to calibrate *from* otherwise. Only real
+          providers populate it (<code>kalshi_trade_tape.py</code>, via the new breakdown function); simulator rows
+          leave it null, which doubles as the "real signals only" filter for calibration with no second, driftable
+          source-string match to maintain. <code>generate_calibration_report()</code> is gated *inside the function
+          itself* (the same precedent <code>advisory_engine.generate_recommendations</code> already set) - splits
+          resolved real signals into low/mid/high tertiles per factor and reports each bucket's win rate and the gap
+          between them. A real bug, caught by this module's own tests, not hypothetical: a near-constant factor
+          (<code>proximity_factor</code> is often exactly 0.0) with plain index-based tertiles would silently
+          reflect insertion order instead of the factor itself, since a stable sort of tied values doesn't actually
+          separate them - fixed by requiring at least 3 *distinct* values before a factor gets split at all,
+          reporting "not enough variance to say" honestly instead of a fabricated gap. Proposes concrete
+          <code>suggested_weights</code> (proportional to each factor's own discrimination gap, floored so nothing
+          goes to zero off one report) rather than only descriptive stats - matching <code>advisory_engine</code>'s
+          "emit an actual value, not just hedged prose" ethos while staying fully deterministic, never a fitted
+          model. New <code>confidence_calibration</code> config (<code>enabled: false</code>,
+          <code>min_resolved_signals: 50</code>) and two read-only routes - deliberately no apply endpoint at all in
+          v1, unlike <code>advisory_engine</code>'s manual-apply button: the weights aren't config-editable today,
+          just hardcoded constants, so there's no live value yet to <code>PATCH</code>.</p>
+        <p>Verified live: fresh real signals confirmed carrying full factor breakdowns with sane values (no more
+          hard-capped 1.0s, percentile-style context values), the migration applied cleanly to the live
+          <code>data/signal_log.db</code> with zero data loss (older rows correctly <code>factors_json=null</code>,
+          new ones populated), both new routes confirmed correctly gated/dormant
+          (<code>resolved_count</code> starts at 0 for factor-carrying signals, since the 9 previously-resolved
+          signals predate this change). 24 new tests. Full suite: 297 passing (was 285).</p>
+        <div class="files"><code>services/whale_simulator.py</code> (<code>composite_confidence_breakdown</code>,
+          rebalanced weights) · <code>services/confidence_calibration.py</code> (new) ·
+          <code>services/signal_log.py</code> (<code>factors_json</code> migration,
+          <code>recent_sides_for_ticker</code>, <code>resolved_signals_with_factors</code>) ·
+          <code>services/whalewatchers/kalshi_trade_tape.py</code> (agreement-factor lookup, breakdown persistence)
+          · <code>main.py</code> (<code>/api/confidence-calibration/status</code>, <code>.../report</code>) ·
+          <code>config/settings.yaml</code> (<code>confidence_calibration.*</code>) ·
+          <code>tests/test_confidence_calibration.py</code> (new),
+          <code>tests/test_signal_log.py</code>, <code>tests/test_whalewatchers_kalshi_trade_tape.py</code>,
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -1709,16 +1779,17 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code></td><td class="loc">1523</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code></td><td class="loc">1553</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + round-robin cross-event watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps</td><td class="loc">253</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code> + paginated <code>recent()</code>/<code>total_count()</code> for the browsable history panel + public <code>series_of()</code> shared with the manual-exclusion filter + <code>find_clusters()</code> probable-same-actor accumulation detection, <code>data/signal_log.db</code></td><td class="loc">236</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/signal_log.py</td><td class="note">persistent whale-signal log + resolution/win-rate tracking + self-serve <code>clear_all()</code> + paginated <code>recent()</code>/<code>total_count()</code> for the browsable history panel + public <code>series_of()</code> shared with the manual-exclusion filter + <code>find_clusters()</code> probable-same-actor accumulation detection + nullable <code>factors_json</code> column (idempotent migration) + <code>recent_sides_for_ticker()</code>/<code>resolved_signals_with_factors()</code> for confidence calibration, <code>data/signal_log.db</code></td><td class="loc">305</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values</td><td class="loc">168</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
-          <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, priced off real market data — volume-weighted market selection, log-normal size relative to each market's own volume, optional live-markets-only generation gate. Confidence scoring split into shared <code>composite_confidence()</code> (the four-factor depth/unusualness/proximity/context formula, noise-free) plus a thin noise-adding wrapper, so the real provider below reuses the exact same formula</td><td class="loc">211</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, priced off real market data — volume-weighted market selection, log-normal size relative to each market's own volume, optional live-markets-only generation gate. Confidence scoring is now five factors (depth/unusualness/proximity/context/agreement) via <code>composite_confidence_breakdown()</code> — exponential-saturation depth (no hard cap), percentile-rank context (robust to one outlier market), new same-market signal-agreement factor — plus a noise-free <code>composite_confidence()</code> wrapper and a thin noise-adding wrapper for the simulator</td><td class="loc">293</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements — <code>fetch_signals()</code> takes an optional <code>market_context</code> (this tick's already-fetched markets/trade tape/config) so a provider can classify data this app already has instead of always fetching its own</td><td class="loc">30</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">configurable REST + field mapping provider, for pointing at an external whale-watcher tool</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
-          <tr><td class="mod">services/whalewatchers/kalshi_trade_tape.py</td><td class="note">real, size-based whale-watcher provider — classifies Kalshi's own public trade feed (already fetched every tick, no extra API cost, no credentials) into whale prints by real notional dollar size (side-aware), scored via <code>whale_simulator.composite_confidence()</code>. Kalshi has no public trader identity/leaderboard, so this is strictly size-based, never reputation-based. <b>Active by default</b> since 2026-08-08</td><td class="loc">134</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/whalewatchers/kalshi_trade_tape.py</td><td class="note">real, size-based whale-watcher provider — classifies Kalshi's own public trade feed (already fetched every tick, no extra API cost, no credentials) into whale prints by real notional dollar size (side-aware), scored via <code>whale_simulator.composite_confidence_breakdown()</code> (looks up recent same-market signal agreement via <code>signal_log</code>, 6h lookback) and persists the full factor breakdown alongside each signal. Kalshi has no public trader identity/leaderboard, so this is strictly size-based, never reputation-based. <b>Active by default</b> since 2026-08-08</td><td class="loc">156</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/confidence_calibration.py</td><td class="note">gated, rule-based tool that buckets resolved real whale signals (with a factor breakdown) into low/mid/high tertiles per confidence factor and reports which ones actually predicted correctness, plus concrete suggested reweightings — read-only, no apply path yet since the weights aren't config-editable. Dormant until <code>confidence_calibration.min_resolved_signals</code> (default 50) is reached</td><td class="loc">153</td><td><span class="pill gated">built, dormant until enough data</span></td></tr>
           <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">37</td><td><span class="pill planned">not registered</span></td></tr>
           <tr><td class="mod">services/whalewatchers/__init__.py</td><td class="note">provider registry, selects active one via env var — defaults to <code>kalshi_trade_tape</code> (real data, no setup needed) as of 2026-08-08, was <code>generic_rest</code> (silently simulator-only with no URL configured)</td><td class="loc">30</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic (now threads <code>config_fingerprint</code> into <code>open_position</code>), including the optional live-markets-only gate, manual excluded-series denylist, already-open/already-resolved guards; <code>check_exits</code> (settlement via the shared <code>close_if_settled()</code> + take-profit/stop-loss/sentiment-reversal/auto-exit) and the <code>_exit_confidence</code> composite scoring algorithm. <code>close_if_settled()</code> is module-level, shared with <code>market_strategy.py</code>'s own <code>check_exits</code></td><td class="loc">334</td><td><span class="pill good">done</span></td></tr>
@@ -1817,6 +1888,8 @@
       <div class="cfg-cell"><span class="p">market_strategy.enabled</span><span class="v">false</span></div>
       <div class="cfg-cell"><span class="p">market_strategy.starting_bankroll</span><span class="v">$10,000</span></div>
       <div class="cfg-cell"><span class="p">whale_watcher_kalshi.min_notional_usd</span><span class="v">$2,500</span></div>
+      <div class="cfg-cell"><span class="p">confidence_calibration.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">confidence_calibration.min_resolved_signals</span><span class="v">50</span></div>
     </div>
 
     <p class="lede" style="margin-top:24px;"><code style="color:var(--whale); font-family:var(--mono);">.env</code> — secrets and URLs, gitignored, every variable optional:</p>

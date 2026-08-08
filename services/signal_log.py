@@ -12,11 +12,23 @@ being "yes"/"no" once settled. That's a reasonable reading of the API but,
 like the account-balance field names elsewhere in this app, wasn't
 independently confirmed against every market type — see /status.
 """
+import json
 import sqlite3
 import time
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "signal_log.db"
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/signal_log.db is a live file the running dev server reads/writes
+    # (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a column to
+    # an existing table with existing rows, so a new column needs an
+    # explicit, idempotent ALTER TABLE guarded by a check - same pattern
+    # services/paper_broker.py already established for config_fingerprint.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def _connect() -> sqlite3.Connection:
@@ -41,6 +53,16 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_resolved ON signals (resolved)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_series ON signals (series)")
+    # services/confidence_calibration.py's whole input - the individual
+    # confidence factors, not just the blended score, so a future pass can
+    # ask "which factors actually predicted a correct call" instead of only
+    # ever seeing the number they were already blended into. Added after
+    # the table above already shipped with live rows, hence the guarded
+    # ALTER TABLE rather than a column in the CREATE statement. Nullable:
+    # only real providers that compute a breakdown populate it (see
+    # services/whalewatchers/kalshi_trade_tape.py) - simulator-sourced rows
+    # leave it null, and calibration explicitly filters to real ones anyway.
+    _add_column_if_missing(conn, "signals", "factors_json", "TEXT")
     return conn
 
 
@@ -56,12 +78,34 @@ def series_of(ticker: str) -> str:
     return ticker.split("-")[0] if ticker else ticker
 
 
-def log_signal(ticker: str, side: str, size: int, confidence: float, source: str, seen_at: float | None = None):
+def log_signal(
+    ticker: str, side: str, size: int, confidence: float, source: str,
+    seen_at: float | None = None, factors: dict | None = None,
+):
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time()),
+            "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, factors_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time(),
+                json.dumps(factors) if factors is not None else None,
+            ),
         )
+
+
+def recent_sides_for_ticker(ticker: str, since_ts: float) -> list[str]:
+    """Every side ("yes"/"no") logged for this exact ticker since since_ts -
+    services/whalewatchers/kalshi_trade_tape.py's input for scoring whether
+    a new print agrees with recent ones on the same market (composite_confidence_
+    breakdown's agreement_factor). Ticker-scoped, not series-scoped like
+    series_stats - "did whales agree on THIS market" is a narrower, more
+    literal question than "how do whales usually do on this type of
+    market."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT side FROM signals WHERE ticker = ? AND seen_at >= ?", (ticker, since_ts),
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def unresolved_batch(limit: int = 3, older_than_sec: float = 600) -> list[dict]:
@@ -141,6 +185,31 @@ def total_count(resolved_only: bool = False) -> int:
     where = "WHERE resolved = 1" if resolved_only else ""
     with _connect() as conn:
         return conn.execute(f"SELECT COUNT(*) FROM signals {where}").fetchone()[0]
+
+
+def resolved_signals_with_factors() -> list[dict]:
+    """services/confidence_calibration.py's entire input: resolved signals
+    that carry a real per-factor confidence breakdown. factors_json IS NOT
+    NULL is the filter, not a source string match - only real providers
+    (services/whalewatchers/kalshi_trade_tape.py) ever populate it, so this
+    naturally excludes every simulator-sourced row without needing a second,
+    possibly-drifting definition of "real" to maintain. No date/limit
+    scoping - the calibration gate cares about total resolved count, not
+    recency, and this table is small enough (one row per signal, not per
+    tick) that a full scan is cheap."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT confidence, correct, factors_json FROM signals "
+            "WHERE resolved = 1 AND factors_json IS NOT NULL",
+        ).fetchall()
+    results = []
+    for confidence, correct, factors_json in rows:
+        try:
+            factors = json.loads(factors_json)
+        except (TypeError, ValueError):
+            continue  # malformed row - skip rather than crash the whole report
+        results.append({"confidence": confidence, "correct": bool(correct), "factors": factors})
+    return results
 
 
 def _size_ratio_ok(a: float, b: float, max_ratio: float) -> bool:

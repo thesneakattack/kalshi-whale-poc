@@ -17,7 +17,8 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services.whale_simulator import WhaleSignal, composite_confidence
+from services import signal_log
+from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
 _DEFAULT_MIN_NOTIONAL_USD = 2500.0
@@ -27,6 +28,13 @@ _DEFAULT_MIN_NOTIONAL_USD = 2500.0
 # last-10 list. Bounded so a long-running process doesn't grow this
 # unbounded; old entries age out in insertion order once the cap is hit.
 _MAX_SEEN_TRADE_IDS = 5000
+# How far back to look for other real whale prints on the same market when
+# scoring composite_confidence_breakdown's agreement_factor - shorter than
+# diagnostikon/polymarket-whale-momentum-trader's 48h default (see
+# docs/kalshi-whale-provider-and-strategy-porting-plan.md Part 2), since
+# Kalshi's fastest markets (5/15-minute crypto windows) resolve well within
+# 48h and a print from two days ago has little bearing on one right now.
+_AGREEMENT_LOOKBACK_SEC = 6 * 3600
 
 
 def _notional_usd(trade: dict) -> float:
@@ -118,7 +126,20 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 continue
 
             side = "yes" if str(trade.get("taker_side") or "").lower() == "yes" else "no"
-            confidence = composite_confidence(market, markets, size, price, now)
+
+            # Do recent real prints on this exact market agree with this
+            # one? No recent history at all is neutral (0.5) - not scored as
+            # either agreement or disagreement, same idiom composite_
+            # confidence_breakdown's other missing-data cases already use.
+            recent_sides = signal_log.recent_sides_for_ticker(ticker, since_ts=now - _AGREEMENT_LOOKBACK_SEC)
+            agreement_factor = (
+                sum(1 for s in recent_sides if s == side) / len(recent_sides)
+                if recent_sides else 0.5
+            )
+
+            breakdown = composite_confidence_breakdown(
+                market, markets, size, price, now, agreement_factor=agreement_factor,
+            )
             timestamp = _parse_trade_time(trade.get("created_time")) or now
 
             signals.append(WhaleSignal(
@@ -127,8 +148,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 side=side,
                 size=size,
                 price=round(price, 2),
-                confidence=round(confidence, 2),
+                confidence=round(breakdown.score, 2),
                 timestamp=timestamp,
+                factors=breakdown.to_dict(),
             ))
 
         return signals

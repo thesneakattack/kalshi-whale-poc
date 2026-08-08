@@ -32,6 +32,12 @@ class WhaleSignal:
     price: float        # 0-1 implied probability at time of print
     confidence: float   # 0-1 synthetic confidence score
     timestamp: float
+    # Per-factor confidence breakdown (see composite_confidence_breakdown),
+    # only populated by providers that compute one - None for the simulator.
+    # Persisted alongside the signal (services/signal_log.py's factors_json)
+    # so a future calibration pass has more than just the final blended
+    # number to learn from - see services/confidence_calibration.py.
+    factors: dict | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -50,6 +56,10 @@ _SIZE_LOGNORM_SIGMA = 0.6
 # informationally loaded than the same print months out — informed money
 # moving right before an outcome is revealed, vs. no particular urgency.
 _CLOSE_PROXIMITY_WINDOW_SEC = 48 * 3600
+# Depth factor's exponential-saturation rate (see composite_confidence_breakdown):
+# chosen so a print of exactly one day's volume scores 0.9, matching roughly
+# where the old hard cap used to bind, while never hard-plateauing beyond it.
+_DEPTH_SATURATION_K = math.log(10)
 
 
 class WhaleSimulator:
@@ -148,31 +158,69 @@ class WhaleSimulator:
     ) -> float:
         """Composite score plus a little synthetic noise, so repeated
         simulated prints against the same market don't all land on the exact
-        same number - see composite_confidence() below for the four-factor
-        formula itself, shared with real whale-watcher providers (which
-        report it as-is, with no noise added - a real trade's confidence
-        shouldn't have fake uncertainty injected into it)."""
+        same number - see composite_confidence() below for the formula
+        itself, shared with real whale-watcher providers (which report it
+        as-is, with no noise added - a real trade's confidence shouldn't
+        have fake uncertainty injected into it). agreement_factor is left at
+        its neutral default here - the simulator has no real signal history
+        worth checking agreement against."""
         base = composite_confidence(market, markets, size, price, now)
         noise = random.uniform(-0.1, 0.1)
         return min(max(base + noise, 0.0), 1.0)
 
 
-def composite_confidence(
-    market: dict, markets: list[dict], size: float, price: float, now: float
-) -> float:
+@dataclass
+class ConfidenceBreakdown:
+    """Every factor that went into a composite_confidence score, not just
+    the final blended number - what services/confidence_calibration.py
+    needs to later ask "which of these factors actually predicted a correct
+    call", something the plain float alone can't answer after the fact."""
+    depth_factor: float
+    unusualness_factor: float
+    proximity_factor: float
+    context_factor: float
+    agreement_factor: float
+    score: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def composite_confidence_breakdown(
+    market: dict, markets: list[dict], size: float, price: float, now: float,
+    agreement_factor: float = 0.5,
+) -> ConfidenceBreakdown:
     """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md):
     trade size relative to market depth, how unusual the price is, proximity
-    to resolution, and broader market context. Each factor normalized to
-    0-1, weighted-summed. Pure function of its inputs - no randomness - so
-    it's shared as-is between the simulator (which adds noise on top, see
+    to resolution, broader market context, and whether recent whale prints
+    on this same market agree. Each factor normalized to 0-1, weighted-
+    summed. Pure function of its inputs - no randomness - so it's shared
+    as-is between the simulator (which adds noise on top, see
     WhaleSimulator._score_confidence) and any real whale-watcher provider
-    scoring an actual trade (services/whalewatchers/kalshi_trade_tape.py)."""
+    scoring an actual trade (services/whalewatchers/kalshi_trade_tape.py).
+
+    agreement_factor is the caller's responsibility to compute (this
+    function has no access to signal history) - defaults to 0.5 (neutral:
+    neither agreement nor disagreement) when the caller has no real
+    signal-agreement concept to offer, e.g. the simulator, or a real
+    provider scoring a market with no recent prior prints to compare
+    against - same "missing data isn't scored as agreement or disagreement"
+    idiom already used elsewhere in this app (e.g. auto_exit_confidence)."""
     market_volume = float(market.get("volume_24h_fp") or 0)
 
     # (1) Size relative to THIS market's own activity - a 20,000-contract
     # print is unremarkable in a 2M-volume market, huge in a 5,000-volume
-    # one. Capped at 1.0 once a print reaches a whole day's volume.
-    depth_factor = min(size / max(market_volume, 1.0), 1.0)
+    # one. Exponential saturation, not a hard cap: the old `min(x, 1.0)`
+    # meant a print of exactly one day's volume and a print of 100x that
+    # scored identically (1.0) - a real, flagged weakness (a modest trade in
+    # a thin market could trivially hit the same ceiling as a genuinely
+    # enormous one, and nothing beyond the ceiling could ever differentiate
+    # further). `1 - e^(-k*x)` has no plateau - it keeps inching toward 1.0
+    # for arbitrarily larger prints - while still landing at the same ~0.9
+    # for "exactly one day's volume" the old cap used to bind at, so this
+    # isn't a wholesale rescale, just removing the cliff.
+    depth_ratio = size / max(market_volume, 1.0)
+    depth_factor = 1.0 - math.exp(-_DEPTH_SATURATION_K * depth_ratio)
 
     # (2) How unusual the price is - closer to a coin-flip (0.5) means the
     # market's genuinely undecided, so a big directional bet there is more
@@ -196,16 +244,50 @@ def composite_confidence(
 
     # (4) Broader market context - is this one of the more actively-traded
     # markets in the current batch, or a thin outlier? A big print in an
-    # already-busy market reads as more credible than the same print in
-    # the quietest one on the list.
+    # already-busy market reads as more credible than the same print in the
+    # quietest one on the list. Percentile rank among the batch, not a raw
+    # ratio against the single busiest market - a real, flagged weakness of
+    # the ratio approach: one outsized market in the batch could crush
+    # every other market's context_factor toward zero even if they're all
+    # reasonably active *relative to each other*. Rank is robust to that -
+    # one outlier only nudges everyone else's rank slightly, never crushes
+    # it.
     other_volumes = [float(m.get("volume_24h_fp") or 0) for m in markets]
-    max_volume = max(other_volumes) if other_volumes else 0.0
-    context_factor = (market_volume / max_volume) if max_volume > 0 else 0.5
-
-    base = (
-        0.40 * depth_factor
-        + 0.25 * unusualness_factor
-        + 0.20 * proximity_factor
-        + 0.15 * context_factor
+    context_factor = (
+        sum(1 for v in other_volumes if v <= market_volume) / len(other_volumes)
+        if other_volumes else 0.5
     )
-    return min(max(base, 0.0), 1.0)
+
+    # (5) Do recent whale prints on this same market agree with this one?
+    # Independent same-direction prints plausibly share a real catalyst
+    # rather than being noise - the core thesis behind
+    # docs/kalshi-whale-provider-and-strategy-porting-plan.md Part 2's
+    # whale-consensus idea, folded into the base confidence score itself
+    # rather than only a separate future strategy. Computed by the caller
+    # (needs real signal-log history this function doesn't have access to,
+    # see services/whalewatchers/kalshi_trade_tape.py) - defaults to
+    # neutral 0.5 here.
+
+    score = (
+        0.35 * depth_factor
+        + 0.20 * unusualness_factor
+        + 0.15 * proximity_factor
+        + 0.15 * context_factor
+        + 0.15 * agreement_factor
+    )
+    return ConfidenceBreakdown(
+        depth_factor=depth_factor, unusualness_factor=unusualness_factor,
+        proximity_factor=proximity_factor, context_factor=context_factor,
+        agreement_factor=agreement_factor, score=min(max(score, 0.0), 1.0),
+    )
+
+
+def composite_confidence(
+    market: dict, markets: list[dict], size: float, price: float, now: float,
+    agreement_factor: float = 0.5,
+) -> float:
+    """The blended score only - see composite_confidence_breakdown for the
+    full per-factor detail. Kept as its own function so every existing
+    caller that only ever wanted a plain float (WhaleSimulator, tests)
+    doesn't need to change."""
+    return composite_confidence_breakdown(market, markets, size, price, now, agreement_factor).score

@@ -5,7 +5,7 @@ kalshi:
   watchlist_size: 50
   min_volume_24h: 1
   categories: []
-  live_markets_only: false
+  live_markets_only: true
   poll_interval_sec: 15
   request_timeout_sec: 10
 whale_signal:
@@ -62,12 +62,15 @@ market_strategy:
   max_daily_loss_pct: 1
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 0
+  min_notional_usd: 3000
 advisory:
   enabled: false
   min_resolved_trades_per_variant: 30
   auto_apply_enabled: false
   auto_apply_min_confidence: higher
   auto_apply_cooldown_sec: 86400
+confidence_calibration:
+  enabled: false
+  min_resolved_signals: 50
 logging:
   level: INFO

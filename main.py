@@ -17,6 +17,7 @@ load_dotenv()  # reads .env if present; every var is optional, see .env.example
 from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
+from services import confidence_calibration
 from services import config_performance
 from services import market_history
 from services import signal_log
@@ -687,7 +688,7 @@ async def trading_loop():
                 state["stats"]["signals_seen"] += 1
                 signal_log.log_signal(
                     signal.ticker, signal.side, signal.size, signal.confidence,
-                    state["whale_source"], signal.timestamp,
+                    state["whale_source"], signal.timestamp, factors=signal.factors,
                 )
 
                 # Same live-status lookup the LIVE badge uses (state["live_status"],
@@ -1152,6 +1153,35 @@ async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
         "changes": config_performance.recent_applied_changes(limit=limit, offset=offset),
         "total": config_performance.applied_changes_count(),
     }
+
+
+@app.get("/api/confidence-calibration/status")
+async def get_confidence_calibration_status():
+    # Same "honest progress even while gated" idiom as /api/advisory/status -
+    # never leaks a real report early, but useful to show real progress
+    # toward the threshold while waiting.
+    cc_cfg = config_store.get()["confidence_calibration"]
+    resolved_count = len(signal_log.resolved_signals_with_factors())
+    return {
+        "enabled": cc_cfg["enabled"],
+        "min_resolved_signals": cc_cfg["min_resolved_signals"],
+        "resolved_count": resolved_count,
+        "ready": resolved_count >= cc_cfg["min_resolved_signals"],
+    }
+
+
+@app.get("/api/confidence-calibration/report")
+async def get_confidence_calibration_report():
+    # Always safe to call regardless of confidence_calibration.enabled - the
+    # data-threshold gate lives inside generate_calibration_report() itself
+    # (services/confidence_calibration.py), not here, matching advisory's
+    # own route-level pattern.
+    cc_cfg = config_store.get()["confidence_calibration"]
+    if not cc_cfg["enabled"]:
+        return {"report": None, "gated_reason": "confidence calibration is disabled", "resolved_count": None}
+
+    rows = signal_log.resolved_signals_with_factors()
+    return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"])
 
 
 @app.get("/api/market-strategy/state")

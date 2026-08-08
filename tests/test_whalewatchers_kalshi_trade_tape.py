@@ -2,7 +2,17 @@ import asyncio
 
 import pytest
 
+from services import signal_log
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
+
+
+@pytest.fixture(autouse=True)
+def _redirect_signal_log_db(tmp_path, monkeypatch):
+    # fetch_signals() now queries signal_log.recent_sides_for_ticker() for
+    # agreement_factor - redirect before any test can touch the real
+    # data/signal_log.db (CLAUDE.md's live-db warning), same pattern
+    # tests/test_signal_log.py/test_market_history.py already use.
+    monkeypatch.setattr(signal_log, "DB_PATH", tmp_path / "signal_log.db")
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):
@@ -119,3 +129,47 @@ def test_trade_with_no_trade_id_is_skipped():
     trade["trade_id"] = None
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     assert asyncio.run(provider.fetch_signals(market_context=ctx)) == []
+
+
+def test_signal_carries_a_full_factor_breakdown():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert len(signals) == 1
+    factors = signals[0].factors
+    assert factors is not None
+    for key in ("depth_factor", "unusualness_factor", "proximity_factor", "context_factor", "agreement_factor", "score"):
+        assert key in factors
+        assert 0.0 <= factors[key] <= 1.0
+
+
+def test_agreement_factor_is_neutral_with_no_recent_history():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["agreement_factor"] == 0.5
+
+
+def test_agreement_factor_reflects_recent_same_side_signals_on_the_same_ticker():
+    signal_log.log_signal("TICK-A", "yes", 500, 0.7, "kalshi_trade_tape")
+    signal_log.log_signal("TICK-A", "yes", 500, 0.7, "kalshi_trade_tape")
+    signal_log.log_signal("TICK-A", "no", 500, 0.7, "kalshi_trade_tape")
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    # 2 of 3 recent signals on this ticker agreed (yes) with this new yes print
+    assert signals[0].factors["agreement_factor"] == pytest.approx(2 / 3)
+
+
+def test_agreement_factor_ignores_signals_on_a_different_ticker():
+    signal_log.log_signal("OTHER-TICKER", "no", 500, 0.7, "kalshi_trade_tape")
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(ticker="TICK-A", count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market(ticker="TICK-A")], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["agreement_factor"] == 0.5  # no history on TICK-A itself

@@ -200,3 +200,38 @@ def test_find_clusters_sorted_by_total_size_descending(tmp_path, monkeypatch):
     log.log_signal("TICK-BIG", "no", 42000, 0.7, "simulated", seen_at=now)
     clusters = log.find_clusters(hours=24)
     assert [c["ticker"] for c in clusters] == ["TICK-BIG", "TICK-SMALL"]
+
+
+def test_recent_sides_for_ticker_scoped_to_ticker_and_window(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 500, 0.7, "kalshi_trade_tape", seen_at=now - 60)
+    log.log_signal("TICK-A", "no", 500, 0.7, "kalshi_trade_tape", seen_at=now - 3600 * 10)  # too old
+    log.log_signal("TICK-B", "yes", 500, 0.7, "kalshi_trade_tape", seen_at=now - 60)  # different ticker
+    sides = log.recent_sides_for_ticker("TICK-A", since_ts=now - 3600)
+    assert sides == ["yes"]
+
+
+def test_log_signal_persists_factors_json_roundtrip(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    factors = {"depth_factor": 0.8, "unusualness_factor": 0.3, "proximity_factor": 0.0,
+               "context_factor": 0.5, "agreement_factor": 0.5, "score": 0.6}
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors=factors)
+    log.mark_resolved(1, correct=True)
+    rows = log.resolved_signals_with_factors()
+    assert len(rows) == 1
+    assert rows[0]["factors"] == factors
+    assert rows[0]["correct"] is True
+
+
+def test_resolved_signals_with_factors_excludes_rows_without_a_breakdown(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 500, 0.6, "simulated")  # no factors= passed - simulator-style
+    log.mark_resolved(1, correct=True)
+    assert log.resolved_signals_with_factors() == []
+
+
+def test_resolved_signals_with_factors_excludes_unresolved_rows(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})
+    assert log.resolved_signals_with_factors() == []  # never resolved

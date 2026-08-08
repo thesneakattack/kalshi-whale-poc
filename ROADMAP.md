@@ -841,6 +841,76 @@ band instead.
       `state.live_status`), back to 50 with it off; search's `live_only=true`
       returned 12 real, currently-live results. 6 new tests
       (`tests/test_kalshi_client.py`). Full suite: 281 passing (was 275).
+- [x] Hardened confidence scoring, and a gated, rule-based confidence-
+      calibration tool. Direct request: "the confidence level algorithm is
+      decent i guess, a bit basic. id like it to be more robust if
+      possible. and id also like an agent to study whale prints and their
+      actual outcomes so as to create a more accurate formula." Two tracks,
+      both confirmed directly (`AskUserQuestion`) before building anything.
+
+      Track 1 — `services/whale_simulator.py`'s `composite_confidence`
+      hardened in the three specific ways named as real weaknesses up
+      front: the depth factor's hard cap (`min(size/volume, 1.0)`, which
+      made a print of exactly one day's volume and one 100x bigger score
+      identically) replaced with exponential saturation
+      (`1 - e^(-k·ratio)`, landing at the same ~0.9 for one day's volume
+      but never plateauing beyond it); the context factor's raw ratio
+      against the single busiest market in the batch (fragile to one
+      outlier crushing everyone else's score) replaced with percentile
+      rank among the batch; a new agreement factor (5th factor, 15%
+      weight) scoring whether recent real prints on the *same market*
+      agree with this one — computed by the caller via new
+      `signal_log.recent_sides_for_ticker()` (6h lookback), neutral 0.5
+      when there's no recent history to check (same "missing data isn't
+      scored as agreement or disagreement" idiom as `auto_exit_confidence`).
+      Weights rebalanced (depth 40→35%, unusualness 25→20%, proximity
+      20→15%, context unchanged 15%, agreement new at 15%). New
+      `composite_confidence_breakdown()` returns every factor plus the
+      final score; `composite_confidence()` itself is unchanged in
+      contract (still a plain float) so the simulator and every existing
+      caller/test needed zero changes.
+
+      Track 2 — re-confirmed the same rule-based-over-ML reasoning
+      `docs/advisory-engine-plan.md` originally made, now with real
+      numbers behind it: checked live before building anything, found
+      5,738 real signals seen but only 9 resolved — nowhere near enough to
+      fit anything trustworthy. New `services/confidence_calibration.py`:
+      needed a real data-model addition first — `signal_log`'s `signals`
+      table gained a nullable `factors_json` column (idempotent
+      `ALTER TABLE`, same migration pattern `paper_broker.py`'s
+      `config_fingerprint` used) so individual factor values persist per
+      signal, not just the blended number. Only real providers populate it
+      (`kalshi_trade_tape.py`, via `composite_confidence_breakdown`) — the
+      column doubling as the "real signals only" filter for calibration
+      with no second, driftable definition to maintain.
+      `generate_calibration_report()` is gated *inside the function*
+      (same precedent as `advisory_engine.generate_recommendations`) —
+      splits resolved real signals into low/mid/high tertiles per factor
+      and reports each bucket's win rate and the gap between them; a real
+      bug caught by this module's own tests along the way — a near-
+      constant factor (e.g. `proximity_factor`, often exactly 0.0) with
+      index-based tertiles would silently reflect insertion order instead
+      of the factor itself, since a stable sort of tied values doesn't
+      actually separate them; fixed by requiring at least 3 *distinct*
+      values before splitting at all, reporting "not enough variance to
+      say" instead of a fabricated gap. Proposes concrete
+      `suggested_weights` (proportional to each factor's own
+      discrimination gap, floored so nothing goes to zero off one report)
+      — matching `advisory_engine`'s "emit an actual value, not just
+      hedged prose" ethos while staying fully deterministic. New
+      `confidence_calibration` config (`enabled: false`,
+      `min_resolved_signals: 50`) and two read-only routes
+      (`GET /api/confidence-calibration/status`, `.../report`) —
+      deliberately no apply endpoint in v1, since the weights aren't
+      config-editable yet, just hardcoded constants; a human edits them in
+      code if the report says it's worth it.
+
+      Verified live: fresh real signals confirmed carrying full factor
+      breakdowns with sane values (no more hard-capped 1.0s), the
+      migration applied cleanly to the live `data/signal_log.db` with zero
+      data loss (older rows correctly `factors_json=null`, new ones
+      populated), both new routes confirmed correctly gated/dormant. 24
+      new tests. Full suite: 297 passing (was 285).
 - [x] Improve series/category grouping — "better Kalshi series metadata"
       turned out to already exist and just be unused, confirmed by
       actually querying `get_series_list()` directly rather than assuming
