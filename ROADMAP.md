@@ -13,11 +13,36 @@ one is the historical record.
 
 ## P0 — Safety & correctness (before anything else)
 
-- [ ] Verify real Kalshi balance/position/fill field names against an actual
-      connected account. `services/kalshi_account_client.py` and the
-      Portfolio "Real Kalshi Account" mode are best-effort guesses at the
-      response shape right now (raw JSON is always shown alongside as a
-      safety net, but the formatted fields could be wrong).
+- [x] Verify real Kalshi balance/position/fill field names against an actual
+      connected account. **Also found and fixed a real bug in the process:
+      every signed request was returning 401 Unauthorized**, on both
+      production and demo hosts — the signed message omitted the
+      `/trade-api/v2` prefix that Kalshi's own docs example
+      (`path='/trade-api/v2/portfolio/balance'`) includes. This had never
+      been tested against a real key before; nothing was wrong with the
+      account/credentials, the signing code itself was wrong. Fixed in
+      `services/kalshi_account_client.py` (`_base_path`, derived from
+      `base_url` rather than hardcoded, so it's correct on production,
+      demo, or any other host). Also added `KALSHI_ACCOUNT_BASE_URL` so the
+      account client can point at a different Kalshi environment than
+      public market data does — demo and production use separate
+      credentials entirely. Once auth worked, real field names turned out
+      to differ from the guesses in several places: `market_positions`
+      entries use `position_fp`/`market_exposure_dollars`/
+      `total_traded_dollars`, not `position`/`market_exposure`/
+      `total_traded`; fills use `count_fp`/`yes_price_dollars`/
+      `no_price_dollars`, not `count`/`size`/`yes_price`/`price` — the old
+      guesses didn't exist on any real response and silently rendered
+      "—"/blank for every row. Balance turned out to have two genuinely
+      different real numbers (`balance` = uninvested cash, `portfolio_value`
+      = cash + open positions) that the old code picked between as if one
+      were a fallback for the other; the dashboard now shows both labeled
+      explicitly. Raw JSON stays visible everywhere regardless, since
+      Kalshi's docs can still drift again. 2 new regression tests
+      (`test_signed_message_includes_the_trade_api_v2_prefix`,
+      `test_base_path_derived_from_base_url_not_hardcoded`); the field-name
+      fixes were verified live against the real connected account (visually
+      confirmed in a real Chrome session, not just curl).
 - [x] Verify the `create_order`/`cancel_order` request schema against
       Kalshi's *current* docs. **The concern was justified — the original
       implementation was wrong.** It targeted Kalshi's legacy order shape

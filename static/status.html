@@ -395,6 +395,37 @@
           <code>tests/test_shadow_mode.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 13 · a real key, finally</div>
+        <h4>Connected a real account — and the auth signing itself was broken</h4>
+        <p>The last open P0 item needed something no amount of code review could substitute for: an actual Kalshi
+          API key. Once one existed, connecting it immediately 401'd — on both production and demo hosts, ruling
+          out an environment mismatch. Fetched Kalshi's own worked authentication example directly from
+          docs.kalshi.com (<code>path='/trade-api/v2/portfolio/balance'</code>) and found the bug: this file's
+          signed message omitted the <code>/trade-api/v2</code> prefix that path is supposed to include. The
+          request URLs were always correct — only the signature input was wrong, which is exactly the kind of bug
+          that produces a clean 401 with no other symptom, and exactly why this had sat unverified for so long:
+          there was never a real key to notice with before. Fixed by deriving the correct base path from
+          <code>base_url</code> itself (<code>urlsplit(base_url).path</code>) rather than hardcoding it a second
+          time, so it stays correct however <code>base_url</code> is configured. Along the way, discovered demo
+          and production Kalshi environments need separate credentials entirely — added
+          <code>KALSHI_ACCOUNT_BASE_URL</code> so the account client can target either independently of the public
+          market-data client, which stays on production. With auth actually working, the real response shapes
+          finally settled the other half of this roadmap item: several guessed field names were wrong
+          (<code>position_fp</code> not <code>position</code>, <code>market_exposure_dollars</code> not
+          <code>market_exposure</code>, <code>count_fp</code>/<code>yes_price_dollars</code>/
+          <code>no_price_dollars</code> on fills, not <code>count</code>/<code>price</code>) and silently rendered
+          blank for every row before now. Also found that "balance" and "portfolio_value" are two genuinely
+          different real numbers (cash vs. cash-plus-positions) that the dashboard had been treating as
+          interchangeable fallbacks for each other — now shown side by side, explicitly labeled. Verified against
+          a real connected account holding real open positions and fill history, in a real Chrome session, not
+          just curl.</p>
+        <div class="files"><code>services/kalshi_account_client.py</code> (<code>_base_path</code>) ·
+          <code>main.py</code> (<code>KALSHI_ACCOUNT_BASE_URL</code>) ·
+          <code>static/index.html</code> (real position/fill rendering, Cash Balance/Portfolio Value split) ·
+          <code>.env.example</code> · <code>tests/test_kalshi_account_client.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -573,10 +604,17 @@
         is shown.</div>
     </div>
     <div class="limitation">
-      <div class="h">Real balance/position field names are best-effort</div>
-      <div class="b">The Live Account panel tries common Kalshi response shapes for balance/positions and always
-        shows the raw JSON alongside its best-effort formatting, specifically because those exact field names
-        weren't independently confirmed the way the read-only GET paths' existence was.</div>
+      <div class="h">Real account connection: verified 2026-08-07, and the auth signing itself was broken</div>
+      <div class="b">A real key made it possible to test this for the first time, and it surfaced a genuine bug, not
+        just an unconfirmed guess: every signed request 401'd, on both production and demo — the signed message
+        omitted the <code>/trade-api/v2</code> prefix Kalshi's own docs example includes. Fixed in
+        <code>services/kalshi_account_client.py</code>. Once auth worked, several field-name guesses turned out
+        wrong too — <code>market_positions</code> uses <code>position_fp</code>/<code>market_exposure_dollars</code>,
+        fills use <code>count_fp</code>/<code>yes_price_dollars</code>/<code>no_price_dollars</code> — none of
+        which existed under the old guessed names, so those rows silently rendered blank before. All fixed and
+        verified against a real connected account in a real browser session. Raw JSON stays visible everywhere
+        regardless, since Kalshi's docs can still drift again — this is now confirmed-correct, not guaranteed
+        permanent.</div>
     </div>
   </section>
 

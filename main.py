@@ -44,8 +44,14 @@ whale_sim = WhaleSimulator(
     bias=cfg["whale_signal"]["bias"],
 )
 whale_provider = get_active_provider()  # only active if its own env vars are set — see services/whalewatchers/
+# Kalshi's demo and production environments use separate credentials and
+# separate hosts (KALSHI_API_KEY_ID/KALSHI_PRIVATE_KEY_PATH for one won't
+# authenticate against the other) — KALSHI_ACCOUNT_BASE_URL lets the account
+# client point at either independently of kalshi.base_url above, which stays
+# on production for public market data regardless.
+account_base_url = os.environ.get("KALSHI_ACCOUNT_BASE_URL", "").strip() or cfg["kalshi"]["base_url"]
 account = KalshiAccountClient(
-    cfg["kalshi"]["base_url"],
+    account_base_url,
     cfg["kalshi"]["request_timeout_sec"],
     cfg["kalshi_account"]["trading_enabled"],
 )  # real account — only active if KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH are set in .env

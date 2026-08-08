@@ -4,14 +4,25 @@ Authenticated Kalshi client — YOUR real account. Separate from kalshi_client.p
 data" and "touch a real account" should never be able to get accidentally mixed
 into the same file.
 
-Auth scheme (Kalshi trade-api v2, confirmed against current Kalshi docs):
+Auth scheme (Kalshi trade-api v2). Fixed 2026-08-07 after a real key finally
+made it possible to test this for the first time — every signed request had
+been getting 401 Unauthorized, on both production and demo hosts. The
+message being signed omitted the "/trade-api/v2" prefix; fetching
+docs.kalshi.com's own worked example (`path='/trade-api/v2/portfolio/balance'`)
+confirmed the signed path must include it, contrary to what this docstring
+used to claim. This was never actually load-bearing before now: nothing had
+a real key to notice the read endpoints below were completely non-functional
+the moment credentials existed.
   - Every request carries three headers: KALSHI-ACCESS-KEY, KALSHI-ACCESS-TIMESTAMP,
     KALSHI-ACCESS-SIGNATURE.
-  - message = f"{timestamp_ms}{method.upper()}{path}"  — path is the route only
-    (e.g. "/portfolio/balance"), WITHOUT the "/trade-api/v2" prefix and without
-    a query string.
+  - message = f"{timestamp_ms}{method.upper()}{base_path}{path}" — base_path is
+    derived from base_url (e.g. "/trade-api/v2"), path is the route
+    (e.g. "/portfolio/balance"), no query string.
   - signature = base64(RSA-PSS-SHA256.sign(private_key, message)), MGF1(SHA256),
     salt_length = digest length.
+  - Verified working end-to-end against a real (read-only, demo-environment)
+    Kalshi API key: KALSHI-ACCESS-KEY accepted, balance/positions/fills all
+    returned real 200s instead of 401.
 
 Read endpoints (balance/positions/fills/orders) are real and active as soon as
 KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH are set in .env — nothing else has
@@ -54,6 +65,7 @@ again, and no live order has ever actually been placed against this code.
 import base64
 import os
 import time
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -66,6 +78,11 @@ class KalshiAccountClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = request_timeout_sec
         self.trading_enabled = trading_enabled
+        # Kalshi signs the full request path *including* the API version
+        # prefix (e.g. "/trade-api/v2"), not just the route after it — derive
+        # it from base_url so this stays correct on production, demo, or any
+        # other host, rather than hardcoding "/trade-api/v2" a second time.
+        self._base_path = urlsplit(self.base_url).path
 
         self.key_id = os.getenv("KALSHI_API_KEY_ID", "").strip()
         key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "").strip()
@@ -94,7 +111,7 @@ class KalshiAccountClient:
 
     def _sign(self, method: str, path: str) -> tuple[str, str]:
         timestamp_ms = str(int(time.time() * 1000))
-        message = f"{timestamp_ms}{method.upper()}{path}".encode("utf-8")
+        message = f"{timestamp_ms}{method.upper()}{self._base_path}{path}".encode("utf-8")
         signature = self._private_key.sign(
             message,
             padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),

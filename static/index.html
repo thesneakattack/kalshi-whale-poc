@@ -660,17 +660,22 @@ function rawJsonDetails(data) {
   return `<details class="raw-json-wrap"><summary>raw response</summary><pre class="raw-json">${esc(JSON.stringify(data, null, 2))}</pre></details>`;
 }
 
-// Real positions/fills field names aren't independently confirmed (see /status
-// Known Limitations) — try the common shapes, but always keep the raw response
-// visible too rather than silently hiding data that doesn't match a guess.
+// Real field names verified 2026-08-07 against a real connected account
+// (see ROADMAP.md/status.html) — position_fp/market_exposure_dollars/
+// total_traded_dollars on market_positions, count_fp/yes_price_dollars/
+// no_price_dollars on fills. The earlier guesses (position, market_exposure,
+// count, yes_price, ...) didn't exist on any real response and silently
+// rendered "—"/blank for every row. Raw response stays visible regardless,
+// since Kalshi's docs can still drift again.
 function renderRealPositions(positions) {
   const el = $('positions-list');
-  $('position-count').textContent = '';
   if (positions === null || positions === undefined) {
+    $('position-count').textContent = '';
     el.innerHTML = '<div class="empty">Not connected — set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env</div>';
     return;
   }
   const list = Array.isArray(positions) ? positions : (positions.market_positions || []);
+  $('position-count').textContent = list.length ? `(${list.length})` : '';
   if (!list.length) {
     el.innerHTML = '<div class="empty">No open real positions</div>' + rawJsonDetails(positions);
     return;
@@ -678,11 +683,13 @@ function renderRealPositions(positions) {
   el.innerHTML = list.map(p => {
     const ticker = p.ticker || p.market_ticker || 'unknown';
     const label = marketLabel(ticker);
-    const qty = p.position ?? p.count ?? p.total_traded ?? '—';
-    const exposure = p.market_exposure ?? p.resting_order_count ?? null;
+    const qty = p.position_fp ?? '—';
+    const exposure = p.market_exposure_dollars != null ? fmt(parseFloat(p.market_exposure_dollars)) : null;
+    const pnl = p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null;
+    const pnlHtml = pnl != null ? ` <span style="color: var(${pnl >= 0 ? '--yes' : '--no'})">${fmt(pnl)} realized</span>` : '';
     return `<div class="position-row" title="${esc(JSON.stringify(p))}">
       <div class="name">${esc(label.short)}</div>
-      <div class="nums"><span>qty ${esc(String(qty))}${exposure != null ? ' · exposure ' + esc(String(exposure)) : ''}</span></div>
+      <div class="nums"><span>qty ${esc(String(qty))}${exposure != null ? ' · exposure ' + exposure : ''}${pnlHtml}</span></div>
     </div>`;
   }).join('') + rawJsonDetails(positions);
 }
@@ -702,11 +709,12 @@ function renderRealFills(fills) {
     const ticker = f.ticker || f.market_ticker || 'unknown';
     const label = marketLabel(ticker);
     const side = f.side || f.action || '';
-    const count = f.count ?? f.size ?? '—';
-    const price = f.yes_price ?? f.price ?? null;
+    const count = f.count_fp ?? '—';
+    const priceDollars = f.side === 'no' ? f.no_price_dollars : f.yes_price_dollars;
+    const price = priceDollars != null ? `${(parseFloat(priceDollars) * 100).toFixed(0)}¢` : null;
     return `<div class="trade-row" title="${esc(JSON.stringify(f))}">
       <div class="name">${esc(label.short)} ${side ? `<span class="side-tag ${esc(side)}">${esc(side)}</span>` : ''}</div>
-      <div class="nums"><span>${esc(String(count))} ct${price != null ? ' @ ' + esc(String(price)) : ''}</span></div>
+      <div class="nums"><span>${esc(String(count))} ct${price != null ? ' @ ' + price : ''}</span></div>
     </div>`;
   }).join('') + rawJsonDetails(fills);
 }
@@ -898,7 +906,13 @@ function renderAccount(account) {
     return;
   }
   const bal = account.balance || {};
-  const balanceCents = bal.balance ?? bal.portfolio_value ?? null;
+  // "balance" is uninvested cash; "portfolio_value" is cash + open positions'
+  // value - both verified real fields (2026-08-07), genuinely different
+  // numbers, not a fallback for each other. Showing only "balance" reads as
+  // "you have basically nothing" right next to a positions list proving
+  // otherwise, so both are shown explicitly instead of picking one.
+  const balanceCents = bal.balance ?? null;
+  const portfolioCents = bal.portfolio_value ?? null;
   const positions = account.positions;
   let positionCount = '—';
   if (Array.isArray(positions)) positionCount = positions.length;
@@ -912,7 +926,8 @@ function renderAccount(account) {
 
   el.innerHTML = `<div class="account-bar">
     <span class="tag">● REAL KALSHI ACCOUNT — REAL MONEY, not the paper numbers above</span>
-    <span class="field"><span class="label">Balance</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
+    <span class="field"><span class="label">Cash Balance</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
+    <span class="field"><span class="label">Portfolio Value</span>${portfolioCents != null ? fmt(portfolioCents / 100) : 'see raw ↴'}</span>
     <span class="field"><span class="label">Positions</span>${positionCount}</span>
     ${tradingHtml}
     <details>
