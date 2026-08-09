@@ -65,7 +65,7 @@ market_strategy:
   max_daily_loss_pct: 0.2
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 1
+  min_notional_usd: 2500
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 30
@@ -76,7 +76,7 @@ confidence_calibration:
   enabled: false
   min_resolved_signals: 50
 market_analyst:
-  enabled: false
+  enabled: true
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
 logging:
