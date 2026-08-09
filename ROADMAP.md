@@ -613,6 +613,81 @@ never cut.
       History's Cost/Payout columns, left over from before fee modeling
       existed — same "label doesn't match what's shown" bug class
       documented in CLAUDE.md. 3 new tests. Full suite: 417 (was 414).
+- [x] Applied the same research-driven rigor to exits, the kill switch, and
+      advisory config-tuning, direct request: "i want to apply the same
+      'doctorate level market analyst' methodologies and practices and
+      inferences to all the heuristics, engines, existing
+      algorithms/formulas" — scoped, after an explicit choice, to tightening
+      the existing arithmetic against the research rather than adding new
+      LLM calls. Found and fixed several real gaps:
+      - **Exits were fee-blind.** `check_exits`' `pnl_pct` (driving
+        take_profit_pct/stop_loss_pct/auto_exit in both
+        `strategy_engine.py` and `market_strategy.py`) compared against
+        raw `mark_to_market()` price movement, never subtracting the entry
+        fee already paid or the close fee the exit itself would incur — a
+        `stop_loss_pct: 0.10` didn't actually cap the loss at 10% of what
+        was put in. Fixed in both files; several exact-boundary tests
+        needed their thresholds recomputed against the new, correct,
+        fee-inclusive numbers.
+      - **Sentiment-reversal exits weighted every whale print equally**,
+        regardless of its own confidence — extended the same
+        confidence-weighting principle already applied at entry
+        (Barclay & Warner stealth-trading research) to
+        `strategy_engine._whale_lean()`, mirrored in `computeWhaleLean()`
+        (static/index.html) to keep the two implementations' math
+        identical, per that function's own explicit "kept in one place
+        conceptually... even though it has to live in two languages" design
+        note.
+      - **The daily-loss kill switch was checking realized bankroll only.**
+        Both `FollowTheWhaleStrategy.evaluate()` and
+        `MarketNativeStrategy.evaluate_all()` called
+        `self.broker.equity({})` — an empty prices dict silently makes
+        every open position's unrealized P&L compute as exactly 0, so this
+        was mathematically identical to just checking `self.broker.bankroll`
+        directly. A large real unrealized drawdown sitting in open
+        positions could never trip the kill switch until something
+        actually closed. Fixed by threading real, this-tick prices through
+        `evaluate()`/`evaluate_all()` (a new `latest_prices` parameter,
+        backward-compatible default `None`).
+      - **A genuinely foundational bug surfaced while fixing the above**:
+        `PaperBroker.equity()` itself (`bankroll + total_unrealized_pnl`)
+        under-reports true portfolio value by the full cost basis of every
+        open position — confirmed two independent ways (the project's own
+        equity test's comment named a position's real value right next to
+        an assertion that didn't include it; and equity showed a real
+        discontinuity, jumping by roughly a position's cost basis at the
+        instant it closed even at zero net price change). This is the same
+        formula behind the dashboard's own Equity header figure — not
+        introduced by this session, pre-existing. Flagged directly and,
+        per direct confirmation, fixed as part of this same pass: new
+        `total_position_value()` (cost basis + unrealized gain/loss, not
+        gain/loss alone), `equity()` redefined to use it, and
+        `unrealized_pnl` added as its own explicit field in
+        `PaperBroker.state()` so the header strip's Unrealized P&L reads
+        it directly instead of re-deriving `equity - bankroll` — the exact
+        re-derivation that broke once already (see the phase-54 entry
+        above) and would have broken again the moment `equity()` stopped
+        meaning what that subtraction assumed.
+      - **A live regression, found and fixed mid-session** (direct report:
+        "im seeing an old bug re-appear. market ids instead of human
+        readable titles"): the kill-switch fix's own `latest_prices`
+        construction in `market_strategy.py` used
+        `float(m["yes_bid_dollars"])` guarded only by `is not None`, which
+        lets an empty-string price through to `float("")`, which raises —
+        aborting the whole tick before `_fetch_event_titles` ever ran, so
+        any market not already cached fell back to its raw ticker. Fixed
+        to use the same `or 0.5` idiom every other `yes_bid_dollars` read
+        in this codebase already uses; found and fixed the identical
+        pre-existing latent bug in `check_exits`' own price lookup while
+        looking.
+      - **Advisory engine gained a longshot-bonus-specific recommendation**
+        (`advisory_engine._longshot_bonus_recommendation()`), mirroring
+        `_entry_threshold_recommendation`'s exact bucket-comparison shape:
+        if longshot-zone entries still underperform non-longshot ones even
+        with today's `longshot_entry_threshold_bonus` already applied, it
+        suggests raising the bonus — closing the loop on FLB research
+        being applied at entry but never checked at the advisory layer.
+      9 new tests. Full suite: 426 (was 417).
 
 ## P3 — Reliability & engineering hygiene
 

@@ -3108,13 +3108,21 @@ function renderEquityChart(history, baseline, valueKey, baselineLabel, elId) {
 
 // Aggregates recent whale prints on one ticker into a single lean — this is
 // what the Whale Watch view foregrounds next to each market's plain price.
+// Weighted by size * confidence, not size alone - mirrors services/
+// strategy_engine.py's _whale_lean() exactly (same inputs, same math, kept
+// in one place conceptually even though it has to live in two languages).
+// A low-confidence print counts as weaker evidence of real sentiment than
+// a high-confidence one, same distinction the entry side already makes.
 function computeWhaleLean(ticker, signals) {
   const matches = signals.filter(s => s.ticker === ticker);
   if (!matches.length) return null;
-  let yesSize = 0, noSize = 0;
-  matches.forEach(s => { if (s.side === 'yes') yesSize += s.size; else noSize += s.size; });
-  const total = yesSize + noSize;
-  return { count: matches.length, yesSize, noSize, total, yesPct: total ? (yesSize / total * 100) : 50 };
+  let yesWeight = 0, noWeight = 0;
+  matches.forEach(s => {
+    const w = s.size * s.confidence;
+    if (s.side === 'yes') yesWeight += w; else noWeight += w;
+  });
+  const total = yesWeight + noWeight;
+  return { count: matches.length, yesSize: yesWeight, noSize: noWeight, total, yesPct: total ? (yesWeight / total * 100) : 50 };
 }
 
 // "This type of market" win rate — grouped server-side by Kalshi's series/
@@ -3478,16 +3486,20 @@ function renderHeaderStrip(broker, account, realBalanceHistory) {
     $('header-pnl-label').textContent = 'Unrealized P&L';
     $('bankroll').textContent = fmt(broker.bankroll);
     $('equity').textContent = fmt(broker.equity);
-    // equity = bankroll + total_unrealized_pnl(open positions) (see
-    // paper_broker.py's equity()), so equity - bankroll IS the unrealized
-    // P&L on currently-open positions - equity - starting_bankroll (the old
-    // code here) is cumulative all-time P&L including realized gains from
-    // closed trades, which showed a large nonzero "Unrealized P&L" even with
-    // zero open positions (direct report, 2026-08-09: "I get values for
-    // bankroll, equity, and unrealized P&L, but the open positions
-    // themselves arent shown"). All-time P&L already has its own correctly-
+    // broker.unrealized_pnl is its own explicit backend field (see
+    // PaperBroker.state()), not re-derived here as equity - bankroll -
+    // that re-derivation is exactly how this figure broke once already
+    // (direct report, 2026-08-09: "I get values for bankroll, equity, and
+    // unrealized P&L, but the open positions themselves arent shown" - it
+    // was computing equity - starting_bankroll, cumulative all-time P&L
+    // including realized gains, not equity - bankroll). It would break
+    // again the same way now that equity() itself includes open positions'
+    // full current value (cost basis + gain/loss), not just the gain/loss
+    // component alone (a separate, deeper bug in equity() itself, found
+    // and fixed the same day) - equity - bankroll no longer equals
+    // unrealized P&L at all. All-time P&L already has its own correctly-
     // labeled home on the Trading History tab.
-    const pnl = broker.equity - broker.bankroll;
+    const pnl = broker.unrealized_pnl;
     const pnlEl = $('pnl');
     pnlEl.textContent = fmt(pnl);
     pnlEl.className = 'value ' + (pnl >= 0 ? 'pos' : 'neg');

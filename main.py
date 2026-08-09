@@ -1104,6 +1104,7 @@ async def trading_loop():
 
                 decision = strategy.evaluate(
                     signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
+                    latest_prices=state["latest_prices"],
                 )
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]

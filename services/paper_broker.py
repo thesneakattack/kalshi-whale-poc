@@ -327,13 +327,48 @@ class PaperBroker:
             for ticker, pos in self.positions.items()
         )
 
+    def total_position_value(self, latest_prices: dict[str, float]) -> float:
+        """Current mark-to-market value of every open position - cost basis
+        plus unrealized gain/loss, not just the gain/loss component alone.
+        total_unrealized_pnl() is correct on its own terms for *its* job
+        (the dashboard's own Unrealized P&L figure - see CLAUDE.md's
+        documented bug pattern, and this file's own equity() history), but
+        by itself it excludes the capital that's actually tied up in the
+        position, which bankroll already had subtracted at entry. Needed
+        as its own method (not just inlined into equity() below) so a
+        caller that wants "what would I have if I liquidated everything
+        right now" isn't tempted to reach for total_unrealized_pnl() alone,
+        which looks equally plausible at the call site but answers a
+        different question - the exact bug equity() itself had until
+        2026-08-09 (audit finding: confirmed two ways - the project's own
+        equity test's comment named a position's real value while the
+        assertion it sat next to didn't include it, and equity() showed a
+        real discontinuity, jumping by roughly a position's full cost basis
+        at the instant it closed even at zero net price change)."""
+        return sum(
+            self.cost_basis(ticker) + self.mark_to_market(ticker, latest_prices.get(ticker, pos.entry_price))
+            for ticker, pos in self.positions.items()
+        )
+
     def equity(self, latest_prices: dict[str, float]) -> float:
-        return round(self.bankroll + self.total_unrealized_pnl(latest_prices), 2)
+        """True total portfolio value: cash on hand plus the current market
+        value of everything currently held - not just bankroll plus the
+        gain/loss on top of it (see total_position_value()'s docstring for
+        why that distinction is real and was a genuine bug here until
+        2026-08-09)."""
+        return round(self.bankroll + self.total_position_value(latest_prices), 2)
 
     def state(self, latest_prices: dict[str, float]) -> dict:
         return {
             "bankroll": round(self.bankroll, 2),
             "equity": self.equity(latest_prices),
+            # Its own explicit field, not left for a caller to re-derive as
+            # equity - bankroll - that re-derivation is exactly how the
+            # header strip's "Unrealized P&L" broke once already (see
+            # CLAUDE.md) and would break again the moment equity() stopped
+            # being defined as bankroll + this exact number (which, as of
+            # the fix above, it no longer is).
+            "unrealized_pnl": round(self.total_unrealized_pnl(latest_prices), 2),
             "starting_bankroll": self.starting_bankroll,
             "positions": [
                 {**asdict(p), "cost_basis": round(self.cost_basis(p.ticker), 2)} for p in self.positions.values()

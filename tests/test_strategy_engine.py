@@ -122,6 +122,39 @@ def test_skip_when_halted(tmp_path, monkeypatch):
     assert "halted" in decision["reason"]
 
 
+def test_kill_switch_trips_on_real_unrealized_drawdown_when_prices_passed(tmp_path, monkeypatch):
+    # Audit finding (2026-08-09): the kill switch used to check
+    # self.broker.equity({}) - an empty prices dict makes every position's
+    # unrealized P&L silently compute as exactly 0 (mark_to_market falls
+    # back to entry_price), so it was mathematically identical to checking
+    # bankroll alone. A big real unrealized loss sitting in an open
+    # position, with bankroll itself untouched, should now halt new trades
+    # once latest_prices is actually passed through.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=10000.0, max_daily_loss_pct=0.1)
+    # A large yes position that has since collapsed in price - realized
+    # bankroll only reflects the entry cost/fee, not this unrealized loss.
+    broker.open_position("TICK-A", "yes", size=5000, price=0.5, reason="entry")
+    # Position now worth almost nothing - unrealized loss alone comfortably
+    # exceeds 10% of the 10000 starting bankroll (cost basis was 2500).
+    latest_prices = {"TICK-A": 0.01}
+    equity_with_prices = broker.equity(latest_prices)
+    assert equity_with_prices < 10000.0 * 0.9  # sanity: this really does cross the 10% daily-loss line
+
+    decision = strategy.evaluate(_signal(ticker="TICK-B", confidence=0.9), _cfg(), latest_prices=latest_prices)
+    assert decision["action"] == "skip"
+    assert "halted" in decision["reason"]
+
+
+def test_kill_switch_ignores_unrealized_drawdown_when_no_prices_passed(tmp_path, monkeypatch):
+    # Backward-compatible default: a caller that doesn't pass latest_prices
+    # at all (latest_prices=None) gets the old bankroll-only behavior, not
+    # a crash or a silently different halt decision.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=10000.0, max_daily_loss_pct=0.1)
+    broker.open_position("TICK-A", "yes", size=5000, price=0.5, reason="entry")
+    decision = strategy.evaluate(_signal(ticker="TICK-B", confidence=0.9), _cfg())
+    assert decision["action"] != "skip" or "halted" not in decision.get("reason", "")
+
+
 def test_skip_when_market_already_resolved(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     decision = strategy.evaluate(_signal(confidence=0.9), _cfg(), market_results={"TICK-A": "yes"})
@@ -261,15 +294,22 @@ def test_check_exits_does_nothing_when_unconfigured(tmp_path, monkeypatch):
 def test_check_exits_take_profit_closes_position(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
-    # +50% of cost basis: (0.75 - 0.5) * 100 / (0.5 * 100) = 0.5
-    decisions = strategy.check_exits({"TICK-A": 0.75}, [], _cfg(take_profit_pct=0.5))
+    # check_exits' pnl_pct is fee-inclusive (2026-08-09 audit finding: a
+    # stop_loss_pct/take_profit_pct should mean "X% of what was actually put
+    # in," not "X% of the raw price move before fees make it worse") - raw
+    # gain is (0.75-0.5)*100/50 = 0.5 exactly, but entry_fee + the close fee
+    # this exit itself incurs eat into that, so the real trigger threshold
+    # (0.4) is set comfortably below the fee-inclusive ~0.439, not the raw 0.5.
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.75)
+    expected_pnl_pct = ((0.75 - 0.5) * 100 - entry_fee - close_fee) / 50
+    assert 0.4 <= expected_pnl_pct < 0.5  # fee-inclusive gain sits between the new and the old (raw) threshold
+    decisions = strategy.check_exits({"TICK-A": 0.75}, [], _cfg(take_profit_pct=0.4))
     assert len(decisions) == 1
     assert decisions[0]["action"] == "close"
     assert decisions[0]["ticker"] == "TICK-A"
     assert "take-profit" in decisions[0]["reason"]
     assert "TICK-A" not in broker.positions
-    entry_fee = taker_fee(100, 0.5)
-    close_fee = taker_fee(100, 0.75)
     # started 10000, cost 50, cash back 75, minus both legs' real fees
     assert broker.bankroll == pytest.approx(1000.0 * 10 - 50 + 75 - entry_fee - close_fee)
 
@@ -362,8 +402,10 @@ def test_check_exits_handles_multiple_positions_independently(tmp_path, monkeypa
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # will hit take-profit
     broker.open_position("TICK-B", "yes", size=100, price=0.5, reason="entry")  # stays flat, shouldn't close
+    # take_profit_pct=0.4 - see test_check_exits_take_profit_closes_position
+    # for why 0.4, not the raw-math 0.5, is the right threshold to use here.
     decisions = strategy.check_exits(
-        {"TICK-A": 0.75, "TICK-B": 0.5}, [], _cfg(take_profit_pct=0.5),
+        {"TICK-A": 0.75, "TICK-B": 0.5}, [], _cfg(take_profit_pct=0.4),
     )
     assert len(decisions) == 1
     assert decisions[0]["ticker"] == "TICK-A"
@@ -374,8 +416,14 @@ def test_check_exits_handles_multiple_positions_independently(tmp_path, monkeypa
 def test_check_exits_no_side_position_uses_correct_direction(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "no", size=100, price=0.4, reason="entry")  # cost = 100*(1-0.4) = 60
-    # yes price drops 0.4 -> 0.1: NO side gains. pnl = (0.4-0.1)*100 = 30, pnl_pct = 30/60 = 0.5
-    decisions = strategy.check_exits({"TICK-A": 0.1}, [], _cfg(take_profit_pct=0.5))
+    # yes price drops 0.4 -> 0.1: NO side gains. Raw pnl = (0.4-0.1)*100 = 30,
+    # raw pnl_pct = 30/60 = 0.5 - but fee-inclusive (see the take-profit test
+    # above) it's ~0.46, so take_profit_pct is set to 0.4 to still clear it.
+    entry_fee = taker_fee(100, 0.4)
+    close_fee = taker_fee(100, 0.1)
+    expected_pnl_pct = (30 - entry_fee - close_fee) / 60
+    assert expected_pnl_pct >= 0.4
+    decisions = strategy.check_exits({"TICK-A": 0.1}, [], _cfg(take_profit_pct=0.4))
     assert len(decisions) == 1
     assert "TICK-A" not in broker.positions
 
@@ -395,14 +443,20 @@ def test_check_exits_auto_exit_off_by_default(tmp_path, monkeypatch):
 def test_check_exits_auto_exit_pnl_gain_triggers_at_threshold(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
-    # pnl_pct = (0.65-0.5)*100 / 50 = 0.3; default gain reference 0.5 ->
-    # pnl_factor = 0.3/0.5 = 0.6. No signal_feed at all, so sentiment/
-    # staleness factors are entirely absent (not zero) from the average -
-    # confidence is exactly the pnl factor, 0.6, which meets the default
-    # 0.6 threshold. If a missing factor were wrongly scored as 0 instead
-    # of omitted, this would average down to 0.24 and never trigger -
-    # this is the case that proves it isn't.
-    decisions = strategy.check_exits({"TICK-A": 0.65}, [], _cfg(auto_exit_enabled=True))
+    # Fee-inclusive pnl_pct at exit 0.7: raw gain (0.7-0.5)*100=20, minus
+    # entry_fee + this exit's own close_fee, over cost basis 50. Default
+    # gain reference 0.5 -> pnl_factor = pnl_pct/0.5, comfortably clearing
+    # the default 0.6 auto_exit_threshold on its own. No signal_feed at
+    # all, so sentiment/staleness factors are entirely absent (not zero)
+    # from the average - confidence is exactly this pnl factor. If a
+    # missing factor were wrongly scored as 0 instead of omitted, this
+    # would average down well below threshold and never trigger - this is
+    # the case that proves it isn't.
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.7)
+    expected_pnl_factor = min(1.0, (((0.7 - 0.5) * 100 - entry_fee - close_fee) / 50) / 0.5)
+    assert expected_pnl_factor >= 0.6
+    decisions = strategy.check_exits({"TICK-A": 0.7}, [], _cfg(auto_exit_enabled=True))
     assert len(decisions) == 1
     assert decisions[0]["action"] == "close"
     assert "auto-exit" in decisions[0]["reason"]
@@ -445,12 +499,19 @@ def test_check_exits_auto_exit_pnl_alone_insufficient_with_sentiment_present(tmp
 def test_check_exits_auto_exit_sentiment_factor_contributes_to_confidence(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
-    # Same pnl_factor (0.2) as the test above - this time sentiment's
-    # default weight (1.0) is left on. confidence = (0.2*1 + 1.0*1)/2 = 0.6,
-    # crossing the default threshold where pnl alone (0.2) did not.
+    # A small fee-inclusive pnl_factor alone (exit 0.6, comparable in shape
+    # to test_check_exits_auto_exit_pnl_alone_insufficient_with_sentiment_
+    # present's 0.55) isn't enough on its own - this time sentiment's
+    # default weight (1.0) is left on, and the whale-lean fully reversed
+    # (sentiment_factor=1.0) pulls the averaged confidence up past the
+    # default 0.6 threshold where pnl alone would not have.
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.6)
+    pnl_factor = min(1.0, (((0.6 - 0.5) * 100 - entry_fee - close_fee) / 50) / 0.5)
+    assert (pnl_factor + 1.0) / 2 >= 0.6  # sanity: combined with full-reversal sentiment, this should clear threshold
     feed = [_signal_dict(ticker="TICK-A", side="no", size=1000) for _ in range(3)]
     decisions = strategy.check_exits(
-        {"TICK-A": 0.55}, feed,
+        {"TICK-A": 0.6}, feed,
         _cfg(auto_exit_enabled=True, auto_exit_staleness_weight=0),
     )
     assert len(decisions) == 1

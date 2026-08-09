@@ -1,3 +1,5 @@
+import pytest
+
 from services import advisory_engine as ae
 from services import trade_analytics
 
@@ -88,6 +90,45 @@ def test_entry_threshold_recommendation_id_deterministic():
     rec3 = ae._entry_threshold_recommendation(more_rows, current_value=0.5)
     assert rec3["suggested_value"] == rec1["suggested_value"]
     assert rec3["id"] != rec1["id"]
+
+
+# --- _longshot_bonus_recommendation --------------------------------------
+
+def _longshot_split_rows(n_longshot, longshot_win, n_normal, normal_win):
+    rows = []
+    for i in range(n_longshot):
+        rows.append(_row(entry_price=0.1, won=(i < longshot_win)))  # inside the default 15% longshot zone
+    for i in range(n_normal):
+        rows.append(_row(entry_price=0.5, won=(i < normal_win)))  # comfortably outside it
+    return rows
+
+
+def test_longshot_bonus_recommendation_fires_when_longshots_underperform():
+    rows = _longshot_split_rows(n_longshot=4, longshot_win=0, n_normal=4, normal_win=4)  # 0% vs 100%
+    rec = ae._longshot_bonus_recommendation(rows, _cfg()["strategy"])
+    assert rec is not None
+    assert rec["config_path"] == "strategy.longshot_entry_threshold_bonus"
+    assert rec["current_value"] == 0.15  # advisory_engine's own default when unset
+    assert rec["suggested_value"] == pytest.approx(0.25)
+    assert rec["n"] == 8
+
+
+def test_longshot_bonus_recommendation_none_when_gap_small():
+    rows = _longshot_split_rows(n_longshot=4, longshot_win=2, n_normal=4, normal_win=2)  # 50% vs 50%
+    assert ae._longshot_bonus_recommendation(rows, _cfg()["strategy"]) is None
+
+
+def test_longshot_bonus_recommendation_none_with_too_few_rows_in_either_bucket():
+    rows = _longshot_split_rows(n_longshot=2, longshot_win=0, n_normal=4, normal_win=4)  # only 2 longshot rows
+    assert ae._longshot_bonus_recommendation(rows, _cfg()["strategy"]) is None
+
+
+def test_longshot_bonus_recommendation_ignores_rows_with_no_entry_price():
+    rows = _longshot_split_rows(n_longshot=4, longshot_win=0, n_normal=4, normal_win=4)
+    rows.append(_row(entry_price=None, won=False))  # e.g. a trade with no matched entry - shouldn't crash or count
+    rec = ae._longshot_bonus_recommendation(rows, _cfg()["strategy"])
+    assert rec is not None
+    assert rec["n"] == 8  # the entry_price=None row wasn't counted in either bucket
 
 
 # --- _exit_pct_recommendation -------------------------------------------------

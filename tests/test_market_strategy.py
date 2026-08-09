@@ -78,6 +78,25 @@ def test_evaluate_all_returns_nothing_when_halted(tmp_path, monkeypatch):
     assert decisions == []
 
 
+def test_evaluate_all_kill_switch_trips_on_real_unrealized_drawdown(tmp_path, monkeypatch):
+    # Audit finding (2026-08-09), same as FollowTheWhaleStrategy.evaluate():
+    # this used to check self.broker.equity({}), silently always identical
+    # to bankroll alone since an empty prices dict makes every position's
+    # unrealized P&L compute as exactly 0. A real unrealized loss sitting in
+    # an open position - even with realized bankroll itself untouched -
+    # should now halt new market-native entries too, using this tick's
+    # already-fetched market prices (no extra API cost).
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=10000.0, max_daily_loss_pct=0.1)
+    broker.open_position("TICK-A", "yes", size=5000, price=0.5, reason="entry")
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-B", now, 0.4, 0.6)
+    # TICK-A has collapsed to 1c - a real, large unrealized loss - while
+    # TICK-B (a fresh, unrelated candidate) still cleanly qualifies to trade.
+    markets = [_market(ticker="TICK-A", yes_bid=0.01, now=now), _market(ticker="TICK-B", now=now)]
+    decisions = strategy.evaluate_all(markets, now, _permissive_cfg())
+    assert decisions == []
+
+
 def test_trades_yes_when_momentum_positive(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     now = time.time()

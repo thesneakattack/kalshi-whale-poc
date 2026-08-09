@@ -131,15 +131,46 @@ def test_mark_to_market_no_position_is_zero(tmp_path, monkeypatch):
     assert broker.mark_to_market("NOPE", 0.5) == 0.0
 
 
-def test_equity_combines_bankroll_and_unrealized_pnl(tmp_path, monkeypatch):
+def test_equity_combines_bankroll_and_total_position_value(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
-    # bankroll now 950-fee, position worth 100*0.6=60 vs entry cost 50 -> +10
-    # unrealized. mark_to_market is pure price P&L with no fee awareness
-    # (fees are a bankroll-level cash outflow, not a position-value one) -
-    # see paper_broker.py's equity()/mark_to_market() docstrings.
+    # bankroll now 950-fee, position now genuinely worth 100*0.6=60 (cost
+    # basis 50 + 10 unrealized gain) - equity is bankroll plus that full
+    # current value, not just the +10 gain component on its own (audit
+    # finding, 2026-08-09: equity() used to omit the cost-basis part
+    # entirely, silently under-reporting true portfolio value by however
+    # much capital was tied up in open positions - see
+    # PaperBroker.total_position_value()'s docstring for the two
+    # independent ways this was confirmed).
     fee = taker_fee(100, 0.5)
-    assert broker.equity({"TICK-A": 0.6}) == pytest.approx(960.0 - fee)
+    assert broker.equity({"TICK-A": 0.6}) == pytest.approx(1010.0 - fee)
+
+
+def test_state_exposes_unrealized_pnl_as_its_own_field(tmp_path, monkeypatch):
+    # Not left for a caller to re-derive as equity - bankroll - that's
+    # exactly the re-derivation that broke once already (the header-strip
+    # "Unrealized P&L" bug, see CLAUDE.md) and would break again now that
+    # equity() is no longer defined as bankroll + this exact number.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
+    state = broker.state({"TICK-A": 0.6})
+    assert state["unrealized_pnl"] == pytest.approx(10.0)
+    assert state["equity"] != pytest.approx(state["bankroll"] + state["unrealized_pnl"])  # the old, broken relationship
+
+
+def test_equity_is_continuous_across_closing_a_position_at_the_same_price(tmp_path, monkeypatch):
+    # The concrete regression this bug caused: closing a position at
+    # exactly the price it's already marked at should not itself change
+    # total wealth (aside from the fee this close leg incurs) - equity()
+    # used to jump by roughly the position's full cost basis at the
+    # instant of closing, purely from an accounting gap, not any real P&L.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
+    equity_before_close = broker.equity({"TICK-A": 0.6})
+    broker.close_position("TICK-A", exit_price=0.6, reason="test")
+    close_fee = taker_fee(100, 0.6)
+    equity_after_close = broker.equity({})
+    assert equity_after_close == pytest.approx(equity_before_close - close_fee)
 
 
 def test_state_recent_trades_most_recent_first(tmp_path, monkeypatch):

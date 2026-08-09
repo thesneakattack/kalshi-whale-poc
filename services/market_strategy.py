@@ -47,7 +47,7 @@ plus an optional momentum-reversal exit - the market-native analog of
 whale signal_feed. No auto-exit composite algorithm yet (a possible future
 extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 """
-from services import market_analyst_agent, market_history
+from services import kalshi_fees, market_analyst_agent, market_history
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.strategy_engine import close_if_settled
@@ -107,7 +107,24 @@ class MarketNativeStrategy:
         strat_cfg = cfg["market_strategy"]
         if not strat_cfg.get("enabled"):
             return []
-        if not self.risk.check_daily_loss(self.broker.equity({})):
+        # Real, this-tick prices from markets (already fetched, no extra
+        # cost) rather than an empty dict - audit finding (2026-08-09), see
+        # strategy_engine.py's own FollowTheWhaleStrategy.evaluate() for the
+        # full explanation: equity({}) silently zeroes every position's
+        # unrealized P&L, making the kill switch check only realized
+        # bankroll, blind to any real unrealized drawdown currently sitting
+        # in open positions.
+        # `or 0.5` guards an empty-string yes_bid_dollars, not just a
+        # missing/None one - a real, confirmed-live regression this exact
+        # line caused once already (bare `is not None` lets "" through,
+        # then float("") raises, aborting the whole tick before
+        # _fetch_event_titles ever runs, so any market not already cached
+        # silently falls back to showing its raw ticker instead of a
+        # title - the same idiom every other yes_bid_dollars read in this
+        # codebase already uses, e.g. main.py's own state["latest_prices"]
+        # construction).
+        latest_prices = {m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")}
+        if not self.risk.check_daily_loss(self.broker.equity(latest_prices)):
             return []  # halted - same hard rail as the whale strategy
 
         market_results = market_results or {}
@@ -204,16 +221,24 @@ class MarketNativeStrategy:
             if (result or "").strip().lower() in ("yes", "no"):
                 continue  # settled but close raced/no-op'd - nothing left to check
 
+            # `market.get(...) or pos.entry_price`, not a bare `is not None`
+            # guard - the latter lets an empty-string yes_bid_dollars through
+            # to float(""), which raises (see evaluate_all's own
+            # latest_prices construction above for the same fix, and why it
+            # matters: an uncaught exception here aborts the whole tick
+            # before title-fetching runs).
             market = markets_by_ticker.get(ticker)
-            current_price = (
-                float(market["yes_bid_dollars"])
-                if market and market.get("yes_bid_dollars") is not None
-                else pos.entry_price
-            )
+            current_price = float((market or {}).get("yes_bid_dollars") or pos.entry_price)
             cost_basis = self.broker.cost_basis(ticker)
             if cost_basis <= 0:
                 continue
-            pnl_pct = self.broker.mark_to_market(ticker, current_price) / cost_basis
+            # Fee-inclusive, not just mark_to_market()'s raw price-move P&L -
+            # same audit finding (2026-08-09) as strategy_engine.py's own
+            # check_exits: a stop_loss_pct/take_profit_pct should mean "X%
+            # of what was actually put in," not "X% of the raw price move
+            # before fees make it worse."
+            close_fee = kalshi_fees.taker_fee(pos.size, current_price)
+            pnl_pct = (self.broker.mark_to_market(ticker, current_price) - pos.entry_fee - close_fee) / cost_basis
 
             reason = None
             if take_profit_pct is not None and pnl_pct >= take_profit_pct:

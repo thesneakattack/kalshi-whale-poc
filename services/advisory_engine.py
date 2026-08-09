@@ -103,6 +103,52 @@ def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> d
     }
 
 
+def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | None:
+    """Favorite-longshot bias, confirmed on real Kalshi data (Bürgi, Deng &
+    Whelan 2025 - see docs/prediction-markets-research-reference.md Part
+    1.2, worse for takers specifically) and already the reason
+    strategy_engine.py requires extra confidence for longshot-zone entries
+    (strategy.longshot_entry_threshold_bonus). Direct request (2026-08-09):
+    "apply the same methodologies... to all the heuristics" - the entry
+    threshold already reacts to FLB, but nothing checked whether the
+    current bonus is actually *enough*. Same bucket-comparison shape as
+    _entry_threshold_recommendation, splitting on price zone instead of
+    confidence: if longshot-zone entries under this exact config still win
+    meaningfully less often than non-longshot ones even with today's bonus
+    already applied, the bonus itself should go up, not just exist."""
+    longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
+    current_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
+    priced_rows = [r for r in rows if r.get("entry_price") is not None]
+    longshot_rows = [r for r in priced_rows if r["entry_price"] <= longshot_zone or r["entry_price"] >= (1 - longshot_zone)]
+    non_longshot_rows = [r for r in priced_rows if r not in longshot_rows]
+    if len(longshot_rows) < 3 or len(non_longshot_rows) < 3:
+        return None
+    longshot_wr = sum(1 for r in longshot_rows if r["won"]) / len(longshot_rows) * 100
+    non_longshot_wr = sum(1 for r in non_longshot_rows if r["won"]) / len(non_longshot_rows) * 100
+    if non_longshot_wr - longshot_wr < _COMPARABLE_MIN_WIN_RATE_GAP:
+        return None  # longshot entries aren't meaningfully underperforming under this config's current bonus
+    n = len(longshot_rows) + len(non_longshot_rows)
+    suggested = round(min(0.5, current_bonus + 0.1), 3)
+    if suggested <= current_bonus:
+        return None
+    return {
+        "id": _rec_id("strategy.longshot_entry_threshold_bonus", suggested, n),
+        "config_path": "strategy.longshot_entry_threshold_bonus",
+        "current_value": current_bonus,
+        "suggested_value": suggested,
+        "rationale": (
+            f"Under this config, longshot-zone entries (price <= {longshot_zone:.0%} or >= "
+            f"{1 - longshot_zone:.0%}) won {longshot_wr:.0f}% of the time (n={len(longshot_rows)}) vs "
+            f"{non_longshot_wr:.0f}% for non-longshot entries (n={len(non_longshot_rows)}) - even with "
+            f"the current +{current_bonus:.2f} confidence bonus already applied, favorite-longshot bias "
+            f"(confirmed worse for takers on real Kalshi data) still shows through. Raising the bonus to "
+            f"{suggested:.2f} targets that gap."
+        ),
+        "n": n,
+        "confidence_label": trade_analytics.confidence_label(n),
+    }
+
+
 def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str, current_value: float | None) -> dict | None:
     """take_profit_pct / stop_loss_pct: suggest the current value adjusted
     by what was actually observed on that variant's own closes of this
@@ -154,6 +200,9 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
 def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[dict]:
     out = []
     rec = _entry_threshold_recommendation(rows, strat_cfg["entry_threshold"])
+    if rec:
+        out.append(rec)
+    rec = _longshot_bonus_recommendation(rows, strat_cfg)
     if rec:
         out.append(rec)
     rec = _exit_pct_recommendation(rows, "take_profit", "take_profit_pct", strat_cfg.get("take_profit_pct"))

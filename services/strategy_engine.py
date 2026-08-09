@@ -5,7 +5,7 @@ manager, or data sources.
 """
 import time
 
-from services import signal_log
+from services import kalshi_fees, signal_log
 from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
@@ -45,7 +45,7 @@ class FollowTheWhaleStrategy:
 
     def evaluate(
         self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None, market_results: dict | None = None,
-        config_fingerprint: str | None = None,
+        config_fingerprint: str | None = None, latest_prices: dict | None = None,
     ) -> dict:
         """Returns a decision dict describing what happened (trade or skip + why).
         is_live comes from main.py's milestone/live-data lookup (see
@@ -60,7 +60,19 @@ class FollowTheWhaleStrategy:
         brand-new position with a predetermined, already-known outcome."""
         strat_cfg = cfg["strategy"]
 
-        if not self.risk.check_daily_loss(self.broker.equity({})):
+        # Audit finding (2026-08-09): this used to be self.broker.equity({})
+        # - an empty prices dict makes every open position's mark_to_market
+        # fall back to its own entry_price (see PaperBroker.equity's
+        # docstring), so total_unrealized_pnl was silently always exactly
+        # 0 and this call was mathematically identical to just passing
+        # self.broker.bankroll directly. The kill switch was therefore
+        # checking only *realized* daily loss, blind to however large an
+        # unrealized drawdown was currently sitting in open positions - a
+        # portfolio could be deep underwater on paper and this would never
+        # stop new trades from opening until something actually closed.
+        # Passing the real latest_prices makes this true daily *equity*
+        # loss, the correct, more protective definition for a safety rail.
+        if not self.risk.check_daily_loss(self.broker.equity(latest_prices or {})):
             return self._skip(signal, f"halted: {self.risk.halt_reason}")
 
         result = ((market_results or {}).get(signal.ticker) or "").strip().lower()
@@ -239,7 +251,20 @@ class FollowTheWhaleStrategy:
             cost_basis = self.broker.cost_basis(ticker)
             if cost_basis <= 0:
                 continue
-            pnl_pct = self.broker.mark_to_market(ticker, current_price) / cost_basis
+            # Fee-inclusive, not just mark_to_market()'s raw price-move P&L -
+            # audit finding (2026-08-09): take_profit_pct/stop_loss_pct/
+            # auto_exit's pnl_factor were all being compared against a
+            # number that ignored both the entry fee already paid and the
+            # close fee this exit itself would incur, the exact same
+            # "fee-blind P&L" gap already fixed once for Trading History's
+            # realized_pnl (see PaperBroker.close_position) - a stop_loss_pct
+            # of 0.10 should mean "never lose more than 10% of what was put
+            # in," not "never lose more than 10% of the raw price move
+            # before fees make it worse." services/kalshi_fees.py's formula
+            # is symmetric/deterministic, so estimating the not-yet-incurred
+            # close fee here is exact, not a guess.
+            close_fee = kalshi_fees.taker_fee(pos.size, current_price)
+            pnl_pct = (self.broker.mark_to_market(ticker, current_price) - pos.entry_fee - close_fee) / cost_basis
 
             reason = None
             if take_profit_pct is not None and pnl_pct >= take_profit_pct:
@@ -285,14 +310,25 @@ def _whale_lean(ticker: str, signal_feed: list[dict]) -> dict | None:
     """Same definition of "lean" as the dashboard's own computeWhaleLean
     (static/index.html) - which side recent prints on this ticker have
     mostly favored, and by how much. Kept in one place conceptually (same
-    inputs, same math) even though it has to live in two languages."""
+    inputs, same math) even though it has to live in two languages.
+
+    Weighted by size * confidence, not size alone - direct request
+    (2026-08-09): "apply the same methodologies... to all the heuristics."
+    The entry side already treats a low-confidence print as weaker evidence
+    than a high-confidence one (composite_confidence_breakdown's whole
+    point); a "sentiment reversal" exit built by simply summing raw size
+    was blind to that same distinction - three noisy, low-confidence prints
+    against the held side would count exactly as much as three high-
+    confidence ones, even though Barclay & Warner's stealth-trading
+    research (the same finding cluster_factor is grounded in) is precisely
+    about which prints are more likely to reflect real information."""
     matches = [s for s in signal_feed if s.get("ticker") == ticker]
     if not matches:
         return None
-    yes_size = sum(s["size"] for s in matches if s.get("side") == "yes")
-    no_size = sum(s["size"] for s in matches if s.get("side") == "no")
-    total = yes_size + no_size
-    return {"count": len(matches), "yes_pct": (yes_size / total * 100) if total else 50.0}
+    yes_weight = sum(s["size"] * s["confidence"] for s in matches if s.get("side") == "yes")
+    no_weight = sum(s["size"] * s["confidence"] for s in matches if s.get("side") == "no")
+    total = yes_weight + no_weight
+    return {"count": len(matches), "yes_pct": (yes_weight / total * 100) if total else 50.0}
 
 
 def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], strat_cfg: dict) -> tuple[float, dict]:
