@@ -593,6 +593,26 @@ never cut.
       `_entry_confidence()` (conditionally included only when a fresh
       estimate exists, so ordinary momentum-only entries stay unaffected).
       15 new tests. Full suite: 414 (was 399).
+- [x] Second-pass bug audit of the on-demand market analyst work, direct
+      request ("do another deep dive... no logic gaps, no failures to
+      account for relevant data from the APIs, no bugs"). Found and fixed:
+      a real race condition — `last_analyzed_at` only gets recorded after
+      two real awaits (`get_market`, then the LLM call itself), so
+      close-and-reopen-the-modal-then-click-again before the first click's
+      response landed could pass the same pre-commit cooldown check twice
+      and spend two real API calls on the same ticker; fixed with an
+      in-process `_analyzing_tickers` set (`main.py`) guarding the whole
+      request, reproduced directly with a real asyncio-interleaved
+      regression test before trusting the fix. Also found: `liquidity`,
+      `open_interest`, and `last_price` were already being fetched into
+      `market_detail` (the same dict the dashboard's own market-detail
+      modal reads them from) but silently never reached the analyst's
+      prompt — added at zero extra API cost
+      (`market_analyst_agent.build_prompt()`). Also fixed stale
+      "actually paid"/"actually received" tooltip wording on Trading
+      History's Cost/Payout columns, left over from before fee modeling
+      existed — same "label doesn't match what's shown" bug class
+      documented in CLAUDE.md. 3 new tests. Full suite: 417 (was 414).
 
 ## P3 — Reliability & engineering hygiene
 

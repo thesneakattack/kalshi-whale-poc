@@ -785,6 +785,19 @@ def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float
     return float(cfg["risk"]["starting_bankroll"]), "configured_starting_bankroll (no real account connected)"
 
 
+# Tickers with a request currently in flight through _run_market_analyst_for_
+# ticker - closes a real race the cooldown check alone can't: last_analyzed_at
+# only gets recorded at the very end (after two real awaits: get_market, then
+# the LLM call itself), so two near-simultaneous requests for the same ticker
+# - e.g. close-and-reopen the market detail modal, click Analyze again before
+# the first click's response has landed - would both read the same pre-commit
+# cooldown state, both pass, and both spend a real API call. In-process only
+# (this app runs as one uvicorn worker, not a distributed fleet), cleared in
+# a finally block so a crash or an early-return can't leak a ticker stuck
+# "in flight" forever.
+_analyzing_tickers: set[str] = set()
+
+
 async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker: str) -> dict:
     """On-demand, single-ticker orchestration for services/market_analyst_agent.py
     - direct request (2026-08-09): switched from an automatic per-tick
@@ -797,15 +810,18 @@ async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker
     confidence_calibration's read-only-until-enough-data design.
 
     Returns {"ok": True, **result} on a fresh analysis, or {"ok": False,
-    "reason": <str>} if gated (disabled, no key, still in cooldown, or the
-    LLM call itself failed/declined) - always a clean dict, never raises,
-    so the route can turn this straight into a JSON response."""
+    "reason": <str>} if gated (disabled, no key, already in flight, still in
+    cooldown, or the LLM call itself failed/declined) - always a clean dict,
+    never raises, so the route can turn this straight into a JSON response."""
     ma_cfg = cfg.get("market_analyst") or {}
     if not ma_cfg.get("enabled"):
         return {"ok": False, "reason": "Market Analyst is disabled — enable it in Config → Market Analyst (AI)."}
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return {"ok": False, "reason": "No ANTHROPIC_API_KEY configured in .env."}
+
+    if ticker in _analyzing_tickers:
+        return {"ok": False, "reason": "Already analyzing this market — try again in a moment."}
 
     cooldown = ma_cfg.get("reanalyze_cooldown_sec", 1800)
     now = time.time()
@@ -814,6 +830,20 @@ async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker
         wait_sec = int(cooldown - (now - last))
         return {"ok": False, "reason": f"Already analyzed recently — try again in {wait_sec}s."}
 
+    _analyzing_tickers.add(ticker)
+    try:
+        return await _analyze_market_uncached(client, ma_cfg, cfg, ticker, now, api_key)
+    finally:
+        _analyzing_tickers.discard(ticker)
+
+
+async def _analyze_market_uncached(
+    client: KalshiClient, ma_cfg: dict, cfg: dict, ticker: str, now: float, api_key: str,
+) -> dict:
+    """The real fetch-and-analyze body, split out of _run_market_analyst_for_
+    ticker so the in-flight guard in that function wraps every exit path
+    (including early returns below) via one try/finally, rather than each
+    needing its own cleanup."""
     try:
         market_detail = await client.get_market(ticker)
     except Exception as e:

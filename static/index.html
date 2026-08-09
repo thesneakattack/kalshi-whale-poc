@@ -1403,7 +1403,7 @@ function payoutHTML(count) {
 // multiplication in your head.
 function costHTML(count, price) {
   if (count == null || price == null || isNaN(count) || isNaN(price)) return '';
-  return `<span class="cost" title="Contracts x price - what was actually paid">${fmt(Math.abs(count) * price)} put in</span>`;
+  return `<span class="cost" title="Contracts x price, before fees">${fmt(Math.abs(count) * price)} put in</span>`;
 }
 
 // Shared Simple/Advanced toggle — see ROADMAP.md Phase 0.5. panelId is a
@@ -3058,8 +3058,8 @@ function renderHistoryTrades() {
   el.innerHTML = `<table class="positions-table sortable">
     <thead><tr>
       <th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Exit</th>
-      <th title="Dollar amount actually paid at entry">Cost</th><th title="Dollar amount actually received at exit">Payout</th>
-      <th title="Real Kalshi taker fees, both legs combined - already netted into Realized P&amp;L">Fees</th>
+      <th title="Contracts x entry price, before fees (see Fees column) - the raw cost basis">Cost</th><th title="Contracts x exit price, before fees (see Fees column) - the raw cash back">Payout</th>
+      <th title="Real Kalshi taker fees, both legs combined - already netted into Realized P&amp;L, shown separately here so the fee drag is visible on its own">Fees</th>
       <th>Closed By</th><th>Held</th><th title="Whale confidence at entry">Entry Conf.</th>
       <th>Realized P&amp;L</th><th title="Hypothetical: size*(1-exit price) for yes / size*exit price for no - what a full $1 win would have paid beyond what this early exit actually banked">Left on Table</th>
     </tr></thead>

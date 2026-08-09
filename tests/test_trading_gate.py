@@ -833,6 +833,71 @@ def test_run_market_analyst_for_ticker_gated_during_cooldown(tmp_path, monkeypat
     assert fake_client.get_market_calls == []
 
 
+def test_run_market_analyst_for_ticker_returns_reason_when_market_fetch_raises(tmp_path, monkeypatch):
+    # A ticker Kalshi's API doesn't recognize (typo, delisted, etc.) -
+    # get_market() raising must degrade to a clean gated reason, not bubble
+    # an exception up through the route.
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+
+    class _FailingClient:
+        async def get_market(self, ticker):
+            raise RuntimeError("404: no such market")
+
+    result = asyncio.run(main._run_market_analyst_for_ticker(_FailingClient(), cfg, "NOT-A-REAL-TICKER"))
+    assert result["ok"] is False
+    assert "could not fetch" in result["reason"].lower()
+
+
+def test_run_market_analyst_for_ticker_rejects_a_concurrent_request_for_the_same_ticker(tmp_path, monkeypatch):
+    # Real bug found by audit (2026-08-09): last_analyzed_at only gets
+    # recorded at the very end, after two real awaits - a second request
+    # for the same ticker that starts before the first one finishes would
+    # read the same pre-commit cooldown state and both would spend a real
+    # API call. Reproduces the exact race: request A is parked mid-fetch
+    # (simulating a slow network call) when request B fires for the same
+    # ticker; B must be rejected without ever reaching the network itself.
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    main._analyzing_tickers.clear()
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+
+    async def fake_analyze_market(market_detail, snapshot, model, api_key):
+        return {"estimated_probability": 0.6, "confidence": 0.5, "reasoning": "r"}
+    monkeypatch.setattr(market_analyst_agent, "analyze_market", fake_analyze_market)
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    class _SlowClient:
+        def __init__(self):
+            self.get_market_calls = 0
+
+        async def get_market(self, ticker):
+            self.get_market_calls += 1
+            started.set()
+            await proceed.wait()
+            return {"title": "T", "yes_bid_dollars": "0.5"}
+
+    fake_client = _SlowClient()
+
+    async def scenario():
+        task_a = asyncio.create_task(main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A"))
+        await started.wait()  # request A is now parked inside its "network" call
+        result_b = await main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A")
+        proceed.set()
+        result_a = await task_a
+        return result_a, result_b
+
+    result_a, result_b = asyncio.run(scenario())
+    assert result_a["ok"] is True
+    assert result_b["ok"] is False
+    assert "already analyzing" in result_b["reason"].lower()
+    assert fake_client.get_market_calls == 1  # B was rejected before ever touching the network
+    assert market_analyst_agent.total_count() == 1  # only A's analysis was ever recorded
+
+
 def test_run_market_analyst_for_ticker_succeeds_and_records_analysis(tmp_path, monkeypatch):
     _isolate_market_analyst_dbs(tmp_path, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")

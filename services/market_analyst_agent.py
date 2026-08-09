@@ -102,9 +102,15 @@ def _connect() -> sqlite3.Connection:
 def build_prompt(market_detail: dict, context_snapshot: dict, own_track_record: dict | None = None) -> str:
     """market_detail: a real, full get_market()/get_event()-shaped dict
     (title, rules_primary, rules_secondary, category, yes_bid_dollars,
-    yes_ask_dollars, close_time, volume_24h_fp - the same fields the
-    dashboard's own market-detail modal reads, see main.py's
-    GET /api/markets/{ticker}/detail). context_snapshot:
+    yes_ask_dollars, close_time, volume_24h_fp, open_interest_fp,
+    liquidity_dollars, last_price_dollars - the same fields the dashboard's
+    own market-detail modal reads via main.py's _slim_detail_market(), read
+    here in their raw (unslimmed) form since that's what
+    client.get_market() actually returns. Audit finding (2026-08-09): the
+    last three used to be fetched into market_detail and then silently
+    dropped before reaching this prompt - the analyst was reasoning with
+    strictly less context than a human sees on the same market's own detail
+    modal, at zero extra API cost to fix. context_snapshot:
     services/ml_feed.py's build_context_snapshot() output - this app's own
     accumulated track record, so the model's judgment is grounded in real
     history here, not just general world knowledge (the whole "work WITH,
@@ -140,7 +146,10 @@ Rules: {market_detail.get("rules_primary") or "(none provided)"}
 {market_detail.get("rules_secondary") or ""}
 
 Current market price: {float(market_detail.get("yes_bid_dollars") or market_detail.get("yes_ask_dollars") or 0.5):.2f} (implies the market currently thinks this is that likely)
+Last trade price: {market_detail.get("last_price_dollars") or "unknown"}
 24h volume: {market_detail.get("volume_24h_fp") or "unknown"}
+Open interest: {market_detail.get("open_interest_fp") or "unknown"}
+Liquidity: {market_detail.get("liquidity_dollars") or "unknown"}
 Closes: {market_detail.get("close_time") or "unknown"}
 
 ## This platform's own accumulated context (use this to calibrate, not to substitute for your own judgment)

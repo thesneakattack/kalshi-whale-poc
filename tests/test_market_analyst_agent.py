@@ -130,6 +130,22 @@ def test_build_prompt_includes_market_title_and_rules():
     assert "0.42" in prompt
 
 
+def test_build_prompt_includes_liquidity_open_interest_and_last_price():
+    # Audit finding (2026-08-09): these three were already fetched into
+    # market_detail by main.py's own client.get_market() call - the same
+    # dict the dashboard's own detail modal reads them from - but silently
+    # never reached this prompt. Raw (unslimmed) field names, matching what
+    # client.get_market() actually returns.
+    market_detail = {
+        "title": "T", "yes_bid_dollars": "0.5",
+        "last_price_dollars": "0.48", "open_interest_fp": "12345", "liquidity_dollars": "6789",
+    }
+    prompt = maa.build_prompt(market_detail, {})
+    assert "0.48" in prompt
+    assert "12345" in prompt
+    assert "6789" in prompt
+
+
 def test_build_prompt_handles_missing_context_gracefully():
     market_detail = {"title": "T", "yes_bid_dollars": "0.5"}
     prompt = maa.build_prompt(market_detail, {})  # no whale_track_record/advisory keys at all
