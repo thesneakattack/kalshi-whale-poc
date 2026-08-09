@@ -326,6 +326,56 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
                 live_candidates, cfg["kalshi"]["watchlist_size"],
                 max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
             )
+            # Real, confirmed-live bug: market_catalog rows only ever carry
+            # schedule/title/volume metadata for discovery purposes (see
+            # market_catalog.upsert_markets - no yes_bid_dollars/
+            # yes_ask_dollars column exists), so every catalog-sourced
+            # market silently fell through to state["latest_prices"]'s 0.5
+            # fallback below - every card showed 50c/50c YES/NO and never
+            # moved, for as long as live_markets_only has been on, direct
+            # report: "showing 50c in green and red for all sets of yes/no
+            # values all across the app. its not updating either." Final
+            # selection is already bounded (watchlist_size parent series,
+            # whatever max_children_per_parent allows), so re-fetching by
+            # *series* here (one real get_markets(series_ticker=...) call
+            # per distinct selected series, full priced market objects) is
+            # the same per-series cost the non-live-only branch below
+            # already pays - just deferred until after selection instead of
+            # spent on the whole broad candidate pool.
+            selected_tickers = {m["ticker"] for m in markets if m.get("ticker")}
+            selected_series = sorted({signal_log.series_of(t) for t in selected_tickers})
+            hydration_results = await asyncio.gather(
+                *(client.get_markets(limit=100, status="open", series_ticker=s) for s in selected_series),
+                return_exceptions=True,
+            )
+            hydrated_by_ticker = {}
+            for r in hydration_results:
+                if isinstance(r, list):
+                    for hm in r:
+                        if hm.get("ticker") in selected_tickers:
+                            hydrated_by_ticker[hm["ticker"]] = hm
+            # A ticker that settled between the catalog scan and now won't
+            # come back from the status="open" batch fetch above (confirmed
+            # live: a handful of already-finalized markets were still
+            # falling back to the 0.5 placeholder for exactly this reason) -
+            # one direct per-ticker fetch (no status filter, whatever its
+            # real current state is) for just what's still missing, same
+            # "always the real current price, never a placeholder" goal,
+            # cheap since this is normally a small residual set.
+            still_missing = [t for t in selected_tickers if t not in hydrated_by_ticker]
+            if still_missing:
+                fallback_results = await asyncio.gather(
+                    *(client.get_market(t) for t in still_missing), return_exceptions=True,
+                )
+                for hm in fallback_results:
+                    if isinstance(hm, dict) and hm.get("ticker"):
+                        hydrated_by_ticker[hm["ticker"]] = hm
+            # Still falls back to the original catalog row (schedule/title
+            # info, just no live price) rather than dropping a ticker
+            # outright if even the per-ticker fetch failed (a real API
+            # error) - same "degrade honestly, never silently drop" pattern
+            # as the rest of this app.
+            markets = [hydrated_by_ticker.get(m["ticker"], m) for m in markets]
         else:
             top_series = await _get_top_series(client)
             markets = await client.get_top_volume_markets(

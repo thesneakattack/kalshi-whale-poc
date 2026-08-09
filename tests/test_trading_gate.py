@@ -475,6 +475,102 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
 
 
+# --- _fetch_markets (live_markets_only): catalog rows must be hydrated with
+# real prices, not left at whatever fallback state["latest_prices"] uses ----
+# Real, confirmed-live bug: market_catalog rows only ever carry schedule/
+# title/volume metadata (see services/market_catalog.py - no yes_bid_dollars
+# column exists), so every live-only-selected market silently fell through
+# to state["latest_prices"]'s `float(m.get("yes_bid_dollars") or 0.5)`
+# fallback - every card showed 50c/50c YES/NO and never moved. Direct
+# report: "showing 50c in green and red for all sets of yes/no values all
+# across the app. its not updating either." Fixed by re-fetching the real,
+# full market object (by series, batched) for whatever round_robin_select
+# actually selected, before returning it.
+
+class _FakeHydrationClient(_FakeLiveClient):
+    """Extends the live-status fake with the two calls the hydration pass
+    itself makes - get_markets (the batch, per-series path) and get_market
+    (the per-ticker fallback for whatever the batch didn't return)."""
+
+    def __init__(self, hydrated_markets, **kwargs):
+        super().__init__(**kwargs)
+        self.hydrated_markets = hydrated_markets  # ticker -> full market dict
+        self.get_markets_calls = []
+        self.get_market_calls = []
+
+    async def get_markets(self, limit, status, series_ticker=None):
+        self.get_markets_calls.append(series_ticker)
+        return [m for t, m in self.hydrated_markets.items() if t.startswith(series_ticker)]
+
+    async def get_market(self, ticker):
+        self.get_market_calls.append(ticker)
+        return self.hydrated_markets[ticker]
+
+
+def _cfg_live_only(**overrides):
+    cfg = {"kalshi": {
+        "markets_watchlist": [], "min_volume_24h": 0, "live_markets_only": True,
+        "watchlist_size": 10, "max_children_per_parent": None,
+    }}
+    cfg["kalshi"].update(overrides)
+    return cfg
+
+
+def test_fetch_markets_live_only_hydrates_catalog_rows_with_real_prices():
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    # A catalog row has no price fields at all - matches what
+    # market_catalog.upsert_markets/candidates_in_window actually store.
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "open",
+    }])
+    fake = _FakeHydrationClient(
+        hydrated_markets={
+            "SERA-EVT1-YES": {"ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.73"},
+        },
+        widget_status="live",
+    )
+    markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
+    assert len(markets) == 1
+    assert markets[0]["yes_bid_dollars"] == "0.73"  # real price, not a catalog row missing the field
+    assert fake.get_markets_calls == ["SERA"]  # hydrated via the batched per-series path
+
+
+def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misses_it():
+    # The batch fetch filters status="open" - a market that settled between
+    # the catalog scan and now won't come back from it. Confirmed live:
+    # this was silently falling back to the unpriced catalog row (the same
+    # 0.5-fallback bug, just for a smaller residual set) before the
+    # per-ticker fallback existed.
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "open",
+    }])
+    fake = _FakeHydrationClient(
+        hydrated_markets={
+            # Deliberately NOT returned by get_markets (simulates status="open"
+            # excluding an already-finalized market) - only reachable via the
+            # per-ticker get_market fallback.
+        },
+        widget_status="live",
+    )
+    fake.get_market_calls = []
+
+    async def fake_get_market(ticker):
+        fake.get_market_calls.append(ticker)
+        return {"ticker": ticker, "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.00", "status": "finalized"}
+    fake.get_market = fake_get_market
+
+    markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
+    assert len(markets) == 1
+    assert markets[0]["yes_bid_dollars"] == "0.00"
+    assert markets[0]["status"] == "finalized"
+    assert fake.get_market_calls == ["SERA-EVT1-YES"]
+
+
 def test_market_catalog_status_endpoint_reports_progress():
     mc_module.clear_all()
     mc_module.upsert_markets("SER-A", "Sports", [

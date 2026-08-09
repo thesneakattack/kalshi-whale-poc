@@ -1332,6 +1332,50 @@ band instead.
       multiple concurrent events (WTA Set Winner, PGA Head-to-Head
       Matchups, BTTS) got a visible `.series-section` wrapper — everything
       else rendered as a plain card/row, unchanged.
+- [x] Fixed a real, confirmed-live bug the phase 49 UI work surfaced: every
+      YES/NO price showed exactly 50¢/50¢, green and red, and never moved —
+      direct report (2026-08-08): "showing 50c in green and red for all
+      sets of yes/no values all across the app. its not updating either
+      like it used to be." Also corrected an earlier, incorrect claim that
+      no browser was available to verify this in Selenium — a dedicated
+      `selenium-chrome` ddev service (`.ddev/docker-compose.selenium-chrome.yaml`)
+      was already running, reachable at `selenium-chrome:4444` from inside
+      `fastapi` (which already has the `selenium` package installed); the
+      earlier check looked for a local Chrome binary instead of this
+      service. Root cause, found by tracing `state["latest_prices"]`
+      directly: `market_catalog` rows (`kalshi.live_markets_only`'s entire
+      candidate source since phase 47) only ever store schedule/title/
+      volume metadata for discovery purposes — no `yes_bid_dollars` column
+      exists — so every catalog-sourced selected market silently fell
+      through to `float(m.get("yes_bid_dollars") or 0.5)`'s fallback. This
+      has been true since market_catalog shipped in phase 47; it likely
+      went unnoticed until phase 49's grouping made far more cards visible
+      at once, and until the recent series-level watchlist change (this
+      same day) meant an unbounded, much larger number of individual
+      markets were being selected and priced this way. Fixed in
+      `_fetch_markets`'s `live_markets_only` branch:
+      after `round_robin_select` picks the final watchlist, re-fetch real,
+      full market objects — batched by distinct selected series (one real
+      `get_markets(series_ticker=...)` call per series, same per-series
+      cost the non-live-only branch already pays, just deferred until
+      after selection instead of spent on the whole broad candidate pool)
+      — with a per-ticker `get_market()` fallback for whatever the
+      status="open" batch fetch didn't return (a market that settled
+      between the catalog scan and now, confirmed live as a real, smaller
+      residual case of the same bug). Falls back to the original catalog
+      row only if even that direct fetch fails, same "degrade honestly,
+      never silently drop" pattern as the rest of this app. 2 new tests in
+      `tests/test_trading_gate.py` covering both the batch-hydration path
+      and the per-ticker fallback. Verified live, not just in tests: before
+      the fix, `/api/state`'s `latest_prices` was exactly `0.5` for all 206
+      selected markets; after, real diverse values (0.06, 0.93, 0.34,
+      0.001, ...) that visibly changed between consecutive polls on a real
+      in-progress match. Verified visually too, via the selenium-chrome
+      service found above — real screenshots of the Terminal and Markets
+      tabs confirmed varied real prices and correct series-header/section
+      grouping rendering together. Full suite: 328 passing.
+
+## P3 — Reliability & engineering hygiene
 
 - [x] Automated test suite — 35+ tests in `tests/` covering
       `paper_broker.py`, `risk_manager.py`, `strategy_engine.py`, and

@@ -1889,6 +1889,50 @@
           CSS)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 50 · every card was showing 50&cent;/50&cent; - the real root cause was two phases back</div>
+        <h4>"Showing 50c in green and red for all sets of yes/no values all across the app. its not updating
+          either like it used to be." Plus a correction: "youre mistaken about the browser testing because you
+          did in fact install selenium with ddev."</h4>
+        <p>Two things in one report. First, an incorrect claim in phase 49's writeup: no browser was available to
+          verify visually, so verification there leaned on a Node harness instead. That was wrong - a dedicated
+          <code>selenium-chrome</code> ddev service (<code>.ddev/docker-compose.selenium-chrome.yaml</code>) was
+          already running the whole time, reachable at <code>selenium-chrome:4444</code> from inside
+          <code>fastapi</code>, which already has the <code>selenium</code> Python package installed. The earlier
+          check looked for a local Chrome binary on the host and in the container instead of this service -
+          confirmed via <code>ddev describe</code> once pointed at it directly.</p>
+        <p>Second, the real bug. Traced <code>state["latest_prices"]</code> directly rather than guessing at the
+          frontend: every single selected market was pinned at exactly <code>0.5</code>. Root cause -
+          <code>market_catalog</code> rows (the entire candidate source for <code>kalshi.live_markets_only</code>
+          since phase 47) only ever store schedule/title/volume metadata for discovery purposes; no
+          <code>yes_bid_dollars</code> column exists on them at all. Every catalog-sourced market therefore fell
+          straight through to <code>float(m.get("yes_bid_dollars") or 0.5)</code>'s fallback - the exact bug a
+          comment already on that line had warned about once before, for a different underlying cause. This has
+          been true since <code>market_catalog</code> shipped in phase 47; it likely went unnoticed until phase
+          49's grouping made far more cards visible on screen at once, and until the series-level watchlist change
+          earlier this same day meant an unbounded, much larger number of individual markets were being selected
+          and priced this way.</p>
+        <p>Fixed in <code>_fetch_markets</code>'s <code>live_markets_only</code> branch: after
+          <code>round_robin_select</code> picks the final watchlist, re-fetch real, full market objects - batched
+          by distinct selected series (one real <code>get_markets(series_ticker=...)</code> call per series, the
+          same per-series cost the non-live-only branch already pays, just deferred until after selection instead
+          of spent on the whole broad candidate pool) - with a per-ticker <code>get_market()</code> fallback for
+          whatever the <code>status="open"</code> batch fetch didn't return (a market that settled between the
+          catalog scan and now - confirmed live as a real, smaller residual case of the same bug). Falls back to
+          the original catalog row only if even that direct fetch fails, same "degrade honestly, never silently
+          drop" pattern as the rest of this app.</p>
+        <p>Verified live, not just in tests: before the fix, <code>/api/state</code>'s <code>latest_prices</code>
+          was exactly <code>0.5</code> for all 206 selected markets; after, real diverse values (0.06, 0.93, 0.34,
+          0.001, ...) that visibly changed between two consecutive polls on a real in-progress tennis match.
+          Verified visually too, this time actually via the <code>selenium-chrome</code> service found above -
+          real screenshots of the Terminal and Markets tabs confirmed varied real prices throughout (no more
+          uniform 50&cent;) alongside correct series-header/section grouping rendering, together, in the same
+          real page. 2 new tests in <code>tests/test_trading_gate.py</code> covering both the batch-hydration path
+          and the per-ticker fallback. Full suite: 328 passing.</p>
+        <div class="files"><code>main.py</code> (<code>_fetch_markets</code>'s <code>live_markets_only</code>
+          hydration pass) · <code>tests/test_trading_gate.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -1935,7 +1979,7 @@
       <table>
         <thead><tr><th>Module</th><th>Role</th><th>Lines</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code>, schedule-aware light polling for live-market status (<code>live_status_cache</code>, milestone-gated schedule fallback), per-tick incremental market-catalog scan batch, <code>/api/market-catalog/status</code></td><td class="loc">1747</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">main.py</td><td class="note">FastAPI app, API/auth routes only (no HTML — see nginx below), trading loop, all state assembly, CORS restricted, real-trading confirmation gate, shadow-mode wiring, exchange-status fetch, per-market order book + candlesticks + trades + full-detail (market+event+siblings) + search + paginated signal-history + signal-cluster + paginated trading-history endpoints, watchlist-scoped trade tape (20 markets), series-based market discovery, real series metadata (title/category/tags, scoped to the current watchlist), event/outcome grouping + context (incl. yes_ask for the screener's Spread column), real live-market status via milestone/live-data lookup, per-signal is_live resolution for the live-markets-only gate (strategy + simulator both), selectable-domain reset, generation-counter ETag/304 caching on <code>/api/state</code>, slimmed real-account fills/positions, concurrent signal-resolution checking, active-position <code>check_exits</code> wiring + settlement <code>market_results</code>, always-fetch open-position tickers even off the top-volume watchlist (now for both brokers), write-through title-cache persistence, config-fingerprint computation/recording every tick, <code>/api/advisory/*</code> routes + config guard, real-market-data snapshot/outcome logging every tick, <code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring + their debug endpoints, passes each tick's already-fetched <code>market_context</code> to the active whale-watcher provider, optional LIVE-only watchlist discovery (candidate pool filtered by live status before round-robin selection) and matching <code>live_only</code> param on <code>/api/markets/search</code>, <code>/api/confidence-calibration/status</code> + <code>.../report</code>, schedule-aware light polling for live-market status (<code>live_status_cache</code>, milestone-gated schedule fallback), per-tick incremental market-catalog scan batch, <code>/api/market-catalog/status</code>, live-only watchlist hydration (real per-series/per-ticker price re-fetch after catalog-based selection, fixing catalog rows' missing price fields)</td><td class="loc">1797</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">.ddev/nginx/kalshi-proxy.conf</td><td class="note">the actual public entrypoint's routing: serves static/ directly, reverse-proxies /api/ + /auth/ to fastapi:8000 (no public URL of its own)</td><td class="loc">49</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_client.py</td><td class="note">read-only market data client, now on Kalshi's official <code>kalshi_python_async</code> SDK (public, unauthenticated) + exchange status + per-event title lookup + candlesticks + trades + series-based discovery (<code>get_series_list</code>) + milestone/live-data lookup (<code>get_milestones_for_event</code>, <code>get_live_data</code>) + watchlist selection, split into <code>get_candidate_markets()</code> (fetch/filter/sort, no cutoff) + static <code>round_robin_select()</code> so a caller can filter the candidate pool (e.g. by live status) between the two steps. <code>round_robin_select()</code> groups by <i>series</i> (the parent/watchlist unit — Kalshi's Series → Event → Market hierarchy, one level below the broader Category grouping), so a whole tournament's worth of events/markets costs exactly one watchlist slot, every child included by default, optionally capped via <code>max_children_per_parent</code></td><td class="loc">266</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/http_client.py</td><td class="note"><code>call_with_backoff</code> (429 retry, wraps SDK client calls) shared by both Kalshi clients; plain httpx singleton retained for non-Kalshi callers</td><td class="loc">52</td><td><span class="pill good">done</span></td></tr>
