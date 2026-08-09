@@ -575,14 +575,50 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     return result
 
 
-_POSITION_FIELDS = ("ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars")
-_FILL_FIELDS = ("ticker", "market_ticker", "side", "action", "count_fp", "yes_price_dollars", "no_price_dollars")
-# Same trim as _slim_market: keep only what renderRealPositions/renderRealFills
-# actually read (field names confirmed against a real connected account, not
-# guessed — see the comment above renderRealPositions for why that mattered).
-# event_positions/cursor/fill_id/order_id/... are real fields, just not
-# currently rendered anywhere. Cut fills from ~13.4KB to well under 2KB for a
-# 25-fill page, the single largest piece of /api/state's payload.
+_POSITION_FIELDS = (
+    "ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars",
+    # fees_paid_dollars/total_traded_dollars/last_updated_ts added after a
+    # direct data-usage review found them: real fields (confirmed against a
+    # real connected account), fetched-for-free on every get_positions()
+    # call, previously trimmed here and never reaching the frontend at all —
+    # a real position's fees directly eat into its P&L, so showing exposure
+    # without what it cost to get there was an incomplete picture on a
+    # panel that's specifically about real money.
+    "fees_paid_dollars", "total_traded_dollars", "last_updated_ts",
+)
+_FILL_FIELDS = (
+    "ticker", "market_ticker", "side", "action", "count_fp", "yes_price_dollars", "no_price_dollars",
+    # created_time/fee_cost/is_taker/fill_id/order_id added for the same
+    # reason as _POSITION_FIELDS above — most notably created_time: the real
+    # Trade Log had no timestamp at all before this, so real fills couldn't
+    # be read in time order or checked for recency.
+    "created_time", "fee_cost", "is_taker", "fill_id", "order_id",
+)
+# Same trim idea as _slim_market: keep only what renderRealPositions/
+# renderRealFills actually read (field names confirmed against a real
+# connected account, not guessed — see the comment above renderRealPositions
+# for why that mattered). event_positions/cursor/... are real fields, just
+# not currently rendered anywhere. Keeps fills well under the ~13.4KB a full
+# 25-fill page would otherwise cost, the single largest piece of /api/state's
+# payload, while still keeping every field the UI actually shows.
+
+# Real order history - GetOrders' full real fields confirmed against a live
+# connected account (docstring in kalshi_account_client.py has the full
+# example). Unlike positions/fills, order history isn't part of the main
+# poll loop at all (see GET /api/account/orders below) - it's on-demand,
+# same "paginated, fetched only when that panel is actually open" pattern
+# as GET /api/signals/history and GET /api/trading-history, not something
+# every 15s tick needs to pull.
+_ORDER_FIELDS = (
+    "order_id", "ticker", "side", "action", "type", "status",
+    "yes_price_dollars", "no_price_dollars", "fill_count_fp", "remaining_count_fp", "initial_count_fp",
+    "taker_fees_dollars", "maker_fees_dollars", "created_time", "last_update_time", "client_order_id",
+)
+
+
+def _slim_order(o: dict) -> dict:
+    return {k: o.get(k) for k in _ORDER_FIELDS}
+
 
 
 def _slim_position(p: dict) -> dict:
@@ -689,6 +725,22 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
                 # also mutually_exclusive but with no simple pairwise
                 # complement) - see eventGroupCardHTML in static/index.html.
                 "mutually_exclusive": event.get("mutually_exclusive"),
+                # product_metadata.competition/competition_scope - real
+                # fields, same "already fetched here, previously discarded"
+                # finding. Direct display value only (e.g. "Wyndham
+                # Championship" shown on a golf pairing's event card) - NOT
+                # used for grouping, since it's tournament-specific for golf
+                # but sport-generic for esports ("Dota 2", shared by
+                # unrelated matches, confirmed live) and so can't safely
+                # replace series_of/round_robin_select's own grouping logic
+                # (see ROADMAP.md's parent/child grouping work). Legitimately
+                # absent for most non-competitor markets (politics,
+                # economics) - unlike mutually_exclusive, a missing value
+                # here is a real "this event has no competition," not a
+                # backfill signal, so it isn't part of the re-fetch check
+                # above.
+                "competition": (event.get("product_metadata") or {}).get("competition"),
+                "competition_scope": (event.get("product_metadata") or {}).get("competition_scope"),
             }
     return fetched
 
@@ -1287,6 +1339,35 @@ async def get_trading_history(limit: int = 50, offset: int = 0):
         "cumulative_pnl_curve": cumulative_pnl_curve,
         "market_titles": _scoped_market_titles({r["ticker"] for r in page}),
     }
+
+
+@app.get("/api/account/orders")
+async def get_account_orders(limit: int = 25, cursor: str | None = None, status: str | None = None):
+    # Real order history - direct data-usage review finding: get_orders()
+    # was fully implemented in kalshi_account_client.py and returns real
+    # order objects (confirmed against the live connected account), but
+    # nothing ever called it - no route, no state key, no panel. Any order
+    # on that account (placed by this app once trading is enabled, or
+    # manually on Kalshi's own site) was completely invisible in this
+    # dashboard. Kept out of the main /api/state poll loop on purpose -
+    # order history isn't bounded the way "current positions" is, so it's
+    # an on-demand paginated fetch instead (Kalshi's own cursor, passed
+    # through opaquely, not the limit/offset pagination this app's own
+    # endpoints use elsewhere - real order history is Kalshi's data, not
+    # ours to re-paginate).
+    limit = min(max(limit, 1), 100)
+    if not account.enabled:
+        return {"connected": False, "orders": [], "cursor": None, "error": account.status["error"]}
+    try:
+        result = await account.get_orders(limit=limit, cursor=cursor, status=status)
+        return {
+            "connected": True,
+            "orders": [_slim_order(o) for o in (result.get("orders") or [])],
+            "cursor": result.get("cursor"),
+            "error": None,
+        }
+    except Exception as e:
+        return {"connected": True, "orders": [], "cursor": None, "error": str(e)}
 
 
 @app.get("/api/advisory/status")

@@ -103,8 +103,19 @@ class KalshiAccountClient:
         resp = await call_with_backoff(self._client.get_fills, limit=limit)
         return resp.model_dump(mode="json")
 
-    async def get_orders(self) -> dict:
-        resp = await call_with_backoff(self._client.get_orders)
+    async def get_orders(self, limit: int = 25, cursor: str | None = None, status: str | None = None) -> dict:
+        # Only pass cursor/status through when actually set - explicitly
+        # passing an unset optional as None vs omitting the kwarg entirely
+        # changes results at the wire level for this SDK on other calls
+        # (confirmed directly on get_markets - see kalshi_client.py), same
+        # omit-when-unset pattern applied here defensively rather than
+        # re-verifying it call by call.
+        kwargs = {"limit": limit}
+        if cursor is not None:
+            kwargs["cursor"] = cursor
+        if status is not None:
+            kwargs["status"] = status
+        resp = await call_with_backoff(self._client.get_orders, **kwargs)
         return resp.model_dump(mode="json")
 
     # ---- write: fully implemented, gated behind trading_enabled ----------

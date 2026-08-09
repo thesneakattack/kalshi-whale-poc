@@ -53,6 +53,38 @@ def test_event_titles_upsert_overwrites_mutually_exclusive_on_conflict(tmp_path,
     assert cache.load_event_titles()["EVT-A"]["mutually_exclusive"] is True
 
 
+def test_event_titles_round_trip_carries_competition(tmp_path, monkeypatch):
+    # product_metadata.competition/competition_scope - real Kalshi fields,
+    # already fetched on every get_event() call but previously discarded.
+    # Direct display value ("Wyndham Championship" on a golf pairing's
+    # event card) - see static/index.html's eventGroupCardHTML.
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_event_titles({
+        "EVT-A": {
+            "title": "3rd Round Head-to-Head: Hossler vs James", "sub_title": None, "category": "Sports",
+            "mutually_exclusive": True, "competition": "Wyndham Championship", "competition_scope": "3rd Round Matchups",
+        },
+    })
+    result = cache.load_event_titles()["EVT-A"]
+    assert result["competition"] == "Wyndham Championship"
+    assert result["competition_scope"] == "3rd Round Matchups"
+
+
+def test_event_titles_competition_is_none_when_legitimately_absent(tmp_path, monkeypatch):
+    # Real, honest absence (e.g. a politics/economics event has no
+    # "competition" at all) - distinct from mutually_exclusive, where a
+    # cached None specifically means "not yet fetched," competition being
+    # None is a genuine value, not a backfill signal (see main.py's
+    # _fetch_event_titles).
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_event_titles({
+        "EVT-A": {"title": "Fed Rate Decision", "sub_title": None, "category": "Economics", "mutually_exclusive": True},
+    })
+    result = cache.load_event_titles()["EVT-A"]
+    assert result["competition"] is None
+    assert result["competition_scope"] is None
+
+
 def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, monkeypatch):
     # data/title_cache.db is a live file (CLAUDE.md) - simulates an
     # existing table from before this column existed, confirming the

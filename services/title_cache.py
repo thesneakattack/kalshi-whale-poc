@@ -67,6 +67,14 @@ def _connect() -> sqlite3.Connection:
     # outs" sharing an event). Added after the table above already had live
     # rows, hence the guarded ALTER TABLE.
     _add_column_if_missing(conn, "event_titles", "mutually_exclusive", "INTEGER")
+    # product_metadata.competition/competition_scope - real Kalshi fields,
+    # already fetched on every get_event() call but previously discarded.
+    # Direct display value: "Wyndham Championship" for a golf pairing card,
+    # confirmed live - not used for grouping (that's series_of/round_robin_
+    # select's job, and this field is too generic for that on some series -
+    # see ROADMAP.md), just shown as real context on the event card.
+    _add_column_if_missing(conn, "event_titles", "competition", "TEXT")
+    _add_column_if_missing(conn, "event_titles", "competition_scope", "TEXT")
     return conn
 
 
@@ -105,14 +113,16 @@ def save_market_titles(entries: dict[str, dict]) -> None:
 def load_event_titles() -> dict[str, dict]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT event_ticker, title, sub_title, category, mutually_exclusive FROM event_titles"
+            "SELECT event_ticker, title, sub_title, category, mutually_exclusive, competition, competition_scope "
+            "FROM event_titles"
         ).fetchall()
     return {
         event_ticker: {
             "title": title, "sub_title": sub_title, "category": category,
             "mutually_exclusive": bool(mutually_exclusive) if mutually_exclusive is not None else None,
+            "competition": competition, "competition_scope": competition_scope,
         }
-        for event_ticker, title, sub_title, category, mutually_exclusive in rows
+        for event_ticker, title, sub_title, category, mutually_exclusive, competition, competition_scope in rows
     }
 
 
@@ -122,18 +132,21 @@ def save_event_titles(entries: dict[str, dict]) -> None:
     with _connect() as conn:
         conn.executemany(
             """
-            INSERT INTO event_titles (event_ticker, title, sub_title, category, mutually_exclusive)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO event_titles
+                (event_ticker, title, sub_title, category, mutually_exclusive, competition, competition_scope)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_ticker) DO UPDATE SET
                 title = excluded.title,
                 sub_title = excluded.sub_title,
                 category = excluded.category,
-                mutually_exclusive = excluded.mutually_exclusive
+                mutually_exclusive = excluded.mutually_exclusive,
+                competition = excluded.competition,
+                competition_scope = excluded.competition_scope
             """,
             [
                 (
                     event_ticker, v.get("title"), v.get("sub_title"), v.get("category"),
-                    v.get("mutually_exclusive"),
+                    v.get("mutually_exclusive"), v.get("competition"), v.get("competition_scope"),
                 )
                 for event_ticker, v in entries.items()
             ],

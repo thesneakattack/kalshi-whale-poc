@@ -1425,6 +1425,68 @@ band instead.
       Markets tabs, while independent-prop events ("Outs Recorded," "Hits,"
       "Team Total") and the genuine 60+-outcome Wyndham Championship Winner
       market correctly stayed fully expanded. Full suite: 338 passing.
+- [x] Data & presentation review, direct request (2026-08-08): "make sure
+      youre using all useful data fields in the provided API calls where
+      necessary. I also need you to do a deep review of both simple and
+      advanced views of the portfolio page, markets, whale watch tabs,
+      terminal, and history... i want to avoid missing anything." Plus a
+      concrete complaint alongside it: "the controls column in the terminal
+      sure is taking up a lot of space that it doesn't need to be."
+      Terminal's `.layout` grid gave Controls a full fractional column
+      (`1fr` of `1.3fr 1.2fr 1fr`) for 4 buttons and one line of text -
+      fixed at `260px`, freed width going to Watchlist/Signals. Full audit
+      published as a report (findings + priority order, confirmed against
+      real API responses before writing anything) before touching code,
+      then implemented end to end once the user said "do it all":
+      - Real positions/fills were missing `fees_paid_dollars`/
+        `total_traded_dollars`/`last_updated_ts` and, most notably,
+        `created_time` - the real Trade Log had no timestamp at all.
+        Widened `_POSITION_FIELDS`/`_FILL_FIELDS`, gave both panels a
+        Simple/Advanced split (new sortable tables) matching every other
+        data-dense panel in this app.
+      - `get_orders()` was fully implemented in `kalshi_account_client.py`
+        but never called anywhere - no route, no panel. New
+        `GET /api/account/orders` (Kalshi's own cursor pagination, passed
+        through opaquely) + a new Order History panel on Portfolio,
+        on-demand loaded like Signal/Trading History rather than part of
+        the 5s poll cycle.
+      - Market detail modal was already fetching `liquidity`, `last_price`,
+        `open_time`, and `rules_secondary` (real fields, confirmed live
+        `rules_secondary` carries genuinely load-bearing detail primary
+        alone doesn't - forfeit/withdrawal handling on a real Wyndham
+        Championship market) but never rendering any of them - all four
+        added.
+      - `product_metadata.competition` (already fetched for the parent/
+        child grouping work, never displayed) now shows as a context line
+        on multi-outcome event cards when it adds real information beyond
+        the event's own title, skipped when it would just repeat it.
+      - Candlestick chart's `yes_bid`/`yes_ask` low/high bands and
+        `open_interest_fp` were fetched on every call and unused - Advanced
+        mode now shows a shaded bid/ask spread band behind the candles and
+        an open-interest first-vs-last delta in the caption (not a full
+        second chart series - its scale is usually orders of magnitude off
+        a 0-1 price axis).
+      New `_ORDER_FIELDS`/`_slim_order()`, `title_cache.py`'s
+      `competition`/`competition_scope` columns (idempotent migration, same
+      pattern as `mutually_exclusive`). 16 new tests across
+      `tests/test_title_cache.py`/`tests/test_trading_gate.py` covering the
+      widened field allowlists, order slimming, the new endpoint's
+      connected/disconnected states, and competition extraction (including
+      the legitimate-absence case for non-competitor markets). Caught and
+      fixed a real live-verification surprise along the way, unrelated to
+      the code itself: `ddev restart`'s full image rebuild dropped
+      `pytest`/`selenium` (runtime-installed earlier this session, not in
+      `requirements.txt`) - reinstalled, confirmed not a regression of the
+      documented Traefik dual-router bug (checked directly: `web`'s process
+      list is plain nginx/php-fpm, `fastapi`'s compose file has no public
+      exposure directives). Verified live end to end via real
+      `selenium-chrome` screenshots and direct DOM/API checks against the
+      real connected account: real fees and timestamps rendering in both
+      Simple and Advanced positions/fills, Order History showing real fees
+      and Taker/Maker roles, the market detail modal showing all four new
+      stats plus both rules paragraphs, and the candlestick chart's bid/ask
+      bands (2 polygons) and OI delta rendering correctly. Full suite: 347
+      passing.
 
 ## P3 — Reliability & engineering hygiene
 

@@ -632,6 +632,128 @@ def test_fetch_event_titles_does_not_refetch_an_already_complete_cache_entry():
     assert result == {}
 
 
+def test_fetch_event_titles_extracts_competition_from_product_metadata():
+    # Real, confirmed-live: get_event()'s product_metadata.competition -
+    # "Wyndham Championship" for golf - was already fetched here and
+    # discarded outright.
+    main.state["event_titles"].clear()
+    fake = _FakeEventClient({
+        "EVT-A": {"event": {
+            "title": "3rd Round Head-to-Head: Hossler vs James", "sub_title": None, "category": "Sports",
+            "mutually_exclusive": True,
+            "product_metadata": {"competition": "Wyndham Championship", "competition_scope": "3rd Round Matchups"},
+        }},
+    })
+    markets = [{"ticker": "T-A", "event_ticker": "EVT-A"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result["EVT-A"]["competition"] == "Wyndham Championship"
+    assert result["EVT-A"]["competition_scope"] == "3rd Round Matchups"
+
+
+def test_fetch_event_titles_competition_is_none_when_product_metadata_missing():
+    # Real, honest absence (e.g. politics/economics events have no
+    # product_metadata at all) - must not raise on the missing key.
+    main.state["event_titles"].clear()
+    fake = _FakeEventClient({
+        "EVT-A": {"event": {"title": "Fed Rate Decision", "sub_title": None, "category": "Economics", "mutually_exclusive": True}},
+    })
+    markets = [{"ticker": "T-A", "event_ticker": "EVT-A"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result["EVT-A"]["competition"] is None
+    assert result["EVT-A"]["competition_scope"] is None
+
+
+# --- Real account: widened position/fill/order field allowlists ------------
+# Direct data-usage review finding: fees_paid_dollars/total_traded_dollars/
+# last_updated_ts (positions) and created_time/fee_cost/is_taker/fill_id/
+# order_id (fills) are real fields, confirmed against a live connected
+# account, that _POSITION_FIELDS/_FILL_FIELDS were dropping before they ever
+# reached the frontend - most notably fills had no timestamp at all.
+
+def test_slim_position_keeps_fees_and_last_updated():
+    position = {
+        "ticker": "T-A", "position_fp": "9.13", "market_exposure_dollars": "4.8389",
+        "realized_pnl_dollars": "0.0", "fees_paid_dollars": "0.1592",
+        "total_traded_dollars": "4.8389", "last_updated_ts": "2026-08-08T15:05:18.514462Z",
+        "some_other_real_field_not_used_anywhere": "should not leak through",
+    }
+    result = main._slim_position(position)
+    assert result["fees_paid_dollars"] == "0.1592"
+    assert result["total_traded_dollars"] == "4.8389"
+    assert result["last_updated_ts"] == "2026-08-08T15:05:18.514462Z"
+    assert "some_other_real_field_not_used_anywhere" not in result
+
+
+def test_slim_fill_keeps_created_time_fee_and_taker_flag():
+    fill = {
+        "ticker": "T-A", "market_ticker": "T-A", "side": "yes", "action": "buy", "count_fp": "9.13",
+        "yes_price_dollars": "0.53", "no_price_dollars": "0.47",
+        "created_time": "2026-08-08T15:05:18.514409Z", "fee_cost": "0.1592", "is_taker": True,
+        "fill_id": "d670144c-75eb-5c82-168c-ec1d412b8184", "order_id": "8cf67fcb-6c78-440b-a9b7-9e29230979ed",
+    }
+    result = main._slim_fill(fill)
+    assert result["created_time"] == "2026-08-08T15:05:18.514409Z"
+    assert result["fee_cost"] == "0.1592"
+    assert result["is_taker"] is True
+    assert result["order_id"] == "8cf67fcb-6c78-440b-a9b7-9e29230979ed"
+
+
+def test_slim_order_keeps_the_fields_the_order_history_panel_reads():
+    order = {
+        "order_id": "8cf67fcb-6c78-440b-a9b7-9e29230979ed", "user_id": "some-uuid", "client_order_id": "",
+        "ticker": "T-A", "side": "yes", "action": "buy", "type": "market", "status": "executed",
+        "yes_price_dollars": "0.99", "no_price_dollars": "0.01", "fill_count_fp": "9.13",
+        "remaining_count_fp": "0.00", "initial_count_fp": "9.13",
+        "taker_fees_dollars": "0.1592", "maker_fees_dollars": "0.0",
+        "created_time": "2026-08-08T15:05:18.514409Z", "last_update_time": "2026-08-08T15:05:18.514409Z",
+        "subaccount_number": 0,  # a real field, not currently rendered anywhere - confirms it's excluded
+    }
+    result = main._slim_order(order)
+    assert result["order_id"] == "8cf67fcb-6c78-440b-a9b7-9e29230979ed"
+    assert result["status"] == "executed"
+    assert result["taker_fees_dollars"] == "0.1592"
+    assert result["created_time"] == "2026-08-08T15:05:18.514409Z"
+    assert "subaccount_number" not in result
+
+
+def test_account_orders_endpoint_reports_not_connected_when_account_disabled(monkeypatch):
+    # Other tests in this file monkeypatch main.account._client to simulate
+    # a connected account - set it explicitly here rather than assuming
+    # whatever the ambient state happens to be after them.
+    monkeypatch.setattr(main.account, "_client", None)
+    resp = client.get("/api/account/orders")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is False
+    assert body["orders"] == []
+
+
+def test_account_orders_endpoint_slims_and_paginates(monkeypatch):
+    monkeypatch.setattr(main.account, "_client", object())  # simulate a connected account
+
+    async def fake_get_orders(limit, cursor=None, status=None):
+        assert limit == 25
+        return {
+            "orders": [{
+                "order_id": "ord-1", "ticker": "T-A", "side": "yes", "action": "buy", "type": "market",
+                "status": "executed", "yes_price_dollars": "0.99", "no_price_dollars": "0.01",
+                "fill_count_fp": "9.13", "remaining_count_fp": "0.00", "initial_count_fp": "9.13",
+                "taker_fees_dollars": "0.1592", "maker_fees_dollars": "0.0",
+                "created_time": "2026-08-08T15:05:18Z", "last_update_time": "2026-08-08T15:05:18Z",
+            }],
+            "cursor": "next-page-token",
+        }
+    monkeypatch.setattr(main.account, "get_orders", fake_get_orders)
+
+    resp = client.get("/api/account/orders")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is True
+    assert body["cursor"] == "next-page-token"
+    assert len(body["orders"]) == 1
+    assert body["orders"][0]["order_id"] == "ord-1"
+
+
 def test_market_catalog_status_endpoint_reports_progress():
     mc_module.clear_all()
     mc_module.upsert_markets("SER-A", "Sports", [
