@@ -252,6 +252,20 @@ def _series_meta_map(series_tickers: set[str]) -> dict:
     }
 
 
+def _real_account_position_tickers(account: dict) -> set[str]:
+    """Tickers of the *real* connected Kalshi account's currently open
+    positions only - deliberately excludes fills (see trading_loop's own
+    extra_tickers comment for why folding fills into anything that drives
+    the live watchlist fetch is wrong: fills are historical trade records
+    that can span days/weeks, unlike a position, which naturally drops out
+    the tick it closes). Shared by trading_loop (feeds _fetch_markets'
+    extra_tickers) and _relevant_tickers below (feeds /api/state's title
+    scoping) so both stay defined identically rather than drifting."""
+    return {
+        p.get("ticker") for p in ((account.get("positions") or {}).get("market_positions") or []) if p.get("ticker")
+    }
+
+
 def _relevant_tickers() -> set[str]:
     """Every ticker actually shown on this tick's /api/state response -
     current watchlist, open positions, the Trade Log's own last-25 closed
@@ -283,9 +297,7 @@ def _relevant_tickers() -> set[str]:
         if t:
             tickers.add(t)
     account = state.get("account") or {}
-    tickers |= {
-        p.get("ticker") for p in ((account.get("positions") or {}).get("market_positions") or []) if p.get("ticker")
-    }
+    tickers |= _real_account_position_tickers(account)
     tickers |= {
         f.get("ticker") or f.get("market_ticker")
         for f in ((account.get("fills") or {}).get("fills") or [])
@@ -941,29 +953,36 @@ async def trading_loop():
             # whale-follow one does (see ROADMAP.md - this was a real bug
             # for the whale broker before extra_tickers existed at all).
             # Also folds in the *real* connected Kalshi account's own open
-            # positions/recent fills (from last tick's snapshot - this tick's
-            # fresh one is fetched concurrently below, one-tick-old tickers
-            # are fine since a real account's holdings rarely change tick to
-            # tick) - without this, a real position's market never got
-            # fetched at all unless it happened to already be on the
-            # watchlist, so state["market_titles"] never had an entry for it
-            # and the real Positions/Trade Log panels showed raw ticker IDs
-            # with zero title resolution, a gap paper trading never had (see
-            # _relevant_tickers for the matching /api/state scoping half of
-            # this same fix).
-            prev_account = state.get("account") or {}
-            real_account_tickers = {
-                p.get("ticker")
-                for p in ((prev_account.get("positions") or {}).get("market_positions") or [])
-                if p.get("ticker")
-            }
-            real_account_tickers |= {
-                f.get("ticker") or f.get("market_ticker")
-                for f in ((prev_account.get("fills") or {}).get("fills") or [])
-                if f.get("ticker") or f.get("market_ticker")
-            }
+            # positions (from last tick's snapshot - this tick's fresh one is
+            # fetched concurrently below, one-tick-old tickers are fine since
+            # a real account's holdings rarely change tick to tick) - without
+            # this, a real position's market never got fetched at all unless
+            # it happened to already be on the watchlist, so
+            # state["market_titles"] never had an entry for it and the real
+            # Positions panel showed raw ticker IDs with zero title
+            # resolution, a gap paper trading never had.
+            #
+            # Deliberately NOT fills here (real, confirmed-live regression,
+            # direct report: "the market watchlist doesn't appear to be
+            # updating/repopulating/removing closed markets and those with
+            # insufficient volume") - state["markets"] IS the live watchlist
+            # (wholesale-replaced every tick from exactly this fetch), not
+            # just a title-resolution scratch space. get_fills(limit=50)
+            # returns real historical trade records that can span days/weeks
+            # since a market only rolls out of the last-50 window once
+            # enough *newer* fills replace it - unlike a paper/real
+            # *position*, which naturally drops out of this set the tick it
+            # closes. Folding fills in here force-fed long-since-finalized,
+            # zero-volume markets back into the live watchlist every single
+            # tick for as long as their fill stayed in that window - exactly
+            # the symptom reported. Fills' tickers still get title
+            # resolution for the real Trade Log display via
+            # _relevant_tickers()/state["market_titles"]'s own unbounded
+            # accumulation - they just don't belong in the *live* watchlist
+            # fetch.
+            real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(
-                set(broker.positions.keys()) | set(market_broker.positions.keys()) | real_account_tickers
+                set(broker.positions.keys()) | set(market_broker.positions.keys()) | real_position_tickers
             )
             markets, account_snapshot, exchange_status, _, _ = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),

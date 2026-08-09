@@ -203,6 +203,28 @@ def test_relevant_tickers_falls_back_to_market_ticker_field_for_fills(monkeypatc
     assert "REAL-FALLBACK" in main._relevant_tickers()
 
 
+def test_real_account_position_tickers_excludes_fills():
+    # Real, confirmed-live regression (2026-08-09, direct report: "the
+    # market watchlist doesn't appear to be updating/repopulating/removing
+    # closed markets and those with insufficient volume") - an earlier fix
+    # folded real-account *fills* into trading_loop's extra_tickers, which
+    # feeds directly into state["markets"] (the live watchlist, wholesale-
+    # replaced every tick). get_fills(limit=50) returns historical trade
+    # records that can span days/weeks, so a long-since-finalized,
+    # zero-volume market stayed pinned in the live watchlist for as long as
+    # its fill sat in that window - unlike a position, which drops out the
+    # tick it closes. _real_account_position_tickers must only ever surface
+    # open positions, never fills, regardless of how stale/finalized the
+    # fill's market now is.
+    account = {
+        "positions": {"market_positions": [{"ticker": "REAL-OPEN-POS"}]},
+        "fills": {"fills": [{"ticker": "REAL-OLD-FILL", "side": "yes"}]},
+    }
+    result = main._real_account_position_tickers(account)
+    assert result == {"REAL-OPEN-POS"}
+    assert "REAL-OLD-FILL" not in result
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with

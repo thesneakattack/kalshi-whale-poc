@@ -732,6 +732,31 @@ never cut.
       `KXOSCARPIC-27-ODY` → "Will The Odyssey win Best Picture at the
       Oscars?"), where every one previously showed only the raw ticker. 2
       new tests. Full suite: 429 (was 427).
+- [x] Fixed a same-session regression the fix directly above introduced
+      (direct report: "the market watchlist doesn't appear to be updating/
+      repopulating/removing closed markets and those with insufficient
+      volume"): that fix folded real-account **fills** (not just positions)
+      into `trading_loop()`'s `open_position_tickers`, which feeds
+      `_fetch_markets`' `extra_tickers` — the mechanism that force-fetches a
+      ticker into `state["markets"]` regardless of the live-only/volume
+      filters discovery itself applies. `get_fills(limit=50)` returns real
+      historical trade records that can span days/weeks, unlike a position,
+      which naturally drops out of the set the tick it closes — so every
+      long-since-finalized, zero-volume market a fill referenced got
+      force-fed back into the *live* watchlist every single tick for as
+      long as that fill sat in the last-50 window. Confirmed live: 15
+      finalized, zero-24h-volume markets (some closed 2-3 days earlier)
+      were permanently pinned in `/api/state`'s `markets` list. Fixed by
+      splitting the extraction into a new shared helper,
+      `_real_account_position_tickers()` (positions only), used by both
+      `trading_loop()`'s `extra_tickers` and `_relevant_tickers()` — fills
+      still get title resolution for the real Trade Log display via
+      `_relevant_tickers()`'s own separate fills lookup, they just no
+      longer drive what's in the live watchlist. Verified live across three
+      consecutive poll ticks: watchlist count dropped 99 → 93 → 84 → 81 as
+      the stale fill-pinned entries cleared, ending at zero
+      finalized/below-min-volume markets. 1 new test. Full suite: 430 (was
+      429).
 
 ## P3 — Reliability & engineering hygiene
 
