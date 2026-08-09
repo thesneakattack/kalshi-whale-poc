@@ -2405,6 +2405,33 @@
         <div class="files"><code>main.py</code> · <code>tests/test_trading_gate.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 62 · re-tuning the whale threshold against what's actually live right now</div>
+        <h4>"i have this feeling ... there should be a vast number more whale signals coming in even despite my
+          whale watch settings"</h4>
+        <p>A hunch, checked against real data before touching anything - same discipline as phase 45's near-identical
+          investigation. Pulled the last 100 real trades across the current live-only watchlist and computed their
+          real notional (<code>count_fp × price</code>, side-aware): zero cleared the live
+          <code>whale_watcher_kalshi.min_notional_usd</code> value of $2,500 (the "documented default," restored
+          there in the previous commit after being at $1 for earlier testing) - median trade size was ~$12.65, the
+          single largest was $1,740. <code>data/signal_log.db</code>'s own hourly bucket counts confirmed the same
+          story from the other direction: roughly thousands of signals/hour while the threshold sat at $1, cratering
+          to ~10-20/hour within the hour the threshold was restored to $2,500. The live-only watchlist right now
+          leans toward lower-liquidity niche markets - ATP Challenger tennis, secondary golf pairings, mention
+          markets, esports - where Kalshi's real trade sizes just don't reach four figures often, unlike the
+          higher-volume political/macro markets $2,500 was originally calibrated against.</p>
+        <p>Presented the finding with a concrete recommendation rather than changing it unprompted, given it's a
+          deliberately-set live tuning value, not a bug. Live-retuned to $500 (clears 8% of that same real sample -
+          a real, meaningful jump without going as low as $1's "admits nearly every real trade" failure mode phase
+          45 already found) via the real <code>POST /api/config</code> endpoint, confirmed new signals landing
+          within one poll tick. No code changed.</p>
+        <p>Direct follow-up flagged for later, not built yet: per-market-type (per-series)
+          <code>min_notional_usd</code> thresholds instead of one global value, since a single number can't be
+          right for both a quiet niche market and a high-volume headline one at the same time - added to
+          <code>ROADMAP.md</code>'s P2 section as an open design question.</p>
+        <div class="files"><code>config/settings.yaml</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -2568,7 +2595,7 @@
       <div class="cfg-cell"><span class="p">advisory.min_resolved_trades_per_variant</span><span class="v">30</span></div>
       <div class="cfg-cell"><span class="p">market_strategy.enabled</span><span class="v">false</span></div>
       <div class="cfg-cell"><span class="p">market_strategy.starting_bankroll</span><span class="v">$10,000</span></div>
-      <div class="cfg-cell"><span class="p">whale_watcher_kalshi.min_notional_usd</span><span class="v">$2,500</span></div>
+      <div class="cfg-cell"><span class="p">whale_watcher_kalshi.min_notional_usd</span><span class="v">$500</span></div>
       <div class="cfg-cell"><span class="p">confidence_calibration.enabled</span><span class="v">false</span></div>
       <div class="cfg-cell"><span class="p">confidence_calibration.min_resolved_signals</span><span class="v">50</span></div>
       <div class="cfg-cell"><span class="p">market_analyst.enabled</span><span class="v">false</span></div>

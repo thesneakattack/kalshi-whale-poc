@@ -757,6 +757,30 @@ never cut.
       the stale fill-pinned entries cleared, ending at zero
       finalized/below-min-volume markets. 1 new test. Full suite: 430 (was
       429).
+- [x] Live-retuned `whale_watcher_kalshi.min_notional_usd` from $2,500 down
+      to $500 (direct report: "there's a feeling ... there should be a vast
+      number more whale signals coming in even despite my whale watch
+      settings"). Confirmed with real data before changing anything: 0 of
+      the last 100 real trades across the current live-only watchlist
+      cleared $2,500 (median trade ~$12.65, max $1,740 — the live-only
+      watchlist currently leans toward lower-liquidity niche markets: ATP
+      Challenger tennis, secondary golf pairings, mention markets, esports),
+      and `data/signal_log.db`'s own hourly bucket counts showed the exact
+      cliff: ~thousands/hour while this was at $1 for earlier testing (see
+      phase 44 above), crashing to ~10-20/hour the moment it was restored to
+      $2,500. $500 clears 8% of that same real sample — a real, meaningful
+      volume increase without going as low as $1's "admits literally every
+      real trade" failure mode from phase 45. Live via `POST /api/config`,
+      confirmed new signals landing within one poll tick. No code change.
+- [ ] Direct follow-up, not yet built: **per-market-type (per-series)
+      `min_notional_usd` thresholds**, instead of one global value — a
+      single number can't be right for both a low-liquidity ATP Challenger
+      tennis market and a high-volume political/macro one at the same time.
+      Needs a design decision before implementation: keyed by
+      `signal_log.series_of()`'s existing series-prefix grouping (already
+      used for `series_stats`/win-rate tracking) most likely, with a
+      fallback default for series with no override set, probably surfaced
+      as a new Config-tab sub-section.
 
 ## P3 — Reliability & engineering hygiene
 

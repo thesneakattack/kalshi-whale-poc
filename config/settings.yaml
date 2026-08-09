@@ -65,7 +65,7 @@ market_strategy:
   max_daily_loss_pct: 0.2
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 2500
+  min_notional_usd: 500
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 30
