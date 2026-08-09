@@ -159,6 +159,50 @@ def test_state_market_titles_includes_a_recently_closed_trades_ticker(monkeypatc
     assert body["market_titles"]["TICK-CLOSED"]["title"] == "A Real Title"
 
 
+def test_state_market_titles_includes_real_account_position_and_fill_tickers(monkeypatch):
+    # Same bug class as the trade_log fix above (2026-08-09 follow-up, direct
+    # request: "make sure the REAL Kalshi stuff works just as well as the
+    # paper default") - _relevant_tickers() scoped /api/state's market_titles
+    # off the paper broker's own tickers, but the *real* connected Kalshi
+    # account's positions/fills had no title-resolution path at all, not even
+    # a lagging one: renderRealPositions/renderRealFills already call the
+    # same marketLabel() the paper panels use, they just never had an entry
+    # in market_titles to find.
+    main.broker.reset(starting_bankroll=10000.0)
+    monkeypatch.setitem(main.state, "markets", [])
+    monkeypatch.setitem(main.state, "signal_feed", [])
+    monkeypatch.setitem(main.state, "decision_feed", [])
+    monkeypatch.setitem(main.state["market_titles"], "REAL-POS", {"title": "A Real Position Title"})
+    monkeypatch.setitem(main.state["market_titles"], "REAL-FILL", {"title": "A Real Fill Title"})
+    monkeypatch.setitem(main.state, "account", {
+        "connected": True, "trading_enabled": False, "error": None,
+        "positions": {"market_positions": [{"ticker": "REAL-POS", "position_fp": "10"}]},
+        "fills": {"fills": [{"ticker": "REAL-FILL", "side": "yes", "count_fp": "5"}]},
+    })
+    main._bump_generation()
+
+    resp = client.get("/api/state")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["market_titles"]["REAL-POS"]["title"] == "A Real Position Title"
+    assert body["market_titles"]["REAL-FILL"]["title"] == "A Real Fill Title"
+
+
+def test_relevant_tickers_falls_back_to_market_ticker_field_for_fills(monkeypatch):
+    # _FILL_FIELDS carries both "ticker" and "market_ticker" (confirmed real
+    # fields against a live account) - a fill missing "ticker" but carrying
+    # "market_ticker" must still resolve, not silently drop out.
+    monkeypatch.setitem(main.state, "markets", [])
+    monkeypatch.setitem(main.state, "signal_feed", [])
+    monkeypatch.setitem(main.state, "decision_feed", [])
+    monkeypatch.setitem(main.state, "account", {
+        "connected": True, "trading_enabled": False, "error": None,
+        "positions": {"market_positions": []},
+        "fills": {"fills": [{"ticker": None, "market_ticker": "REAL-FALLBACK", "side": "yes"}]},
+    })
+    assert "REAL-FALLBACK" in main._relevant_tickers()
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with

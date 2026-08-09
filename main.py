@@ -262,13 +262,18 @@ def _relevant_tickers() -> set[str]:
     feeds, even though the Trade Log kept showing that trade, so it fell
     back to its raw ticker until something else - visiting History, whose
     own endpoint separately backfills the shared client-side title cache -
-    happened to pull the title back in), and whatever's still in the capped
-    signal/decision feeds. state["market_titles"]/state["event_titles"]
-    themselves accumulate unbounded for the app's whole lifetime now (see
-    services/title_cache.py) so history/clusters can still resolve an old
-    ticker's title on their own separately-scoped requests, but /api/state
-    itself must stay scoped to this same small set - same reasoning, same
-    ~1MB regression risk, as _series_meta_map above."""
+    happened to pull the title back in), whatever's still in the capped
+    signal/decision feeds, and the *real* connected Kalshi account's own
+    open positions/recent fills (renderRealPositions/renderRealFills call
+    the same marketLabel() as the paper panels - they were only ever
+    missing an entry to look up, same bug class, added alongside the
+    trade_log fix above once it turned out real-account tickers had no
+    title-resolution path at all, not even a lagging one). state["market_titles"]/
+    state["event_titles"] themselves accumulate unbounded for the app's
+    whole lifetime now (see services/title_cache.py) so history/clusters can
+    still resolve an old ticker's title on their own separately-scoped
+    requests, but /api/state itself must stay scoped to this same small set
+    - same reasoning, same ~1MB regression risk, as _series_meta_map above."""
     tickers = {m["ticker"] for m in state["markets"] if m.get("ticker")}
     tickers |= set(broker.positions.keys())
     tickers |= {t.ticker for t in broker.trade_log[-25:]}
@@ -277,6 +282,15 @@ def _relevant_tickers() -> set[str]:
         t = d.get("ticker") or (d.get("signal") or {}).get("ticker")
         if t:
             tickers.add(t)
+    account = state.get("account") or {}
+    tickers |= {
+        p.get("ticker") for p in ((account.get("positions") or {}).get("market_positions") or []) if p.get("ticker")
+    }
+    tickers |= {
+        f.get("ticker") or f.get("market_ticker")
+        for f in ((account.get("fills") or {}).get("fills") or [])
+        if f.get("ticker") or f.get("market_ticker")
+    }
     return tickers
 
 
@@ -926,7 +940,31 @@ async def trading_loop():
             # needs price updates for its own exit checks just as much as a
             # whale-follow one does (see ROADMAP.md - this was a real bug
             # for the whale broker before extra_tickers existed at all).
-            open_position_tickers = list(set(broker.positions.keys()) | set(market_broker.positions.keys()))
+            # Also folds in the *real* connected Kalshi account's own open
+            # positions/recent fills (from last tick's snapshot - this tick's
+            # fresh one is fetched concurrently below, one-tick-old tickers
+            # are fine since a real account's holdings rarely change tick to
+            # tick) - without this, a real position's market never got
+            # fetched at all unless it happened to already be on the
+            # watchlist, so state["market_titles"] never had an entry for it
+            # and the real Positions/Trade Log panels showed raw ticker IDs
+            # with zero title resolution, a gap paper trading never had (see
+            # _relevant_tickers for the matching /api/state scoping half of
+            # this same fix).
+            prev_account = state.get("account") or {}
+            real_account_tickers = {
+                p.get("ticker")
+                for p in ((prev_account.get("positions") or {}).get("market_positions") or [])
+                if p.get("ticker")
+            }
+            real_account_tickers |= {
+                f.get("ticker") or f.get("market_ticker")
+                for f in ((prev_account.get("fills") or {}).get("fills") or [])
+                if f.get("ticker") or f.get("market_ticker")
+            }
+            open_position_tickers = list(
+                set(broker.positions.keys()) | set(market_broker.positions.keys()) | real_account_tickers
+            )
             markets, account_snapshot, exchange_status, _, _ = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client), _check_signal_resolutions(client),

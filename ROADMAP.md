@@ -710,6 +710,28 @@ never cut.
       Whale-lean/Kill-switch glossary entries, both still describing the
       pre-session 4-factor confidence formula and a bankroll-only kill
       switch. 1 new test. Full suite: 427 (was 426).
+- [x] Same "raw ticker IDs" bug class, one layer deeper (direct follow-up:
+      "make sure the REAL Kalshi stuff works just as well as the paper
+      default") — the *real* connected Kalshi account's own positions/fills
+      had **no title-resolution path at all**, not even a lagging one, a
+      genuinely separate gap from the trade_log fix above: `renderRealPositions`/
+      `renderRealFills` already call the same `marketLabel()` the paper
+      panels use, but `_relevant_tickers()` never included real-account
+      tickers, and even if it had, `_fetch_markets`' `extra_tickers` (the
+      mechanism that fetches title data for an off-watchlist ticker) never
+      saw them either — a real position on a market outside the current
+      watchlist simply never got fetched, paper or not. Fixed both halves:
+      `trading_loop()` now folds the previous tick's real
+      `positions.market_positions`/`fills.fills` tickers into
+      `open_position_tickers` (one-tick-old is fine — a real account's
+      holdings don't change fast, and it self-heals every tick after), and
+      `_relevant_tickers()` now includes the current tick's real-account
+      tickers in `/api/state`'s scoped `market_titles`. Verified live
+      against the real connected account: all 11 real open positions and
+      every distinct real fill ticker resolved to real titles (e.g.
+      `KXOSCARPIC-27-ODY` → "Will The Odyssey win Best Picture at the
+      Oscars?"), where every one previously showed only the raw ticker. 2
+      new tests. Full suite: 429 (was 427).
 
 ## P3 — Reliability & engineering hygiene
 
