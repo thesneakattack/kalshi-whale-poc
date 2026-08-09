@@ -1374,6 +1374,57 @@ band instead.
       service found above — real screenshots of the Terminal and Markets
       tabs confirmed varied real prices and correct series-header/section
       grouping rendering together. Full suite: 328 passing.
+- [x] Collapsed redundant inversion pairs out of the child-market display,
+      direct request (2026-08-08): "do a thorough evaluation of how you
+      group and show child markets... 'technically' they may be different
+      markets but they are just inversions of each other." Investigated
+      before building anything: pulled real 2-sibling events and confirmed
+      numerically that a genuine game/match/map/set-winner event's two
+      sibling markets' `yes_bid_dollars` sum to ~1.0 (e.g. "Toronto vs
+      Philadelphia Winner": 0.92 + 0.07) — the second row is 100% derivable
+      from the first, not new information. But NOT every 2-sibling event is
+      like this: "Max Scherzer 15+ outs" and "Aaron Nola 18+ outs" share an
+      event yet are independent props (0.76 + 0.0, nowhere near 1.0), and a
+      genuine multi-outcome market ("Wyndham Championship Winner", 60+
+      golfers) also has many siblings with no simple pairwise complement.
+      The real, authoritative signal turned out to already be one API call
+      away: `get_event()`'s `mutually_exclusive` field — already fetched by
+      `main.py::_fetch_event_titles` on every call, previously discarded
+      entirely. Added it to `title_cache.py`'s `event_titles` table
+      (idempotent `ALTER TABLE`, same pattern as every other live-DB
+      migration in this app) and to the fetched dict. Real design choice
+      confirmed directly rather than guessed: for a 2-sibling
+      `mutually_exclusive` event, show only the higher-probability side's
+      existing row (its own Yes/No pair already implies the other side's
+      odds by complement) rather than inventing a new "vs" row format —
+      minimal change, reuses the exact row component already used
+      everywhere. New shared `dedupeInversionPairs()` (Terminal's flat
+      list) and matching logic inside `eventGroupCardHTML` (Markets/Whale
+      cards) — both only ever drop the redundant *display* row; the
+      honest total counts (`vol`, `N markets`, the top badge) still reflect
+      every real underlying Kalshi ticker, unchanged. Caught and fixed a
+      real staleness gap before it shipped inert: `_fetch_event_titles`
+      only ever fetches an event that's "not yet cached," so every event
+      already cached before this field existed would have stayed `null`
+      forever — confirmed live (every one of 36 pre-existing cache entries
+      showed `mutually_exclusive: null` right after deploying). Fixed by
+      also re-fetching whenever a cached entry's `mutually_exclusive` is
+      still `None`, since real Kalshi events always return a real
+      `True`/`False` for it — self-heals over the next few ticks as each
+      event naturally reappears in the watchlist, no backfill script or DB
+      wipe needed (confirmed live: cache went from 100% `null` to a mix of
+      26 `False`/11 `True`/5 still-pending within about half a minute).
+      8 new tests (`tests/test_title_cache.py`, `tests/test_trading_gate.py`)
+      covering the round-trip, the idempotent migration against a
+      pre-existing table, extraction of both `True` and `False`, and the
+      backfill-vs-already-complete-cache-entry distinction. Verified live
+      via direct data checks and real selenium-chrome screenshots: "Toronto
+      vs Philadelphia," "Chicago C vs Kansas City," "Minnesota vs
+      Milwaukee," "KOI vs. 100 Thieves: Map 4," and several tennis/esports
+      match-winner events each collapsed to one row in both Terminal and
+      Markets tabs, while independent-prop events ("Outs Recorded," "Hits,"
+      "Team Total") and the genuine 60+-outcome Wyndham Championship Winner
+      market correctly stayed fully expanded. Full suite: 338 passing.
 
 ## P3 — Reliability & engineering hygiene
 

@@ -571,6 +571,67 @@ def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misse
     assert fake.get_market_calls == ["SERA-EVT1-YES"]
 
 
+# --- _fetch_event_titles: mutually_exclusive extraction --------------------
+# Real Kalshi field, already present on every get_event() response this
+# function was already fetching - previously discarded. Direct report:
+# "'technically' they may be different markets but they are just
+# inversions of each other" - confirmed live, a 2-outcome mutually_exclusive
+# event's sibling markets' yes_bid prices sum to ~1.0. This field is what
+# lets the dashboard tell that apart from independent sibling props sharing
+# an event (not mutually exclusive) or a genuine multi-outcome market.
+
+class _FakeEventClient:
+    def __init__(self, events):
+        self.events = events  # event_ticker -> full get_event()-shaped dict
+
+    async def get_event(self, event_ticker):
+        return self.events[event_ticker]
+
+
+def test_fetch_event_titles_extracts_mutually_exclusive_true():
+    main.state["event_titles"].clear()
+    fake = _FakeEventClient({
+        "EVT-A": {"event": {"title": "Toronto vs Philadelphia", "sub_title": None, "category": "Sports", "mutually_exclusive": True}},
+    })
+    markets = [{"ticker": "T-A", "event_ticker": "EVT-A"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result["EVT-A"]["mutually_exclusive"] is True
+
+
+def test_fetch_event_titles_extracts_mutually_exclusive_false():
+    main.state["event_titles"].clear()
+    fake = _FakeEventClient({
+        "EVT-B": {"event": {"title": "Toronto vs Philadelphia: Outs Recorded", "sub_title": None, "category": "Sports", "mutually_exclusive": False}},
+    })
+    markets = [{"ticker": "T-B", "event_ticker": "EVT-B"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result["EVT-B"]["mutually_exclusive"] is False
+
+
+def test_fetch_event_titles_backfills_a_cached_entry_missing_mutually_exclusive():
+    # Real, confirmed-live gap: every event_titles row cached before this
+    # field existed has mutually_exclusive=None forever, since this
+    # function only ever fetches what's "not yet cached" - a cached None
+    # must be treated as "never fetched this field", not skipped.
+    main.state["event_titles"].clear()
+    main.state["event_titles"]["EVT-A"] = {"title": "Old cached title", "sub_title": None, "category": None, "mutually_exclusive": None}
+    fake = _FakeEventClient({
+        "EVT-A": {"event": {"title": "Toronto vs Philadelphia", "sub_title": None, "category": "Sports", "mutually_exclusive": True}},
+    })
+    markets = [{"ticker": "T-A", "event_ticker": "EVT-A"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result["EVT-A"]["mutually_exclusive"] is True
+
+
+def test_fetch_event_titles_does_not_refetch_an_already_complete_cache_entry():
+    main.state["event_titles"].clear()
+    main.state["event_titles"]["EVT-A"] = {"title": "Cached", "sub_title": None, "category": None, "mutually_exclusive": False}
+    fake = _FakeEventClient({})  # would KeyError if _fetch_event_titles tried to re-fetch it
+    markets = [{"ticker": "T-A", "event_ticker": "EVT-A"}]
+    result = asyncio.run(main._fetch_event_titles(fake, markets))
+    assert result == {}
+
+
 def test_market_catalog_status_endpoint_reports_progress():
     mc_module.clear_all()
     mc_module.upsert_markets("SER-A", "Sports", [

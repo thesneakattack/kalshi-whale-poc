@@ -22,6 +22,18 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "title_cache.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/title_cache.db is a live file the running dev server reads/
+    # writes (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a
+    # column to an existing table with existing rows, so a new column needs
+    # an explicit, idempotent ALTER TABLE guarded by a check - same pattern
+    # services/market_catalog.py/paper_broker.py/signal_log.py already
+    # established.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -46,6 +58,15 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # Real Kalshi field, already fetched on every get_event() call but
+    # previously discarded - lets a 2-outcome event ("Toronto vs
+    # Philadelphia Winner") be told apart from a genuine multi-outcome one
+    # ("Wyndham Championship Winner", 60+ golfers) or an event whose
+    # sibling markets are independent props (not one mutually-exclusive
+    # question at all - e.g. "Max Scherzer 15+ outs" and "Aaron Nola 18+
+    # outs" sharing an event). Added after the table above already had live
+    # rows, hence the guarded ALTER TABLE.
+    _add_column_if_missing(conn, "event_titles", "mutually_exclusive", "INTEGER")
     return conn
 
 
@@ -83,10 +104,15 @@ def save_market_titles(entries: dict[str, dict]) -> None:
 
 def load_event_titles() -> dict[str, dict]:
     with _connect() as conn:
-        rows = conn.execute("SELECT event_ticker, title, sub_title, category FROM event_titles").fetchall()
+        rows = conn.execute(
+            "SELECT event_ticker, title, sub_title, category, mutually_exclusive FROM event_titles"
+        ).fetchall()
     return {
-        event_ticker: {"title": title, "sub_title": sub_title, "category": category}
-        for event_ticker, title, sub_title, category in rows
+        event_ticker: {
+            "title": title, "sub_title": sub_title, "category": category,
+            "mutually_exclusive": bool(mutually_exclusive) if mutually_exclusive is not None else None,
+        }
+        for event_ticker, title, sub_title, category, mutually_exclusive in rows
     }
 
 
@@ -96,15 +122,19 @@ def save_event_titles(entries: dict[str, dict]) -> None:
     with _connect() as conn:
         conn.executemany(
             """
-            INSERT INTO event_titles (event_ticker, title, sub_title, category)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO event_titles (event_ticker, title, sub_title, category, mutually_exclusive)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(event_ticker) DO UPDATE SET
                 title = excluded.title,
                 sub_title = excluded.sub_title,
-                category = excluded.category
+                category = excluded.category,
+                mutually_exclusive = excluded.mutually_exclusive
             """,
             [
-                (event_ticker, v.get("title"), v.get("sub_title"), v.get("category"))
+                (
+                    event_ticker, v.get("title"), v.get("sub_title"), v.get("category"),
+                    v.get("mutually_exclusive"),
+                )
                 for event_ticker, v in entries.items()
             ],
         )

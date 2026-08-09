@@ -98,7 +98,7 @@ state = {
     # once keeps its title even after it rotates off the top-volume
     # watchlist or the dev server reloads.
     "market_titles": title_cache.load_market_titles(),
-    "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category"}, see _fetch_event_titles
+    "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category", "mutually_exclusive"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
     # Survives across ticks (unlike live_status above, still replaced wholesale
@@ -643,10 +643,25 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
     event.get("subtitle") looked plausible but was wrong - the real field
     is sub_title (confirmed directly against a live event: "SD vs AZ (Aug
     6)" only came back under that key), so this was silently returning None
-    for every event until caught."""
+    for every event until caught.
+
+    Also re-fetches an already-cached event if its cached entry has no
+    mutually_exclusive value yet (None) - real Kalshi events always return
+    a real True/False for this field, so a cached None uniquely means "this
+    entry predates that field being extracted here," not a genuine value.
+    Without this, every event cached before mutually_exclusive was added
+    would stay permanently None forever (this function only ever fetches
+    what's "not yet cached" - confirmed live: every entry already in
+    data/title_cache.db showed null for it after the field was added,
+    since none of them had ever been "not yet cached" again). This
+    self-heals over the next few ticks as each event naturally reappears in
+    the watchlist, no one-time backfill script or DB wipe needed."""
     to_fetch = [
         m["event_ticker"] for m in markets
-        if m.get("event_ticker") and m["event_ticker"] not in state["event_titles"]
+        if m.get("event_ticker") and (
+            m["event_ticker"] not in state["event_titles"]
+            or state["event_titles"][m["event_ticker"]].get("mutually_exclusive") is None
+        )
     ]
     to_fetch = list(dict.fromkeys(to_fetch))  # de-dupe, preserve order
     if not to_fetch:
@@ -660,6 +675,20 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
                 "title": event.get("title") or et,
                 "sub_title": event.get("sub_title"),
                 "category": event.get("category"),
+                # Kalshi's own real field for "exactly one of this event's
+                # sibling markets resolves YES" - already present in every
+                # get_event() response above, previously discarded. Lets
+                # the dashboard tell a genuine 2-outcome inversion pair
+                # ("Toronto vs Philadelphia Winner" - the two sibling
+                # markets are the same information mirrored, confirmed
+                # live: their yes_bid prices sum to ~1.0) apart from
+                # sibling markets that are independent props sharing an
+                # event but NOT mutually exclusive (e.g. "Max Scherzer 15+
+                # outs" and "Aaron Nola 18+ outs") or a genuine multi-way
+                # market (e.g. "Wyndham Championship Winner", 60+ golfers,
+                # also mutually_exclusive but with no simple pairwise
+                # complement) - see eventGroupCardHTML in static/index.html.
+                "mutually_exclusive": event.get("mutually_exclusive"),
             }
     return fetched
 

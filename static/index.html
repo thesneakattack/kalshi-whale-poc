@@ -1434,6 +1434,40 @@ function seriesLabel(seriesTicker) {
   return (meta && meta.title) ? meta.title : seriesTicker;
 }
 
+// A 2-sibling *mutually exclusive* event (event.mutually_exclusive, real
+// Kalshi field - see main.py's _fetch_event_titles) is a real inversion
+// pair, not two independent pieces of information - confirmed live, direct
+// report: "they are just inversions of each other" ("Toronto vs
+// Philadelphia Winner"'s two sibling markets' yes_bid prices sum to
+// ~1.0). Drops the lower-probability half, keeping the higher one (its own
+// Yes/No pair already implies the other side's odds by complement) -
+// shared with eventGroupCardHTML's own version of this same rule for the
+// Markets/Whale card view. Does NOT touch a genuine multi-outcome market
+// (more than 2 siblings - each row is real, independent information) or
+// sibling markets that merely share an event without being mutually
+// exclusive at all (independent props - confirmed live, "Max Scherzer 15+
+// outs" and "Aaron Nola 18+ outs" do NOT sum to 1.0). Order-preserving
+// otherwise - only ever removes an item, never reorders the rest, so
+// callers relying on markets' existing series/volume ordering
+// (round_robin_select) keep working unchanged.
+function dedupeInversionPairs(markets, prices) {
+  const byEvent = new Map();
+  markets.forEach(m => {
+    if (!m.event_ticker) return;
+    if (!byEvent.has(m.event_ticker)) byEvent.set(m.event_ticker, []);
+    byEvent.get(m.event_ticker).push(m);
+  });
+  const drop = new Set();
+  byEvent.forEach((group, eventTicker) => {
+    const info = eventTitles[eventTicker];
+    if (group.length === 2 && info && info.mutually_exclusive) {
+      const lower = (prices[group[0].ticker] ?? -1) >= (prices[group[1].ticker] ?? -1) ? group[1] : group[0];
+      drop.add(lower.ticker);
+    }
+  });
+  return markets.filter(m => !drop.has(m.ticker));
+}
+
 // What sport/category this is, the actual matchup (from the event, not the
 // often-messy per-market title), and what a Yes/No position on this specific
 // market means in plain words - e.g. "San Diego wins" rather than just a
@@ -1516,8 +1550,13 @@ function marketRowHTML(m, prices) {
 
 function renderMarkets(markets, prices) {
   const el = $('markets-list');
+  // Badge stays the real total (matches state.markets.length/watchlist_size
+  // exactly) even though dedupeInversionPairs below may render fewer rows -
+  // same "honest counts, simplified display" split eventGroupCardHTML uses.
   $('market-count').textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+
+  const visibleTickers = new Set(dedupeInversionPairs(markets, prices).map(m => m.ticker));
 
   // markets arrives already grouped consecutively by parent series (see
   // KalshiClient.round_robin_select - every market under a selected series
@@ -1525,7 +1564,9 @@ function renderMarkets(markets, prices) {
   // changed since the last row" check reproduces that grouping without
   // re-sorting or re-bucketing anything client-side. A header only shows
   // for a series with more than one market - a lone market renders exactly
-  // as a plain row, same as before this grouping existed.
+  // as a plain row, same as before this grouping existed. Header counts
+  // stay the real per-series total, same reasoning as the badge above -
+  // only which rows actually render gets deduped.
   let html = '';
   let currentSeries = null;
   let group = [];
@@ -1535,7 +1576,7 @@ function renderMarkets(markets, prices) {
       const vol = group.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
       html += `<div class="series-header"><span>${esc(seriesLabel(currentSeries))}</span><span class="count">${group.length} markets · vol ${Math.round(vol).toLocaleString()}</span></div>`;
     }
-    html += group.map(m => marketRowHTML(m, prices)).join('');
+    html += group.filter(m => visibleTickers.has(m.ticker)).map(m => marketRowHTML(m, prices)).join('');
   };
   markets.forEach(m => {
     const s = seriesOf(m.ticker);
@@ -2791,14 +2832,33 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
 // version of this did that; a real, well-founded complaint that the
 // group-of-full-cards version still showed "a clear lack of data for any
 // market in particular" and a raw ticker feel is what prompted this).
+//
+// A 2-sibling *mutually exclusive* event (event.mutually_exclusive, real
+// Kalshi field - see main.py's _fetch_event_titles) is a real inversion
+// pair, not two independent pieces of information - "Toronto vs
+// Philadelphia Winner"'s two sibling markets' yes_bid prices sum to ~1.0,
+// confirmed live, direct report: "they are just inversions of each
+// other." Only the higher-probability side's row is shown (already sorted
+// first below) - its own Yes/No pair already implies the other side's
+// odds by complement, so nothing is lost by not repeating it a second
+// time from the opposite angle. This does NOT apply to a genuine
+// multi-outcome market (e.g. "Wyndham Championship Winner", 60+ golfers,
+// also mutually_exclusive but with no simple pairwise complement - each
+// additional row is real, independent information) or to sibling markets
+// that merely share an event without being mutually exclusive at all
+// (e.g. two different players' independent prop bets - confirmed live,
+// "Max Scherzer 15+ outs" and "Aaron Nola 18+ outs" do NOT sum to 1.0).
 function eventGroupCardHTML(group, eventInfo, prices) {
   const title = eventInfo ? eventInfo.title : (group[0].event_ticker || 'Related markets');
   const category = eventInfo ? eventInfo.category : null;
   const totalVol = group.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
+  const isInversionPair = group.length === 2 && !!(eventInfo && eventInfo.mutually_exclusive);
 
-  const rows = group.slice()
-    .sort((a, b) => (prices[b.ticker] ?? -1) - (prices[a.ticker] ?? -1))  // most-likely outcome first
-    .map(m => {
+  let sortedGroup = group.slice()
+    .sort((a, b) => (prices[b.ticker] ?? -1) - (prices[a.ticker] ?? -1));  // most-likely outcome first
+  if (isInversionPair) sortedGroup = sortedGroup.slice(0, 1);
+
+  const rows = sortedGroup.map(m => {
       const label = marketLabel(m.ticker);
       const info = marketTitles[m.ticker];
       const outcomeName = (info && info.yes_sub_title) || label.short;
