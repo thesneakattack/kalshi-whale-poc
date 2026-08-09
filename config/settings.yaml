@@ -38,9 +38,11 @@ strategy:
   auto_exit_gain_reference_pct: 0.5
   auto_exit_loss_reference_pct: 0.3
   auto_exit_stale_after_sec: 1800
+  longshot_price_threshold: 0.15
+  longshot_entry_threshold_bonus: 0.15
 risk:
   starting_bankroll: 10000
-  max_daily_loss_pct: 1
+  max_daily_loss_pct: 0.25
   kill_switch_enabled: true
 kalshi_account:
   trading_enabled: false
@@ -73,5 +75,10 @@ advisory:
 confidence_calibration:
   enabled: false
   min_resolved_signals: 50
+market_analyst:
+  enabled: false
+  model: claude-sonnet-5
+  reanalyze_cooldown_sec: 1800
+  max_analyses_per_tick: 1
 logging:
   level: INFO

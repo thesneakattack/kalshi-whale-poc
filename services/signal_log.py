@@ -108,6 +108,37 @@ def recent_sides_for_ticker(ticker: str, since_ts: float) -> list[str]:
     return [r[0] for r in rows]
 
 
+def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_size_ratio: float = 4.0) -> float:
+    """How much this (not-yet-logged) trade looks like it's extending an
+    active same-actor accumulation pattern, rather than standing alone as an
+    isolated large print - the live, per-signal analog of find_clusters()
+    below, feeding composite_confidence_breakdown's cluster_factor (see
+    services/whale_simulator.py). Barclay & Warner's stealth-trading finding
+    (docs/prediction-market-strategy-alignment-plan.md Part 2.1) is why this
+    exists: the strongest real evidence on which large trades are actually
+    informed says sophisticated informed traders deliberately split into a
+    run of similar-sized prints rather than one conspicuous block - so a
+    print that's part of such a run is a stronger signal than an equally
+    large one with nothing else like it nearby, not a weaker one.
+
+    Unlike recent_sides_for_ticker/agreement_factor's "no history = neutral"
+    idiom, "no similar-sized recent prints" is itself informative here (an
+    isolated print, exactly the profile a pure notional-size threshold
+    already treats as its only signal) - so this returns 0.0, not 0.5, when
+    nothing qualifies. Scales toward 1.0 as more size-compatible prints pile
+    up, capped at 3 (matching find_clusters' own "more prints = more likely
+    real accumulation" intuition without trying to reproduce its full
+    sequential-run algorithm here - this is a cheaper, real-time proxy for
+    one trade, not a retrospective full-history scan)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT size FROM signals WHERE ticker = ? AND side = ? AND seen_at >= ?",
+            (ticker, side, since_ts),
+        ).fetchall()
+    matches = sum(1 for (s,) in rows if _size_ratio_ok(s, size, max_size_ratio))
+    return min(matches / 3, 1.0)
+
+
 def unresolved_batch(limit: int = 3, older_than_sec: float = 600) -> list[dict]:
     """Oldest unresolved signals whose market has had at least `older_than_sec`
     to plausibly settle — avoids re-checking a market seconds after the print,

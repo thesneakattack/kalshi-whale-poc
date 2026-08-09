@@ -60,6 +60,26 @@ def test_build_trade_history_pairs_entry_and_close():
     assert r["cash_back"] == 75.0  # 100 * 0.75
 
 
+def test_build_trade_history_defaults_fees_paid_to_zero_without_fee_data():
+    # _open/_closed (this file's own helpers) don't carry a "fee" key at
+    # all - the same shape a trade logged before fee modeling existed
+    # would have. "no data" and "zero fee" look identical here on purpose
+    # (see build_trade_history's comment) - the honest default is 0.0, not
+    # a crash or a None that'd need special-casing downstream.
+    log = [_open(ts=1000.0), _closed(ts=1300.0)]
+    rows = ta.build_trade_history(log)
+    assert rows[0]["fees_paid"] == 0.0
+
+
+def test_build_trade_history_sums_entry_and_close_fees():
+    entry = _open(ts=1000.0)
+    entry["fee"] = 1.75
+    close = _closed(ts=1300.0)
+    close["fee"] = 1.31
+    rows = ta.build_trade_history([entry, close])
+    assert rows[0]["fees_paid"] == 3.06
+
+
 def test_build_trade_history_dollar_amounts_account_for_no_side():
     log = [
         _open(ticker="TICK-A", side="no", price=0.4, size=100, ts=1000.0),
@@ -147,6 +167,16 @@ def test_compute_summary_totals_capital_deployed():
     rows = ta.build_trade_history(log)
     summary = ta.compute_summary(rows)
     assert summary["total_capital_deployed"] == 110.0
+
+
+def test_compute_summary_totals_fees_paid():
+    entry = _open(ticker="A", ts=1000.0, tid="o1")
+    entry["fee"] = 1.75
+    close = _closed(ticker="A", ts=1100.0, tid="c1")
+    close["fee"] = 1.31
+    rows = ta.build_trade_history([entry, close])
+    summary = ta.compute_summary(rows)
+    assert summary["total_fees_paid"] == 3.06
 
 
 def test_compute_summary_aggregates_wins_losses_and_by_close_type():

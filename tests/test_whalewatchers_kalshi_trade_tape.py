@@ -1,18 +1,23 @@
 import asyncio
+import time
 
 import pytest
 
-from services import signal_log
+from services import market_history, signal_log
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
 
 
 @pytest.fixture(autouse=True)
 def _redirect_signal_log_db(tmp_path, monkeypatch):
     # fetch_signals() now queries signal_log.recent_sides_for_ticker() for
-    # agreement_factor - redirect before any test can touch the real
-    # data/signal_log.db (CLAUDE.md's live-db warning), same pattern
+    # agreement_factor and signal_log.cluster_factor() for cluster_factor -
+    # redirect before any test can touch the real data/signal_log.db
+    # (CLAUDE.md's live-db warning), same pattern
     # tests/test_signal_log.py/test_market_history.py already use.
     monkeypatch.setattr(signal_log, "DB_PATH", tmp_path / "signal_log.db")
+    # fetch_signals() also now queries market_history.momentum() for
+    # trend_factor - same real-db-isolation reasoning.
+    monkeypatch.setattr(market_history, "DB_PATH", tmp_path / "market_history.db")
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):
@@ -173,3 +178,73 @@ def test_agreement_factor_ignores_signals_on_a_different_ticker():
     ctx = {"markets": [_market(ticker="TICK-A")], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert signals[0].factors["agreement_factor"] == 0.5  # no history on TICK-A itself
+
+
+# ---- cluster_factor wiring (docs/prediction-market-strategy-alignment-plan.md Part 2.1) ----
+
+def test_cluster_factor_is_zero_with_no_recent_similar_prints():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["cluster_factor"] == 0.0
+
+
+def test_cluster_factor_reflects_recent_size_compatible_prints_on_the_same_ticker():
+    signal_log.log_signal("TICK-A", "yes", 9500, 0.7, "kalshi_trade_tape")
+    signal_log.log_signal("TICK-A", "yes", 10500, 0.7, "kalshi_trade_tape")
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["cluster_factor"] == pytest.approx(2 / 3)
+
+
+# ---- trend_factor wiring (docs/prediction-market-strategy-alignment-plan.md Part 2.4) ----
+
+def test_trend_factor_is_neutral_with_no_real_price_history():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["trend_factor"] == 0.5
+
+
+def test_trend_factor_is_high_when_yes_print_agrees_with_a_rising_price():
+    now = time.time()
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.50}], timestamp=now - 1000)
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.55}], timestamp=now)
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes", created_time=None)
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["trend_factor"] == 1.0  # price rose 5c, yes print agrees, saturates at max
+
+
+def test_trend_factor_is_low_when_yes_print_fights_a_falling_price():
+    now = time.time()
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.55}], timestamp=now - 1000)
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.50}], timestamp=now)
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes", created_time=None)
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["trend_factor"] == 0.0  # price fell 5c, yes print fights it, saturates at min
+
+
+def test_trend_factor_flips_for_the_no_side():
+    # Same falling price as above, but a NO print now agrees with it rather
+    # than fighting it - the exact same real trend should score oppositely
+    # depending on which side the print is on.
+    now = time.time()
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.55}], timestamp=now - 1000)
+    market_history.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.50}], timestamp=now)
+
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.40", taker_side="no", created_time=None)
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["trend_factor"] == 1.0

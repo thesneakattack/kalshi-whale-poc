@@ -147,18 +147,19 @@ see "Connecting your real Kalshi account" above for why.
 |---|---|---|
 | Whale signal | Simulated or a named provider, switches on `.env` (see above) | Already wired — no rewrite needed |
 | Account read access | Real balance/positions/fills via `services/kalshi_account_client.py`, read-only | Already wired — no rewrite needed |
-| Order execution | `services/paper_broker.py` (fake fills, fake bankroll). Real `create_order`/`cancel_order` exist but are gated off by `kalshi_account.trading_enabled: false` | Flip `trading_enabled` to `true` once you trust it — after shadow mode (below) |
-| Mode | `mode: paper` in `config/settings.yaml` | Add a `shadow` mode first (logs what it *would* trade, no execution) before ever flipping to `live` |
+| Order execution | `services/paper_broker.py` (fake fills, fake bankroll). Real `create_order`/`cancel_order` exist but are gated off by `kalshi_account.trading_enabled: false` plus a typed in-app confirmation phrase | Flip `trading_enabled` to `true` (and confirm) once you trust it — after shadow mode (below) |
+| Mode | `mode: paper` in `config/settings.yaml` | `services/shadow_mode.py` already exists (logs what it *would* trade, no execution) — run it for a real stretch and review the results before ever flipping to `live` |
 
 ## Safety notes for when you go live
 
 - Kalshi is a CFTC-regulated exchange. Read-only account access is wired up;
   real order placement is implemented but deliberately gated off by
   `kalshi_account.trading_enabled` — flipping it is a decision, not an accident.
-- The `create_order` request shape targets Kalshi's classic prediction-markets
-  order endpoint. Kalshi's API has more than one order-placement surface (this
-  isn't their perpetuals/margin product) and it has changed before — re-verify
-  the request schema against current Kalshi docs before ever enabling it.
+- The `create_order` request shape has been verified against Kalshi's current
+  docs and migrated to their official `kalshi_python_async` SDK. Kalshi's API
+  has more than one order-placement surface (this isn't their perpetuals/
+  margin product) and it has changed before — worth re-checking against
+  current docs if it's been a while since this was last verified.
 - Before connecting real trading: run in `shadow` mode against a live whale
   feed for a while and compare its decisions to what you'd have wanted, before
   trusting the kill switch and position limits with actual capital.

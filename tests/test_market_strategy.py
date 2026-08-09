@@ -1,9 +1,12 @@
 import re
 import time
 
+import pytest
+
 from services import market_history as mh
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
+from services.kalshi_fees import taker_fee
 from services.market_strategy import MarketNativeStrategy
 from services.trade_analytics import _ENTRY_CONF_RE
 
@@ -232,8 +235,11 @@ def test_check_exits_settles_position_correctly(tmp_path, monkeypatch):
     decisions = strategy.check_exits({}, now, _permissive_cfg(), market_results={"TICK-A": "no"})
     assert len(decisions) == 1
     assert "TICK-A" not in broker.positions
-    # no position won -> cash back 100 * 1.0 (terminal no-side payout) = 100
-    assert broker.bankroll == 10000.0 - 60 + 100
+    # no position won -> cash back 100 * 1.0 (terminal no-side payout) = 100.
+    # Settlement's terminal price (0.0/1.0) means zero close-leg fee (see
+    # services/kalshi_fees.py) - only the entry leg's real fee applies here.
+    entry_fee = taker_fee(100, 0.4)
+    assert broker.bankroll == pytest.approx(10000.0 - 60 + 100 - entry_fee)
 
 
 def test_check_exits_take_profit_closes_position(tmp_path, monkeypatch):

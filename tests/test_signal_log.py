@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from services import signal_log as sl
 
 
@@ -122,6 +124,53 @@ def test_total_count(tmp_path, monkeypatch):
     log.log_signal("TICK-B", "no", 2000, 0.7, "simulated")
     assert log.total_count() == 2
     assert log.total_count(resolved_only=True) == 0
+
+
+# ---- cluster_factor (live, per-signal analog of find_clusters) -------------
+
+def test_cluster_factor_is_zero_with_no_recent_history(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    # Isolated print - nothing to compare against - scores 0.0, not the
+    # neutral 0.5 recent_sides_for_ticker/agreement_factor would use, since
+    # "no similar prints nearby" is itself informative here.
+    assert log.cluster_factor("TICK-A", "yes", 5000, since_ts=now - 1800) == 0.0
+
+
+def test_cluster_factor_scales_up_with_more_size_compatible_prints(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "kalshi_trade_tape", seen_at=now - 600)
+    one = log.cluster_factor("TICK-A", "yes", 5200, since_ts=now - 1800)
+    log.log_signal("TICK-A", "yes", 5500, 0.7, "kalshi_trade_tape", seen_at=now - 300)
+    two = log.cluster_factor("TICK-A", "yes", 5200, since_ts=now - 1800)
+    log.log_signal("TICK-A", "yes", 4800, 0.7, "kalshi_trade_tape", seen_at=now - 100)
+    three = log.cluster_factor("TICK-A", "yes", 5200, since_ts=now - 1800)
+    assert 0.0 < one < two < three
+    assert three == 1.0  # capped at 3 matching prints
+
+
+def test_cluster_factor_ignores_size_mismatched_prints(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 500, 0.7, "kalshi_trade_tape", seen_at=now - 300)  # far outside a 4x ratio
+    assert log.cluster_factor("TICK-A", "yes", 50000, since_ts=now - 1800, max_size_ratio=4.0) == 0.0
+
+
+def test_cluster_factor_ignores_different_ticker_or_side(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "kalshi_trade_tape", seen_at=now - 300)
+    log.log_signal("TICK-B", "yes", 5000, 0.7, "kalshi_trade_tape", seen_at=now - 300)
+    log.log_signal("TICK-A", "no", 5000, 0.7, "kalshi_trade_tape", seen_at=now - 300)
+    assert log.cluster_factor("TICK-A", "yes", 5000, since_ts=now - 1800) == pytest.approx(1 / 3)
+
+
+def test_cluster_factor_respects_since_ts_window(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 5000, 0.7, "kalshi_trade_tape", seen_at=now - 7200)  # 2h ago, outside window
+    assert log.cluster_factor("TICK-A", "yes", 5000, since_ts=now - 1800) == 0.0
 
 
 def test_find_clusters_groups_close_similar_prints(tmp_path, monkeypatch):

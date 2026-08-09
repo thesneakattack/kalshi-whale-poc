@@ -3,14 +3,15 @@ import pytest
 from services import confidence_calibration as cc
 
 
-def _row(depth, unusualness, proximity, context, agreement, correct):
+def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5):
     return {
-        "confidence": 0.5,
+        "confidence": confidence,
         "correct": correct,
         "factors": {
             "depth_factor": depth, "unusualness_factor": unusualness,
             "proximity_factor": proximity, "context_factor": context,
-            "agreement_factor": agreement, "score": 0.5,
+            "agreement_factor": agreement, "cluster_factor": cluster,
+            "trend_factor": trend, "score": confidence,
         },
     }
 
@@ -100,3 +101,56 @@ def test_overall_win_rate_and_confidence_label_present():
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
     assert result["report"]["overall_win_rate"] == pytest.approx(33.3, abs=0.5)
     assert result["report"]["confidence_label"] == "higher"  # n=30
+
+
+# ---- overall confidence-score calibration (distinct from per-factor discrimination) ----
+
+def test_well_calibrated_band_shows_a_small_gap():
+    # 10 signals at ~65% confidence, 6 win (60%) and 4 lose - close to what
+    # a genuinely well-calibrated 60-70%-confidence band should look like.
+    rows = (
+        [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=True, confidence=0.65) for _ in range(6)]
+        + [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=False, confidence=0.65) for _ in range(4)]
+    )
+    result = cc.generate_calibration_report(rows, min_resolved_signals=10)
+    bands = result["report"]["confidence_calibration"]
+    band = next(b for b in bands if b["band"] == "60-70%")
+    assert band["n"] == 10
+    assert band["predicted_pct"] == 65.0
+    assert band["observed_win_rate_pct"] == 60.0
+    assert band["gap_pts"] == pytest.approx(-5.0)
+
+
+def test_overconfident_band_shows_a_large_negative_gap():
+    # 10 signals at ~85% confidence but only 3 actually win (30%) - exactly
+    # the "confidence doesn't mean what it claims to" case this exists to
+    # surface, distinct from whether any individual factor discriminates.
+    rows = (
+        [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=True, confidence=0.85) for _ in range(3)]
+        + [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=False, confidence=0.85) for _ in range(7)]
+    )
+    result = cc.generate_calibration_report(rows, min_resolved_signals=10)
+    band = next(b for b in result["report"]["confidence_calibration"] if b["band"] == "80-90%")
+    assert band["observed_win_rate_pct"] == 30.0
+    assert band["gap_pts"] < -40  # badly overconfident
+
+
+def test_bands_with_too_few_signals_are_omitted():
+    # 2 signals at ~95% confidence - below _MIN_BAND_SIZE (3), shouldn't be
+    # reported as a finding on that thin a sample. Padded with an unrelated
+    # well-sampled band so the report itself still gates open.
+    rows = (
+        [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=True, confidence=0.95) for _ in range(2)]
+        + [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=True, confidence=0.55) for _ in range(10)]
+    )
+    result = cc.generate_calibration_report(rows, min_resolved_signals=12)
+    labels = [b["band"] for b in result["report"]["confidence_calibration"]]
+    assert "90-100%" not in labels
+    assert "50-60%" in labels
+
+
+def test_confidence_exactly_one_lands_in_top_band():
+    rows = [_row(0.5, 0.5, 0.5, 0.5, 0.5, correct=True, confidence=1.0) for _ in range(3)]
+    bands = cc._confidence_calibration_bands(rows)
+    assert bands[0]["band"] == "90-100%"
+    assert bands[0]["n"] == 3

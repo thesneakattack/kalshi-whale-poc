@@ -1072,6 +1072,27 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
     </p>
     <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
+         Part 3) - an LLM reading each market's own title/rules/context and
+         forming an independent probability estimate, distinct in kind from
+         the arithmetic-only whale-flow/momentum strategies above.
+         Advisory-only, same as Advisory Recommendations - never places a
+         trade or writes config, just a visible, gradeable opinion. -->
+    <div class="panel-title">Market Analyst <span class="data-badge new">🆕 new</span> <span id="market-analyst-status-badge"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      An LLM reads each analyzed market's actual title, rules, and this app's own accumulated track record,
+      then forms its own probability estimate — independent of the whale-flow and momentum signals above,
+      not a replacement for either. Disabled by default; needs an ANTHROPIC_API_KEY set too. Never places a
+      trade or changes config on its own — a visible opinion you can grade over time, nothing more yet.
+    </p>
+    <div class="stat-cards" id="market-analyst-summary-cards" style="margin-bottom:14px;">
+      <div class="cell"><div class="lbl">Analyses (30d)</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Resolved</div><div class="val">—</div></div>
+      <div class="cell"><div class="lbl">Hit Rate</div><div class="val">—</div></div>
+      <div class="cell" title="Mean squared error between the model's own probability estimate and the real outcome - 0 is perfect, 0.25 is no better than a coin flip. The more meaningful number once there's enough resolved history, per the same hit-rate-vs-calibration distinction this app's own research surfaced."><div class="lbl">Brier Score</div><div class="val">—</div></div>
+    </div>
+    <div id="market-analyst-analyses" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
     <div id="history-trades"><div class="empty">Loading…</div></div>
   </div>
@@ -1113,6 +1134,8 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
       <summary>Strategy <span class="section-desc">— what the whale-follow strategy trades on</span></summary>
       <div class="section-body config-group">
         <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label title="Prices at or below this, or at or above (1 - this), count as &quot;longshot&quot; territory - real Kalshi data shows these are systematically overpriced, worse for the taker orders this app uses once real trading is on.">Longshot price zone (0–1, e.g. 0.15 = below 15¢ or above 85¢)</label><input id="cfg-longshot-zone" type="number" step="0.05" min="0" max="0.5"></div>
+        <div class="field"><label title="Added on top of the entry threshold above, only for signals priced inside the longshot zone.">Extra confidence required in the longshot zone (added to threshold above)</label><input id="cfg-longshot-bonus" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
         <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
         <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
@@ -1199,6 +1222,25 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
         <div class="field"><label>Stop-loss (0–1, blank = off)</label><input id="cfg-market-strategy-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
         <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side</label></div>
         <div class="field"><label>Max daily loss (% of its own bankroll)</label><input id="cfg-market-strategy-max-loss" type="number" step="0.01" min="0" max="1"></div>
+      </div>
+    </details>
+
+    <details class="config-section">
+      <summary>Market Analyst (AI) <span class="data-badge new">🆕 new</span> <span class="section-desc">— an LLM forms its own probability estimate per market</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          A third, genuinely different kind of strategy input alongside whale-flow and momentum above -
+          instead of arithmetic factor scoring, an LLM reads each analyzed market's actual title, rules,
+          and this app's own accumulated track record, then forms its own probability estimate. See the
+          Market Analyst panel on the Trading History tab for results. Off by default, and needs an
+          <code>ANTHROPIC_API_KEY</code> set in <code>.env</code> too - both are required. Advisory-only:
+          nothing here ever places a trade or writes config on its own, and this app has no plan to
+          promote it into an actual trading decision until it has a real track record.
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-market-analyst-enabled"> Enable Market Analyst</label></div>
+        <div class="field"><label>Model</label><input id="cfg-market-analyst-model" type="text" placeholder="claude-sonnet-5"></div>
+        <div class="field"><label title="A given market won't be re-analyzed more often than this - keeps real API cost bounded.">Re-analysis cooldown per market (seconds)</label><input id="cfg-market-analyst-cooldown" type="number" step="60" min="0"></div>
+        <div class="field"><label title="At most this many NEW markets get analyzed per trading-loop tick, regardless of how many are eligible.">Max new analyses per tick</label><input id="cfg-market-analyst-max-per-tick" type="number" step="1" min="0"></div>
       </div>
     </details>
 
@@ -1791,9 +1833,14 @@ function plainEnglishSkipReason(reason) {
   if ((m = /^series "(.+)" is manually excluded$/.exec(reason))) {
     return `Skipped — "${m[1]}"-type markets are on your manually excluded list in Config, regardless of confidence.`;
   }
-  if ((m = /^confidence ([\d.]+) below threshold$/.exec(reason))) {
+  if ((m = /^confidence ([\d.]+) below threshold \(([\d.]+)( - longshot zone)?\)$/.exec(reason))) {
     const pct = Math.round(parseFloat(m[1]) * 100);
-    return `Skipped — this whale print only scored ${pct}% confidence, below the minimum needed to act on it.`;
+    const thresholdPct = Math.round(parseFloat(m[2]) * 100);
+    const longshotNote = m[3]
+      ? ` This market's price is in "longshot" territory (very close to 0¢ or 100¢), which real Kalshi data shows is `
+        + `systematically overpriced — so the bar is raised here specifically, not just the usual minimum.`
+      : '';
+    return `Skipped — this whale print only scored ${pct}% confidence, below the ${thresholdPct}% minimum needed to act on it.${longshotNote}`;
   }
   if ((m = /^whale win rate for "(.+)"-type markets is ([\d.]+)% over (\d+) resolved signals \(below ([\d.]+)% minimum\) — avoiding$/.exec(reason))) {
     const seriesMetaEntry = seriesMeta[m[1]];
@@ -2740,6 +2787,7 @@ async function loadTradingHistory() {
     renderHistoryInsights(resp.insights || []);
     renderHistoryTrades();
     loadAdvisory();
+    loadMarketAnalyst();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -2769,6 +2817,7 @@ function renderHistorySummary(summary) {
     <div class="cell"><div class="lbl">Total Capital Deployed</div><div class="val">${fmt(summary.total_capital_deployed ?? 0)}</div></div>
     <div class="cell"><div class="lbl">Total Realized P&amp;L</div><div class="val" style="color:${pnlColor}">${fmt(pnl)}</div></div>
     <div class="cell"><div class="lbl">Left on Table (early exits)</div><div class="val">${fmt(summary.total_left_on_table ?? 0)}</div></div>
+    <div class="cell" title="Real Kalshi taker fees (0.07 * contracts * price * (1-price) per leg), already netted into Total Realized P&amp;L above - shown separately so the fee drag itself is visible, not just its effect on the bottom line."><div class="lbl">Fees Paid</div><div class="val">${fmt(summary.total_fees_paid ?? 0)}</div></div>
     <div class="cell"><div class="lbl">Avg Hold Time</div><div class="val">${historyDurationHTML(summary.avg_hold_sec)}</div></div>
   `;
 }
@@ -2883,6 +2932,74 @@ async function applyAdvisoryRecommendation(id, btn) {
   }
 }
 
+// Market Analyst (docs/prediction-market-strategy-alignment-plan.md Part 3) -
+// same two-fetch shape as loadAdvisory above (a status call that's always
+// safe regardless of enabled, plus the actual data), but distinguishes a
+// third state Advisory doesn't have: enabled with no ANTHROPIC_API_KEY set,
+// which would otherwise look identical to "enabled and just hasn't analyzed
+// anything yet" - worth a different, more actionable message.
+async function loadMarketAnalyst() {
+  const badge = $('market-analyst-status-badge');
+  const el = $('market-analyst-analyses');
+  try {
+    const status = await fetchJSON('/api/market-analyst/status');
+    const cards = $('market-analyst-summary-cards').children;
+    cards[0].querySelector('.val').textContent = status.total_analyses ?? '—';
+    cards[1].querySelector('.val').textContent = status.resolved ?? '—';
+    cards[2].querySelector('.val').textContent = status.hit_rate_pct != null ? `${status.hit_rate_pct}%` : '—';
+    cards[3].querySelector('.val').textContent = status.brier_score != null ? status.brier_score.toFixed(3) : '—';
+
+    if (!status.enabled) {
+      badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
+      el.innerHTML = '<div class="empty">Market Analyst is disabled — enable it in Config → Market Analyst (AI).</div>';
+      return;
+    }
+    if (!status.api_key_configured) {
+      badge.innerHTML = '<span style="color:var(--no); font-size:11px; text-transform:uppercase;">no API key</span>';
+      el.innerHTML = '<div class="empty">Enabled, but ANTHROPIC_API_KEY isn\'t set in .env — nothing will run until it is.</div>';
+      return;
+    }
+    badge.innerHTML = '<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">enabled</span>';
+
+    const resp = await fetchJSON('/api/market-analyst/analyses?limit=25');
+    const rows = resp.rows || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No analyses yet — one candidate market gets analyzed at most every '
+        + 'few ticks once enabled (see Config → Market Analyst for the pacing knobs).</div>';
+      return;
+    }
+    el.innerHTML = rows.map(r => {
+      const label = marketLabel(r.ticker);
+      const lean = r.estimated_probability >= 0.5 ? 'YES' : 'NO';
+      const leanPct = Math.round(r.estimated_probability >= 0.5 ? r.estimated_probability * 100 : (1 - r.estimated_probability) * 100);
+      const marketPct = Math.round(r.market_price * 100);
+      let outcomeHtml = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">pending</span>';
+      if (r.resolved) {
+        outcomeHtml = r.correct
+          ? '<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">✓ correct</span>'
+          : '<span style="color:var(--no); font-size:11px; text-transform:uppercase;">✗ missed</span>';
+      }
+      return `
+        <div class="signal-card">
+          <div class="top-row">
+            <span>${esc(label.short)}</span>
+            ${outcomeHtml}
+          </div>
+          <div style="margin:4px 0;">
+            Model: <b class="side-tag ${lean.toLowerCase()}">${lean} ${leanPct}%</b>
+            <span style="color:var(--muted);"> · Market was pricing YES at ${marketPct}% ·
+            confidence ${Math.round(r.llm_confidence * 100)}%</span>
+          </div>
+          <div style="color:var(--muted); font-size:13px;">${esc(r.reasoning)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    badge.innerHTML = '';
+    el.innerHTML = '<div class="empty">Failed to load Market Analyst data.</div>';
+  }
+}
+
 function renderHistoryTrades() {
   const el = $('history-trades');
   $('history-trades-count').textContent = historyTotal ? `(${historyTotal})` : '';
@@ -2905,6 +3022,7 @@ function renderHistoryTrades() {
       <td>${(t.exit_price * 100).toFixed(0)}¢</td>
       <td>${t.cost_basis !== null && t.cost_basis !== undefined ? fmt(t.cost_basis) : '—'}</td>
       <td>${fmt(t.cash_back ?? 0)}</td>
+      <td style="color:var(--muted);">${fmt(t.fees_paid ?? 0)}</td>
       <td>${esc(closeTypeLabel)}</td>
       <td>${historyDurationHTML(t.hold_sec)}</td>
       <td>${conf}</td>
@@ -2929,6 +3047,7 @@ function renderHistoryTrades() {
     <thead><tr>
       <th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Exit</th>
       <th title="Dollar amount actually paid at entry">Cost</th><th title="Dollar amount actually received at exit">Payout</th>
+      <th title="Real Kalshi taker fees, both legs combined - already netted into Realized P&amp;L">Fees</th>
       <th>Closed By</th><th>Held</th><th title="Whale confidence at entry">Entry Conf.</th>
       <th>Realized P&amp;L</th><th title="Hypothetical: size*(1-exit price) for yes / size*exit price for no - what a full $1 win would have paid beyond what this early exit actually banked">Left on Table</th>
     </tr></thead>
@@ -3347,7 +3466,16 @@ function renderHeaderStrip(broker, account, realBalanceHistory) {
     $('header-pnl-label').textContent = 'Unrealized P&L';
     $('bankroll').textContent = fmt(broker.bankroll);
     $('equity').textContent = fmt(broker.equity);
-    const pnl = broker.equity - broker.starting_bankroll;
+    // equity = bankroll + total_unrealized_pnl(open positions) (see
+    // paper_broker.py's equity()), so equity - bankroll IS the unrealized
+    // P&L on currently-open positions - equity - starting_bankroll (the old
+    // code here) is cumulative all-time P&L including realized gains from
+    // closed trades, which showed a large nonzero "Unrealized P&L" even with
+    // zero open positions (direct report, 2026-08-09: "I get values for
+    // bankroll, equity, and unrealized P&L, but the open positions
+    // themselves arent shown"). All-time P&L already has its own correctly-
+    // labeled home on the Trading History tab.
+    const pnl = broker.equity - broker.bankroll;
     const pnlEl = $('pnl');
     pnlEl.textContent = fmt(pnl);
     pnlEl.className = 'value ' + (pnl >= 0 ? 'pos' : 'neg');
@@ -4240,6 +4368,8 @@ async function loadConfig() {
   const cfg = await fetchJSON('/api/config');
   $('cfg-mode').value = cfg.mode || 'paper';
   $('cfg-threshold').value = cfg.strategy.entry_threshold;
+  $('cfg-longshot-zone').value = cfg.strategy.longshot_price_threshold ?? 0.15;
+  $('cfg-longshot-bonus').value = cfg.strategy.longshot_entry_threshold_bonus ?? 0.15;
   $('cfg-position-pct').value = cfg.strategy.max_position_pct;
   $('cfg-cooldown').value = cfg.strategy.cooldown_sec;
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
@@ -4278,6 +4408,11 @@ async function loadConfig() {
   $('cfg-market-strategy-stop-loss').value = ms.stop_loss_pct ?? '';
   $('cfg-market-strategy-momentum-reversal').checked = !!ms.exit_on_momentum_reversal;
   $('cfg-market-strategy-max-loss').value = ms.max_daily_loss_pct ?? 1;
+  const marketAnalystCfg = cfg.market_analyst || {};
+  $('cfg-market-analyst-enabled').checked = !!marketAnalystCfg.enabled;
+  $('cfg-market-analyst-model').value = marketAnalystCfg.model ?? 'claude-sonnet-5';
+  $('cfg-market-analyst-cooldown').value = marketAnalystCfg.reanalyze_cooldown_sec ?? 1800;
+  $('cfg-market-analyst-max-per-tick').value = marketAnalystCfg.max_analyses_per_tick ?? 1;
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -4320,6 +4455,8 @@ $('save-config-btn').addEventListener('click', async () => {
     mode: $('cfg-mode').value,
     strategy: {
       entry_threshold: parseFloat($('cfg-threshold').value),
+      longshot_price_threshold: parseFloat($('cfg-longshot-zone').value),
+      longshot_entry_threshold_bonus: parseFloat($('cfg-longshot-bonus').value),
       max_position_pct: parseFloat($('cfg-position-pct').value),
       cooldown_sec: parseInt($('cfg-cooldown').value),
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
@@ -4361,6 +4498,12 @@ $('save-config-btn').addEventListener('click', async () => {
       stop_loss_pct: $('cfg-market-strategy-stop-loss').value === '' ? null : parseFloat($('cfg-market-strategy-stop-loss').value),
       exit_on_momentum_reversal: $('cfg-market-strategy-momentum-reversal').checked,
       max_daily_loss_pct: parseFloat($('cfg-market-strategy-max-loss').value),
+    },
+    market_analyst: {
+      enabled: $('cfg-market-analyst-enabled').checked,
+      model: $('cfg-market-analyst-model').value || 'claude-sonnet-5',
+      reanalyze_cooldown_sec: parseInt($('cfg-market-analyst-cooldown').value),
+      max_analyses_per_tick: parseInt($('cfg-market-analyst-max-per-tick').value),
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),

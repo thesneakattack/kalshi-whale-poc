@@ -3,8 +3,10 @@
 Kalshi whale-signal paper trading terminal. Real Kalshi market data + a
 simulated-or-live whale order-flow signal + a fake broker. Safety-first POC:
 no real order ever gets placed unless `kalshi_account.trading_enabled` is
-explicitly flipped in `config/settings.yaml`, and that flip is currently gated
-behind unresolved P0 items — see `ROADMAP.md`.
+explicitly flipped in `config/settings.yaml` plus a typed in-app confirmation
+phrase. All P0 code-level safety gates are done; what's still open before
+real capital should depend on this is operational — see ROADMAP.md's "Path
+to production" section.
 
 ## Git history + two supplementary docs
 
@@ -103,19 +105,49 @@ concern, consistent with how the rest of the app is factored.
 
 - Paper mode by default (`mode: paper` in `config/settings.yaml`).
 - Real order placement (`create_order`/`cancel_order` in
-  `services/kalshi_account_client.py`) is fully implemented but gated by
-  `kalshi_account.trading_enabled` — must stay `false` until the P0
-  verification items in `ROADMAP.md` are resolved (order schema unverified
-  against Kalshi's current docs, no in-app confirmation step yet).
-- CORS is currently wide open (`allow_origins=["*"]` in `main.py`) — a known,
-  tracked P0 item, not an accident. Don't "fix" it as a drive-by; it needs
-  its own pass (see ROADMAP.md).
+  `services/kalshi_account_client.py`) is fully implemented — schema
+  verified against Kalshi's current docs and migrated to the official
+  `kalshi_python_async` SDK — and gated by `kalshi_account.trading_enabled`
+  (default `false`) plus a typed in-app confirmation phrase
+  (`POST /api/trading/enable`). All P0 code-level gates are done; what's
+  left before ever flipping it for real is operational, not code — see
+  ROADMAP.md's "Path to production" section.
+- CORS is restricted to the DDEV hostname + `localhost:8000` (overridable
+  via `ALLOWED_ORIGINS` in `.env`), not wide open — don't reopen it as a
+  drive-by.
 - The daily-loss kill switch (`services/risk_manager.py`) and the paper
   broker's bankroll/positions/trade log both persist across restarts now
   (`data/risk_state.db`, `data/paper_broker.db`). Keep them in sync if you
   touch either file — the risk manager's `day_start_bankroll` baseline must
   stay consistent with the broker's actual persisted bankroll, or the kill
   switch can mismeasure today's loss or silently un-halt after a restart.
+
+## Bug pattern to watch for — a displayed value must match its label, not just look plausible
+
+Found live 2026-08-09 (`ROADMAP.md`/`status.html` phase 54, direct report:
+"I get values for bankroll, equity, and unrealized P&L, but the open
+positions themselves aren't shown, what a lie"). The Portfolio header's
+"Unrealized P&L" was computed as `equity - starting_bankroll` — cumulative
+all-time P&L, including every past realized gain — instead of
+`equity - bankroll`, the actual unrealized P&L on currently-open positions
+per `PaperBroker.equity()`'s own definition (`bankroll +
+total_unrealized_pnl(open_positions)`). With zero open positions this showed
+a large nonzero figure next to an empty positions list. Both formulas read
+as equally plausible from the call site — `starting_bankroll` and `bankroll`
+are both real, nearby, correctly-spelled fields — which is exactly why it
+shipped unnoticed.
+
+Same root shape as the earlier, independently-found "no-side dollar math"
+bug class (`ROADMAP.md`, Active Position Management section): four separate
+frontend spots reimplemented `cost = size * price` without the `1 - price`
+no-side inversion, each looking locally reasonable in isolation. Before
+adding or editing any displayed financial figure (P&L, cost basis, exposure,
+payout, ...), trace it back to its backend definition
+(`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`) rather than
+deriving it from whichever fields already happen to be in scope at the call
+site. When a backend-computed value already exists, prefer exposing it as
+its own named field over re-deriving it client-side at all — re-derivation
+is exactly where both of these bug classes happened.
 
 ## Quick file map
 

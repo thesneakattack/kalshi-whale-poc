@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from services import kalshi_fees
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_broker.db"
 
 
@@ -26,6 +28,12 @@ class Position:
     entry_price: float
     opened_at: float
     config_fingerprint: str | None = None
+    # Real Kalshi taker fee paid on entry (services/kalshi_fees.py),
+    # carried on the position so close_position can report a true
+    # round-trip-inclusive realized P&L without re-deriving it from a
+    # trade-log scan. Defaults to 0.0 for positions opened before this
+    # field existed (see the idempotent migration below).
+    entry_fee: float = 0.0
 
 
 @dataclass
@@ -38,6 +46,10 @@ class Trade:
     reason: str
     timestamp: float
     config_fingerprint: str | None = None
+    # Real Kalshi taker fee this specific fill paid - not a round-trip
+    # total (see services/kalshi_fees.py). 0.0 for trades logged before
+    # this field existed.
+    fee: float = 0.0
 
     def to_dict(self):
         return asdict(self)
@@ -94,6 +106,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # guarded ALTER TABLE rather than a column in the CREATE statements.
     _add_column_if_missing(conn, "positions", "config_fingerprint", "TEXT")
     _add_column_if_missing(conn, "trades", "config_fingerprint", "TEXT")
+    # Real fee modeling (docs/prediction-market-strategy-alignment-plan.md
+    # Part 2.2) - same idempotent-migration pattern, added after both tables
+    # already had live rows. NULL on pre-existing rows reads back as None,
+    # handled explicitly wherever these are reconstructed from the DB below.
+    _add_column_if_missing(conn, "positions", "entry_fee", "REAL")
+    _add_column_if_missing(conn, "trades", "fee", "REAL")
     return conn
 
 
@@ -127,14 +145,14 @@ class PaperBroker:
                 # Resuming — the persisted account wins over whatever
                 # config/settings.yaml's starting_bankroll says right now.
                 self.bankroll, self.starting_bankroll = row
-                for ticker, side, size, entry_price, opened_at, fp in conn.execute(
-                    "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint FROM positions"
+                for ticker, side, size, entry_price, opened_at, fp, entry_fee in conn.execute(
+                    "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee FROM positions"
                 ):
-                    self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp)
-                for tid, ticker, side, size, price, reason, timestamp, fp in conn.execute(
-                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint FROM trades ORDER BY timestamp ASC"
+                    self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0)
+                for tid, ticker, side, size, price, reason, timestamp, fp, fee in conn.execute(
+                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee FROM trades ORDER BY timestamp ASC"
                 ):
-                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp))
+                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
 
     def _connect(self) -> sqlite3.Connection:
@@ -160,10 +178,21 @@ class PaperBroker:
         cost = min(cost, self.bankroll)          # never go negative in the POC
         actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
 
-        self.bankroll -= cost
+        # Real Kalshi taker fee (services/kalshi_fees.py), deducted as an
+        # additional cash outflow on top of cost - not folded into the
+        # position-sizing math above, which stays exactly as already tested/
+        # correct. This means a trade landing right at the bankroll limit
+        # can push bankroll fractionally (cents) below zero once the fee is
+        # added - an acceptable, explicitly-accepted approximation for a
+        # paper POC (see the "never go negative in the POC" comment above,
+        # already an approximation, not a hard invariant), not worth the
+        # complexity of solving cost+fee<=bankroll simultaneously.
+        fee = kalshi_fees.taker_fee(actual_size, price)
+
+        self.bankroll -= (cost + fee)
         self.positions[ticker] = Position(
             ticker=ticker, side=side, size=actual_size, entry_price=price, opened_at=time.time(),
-            config_fingerprint=config_fingerprint,
+            config_fingerprint=config_fingerprint, entry_fee=fee,
         )
         trade = Trade(
             id=str(uuid.uuid4())[:8],
@@ -174,6 +203,7 @@ class PaperBroker:
             reason=reason,
             timestamp=time.time(),
             config_fingerprint=config_fingerprint,
+            fee=fee,
         )
         self.trade_log.append(trade)
         self.last_trade_time[ticker] = trade.timestamp
@@ -182,14 +212,14 @@ class PaperBroker:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute(
                 "INSERT OR REPLACE INTO positions "
-                "(ticker, side, size, entry_price, opened_at, config_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
-                (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint),
+                "(ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint, fee),
             )
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
-                 config_fingerprint),
+                 config_fingerprint, fee),
             )
         return trade
 
@@ -207,8 +237,19 @@ class PaperBroker:
         if not pos:
             return None
 
-        cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
-        realized_pnl = self.mark_to_market(ticker, exit_price)
+        # Real Kalshi taker fee on this leg (services/kalshi_fees.py) -
+        # naturally 0.0 at exit_price 0.0/1.0 (settlement's terminal payout,
+        # see strategy_engine.close_if_settled), matching that settlement
+        # isn't a fee-charged trade in the first place. "realized" here is
+        # now the TRUE net P&L including both legs' fees: pos.entry_fee was
+        # already deducted from bankroll back at open_position time, so
+        # subtracting it again here (alongside this leg's own close_fee)
+        # makes the reported number match bankroll's actual net change
+        # across the full round trip, not just the raw price move.
+        close_fee = kalshi_fees.taker_fee(pos.size, exit_price)
+        gross_cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
+        cash_back = gross_cash_back - close_fee
+        realized_pnl = self.mark_to_market(ticker, exit_price) - pos.entry_fee - close_fee
         self.bankroll += cash_back
 
         trade = Trade(
@@ -225,6 +266,7 @@ class PaperBroker:
             # at entry), even if strategy.* changed while the position was
             # held. See services/config_performance.py's module docstring.
             config_fingerprint=pos.config_fingerprint,
+            fee=close_fee,
         )
         self.trade_log.append(trade)
         del self.positions[ticker]
@@ -233,10 +275,10 @@ class PaperBroker:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
-                 trade.config_fingerprint),
+                 trade.config_fingerprint, close_fee),
             )
         return trade
 

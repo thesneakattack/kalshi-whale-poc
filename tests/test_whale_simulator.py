@@ -240,3 +240,14 @@ def test_composite_confidence_matches_score_confidence_shape():
     scored = [sim._score_confidence(market, [market], size=5000, price=0.5, now=now) for _ in range(200)]
     assert all(abs(s - base) <= 0.1 + 1e-9 for s in scored)  # noise is always within +/-0.1 of the shared base
     assert min(scored) < base < max(scored)  # and it actually varies the result, not a no-op
+
+
+# ---- trend_factor (docs/prediction-market-strategy-alignment-plan.md Part 2.4) ----
+
+def test_trend_factor_pass_through_raises_score_above_neutral_default():
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    neutral = composite_confidence(market, [market], size=5000, price=0.5, now=now)  # trend_factor defaults to 0.5
+    with_trend = composite_confidence(market, [market], size=5000, price=0.5, now=now, trend_factor=1.0)
+    against_trend = composite_confidence(market, [market], size=5000, price=0.5, now=now, trend_factor=0.0)
+    assert against_trend < neutral < with_trend

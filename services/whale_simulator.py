@@ -161,9 +161,13 @@ class WhaleSimulator:
         same number - see composite_confidence() below for the formula
         itself, shared with real whale-watcher providers (which report it
         as-is, with no noise added - a real trade's confidence shouldn't
-        have fake uncertainty injected into it). agreement_factor is left at
-        its neutral default here - the simulator has no real signal history
-        worth checking agreement against."""
+        have fake uncertainty injected into it). agreement_factor,
+        cluster_factor, and trend_factor are all left at their defaults
+        here - the simulator has no real signal history worth checking
+        agreement or clustering against, and (unlike a real provider, which
+        has services/market_history.py's real snapshots to work from for
+        any real market) doesn't reach for real price-trend data just to
+        score a synthetic print."""
         base = composite_confidence(market, markets, size, price, now)
         noise = random.uniform(-0.1, 0.1)
         return min(max(base + noise, 0.0), 1.0)
@@ -180,6 +184,8 @@ class ConfidenceBreakdown:
     proximity_factor: float
     context_factor: float
     agreement_factor: float
+    cluster_factor: float
+    trend_factor: float
     score: float
 
     def to_dict(self) -> dict:
@@ -188,24 +194,42 @@ class ConfidenceBreakdown:
 
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
-    agreement_factor: float = 0.5,
+    agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
 ) -> ConfidenceBreakdown:
-    """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md):
-    trade size relative to market depth, how unusual the price is, proximity
-    to resolution, broader market context, and whether recent whale prints
-    on this same market agree. Each factor normalized to 0-1, weighted-
-    summed. Pure function of its inputs - no randomness - so it's shared
-    as-is between the simulator (which adds noise on top, see
+    """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md),
+    extended per docs/prediction-market-strategy-alignment-plan.md: trade
+    size relative to market depth, how unusual the price is, proximity to
+    resolution, broader market context, whether recent whale prints on this
+    same market agree, whether this print looks like part of an active
+    accumulation run, and whether it agrees with or fights the market's own
+    recent real price trend. Each factor normalized to 0-1, weighted-summed.
+    Pure function of its inputs - no randomness - so it's shared as-is
+    between the simulator (which adds noise on top, see
     WhaleSimulator._score_confidence) and any real whale-watcher provider
     scoring an actual trade (services/whalewatchers/kalshi_trade_tape.py).
 
-    agreement_factor is the caller's responsibility to compute (this
-    function has no access to signal history) - defaults to 0.5 (neutral:
-    neither agreement nor disagreement) when the caller has no real
-    signal-agreement concept to offer, e.g. the simulator, or a real
-    provider scoring a market with no recent prior prints to compare
-    against - same "missing data isn't scored as agreement or disagreement"
-    idiom already used elsewhere in this app (e.g. auto_exit_confidence)."""
+    agreement_factor, cluster_factor, and trend_factor are all the caller's
+    responsibility to compute (this function has no access to signal
+    history or price history):
+
+    - agreement_factor defaults to 0.5 (neutral: neither agreement nor
+      disagreement) when the caller has no real signal-agreement concept to
+      offer, e.g. the simulator, or a real provider scoring a market with no
+      recent prior prints to compare against - same "missing data isn't
+      scored as agreement or disagreement" idiom already used elsewhere in
+      this app (e.g. auto_exit_confidence).
+    - cluster_factor defaults to 0.0, NOT 0.5 - unlike agreement_factor,
+      "no similar-sized recent prints nearby" is itself informative here,
+      not merely unknown (see services/signal_log.py's cluster_factor()).
+      An isolated large print, with nothing else like it nearby, is exactly
+      the profile Barclay & Warner's stealth-trading research found real
+      informed traders avoid presenting - see
+      docs/prediction-market-strategy-alignment-plan.md Part 2.1.
+    - trend_factor defaults to 0.5 (neutral), same reasoning as
+      agreement_factor - no real price-trend data, or a flat trend, reads
+      the same as "can't judge fighting-the-trend risk either way," not as
+      evidence of anything (see services/whalewatchers/kalshi_trade_tape.py's
+      _trend_factor())."""
     market_volume = float(market.get("volume_24h_fp") or 0)
 
     # (1) Size relative to THIS market's own activity - a 20,000-contract
@@ -268,26 +292,53 @@ def composite_confidence_breakdown(
     # see services/whalewatchers/kalshi_trade_tape.py) - defaults to
     # neutral 0.5 here.
 
+    # (6) Does this print look like it's part of an active accumulation run
+    # (a tight, size-consistent sequence of prints on this same ticker/side),
+    # rather than a single conspicuous block with nothing else like it
+    # nearby? Computed by the caller (services/signal_log.py's
+    # cluster_factor(), needs real signal-log history this function doesn't
+    # have access to) - defaults to 0.0, not 0.5, since "isolated" is itself
+    # informative here, not merely unknown (see the docstring above).
+
+    # (7) Does this print's direction agree with, or fight, the market's own
+    # recent real price trend? A big print consistent with where the price
+    # has already been drifting is a different animal from one trying to
+    # reverse an established trend - the classic manipulation-risk
+    # distinction (docs/prediction-market-strategy-alignment-plan.md Part
+    # 2.4) that nothing in this scoring model checked before now. A caution
+    # factor, not a block - manipulator presence isn't unambiguously
+    # accuracy-destroying (Hanson 2009) - so this nudges the score, it
+    # doesn't gate it. Computed by the caller from real price history
+    # (services/market_history.py's momentum(), which this function has no
+    # access to) - defaults to 0.5 (neutral: no trend data, or a flat
+    # trend, reads the same as "can't judge fighting-the-trend risk either
+    # way").
+
     score = (
-        0.35 * depth_factor
-        + 0.20 * unusualness_factor
+        0.25 * depth_factor
+        + 0.10 * unusualness_factor
         + 0.15 * proximity_factor
-        + 0.15 * context_factor
+        + 0.10 * context_factor
         + 0.15 * agreement_factor
+        + 0.15 * cluster_factor
+        + 0.10 * trend_factor
     )
     return ConfidenceBreakdown(
         depth_factor=depth_factor, unusualness_factor=unusualness_factor,
         proximity_factor=proximity_factor, context_factor=context_factor,
-        agreement_factor=agreement_factor, score=min(max(score, 0.0), 1.0),
+        agreement_factor=agreement_factor, cluster_factor=cluster_factor,
+        trend_factor=trend_factor, score=min(max(score, 0.0), 1.0),
     )
 
 
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
-    agreement_factor: float = 0.5,
+    agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
 ) -> float:
     """The blended score only - see composite_confidence_breakdown for the
     full per-factor detail. Kept as its own function so every existing
     caller that only ever wanted a plain float (WhaleSimulator, tests)
     doesn't need to change."""
-    return composite_confidence_breakdown(market, markets, size, price, now, agreement_factor).score
+    return composite_confidence_breakdown(
+        market, markets, size, price, now, agreement_factor, cluster_factor, trend_factor,
+    ).score

@@ -103,6 +103,18 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
             )
         cash_back = round(t["size"] * (t["price"] if t["side"] == "yes" else (1 - t["price"])), 2)
 
+        # Real Kalshi taker fees (services/kalshi_fees.py) on both legs -
+        # kept as its own explicit field rather than silently folded into
+        # cash_back/cost_basis, matching this app's own convention of
+        # showing the mechanism, not just the fee-adjusted result (the
+        # reason string's "(realized ...)" figure IS fee-inclusive - see
+        # PaperBroker.close_position - this is that same fee cost broken
+        # back out for display). 0.0 for trades logged before fee modeling
+        # existed, not None, since "no fee data" and "zero fee" look
+        # identical for those old rows and there's no honest way to tell
+        # them apart in a display context.
+        fees_paid = round((entry.get("fee") or 0.0 if entry else 0.0) + (t.get("fee") or 0.0), 2)
+
         rows.append({
             "ticker": t["ticker"],
             "side": t["side"],
@@ -121,6 +133,7 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
             "left_on_table": left_on_table,
             "cost_basis": cost_basis,
             "cash_back": cash_back,
+            "fees_paid": fees_paid,
             # Which strategy config was active when this position was opened
             # (see services/config_performance.py) - sourced from the entry
             # trade specifically, though the close trade carries the same
@@ -141,6 +154,7 @@ def compute_summary(rows: list[dict]) -> dict:
     hold_secs = [r["hold_sec"] for r in rows if r["hold_sec"] is not None]
     left_on_table_total = sum(r["left_on_table"] for r in rows if r["left_on_table"])
     cost_basis_total = sum(r["cost_basis"] for r in rows if r["cost_basis"])
+    fees_paid_total = sum(r.get("fees_paid") or 0.0 for r in rows)
 
     by_type = {}
     for r in rows:
@@ -165,6 +179,7 @@ def compute_summary(rows: list[dict]) -> dict:
         "avg_hold_sec": round(sum(hold_secs) / len(hold_secs), 0) if hold_secs else None,
         "total_left_on_table": round(left_on_table_total, 2),
         "total_capital_deployed": round(cost_basis_total, 2),
+        "total_fees_paid": round(fees_paid_total, 2),
         "by_close_type": close_type_breakdown,
     }
 

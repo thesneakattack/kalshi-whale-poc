@@ -1,8 +1,11 @@
 import time
 
+import pytest
+
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import signal_log
+from services.kalshi_fees import taker_fee
 from services.strategy_engine import FollowTheWhaleStrategy
 from services.whale_simulator import WhaleSignal
 
@@ -48,6 +51,49 @@ def test_skip_below_confidence_threshold(tmp_path, monkeypatch):
     assert broker.bankroll == 10000.0  # nothing traded
 
 
+# ---- favorite-longshot-bias-aware entry threshold (docs/prediction-market-strategy-alignment-plan.md Part 2.3) ----
+
+def test_longshot_price_requires_a_higher_confidence_bar(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    # 0.10 is inside the default 0.15 longshot zone (<=0.15 or >=0.85) - the
+    # flat entry_threshold (0.65) alone wouldn't block a 0.70-confidence
+    # signal, but the +0.15 longshot bonus raises the real bar to 0.80.
+    decision = strategy.evaluate(_signal(confidence=0.70, price=0.10), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "skip"
+    assert "longshot zone" in decision["reason"]
+
+
+def test_longshot_price_still_trades_above_the_raised_bar(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.85, price=0.10), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "trade"
+
+
+def test_longshot_zone_applies_symmetrically_to_high_prices(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.70, price=0.92), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "skip"
+    assert "longshot zone" in decision["reason"]
+
+
+def test_mid_range_price_uses_the_flat_threshold_unmodified(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    # 0.70 confidence clears a flat 0.65 threshold with no longshot bonus applied.
+    decision = strategy.evaluate(_signal(confidence=0.70, price=0.50), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "trade"
+
+
+def test_longshot_threshold_and_bonus_are_configurable(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    # Narrow the longshot zone to 0.05 and shrink the bonus to 0.05 - a 0.10
+    # price is no longer inside the zone, so the flat threshold applies.
+    decision = strategy.evaluate(
+        _signal(confidence=0.68, price=0.10),
+        _cfg(entry_threshold=0.65, longshot_price_threshold=0.05, longshot_entry_threshold_bonus=0.05),
+    )
+    assert decision["action"] == "trade"
+
+
 def test_trade_when_conditions_met(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg())
@@ -64,7 +110,8 @@ def test_trade_sizes_no_side_off_inverted_price(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
     expected_contracts = int(10000.0 * 0.05 / 0.8)
     assert decision["trade"]["size"] == expected_contracts
-    assert broker.bankroll == 10000.0 - expected_contracts * 0.8
+    fee = taker_fee(expected_contracts, 0.2)
+    assert broker.bankroll == pytest.approx(10000.0 - expected_contracts * 0.8 - fee)
 
 
 def test_skip_when_halted(tmp_path, monkeypatch):
@@ -221,7 +268,10 @@ def test_check_exits_take_profit_closes_position(tmp_path, monkeypatch):
     assert decisions[0]["ticker"] == "TICK-A"
     assert "take-profit" in decisions[0]["reason"]
     assert "TICK-A" not in broker.positions
-    assert broker.bankroll == 1000.0 * 10 - 50 + 75  # started 10000, cost 50, cash back 75
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.75)
+    # started 10000, cost 50, cash back 75, minus both legs' real fees
+    assert broker.bankroll == pytest.approx(1000.0 * 10 - 50 + 75 - entry_fee - close_fee)
 
 
 def test_check_exits_take_profit_does_not_trigger_below_threshold(tmp_path, monkeypatch):
@@ -447,7 +497,11 @@ def test_check_exits_settles_winning_position_at_full_dollar(tmp_path, monkeypat
     assert "settled YES" in decisions[0]["reason"]
     assert "won" in decisions[0]["reason"]
     assert "TICK-A" not in broker.positions
-    assert broker.bankroll == 9950.0 + 100.0  # full $1/contract payout, not the stale 0.5 latest_price
+    # full $1/contract payout, not the stale 0.5 latest_price. Settlement's
+    # terminal price (1.0) means zero close-leg fee (services/kalshi_fees.py) -
+    # only the entry leg's real fee applies.
+    entry_fee = taker_fee(100, 0.5)
+    assert broker.bankroll == pytest.approx(9950.0 + 100.0 - entry_fee)
 
 
 def test_check_exits_settles_losing_position_at_zero(tmp_path, monkeypatch):
@@ -458,7 +512,8 @@ def test_check_exits_settles_losing_position_at_zero(tmp_path, monkeypatch):
     assert "settled NO" in decisions[0]["reason"]
     assert "lost" in decisions[0]["reason"]
     assert "TICK-A" not in broker.positions
-    assert broker.bankroll == 9950.0  # nothing paid back
+    entry_fee = taker_fee(100, 0.5)
+    assert broker.bankroll == pytest.approx(9950.0 - entry_fee)  # nothing paid back, entry fee already spent
 
 
 def test_check_exits_settles_no_side_position_correctly(tmp_path, monkeypatch):
@@ -467,7 +522,8 @@ def test_check_exits_settles_no_side_position_correctly(tmp_path, monkeypatch):
     decisions = strategy.check_exits({"TICK-A": 0.4}, [], _cfg(), market_results={"TICK-A": "no"})
     assert len(decisions) == 1
     assert "won" in decisions[0]["reason"]
-    assert broker.bankroll == 9940.0 + 100.0
+    entry_fee = taker_fee(100, 0.4)
+    assert broker.bankroll == pytest.approx(9940.0 + 100.0 - entry_fee)
 
 
 def test_check_exits_ignores_unresolved_market_results(tmp_path, monkeypatch):

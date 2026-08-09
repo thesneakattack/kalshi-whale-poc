@@ -3,6 +3,7 @@ import time
 import pytest
 
 from services import paper_broker as pb
+from services.kalshi_fees import taker_fee
 
 
 def _broker(tmp_path, monkeypatch, starting_bankroll=1000.0):
@@ -21,20 +22,32 @@ def test_fresh_broker_uses_starting_bankroll(tmp_path, monkeypatch):
 def test_open_position_deducts_cost_and_logs_trade(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     trade = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
-    assert broker.bankroll == 950.0
+    # Real Kalshi taker fee (services/kalshi_fees.py) is now an additional
+    # cash outflow on top of cost - see docs/prediction-market-strategy-
+    # alignment-plan.md Part 2.2.
+    fee = taker_fee(100, 0.5)
+    assert fee > 0
+    assert broker.bankroll == pytest.approx(1000.0 - 50.0 - fee)
+    assert trade.fee == fee
     assert trade.size == 100
     assert trade.price == 0.5
     assert "TICK-A" in broker.positions
     assert broker.positions["TICK-A"].size == 100
+    assert broker.positions["TICK-A"].entry_fee == fee
     assert len(broker.trade_log) == 1
 
 
 def test_open_position_cost_capped_at_bankroll(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=10.0)
     # size*price = 1000*0.5 = 500, far more than the $10 available - the fill
-    # should shrink to fit rather than overdraw the account.
+    # should shrink to fit rather than overdraw the account. The fee is
+    # deducted on top of the (already-capped) cost, not folded into the
+    # sizing math itself - see paper_broker.py's open_position comment - so
+    # a fill landing right at the bankroll cap can now go fractionally
+    # negative by exactly the fee amount. Explicitly accepted, not a bug.
     trade = broker.open_position("TICK-A", "yes", size=1000, price=0.5, reason="test")
-    assert broker.bankroll == 0.0
+    fee = taker_fee(trade.size, 0.5)
+    assert broker.bankroll == pytest.approx(0.0 - fee)
     assert trade.size == int(10.0 / 0.5)
 
 
@@ -43,7 +56,8 @@ def test_open_position_no_side_charges_inverted_price(tmp_path, monkeypatch):
     # price is always the yes price - a NO contract at yes-price 0.3 really
     # costs (1-0.3)=0.7/contract, not 0.3/contract.
     trade = broker.open_position("TICK-A", "no", size=100, price=0.3, reason="test")
-    assert broker.bankroll == 1000.0 - 100 * 0.7
+    fee = taker_fee(100, 0.3)
+    assert broker.bankroll == pytest.approx(1000.0 - 100 * 0.7 - fee)
     assert trade.size == 100
     assert trade.price == 0.3  # still stored in yes-price terms
 
@@ -54,7 +68,8 @@ def test_open_position_no_side_cost_capped_at_bankroll(tmp_path, monkeypatch):
     # than the $7 available - the fill should shrink to fit at the true
     # NO-side unit cost, not the yes-price.
     trade = broker.open_position("TICK-A", "no", size=1000, price=0.3, reason="test")
-    assert broker.bankroll == 0.0
+    fee = taker_fee(trade.size, 0.3)
+    assert broker.bankroll == pytest.approx(0.0 - fee)
     assert trade.size == int(7.0 / 0.7)
 
 
@@ -119,8 +134,12 @@ def test_mark_to_market_no_position_is_zero(tmp_path, monkeypatch):
 def test_equity_combines_bankroll_and_unrealized_pnl(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
-    # bankroll now 950, position worth 100*0.6=60 vs entry cost 50 -> +10 unrealized
-    assert broker.equity({"TICK-A": 0.6}) == pytest.approx(960.0)
+    # bankroll now 950-fee, position worth 100*0.6=60 vs entry cost 50 -> +10
+    # unrealized. mark_to_market is pure price P&L with no fee awareness
+    # (fees are a bankroll-level cash outflow, not a position-value one) -
+    # see paper_broker.py's equity()/mark_to_market() docstrings.
+    fee = taker_fee(100, 0.5)
+    assert broker.equity({"TICK-A": 0.6}) == pytest.approx(960.0 - fee)
 
 
 def test_state_recent_trades_most_recent_first(tmp_path, monkeypatch):
@@ -174,25 +193,31 @@ def test_reset_wipes_state_and_persists_the_wipe(tmp_path, monkeypatch):
 
 def test_close_position_yes_side_realizes_profit(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
-    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950-entry_fee
     trade = broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
     assert trade is not None
     assert trade.side == "yes"
     assert trade.size == 100
     assert trade.price == 0.75
     assert "closed:" in trade.reason and "take-profit" in trade.reason
-    # cash back = 100 * 0.75 = 75; bankroll = 950 + 75 = 1025 (net +25 profit)
-    assert broker.bankroll == 1025.0
+    # cash back = 100*0.75 - close_fee; bankroll = 950-entry_fee + cash_back
+    # (net +25 profit before fees, both legs' real fees now included).
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.75)
+    assert trade.fee == close_fee
+    assert broker.bankroll == pytest.approx(1025.0 - entry_fee - close_fee)
     assert "TICK-A" not in broker.positions
     assert len(broker.trade_log) == 2  # the open, and the close
 
 
 def test_close_position_yes_side_realizes_loss(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
-    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")  # bankroll -> 950-entry_fee
     broker.close_position("TICK-A", exit_price=0.3, reason="stop-loss")
-    # cash back = 100 * 0.3 = 30; bankroll = 950 + 30 = 980 (net -20 loss)
-    assert broker.bankroll == 980.0
+    # cash back = 100 * 0.3 = 30; bankroll = 950-entry_fee + 30-close_fee (net -20 loss before fees)
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.3)
+    assert broker.bankroll == pytest.approx(980.0 - entry_fee - close_fee)
 
 
 def test_close_position_no_side_uses_inverted_price(tmp_path, monkeypatch):
@@ -200,10 +225,12 @@ def test_close_position_no_side_uses_inverted_price(tmp_path, monkeypatch):
     # NO position entered when yes-price was 0.4, so the NO side really costs
     # (1-0.4)=0.6/contract - open_position charges that, even though
     # entry_price is still stored in yes-price terms (see mark_to_market).
-    broker.open_position("TICK-A", "no", size=100, price=0.4, reason="entry")  # cost = 100*0.6 = 60, bankroll -> 940
+    broker.open_position("TICK-A", "no", size=100, price=0.4, reason="entry")  # cost = 100*0.6 = 60, bankroll -> 940-entry_fee
     broker.close_position("TICK-A", exit_price=0.2, reason="whale sentiment reversed")
     # yes price dropped 0.4 -> 0.2, so the NO side gained: cash back = 100 * (1 - 0.2) = 80
-    assert broker.bankroll == 1020.0  # 940 + 80
+    entry_fee = taker_fee(100, 0.4)
+    close_fee = taker_fee(100, 0.2)
+    assert broker.bankroll == pytest.approx(1020.0 - entry_fee - close_fee)  # 940 + 80, fee-adjusted
 
 
 def test_close_position_returns_none_for_no_open_position(tmp_path, monkeypatch):
@@ -221,7 +248,9 @@ def test_close_position_persists_across_restart(tmp_path, monkeypatch):
     broker.close_position("TICK-A", exit_price=0.75, reason="take-profit")
 
     resumed = pb.PaperBroker(starting_bankroll=999999.0)
-    assert resumed.bankroll == 1025.0
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.75)
+    assert resumed.bankroll == pytest.approx(1025.0 - entry_fee - close_fee)
     assert "TICK-A" not in resumed.positions
     assert len(resumed.trade_log) == 2
 
@@ -328,8 +357,8 @@ def test_two_broker_instances_with_different_db_paths_do_not_collide(tmp_path, m
     broker_a.open_position("TICK-A", "yes", size=100, price=0.5, reason="a")
     broker_b.open_position("TICK-B", "yes", size=200, price=0.5, reason="b")
 
-    assert broker_a.bankroll == 1000.0 - 50.0
-    assert broker_b.bankroll == 5000.0 - 100.0
+    assert broker_a.bankroll == pytest.approx(1000.0 - 50.0 - taker_fee(100, 0.5))
+    assert broker_b.bankroll == pytest.approx(5000.0 - 100.0 - taker_fee(200, 0.5))
     assert list(broker_a.positions.keys()) == ["TICK-A"]
     assert list(broker_b.positions.keys()) == ["TICK-B"]
 

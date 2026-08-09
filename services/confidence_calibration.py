@@ -27,7 +27,10 @@ done here, once a report has actually shipped and proven useful.
 from services import trade_analytics
 
 _BUCKET_COUNT = 3
-_FACTOR_NAMES = ("depth_factor", "unusualness_factor", "proximity_factor", "context_factor", "agreement_factor")
+_FACTOR_NAMES = (
+    "depth_factor", "unusualness_factor", "proximity_factor", "context_factor",
+    "agreement_factor", "cluster_factor", "trend_factor",
+)
 # How much a factor's high-bucket win rate must beat its low-bucket win rate
 # to count as "this factor actually discriminates outcomes" - a smaller bar
 # than advisory_engine's 15pt (trade-level comparisons carry more real-world
@@ -43,8 +46,9 @@ _MIN_SUGGESTED_WEIGHT = 0.05
 # kept here only as the "current" reference point a rationale string can
 # compare against, not read by the scoring function itself.
 CURRENT_WEIGHTS = {
-    "depth_factor": 0.35, "unusualness_factor": 0.20, "proximity_factor": 0.15,
-    "context_factor": 0.15, "agreement_factor": 0.15,
+    "depth_factor": 0.25, "unusualness_factor": 0.10, "proximity_factor": 0.15,
+    "context_factor": 0.10, "agreement_factor": 0.15, "cluster_factor": 0.15,
+    "trend_factor": 0.10,
 }
 
 
@@ -114,6 +118,56 @@ def _suggested_weights(per_factor: list[dict]) -> dict | None:
     return {k: round(v / floor_total, 2) for k, v in floored.items()}
 
 
+# Fixed-width bands, not tertiles - unlike _bucket_win_rates above (which
+# splits by rank specifically to stay robust against a near-constant
+# factor), the *overall* composite_confidence score is a continuous blend
+# unlikely to be near-constant, and the question this answers is genuinely
+# different: not "does a higher score correlate with winning more" (that's
+# discrimination - per_factor above already covers it) but "does a
+# 60-70%-confidence signal actually win ~60-70% of the time" - calibration.
+# This is the concrete metric Kalshi itself argued was the right lens
+# (docs/prediction-markets-research-reference.md Part 1.4, the Clinton &
+# Huang vs. Kalshi dispute over hit-rate vs. calibration as the correct way
+# to measure a prediction market's - or here, a signal's - real accuracy),
+# and this app had no way to check it before this, only the flat overall
+# win_rate services/signal_log.py's stats() already reports.
+_CONFIDENCE_BANDS = [
+    (0.0, 0.5, "<50%"),
+    (0.5, 0.6, "50-60%"),
+    (0.6, 0.7, "60-70%"),
+    (0.7, 0.8, "70-80%"),
+    (0.8, 0.9, "80-90%"),
+    (0.9, 1.01, "90-100%"),  # 1.01 so a confidence of exactly 1.0 lands in this band
+]
+# Same minimum-sample-size idiom as trade_analytics.compute_insights - a
+# band with only 1-2 signals in it isn't worth reporting as a finding.
+_MIN_BAND_SIZE = 3
+
+
+def _confidence_calibration_bands(rows: list[dict]) -> list[dict]:
+    """Buckets resolved real signals by their final composite_confidence
+    score into fixed confidence bands and compares each band's *predicted*
+    probability (the band's own midpoint) against its *observed* win rate.
+    Bands with too few signals are dropped rather than reported on a
+    misleadingly small sample - same honesty-over-fabrication idiom
+    _bucket_win_rates above already uses."""
+    bands = []
+    for lo, hi, label in _CONFIDENCE_BANDS:
+        group = [r for r in rows if lo <= r["confidence"] < hi]
+        if len(group) < _MIN_BAND_SIZE:
+            continue
+        observed = round(sum(1 for r in group if r["correct"]) / len(group) * 100, 1)
+        predicted_mid = round((lo + min(hi, 1.0)) / 2 * 100, 1)
+        bands.append({
+            "band": label,
+            "n": len(group),
+            "predicted_pct": predicted_mid,
+            "observed_win_rate_pct": observed,
+            "gap_pts": round(observed - predicted_mid, 1),
+        })
+    return bands
+
+
 def generate_calibration_report(rows: list[dict], min_resolved_signals: int) -> dict:
     """rows: services.signal_log.resolved_signals_with_factors()'s output -
     already scoped to real (not simulated) signals that carry a factor
@@ -147,6 +201,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int) -> 
             "per_factor": per_factor,
             "ranked_by_discrimination": [f["factor"] for f in ranked],
             "suggested_weights": _suggested_weights(per_factor),
+            "confidence_calibration": _confidence_calibration_bands(rows),
         },
         "gated_reason": None,
         "resolved_count": resolved_count,

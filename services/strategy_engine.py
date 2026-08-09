@@ -80,8 +80,28 @@ class FollowTheWhaleStrategy:
         if series in excluded_series:
             return self._skip(signal, f'series "{series}" is manually excluded')
 
-        if signal.confidence < strat_cfg["entry_threshold"]:
-            return self._skip(signal, f"confidence {signal.confidence} below threshold")
+        # Favorite-longshot bias, confirmed on real Kalshi data (Bürgi, Deng
+        # & Whelan 2025 - see docs/prediction-markets-research-reference.md
+        # Part 1.2): longshot-priced contracts (near $0 or $1) are
+        # systematically overpriced relative to their real win rate, and
+        # the bias is far worse for takers - this app's real order path
+        # (services/kalshi_account_client.py defaults to
+        # time_in_force="immediate_or_cancel") - than makers. A flat
+        # entry_threshold applied the same way at every price point ignores
+        # this; a signal priced in longshot territory needs to clear a
+        # higher bar, not the same one. market_strategy.py already handles
+        # this differently (a hard min_price/max_price exclusion band) -
+        # this is the whale-follow strategy's own gap to close, graduated
+        # rather than a hard cutoff since a strong enough signal can still
+        # be worth it even in that zone.
+        longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
+        longshot_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
+        is_longshot = signal.price <= longshot_zone or signal.price >= (1 - longshot_zone)
+        effective_threshold = strat_cfg["entry_threshold"] + (longshot_bonus if is_longshot else 0.0)
+        if signal.confidence < effective_threshold:
+            reason = f"confidence {signal.confidence} below threshold ({effective_threshold:.2f}"
+            reason += " - longshot zone)" if is_longshot else ")"
+            return self._skip(signal, reason)
 
         # Avoid this whale's picks on markets like this one once they've proven
         # unreliable here — but only once there's enough resolved history to
