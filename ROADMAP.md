@@ -570,6 +570,29 @@ never cut.
         History-tab panel (Analyses/Resolved/Hit Rate/Brier Score), both
         live-verified via `selenium-chrome`. 48 new tests. Full suite: 399
         (was 351).
+- [x] Market analyst agent redesigned from an automatic per-tick background
+      scan to an on-demand button, same day as it shipped — direct pushback:
+      "would it make more sense to let the heuristic analysis engines run
+      and then just have an option to weave in the market analyst agent...
+      with a button click versus fully automated?" It's the first thing in
+      this app that spends real money per call; `main.py`'s
+      `_maybe_run_market_analyst()` → `_run_market_analyst_for_ticker()`,
+      now only reachable via a new `POST /api/market-analyst/analyze`, only
+      called by a new "🔎 Analyze this market" button in the per-market
+      detail modal. Removed `market_analyst.max_analyses_per_tick` (no
+      longer meaningful). Also: "leverages its own history" — the agent's
+      own `stats()` (hit rate, Brier score) now feeds back into its own
+      prompt (`build_prompt()`'s new `own_track_record` param) so it can
+      self-calibrate. Also: "inform the various engines... without
+      consuming AI tokens" — `composite_confidence_breakdown()` gained an
+      8th factor, `analyst_factor` (agreement with the agent's own lean via
+      a cheap DB read, `analyst_lean()`, never a new API call), wired into
+      *both* real callers — confirmed directly against "is this also in the
+      real whale watcher, not just the simulator?": `kalshi_trade_tape.py`
+      (real, active-by-default provider) and `market_strategy.py`'s
+      `_entry_confidence()` (conditionally included only when a fresh
+      estimate exists, so ordinary momentum-only entries stay unaffected).
+      15 new tests. Full suite: 414 (was 399).
 
 ## P3 — Reliability & engineering hygiene
 

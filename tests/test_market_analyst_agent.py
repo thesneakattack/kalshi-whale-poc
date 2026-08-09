@@ -144,6 +144,19 @@ def test_build_prompt_includes_real_track_record_when_present():
     assert "62.5" in prompt
 
 
+def test_build_prompt_has_no_self_calibration_signal_when_own_track_record_empty():
+    prompt = maa.build_prompt({"title": "T", "yes_bid_dollars": "0.5"}, {}, own_track_record=None)
+    assert "No resolved estimates yet" in prompt
+
+
+def test_build_prompt_includes_own_track_record_when_present():
+    own_track_record = {"resolved": 12, "hit_rate_pct": 58.3, "brier_score": 0.21, "window_days": 30}
+    prompt = maa.build_prompt({"title": "T", "yes_bid_dollars": "0.5"}, {}, own_track_record=own_track_record)
+    assert "12 of your own past estimates have resolved" in prompt
+    assert "58.3" in prompt
+    assert "0.21" in prompt
+
+
 # ---- analyze_market (gating + structured tool-call parsing) ----------------
 
 def test_analyze_market_returns_none_without_api_key(monkeypatch):
@@ -152,7 +165,8 @@ def test_analyze_market_returns_none_without_api_key(monkeypatch):
     assert result is None
 
 
-def test_analyze_market_parses_the_forced_tool_call(monkeypatch):
+def test_analyze_market_parses_the_forced_tool_call(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
     tool_block = SimpleNamespace(
         type="tool_use", name=maa._TOOL_NAME,
         input={"estimated_probability": 0.73, "confidence": 0.6, "reasoning": "Because of X and Y."},
@@ -172,12 +186,44 @@ def test_analyze_market_parses_the_forced_tool_call(monkeypatch):
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
-    result = asyncio.run(maa.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
+    result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result == {"estimated_probability": 0.73, "confidence": 0.6, "reasoning": "Because of X and Y."}
     assert seen_kwargs["tool_choice"] == {"type": "tool", "name": maa._TOOL_NAME}
 
 
-def test_analyze_market_clamps_out_of_range_values(monkeypatch):
+def test_analyze_market_threads_own_stats_into_the_prompt(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    # Build a real, resolved track record first so stats() has something to report.
+    agent.record_analysis("TICK-A", "TICK", 0.5, 0.8, 0.7, "r", "m")
+    agent.resolve_from_market_results({"TICK-A": "yes"})
+
+    tool_block = SimpleNamespace(
+        type="tool_use", name=maa._TOOL_NAME,
+        input={"estimated_probability": 0.6, "confidence": 0.5, "reasoning": "r"},
+    )
+    fake_response = SimpleNamespace(content=[tool_block])
+    seen_kwargs = {}
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            seen_kwargs.update(kwargs)
+            return fake_response
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            self.messages = _FakeMessages()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+
+    asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
+    sent_prompt = seen_kwargs["messages"][0]["content"]
+    assert "1 of your own past estimates have resolved" in sent_prompt
+    assert "100.0" in sent_prompt  # hit_rate_pct: the one resolved estimate was correct
+
+
+def test_analyze_market_clamps_out_of_range_values(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
     tool_block = SimpleNamespace(
         type="tool_use", name=maa._TOOL_NAME,
         input={"estimated_probability": 1.4, "confidence": -0.2, "reasoning": "r"},
@@ -195,12 +241,14 @@ def test_analyze_market_clamps_out_of_range_values(monkeypatch):
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
-    result = asyncio.run(maa.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
+    result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result["estimated_probability"] == 1.0
     assert result["confidence"] == 0.0
 
 
-def test_analyze_market_returns_none_when_the_call_raises(monkeypatch):
+def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+
     class _FakeMessages:
         async def create(self, **kwargs):
             raise RuntimeError("network error")
@@ -212,11 +260,12 @@ def test_analyze_market_returns_none_when_the_call_raises(monkeypatch):
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
-    result = asyncio.run(maa.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
+    result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
 
 
-def test_analyze_market_returns_none_when_model_skips_the_tool(monkeypatch):
+def test_analyze_market_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
     fake_response = SimpleNamespace(content=[SimpleNamespace(type="text", text="I refuse.")])
 
     class _FakeMessages:
@@ -230,5 +279,5 @@ def test_analyze_market_returns_none_when_model_skips_the_tool(monkeypatch):
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
-    result = asyncio.run(maa.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
+    result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None

@@ -44,6 +44,7 @@ config_store_module.config_store.reload()
 
 import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
+from services import market_analyst_agent  # noqa: E402  (same module object main.py's own import binds - no pre-import DB redirect needed here, done per-test below instead)
 
 # Bare (non-context-manager) TestClient does not trigger ASGI lifespan, so
 # main.trading_loop() never starts - these tests only exercise the HTTP
@@ -767,3 +768,97 @@ def test_market_catalog_status_endpoint_reports_progress():
     assert body["scanned_series"] == 1
     assert body["total_markets"] == 1
     assert "enabled" in body
+
+
+# ---- Market Analyst: on-demand analyze (direct request, 2026-08-09 - ----
+# ---- replaces the earlier automatic per-tick background scan) ----------
+
+class _FakeAnalystKalshiClient:
+    """No event_ticker on the fake market, so the get_event bonus-fetch
+    branch is exercised separately by real market_analyst_agent tests -
+    this fake only needs to prove _run_market_analyst_for_ticker's own
+    gating/wiring, not re-test get_event's already-covered call shape."""
+
+    def __init__(self, market_detail):
+        self._market_detail = market_detail
+        self.get_market_calls = []
+
+    async def get_market(self, ticker):
+        self.get_market_calls.append(ticker)
+        return self._market_detail
+
+
+def _isolate_market_analyst_dbs(tmp_path, monkeypatch):
+    # Both DBs _run_market_analyst_for_ticker's real code path touches
+    # (market_analyst_agent's own analyses table, plus signal_log.stats()
+    # for the prompt's whale-track-record context) - redirected per-test so
+    # nothing here can reach the real, live data/*.db files (see this
+    # module's own docstring on why that matters).
+    import services.signal_log as signal_log_module
+    monkeypatch.setattr(market_analyst_agent, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
+
+
+def test_run_market_analyst_for_ticker_gated_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": False}}
+    fake_client = _FakeAnalystKalshiClient({"title": "T"})
+    result = asyncio.run(main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A"))
+    assert result["ok"] is False
+    assert "disabled" in result["reason"].lower()
+    assert fake_client.get_market_calls == []  # gated before ever touching the network
+
+
+def test_run_market_analyst_for_ticker_gated_without_api_key(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+    fake_client = _FakeAnalystKalshiClient({"title": "T"})
+    result = asyncio.run(main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A"))
+    assert result["ok"] is False
+    assert "api" in result["reason"].lower()
+
+
+def test_run_market_analyst_for_ticker_gated_during_cooldown(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "reanalyze_cooldown_sec": 1800}}
+    market_analyst_agent.record_analysis(
+        "TICK-A", "TICK", 0.5, 0.6, 0.7, "r", "m", analyzed_at=time.time(),
+    )
+    fake_client = _FakeAnalystKalshiClient({"title": "T"})
+    result = asyncio.run(main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A"))
+    assert result["ok"] is False
+    assert "recently" in result["reason"].lower()
+    assert fake_client.get_market_calls == []
+
+
+def test_run_market_analyst_for_ticker_succeeds_and_records_analysis(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "model": "claude-sonnet-5"}}
+
+    async def fake_analyze_market(market_detail, snapshot, model, api_key):
+        assert model == "claude-sonnet-5"
+        assert api_key == "fake-key"
+        return {"estimated_probability": 0.72, "confidence": 0.65, "reasoning": "Because of X."}
+    monkeypatch.setattr(market_analyst_agent, "analyze_market", fake_analyze_market)
+
+    fake_client = _FakeAnalystKalshiClient({"title": "T", "yes_bid_dollars": "0.55"})
+    result = asyncio.run(main._run_market_analyst_for_ticker(fake_client, cfg, "TICK-A"))
+
+    assert result["ok"] is True
+    assert result["estimated_probability"] == 0.72
+    assert result["market_price"] == 0.55
+    assert fake_client.get_market_calls == ["TICK-A"]
+    assert market_analyst_agent.total_count() == 1  # actually persisted, not just returned
+
+
+def test_post_market_analyst_analyze_route_returns_gated_reason_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"market_analyst": {"enabled": False}})
+    resp = client.post("/api/market-analyst/analyze", json={"ticker": "TICK-A"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "disabled" in body["reason"].lower()

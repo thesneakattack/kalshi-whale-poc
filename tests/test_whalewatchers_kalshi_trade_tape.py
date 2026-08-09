@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services import market_history, signal_log
+from services import market_analyst_agent, market_history, signal_log
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
 
 
@@ -18,6 +18,9 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     # fetch_signals() also now queries market_history.momentum() for
     # trend_factor - same real-db-isolation reasoning.
     monkeypatch.setattr(market_history, "DB_PATH", tmp_path / "market_history.db")
+    # fetch_signals() also now queries market_analyst_agent.analyst_lean()
+    # for analyst_factor - same real-db-isolation reasoning.
+    monkeypatch.setattr(market_analyst_agent, "DB_PATH", tmp_path / "market_analyst.db")
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):
@@ -248,3 +251,48 @@ def test_trend_factor_flips_for_the_no_side():
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert signals[0].factors["trend_factor"] == 1.0
+
+
+def test_analyst_factor_is_neutral_with_no_analysis_on_file():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["analyst_factor"] == 0.5
+
+
+def test_analyst_factor_agrees_with_a_yes_leaning_estimate():
+    market_analyst_agent.record_analysis(
+        "TICK-A", "TICK", 0.5, estimated_probability=0.8, llm_confidence=0.7, reasoning="r", model="m",
+    )
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["analyst_factor"] == 0.8
+
+
+def test_analyst_factor_flips_for_the_no_side():
+    # Same estimate as above (leans yes at 0.8), but a NO print now
+    # disagrees with it rather than agreeing - the analyst's read should
+    # score oppositely depending on which side the print is on.
+    market_analyst_agent.record_analysis(
+        "TICK-A", "TICK", 0.5, estimated_probability=0.8, llm_confidence=0.7, reasoning="r", model="m",
+    )
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.40", taker_side="no")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["analyst_factor"] == pytest.approx(0.2)
+
+
+def test_analyst_factor_ignores_a_stale_analysis():
+    market_analyst_agent.record_analysis(
+        "TICK-A", "TICK", 0.5, estimated_probability=0.9, llm_confidence=0.7, reasoning="r", model="m",
+        analyzed_at=time.time() - 2 * 86400,  # 2 days old, past the 24h freshness window
+    )
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["analyst_factor"] == 0.5

@@ -186,6 +186,7 @@ class ConfidenceBreakdown:
     agreement_factor: float
     cluster_factor: float
     trend_factor: float
+    analyst_factor: float
     score: float
 
     def to_dict(self) -> dict:
@@ -195,22 +196,25 @@ class ConfidenceBreakdown:
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
+    analyst_factor: float = 0.5,
 ) -> ConfidenceBreakdown:
     """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md),
     extended per docs/prediction-market-strategy-alignment-plan.md: trade
     size relative to market depth, how unusual the price is, proximity to
     resolution, broader market context, whether recent whale prints on this
     same market agree, whether this print looks like part of an active
-    accumulation run, and whether it agrees with or fights the market's own
-    recent real price trend. Each factor normalized to 0-1, weighted-summed.
-    Pure function of its inputs - no randomness - so it's shared as-is
-    between the simulator (which adds noise on top, see
-    WhaleSimulator._score_confidence) and any real whale-watcher provider
-    scoring an actual trade (services/whalewatchers/kalshi_trade_tape.py).
+    accumulation run, whether it agrees with or fights the market's own
+    recent real price trend, and whether it agrees with the market analyst
+    LLM's own independent read of this market, if a fresh one exists. Each
+    factor normalized to 0-1, weighted-summed. Pure function of its inputs -
+    no randomness - so it's shared as-is between the simulator (which adds
+    noise on top, see WhaleSimulator._score_confidence) and any real
+    whale-watcher provider scoring an actual trade
+    (services/whalewatchers/kalshi_trade_tape.py).
 
-    agreement_factor, cluster_factor, and trend_factor are all the caller's
-    responsibility to compute (this function has no access to signal
-    history or price history):
+    agreement_factor, cluster_factor, trend_factor, and analyst_factor are
+    all the caller's responsibility to compute (this function has no access
+    to signal history, price history, or market_analyst_agent's own DB):
 
     - agreement_factor defaults to 0.5 (neutral: neither agreement nor
       disagreement) when the caller has no real signal-agreement concept to
@@ -314,26 +318,44 @@ def composite_confidence_breakdown(
     # trend, reads the same as "can't judge fighting-the-trend risk either
     # way").
 
+    # (8) Does this print's direction agree with the market analyst LLM's
+    # own independent probability estimate for this market, if one exists
+    # and is fresh? Direct request (2026-08-09): "whenever the market
+    # analysis agent runs I want it to inform the various engines... so
+    # they can run the added logic without consuming AI tokens" - this is
+    # that wiring for the whale-confidence score specifically. Computed by
+    # the caller (services/market_analyst_agent.py's analyst_lean(), needs
+    # that module's own DB this function has no access to) - defaults to
+    # 0.5 (neutral: no analysis has been manually triggered for this market
+    # yet, or the one on file is too stale to trust - see
+    # market_analyst_agent.analyst_lean()'s own freshness window). Unlike
+    # the other six factors, this one is populated only when a human
+    # deliberately spent a real API call analyzing this specific market -
+    # neutral is the overwhelmingly common case, not an edge case.
+
     score = (
-        0.25 * depth_factor
-        + 0.10 * unusualness_factor
-        + 0.15 * proximity_factor
-        + 0.10 * context_factor
-        + 0.15 * agreement_factor
-        + 0.15 * cluster_factor
-        + 0.10 * trend_factor
+        0.21 * depth_factor
+        + 0.09 * unusualness_factor
+        + 0.13 * proximity_factor
+        + 0.08 * context_factor
+        + 0.13 * agreement_factor
+        + 0.13 * cluster_factor
+        + 0.08 * trend_factor
+        + 0.15 * analyst_factor
     )
     return ConfidenceBreakdown(
         depth_factor=depth_factor, unusualness_factor=unusualness_factor,
         proximity_factor=proximity_factor, context_factor=context_factor,
         agreement_factor=agreement_factor, cluster_factor=cluster_factor,
-        trend_factor=trend_factor, score=min(max(score, 0.0), 1.0),
+        trend_factor=trend_factor, analyst_factor=analyst_factor,
+        score=min(max(score, 0.0), 1.0),
     )
 
 
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
+    analyst_factor: float = 0.5,
 ) -> float:
     """The blended score only - see composite_confidence_breakdown for the
     full per-factor detail. Kept as its own function so every existing
@@ -341,4 +363,5 @@ def composite_confidence(
     doesn't need to change."""
     return composite_confidence_breakdown(
         market, markets, size, price, now, agreement_factor, cluster_factor, trend_factor,
+        analyst_factor,
     ).score

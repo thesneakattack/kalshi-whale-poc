@@ -810,6 +810,15 @@
       <button onclick="closeMarketDetail()" title="Close" aria-label="Close">✕</button>
     </div>
     <div id="market-detail-body"><div class="empty">Loading order book…</div></div>
+    <hr style="border-color: var(--panel-border); margin: 20px 0;">
+    <!-- Deliberately outside market-detail-body - that container gets its
+         innerHTML wholesale-replaced by refreshMarketDetail() on every ~5s
+         poll tick while the modal is open, which would otherwise wipe an
+         in-flight "Analyzing…" state or a just-shown result out from under
+         the user (the same class of refresh-wipes-state bug already fixed
+         once for the Portfolio tab's whale-reason disclosures). This block
+         is rendered once per openMarketDetail() call instead. -->
+    <div id="market-detail-analyst"></div>
   </div>
 </div>
 
@@ -1230,17 +1239,20 @@ CONFIDENCE: a weighted blend of how large the print is relative to that market's
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
           A third, genuinely different kind of strategy input alongside whale-flow and momentum above -
-          instead of arithmetic factor scoring, an LLM reads each analyzed market's actual title, rules,
-          and this app's own accumulated track record, then forms its own probability estimate. See the
-          Market Analyst panel on the Trading History tab for results. Off by default, and needs an
-          <code>ANTHROPIC_API_KEY</code> set in <code>.env</code> too - both are required. Advisory-only:
-          nothing here ever places a trade or writes config on its own, and this app has no plan to
-          promote it into an actual trading decision until it has a real track record.
+          instead of arithmetic factor scoring, an LLM reads a market's actual title, rules, and this
+          app's own accumulated track record, then forms its own probability estimate. On-demand only:
+          click "Analyze" on a market's detail view to spend a real API call on it (see the Market
+          Analyst panel on the Trading History tab for past results) - nothing runs automatically in the
+          background, since this is the only strategy input in this app that costs real money per use.
+          Off by default, and needs an <code>ANTHROPIC_API_KEY</code> set in <code>.env</code> too - both
+          are required. Once a market's been analyzed, its lean quietly feeds the cheap, arithmetic whale
+          confidence score too (the new "analyst" factor - neutral until a fresh analysis exists, no
+          extra API cost to use it there). Still fully advisory: nothing here ever places a trade or
+          writes config on its own.
         </p>
         <div class="field"><label><input type="checkbox" id="cfg-market-analyst-enabled"> Enable Market Analyst</label></div>
         <div class="field"><label>Model</label><input id="cfg-market-analyst-model" type="text" placeholder="claude-sonnet-5"></div>
-        <div class="field"><label title="A given market won't be re-analyzed more often than this - keeps real API cost bounded.">Re-analysis cooldown per market (seconds)</label><input id="cfg-market-analyst-cooldown" type="number" step="60" min="0"></div>
-        <div class="field"><label title="At most this many NEW markets get analyzed per trading-loop tick, regardless of how many are eligible.">Max new analyses per tick</label><input id="cfg-market-analyst-max-per-tick" type="number" step="1" min="0"></div>
+        <div class="field"><label title="Clicking Analyze again on the same market before this much time has passed is refused, to bound accidental repeat API cost.">Re-analysis cooldown per market (seconds)</label><input id="cfg-market-analyst-cooldown" type="number" step="60" min="0"></div>
       </div>
     </details>
 
@@ -2092,7 +2104,7 @@ function renderPositions(positions, prices, recentTrades, signals) {
         <td>${p.size.toLocaleString()}</td>
         <td>${(p.entry_price*100).toFixed(0)}¢</td>
         <td>${(current*100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
-        <td>${fmt(cost)}</td>
+        <td>${fmt(cost)}${p.entry_fee ? `<div style="font-size:10px; color:var(--muted);" title="Real Kalshi taker fee, already deducted from bankroll at entry - shown separately rather than folded into Cost, same convention as Trading History's own Fees column">+${fmt(p.entry_fee)} fee</div>` : ''}</td>
         <td>${fmt(p.size)}</td>
         <td>${fmt(value)}</td>
         <td class="${ret >= 0 ? 'pos' : 'neg'}">${fmt(ret)} (${retPct.toFixed(0)}%)</td>
@@ -2964,8 +2976,8 @@ async function loadMarketAnalyst() {
     const resp = await fetchJSON('/api/market-analyst/analyses?limit=25');
     const rows = resp.rows || [];
     if (!rows.length) {
-      el.innerHTML = '<div class="empty">No analyses yet — one candidate market gets analyzed at most every '
-        + 'few ticks once enabled (see Config → Market Analyst for the pacing knobs).</div>';
+      el.innerHTML = '<div class="empty">No analyses yet — click "Analyze" on a market\'s detail view to '
+        + 'spend a real API call on it (nothing runs automatically in the background).</div>';
       return;
     }
     el.innerHTML = rows.map(r => {
@@ -3507,6 +3519,7 @@ async function openMarketDetail(ticker, eventTicker) {
   renderMarketDetailTitle(ticker);
   $('market-detail-backdrop').classList.add('open');
   $('market-detail-body').innerHTML = '<div class="empty">Loading…</div>';
+  renderMarketAnalystSection(ticker);
   await refreshMarketDetail();
 }
 
@@ -3514,6 +3527,63 @@ function closeMarketDetail() {
   marketDetailTicker = null;
   marketDetailEventTicker = null;
   $('market-detail-backdrop').classList.remove('open');
+}
+
+// On-demand Market Analyst trigger (direct request, 2026-08-09) - a real
+// API call the user deliberately spends on one specific market, not
+// something that runs on a schedule. Rendered once per openMarketDetail()
+// call (see the HTML comment above market-detail-analyst) so its own
+// Analyzing/result state survives refreshMarketDetail()'s ~5s poll cycle.
+function renderMarketAnalystSection(ticker) {
+  $('market-detail-analyst').innerHTML = `
+    <div class="panel-title" style="margin-top:0;">Market Analyst <span class="data-badge new">🆕 new</span></div>
+    <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      An LLM forms its own independent probability estimate for this market, grounded in this app's own
+      whale/advisory track record. Spends one real API call - click only when you actually want its opinion.
+    </div>
+    <button id="market-analyst-analyze-btn" class="primary" onclick="triggerMarketAnalystAnalysis('${esc(ticker)}')">🔎 Analyze this market</button>
+    <div id="market-analyst-result" style="margin-top:12px;"></div>
+  `;
+}
+
+async function triggerMarketAnalystAnalysis(ticker) {
+  const btn = $('market-analyst-analyze-btn');
+  const resultEl = $('market-analyst-result');
+  if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+  resultEl.innerHTML = '<div class="empty">Calling the model…</div>';
+  try {
+    const resp = await fetch('/api/market-analyst/analyze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    const result = await resp.json();
+    // Stale response guard - the modal may have moved to a different
+    // market (or closed) while this real network call was in flight.
+    if (marketDetailTicker !== ticker) return;
+
+    if (!result.ok) {
+      resultEl.innerHTML = `<div class="empty">${esc(result.reason || 'Analysis unavailable.')}</div>`;
+    } else {
+      const lean = result.estimated_probability >= 0.5 ? 'YES' : 'NO';
+      const leanPct = Math.round(result.estimated_probability >= 0.5 ? result.estimated_probability * 100 : (1 - result.estimated_probability) * 100);
+      const marketPct = Math.round((result.market_price ?? 0.5) * 100);
+      resultEl.innerHTML = `
+        <div class="signal-card">
+          <div class="top-row">
+            <span>Model estimate: <b class="side-tag ${lean.toLowerCase()}">${lean} ${leanPct}%</b></span>
+            <span style="color:var(--muted); font-size:12px;">market was pricing YES ${marketPct}% · model confidence ${Math.round(result.confidence * 100)}%</span>
+          </div>
+          <div style="color:var(--muted); font-size:13px; margin-top:6px;">${esc(result.reasoning)}</div>
+        </div>
+      `;
+    }
+  } catch (e) {
+    if (marketDetailTicker === ticker) {
+      resultEl.innerHTML = '<div class="empty">Request failed - see console/server logs.</div>';
+    }
+  } finally {
+    if (btn && marketDetailTicker === ticker) { btn.disabled = false; btn.textContent = '🔎 Re-analyze this market'; }
+  }
 }
 
 // Glossary (ROADMAP.md P1) - every piece of jargon this app actually uses,
@@ -4412,7 +4482,6 @@ async function loadConfig() {
   $('cfg-market-analyst-enabled').checked = !!marketAnalystCfg.enabled;
   $('cfg-market-analyst-model').value = marketAnalystCfg.model ?? 'claude-sonnet-5';
   $('cfg-market-analyst-cooldown').value = marketAnalystCfg.reanalyze_cooldown_sec ?? 1800;
-  $('cfg-market-analyst-max-per-tick').value = marketAnalystCfg.max_analyses_per_tick ?? 1;
   $('cfg-freq').value = cfg.whale_signal.signal_frequency_sec;
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
@@ -4503,7 +4572,6 @@ $('save-config-btn').addEventListener('click', async () => {
       enabled: $('cfg-market-analyst-enabled').checked,
       model: $('cfg-market-analyst-model').value || 'claude-sonnet-5',
       reanalyze_cooldown_sec: parseInt($('cfg-market-analyst-cooldown').value),
-      max_analyses_per_tick: parseInt($('cfg-market-analyst-max-per-tick').value),
     },
     whale_signal: {
       signal_frequency_sec: parseInt($('cfg-freq').value),

@@ -47,24 +47,45 @@ plus an optional momentum-reversal exit - the market-native analog of
 whale signal_feed. No auto-exit composite algorithm yet (a possible future
 extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 """
-from services import market_history
+from services import market_analyst_agent, market_history
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.strategy_engine import close_if_settled
 
+# How fresh a market_analyst_agent estimate must be to fold into this
+# strategy's entry confidence - same freshness window as the whale-follow
+# side's analyst_factor (services/whalewatchers/kalshi_trade_tape.py), for
+# the same reason: the event being estimated is far more stable than the
+# market's own price.
+_ANALYST_FRESHNESS_SEC = 24 * 3600
 
-def _entry_confidence(mom: dict, volume: float, spread: float, strat_cfg: dict) -> tuple[float, dict]:
+
+def _entry_confidence(mom: dict, volume: float, spread: float, strat_cfg: dict, side: str, ticker: str) -> tuple[float, dict]:
     """Composite 0-1 score, same weighted-factor idiom as
     whale_simulator._score_confidence / strategy_engine._exit_confidence.
-    All three factors are always present here (momentum is already
+    momentum/liquidity/spread are always present here (momentum is already
     required non-None by the caller's gate; volume/spread are always
-    numeric), unlike _exit_confidence's "some factors may be missing"
-    case - so a plain average, no weighting needed."""
+    numeric), so those three alone would need no weighting - a plain
+    average. The analyst factor is different: it's only ever present when
+    someone has actually spent a real API call analyzing this specific
+    ticker recently (services/market_analyst_agent.py, direct request
+    2026-08-09 - "inform the various engines... without consuming AI
+    tokens"), which is the overwhelmingly uncommon case. Folding it into a
+    always-4-wide average would permanently water down every ordinary
+    momentum-only entry by a phantom neutral factor; instead it's only
+    added to the averaged set at all when a fresh estimate exists, so
+    today's momentum-only behavior is completely unchanged unless someone
+    has actually asked the analyst about this exact market."""
     momentum_factor = min(1.0, abs(mom["delta"]) / max(strat_cfg["min_momentum_delta"] * 3, 1e-9))
     liquidity_factor = min(1.0, volume / max(strat_cfg["min_volume_24h"] * 3, 1e-9))
     max_spread = max(strat_cfg["max_spread"], 1e-9)
     spread_factor = min(1.0, max(0.0, (max_spread - spread) / max_spread))
     factors = {"momentum": momentum_factor, "liquidity": liquidity_factor, "spread": spread_factor}
+
+    lean = market_analyst_agent.analyst_lean(ticker, max_age_sec=_ANALYST_FRESHNESS_SEC)
+    if lean is not None:
+        factors["analyst"] = lean if side == "yes" else (1.0 - lean)
+
     confidence = sum(factors.values()) / len(factors)
     return confidence, factors
 
@@ -134,7 +155,7 @@ class MarketNativeStrategy:
         # itself is increasingly pricing YES as likely, so riding that means
         # buying yes; a falling yes_price means the opposite.
         side = "yes" if mom["delta"] > 0 else "no"
-        confidence, factors = _entry_confidence(mom, volume, spread, strat_cfg)
+        confidence, factors = _entry_confidence(mom, volume, spread, strat_cfg, side, ticker)
         if confidence < strat_cfg["entry_confidence_threshold"]:
             return None
 

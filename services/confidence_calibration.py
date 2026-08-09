@@ -29,7 +29,7 @@ from services import trade_analytics
 _BUCKET_COUNT = 3
 _FACTOR_NAMES = (
     "depth_factor", "unusualness_factor", "proximity_factor", "context_factor",
-    "agreement_factor", "cluster_factor", "trend_factor",
+    "agreement_factor", "cluster_factor", "trend_factor", "analyst_factor",
 )
 # How much a factor's high-bucket win rate must beat its low-bucket win rate
 # to count as "this factor actually discriminates outcomes" - a smaller bar
@@ -46,9 +46,9 @@ _MIN_SUGGESTED_WEIGHT = 0.05
 # kept here only as the "current" reference point a rationale string can
 # compare against, not read by the scoring function itself.
 CURRENT_WEIGHTS = {
-    "depth_factor": 0.25, "unusualness_factor": 0.10, "proximity_factor": 0.15,
-    "context_factor": 0.10, "agreement_factor": 0.15, "cluster_factor": 0.15,
-    "trend_factor": 0.10,
+    "depth_factor": 0.21, "unusualness_factor": 0.09, "proximity_factor": 0.13,
+    "context_factor": 0.08, "agreement_factor": 0.13, "cluster_factor": 0.13,
+    "trend_factor": 0.08, "analyst_factor": 0.15,
 }
 
 

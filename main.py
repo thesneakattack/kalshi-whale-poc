@@ -785,82 +785,82 @@ def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float
     return float(cfg["risk"]["starting_bankroll"]), "configured_starting_bankroll (no real account connected)"
 
 
-async def _maybe_run_market_analyst(client: KalshiClient, cfg: dict, markets: list[dict]):
-    """services/market_analyst_agent.py's per-tick orchestration - a real
-    external LLM call, so this is deliberately paced (at most
-    max_analyses_per_tick new analyses per tick, each ticker re-eligible only
-    after reanalyze_cooldown_sec) rather than run against the whole watchlist
-    every 15s like the arithmetic-only strategies. No-op, cheaply, unless
-    both market_analyst.enabled is true AND a real ANTHROPIC_API_KEY is set -
-    same "every credential is optional, everything degrades honestly"
-    pattern the rest of this app's optional integrations already use."""
+async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker: str) -> dict:
+    """On-demand, single-ticker orchestration for services/market_analyst_agent.py
+    - direct request (2026-08-09): switched from an automatic per-tick
+    background scan to a button-triggered "analyze this one market right
+    now" flow, since this is the first thing in this app that spends real
+    money per call (every other strategy is zero-marginal-cost arithmetic),
+    so it should be a deliberate human action, not ambient background spend
+    - same "prove it, then promote it" philosophy already used for
+    advisory_engine's manual-apply-with-audit-trail and
+    confidence_calibration's read-only-until-enough-data design.
+
+    Returns {"ok": True, **result} on a fresh analysis, or {"ok": False,
+    "reason": <str>} if gated (disabled, no key, still in cooldown, or the
+    LLM call itself failed/declined) - always a clean dict, never raises,
+    so the route can turn this straight into a JSON response."""
     ma_cfg = cfg.get("market_analyst") or {}
     if not ma_cfg.get("enabled"):
-        return
+        return {"ok": False, "reason": "Market Analyst is disabled — enable it in Config → Market Analyst (AI)."}
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        return
+        return {"ok": False, "reason": "No ANTHROPIC_API_KEY configured in .env."}
 
     cooldown = ma_cfg.get("reanalyze_cooldown_sec", 1800)
-    max_per_tick = ma_cfg.get("max_analyses_per_tick", 1)
     now = time.time()
-    candidates = []
-    for m in markets:
-        ticker = m.get("ticker")
-        if not ticker:
-            continue
-        last = market_analyst_agent.last_analyzed_at(ticker)
-        if last is not None and (now - last) < cooldown:
-            continue
-        candidates.append(ticker)
+    last = market_analyst_agent.last_analyzed_at(ticker)
+    if last is not None and (now - last) < cooldown:
+        wait_sec = int(cooldown - (now - last))
+        return {"ok": False, "reason": f"Already analyzed recently — try again in {wait_sec}s."}
 
-    for ticker in candidates[:max_per_tick]:
+    try:
+        market_detail = await client.get_market(ticker)
+    except Exception as e:
+        return {"ok": False, "reason": f"Could not fetch market data: {e}"}
+    event_ticker = market_detail.get("event_ticker")
+    if event_ticker:
         try:
-            market_detail = await client.get_market(ticker)
+            ev = await client.get_event(event_ticker)
+            market_detail = {**market_detail, "category": (ev.get("event") or {}).get("category")}
         except Exception:
-            continue  # a real fetch failure for one candidate shouldn't skip the rest of the tick
-        event_ticker = market_detail.get("event_ticker")
-        if event_ticker:
-            try:
-                ev = await client.get_event(event_ticker)
-                market_detail = {**market_detail, "category": (ev.get("event") or {}).get("category")}
-            except Exception:
-                pass  # category is a bonus for the prompt, not required
+            pass  # category is a bonus for the prompt, not required
 
-        # Same real accumulated-context bundle a human sees on the
-        # dashboard (services/ml_feed.py's whole "work WITH, not replace"
-        # point) - grounds the model's judgment in this app's own track
-        # record, not just general world knowledge.
-        adv_cfg = cfg["advisory"]
-        all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-        recommendations = {"recommendations": [], "gated_reason": "advisory engine is disabled"}
-        if adv_cfg["enabled"]:
-            current_fp = config_performance.fingerprint(cfg)
-            variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
-            recommendations = advisory_engine.generate_recommendations(
-                all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
-            )
-        snapshot = ml_feed.build_context_snapshot(
-            cfg=cfg,
-            portfolio=broker.state(state["latest_prices"]),
-            market_snapshot={"markets": state["markets"], "latest_prices": state["latest_prices"]},
-            trade_history_rows=all_rows,
-            whale_track_record=signal_log.stats(),
-            advisory=recommendations,
+    # Same real accumulated-context bundle a human sees on the dashboard
+    # (services/ml_feed.py's whole "work WITH, not replace" point) - grounds
+    # the model's judgment in this app's own track record, not just general
+    # world knowledge.
+    adv_cfg = cfg["advisory"]
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    recommendations = {"recommendations": [], "gated_reason": "advisory engine is disabled"}
+    if adv_cfg["enabled"]:
+        current_fp = config_performance.fingerprint(cfg)
+        variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+        recommendations = advisory_engine.generate_recommendations(
+            all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
         )
+    snapshot = ml_feed.build_context_snapshot(
+        cfg=cfg,
+        portfolio=broker.state(state["latest_prices"]),
+        market_snapshot={"markets": state["markets"], "latest_prices": state["latest_prices"]},
+        trade_history_rows=all_rows,
+        whale_track_record=signal_log.stats(),
+        advisory=recommendations,
+    )
 
-        result = await market_analyst_agent.analyze_market(
-            market_detail, snapshot, ma_cfg.get("model", "claude-sonnet-5"), api_key,
-        )
-        if result is None:
-            continue
-        market_price = float(market_detail.get("yes_bid_dollars") or market_detail.get("yes_ask_dollars") or 0.5)
-        market_analyst_agent.record_analysis(
-            ticker=ticker, series=signal_log.series_of(ticker), market_price=market_price,
-            estimated_probability=result["estimated_probability"], llm_confidence=result["confidence"],
-            reasoning=result["reasoning"], model=ma_cfg.get("model", "claude-sonnet-5"), analyzed_at=now,
-        )
-        _bump_generation()
+    result = await market_analyst_agent.analyze_market(
+        market_detail, snapshot, ma_cfg.get("model", "claude-sonnet-5"), api_key,
+    )
+    if result is None:
+        return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
+    market_price = float(market_detail.get("yes_bid_dollars") or market_detail.get("yes_ask_dollars") or 0.5)
+    market_analyst_agent.record_analysis(
+        ticker=ticker, series=signal_log.series_of(ticker), market_price=market_price,
+        estimated_probability=result["estimated_probability"], llm_confidence=result["confidence"],
+        reasoning=result["reasoning"], model=ma_cfg.get("model", "claude-sonnet-5"), analyzed_at=now,
+    )
+    _bump_generation()
+    return {"ok": True, **result, "market_price": market_price}
 
 
 async def trading_loop():
@@ -1020,10 +1020,6 @@ async def trading_loop():
                     state["real_balance_history"] = state["real_balance_history"][-200:]
                 except (TypeError, ValueError):
                     pass
-
-            # Real LLM call, deliberately paced - see _maybe_run_market_analyst's
-            # own docstring. No-op cheaply when disabled or no API key set.
-            await _maybe_run_market_analyst(client, cfg, markets)
 
             new_signals = []
             if whale_provider.enabled:
@@ -1594,14 +1590,33 @@ async def get_market_analyst_status():
     # Same "honest progress even while gated/disconnected" idiom as
     # advisory/confidence-calibration's own status routes. api_key_configured
     # is reported separately from enabled - both gate the feature (see
-    # _maybe_run_market_analyst), and a user turning the checkbox on with no
-    # key set should see *why* nothing is happening, not silent inaction.
+    # _run_market_analyst_for_ticker), and a user turning the checkbox on
+    # with no key set should see *why* the Analyze button won't do anything.
     ma_cfg = config_store.get()["market_analyst"]
     return {
         "enabled": ma_cfg["enabled"],
         "api_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         **market_analyst_agent.stats(days=30),
     }
+
+
+class MarketAnalystAnalyzeBody(BaseModel):
+    ticker: str
+
+
+@app.post("/api/market-analyst/analyze")
+async def post_market_analyst_analyze(body: MarketAnalystAnalyzeBody):
+    # On-demand trigger, direct request (2026-08-09) - replaces the earlier
+    # automatic per-tick background scan (see _run_market_analyst_for_ticker's
+    # own docstring for why: this is the only thing in this app that spends
+    # real money per call). A human clicks "Analyze" on one specific market
+    # they're actually looking at; nothing runs on a schedule anymore.
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        return await _run_market_analyst_for_ticker(client, cfg, body.ticker)
+    finally:
+        await client.close()
 
 
 @app.get("/api/market-analyst/analyses")

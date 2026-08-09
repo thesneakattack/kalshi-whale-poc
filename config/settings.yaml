@@ -79,6 +79,5 @@ market_analyst:
   enabled: false
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
-  max_analyses_per_tick: 1
 logging:
   level: INFO

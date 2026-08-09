@@ -3,7 +3,7 @@ import pytest
 from services import confidence_calibration as cc
 
 
-def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5):
+def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5):
     return {
         "confidence": confidence,
         "correct": correct,
@@ -11,7 +11,7 @@ def _row(depth, unusualness, proximity, context, agreement, correct, confidence=
             "depth_factor": depth, "unusualness_factor": unusualness,
             "proximity_factor": proximity, "context_factor": context,
             "agreement_factor": agreement, "cluster_factor": cluster,
-            "trend_factor": trend, "score": confidence,
+            "trend_factor": trend, "analyst_factor": analyst, "score": confidence,
         },
     }
 

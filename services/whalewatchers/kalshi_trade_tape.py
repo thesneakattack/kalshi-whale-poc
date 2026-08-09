@@ -17,7 +17,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import market_history, signal_log
+from services import market_analyst_agent, market_history, signal_log
 from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
@@ -50,6 +50,12 @@ _AGREEMENT_LOOKBACK_SEC = 6 * 3600
 # part of a tight, likely-single-actor accumulation run right now," not
 # "has this market's sentiment leaned this way today."
 _CLUSTER_LOOKBACK_SEC = 30 * 60
+# How fresh a market_analyst_agent estimate must be to count toward
+# analyst_factor - the event being estimated is far more stable than a
+# market's own price, so this doesn't need agreement_factor/cluster_factor's
+# tight windows; just not stale enough to be estimating a different market
+# state entirely (see market_analyst_agent.analyst_lean()'s own docstring).
+_ANALYST_FRESHNESS_SEC = 24 * 3600
 
 
 def _notional_usd(trade: dict) -> float:
@@ -92,6 +98,23 @@ def _trend_factor(ticker: str, side: str, now: float) -> float:
         return 0.5
     signed_delta = mom["delta"] if side == "yes" else -mom["delta"]
     return 0.5 + 0.5 * min(max(signed_delta / _TREND_FULL_SCALE, -1.0), 1.0)
+
+
+def _analyst_factor(ticker: str, side: str) -> float:
+    """Does this print's direction agree with the market analyst LLM's own
+    independent probability estimate for this market, if a fresh one
+    exists? Feeds composite_confidence_breakdown's analyst_factor - direct
+    request (2026-08-09): "whenever the market analysis agent runs I want
+    it to inform the various engines... without consuming AI tokens." A
+    single indexed SQLite read (market_analyst_agent.analyst_lean()), never
+    a new LLM call - the whole point is this stays free to compute on
+    every real trade tape print, unlike the agent itself. Returns the
+    neutral default (0.5) when no market has ever been manually analyzed,
+    or the one on file has aged out - same idiom as _trend_factor above."""
+    lean = market_analyst_agent.analyst_lean(ticker, max_age_sec=_ANALYST_FRESHNESS_SEC)
+    if lean is None:
+        return 0.5
+    return lean if side == "yes" else (1.0 - lean)
 
 
 class KalshiTradeTapeProvider(WhaleWatcherProvider):
@@ -186,9 +209,16 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # docstring - a caution factor, not a block.
             trend = _trend_factor(ticker, side, now)
 
+            # Does this print's direction agree with the market analyst
+            # LLM's own independent read of this market, if one exists and
+            # is fresh? See _analyst_factor's docstring - a cheap DB read,
+            # never a new API call.
+            analyst = _analyst_factor(ticker, side)
+
             breakdown = composite_confidence_breakdown(
                 market, markets, size, price, now,
                 agreement_factor=agreement_factor, cluster_factor=cluster, trend_factor=trend,
+                analyst_factor=analyst,
             )
             timestamp = _parse_trade_time(trade.get("created_time")) or now
 

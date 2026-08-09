@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from services import market_analyst_agent as maa_module
 from services import market_history as mh
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -15,6 +16,9 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     monkeypatch.setattr(pb_module, "DB_PATH", tmp_path / "paper_broker.db")
     monkeypatch.setattr(rm_module, "DB_PATH", tmp_path / "risk_state.db")
     monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    # _entry_confidence now queries market_analyst_agent.analyst_lean() -
+    # redirect before any test can touch the real data/market_analyst.db.
+    monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
     broker = pb_module.PaperBroker(starting_bankroll=bankroll)
     risk = rm_module.RiskManager(bankroll, max_daily_loss_pct, kill_switch_enabled)
     return MarketNativeStrategy(broker, risk), broker, risk
@@ -103,6 +107,43 @@ def test_reason_string_entry_confidence_parses_with_shared_regex(tmp_path, monke
     match = _ENTRY_CONF_RE.search(reason)
     assert match is not None
     assert 0.0 <= float(match.group(1)) <= 1.0
+
+
+def test_entry_confidence_unaffected_by_analyst_when_none_on_file(tmp_path, monkeypatch):
+    # Direct request (2026-08-09): the analyst factor must not water down
+    # ordinary momentum-only entries when nobody has actually analyzed this
+    # market - confirms today's 3-factor plain average is unchanged.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)
+    strategy.evaluate_all([_market(now=now)], now, _permissive_cfg())
+    reason = broker.trade_log[0].reason
+    assert "analyst=" not in reason
+
+
+def test_entry_confidence_includes_analyst_factor_when_fresh_estimate_exists(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)  # momentum favors yes
+    maa_module.record_analysis(
+        "TICK-A", "TICK", 0.5, estimated_probability=0.9, llm_confidence=0.7, reasoning="r", model="m",
+    )
+    strategy.evaluate_all([_market(now=now)], now, _permissive_cfg())
+    reason = broker.trade_log[0].reason
+    assert "analyst=90%" in reason  # side is yes, estimate leans yes at 0.9 -> agreement 0.9
+
+
+def test_entry_confidence_ignores_a_stale_analyst_estimate(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)
+    maa_module.record_analysis(
+        "TICK-A", "TICK", 0.5, estimated_probability=0.9, llm_confidence=0.7, reasoning="r", model="m",
+        analyzed_at=now - 2 * 86400,  # 2 days old, past the 24h freshness window
+    )
+    strategy.evaluate_all([_market(now=now)], now, _permissive_cfg())
+    reason = broker.trade_log[0].reason
+    assert "analyst=" not in reason
 
 
 def test_skips_when_position_already_open(tmp_path, monkeypatch):
