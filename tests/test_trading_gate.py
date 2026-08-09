@@ -131,6 +131,34 @@ def test_state_endpoint_reports_trading_enabled_flag():
     assert resp.json()["account"]["trading_enabled"] is False
 
 
+def test_state_market_titles_includes_a_recently_closed_trades_ticker(monkeypatch):
+    # Real, confirmed-live bug (2026-08-09, direct report: "i see only
+    # ticker ids and such in the portfolio trade log, but when i click on
+    # the history tab then back to the portfolio it shows titles").
+    # _relevant_tickers() scoped /api/state's market_titles to the current
+    # watchlist + open positions + signal/decision feeds, but never the
+    # Trade Log's own tickers - a closed position's title dropped out the
+    # instant it aged out of those other sets, even though the Trade Log
+    # (broker.recent_trades) kept showing that trade. Visiting History
+    # only ever "fixed" it as a side effect of that tab's own endpoint
+    # separately backfilling the shared client-side title cache - the
+    # actual gap was here, not there.
+    main.broker.reset(starting_bankroll=10000.0)
+    monkeypatch.setitem(main.state, "markets", [])  # ticker not in the current watchlist
+    monkeypatch.setitem(main.state, "signal_feed", [])
+    monkeypatch.setitem(main.state, "decision_feed", [])
+    monkeypatch.setitem(main.state["market_titles"], "TICK-CLOSED", {"title": "A Real Title"})
+    main.broker.open_position("TICK-CLOSED", "yes", size=10, price=0.5, reason="entry")
+    main.broker.close_position("TICK-CLOSED", exit_price=0.6, reason="test close")
+    main._bump_generation()
+
+    resp = client.get("/api/state")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "TICK-CLOSED" in body["market_titles"]
+    assert body["market_titles"]["TICK-CLOSED"]["title"] == "A Real Title"
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with

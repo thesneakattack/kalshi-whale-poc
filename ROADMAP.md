@@ -688,6 +688,28 @@ never cut.
         suggests raising the bonus — closing the loop on FLB research
         being applied at entry but never checked at the advisory layer.
       9 new tests. Full suite: 426 (was 417).
+- [x] Fixed the real cause of a recurring "raw ticker IDs instead of
+      titles" report — a different bug than the phase-58 regression, found
+      after the user pinned down the actual trigger: "i see only ticker
+      ids and such in the portfolio trade log, but when i click on the
+      history tab then back to the portfolio it shows titles." `main.py`'s
+      `_relevant_tickers()` (scopes `/api/state`'s `market_titles` payload)
+      included the current watchlist, open positions, and the signal/
+      decision feeds — but never the Trade Log's own tickers
+      (`broker.recent_trades`, what the Portfolio tab's Trade Log actually
+      renders). The instant a closed position's ticker aged out of the
+      watchlist/feeds, its title silently dropped out of `/api/state`,
+      even though the backend's full title cache still had it — visiting
+      History only ever "fixed" it as a side effect of that tab's own
+      endpoint separately backfilling the shared client-side cache; the
+      real gap was in `_relevant_tickers()` all along. Fixed by adding the
+      last 25 trade-log tickers (matching `recent_trades`' own cap) to the
+      scoped set. New regression test manually confirmed to fail against
+      the pre-fix code before trusting the fix. Also updated the Whale
+      Signals panel's info-icon tooltip and the Help modal's Confidence/
+      Whale-lean/Kill-switch glossary entries, both still describing the
+      pre-session 4-factor confidence formula and a bankroll-only kill
+      switch. 1 new test. Full suite: 427 (was 426).
 
 ## P3 — Reliability & engineering hygiene
 

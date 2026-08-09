@@ -254,7 +254,15 @@ def _series_meta_map(series_tickers: set[str]) -> dict:
 
 def _relevant_tickers() -> set[str]:
     """Every ticker actually shown on this tick's /api/state response -
-    current watchlist, open positions, and whatever's still in the capped
+    current watchlist, open positions, the Trade Log's own last-25 closed
+    trades (broker.state()'s "recent_trades", exactly what
+    static/index.html's renderTrades() actually displays - added 2026-08-09,
+    a real, confirmed-live gap: a position's ticker dropped out of this set
+    the instant it closed and aged out of the watchlist/signal/decision
+    feeds, even though the Trade Log kept showing that trade, so it fell
+    back to its raw ticker until something else - visiting History, whose
+    own endpoint separately backfills the shared client-side title cache -
+    happened to pull the title back in), and whatever's still in the capped
     signal/decision feeds. state["market_titles"]/state["event_titles"]
     themselves accumulate unbounded for the app's whole lifetime now (see
     services/title_cache.py) so history/clusters can still resolve an old
@@ -263,6 +271,7 @@ def _relevant_tickers() -> set[str]:
     ~1MB regression risk, as _series_meta_map above."""
     tickers = {m["ticker"] for m in state["markets"] if m.get("ticker")}
     tickers |= set(broker.positions.keys())
+    tickers |= {t.ticker for t in broker.trade_log[-25:]}
     tickers |= {s["ticker"] for s in state["signal_feed"] if s.get("ticker")}
     for d in state["decision_feed"]:
         t = d.get("ticker") or (d.get("signal") or {}).get("ticker")
