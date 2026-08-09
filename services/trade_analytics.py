@@ -262,6 +262,50 @@ def compute_insights(rows: list[dict]) -> list[dict]:
             "n": n, "confidence": confidence_label(n),
         })
 
+    # sentiment_reversal (whale-follow) and its market-native analog
+    # momentum_reversal - direct report: "the config tunings hints section...
+    # doesn't seem to give me actual advice at all." Investigated against
+    # real trade history rather than assumed: confirmed live, 84 of 103 real
+    # closed trades (81%) were sentiment_reversal - by far the dominant real
+    # exit mechanism this app produces - yet neither of these two close
+    # types had a heuristic here at all, unlike stop_loss/take_profit/
+    # auto_exit above. Every other insight this function can produce
+    # happened to need a close type or a spread of confidence buckets this
+    # dataset didn't have, so the panel was correctly staying silent rather
+    # than fabricating something - but silence on the single most common
+    # real close type is exactly the gap worth closing.
+    sentiment_reversal_group = by_type.get("sentiment_reversal", [])
+    if len(sentiment_reversal_group) >= 3:
+        avg_pnl = sum(r["realized_pnl"] for r in sentiment_reversal_group if r["realized_pnl"] is not None) / len(sentiment_reversal_group)
+        n = len(sentiment_reversal_group)
+        advice = (
+            "Consider raising exit_sentiment_lean_pct or exit_sentiment_min_signals if it's reversing out on "
+            "noise before a real trend forms."
+            if avg_pnl <= 0 else
+            "Consider lowering exit_sentiment_lean_pct or exit_sentiment_min_signals to react faster if similar "
+            "reversals keep paying off."
+        )
+        insights.append({
+            "topic": "exit_sentiment_lean_pct",
+            "text": f"sentiment_reversal closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
+            "n": n, "confidence": confidence_label(n),
+        })
+
+    momentum_reversal_group = by_type.get("momentum_reversal", [])
+    if len(momentum_reversal_group) >= 3:
+        avg_pnl = sum(r["realized_pnl"] for r in momentum_reversal_group if r["realized_pnl"] is not None) / len(momentum_reversal_group)
+        n = len(momentum_reversal_group)
+        advice = (
+            "Consider raising min_momentum_delta if it's reversing out on noise before a real trend forms."
+            if avg_pnl <= 0 else
+            "Consider lowering min_momentum_delta to react faster if similar reversals keep paying off."
+        )
+        insights.append({
+            "topic": "min_momentum_delta",
+            "text": f"momentum_reversal closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
+            "n": n, "confidence": confidence_label(n),
+        })
+
     # 3. Settled-only (never actively exited) vs actively-managed win rate.
     settled = [r for r in closed if r["close_type"] in ("settled_win", "settled_loss")]
     managed = [r for r in closed if r["close_type"] not in ("settled_win", "settled_loss")]

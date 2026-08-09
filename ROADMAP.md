@@ -1487,6 +1487,37 @@ band instead.
       stats plus both rules paragraphs, and the candlestick chart's bid/ask
       bands (2 polygons) and OI delta rendering correctly. Full suite: 347
       passing.
+- [x] Fixed a real coverage gap in Config Tuning Hints, direct report
+      (2026-08-08): "the config tunings hints section in the history
+      section doesnt seem to give me actual advice at all." Investigated
+      against real trade history rather than assumed: confirmed live, 84 of
+      103 real closed trades (81%) were `sentiment_reversal` - by far the
+      dominant real exit mechanism this app produces - yet
+      `trade_analytics.compute_insights()` had a heuristic for
+      `stop_loss`/`take_profit`/`auto_exit` but none at all for
+      `sentiment_reversal` or its market-native analog `momentum_reversal`.
+      Every other insight this function can produce happened to need a
+      close type or a confidence-bucket spread this app's real data didn't
+      have (zero real `stop_loss`/`take_profit`/`auto_exit` closes yet, and
+      every real trade's entry confidence landed in the same 0.5-0.75
+      bucket, so the entry-threshold win-rate-gap comparison correctly
+      never fires either) - so the panel was honestly staying silent rather
+      than fabricating something, just silent on the one close type that
+      actually mattered. Added two new insights matching the exact same
+      shape/style as the existing three (names the config field, the trade
+      count, a confidence label, minimum sample size of 3, never edits
+      config): `exit_sentiment_lean_pct` (mentions
+      `exit_sentiment_min_signals` too) and `min_momentum_delta`, each
+      framed the same "raise if reversing on noise, lower to react faster
+      if it keeps paying off" way `auto_exit_threshold`'s hint already
+      used. 4 new tests in `tests/test_trade_analytics.py` covering the
+      minimum-sample-size gate and both advice directions. Verified live:
+      `/api/trading-history` now returns "sentiment_reversal closed 84
+      position(s), avg realized +7.11. Consider lowering
+      exit_sentiment_lean_pct or exit_sentiment_min_signals to react faster
+      if similar reversals keep paying off" alongside the existing
+      exit-management-overall hint, confirmed rendering correctly in the
+      real History tab. Full suite: 351 passing.
 
 ## P3 — Reliability & engineering hygiene
 

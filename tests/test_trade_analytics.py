@@ -249,3 +249,62 @@ def test_compute_insights_never_mutates_input_rows():
     snapshot = [dict(r) for r in rows]
     ta.compute_insights(rows)
     assert rows == snapshot
+
+
+# sentiment_reversal/momentum_reversal - direct report: "the config tunings
+# hints section... doesn't seem to give me actual advice at all." Confirmed
+# live against real trade history: sentiment_reversal was 81% of all real
+# closed trades, but had no heuristic here at all before this, unlike
+# stop_loss/take_profit/auto_exit above - every other insight happened to
+# need a close type or confidence spread this app's real data didn't
+# produce, so the panel was correctly silent, just silent on the one close
+# type that actually mattered.
+
+def test_compute_insights_respects_minimum_sample_size_for_sentiment_reversal():
+    log = [
+        _open(ticker="A", ts=1000.0, tid="o1"),
+        _closed(ticker="A", ts=1100.0, tid="c1", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0),
+        _open(ticker="B", ts=1000.0, tid="o2"),
+        _closed(ticker="B", ts=1100.0, tid="c2", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0),
+    ]
+    rows = ta.build_trade_history(log)
+    insights = ta.compute_insights(rows)
+    assert not any(i["topic"] == "exit_sentiment_lean_pct" for i in insights)
+
+
+def test_compute_insights_fires_sentiment_reversal_hint_once_minimum_sample_reached():
+    log = []
+    for i in range(3):
+        t = f"T{i}"
+        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
+        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0))
+    rows = ta.build_trade_history(log)
+    insights = ta.compute_insights(rows)
+    hit = next(i for i in insights if i["topic"] == "exit_sentiment_lean_pct")
+    assert hit["n"] == 3
+    assert "raising exit_sentiment_lean_pct" in hit["text"]  # avg_pnl <= 0 -> "reversing out on noise" framing
+
+
+def test_compute_insights_sentiment_reversal_hint_flips_advice_when_net_positive():
+    log = []
+    for i in range(3):
+        t = f"T{i}"
+        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
+        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=5.0))
+    rows = ta.build_trade_history(log)
+    insights = ta.compute_insights(rows)
+    hit = next(i for i in insights if i["topic"] == "exit_sentiment_lean_pct")
+    assert "lowering exit_sentiment_lean_pct" in hit["text"]
+
+
+def test_compute_insights_fires_momentum_reversal_hint_once_minimum_sample_reached():
+    log = []
+    for i in range(3):
+        t = f"T{i}"
+        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
+        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="momentum reversed: price moved 4% against this yes position over 30m", realized=-3.0))
+    rows = ta.build_trade_history(log)
+    insights = ta.compute_insights(rows)
+    hit = next(i for i in insights if i["topic"] == "min_momentum_delta")
+    assert hit["n"] == 3
+    assert "raising min_momentum_delta" in hit["text"]
