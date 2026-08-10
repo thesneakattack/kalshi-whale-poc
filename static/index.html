@@ -3316,6 +3316,19 @@ async function loadChangeHistory() {
           ${c.effect.before_win_rate_pct.toFixed(0)}% win rate (n=${c.effect.before_n}) →
           ${c.effect.after_win_rate_pct.toFixed(0)}% (n=${c.effect.after_n}) since this change
         </div>`;
+      } else if (c.effect_windowed) {
+        // Gap 3 (docs/config-tuning-data-gaps-2026-08-10.md) - looser than
+        // c.effect above (no exact-fingerprint requirement, so it's not
+        // starved by config-variant fragmentation), but weaker causal
+        // attribution (other fields may have changed in the same window) -
+        // only shown as a fallback when the strict measurement has nothing.
+        const ew = c.effect_windowed;
+        const wrDelta = ew.after_win_rate_pct - ew.before_win_rate_pct;
+        const wrColor = wrDelta > 0 ? 'var(--yes)' : (wrDelta < 0 ? 'var(--no)' : 'var(--text)');
+        effectHTML = `<div style="margin-top:6px; font-size:12px; color:${wrColor};">
+          ${ew.before_win_rate_pct.toFixed(0)}% win rate (n=${ew.before_n}) →
+          ${ew.after_win_rate_pct.toFixed(0)}% (n=${ew.after_n}) before/after this change (time-windowed, not config-isolated)
+        </div>`;
       }
       return `
         <div class="signal-card">

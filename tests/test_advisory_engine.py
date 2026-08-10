@@ -359,3 +359,57 @@ def test_change_effect_reports_real_before_after_numbers():
         "before_win_rate_pct": 40.0, "before_n": 10, "before_realized_pnl": -20.0,
         "after_win_rate_pct": 80.0, "after_n": 5, "after_realized_pnl": 15.0,
     }
+
+
+# --- change_effect_windowed (Gap 3, docs/config-tuning-data-gaps-2026-08-10.md) ---
+
+def _ts_row(entry_timestamp, **overrides):
+    return _row(entry_timestamp=entry_timestamp, **overrides)
+
+
+def test_change_effect_windowed_none_with_no_trades_before_the_change():
+    rows = [_ts_row(2000.0, won=True, realized_pnl=5.0)]
+    assert ae.change_effect_windowed("strategy.entry_threshold", 1000.0, rows) is None
+
+
+def test_change_effect_windowed_none_with_no_trades_after_the_change():
+    rows = [_ts_row(500.0, won=True, realized_pnl=5.0)]
+    assert ae.change_effect_windowed("strategy.entry_threshold", 1000.0, rows) is None
+
+
+def test_change_effect_windowed_splits_on_entry_timestamp_not_fingerprint():
+    # Deliberately all one fingerprint - unlike change_effect(), this must
+    # not require a fingerprint transition at all, since it's the only
+    # effect measurement market_strategy.*/risk.*/etc. changes can ever get.
+    rows = [
+        _ts_row(100.0, config_fingerprint="fp1", won=False, realized_pnl=-10.0, close_type="stop_loss"),
+        _ts_row(200.0, config_fingerprint="fp1", won=False, realized_pnl=-8.0, close_type="stop_loss"),
+        _ts_row(1500.0, config_fingerprint="fp1", won=True, realized_pnl=12.0, close_type="settled_win"),
+        _ts_row(1600.0, config_fingerprint="fp1", won=True, realized_pnl=9.0, close_type="settled_win"),
+    ]
+    effect = ae.change_effect_windowed("market_strategy.stop_loss_pct", 1000.0, rows)
+    assert effect == {
+        "before_win_rate_pct": 0.0, "before_n": 2, "before_realized_pnl": -18.0,
+        "after_win_rate_pct": 100.0, "after_n": 2, "after_realized_pnl": 21.0,
+    }
+
+
+def test_change_effect_windowed_boundary_trade_counts_as_after():
+    rows = [
+        _ts_row(999.0, won=False, realized_pnl=-5.0),
+        _ts_row(1000.0, won=True, realized_pnl=5.0),  # exactly at applied_at
+    ]
+    effect = ae.change_effect_windowed("strategy.entry_threshold", 1000.0, rows)
+    assert effect["before_n"] == 1
+    assert effect["after_n"] == 1
+
+
+def test_change_effect_windowed_ignores_rows_with_no_entry_timestamp():
+    rows = [
+        _row(entry_timestamp=None, won=True, realized_pnl=100.0),  # unattributed - excluded from both sides
+        _ts_row(500.0, won=False, realized_pnl=-5.0),
+        _ts_row(1500.0, won=True, realized_pnl=5.0),
+    ]
+    effect = ae.change_effect_windowed("strategy.entry_threshold", 1000.0, rows)
+    assert effect["before_n"] == 1
+    assert effect["after_n"] == 1

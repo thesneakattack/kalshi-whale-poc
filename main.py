@@ -2029,12 +2029,24 @@ async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
     offset = max(offset, 0)
     changes = config_performance.recent_applied_changes(limit=limit, offset=offset)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     summaries = advisory_engine.variant_summaries(all_rows)
     for c in changes:
         c["effect"] = (
             advisory_engine.change_effect(c["fingerprint_before"], c["fingerprint_after"], summaries)
             if c["config_path"].startswith("strategy.") else None
         )
+        # Gap 3 of docs/config-tuning-data-gaps-2026-08-10.md - a looser,
+        # complementary measurement alongside the strict one above: works
+        # for any config_path (not just strategy.*, and with no fingerprint-
+        # transition requirement), and isn't starved by fingerprint
+        # fragmentation since it counts every trade before/after applied_at
+        # regardless of which exact config variant produced it. Picks
+        # market_broker's own trade history for market_strategy.* changes -
+        # that strategy's trades never appear in the whale-follow broker's
+        # own log at all.
+        rows_for_path = market_rows if c["config_path"].startswith("market_strategy.") else all_rows
+        c["effect_windowed"] = advisory_engine.change_effect_windowed(c["config_path"], c["applied_at"], rows_for_path)
     return {
         "changes": changes,
         "total": config_performance.applied_changes_count(),

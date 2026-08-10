@@ -164,7 +164,21 @@ works" to "flip it for real" still has open operational questions.
       flag, and a read-only "Rejected Candidates" History-tab panel. 14 new
       tests, 583 passing. Verified live — real rejections already
       accumulating (77 `min_notional_usd`, 11 `entry_threshold`, etc.).
-      Gaps 2-10 still open.
+      **Gap 3 (per-field before/after windowing) is done** — new
+      `advisory_engine.change_effect_windowed()`, a looser measurement
+      alongside the existing `change_effect()`: splits trades by
+      `entry_timestamp` before/after a change's `applied_at` instead of
+      requiring an exact `config_performance` fingerprint match on both
+      sides, so it isn't starved by the fragmentation confirmed live (16
+      `strategy.*` fingerprints, most with 0 resolved trades). Also the
+      only effect measurement `market_strategy.*`/`risk.*`/etc. changes can
+      ever get, since `change_effect()`'s own fingerprinting only covers
+      `strategy.*`. Wired into `GET /api/advisory/applied-changes` as a new
+      `effect_windowed` field; the Change History panel falls back to it,
+      clearly labeled, when the strict `effect` is null. 5 new tests, 588
+      passing. Verified live — several real `exit_sentiment_*` rows that
+      showed `effect: null` now show a real windowed delta (50.0% n=134
+      before → 100.0% n=1 after). Gaps 2, 4-10 still open.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

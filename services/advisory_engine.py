@@ -122,6 +122,47 @@ def change_effect(fingerprint_before: str, fingerprint_after: str, summaries: di
     }
 
 
+def change_effect_windowed(config_path: str, applied_at: float, rows: list[dict]) -> dict | None:
+    """Gap 3 of docs/config-tuning-data-gaps-2026-08-10.md - change_effect()
+    above requires an *exact* fingerprint match on both sides, which starves
+    for real data fast: config_performance.fingerprint() hashes the entire
+    strategy.* dict, so almost any single-field tweak (this one included)
+    mints a brand-new fingerprint with zero trades, and stays that way for a
+    long time even though the vast majority of *other* fields didn't change.
+    Confirmed directly against real data (2026-08-10): 16 distinct
+    strategy.* fingerprints exist, most with 0 resolved trades - the
+    fragmentation this function exists to route around.
+
+    This is a looser, complementary measurement, not a replacement: every
+    trade whose entry_timestamp falls before/after applied_at counts,
+    regardless of fingerprint. Real, disclosed tradeoff - broader data,
+    weaker causal attribution (other fields may also have changed inside
+    the same window) - meant to be read alongside change_effect(), which
+    stays the stricter of the two. Unlike change_effect(), this needs no
+    fingerprint transition at all, so it's the only effect measurement a
+    market_strategy.*/risk.*/etc. change can ever get - change_effect()'s
+    own fingerprinting only ever covers strategy.*.
+
+    None (not a zeroed-out dict) when either side of the window has no
+    resolved trades yet - same "don't show a number you can't honestly
+    back" practice as change_effect() and every other hedged number in
+    this app."""
+    before = [r for r in rows if r.get("entry_timestamp") is not None and r["entry_timestamp"] < applied_at]
+    after = [r for r in rows if r.get("entry_timestamp") is not None and r["entry_timestamp"] >= applied_at]
+    if not before or not after:
+        return None
+    before_summary = trade_analytics.compute_summary(before)
+    after_summary = trade_analytics.compute_summary(after)
+    return {
+        "before_win_rate_pct": before_summary["win_rate_pct"],
+        "before_n": before_summary["total_closed"],
+        "before_realized_pnl": before_summary["total_realized_pnl"],
+        "after_win_rate_pct": after_summary["win_rate_pct"],
+        "after_n": after_summary["total_closed"],
+        "after_realized_pnl": after_summary["total_realized_pnl"],
+    }
+
+
 def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> dict | None:
     """Same confidence-bucket analysis as trade_analytics.compute_insights,
     but the suggested value is now the actual boundary between the worst-
