@@ -225,6 +225,47 @@ def test_real_account_position_tickers_excludes_fills():
     assert "REAL-OLD-FILL" not in result
 
 
+# --- Catalog scan honesty (data-robustness audit, 2026-08-10) ---------------
+# Real finding: mark_scanned() used to be called for the whole batch
+# unconditionally, regardless of whether each series' get_markets() call
+# actually succeeded (return_exceptions=True swallows the failure with no
+# logging) - a persistently-failing series would mark itself "freshly
+# scanned" every rotation forever, looking identical to a healthy-but-quiet
+# one, while never actually writing a row.
+
+class _FakeCatalogScanClient:
+    def __init__(self, failing_tickers):
+        self.failing_tickers = failing_tickers
+        self.calls = []
+
+    async def get_markets(self, limit, status, series_ticker):
+        self.calls.append(series_ticker)
+        if series_ticker in self.failing_tickers:
+            raise RuntimeError("simulated transient API failure")
+        return [{"ticker": f"{series_ticker}-M1", "occurrence_datetime": None}]
+
+
+def test_scan_catalog_batch_only_marks_genuinely_succeeded_series_scanned():
+    main.state["series_cache"] = {
+        "fetched_at": time.time(),
+        "series": [{"ticker": "SER-GOOD", "category": "Sports"}, {"ticker": "SER-BAD", "category": "Sports"}],
+    }
+    fake = _FakeCatalogScanClient(failing_tickers={"SER-BAD"})
+    cfg = config_store_module.config_store.get()
+    cfg["kalshi"]["live_markets_only"] = True
+
+    asyncio.run(main._scan_catalog_batch(fake, cfg))
+
+    scanned = {"SER-GOOD", "SER-BAD"}
+    with mc_module._connect(mc_module.DB_PATH) as conn:
+        rows = dict(conn.execute(
+            "SELECT series_ticker, last_scanned_at FROM series_scan_state WHERE series_ticker IN (?, ?)",
+            tuple(scanned),
+        ).fetchall())
+    assert "SER-GOOD" in rows  # succeeded - correctly marked scanned
+    assert "SER-BAD" not in rows  # failed - must NOT be marked scanned, so it's retried next tick
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with
@@ -777,6 +818,39 @@ def test_slim_position_keeps_fees_and_last_updated():
     assert result["total_traded_dollars"] == "4.8389"
     assert result["last_updated_ts"] == "2026-08-08T15:05:18.514462Z"
     assert "some_other_real_field_not_used_anywhere" not in result
+
+
+def test_slim_event_position_keeps_the_real_event_fields():
+    # event_positions - Kalshi's real parent-event grouping/exposure rollup
+    # - was previously fetched every tick and dropped entirely before
+    # /api/state (direct report: real positions on sibling child markets of
+    # the same event rendered as unrelated flat rows with no grouping).
+    event_position = {
+        "event_ticker": "EVT-A", "total_cost_dollars": "4.84", "total_cost_shares_fp": "10.58",
+        "event_exposure_dollars": "0.0", "realized_pnl_dollars": "0.48", "fees_paid_dollars": "0.04",
+        "cursor": "should not leak through",
+    }
+    result = main._slim_event_position(event_position)
+    assert result["event_ticker"] == "EVT-A"
+    assert result["total_cost_dollars"] == "4.84"
+    assert "cursor" not in result
+
+
+def test_join_real_position_prices_attaches_current_yes_price():
+    account_snapshot = {"positions": {"market_positions": [{"ticker": "REAL-A"}, {"ticker": "REAL-B"}]}}
+    main._join_real_position_prices(account_snapshot, {"REAL-A": 0.62})
+    positions = account_snapshot["positions"]["market_positions"]
+    assert positions[0]["current_yes_price_dollars"] == 0.62
+    # Genuinely absent (not yet fetched) is None, never a fabricated default
+    # - same "don't show a number you can't honestly back" practice used
+    # elsewhere in this app.
+    assert positions[1]["current_yes_price_dollars"] is None
+
+
+def test_join_real_position_prices_no_op_when_not_connected():
+    account_snapshot = {"positions": None}
+    main._join_real_position_prices(account_snapshot, {"REAL-A": 0.62})  # must not raise
+    assert account_snapshot["positions"] is None
 
 
 def test_slim_fill_keeps_created_time_fee_and_taker_flag():

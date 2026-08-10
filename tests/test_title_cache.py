@@ -6,6 +6,32 @@ def _tc(tmp_path, monkeypatch):
     return tc
 
 
+# --- market_title_fields() - the shared title/sub-title builder --------------
+# Previously reimplemented independently in three places (main.py's
+# new_market_titles builder, /api/markets/search, and market_catalog.
+# upsert_markets), each free to drift - consolidated into one function so
+# there's exactly one place this fallback logic can be wrong.
+
+def test_market_title_fields_prefers_real_title():
+    m = {"ticker": "T-A", "title": "Real Title", "yes_sub_title": "Yes Sub", "no_sub_title": "No Sub"}
+    result = tc.market_title_fields(m)
+    assert result == {"title": "Real Title", "yes_sub_title": "Yes Sub", "no_sub_title": "No Sub"}
+
+
+def test_market_title_fields_falls_back_to_yes_sub_title_when_title_missing():
+    # A child of a multi-outcome event can carry a real yes_sub_title with
+    # no separate title field at all.
+    m = {"ticker": "T-A", "title": None, "yes_sub_title": "Golf / Golfer / Golfing"}
+    result = tc.market_title_fields(m)
+    assert result["title"] == "Golf / Golfer / Golfing"
+
+
+def test_market_title_fields_falls_back_to_ticker_as_last_resort():
+    m = {"ticker": "T-A", "title": None, "yes_sub_title": None}
+    result = tc.market_title_fields(m)
+    assert result["title"] == "T-A"
+
+
 def test_market_titles_round_trip(tmp_path, monkeypatch):
     cache = _tc(tmp_path, monkeypatch)
     cache.save_market_titles({

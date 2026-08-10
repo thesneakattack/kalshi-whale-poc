@@ -137,7 +137,8 @@ def test_candidates_in_window_excludes_closed_status(tmp_path, monkeypatch):
     assert result == []
 
 
-def test_next_series_to_scan_prioritizes_never_scanned():
+def test_next_series_to_scan_prioritizes_never_scanned(tmp_path, monkeypatch):
+    _mc(tmp_path, monkeypatch)
     all_series = [{"ticker": "SER-A"}, {"ticker": "SER-B"}, {"ticker": "SER-C"}]
     batch = mc.next_series_to_scan(all_series, batch_size=2)
     assert len(batch) == 2  # no scan history at all yet - any 2 is fine, just confirms the size

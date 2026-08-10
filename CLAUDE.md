@@ -91,6 +91,26 @@ into a row that stale in-memory objects don't know is gone). Check
 paper account cleanly, in place, via `PaperBroker.reset()`) over deleting
 `paper_broker.db` by hand.
 
+**Accumulated history in these files is a first-class asset, not disposable
+state** — direct instruction. `market_history.db`, `signal_log.db`,
+`market_catalog.db`, `market_analyst.db`, `config_performance.db` are the
+dataset every rule-based heuristic (`confidence_calibration`,
+`advisory_engine`, `trade_analytics.compute_insights`), the whale-tracking
+filters, and the market analyst agent all depend on — most of them are
+explicitly sample-size-gated, so losing history doesn't just lose data, it
+silently resets those gates back to zero. This must survive every future
+refactor, rewrite, and test run:
+- Schema changes are always additive (`CREATE TABLE IF NOT EXISTS` +
+  `_add_column_if_missing`-style `ALTER TABLE` — see the idiom below),
+  never a drop-and-recreate.
+- Tests always redirect `DB_PATH` via `monkeypatch` to an isolated tmp
+  path — never touch a real `data/*.db` file (the established convention
+  throughout `tests/*.py`).
+- Manual/live verification should not call `POST /api/reset` or otherwise
+  truncate real data unless a reset is specifically what's being verified —
+  prefer read-only checks, or a disposable round-trip (set a value, confirm,
+  set it back) for anything that needs to touch live config/state.
+
 ## Persistence idiom
 
 Every stateful module owns its own SQLite file under `data/` (gitignored via

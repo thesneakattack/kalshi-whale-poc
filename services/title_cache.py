@@ -78,6 +78,22 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def market_title_fields(m: dict) -> dict:
+    """The title/yes_sub_title/no_sub_title fallback shape, in one place -
+    previously reimplemented independently in three spots (main.py's
+    new_market_titles builder, the /api/markets/search route, and
+    services/market_catalog.py's upsert_markets), each free to drift from
+    the other two. `title` falls back to `yes_sub_title` (a market can have
+    a real yes_sub_title with no separate title at all - e.g. one child of
+    a multi-outcome event) and then to the raw ticker as a last resort,
+    never left blank."""
+    return {
+        "title": m.get("title") or m.get("yes_sub_title") or m.get("ticker"),
+        "yes_sub_title": m.get("yes_sub_title"),
+        "no_sub_title": m.get("no_sub_title"),
+    }
+
+
 def load_market_titles() -> dict[str, dict]:
     with _connect() as conn:
         rows = conn.execute(

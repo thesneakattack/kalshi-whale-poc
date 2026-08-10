@@ -35,6 +35,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services import title_cache
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_catalog.db"
 
 # Direct scope correction: "maybe it doesn't have to be a FULL catalog but
@@ -153,11 +155,12 @@ def upsert_markets(series_ticker: str, category: str | None, markets: list[dict]
             continue
         if not (updated_at - _MAX_PAST_HORIZON_SEC <= occurrence_ts <= updated_at + _MAX_FUTURE_HORIZON_SEC):
             continue
+        title_fields = title_cache.market_title_fields(m)
         rows.append((
             ticker, m.get("event_ticker"), series_ticker, category,
             float(m.get("volume_24h_fp") or 0), occurrence_ts,
             _parse_ts(m.get("close_time")), m.get("status"), updated_at,
-            m.get("title"), m.get("yes_sub_title"), m.get("no_sub_title"),
+            title_fields["title"], title_fields["yes_sub_title"], title_fields["no_sub_title"],
         ))
     if not rows:
         return

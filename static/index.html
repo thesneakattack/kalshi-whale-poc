@@ -165,7 +165,7 @@
   }
   .series-section-header {
     display: flex; align-items: baseline; gap: 8px; justify-content: space-between;
-    padding: 0 4px;
+    padding: 0 4px; cursor: pointer;
   }
   .series-section-title { font-size: 13px; font-weight: 700; }
   .series-section-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
@@ -281,6 +281,11 @@
   }
   .whale-reason-body div { margin-bottom: 4px; }
   .whale-reason-body div:last-child { margin-bottom: 0; }
+  /* Real per-leg breakdown for a genuine combo/MVE market - same disclosure
+     visual language as .whale-reason above, not a new pattern. */
+  .combo-legs { margin-top: 4px; font-size: 11px; }
+  .combo-legs summary { cursor: pointer; color: var(--muted); }
+  .combo-leg { padding: 3px 0 3px 12px; }
   .conf-bar { height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
   .conf-fill { height: 100%; background: var(--whale); }
   .decision-card.trade { border-left: 3px solid var(--yes); }
@@ -631,6 +636,14 @@
      whole page huge. Same pattern as .raw-json/.col above, just applied to
      list panels that previously had no height constraint at all. */
   .scroll-panel { max-height: 420px; overflow-y: auto; padding-right: 2px; }
+  /* Same idea as .scroll-panel above, just taller - this bounds the
+     Markets/Whale Watch market-card grid (#markets-cards/#whale-cards),
+     which is this tab's primary content (not a secondary feed) and can run
+     to hundreds of individual markets on a wide watchlist. Missed by the
+     original .scroll-panel pass entirely - direct report: it was extending
+     the whole page to a "ridiculous height" instead of scrolling internally
+     like every other feed panel already does. */
+  .cards-scroll-panel { max-height: 640px; overflow-y: auto; padding-right: 2px; }
   .raw-json summary { cursor: pointer; color: var(--muted); font-size: 11px; margin-top: 8px; }
 
   .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
@@ -780,7 +793,7 @@
 </div>
 
 <header>
-  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span> <span id="connectivity-badge"></span></h1>
+  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span> <span id="connectivity-badge"></span> <span id="tick-health-badge"></span></h1>
   <div class="equity-strip">
     <span class="mode-tag" id="header-mode-tag">PAPER</span>
     <div class="item"><div class="label" id="header-bankroll-label">Bankroll</div><div class="value" id="bankroll">—</div></div>
@@ -933,7 +946,7 @@
     <div id="markets-tab-search-results"></div>
 
     <div class="panel-title">Watchlist <span id="markets-card-count"></span> <span id="markets-toggle" style="float:right;"></span></div>
-    <div id="markets-cards"><div class="empty">Loading markets…</div></div>
+    <div id="markets-cards" class="cards-scroll-panel"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
 
@@ -964,7 +977,7 @@
     <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
 
     <div class="panel-title">Whale Watch — market view + how whales are betting <span id="whale-cards-toggle" style="float:right;"></span></div>
-    <div id="whale-cards"><div class="empty">Loading markets…</div></div>
+    <div id="whale-cards" class="cards-scroll-panel"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
 
@@ -1468,19 +1481,45 @@ function parseConfidence(reason) {
   return m ? parseFloat(m[1]) : null;
 }
 
-// Kalshi's real title for a combo/parlay market is a flat comma list like
-// "yes Beijing Guoan,yes Bayern Munich,yes Real Sociedad,...,yes Minnesota" —
-// technically a "title" but not something a person can scan. Collapse it to
-// "N-leg parlay: first two legs +N more" instead; the full list is still in
-// the hover tooltip for anyone who needs it.
+// Previously guessed "this is a combo/parlay market" from a comma-split of
+// the title text - a real, confirmed-live bug: an ORDINARY single-outcome
+// market whose title just happens to contain a comma (e.g. a date, "before
+// Aug 10, 2026?") was misdetected as a multi-leg combo and its whole title
+// silently mangled into "2-leg parlay: ...". Fixed to use the real,
+// authoritative signal instead - a ticker's `legs` field (from Kalshi's own
+// Market.mve_selected_legs, see main.py) is only ever populated for a
+// genuine MVE/combo market, never guessed from text. See comboLegsHTML for
+// the real per-leg breakdown; this function no longer does any collapsing,
+// just returns the title as-is.
 function formatTitle(full) {
-  if (!full) return full;
-  const legs = full.split(',').map(s => s.trim()).filter(Boolean);
-  if (legs.length <= 1) return full;
-  const names = legs.map(l => l.replace(/^(yes|no)\s+/i, ''));
-  const shown = names.slice(0, 2).join(', ');
-  const more = names.length > 2 ? ` +${names.length - 2} more` : '';
-  return `${legs.length}-leg parlay: ${shown}${more}`;
+  return full;
+}
+
+// Real per-leg breakdown for a genuine combo/MVE market (Market.
+// mve_selected_legs - {event_ticker, market_ticker, side} per leg, real
+// Kalshi field). Each leg's own label/price resolves off the same
+// marketTitles/latest global `prices` caches every other ticker reference
+// already uses - eventually-consistent (falls back to the raw ticker until
+// that leg's own market data has been fetched at least once), not a new
+// per-leg API call. Returns '' when this ticker isn't a combo market at all
+// (the common case) - never a guess.
+function comboLegsHTML(ticker) {
+  const info = marketTitles[ticker];
+  const legs = info && info.legs;
+  if (!legs || !legs.length) return '';
+  const prices = state.latest_prices || {};
+  const rows = legs.map(leg => {
+    const legLabel = marketLabel(leg.market_ticker);
+    const legPrice = prices[leg.market_ticker];
+    const priceHtml = legPrice != null
+      ? ` — ${leg.side === 'no' ? ((1 - legPrice) * 100).toFixed(0) : (legPrice * 100).toFixed(0)}¢`
+      : '';
+    return `<div class="combo-leg"><span class="side-tag ${esc(leg.side)}">${esc(leg.side)}</span> ${esc(legLabel.short)}${priceHtml}</div>`;
+  }).join('');
+  // Same stopPropagation() this app already needed once for the identical
+  // shape of bug (a disclosure inside a clickable row also opening the
+  // market-detail modal underneath it on click).
+  return `<details class="combo-legs" onclick="event.stopPropagation()"><summary>${legs.length}-leg combo — click to see each selection</summary>${rows}</details>`;
 }
 
 // Whale signals/decisions only carry a raw ticker (e.g. "KXMVESPORTS...-FC34E0243A1")
@@ -1801,8 +1840,9 @@ function renderSignals(signals) {
     // real dollar size is size*(1-price), not size*price, same convention
     // as PaperBroker.cost_basis/open_position's unit_cost.
     const dollarSize = s.price != null ? fmt(s.size * (s.side === 'yes' ? s.price : (1 - s.price))) : null;
+    const sEt = (marketTitles[s.ticker] && marketTitles[s.ticker].event_ticker) || '';
     return `
-    <div class="signal-card" title="${esc(label.full)}">
+    <div class="signal-card" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(s.ticker)}', '${esc(sEt)}')">
       <div class="top-row">
         <span>${stealthTag}${esc(label.short)} <span class="side-tag ${s.side}">${s.side}</span></span>
         <span style="color: var(--whale)">${s.size.toLocaleString()} ct${dollarSize ? ' · ' + dollarSize : ''}</span>
@@ -1903,8 +1943,9 @@ function renderDecisions(decisions) {
     } else {
       detail = esc(plainEnglishSkipReason(d.reason));
     }
+    const dEt = (marketTitles[ticker] && marketTitles[ticker].event_ticker) || '';
     return `
-      <div class="decision-card ${d.action}" title="${esc(label.full)}">
+      <div class="decision-card ${d.action}" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(ticker)}', '${esc(dEt)}')">
         <div class="top-row">
           <span>${esc(label.short)}</span>
           <span class="action-tag ${d.action}">${d.action}</span>
@@ -1979,7 +2020,9 @@ function renderDecisionTable() {
     sortHeaderHTML(decisionFilter, key, label, `toggleSort(decisionFilter,'${key}',renderDecisionTable)`)
   ).join('');
 
-  const bodyRows = rows.map(r => `<tr title="${esc(r.reason || '')}">
+  const bodyRows = rows.map(r => {
+    const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+    return `<tr title="${esc(r.reason || '')} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
     <td>${esc(marketLabel(r.ticker).short)}</td>
     <td><span class="action-tag ${r.action}">${r.action}</span></td>
@@ -1987,7 +2030,8 @@ function renderDecisionTable() {
     <td>${r.size.toLocaleString()}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence === null ? '—' : (r.confidence*100).toFixed(0) + '%'}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 
   el.innerHTML = `<table class="positions-table sortable">
     <thead><tr>${headerHtml}</tr></thead>
@@ -2101,6 +2145,7 @@ function renderPositions(positions, prices, recentTrades, signals) {
         <td><span class="side-tag ${p.side}">${esc(positionLabel)}</span>
           ${whaleConfidenceBadgeHTML(p.ticker, p.side, signals)}
           ${reasonDetailsHTML(p.ticker, recentTrades)}
+          ${comboLegsHTML(p.ticker)}
         </td>
         <td>${p.size.toLocaleString()}</td>
         <td>${(p.entry_price*100).toFixed(0)}¢</td>
@@ -2162,8 +2207,9 @@ function renderTrades(trades, prices) {
     el.innerHTML = lastTradeLog.map(t => {
       const label = marketLabel(t.ticker);
       const when = new Date(t.timestamp * 1000).toLocaleTimeString();
+      const tEt = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
       return `
-      <div class="trade-row" title="${esc(label.full)}">
+      <div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
         <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
           ${contextLineHTML(t.ticker, t.side)}
         </div>
@@ -2223,7 +2269,9 @@ function renderTradeLogTable() {
     sortHeaderHTML(tradeLogFilter, key, label, `toggleSort(tradeLogFilter,'${key}',renderTradeLogTable)`)
   ).join('');
 
-  const bodyRows = rows.map(r => `<tr title="${esc(marketLabel(r.ticker).full)}">
+  const bodyRows = rows.map(r => {
+    const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+    return `<tr title="${esc(marketLabel(r.ticker).full)} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
     <td>${esc(marketLabel(r.ticker).short)}</td>
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
@@ -2231,7 +2279,8 @@ function renderTradeLogTable() {
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence != null ? (r.confidence*100).toFixed(0) + '%' : '—'}</td>
     <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${fmt(r.pnl)}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 
   el.innerHTML = filterHtml + `<table class="positions-table sortable">
     <thead><tr>${headerHtml}</tr></thead>
@@ -2281,23 +2330,37 @@ function renderRealPositions(positions) {
   }
 
   if (isAdvanced('real-positions')) {
-    const rows = sortRows(list.map(p => ({
-      ticker: p.ticker || p.market_ticker || 'unknown',
-      qty: p.position_fp != null ? parseFloat(p.position_fp) : NaN,
-      exposure: p.market_exposure_dollars != null ? parseFloat(p.market_exposure_dollars) : null,
-      fees: p.fees_paid_dollars != null ? parseFloat(p.fees_paid_dollars) : null,
-      totalTraded: p.total_traded_dollars != null ? parseFloat(p.total_traded_dollars) : null,
-      pnl: p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null,
-      updated: p.last_updated_ts || null,
-      p,
-    })), realPositionsState.sortKey, realPositionsState.sortDir);
+    const rows = sortRows(list.map(p => {
+      const qty = p.position_fp != null ? parseFloat(p.position_fp) : NaN;
+      const side = isNaN(qty) ? null : (qty >= 0 ? 'yes' : 'no');
+      // current_yes_price_dollars is always the yes-side price by convention
+      // (same as every other price in this app) - invert for a no position,
+      // the exact no-side math this codebase has gotten wrong before
+      // (CLAUDE.md's documented bug pattern).
+      const yesPrice = p.current_yes_price_dollars;
+      const heldPrice = yesPrice == null ? null : (side === 'no' ? 1 - yesPrice : yesPrice);
+      return {
+        ticker: p.ticker || p.market_ticker || 'unknown',
+        qty, side, heldPrice,
+        exposure: p.market_exposure_dollars != null ? parseFloat(p.market_exposure_dollars) : null,
+        fees: p.fees_paid_dollars != null ? parseFloat(p.fees_paid_dollars) : null,
+        totalTraded: p.total_traded_dollars != null ? parseFloat(p.total_traded_dollars) : null,
+        pnl: p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null,
+        updated: p.last_updated_ts || null,
+        p,
+      };
+    }), realPositionsState.sortKey, realPositionsState.sortDir);
     const sortCall = (key) => `toggleSort(realPositionsState, '${key}', renderRealPositionsFromLast)`;
     const bodyRows = rows.map(r => {
       const label = marketLabel(r.ticker);
-      const side = isNaN(r.qty) ? null : (r.qty >= 0 ? 'yes' : 'no');
-      return `<tr title="${esc(JSON.stringify(r.p))}">
-        <td style="text-align:left;">${esc(label.short)} ${side ? `<span class="side-tag ${side}">${side}</span>` : ''}</td>
+      const et = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+      // Direct request: real positions should open to full market detail the
+      // same way paper positions/every market card already do - this table
+      // was the one place in Portfolio missing it.
+      return `<tr title="${esc(JSON.stringify(r.p))} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(et)}')">
+        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${r.side}">${r.side}</span>` : ''}</td>
         <td>${isNaN(r.qty) ? '—' : r.qty.toLocaleString()}</td>
+        <td>${r.heldPrice != null ? (r.heldPrice*100).toFixed(0)+'¢' : '—'}</td>
         <td>${r.exposure != null ? fmt(r.exposure) : '—'}</td>
         <td>${r.fees != null ? fmt(r.fees) : '—'}</td>
         <td>${r.totalTraded != null ? fmt(r.totalTraded) : '—'}</td>
@@ -2309,6 +2372,7 @@ function renderRealPositions(positions) {
       <thead><tr>
         ${sortHeaderHTML(realPositionsState, 'ticker', 'Market', sortCall('ticker'))}
         ${sortHeaderHTML(realPositionsState, 'qty', 'Contracts', sortCall('qty'))}
+        ${sortHeaderHTML(realPositionsState, 'heldPrice', 'Current Price', sortCall('heldPrice'))}
         ${sortHeaderHTML(realPositionsState, 'exposure', 'Exposure', sortCall('exposure'))}
         ${sortHeaderHTML(realPositionsState, 'fees', 'Fees Paid', sortCall('fees'))}
         ${sortHeaderHTML(realPositionsState, 'totalTraded', 'Total Traded', sortCall('totalTraded'))}
@@ -2320,26 +2384,60 @@ function renderRealPositions(positions) {
     return;
   }
 
-  el.innerHTML = list.map(p => {
+  // Grouped by parent event (Kalshi's own event_positions, previously
+  // fetched every tick and dropped entirely - direct report: real
+  // positions on sibling child markets of the same event, e.g. two
+  // different "what will they say" markets under one mention event, showed
+  // as unrelated flat rows with no indication they shared an event) -
+  // same grouping key marketTitles already carries, same pattern
+  // renderPositions (paper) already uses for the identical reason.
+  const groups = new Map();
+  list.forEach(p => {
     const ticker = p.ticker || p.market_ticker || 'unknown';
-    const label = marketLabel(ticker);
-    const qty = p.position_fp ?? '—';
-    const qtyNum = p.position_fp != null ? parseFloat(p.position_fp) : NaN;
-    const exposure = p.market_exposure_dollars != null ? fmt(parseFloat(p.market_exposure_dollars)) : null;
-    const fees = p.fees_paid_dollars != null ? parseFloat(p.fees_paid_dollars) : null;
-    const feesHtml = fees != null && fees > 0 ? ` · ${fmt(fees)} fees` : '';
-    const pnl = p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null;
-    const pnlHtml = pnl != null ? ` <span style="color: var(${pnl >= 0 ? '--yes' : '--no'})">${fmt(pnl)} realized</span>` : '';
-    const side = isNaN(qtyNum) ? null : (qtyNum >= 0 ? 'yes' : 'no');  // Kalshi's real convention: signed count, positive = Yes
-    const updated = p.last_updated_ts ? new Date(p.last_updated_ts).toLocaleTimeString() : null;
-    return `<div class="position-row" title="${esc(JSON.stringify(p))}">
-      <div class="name">${esc(label.short)}${side ? ` <span class="side-tag ${side}">${side}</span>` : ''}
-        ${side ? contextLineHTML(ticker, side) : ''}
-      </div>
-      <div class="nums"><span title="Signed contract count - positive is a Yes position, negative is No">${esc(String(qty))} contracts${exposure != null ? ' · ' + exposure + ' put in' : ''}${feesHtml}${pnlHtml}</span>
-        ${updated ? `<span style="color:var(--muted);">updated ${esc(updated)}</span>` : ''}
-        ${payoutHTML(qtyNum)}</div>
-    </div>`;
+    const info = marketTitles[ticker];
+    const et = info && info.event_ticker;
+    const key = et || ('__solo__' + ticker);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  });
+
+  el.innerHTML = Array.from(groups.entries()).map(([key, group]) => {
+    const first = group[0];
+    const firstTicker = first.ticker || first.market_ticker || 'unknown';
+    const et = marketTitles[firstTicker] && marketTitles[firstTicker].event_ticker;
+    const groupHeader = (et && group.length > 1)
+      ? `<div class="series-header"><span>${esc((eventTitles[et] && eventTitles[et].title) || marketLabel(firstTicker).short)}</span><span class="count">${group.length} positions</span></div>`
+      : '';
+    const rows = group.map(p => {
+      const ticker = p.ticker || p.market_ticker || 'unknown';
+      const label = marketLabel(ticker);
+      const qty = p.position_fp ?? '—';
+      const qtyNum = p.position_fp != null ? parseFloat(p.position_fp) : NaN;
+      const exposure = p.market_exposure_dollars != null ? fmt(parseFloat(p.market_exposure_dollars)) : null;
+      const fees = p.fees_paid_dollars != null ? parseFloat(p.fees_paid_dollars) : null;
+      const feesHtml = fees != null && fees > 0 ? ` · ${fmt(fees)} fees` : '';
+      const pnl = p.realized_pnl_dollars != null ? parseFloat(p.realized_pnl_dollars) : null;
+      const pnlHtml = pnl != null ? ` <span style="color: var(${pnl >= 0 ? '--yes' : '--no'})">${fmt(pnl)} realized</span>` : '';
+      const side = isNaN(qtyNum) ? null : (qtyNum >= 0 ? 'yes' : 'no');  // Kalshi's real convention: signed count, positive = Yes
+      // current_yes_price_dollars is always the yes-side price by
+      // convention - invert for a no position (CLAUDE.md's documented
+      // no-side-math bug pattern).
+      const yesPrice = p.current_yes_price_dollars;
+      const heldPrice = yesPrice == null ? null : (side === 'no' ? 1 - yesPrice : yesPrice);
+      const priceHtml = heldPrice != null ? ` · ${(heldPrice*100).toFixed(0)}¢ now` : '';
+      const updated = p.last_updated_ts ? new Date(p.last_updated_ts).toLocaleTimeString() : null;
+      const tickerEt = (marketTitles[ticker] && marketTitles[ticker].event_ticker) || '';
+      return `<div class="position-row" style="cursor:pointer;" title="${esc(JSON.stringify(p))} — click to view full market detail" onclick="openMarketDetail('${esc(ticker)}', '${esc(tickerEt)}')">
+        <div class="name">${esc(label.short)}${side ? ` <span class="side-tag ${side}">${side}</span>` : ''}
+          ${side ? contextLineHTML(ticker, side) : ''}
+          ${comboLegsHTML(ticker)}
+        </div>
+        <div class="nums"><span title="Signed contract count - positive is a Yes position, negative is No">${esc(String(qty))} contracts${priceHtml}${exposure != null ? ' · ' + exposure + ' put in' : ''}${feesHtml}${pnlHtml}</span>
+          ${updated ? `<span style="color:var(--muted);">updated ${esc(updated)}</span>` : ''}
+          ${payoutHTML(qtyNum)}</div>
+      </div>`;
+    }).join('');
+    return groupHeader + rows;
   }).join('') + rawJsonDetails(positions);
 }
 
@@ -3026,8 +3124,14 @@ function renderHistoryTrades() {
     const pnlColor = pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)');
     const closeTypeLabel = HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type || 'unknown';
     const conf = t.entry_confidence !== null && t.entry_confidence !== undefined ? `${(t.entry_confidence * 100).toFixed(0)}%` : '—';
-    const title = `Entry: ${t.entry_reason || 'unknown'}\nExit: ${t.exit_reason}`;
-    return `<tr title="${esc(title)}">
+    const title = `Entry: ${t.entry_reason || 'unknown'}\nExit: ${t.exit_reason} — click to view full market detail`;
+    const et = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
+    // Direct request: closed positions in History should open to full
+    // market detail too, matching the same click-through every open
+    // position/market card already has - entry/exit price and close
+    // type/P&L (the "did this win or lose" answer) are already shown
+    // inline in this row; the modal adds the market's fuller context.
+    return `<tr title="${esc(title)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
       <td>${esc(label.short)}</td>
       <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>
       <td>${t.size.toLocaleString()}</td>
@@ -3201,14 +3305,28 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   const ctx = marketContext(m.ticker, null);
   const metaRight = ctx.category ? esc(ctx.category) : esc(m.ticker.split('-')[0]);
   const matchupHtml = ctx.matchup ? `<div class="context-line" style="margin:0 0 6px;">${esc(ctx.matchup)}</div>` : '';
+  // yes_sub_title/no_sub_title say what each side actually MEANS for a
+  // multi-child-market question (e.g. "Golf / Golfer / Golfing" for one
+  // "what will they say" child, or "Over 8.5" for one Total Runs
+  // threshold) - previously fetched into ctx here and then only
+  // ctx.category/ctx.matchup were ever read, discarding exactly the piece
+  // that distinguishes this specific child from its siblings (direct
+  // report: markets with several child markets showed only the generic
+  // series/event title, losing which child a price actually referred to).
+  // Only shown when it says something the main title doesn't already say.
+  const info = marketTitles[m.ticker] || {};
+  const yesSub = info.yes_sub_title && info.yes_sub_title !== label.full ? esc(info.yes_sub_title) : null;
+  const noSub = info.no_sub_title && info.no_sub_title !== label.full && info.no_sub_title !== info.yes_sub_title
+    ? esc(info.no_sub_title) : null;
 
   return `
   <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
     <div class="title">${esc(label.short)} ${liveBadgeHTML(m)}</div>
     ${matchupHtml}
+    ${comboLegsHTML(m.ticker)}
     <div class="prices">
-      <div class="price-btn yes"><div class="lbl">Yes</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div>${priceChangeHTML(m.ticker, yesBid)}</div>
-      <div class="price-btn no"><div class="lbl">No</div><div class="val">${noPrice !== null ? noPrice + '¢' : '—'}</div></div>
+      <div class="price-btn yes"><div class="lbl">Yes${yesSub ? ` <span style="font-weight:400; opacity:0.8;">(${yesSub})</span>` : ''}</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div>${priceChangeHTML(m.ticker, yesBid)}</div>
+      <div class="price-btn no"><div class="lbl">No${noSub ? ` <span style="font-weight:400; opacity:0.8;">(${noSub})</span>` : ''}</div><div class="val">${noPrice !== null ? noPrice + '¢' : '—'}</div></div>
     </div>
     <div class="prob-bar"><div class="fill" style="width:${yesPrice ?? 50}%"></div></div>
     <div class="meta"><span>vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span><span>${metaRight}</span></div>
@@ -3298,11 +3416,29 @@ function eventGroupCardHTML(group, eventInfo, prices) {
   </div>`;
 }
 
+// A series past this many individual markets (e.g. a full tournament
+// bracket) renders collapsed by default - direct report that a handful of
+// oversized series, not the general card count, was what actually blew the
+// page out (one 69-market PGA event alone). Small multi-outcome groups
+// (a 2-3-way race) stay fully expanded, matching today's behavior exactly.
+const _SERIES_COLLAPSE_THRESHOLD = 8;
+
 function renderMarketCards(containerId, countId, markets, prices, includeWhale, signals, seriesTrackRecord) {
   const el = $(containerId);
   el.classList.add('cards-grid'); // shares its container with the Advanced screener table (renderScreenerTableFromState), which needs this class off
   if (countId) $(countId).textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
+
+  // A poll-driven rebuild would otherwise silently re-collapse/re-expand
+  // every series-section back to its threshold default every ~5s, snapping
+  // shut a manually-expanded large series (or re-expanding a manually-
+  // collapsed small one) - same bug class already found and fixed once for
+  // the whale-reason disclosure toggle. Capture each series' current open
+  // state before the rebuild; anything not seen before falls back to the
+  // threshold default, anything seen before keeps exactly what the user set.
+  const prevSeriesOpenState = new Map(
+    Array.from(el.querySelectorAll('details.series-section[data-series]')).map(d => [d.dataset.series, d.open])
+  );
 
   // markets arrives already grouped consecutively by parent series (see
   // KalshiClient.round_robin_select) - split into consecutive series runs
@@ -3341,13 +3477,16 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
     if (eventGroups.size === 1) return cardsHtml;  // one event - nothing to nest, render exactly as before
 
     const totalVol = run.markets.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
-    return `<div class="series-section">
-      <div class="series-section-header">
+    const isOpen = prevSeriesOpenState.has(run.series)
+      ? prevSeriesOpenState.get(run.series)
+      : run.markets.length <= _SERIES_COLLAPSE_THRESHOLD;
+    return `<details class="series-section" data-series="${esc(run.series)}"${isOpen ? ' open' : ''}>
+      <summary class="series-section-header">
         <span class="series-section-title">${esc(seriesLabel(run.series))}</span>
         <span class="series-section-meta">${eventGroups.size} events · ${run.markets.length} markets · vol ${Math.round(totalVol).toLocaleString()}</span>
-      </div>
+      </summary>
       <div class="cards-grid">${cardsHtml}</div>
-    </div>`;
+    </details>`;
   }).join('');
 }
 
@@ -3613,7 +3752,7 @@ const GLOSSARY_TERMS = [
   ['Implied probability', 'What a market\'s price says about the odds, restated as a percent chance - a market trading at 30¢ implies roughly a 30% chance of the event happening.'],
   ['Basis points (bps)', 'A unit equal to 0.01 percentage points (100 bps = 1 percentage point) - a finer-grained way to talk about small probability/price moves than whole percent.'],
   ['Series', 'Kalshi\'s term for a recurring template of similar markets (e.g. "will it rain in NYC tomorrow" repeats daily as its own series). This app groups whale accuracy by series so "how have whales done on this type of market" means something, instead of judging a whale off one single market.'],
-  ['Combo / parlay market', 'A market whose outcome depends on more than one underlying event at once (e.g. "Team A wins AND scores over 100"). Kalshi auto-generates these in bulk - they vastly outnumber single-outcome markets and rarely have real trading activity, so this app filters them out of automatic market discovery.'],
+  ['Combo / parlay market', 'A market whose outcome depends on more than one underlying event at once (e.g. "Team A wins AND scores over 100"). Kalshi auto-generates these in bulk - they vastly outnumber single-outcome markets and rarely have real trading activity, so automatic discovery finds real single-outcome markets by design rather than needing to filter these out after the fact. If one does show up (e.g. in a real position), this app shows its real per-selection breakdown - each leg\'s own market and current price - rather than just a collapsed title.'],
   ['Shadow mode', 'Runs the exact same trading logic this app would use for real, sized against what a connected real account\'s money would allow, and logs what it would have done - without ever placing a real order. The step to trust before ever enabling real trading.'],
   ['Paper trading', 'Trading with fake money against real, live market prices - the default mode this app runs in, so a strategy can be tested with zero financial risk.'],
   ['Live market', 'A market tied to a real-world event that\'s currently in progress right now (a game being played, etc.), as opposed to one that hasn\'t started yet or has already finished. Shown with a LIVE badge.'],
@@ -3646,7 +3785,7 @@ function renderMarketDetailTitle(ticker) {
   const ctxLine = ctx.category || ctx.matchup
     ? `<div class="context-line" style="margin-top:4px;">${ctx.category ? `<span class="cat-tag">${esc(ctx.category)}</span> · ` : ''}${ctx.matchup ? esc(ctx.matchup) : ''}</div>`
     : '';
-  $('market-detail-title').innerHTML = `${esc(label.short)}${ctxLine}`;
+  $('market-detail-title').innerHTML = `${esc(label.short)}${ctxLine}${comboLegsHTML(ticker)}`;
 }
 
 async function refreshMarketDetail() {
@@ -4173,6 +4312,32 @@ function renderConnectivity() {
     + `what you're seeing may be out of date. This is a connectivity problem, not a sign the strategy is stuck.`;
 }
 
+// Data-robustness audit finding (2026-08-10): the entire trading-loop tick
+// runs under one umbrella try/except that sets state["error"] on failure -
+// that field has existed in /api/state's response the whole time, but had
+// ZERO frontend consumers anywhere (confirmed by grep), unlike
+// renderConnectivity above, which only ever tracks whether the browser's
+// own poll reaches the server at all - a completely different failure mode.
+// A backend tick could fail repeatedly, forever - aborting real data
+// collection (record_snapshots/log_signal/the catalog scan) mid-tick - with
+// no visible indication anywhere in the app. Same visual language as
+// renderConnectivity (the .stale pulsing badge), not a new pattern.
+function renderTickHealth(state) {
+  const el = $('tick-health-badge');
+  if (!el) return;
+  if (!state.error) {
+    el.textContent = '';
+    el.className = '';
+    el.title = '';
+    return;
+  }
+  el.textContent = '⚠ BACKEND TICK FAILING';
+  el.className = 'stale';
+  el.title = `The server's own trading-loop tick threw an error and skipped its work this cycle - `
+    + `real data collection (price snapshots, whale signals, market catalog scanning) may be paused `
+    + `until this clears. Last error: ${state.error}`;
+}
+
 function renderHalted(risk) {
   const slot = $('halted-banner-slot');
   slot.innerHTML = risk.halted
@@ -4329,6 +4494,7 @@ async function refresh() {
     lastSuccessfulRefresh = Date.now();
     consecutiveRefreshFailures = 0;
     renderConnectivity();
+    renderTickHealth(state);
 
     $('live-dot').classList.toggle('live', state.running);
     $('whale-source').textContent = `· ${sourceLabel(state.whale_source)}`;

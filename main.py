@@ -217,10 +217,30 @@ async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
         return_exceptions=True,
     )
     now = time.time()
+    # Data-robustness audit finding (2026-08-10): mark_scanned() used to be
+    # called for the WHOLE batch unconditionally, regardless of whether each
+    # series' fetch actually succeeded - return_exceptions=True above
+    # swallows a failure with no logging at all, so a persistently-failing
+    # series (rate limit, malformed/renamed ticker, transient API error)
+    # would mark itself "freshly scanned" every ~59-minute rotation forever,
+    # looking identical to a series that's simply quiet, while never
+    # actually writing a row. Only the series that genuinely succeeded this
+    # batch get marked scanned; a failing one stays at the front of the
+    # least-recently-scanned queue and gets retried next tick instead of
+    # silently going stale for good.
+    succeeded = []
     for s, result in zip(batch, results):
         if isinstance(result, list):
             market_catalog.upsert_markets(s["ticker"], s.get("category"), result, updated_at=now)
-    market_catalog.mark_scanned([s["ticker"] for s in batch], scanned_at=now)
+            succeeded.append(s["ticker"])
+        else:
+            # No logging framework exists anywhere in this app yet (audit
+            # finding) - stdout is captured by `ddev logs -s fastapi` per
+            # this project's own documented workflow, so a failing series is
+            # at least visible there instead of vanishing with zero trace.
+            print(f"[market_catalog] scan failed for {s['ticker']!r}, will retry next tick: {result!r}")
+    if succeeded:
+        market_catalog.mark_scanned(succeeded, scanned_at=now)
 
 
 def _series_meta_map(series_tickers: set[str]) -> dict:
@@ -623,6 +643,17 @@ _POSITION_FIELDS = (
     # panel that's specifically about real money.
     "fees_paid_dollars", "total_traded_dollars", "last_updated_ts",
 )
+# Kalshi's own EventPosition has no price field either (same as
+# MarketPosition - confirmed against the SDK's models), so this doesn't need
+# a price join the way market_positions does below - it's purely the
+# real parent-event grouping/exposure rollup, previously fetched every tick
+# and then dropped entirely before /api/state (direct report: real
+# positions on child markets of the same event rendered as unrelated flat
+# rows with no grouping at all).
+_EVENT_POSITION_FIELDS = (
+    "event_ticker", "total_cost_dollars", "total_cost_shares_fp",
+    "event_exposure_dollars", "realized_pnl_dollars", "fees_paid_dollars",
+)
 _FILL_FIELDS = (
     "ticker", "market_ticker", "side", "action", "count_fp", "yes_price_dollars", "no_price_dollars",
     # created_time/fee_cost/is_taker/fill_id/order_id added for the same
@@ -662,6 +693,27 @@ def _slim_position(p: dict) -> dict:
     return {k: p.get(k) for k in _POSITION_FIELDS}
 
 
+def _slim_event_position(p: dict) -> dict:
+    return {k: p.get(k) for k in _EVENT_POSITION_FIELDS}
+
+
+def _join_real_position_prices(account_snapshot: dict, latest_prices: dict) -> None:
+    """Kalshi's real MarketPosition has no price field at all (confirmed
+    against the SDK's models) - this app has never joined a real position
+    against its market's current price, for any real position, anywhere
+    (direct report). Attached backend-side, from the same latest_prices
+    every other price display already reads, rather than re-derived
+    client-side at the render call site - CLAUDE.md's own documented bug
+    pattern for displayed financial figures. Real position tickers are
+    already force-fetched into `markets` every tick
+    (_real_account_position_tickers, phase 60/61), so this should always
+    resolve; None (not a fabricated default) if a ticker genuinely isn't
+    there yet. Mutates each position dict in place."""
+    real_positions = ((account_snapshot.get("positions") or {}).get("market_positions")) or []
+    for p in real_positions:
+        p["current_yes_price_dollars"] = latest_prices.get(p.get("ticker"))
+
+
 def _slim_fill(f: dict) -> dict:
     return {k: f.get(k) for k in _FILL_FIELDS}
 
@@ -679,7 +731,10 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
         balance, positions, fills = await asyncio.gather(
             account.get_balance(), account.get_positions(), account.get_fills(limit=50)
         )
-        positions = {"market_positions": [_slim_position(p) for p in (positions.get("market_positions") or [])]}
+        positions = {
+            "market_positions": [_slim_position(p) for p in (positions.get("market_positions") or [])],
+            "event_positions": [_slim_event_position(p) for p in (positions.get("event_positions") or [])],
+        }
         fills = {"fills": [_slim_fill(f) for f in (fills.get("fills") or [])]}
         return {
             "connected": True, "balance": balance, "positions": positions, "fills": fills,
@@ -1062,6 +1117,7 @@ async def trading_loop():
             state["latest_prices"] = {
                 m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
             }
+            _join_real_position_prices(state["account"], state["latest_prices"])
             # Human-readable label for a ticker — whale signals/decisions/positions
             # only carry the raw ticker string, so the dashboard looks this up to
             # show something a person can actually read instead of e.g.
@@ -1079,12 +1135,21 @@ async def trading_loop():
             # scopes what's actually sent over /api/state, so this growing
             # unbounded server-side doesn't reintroduce the payload-size
             # regression that scoping was built to fix.
+            # mve_selected_legs (real SDK field, Market.mve_selected_legs) is
+            # the authoritative "is this a combo/MVE market, and what are its
+            # real legs" signal - each entry already has {event_ticker,
+            # market_ticker, side}. Kept ephemeral (not persisted to
+            # title_cache.db, unlike title/yes_sub_title/no_sub_title) since
+            # it's only meaningful "live," the same way latest_prices is
+            # recomputed fresh every tick rather than persisted. Each leg's
+            # own label/price resolves lazily client-side off the existing
+            # marketTitles/latest_prices caches, same eventually-consistent
+            # pattern every other off-watchlist ticker reference already uses
+            # - no extra API calls needed just to expose the leg list itself.
             new_market_titles = {
                 m["ticker"]: {
-                    "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
-                    "yes_sub_title": m.get("yes_sub_title"),
-                    "no_sub_title": m.get("no_sub_title"),
-                    "event_ticker": m.get("event_ticker"),
+                    **title_cache.market_title_fields(m), "event_ticker": m.get("event_ticker"),
+                    "legs": m.get("mve_selected_legs") or None,
                 }
                 for m in markets if m.get("ticker")
             }
@@ -1859,10 +1924,8 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         # added to the watchlist afterward already has a label, no gap.
         searched_titles = {
             m["ticker"]: {
-                "title": m.get("title") or m.get("yes_sub_title") or m["ticker"],
-                "yes_sub_title": m.get("yes_sub_title"),
-                "no_sub_title": m.get("no_sub_title"),
-                "event_ticker": m.get("event_ticker"),
+                **title_cache.market_title_fields(m), "event_ticker": m.get("event_ticker"),
+                "legs": m.get("mve_selected_legs") or None,
             }
             for m in results if m.get("ticker")
         }
