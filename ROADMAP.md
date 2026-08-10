@@ -85,6 +85,10 @@ works" to "flip it for real" still has open operational questions.
       Recommended sequencing is in the doc itself — start with the
       exit-side analyst signal (cheapest) and concentration risk
       (highest safety payoff) before touching position sizing.
+      **Finding 3 (exit-side analyst signal) is done** — a fourth
+      `analyst_divergence` factor in `_exit_confidence()`'s composite
+      auto-exit score, new `strategy.auto_exit_analyst_weight` config
+      field. 4 new tests, 542 passing. Findings 1/2/4-7 still open.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
