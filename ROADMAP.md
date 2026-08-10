@@ -198,5 +198,12 @@ works" to "flip it for real" still has open operational questions.
   message pointing at server logs that didn't exist, and Danger Zone
   reset gaps for `market_analyst`/`market_catalog`/`market_history` (the
   two largest data files on disk previously had no self-serve reset path
-  at all). 11 new tests. Full suite: 442 (was 433). See
-  `static/status.html` phases 64-67.
+  at all); Config tab overhaul — all 55 fields across the 10 core
+  accordions gained a dotted config-path chip (closing the "hint names a
+  variable I can't find" gap by reusing the exact chip already shown on
+  the History tab's hint panels) and a plain-English impact tooltip, plus
+  3 real defects fixed along the way (`"...and"` as a whole label,
+  Market-Native Strategy's exit fields far terser than their Exits-tab
+  equivalents, the Risk field never using the "kill switch" term the Help
+  glossary already does). 11 new tests. Full suite: 442 (was 433). See
+  `static/status.html` phases 64-68.
