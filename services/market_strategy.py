@@ -50,7 +50,7 @@ extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 from services import kalshi_fees, market_analyst_agent, market_history
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
-from services.strategy_engine import close_if_settled, open_position_count_in_series
+from services.strategy_engine import close_if_settled, kelly_scaled_max_size, open_position_count_in_series
 
 # How fresh a market_analyst_agent estimate must be to fold into this
 # strategy's entry confidence - same freshness window as the whale-follow
@@ -186,6 +186,10 @@ class MarketNativeStrategy:
             return None
 
         max_size = self.risk.max_trade_size(self.broker.bankroll, strat_cfg["max_position_pct"])
+        # Deep-scan finding 1 (2026-08-10) - same shared helper/reasoning as
+        # FollowTheWhaleStrategy.evaluate()'s own scaling; off by default.
+        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap", 0.0)
+        max_size = kelly_scaled_max_size(max_size, confidence, strat_cfg["entry_confidence_threshold"], kelly_fraction)
         unit_cost = price if side == "yes" else (1 - price)
         contracts = int(max_size / unit_cost) if unit_cost > 0 else 0
         if contracts <= 0:

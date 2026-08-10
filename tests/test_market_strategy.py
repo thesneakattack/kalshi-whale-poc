@@ -317,6 +317,35 @@ def test_position_sized_from_max_position_pct(tmp_path, monkeypatch):
     assert broker.positions["TICK-A"].size == expected_contracts
 
 
+def test_position_size_unaffected_by_kelly_fraction_when_unset(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=10000.0)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)
+    strategy.evaluate_all(
+        [_market(now=now, yes_bid=0.6, yes_ask=0.61)], now, _permissive_cfg(max_position_pct=0.05),
+    )
+    expected_contracts = int(10000.0 * 0.05 / 0.6)
+    assert broker.positions["TICK-A"].size == expected_contracts
+
+
+def test_position_size_shrinks_with_kelly_fraction_set_when_confidence_not_maxed(tmp_path, monkeypatch):
+    # Deep-scan finding 1 (2026-08-10) - momentum/liquidity factors are both
+    # capped at 1.0 for this fixture but spread_factor isn't quite (0.01
+    # spread against a 0.10 max_spread -> 0.9), so composite confidence
+    # lands just under 1.0 - full kelly_fraction_of_cap should size this
+    # noticeably below the flat max_position_pct cap.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=10000.0)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)
+    strategy.evaluate_all(
+        [_market(now=now, yes_bid=0.6, yes_ask=0.61)], now,
+        _permissive_cfg(max_position_pct=0.05, entry_confidence_threshold=0.01, kelly_fraction_of_cap=1.0),
+    )
+    full_cap_contracts = int(10000.0 * 0.05 / 0.6)
+    assert "TICK-A" in broker.positions
+    assert 0 < broker.positions["TICK-A"].size < full_cap_contracts
+
+
 # --- check_exits --------------------------------------------------------------
 
 def test_check_exits_does_nothing_when_unconfigured(tmp_path, monkeypatch):

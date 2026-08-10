@@ -7,7 +7,7 @@ from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import signal_log
 from services.kalshi_fees import taker_fee
-from services.strategy_engine import FollowTheWhaleStrategy
+from services.strategy_engine import FollowTheWhaleStrategy, kelly_scaled_max_size
 from services.whale_simulator import WhaleSignal
 
 
@@ -121,6 +121,83 @@ def test_trade_sizes_no_side_off_inverted_price(tmp_path, monkeypatch):
     assert decision["trade"]["size"] == expected_contracts
     fee = taker_fee(expected_contracts, 0.2)
     assert broker.bankroll == pytest.approx(10000.0 - expected_contracts * 0.8 - fee)
+
+
+# ---- kelly_scaled_max_size (deep-scan finding 1, 2026-08-10) -------------
+# Pure-function tests for the shared sizing helper, independent of either
+# strategy's full evaluate()/_evaluate_one() plumbing.
+
+def test_kelly_scaled_max_size_off_by_default_returns_unchanged():
+    assert kelly_scaled_max_size(500.0, confidence=0.61, effective_threshold=0.6, kelly_fraction=0.0) == 500.0
+
+
+def test_kelly_scaled_max_size_full_fraction_scales_to_near_zero_at_threshold():
+    result = kelly_scaled_max_size(500.0, confidence=0.6, effective_threshold=0.6, kelly_fraction=1.0)
+    assert result == pytest.approx(0.0)
+
+
+def test_kelly_scaled_max_size_full_fraction_returns_full_size_at_confidence_one():
+    result = kelly_scaled_max_size(500.0, confidence=1.0, effective_threshold=0.6, kelly_fraction=1.0)
+    assert result == pytest.approx(500.0)
+
+
+def test_kelly_scaled_max_size_full_fraction_interpolates_linearly():
+    # Halfway between threshold (0.6) and 1.0 confidence -> half the ceiling.
+    result = kelly_scaled_max_size(500.0, confidence=0.8, effective_threshold=0.6, kelly_fraction=1.0)
+    assert result == pytest.approx(250.0)
+
+
+def test_kelly_scaled_max_size_blends_between_flat_and_scaled():
+    # kelly_fraction=0.5 should land halfway between the flat-cap result
+    # (500.0) and the fully-scaled result at this confidence (0.0 at the
+    # threshold itself) - i.e. 250.0.
+    result = kelly_scaled_max_size(500.0, confidence=0.6, effective_threshold=0.6, kelly_fraction=0.5)
+    assert result == pytest.approx(250.0)
+
+
+def test_kelly_scaled_max_size_never_exceeds_the_ceiling():
+    # Confidence above 1.0 (shouldn't happen given clamping elsewhere, but
+    # this function itself should never hand back more than max_size).
+    result = kelly_scaled_max_size(500.0, confidence=1.5, effective_threshold=0.6, kelly_fraction=1.0)
+    assert result <= 500.0
+
+
+def test_kelly_scaled_max_size_handles_effective_threshold_of_one():
+    # Degenerate case - a threshold of 1.0 would divide by zero in the raw
+    # linear formula; this must return the unscaled ceiling instead of
+    # raising.
+    result = kelly_scaled_max_size(500.0, confidence=0.9, effective_threshold=1.0, kelly_fraction=1.0)
+    assert result == 500.0
+
+
+# ---- Position sizing scales with confidence when kelly_fraction_of_cap is set ----
+
+def test_position_size_unaffected_by_confidence_when_kelly_fraction_unset(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.99, price=0.5), _cfg(entry_threshold=0.65))
+    expected_contracts = int(10000.0 * 0.05 / 0.5)  # full max_position_pct cap, same as any other confidence
+    assert decision["trade"]["size"] == expected_contracts
+
+
+def test_position_size_scales_down_near_threshold_with_kelly_fraction_set(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    # confidence just barely clears entry_threshold (0.65) - full kelly_fraction
+    # should size this close to (but not exactly) zero contracts.
+    decision = strategy.evaluate(
+        _signal(confidence=0.66, price=0.5), _cfg(entry_threshold=0.65, kelly_fraction_of_cap=1.0),
+    )
+    full_cap_contracts = int(10000.0 * 0.05 / 0.5)
+    assert decision["action"] == "trade"
+    assert 0 < decision["trade"]["size"] < full_cap_contracts
+
+
+def test_position_size_at_full_confidence_matches_full_cap_with_kelly_fraction_set(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=1.0, price=0.5), _cfg(entry_threshold=0.65, kelly_fraction_of_cap=1.0),
+    )
+    full_cap_contracts = int(10000.0 * 0.05 / 0.5)
+    assert decision["trade"]["size"] == full_cap_contracts
 
 
 def test_skip_when_halted(tmp_path, monkeypatch):

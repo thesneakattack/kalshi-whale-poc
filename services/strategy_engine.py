@@ -61,6 +61,36 @@ def open_position_count_in_series(broker: PaperBroker, ticker: str) -> int:
     return sum(1 for open_ticker in broker.positions if signal_log.series_of(open_ticker) == series)
 
 
+def kelly_scaled_max_size(max_size: float, confidence: float, effective_threshold: float, kelly_fraction: float) -> float:
+    """Scales max_size (the max_position_pct hard ceiling) down toward
+    zero as confidence approaches effective_threshold from above, full
+    ceiling at confidence 1.0 - deep-scan finding 1 (2026-08-10): position
+    sizing was pure fixed-fraction before this, a signal that barely
+    cleared the entry bar and one at near-perfect confidence got
+    identically sized positions, throwing away the entire composite
+    confidence score the instant the entry decision was made.
+
+    kelly_fraction (strategy.kelly_fraction_of_cap / market_strategy.
+    kelly_fraction_of_cap) is a fractional-Kelly dial, NOT full literal
+    Kelly - confidence is a 0-1 heuristic score, not a calibrated win
+    probability with known payout odds, so this is a linear interpolation
+    between two ends, not the Kelly formula itself. At 0.0 (the default)
+    this returns max_size unchanged - nothing about existing behavior
+    changes unless deliberately turned on, same "ships fully built,
+    opt-in" precedent as every other optional engine in this app
+    (advisory.enabled, market_analyst.enabled, confidence_calibration.
+    enabled, ...). At 1.0, full linear scaling: a signal right at the
+    threshold gets close to 0 size, one at confidence 1.0 gets the full
+    ceiling. Values between blend the two. max_position_pct/
+    max_trade_size stays the hard ceiling this only ever shrinks toward,
+    never exceeds - this never returns more than max_size."""
+    if kelly_fraction <= 0 or effective_threshold >= 1.0:
+        return max_size
+    raw_scale = min(1.0, max(0.0, (confidence - effective_threshold) / (1.0 - effective_threshold)))
+    scale = 1.0 - kelly_fraction * (1.0 - raw_scale)
+    return max_size * scale
+
+
 class FollowTheWhaleStrategy:
     def __init__(self, broker: PaperBroker, risk: RiskManager):
         self.broker = broker
@@ -182,6 +212,13 @@ class FollowTheWhaleStrategy:
             return self._skip(signal, "cooldown active for this market")
 
         max_size = self.risk.max_trade_size(self.broker.bankroll, strat_cfg["max_position_pct"])
+        # Deep-scan finding 1 (2026-08-10): scales the ceiling above down
+        # by how far this signal's confidence cleared effective_threshold
+        # (the real bar it had to pass, including the longshot bonus if
+        # applicable) - off by default (kelly_fraction_of_cap: 0.0), see
+        # kelly_scaled_max_size's own docstring for the full reasoning.
+        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap", 0.0)
+        max_size = kelly_scaled_max_size(max_size, signal.confidence, effective_threshold, kelly_fraction)
         # signal.price is always the YES price (see whale_simulator.py) - a NO
         # print's real per-contract cost is (1 - price), not price itself.
         # Sizing off the wrong unit cost here doesn't just mis-price a NO
