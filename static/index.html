@@ -1287,6 +1287,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         </p>
         <div id="whale-provider-status" style="font-size:12px; margin:0 0 12px;"></div>
         <div class="field"><label>Minimum trade size to count as a whale print ($ notional)</label><input id="cfg-whale-min-notional" type="number" step="100" min="0"></div>
+        <div class="field"><label>Per-series overrides (comma-separated <code>PREFIX:amount</code> pairs, e.g. "KXATPMATCH:100, KXNFLGAME:5000") — falls back to the amount above for any series not listed</label><input id="cfg-whale-min-notional-by-series" type="text" placeholder="none"></div>
       </div>
     </details>
 
@@ -4499,6 +4500,8 @@ async function loadConfig() {
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
   $('cfg-whale-live-only').checked = !!cfg.whale_signal.live_markets_only;
   $('cfg-whale-min-notional').value = (cfg.whale_watcher_kalshi || {}).min_notional_usd ?? 2500;
+  $('cfg-whale-min-notional-by-series').value = Object.entries((cfg.whale_watcher_kalshi || {}).min_notional_usd_by_series || {})
+    .map(([series, amount]) => `${series}:${amount}`).join(', ');
   updateWhaleProviderStatus(lastWhaleSource);
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
@@ -4592,6 +4595,12 @@ $('save-config-btn').addEventListener('click', async () => {
     },
     whale_watcher_kalshi: {
       min_notional_usd: parseFloat($('cfg-whale-min-notional').value) || 0,
+      min_notional_usd_by_series: Object.fromEntries(
+        $('cfg-whale-min-notional-by-series').value.split(',')
+          .map(pair => pair.split(':').map(s => s.trim()))
+          .filter(([series, amount]) => series && amount && !isNaN(parseFloat(amount)))
+          .map(([series, amount]) => [series.toUpperCase(), parseFloat(amount)])
+      ),
     },
     risk: {
       max_daily_loss_pct: parseFloat($('cfg-max-loss').value),

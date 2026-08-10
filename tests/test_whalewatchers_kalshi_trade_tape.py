@@ -105,6 +105,42 @@ def test_threshold_is_configurable_via_cfg():
     assert len(signals) == 1
 
 
+def test_per_series_threshold_overrides_the_global_default():
+    # $60 notional clears a $10 series-specific override but not the $2500 global default
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {
+        "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
+        "cfg": {"whale_watcher_kalshi": {"min_notional_usd_by_series": {"TICK": 10}}},
+    }
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert len(signals) == 1
+
+
+def test_per_series_override_only_applies_to_its_own_series():
+    # same $60 notional, but the override is keyed to a different series -
+    # must fall back to the (unmet) $2500 global default, not the override.
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {
+        "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
+        "cfg": {"whale_watcher_kalshi": {"min_notional_usd_by_series": {"OTHER": 10}}},
+    }
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals == []
+
+
+def test_series_with_no_override_falls_back_to_configured_global_default():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")  # $60 notional
+    ctx = {
+        "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
+        "cfg": {"whale_watcher_kalshi": {"min_notional_usd": 10, "min_notional_usd_by_series": {"OTHER": 5000}}},
+    }
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert len(signals) == 1
+
+
 def test_same_trade_id_is_not_re_emitted_on_a_later_call():
     provider = KalshiTradeTapeProvider()
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")

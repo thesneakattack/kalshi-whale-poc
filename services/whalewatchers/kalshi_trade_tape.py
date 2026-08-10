@@ -148,9 +148,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         markets = market_context.get("markets") or []
         trade_tape = market_context.get("trade_tape") or []
         cfg = market_context.get("cfg") or {}
-        min_notional = float((cfg.get("whale_watcher_kalshi") or {}).get(
-            "min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD
-        ))
+        wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
+        default_min_notional = float(wwk_cfg.get("min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD))
+        min_notional_by_series = wwk_cfg.get("min_notional_usd_by_series") or {}
 
         markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
         now = time.time()
@@ -171,6 +171,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 notional = _notional_usd(trade)
             except (TypeError, ValueError):
                 continue
+            # A single global threshold can't be right for both a
+            # low-liquidity niche market and a high-volume political one
+            # (ROADMAP.md) - series_of() reuses the same series definition
+            # excluded_series/series_stats already key off, with the global
+            # min_notional_usd as the fallback for any series with no
+            # override set.
+            min_notional = float(min_notional_by_series.get(
+                signal_log.series_of(ticker), default_min_notional
+            ))
             if notional < min_notional:
                 continue
 
