@@ -149,8 +149,22 @@ works" to "flip it for real" still has open operational questions.
       per-series win-rate × qualifying-rate cross-checks, raw-signal-field
       logging, calibration-history tracking, cross-strategy comparison,
       regime segmentation, a documented sample-size convention), with a
-      suggested build order. Not started — this is the analysis pass, not
-      the implementation.
+      suggested build order.
+      **Gap 1 (rejected-candidate/counterfactual logging) is done** — new
+      `services/candidate_log.py`, `record_rejection()` called from every
+      gate that previously only produced a boolean (`strategy_engine.py`'s
+      `entry_threshold`/`min_whale_winrate_pct`, `market_strategy.py`'s
+      `min_price`/`max_price`/`max_spread`/`min_volume_24h`/
+      `min_seconds_to_close`/`min_momentum_delta`/
+      `entry_confidence_threshold`, `kalshi_trade_tape.py`'s
+      `min_notional_usd`). Resolved passively off the same `market_results`
+      dict already built each tick (zero new API calls, same shape as
+      `market_analyst_agent.resolve_from_market_results`). New
+      `GET /api/candidate-log/summary`, a `candidate_log` Danger Zone reset
+      flag, and a read-only "Rejected Candidates" History-tab panel. 14 new
+      tests, 583 passing. Verified live — real rejections already
+      accumulating (77 `min_notional_usd`, 11 `entry_threshold`, etc.).
+      Gaps 2-10 still open.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

@@ -28,7 +28,7 @@ strategy:
   live_markets_only: false
   excluded_series: []
   take_profit_pct: null
-  stop_loss_pct: null
+  stop_loss_pct: 0.2
   exit_on_sentiment_reversal: true
   exit_sentiment_min_signals: 11
   exit_sentiment_lean_pct: 90

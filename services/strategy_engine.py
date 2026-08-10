@@ -5,7 +5,7 @@ manager, or data sources.
 """
 import time
 
-from services import kalshi_fees, market_analyst_agent, signal_log
+from services import candidate_log, kalshi_fees, market_analyst_agent, signal_log
 from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
@@ -166,6 +166,10 @@ class FollowTheWhaleStrategy:
         if signal.confidence < effective_threshold:
             reason = f"confidence {signal.confidence} below threshold ({effective_threshold:.2f}"
             reason += " - longshot zone)" if is_longshot else ")"
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "entry_threshold",
+                signal.confidence, effective_threshold, side=signal.side,
+            )
             return self._skip(signal, reason)
 
         # Avoid this whale's picks on markets like this one once they've proven
@@ -175,6 +179,10 @@ class FollowTheWhaleStrategy:
         min_winrate = strat_cfg.get("min_whale_winrate_pct", 40)
         record = signal_log.series_stats(signal.ticker, days=30)
         if record["resolved"] >= min_resolved and record["win_rate"] is not None and record["win_rate"] < min_winrate:
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "min_whale_winrate_pct",
+                record["win_rate"], min_winrate, side=signal.side,
+            )
             return self._skip(
                 signal,
                 f'whale win rate for "{record["series"]}"-type markets is {record["win_rate"]:.0f}% '

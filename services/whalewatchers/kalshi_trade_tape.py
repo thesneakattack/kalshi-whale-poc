@@ -17,7 +17,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
@@ -186,10 +186,17 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # excluded_series/series_stats already key off, with the global
             # min_notional_usd as the fallback for any series with no
             # override set.
+            # Computed before the notional gate below (not after, as
+            # originally written) purely so a rejection can be logged with
+            # a real side - side itself doesn't depend on anything computed
+            # between here and its old location.
+            side = "yes" if str(trade.get("taker_side") or "").lower() == "yes" else "no"
+
             min_notional = float(min_notional_by_series.get(
                 signal_log.series_of(ticker), default_min_notional
             ))
             if notional < min_notional:
+                candidate_log.record_rejection(ticker, "whale_watcher", "min_notional_usd", notional, min_notional, side=side)
                 continue
 
             try:
@@ -200,8 +207,6 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 size = int(round(float(trade.get("count_fp") or 0)))
             except (TypeError, ValueError):
                 continue
-
-            side = "yes" if str(trade.get("taker_side") or "").lower() == "yes" else "no"
 
             # Do recent real prints on this exact market agree with this
             # one? No recent history at all is neutral (0.5) - not scored as

@@ -47,7 +47,7 @@ plus an optional momentum-reversal exit - the market-native analog of
 whale signal_feed. No auto-exit composite algorithm yet (a possible future
 extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 """
-from services import kalshi_fees, market_analyst_agent, market_history
+from services import candidate_log, kalshi_fees, market_analyst_agent, market_history
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.strategy_engine import close_if_settled, kelly_scaled_max_size, open_position_count_in_series
@@ -161,19 +161,41 @@ class MarketNativeStrategy:
         spread = max(ask - price, 0.0)
         volume = float(market.get("volume_24h_fp") or 0.0)
 
-        if not (strat_cfg["min_price"] <= price <= strat_cfg["max_price"]):
+        if price < strat_cfg["min_price"]:
+            candidate_log.record_rejection(ticker, "market_native", "min_price", price, strat_cfg["min_price"])
+            return None
+        if price > strat_cfg["max_price"]:
+            candidate_log.record_rejection(ticker, "market_native", "max_price", price, strat_cfg["max_price"])
             return None
         if spread > strat_cfg["max_spread"]:
+            candidate_log.record_rejection(ticker, "market_native", "max_spread", spread, strat_cfg["max_spread"])
             return None
         if volume < strat_cfg["min_volume_24h"]:
+            candidate_log.record_rejection(ticker, "market_native", "min_volume_24h", volume, strat_cfg["min_volume_24h"])
             return None
 
         seconds_to_close = market_history.seconds_to_close(market.get("close_time"), now)
-        if seconds_to_close is None or seconds_to_close < strat_cfg["min_seconds_to_close"]:
+        if seconds_to_close is None:
+            return None  # no close-time data at all - not a threshold miss, nothing to log
+        if seconds_to_close < strat_cfg["min_seconds_to_close"]:
+            candidate_log.record_rejection(
+                ticker, "market_native", "min_seconds_to_close", seconds_to_close, strat_cfg["min_seconds_to_close"],
+            )
             return None
 
         mom = market_history.momentum(ticker, strat_cfg["momentum_lookback_sec"], as_of=now)
-        if mom is None or abs(mom["delta"]) < strat_cfg["min_momentum_delta"]:
+        if mom is None:
+            return None  # not enough price history yet - not a threshold miss, nothing to log
+        if abs(mom["delta"]) < strat_cfg["min_momentum_delta"]:
+            # side is knowable even though the gate failed - the delta's sign
+            # already implies which direction a trade would have taken, same
+            # "momentum-following" convention _evaluate_one uses below once
+            # this gate actually passes.
+            hypothetical_side = "yes" if mom["delta"] > 0 else "no"
+            candidate_log.record_rejection(
+                ticker, "market_native", "min_momentum_delta", abs(mom["delta"]), strat_cfg["min_momentum_delta"],
+                side=hypothetical_side,
+            )
             return None
 
         # Momentum-following: price is always the YES price throughout this
@@ -183,6 +205,10 @@ class MarketNativeStrategy:
         side = "yes" if mom["delta"] > 0 else "no"
         confidence, factors = _entry_confidence(mom, volume, spread, strat_cfg, side, ticker)
         if confidence < strat_cfg["entry_confidence_threshold"]:
+            candidate_log.record_rejection(
+                ticker, "market_native", "entry_confidence_threshold",
+                confidence, strat_cfg["entry_confidence_threshold"], side=side,
+            )
             return None
 
         max_size = self.risk.max_trade_size(self.broker.bankroll, strat_cfg["max_position_pct"])

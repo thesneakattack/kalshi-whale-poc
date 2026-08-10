@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services import market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
 
 
@@ -28,6 +28,9 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     # was writing to the real data/series_evaluator.db - the exact bug class
     # this app's own "preserve real data" standing rule exists to prevent.
     monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
+    # fetch_signals() now also calls candidate_log.record_rejection() when
+    # the min_notional_usd gate fails - same real-db-isolation reasoning.
+    monkeypatch.setattr(candidate_log, "DB_PATH", tmp_path / "candidate_log.db")
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):
@@ -76,6 +79,18 @@ def test_fetch_signals_skips_trades_below_notional_threshold():
     trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     assert asyncio.run(provider.fetch_signals(market_context=ctx)) == []
+
+
+def test_fetch_signals_below_notional_threshold_logs_a_rejected_candidate():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    asyncio.run(provider.fetch_signals(market_context=ctx))
+    gates = candidate_log.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["strategy"] == "whale_watcher"
+    assert gates[0]["gate_name"] == "min_notional_usd"
+    assert gates[0]["rejected_count"] == 1
 
 
 def test_fetch_signals_emits_signal_above_threshold():

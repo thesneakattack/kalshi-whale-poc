@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+from services import candidate_log as cl_module
 from services import market_analyst_agent as maa_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -41,6 +42,7 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     # this, every test in this file would read the real
     # data/market_analyst.db on every check_exits() call.
     monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(cl_module, "DB_PATH", tmp_path / "candidate_log.db")
     broker = pb_module.PaperBroker(starting_bankroll=bankroll)
     risk = rm_module.RiskManager(bankroll, max_daily_loss_pct, kill_switch_enabled)
     # Default: no whale-filter opinion at all, so the filter branch is a
@@ -58,6 +60,29 @@ def test_skip_below_confidence_threshold(tmp_path, monkeypatch):
     assert decision["action"] == "skip"
     assert "confidence" in decision["reason"]
     assert broker.bankroll == 10000.0  # nothing traded
+
+
+def test_skip_below_confidence_threshold_logs_a_rejected_candidate(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TICK-Z", side="yes", confidence=0.5), _cfg(entry_threshold=0.65))
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["strategy"] == "whale_follow"
+    assert gates[0]["gate_name"] == "entry_threshold"
+    assert gates[0]["rejected_count"] == 1
+
+
+def test_skip_below_min_whale_winrate_logs_a_rejected_candidate(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    monkeypatch.setattr(signal_log, "series_stats", lambda ticker, days=30: {
+        "series": ticker.split("-")[0], "window_days": days, "total_signals": 10,
+        "resolved": 10, "correct": 3, "win_rate": 30.0,
+    })
+    decision = strategy.evaluate(_signal(confidence=0.9), _cfg(entry_threshold=0.65, min_whale_winrate_pct=40, min_resolved_for_whale_filter=5))
+    assert decision["action"] == "skip"
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "min_whale_winrate_pct"
 
 
 # ---- favorite-longshot-bias-aware entry threshold (docs/prediction-market-strategy-alignment-plan.md Part 2.3) ----

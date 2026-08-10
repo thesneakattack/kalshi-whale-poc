@@ -1162,6 +1162,21 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="calibration-report"><div class="empty">Loading…</div></div>
 
+    <!-- Rejected Candidates (services/candidate_log.py, Gap 1 of
+         docs/config-tuning-data-gaps-2026-08-10.md) - the "counterfactual"
+         data every gate/threshold field in Config lacked before this: what
+         happened to a candidate a gate turned away, not just the ones that
+         passed. Read-only, no apply mechanism - this is observation, not a
+         suggestion engine (see Advisory Recommendations above for that). -->
+    <div class="panel-title">Rejected Candidates <span class="data-badge new">🆕 new</span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      What happened to candidates each entry/discovery gate turned away, not just the ones that passed —
+      the data Advisory's own entry-threshold recommendation needs but doesn't have today.
+      <span class="config-path" style="margin:0;">hypothetical_win_rate</span> assumes a position was opened
+      on the implied side and held to settlement; only populated when that side was knowable at rejection time.
+    </p>
+    <div id="candidate-log-summary"><div class="empty">Loading…</div></div>
+
     <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
          Part 3) - an LLM reading each market's own title/rules/context and
          forming an independent probability estimate, distinct in kind from
@@ -3100,6 +3115,7 @@ async function loadTradingHistory() {
     loadSeriesEvaluator();
     loadChangeHistory();
     loadCalibrationReport();
+    loadCandidateLogSummary();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -3380,6 +3396,40 @@ async function loadCalibrationReport() {
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load calibration report.</div>';
+  }
+}
+
+// Rejected Candidates (services/candidate_log.py) - read-only, always safe
+// to call (no enabled flag - this collects passively from every gate check).
+async function loadCandidateLogSummary() {
+  const el = $('candidate-log-summary');
+  try {
+    const resp = await fetchJSON('/api/candidate-log/summary');
+    const gates = resp.gates || [];
+    if (!gates.length) {
+      el.innerHTML = '<div class="empty">No rejected candidates logged yet.</div>';
+      return;
+    }
+    const rows = gates.map(g => {
+      const wr = g.hypothetical_win_rate;
+      const wrText = wr === null ? '—' : `${wr.toFixed(1)}% (n=${g.hypothetical_win_rate_n})`;
+      const wrColor = wr === null ? 'var(--muted)' : (wr >= 50 ? 'var(--yes)' : 'var(--no)');
+      return `<tr>
+        <td>${esc(g.strategy)}</td>
+        <td><span class="config-path" style="margin:0;">${esc(g.gate_name)}</span></td>
+        <td>${g.rejected_count}</td>
+        <td>${g.resolved_count}</td>
+        <td style="color:${wrColor};">${wrText}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `
+      <table class="positions-table">
+        <thead><tr><th>Strategy</th><th>Gate</th><th>Rejected</th><th>Resolved</th><th>Hypothetical Win Rate</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load rejected-candidate summary.</div>';
   }
 }
 

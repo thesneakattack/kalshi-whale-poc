@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from services import candidate_log as cl_module
 from services import market_analyst_agent as maa_module
 from services import market_history as mh
 from services import paper_broker as pb_module
@@ -19,6 +20,7 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     # _entry_confidence now queries market_analyst_agent.analyst_lean() -
     # redirect before any test can touch the real data/market_analyst.db.
     monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(cl_module, "DB_PATH", tmp_path / "candidate_log.db")
     broker = pb_module.PaperBroker(starting_bankroll=bankroll)
     risk = rm_module.RiskManager(bankroll, max_daily_loss_pct, kill_switch_enabled)
     return MarketNativeStrategy(broker, risk), broker, risk
@@ -240,6 +242,10 @@ def test_skips_when_price_outside_band(tmp_path, monkeypatch):
         [_market(now=now, yes_bid=0.95, yes_ask=0.96)], now, _permissive_cfg(max_price=0.85),
     )
     assert decisions == []
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "max_price"
+    assert gates[0]["strategy"] == "market_native"
 
 
 def test_skips_when_spread_too_wide(tmp_path, monkeypatch):
@@ -250,6 +256,9 @@ def test_skips_when_spread_too_wide(tmp_path, monkeypatch):
         [_market(now=now, yes_bid=0.6, yes_ask=0.75)], now, _permissive_cfg(max_spread=0.05),
     )
     assert decisions == []
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "max_spread"
 
 
 def test_skips_when_volume_too_low(tmp_path, monkeypatch):
@@ -260,6 +269,23 @@ def test_skips_when_volume_too_low(tmp_path, monkeypatch):
         [_market(now=now, volume=10)], now, _permissive_cfg(min_volume_24h=500),
     )
     assert decisions == []
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "min_volume_24h"
+
+
+def test_skips_when_momentum_too_small_logs_hypothetical_side(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.50, 0.51)  # tiny positive delta
+    decisions = strategy.evaluate_all([_market(now=now)], now, _permissive_cfg(min_momentum_delta=0.10))
+    assert decisions == []
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "min_momentum_delta"
+    cl_module.resolve_from_market_results({"TICK-A": "yes"})
+    gates = cl_module.gate_summary()
+    assert gates[0]["hypothetical_win_rate_n"] == 1  # side was inferred from the delta's sign
 
 
 def test_skips_when_close_time_missing(tmp_path, monkeypatch):
@@ -306,6 +332,9 @@ def test_skips_when_confidence_below_threshold(tmp_path, monkeypatch):
         [_market(now=now)], now, _permissive_cfg(min_momentum_delta=0.03, entry_confidence_threshold=0.99),
     )
     assert decisions == []
+    gates = cl_module.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "entry_confidence_threshold"
 
 
 def test_position_sized_from_max_position_pct(tmp_path, monkeypatch):

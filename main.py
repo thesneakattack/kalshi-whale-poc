@@ -17,6 +17,7 @@ load_dotenv()  # reads .env if present; every var is optional, see .env.example
 from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
+from services import candidate_log
 from services import confidence_calibration
 from services import config_performance
 from services import market_analyst_agent
@@ -1354,6 +1355,11 @@ async def trading_loop():
             # market_analyst.enabled, so analyses made while it was on still
             # get graded after it's turned back off.
             market_analyst_agent.resolve_from_market_results(market_results)
+            # Same zero-extra-API-call resolution shape - grades every
+            # rejected candidate (services/candidate_log.py, Gap 1 of
+            # docs/config-tuning-data-gaps-2026-08-10.md) against how its
+            # market actually resolved.
+            candidate_log.resolve_from_market_results(market_results)
 
             # Real market data logging (docs/advisory-engine-plan.md §9,
             # direct request: "start storing and analyzing market data
@@ -2065,6 +2071,15 @@ async def get_confidence_calibration_report():
     return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
 
 
+@app.get("/api/candidate-log/summary")
+async def get_candidate_log_summary():
+    # services/candidate_log.py - Gap 1 of docs/config-tuning-data-gaps-
+    # 2026-08-10.md. Always safe to call, no enable flag: this data
+    # collects passively from every gate check regardless of any config
+    # toggle, same as signal_log itself.
+    return {"gates": candidate_log.gate_summary()}
+
+
 @app.get("/api/market-analyst/status")
 async def get_market_analyst_status():
     # Same "honest progress even while gated/disconnected" idiom as
@@ -2606,6 +2621,7 @@ class ResetBody(BaseModel):
     # action - that one is a deliberate single-series re-evaluate; this one
     # is "start the whole series-worthiness log over."
     series_evaluator: bool = False
+    candidate_log: bool = False
 
 
 @app.post("/api/reset")
@@ -2640,6 +2656,9 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.series_evaluator:
         series_evaluator.clear_all()
         cleared.append("series_evaluator")
+    if body.candidate_log:
+        candidate_log.clear_all()
+        cleared.append("candidate_log")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 
