@@ -242,5 +242,14 @@ works" to "flip it for real" still has open operational questions.
   suggestion would need nested-dict apply logic this app doesn't have
   yet — disclosed, not silently dropped). Suggestions land in the same
   unified pool as Advisory's, tagged `source='series-analyst'`. New
-  "🔎 Analyze" button on the Series Evaluator panel. 509 tests. See
-  `static/status.html` phases 64-72.
+  "🔎 Analyze" button on the Series Evaluator panel. 509 tests. Finally
+  shipped "Feed the Analyst" — a full-spectrum scan across all config/
+  history/whale data that can suggest a change to *any* config field
+  (not a fixed one), so every raw suggestion is validated against the
+  live config before it's appliable (must be a real existing field, must
+  not be one of the two fields already protected from manual edits, must
+  actually differ, must be type-compatible). Confirm()-gated given the
+  cost — this is a materially bigger prompt than the other two modes.
+  This completes Item 3 (the unified self-tuning subsystem) entirely —
+  3A/3B/3C/3D have all shipped. 538 tests. See `static/status.html`
+  phases 64-73.
