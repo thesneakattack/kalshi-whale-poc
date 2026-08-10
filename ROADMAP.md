@@ -223,5 +223,14 @@ works" to "flip it for real" still has open operational questions.
   `min_momentum_delta` suggestion that turned out to be unreachable dead
   code, not just mislabeled, since it was checked against the wrong
   broker's trade log). Suggestion cards now reuse the Config tab's own
-  path chips as a clickable jump-to-setting link. 466 tests. See
-  `static/status.html` phases 64-70.
+  path chips as a clickable jump-to-setting link. 466 tests. Then closed
+  a real gap found in that same grounding pass: `config_performance.
+  log_applied_change()` only ever fired from the Advisory apply route — a
+  plain manual Config-tab save (including the real-trading enable/disable
+  toggle) was never logged at all. Now every config-change source logs to
+  the same audit trail (tagged by `source`), and a `strategy.*` change
+  that created a new config variant gets a real measured before/after
+  win-rate + realized-P&L delta once both variants have trades — reusing
+  the same variant-comparison machinery cross-variant recommendations
+  already use, not a new computation. New "Change History" panel on the
+  History tab. 482 tests. See `static/status.html` phases 64-71.
