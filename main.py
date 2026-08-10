@@ -2121,6 +2121,12 @@ class ResetBody(BaseModel):
     shadow: bool = False
     signal_log: bool = False
     market_analyst: bool = False
+    # market_catalog/market_history had no wired reset path at all despite
+    # being the two largest data/*.db files on disk (data-robustness audit
+    # finding, 2026-08-10) - market_catalog.clear_all() already existed,
+    # written for exactly this, just never called from here.
+    market_catalog: bool = False
+    market_history: bool = False
 
 
 @app.post("/api/reset")
@@ -2146,6 +2152,12 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.market_analyst:
         market_analyst_agent.clear_all()
         cleared.append("market_analyst")
+    if body.market_catalog:
+        market_catalog.clear_all()
+        cleared.append("market_catalog")
+    if body.market_history:
+        market_history.clear_all()
+        cleared.append("market_history")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 

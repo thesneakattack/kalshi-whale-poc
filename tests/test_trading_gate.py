@@ -266,6 +266,28 @@ def test_scan_catalog_batch_only_marks_genuinely_succeeded_series_scanned():
     assert "SER-BAD" not in rows  # failed - must NOT be marked scanned, so it's retried next tick
 
 
+def test_reset_route_wires_market_catalog_and_market_history_flags():
+    # Danger Zone gap (data-robustness audit, 2026-08-10): market_catalog
+    # already had a clear_all() written for exactly this, just never called
+    # from the reset route; market_history had no clear_all() at all - the
+    # two largest data/*.db files on disk had no self-serve reset path.
+    mc_module.upsert_markets("SER-A", "Sports", [{
+        "ticker": "SER-A-M1", "event_ticker": "SER-A-EVT", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) - timedelta(minutes=5)), "status": "open",
+    }])
+    mh_module.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.5}])
+
+    resp = client.post("/api/reset", json={
+        "paper": False, "market_catalog": True, "market_history": True,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "market_catalog" in body["cleared"]
+    assert "market_history" in body["cleared"]
+    assert mc_module.scan_progress()["total_markets"] == 0
+    assert mh_module.snapshot_count() == 0
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with

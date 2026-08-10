@@ -35,6 +35,18 @@ def test_record_outcome_and_count(tmp_path, monkeypatch):
     assert mh.outcome_count() == 2
 
 
+def test_clear_all_wipes_both_tables(tmp_path, monkeypatch):
+    # Data-robustness audit finding (2026-08-10): this file had no wired
+    # reset path at all, despite being one of the two largest data/*.db
+    # files on disk - Danger Zone couldn't clear it.
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.5}])
+    mh.record_outcome("TICK-A", "yes")
+    mh.clear_all()
+    assert mh.snapshot_count() == 0
+    assert mh.outcome_count() == 0
+
+
 def test_record_outcome_is_idempotent_first_write_wins(tmp_path, monkeypatch):
     _mh(tmp_path, monkeypatch)
     mh.record_outcome("TICK-A", "yes", resolved_at=100.0)

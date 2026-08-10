@@ -206,7 +206,16 @@ async def analyze_market(
                 result["confidence"] = min(max(float(result["confidence"]), 0.0), 1.0)
                 return result
         return None  # model didn't use the tool - treat as unavailable, don't guess
-    except Exception:
+    except Exception as e:
+        # Data-robustness audit finding (2026-08-10): this used to be a bare
+        # `except Exception: return None` - the real error was discarded
+        # entirely, and main.py's caller returned a message saying "see
+        # server logs" even though no logging framework exists anywhere in
+        # this app (confirmed by repo-wide grep). stdout is captured by
+        # `ddev logs -s fastapi` per this project's own documented
+        # workflow, so that message is now actually true instead of
+        # pointing at logs that don't exist.
+        print(f"[market_analyst_agent] analyze_market failed for this call: {e!r}")
         return None
 
 

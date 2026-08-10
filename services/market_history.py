@@ -159,6 +159,17 @@ def outcome_count() -> int:
         return conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]
 
 
+def clear_all():
+    """Wipes snapshots and outcomes - self-healing on its own via ordinary
+    per-tick recording, this exists for the Config tab's Danger Zone reset,
+    matching market_catalog.clear_all()'s identical shape (data-robustness
+    audit finding, 2026-08-10: this file had no wired reset path at all,
+    despite being one of the two largest data/*.db files on disk)."""
+    with _connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM snapshots")
+        conn.execute("DELETE FROM outcomes")
+
+
 def compute_hypothetical_trades(lookback_windows_sec: tuple = (3600, 21600, 86400)) -> list[dict]:
     """Retrospective, explicitly hypothetical: for every settled market,
     and for each configured lookback window, finds the snapshot closest to

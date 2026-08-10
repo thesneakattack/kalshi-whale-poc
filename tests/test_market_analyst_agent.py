@@ -262,7 +262,7 @@ def test_analyze_market_clamps_out_of_range_values(tmp_path, monkeypatch):
     assert result["confidence"] == 0.0
 
 
-def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch):
+def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch, capsys):
     agent = _agent(tmp_path, monkeypatch)
 
     class _FakeMessages:
@@ -278,6 +278,13 @@ def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch)
 
     result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
+    # Data-robustness audit finding (2026-08-10): this used to be a bare
+    # `except Exception: return None` with the real error discarded
+    # entirely and a caller message pointing at "server logs" that don't
+    # exist (no logging framework exists anywhere in this app) - now at
+    # least visible via stdout (ddev logs -s fastapi).
+    captured = capsys.readouterr()
+    assert "network error" in captured.out
 
 
 def test_analyze_market_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):

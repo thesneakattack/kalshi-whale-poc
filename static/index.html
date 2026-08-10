@@ -1377,6 +1377,9 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label><input type="checkbox" id="reset-cb-paper" checked> Paper account — bankroll, positions, trade log, daily-loss baseline, and the in-memory signal/decision feed</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-shadow"> Shadow trades — logged intended real-bankroll trades and shadow daily-loss baseline</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-signal-log"> Whale track record — every logged signal and its resolved win/loss outcome (the "real" accuracy history)</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-market-analyst"> Market analyst — every AI-generated market analysis and its resolved hit/miss record</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-market-catalog"> Market catalog — the incrementally-scanned near-term market list (self-heals via re-scanning, just takes time to rebuild)</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-market-history"> Market history — real per-market price/volume snapshots and settlement outcomes</label></div>
         <button class="danger" id="config-reset-btn" style="margin-top:8px;">Reset Selected</button>
       </div>
     </details>
@@ -4685,8 +4688,11 @@ $('config-reset-btn').addEventListener('click', async () => {
     paper: $('reset-cb-paper').checked,
     shadow: $('reset-cb-shadow').checked,
     signal_log: $('reset-cb-signal-log').checked,
+    market_analyst: $('reset-cb-market-analyst').checked,
+    market_catalog: $('reset-cb-market-catalog').checked,
+    market_history: $('reset-cb-market-history').checked,
   };
-  if (!body.paper && !body.shadow && !body.signal_log) return;
+  if (!Object.values(body).some(Boolean)) return;
   const picked = Object.entries(body).filter(([, v]) => v).map(([k]) => k).join(', ');
   if (!confirm(`Reset ${picked}? This cannot be undone.`)) return;
   const btn = $('config-reset-btn');
