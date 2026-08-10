@@ -93,6 +93,27 @@ works" to "flip it for real" still has open operational questions.
       pts more bullish/bearish than the market implies" framing is already
       validated as the right idea (matches WhaleScanr/Upside's core
       approach); this would lean into it further, not replace it.
+- [ ] Finish migrating the rest of the render sites (Advanced fills/orders
+      tables, the screener table) onto the child-label/price-aware display
+      pattern shipped 2026-08-10 for positions/market cards/the
+      market-detail modal — those three call the older `marketLabel()`
+      alone and still don't show `yes_sub_title`/per-leg combo data.
+- [ ] Clicking a logged position/signal/decision should also show whether
+      that specific position ultimately closed/won/lost, not just the
+      market's current state (direct request, 2026-08-10) — needs new
+      backend correlation (signal → resulting trade → outcome) that
+      doesn't exist today, not just the click-to-detail wiring already
+      shipped. Trading History rows already show this inline (close type +
+      P&L); the signal feed and decision feed do not.
+- [ ] Market analyst agent's `analyze_market()` swallows its real exception
+      (`except Exception:`, not `as e`) and returns a message pointing at
+      "server logs" that don't exist — no logging framework exists
+      anywhere in this app (2026-08-10 audit finding). Needs the real
+      error captured and at least a minimal stdout logger.
+- [ ] Danger Zone is missing a `market_analyst` reset checkbox (the backend
+      already supports the flag) and has no wired reset path at all for
+      `market_catalog`/`market_history` — the two largest files on disk
+      have no self-serve way to clear them (2026-08-10 audit finding).
 
 ## Shipped (condensed — see `static/status.html` and
 `docs/roadmap-archive-2026-08-09.md` for full detail)
@@ -157,3 +178,18 @@ works" to "flip it for real" still has open operational questions.
   rate limits, exchange open/closed status badge, a structural fix for
   intermittent 403/404s (API-only backend, single public entrypoint),
   mobile/responsive pass, partial accessibility pass.
+- **2026-08-10 session**: Whale Watch/Markets card-mosaic page-height fix
+  (a missing height bound plus threshold-based series collapsing, direct
+  report — one 69-market PGA event was rendering fully expanded); market/
+  position labeling fixed for three distinct root causes (child-market
+  sub-titles silently discarded at the point they were computed, real
+  positions had zero price and no event grouping, combo/MVE markets used a
+  fragile comma-heuristic label instead of real per-leg data — the last of
+  which was also a live, currently-shipping mislabeling bug, found and
+  fixed) plus click-to-detail wired onto the six places that were still
+  missing it (real positions, Trading History, paper Trade Log, whale
+  signal feed, decision feed); a data-robustness audit fixed a live test
+  that had been reading real production data, a catalog-scan bug that
+  marked failed series as healthy, and a backend tick-failure state that
+  existed in the API the whole time with zero UI consumers. 7 new tests.
+  Full suite: 440 (was 433). See `static/status.html` phases 64-66.
