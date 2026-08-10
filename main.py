@@ -1013,6 +1013,111 @@ async def _analyze_market_uncached(
     return {"ok": True, **result, "market_price": market_price}
 
 
+# Series currently being analyzed - same in-flight-race guard as
+# _analyzing_tickers above, kept as its own set rather than sharing one:
+# tickers and series are different namespaces (a series is a ticker prefix,
+# e.g. "KXPGATOUR" vs. a real ticker like "KXPGATOUR-26AUG10-DEF"), so
+# reusing the same set risks a false "already in flight" collision if a
+# series name and a real ticker ever happened to be identical strings.
+_analyzing_series: set[str] = set()
+
+
+def _build_series_context(cfg: dict, series: str) -> dict:
+    """Assembles everything services/market_analyst_agent.build_series_
+    prompt() needs (Item 3B) - real whale-signal stats scoped to this
+    series (signal_log.series_stats reused as-is: series_of() on an
+    already-bare series string is a no-op, so this works without a
+    series-specific variant of that function), this series' own closed-
+    trade summary (trade_analytics.compute_summary on rows filtered to
+    tickers under this series), its current excluded_series membership +
+    per-series notional override, and its series_evaluator verdict if it's
+    ever been evaluated."""
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    series_rows = [r for r in all_rows if signal_log.series_of(r["ticker"]) == series]
+    evaluator_row = next((r for r in series_evaluator.overview() if r["series"] == series), None)
+    strat_cfg = cfg.get("strategy") or {}
+    whale_cfg = cfg.get("whale_watcher_kalshi") or {}
+    return {
+        "series": series,
+        "whale_stats": signal_log.series_stats(series, days=30),
+        "trade_summary": trade_analytics.compute_summary(series_rows),
+        "currently_excluded": series in (strat_cfg.get("excluded_series") or []),
+        "min_notional_override": (whale_cfg.get("min_notional_usd_by_series") or {}).get(series),
+        "evaluator_status": evaluator_row,
+    }
+
+
+def _series_suggestions_from_raw(cfg: dict, series: str, raw_suggestions: list[dict]) -> list[dict]:
+    """Converts services/market_analyst_agent.analyze_series()'s raw
+    {"action": "exclude"|"include", "rationale"} output into this app's
+    unified suggestion shape ({config_path, current_value, suggested_value,
+    id, rationale}, same as services/advisory_engine.py's rule-based
+    suggestions) - done here, not in market_analyst_agent.py, since it
+    needs the live config to compute the actual before/after
+    strategy.excluded_series list. A no-op action (e.g. the model suggests
+    "exclude" on a series that's already excluded) is silently dropped -
+    nothing to actually apply."""
+    current_list = list((cfg.get("strategy") or {}).get("excluded_series") or [])
+    out = []
+    for raw in raw_suggestions:
+        action = raw.get("action")
+        if action == "exclude" and series not in current_list:
+            suggested_list = sorted(current_list + [series])
+        elif action == "include" and series in current_list:
+            suggested_list = [s for s in current_list if s != series]
+        else:
+            continue  # already in the suggested state, or an action we don't recognize - nothing to apply
+        out.append({
+            "id": advisory_engine.rec_id("strategy.excluded_series", suggested_list, 0),
+            "config_path": "strategy.excluded_series",
+            "current_value": current_list,
+            "suggested_value": suggested_list,
+            "rationale": raw.get("rationale") or "",
+            "series": series,
+            "source": "series-analyst",
+        })
+    return out
+
+
+async def _run_series_analysis(cfg: dict, series: str) -> dict:
+    """On-demand per-series orchestration (Item 3B) - same gating shape as
+    _run_market_analyst_for_ticker (disabled/no-key/in-flight/cooldown all
+    return a clean {"ok": False, "reason": ...} rather than raising), reuses
+    market_analyst.reanalyze_cooldown_sec rather than inventing a second
+    knob for a mode that spends the exact same kind of API call."""
+    ma_cfg = cfg.get("market_analyst") or {}
+    if not ma_cfg.get("enabled"):
+        return {"ok": False, "reason": "Market Analyst is disabled — enable it in Config → Market Analyst (AI)."}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"ok": False, "reason": "No ANTHROPIC_API_KEY configured in .env."}
+    if series in _analyzing_series:
+        return {"ok": False, "reason": "Already analyzing this series — try again in a moment."}
+
+    cooldown = ma_cfg.get("reanalyze_cooldown_sec", 1800)
+    now = time.time()
+    last = market_analyst_agent.last_series_analyzed_at(series)
+    if last is not None and (now - last) < cooldown:
+        wait_sec = int(cooldown - (now - last))
+        return {"ok": False, "reason": f"Already analyzed recently — try again in {wait_sec}s."}
+
+    _analyzing_series.add(series)
+    try:
+        series_ctx = _build_series_context(cfg, series)
+        model = ma_cfg.get("model", "claude-sonnet-5")
+        result = await market_analyst_agent.analyze_series(series_ctx, model, api_key)
+        if result is None:
+            return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
+        suggestions = _series_suggestions_from_raw(cfg, series, result["suggestions"])
+        analysis_id = market_analyst_agent.record_series_analysis(
+            series=series, summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
+        )
+        _bump_generation()
+        return {"ok": True, "analysis_id": analysis_id, "series": series, "summary": result["summary"], "suggestions": suggestions}
+    finally:
+        _analyzing_series.discard(series)
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -1854,6 +1959,57 @@ async def get_market_analyst_analyses(limit: int = 25, offset: int = 0, resolved
         "rows": market_analyst_agent.recent(limit=limit, offset=offset, resolved_only=resolved_only),
         "total": market_analyst_agent.total_count(resolved_only=resolved_only),
     }
+
+
+class MarketAnalystSeriesAnalyzeBody(BaseModel):
+    series: str
+
+
+@app.post("/api/market-analyst/series/analyze")
+async def post_market_analyst_series_analyze(body: MarketAnalystSeriesAnalyzeBody):
+    # Per-series analysis mode (Item 3B, 2026-08-10, direct request) -
+    # button lives on the series-evaluator log panel (Item 1), analyzing
+    # one whole series' whale-signal + closed-trade performance rather than
+    # a single market's own probability. Same "deliberate human click, not
+    # background spend" reasoning as the single-market Analyze button.
+    cfg = config_store.get()
+    return await _run_series_analysis(cfg, body.series)
+
+
+class MarketAnalystSeriesApplyBody(BaseModel):
+    analysis_id: str
+    suggestion_id: str
+
+
+@app.post("/api/market-analyst/series/apply")
+async def post_market_analyst_series_apply(body: MarketAnalystSeriesApplyBody):
+    # Applies one suggestion from a *persisted* series analysis - looked up
+    # by (analysis_id, suggestion_id) rather than trusting whatever
+    # config_path/suggested_value the request body might claim, same
+    # never-trust-the-client principle as the rule-based Advisory apply
+    # route. Unlike that route, this can't recompute the suggestion fresh
+    # (an LLM's raw output isn't deterministically reproducible the way a
+    # rule-based one is) - the persisted, server-computed value at analysis
+    # time is the trusted source of truth instead.
+    analysis = market_analyst_agent.get_series_analysis(body.analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Series analysis not found.")
+    match = next((s for s in analysis["suggestions"] if s["id"] == body.suggestion_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found on this analysis.")
+
+    cfg_before = config_store.get()
+    fp_before = config_performance.fingerprint(cfg_before)
+    section, _, field = match["config_path"].partition(".")
+    config_store.update({section: {field: match["suggested_value"]}})
+    fp_after = config_performance.fingerprint(config_store.get())
+    config_performance.log_applied_change(
+        config_path=match["config_path"], old_value=match["current_value"], new_value=match["suggested_value"],
+        rationale=match["rationale"], trade_count=0,
+        fingerprint_before=fp_before, fingerprint_after=fp_after, auto_applied=False, source="series-analyst",
+    )
+    _bump_generation()
+    return {"applied": match, "new_config": config_store.get()["strategy"]}
 
 
 @app.get("/api/series-evaluator/status")

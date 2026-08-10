@@ -60,13 +60,21 @@ from services import trade_analytics
 _COMPARABLE_MIN_WIN_RATE_GAP = 15  # pts - matches trade_analytics' own confidence-bucket threshold
 
 
-def _rec_id(config_path: str, suggested_value, n: int) -> str:
-    """Stable id for one recommendation, used by POST /api/advisory/
-    recommendations/apply to re-identify a specific recommendation against
-    a freshly recomputed list rather than trusting client-supplied
-    current/suggested values directly - the route recomputes
-    generate_recommendations() itself and only applies a value this module
-    just derived, never whatever a request body claims a value should be."""
+def rec_id(config_path: str, suggested_value, n: int) -> str:
+    """Stable id for one suggestion. Public (not module-private) since
+    services/market_analyst_agent.py's per-series analysis mode (Item 3B)
+    reuses the exact same recipe when converting the agent's raw output
+    into this module's unified suggestion shape - one id scheme for every
+    suggestion source, rule-based or agent-driven. Used by POST /api/
+    advisory/recommendations/apply to re-identify a specific rule-based
+    recommendation against a freshly recomputed list rather than trusting
+    client-supplied current/suggested values directly (the route recomputes
+    generate_recommendations() itself); the series-analyst apply path
+    instead looks the id up in what was actually persisted at analysis
+    time, since an LLM-derived suggestion isn't deterministically
+    recomputable the way a rule-based one is - either way, only a value
+    this app itself already derived can ever be applied, never whatever a
+    request body claims a value should be."""
     raw = f"{config_path}|{suggested_value!r}|{n}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
@@ -140,7 +148,7 @@ def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> d
         return None  # nothing to actually suggest - already at/above the well-performing bucket's floor
     suggested = round(suggested, 3)
     return {
-        "id": _rec_id("strategy.entry_threshold", suggested, n),
+        "id": rec_id("strategy.entry_threshold", suggested, n),
         "config_path": "strategy.entry_threshold",
         "current_value": current_value,
         "suggested_value": suggested,
@@ -183,7 +191,7 @@ def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | 
     if suggested <= current_bonus:
         return None
     return {
-        "id": _rec_id("strategy.longshot_entry_threshold_bonus", suggested, n),
+        "id": rec_id("strategy.longshot_entry_threshold_bonus", suggested, n),
         "config_path": "strategy.longshot_entry_threshold_bonus",
         "current_value": current_bonus,
         "suggested_value": suggested,
@@ -238,7 +246,7 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
         )
     full_path = f"strategy.{config_path}"
     return {
-        "id": _rec_id(full_path, suggested, n),
+        "id": rec_id(full_path, suggested, n),
         "config_path": full_path,
         "current_value": current_value,
         "suggested_value": suggested,
@@ -267,7 +275,7 @@ def _auto_exit_threshold_recommendation(rows: list[dict], strat_cfg: dict) -> di
     if suggested == current_value:
         return None
     return {
-        "id": _rec_id("strategy.auto_exit_threshold", suggested, n),
+        "id": rec_id("strategy.auto_exit_threshold", suggested, n),
         "config_path": "strategy.auto_exit_threshold",
         "current_value": current_value,
         "suggested_value": suggested,
@@ -305,7 +313,7 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     out = []
     if lean_suggested != current_lean:
         out.append({
-            "id": _rec_id("strategy.exit_sentiment_lean_pct", lean_suggested, n),
+            "id": rec_id("strategy.exit_sentiment_lean_pct", lean_suggested, n),
             "config_path": "strategy.exit_sentiment_lean_pct",
             "current_value": current_lean,
             "suggested_value": lean_suggested,
@@ -315,7 +323,7 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
         })
     if signals_suggested != current_min_signals:
         out.append({
-            "id": _rec_id("strategy.exit_sentiment_min_signals", signals_suggested, n),
+            "id": rec_id("strategy.exit_sentiment_min_signals", signals_suggested, n),
             "config_path": "strategy.exit_sentiment_min_signals",
             "current_value": current_min_signals,
             "suggested_value": signals_suggested,
@@ -350,7 +358,7 @@ def _momentum_exit_recommendation(rows: list[dict], market_cfg: dict) -> dict | 
     if suggested == current_value:
         return None
     return {
-        "id": _rec_id("market_strategy.min_momentum_delta", suggested, n),
+        "id": rec_id("market_strategy.min_momentum_delta", suggested, n),
         "config_path": "market_strategy.min_momentum_delta",
         "current_value": current_value,
         "suggested_value": suggested,
@@ -430,7 +438,7 @@ def _cross_variant_recommendations(
         for field, other_value in diffs.items():
             full_path = f"strategy.{field}"
             out.append({
-                "id": _rec_id(full_path, other_value, n),
+                "id": rec_id(full_path, other_value, n),
                 "config_path": full_path,
                 "current_value": current_variant["config"].get(field),
                 "suggested_value": other_value,

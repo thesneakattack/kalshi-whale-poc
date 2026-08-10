@@ -1177,6 +1177,15 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="series-evaluator-list" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Per-series agent analysis (Item 3B, 2026-08-10) - "🔎 Analyze"
+         button per row above triggers this. A different kind of question
+         from a single-market Market Analyst call: whole-series whale-
+         signal + closed-trade quality, not one market's own probability -
+         suggestions land in the same unified {config_path, suggested_value}
+         shape as Advisory Recommendations, tagged source='series-analyst'
+         in the Change History panel once applied. -->
+    <div id="series-analysis-result"></div>
+
     <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
     <div id="history-trades"><div class="empty">Loading…</div></div>
   </div>
@@ -3372,14 +3381,82 @@ async function loadSeriesEvaluator() {
       const reEvalBtn = canReEvaluate
         ? `<button style="font-size:11px; padding:2px 8px;" onclick="reEvaluateSeries('${esc(r.series)}', this)">Re-evaluate</button>`
         : '';
+      const analyzeBtn = `<button style="font-size:11px; padding:2px 8px;" onclick="analyzeSeries('${esc(r.series)}', this)">🔎 Analyze</button>`;
       return `<div class="position-row">
         <div class="name">${esc(seriesLabel(r.series))} <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">${esc(r.series)}</span></div>
-        <div class="nums">${statusHtml} ${reEvalBtn}</div>
+        <div class="nums">${statusHtml} ${reEvalBtn} ${analyzeBtn}</div>
       </div>`;
     }).join('');
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load Series Evaluator data.</div>';
+  }
+}
+
+// Per-series agent analysis (Item 3B, 2026-08-10) - same "deliberate human
+// click, not background spend" reasoning as the single-market Market
+// Analyst button. Renders into #series-analysis-result, not inline per row,
+// so a suggestion card can reuse the exact same layout Advisory
+// Recommendations already uses instead of a second, cramped variant.
+async function analyzeSeries(series, btn) {
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Analyzing…';
+  const el = $('series-analysis-result');
+  try {
+    const result = await fetchJSON('/api/market-analyst/series/analyze', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({series}),
+    });
+    if (!result.ok) {
+      el.innerHTML = `<div class="panel-title">Series Analysis: ${esc(seriesLabel(series))}</div>
+        <div class="empty">${esc(result.reason)}</div>`;
+      return;
+    }
+    const suggestionsHTML = result.suggestions.length
+      ? result.suggestions.map(s => `
+        <div class="signal-card">
+          <div class="top-row">
+            <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
+          </div>
+          <div style="margin:4px 0;"><b>${esc(JSON.stringify(s.current_value))}</b> → <b style="color:var(--whale);">${esc(JSON.stringify(s.suggested_value))}</b></div>
+          <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
+          <button class="series-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
+        </div>
+      `).join('')
+      : '<div class="empty">No changes suggested — this series looks fine as-is.</div>';
+    el.innerHTML = `<div class="panel-title">Series Analysis: ${esc(seriesLabel(series))} <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">${esc(series)}</span></div>
+      <div class="signal-card" style="margin-bottom:12px;">${esc(result.summary)}</div>
+      ${suggestionsHTML}
+      <div style="margin-bottom:24px;"></div>`;
+    el.querySelectorAll('[data-jump-path]').forEach(chip => {
+      chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
+    });
+    el.querySelectorAll('.series-suggestion-apply-btn').forEach(applyBtn => {
+      applyBtn.addEventListener('click', () => applySeriesSuggestion(applyBtn.dataset.analysisId, applyBtn.dataset.suggestionId, applyBtn));
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="panel-title">Series Analysis: ${esc(seriesLabel(series))}</div><div class="empty">Failed to analyze this series.</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+async function applySeriesSuggestion(analysisId, suggestionId, btn) {
+  if (!confirm('Apply this suggested value to the live strategy config? This takes effect on the next trading-loop tick.')) return;
+  btn.disabled = true;
+  try {
+    await fetchJSON('/api/market-analyst/series/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({analysis_id: analysisId, suggestion_id: suggestionId}),
+    });
+    btn.textContent = 'Applied ✓';
+    loadConfig();
+    setTimeout(loadChangeHistory, 800);
+    setTimeout(loadSeriesEvaluator, 800);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Apply failed — retry';
   }
 }
 

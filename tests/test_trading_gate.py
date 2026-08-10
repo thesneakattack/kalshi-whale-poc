@@ -1370,3 +1370,182 @@ def test_post_market_analyst_analyze_route_returns_gated_reason_when_disabled(tm
     body = resp.json()
     assert body["ok"] is False
     assert "disabled" in body["reason"].lower()
+
+
+# ---- Market Analyst: per-series analysis mode (Item 3B, 2026-08-10) --------
+
+def test_build_series_context_scopes_stats_and_trades_to_the_series(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("KXTICK-A", "yes", size=10, price=0.5, reason="whale print 5000 @ 0.5 (conf 0.6)")
+    main.broker.close_position("KXTICK-A", exit_price=1.0, reason="market settled YES - position won")
+    main.broker.open_position("OTHER-B", "yes", size=10, price=0.5, reason="whale print 5000 @ 0.5 (conf 0.6)")
+    main.broker.close_position("OTHER-B", exit_price=0.0, reason="market settled NO - position lost")
+
+    cfg = {**main.config_store.get(), "strategy": {**main.config_store.get()["strategy"], "excluded_series": ["OTHER"]}}
+    ctx = main._build_series_context(cfg, "KXTICK")
+    assert ctx["series"] == "KXTICK"
+    assert ctx["trade_summary"]["total_closed"] == 1  # only the KXTICK-A trade, not OTHER-B
+    assert ctx["currently_excluded"] is False
+
+
+def test_build_series_context_reports_excluded_and_notional_override():
+    cfg = {
+        **main.config_store.get(),
+        "strategy": {**main.config_store.get()["strategy"], "excluded_series": ["KXTICK"]},
+        "whale_watcher_kalshi": {"min_notional_usd_by_series": {"KXTICK": 750}},
+    }
+    ctx = main._build_series_context(cfg, "KXTICK")
+    assert ctx["currently_excluded"] is True
+    assert ctx["min_notional_override"] == 750
+
+
+def test_series_suggestions_from_raw_converts_exclude_action():
+    cfg = {"strategy": {"excluded_series": []}}
+    raw = [{"action": "exclude", "rationale": "weak whale accuracy"}]
+    out = main._series_suggestions_from_raw(cfg, "KXTICK", raw)
+    assert len(out) == 1
+    s = out[0]
+    assert s["config_path"] == "strategy.excluded_series"
+    assert s["current_value"] == []
+    assert s["suggested_value"] == ["KXTICK"]
+    assert s["source"] == "series-analyst"
+    assert s["series"] == "KXTICK"
+    assert "id" in s
+
+
+def test_series_suggestions_from_raw_converts_include_action():
+    cfg = {"strategy": {"excluded_series": ["KXTICK", "OTHER"]}}
+    raw = [{"action": "include", "rationale": "back to normal"}]
+    out = main._series_suggestions_from_raw(cfg, "KXTICK", raw)
+    assert out[0]["suggested_value"] == ["OTHER"]
+
+
+def test_series_suggestions_from_raw_drops_no_op_actions():
+    # Already excluded and the model still says "exclude" - nothing to apply.
+    cfg = {"strategy": {"excluded_series": ["KXTICK"]}}
+    raw = [{"action": "exclude", "rationale": "r"}]
+    assert main._series_suggestions_from_raw(cfg, "KXTICK", raw) == []
+
+
+def test_run_series_analysis_gated_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": False}}
+    result = asyncio.run(main._run_series_analysis(cfg, "KXTICK"))
+    assert result["ok"] is False
+    assert "disabled" in result["reason"].lower()
+
+
+def test_run_series_analysis_gated_without_api_key(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+    result = asyncio.run(main._run_series_analysis(cfg, "KXTICK"))
+    assert result["ok"] is False
+    assert "api" in result["reason"].lower()
+
+
+def test_run_series_analysis_gated_during_cooldown(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "reanalyze_cooldown_sec": 1800}}
+    market_analyst_agent.record_series_analysis("KXTICK", "s", [], "m", analyzed_at=time.time())
+    result = asyncio.run(main._run_series_analysis(cfg, "KXTICK"))
+    assert result["ok"] is False
+    assert "recently" in result["reason"].lower()
+
+
+def test_run_series_analysis_rejects_a_concurrent_request_for_the_same_series(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    main._analyzing_series.clear()
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def slow_analyze_series(series_ctx, model, api_key):
+        started.set()
+        await proceed.wait()
+        return {"summary": "s", "suggestions": []}
+    monkeypatch.setattr(market_analyst_agent, "analyze_series", slow_analyze_series)
+
+    async def scenario():
+        task_a = asyncio.create_task(main._run_series_analysis(cfg, "KXTICK"))
+        await started.wait()
+        result_b = await main._run_series_analysis(cfg, "KXTICK")
+        proceed.set()
+        result_a = await task_a
+        return result_a, result_b
+
+    result_a, result_b = asyncio.run(scenario())
+    assert result_a["ok"] is True
+    assert result_b["ok"] is False
+    assert "already analyzing" in result_b["reason"].lower()
+
+
+def test_run_series_analysis_succeeds_and_records_analysis(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "model": "claude-sonnet-5"},
+           "strategy": {**main.config_store.get()["strategy"], "excluded_series": []}}
+
+    async def fake_analyze_series(series_ctx, model, api_key):
+        assert series_ctx["series"] == "KXTICK"
+        assert model == "claude-sonnet-5"
+        return {"summary": "Weak whale accuracy.", "suggestions": [{"action": "exclude", "rationale": "r"}]}
+    monkeypatch.setattr(market_analyst_agent, "analyze_series", fake_analyze_series)
+
+    result = asyncio.run(main._run_series_analysis(cfg, "KXTICK"))
+    assert result["ok"] is True
+    assert result["series"] == "KXTICK"
+    assert result["summary"] == "Weak whale accuracy."
+    assert len(result["suggestions"]) == 1
+    assert result["suggestions"][0]["suggested_value"] == ["KXTICK"]
+    assert market_analyst_agent.get_series_analysis(result["analysis_id"]) is not None
+
+
+def test_post_market_analyst_series_analyze_route_returns_gated_reason_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"market_analyst": {"enabled": False}})
+    resp = client.post("/api/market-analyst/series/analyze", json={"series": "KXTICK"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "disabled" in body["reason"].lower()
+
+
+def test_post_market_analyst_series_apply_end_to_end(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"strategy": {"excluded_series": []}})
+    suggestions = main._series_suggestions_from_raw(
+        main.config_store.get(), "KXTICK", [{"action": "exclude", "rationale": "weak whale accuracy"}],
+    )
+    analysis_id = market_analyst_agent.record_series_analysis("KXTICK", "s", suggestions, "m")
+
+    resp = client.post("/api/market-analyst/series/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": suggestions[0]["id"],
+    })
+    assert resp.status_code == 200
+    assert main.config_store.get()["strategy"]["excluded_series"] == ["KXTICK"]
+
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "strategy.excluded_series")
+    assert match["source"] == "series-analyst"
+
+
+def test_post_market_analyst_series_apply_404s_for_unknown_analysis(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    resp = client.post("/api/market-analyst/series/apply", json={
+        "analysis_id": "does-not-exist", "suggestion_id": "whatever",
+    })
+    assert resp.status_code == 404
+
+
+def test_post_market_analyst_series_apply_404s_for_unknown_suggestion(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    analysis_id = market_analyst_agent.record_series_analysis("KXTICK", "s", [], "m")
+    resp = client.post("/api/market-analyst/series/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": "does-not-exist",
+    })
+    assert resp.status_code == 404
