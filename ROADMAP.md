@@ -205,5 +205,12 @@ works" to "flip it for real" still has open operational questions.
   3 real defects fixed along the way (`"...and"` as a whole label,
   Market-Native Strategy's exit fields far terser than their Exits-tab
   equivalents, the Risk field never using the "kill switch" term the Help
-  glossary already does). 11 new tests. Full suite: 442 (was 433). See
-  `static/status.html` phases 64-68.
+  glossary already does); a series evaluator
+  (`services/series_evaluator.py`) judging whether a series is even
+  "whale-worthy" before letting it back onto the automatic watchlist — a
+  before/after hybrid (a cheap pre-admission backoff check, plus a real
+  post-admission verdict on qualifying rate once there's trade-tape data to
+  judge), with sticky approval, an escalating doubling backoff on repeated
+  rejection, a new Config-tab section, and a History-tab log showing every
+  series ever evaluated with a manual re-evaluate action. 33 new tests.
+  Full suite: 464 (was 433). See `static/status.html` phases 64-69.
