@@ -93,8 +93,24 @@ works" to "flip it for real" still has open operational questions.
       `open_position_count_in_series()` helper, wired into both
       strategies' entry gates; new `strategy.max_open_positions_per_series`/
       `market_strategy.max_open_positions_per_series` config fields
-      (null = unlimited). 7 new tests, 549 passing. Findings 1/4-7 still
-      open.
+      (null = unlimited). 7 new tests, 549 passing.
+      **Finding 1 (edge-aware position sizing) is done** — all 3
+      recommended-sequencing items now shipped. New
+      `kelly_scaled_max_size()` helper + `kelly_fraction_of_cap` config
+      fields (0.0 default, opt-in). 13 new tests, 562 passing. While
+      consulting real data for this pass, also fixed a real crash bug in
+      `confidence_calibration.py` (would KeyError against real signal
+      history — ~9200 resolved signals predate 3 newer factor keys) and
+      applied the 3 data-backed Advisory suggestions this app's own real
+      trade history already supported. Findings 4-7 still open —
+      4 (calibration-band feedback into sizing) is now unblocked, since
+      calibration itself is enabled and working. One real finding
+      surfaced, not yet acted on: `unusualness_factor`/`agreement_factor`
+      both show *negative* discrimination against real outcomes
+      (`GET /api/confidence-calibration/report`) — the opposite of their
+      current positive hardcoded weights in `whale_simulator.py`. Worth a
+      human look before finding 4 (or anything else) leans on those
+      weights being right.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
