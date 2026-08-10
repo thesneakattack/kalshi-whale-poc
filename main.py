@@ -2263,7 +2263,28 @@ async def get_series_evaluator_status():
     # same "history stays visible after a feature's turned off" idiom as
     # market_analyst's own status route above.
     se_cfg = config_store.get().get("series_evaluator") or {}
-    return {"enabled": bool(se_cfg.get("enabled")), "series": series_evaluator.overview()}
+    # Gap 4 of docs/config-tuning-data-gaps-2026-08-10.md - series_evaluator
+    # judges a series by *qualifying rate* (real trades observed vs. how
+    # many cleared the notional threshold), strategy_engine.py's own
+    # min_whale_winrate_pct gate judges it by *realized win rate* - two
+    # genuinely independent mechanisms that had never been cross-checked
+    # against each other before this. all_series_stats() (Gap 2) already
+    # computes every series' win rate in one query - attach it here rather
+    # than adding a second per-series persistence layer.
+    strat_cfg = config_store.get()["strategy"]
+    win_rate_floor = strat_cfg.get("min_whale_winrate_pct", 40)
+    min_resolved_for_filter = strat_cfg.get("min_resolved_for_whale_filter", 10)
+    win_stats = signal_log.all_series_stats(days=30)
+    series_rows = series_evaluator.overview()
+    for row in series_rows:
+        stat = win_stats.get(row["series"]) or {"resolved": 0, "win_rate": None}
+        row["whale_resolved"] = stat["resolved"]
+        row["whale_win_rate"] = stat["win_rate"]
+        row["below_winrate_floor"] = (
+            stat["resolved"] >= min_resolved_for_filter
+            and stat["win_rate"] is not None and stat["win_rate"] < win_rate_floor
+        )
+    return {"enabled": bool(se_cfg.get("enabled")), "series": series_rows}
 
 
 class SeriesEvaluatorResetBody(BaseModel):

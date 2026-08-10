@@ -210,8 +210,23 @@ works" to "flip it for real" still has open operational questions.
       no new UI — zero historical rows exist under this schema until new
       signals accumulate. 7 new tests, 601 passing. Verified live via
       direct sqlite3 query — real signals already capturing raw context
-      within seconds of deploy. Gaps 4-7, 9-10 still open (Gap 2's
-      stateful half deliberately not attempted).
+      within seconds of deploy.
+      **Gap 4 (series_evaluator × win-rate cross-check) is done** —
+      diagnostic-only, no new persistence. `GET /api/series-evaluator/
+      status` now joins `series_evaluator.overview()`'s qualifying-rate
+      verdict against `signal_log.all_series_stats()`'s real win rate
+      (Gap 2's bulk query) inline, attaching `whale_win_rate`/
+      `below_winrate_floor` per series — the latter mirrors
+      `strategy_engine.py`'s real `min_whale_winrate_pct` gate comparison
+      exactly. Surfaced a real disagreement immediately on live data:
+      `KXATPCHALLENGERMATCH` is series-evaluator-approved for the
+      watchlist but `below_winrate_floor: true` (34.4% win rate, n=2326) —
+      the *other* gate is already silently filtering its real trades even
+      though this one approved it. Series Evaluator panel now shows win
+      rate inline, flagged when below the floor. No new tests (thin
+      inline join over two already-tested functions); verified live via
+      curl + selenium-chrome. 601 tests passing, unchanged. Gaps 6, 7, 9,
+      10 still open (Gap 2's stateful half deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

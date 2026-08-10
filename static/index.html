@@ -3616,9 +3616,22 @@ async function loadSeriesEvaluator() {
         ? `<button style="font-size:11px; padding:2px 8px;" onclick="reEvaluateSeries('${esc(r.series)}', this)">Re-evaluate</button>`
         : '';
       const analyzeBtn = `<button style="font-size:11px; padding:2px 8px;" onclick="analyzeSeries('${esc(r.series)}', this)">🔎 Analyze</button>`;
+      // Gap 4 (docs/config-tuning-data-gaps-2026-08-10.md) - series_evaluator's
+      // own qualifying-rate verdict and strategy.min_whale_winrate_pct's real
+      // win-rate floor are two independent mechanisms that had never been
+      // cross-checked before this - flagging it directly when they disagree
+      // (e.g. approved for the watchlist but still below the win-rate floor,
+      // so real trades on it are being filtered out by the *other* gate anyway).
+      let winRateHtml = '';
+      if (r.whale_win_rate !== null) {
+        const wrColor = r.below_winrate_floor ? 'var(--no)' : 'var(--muted)';
+        winRateHtml = `<span style="color:${wrColor}; font-size:11px;" title="whale win rate over ${r.whale_resolved} resolved signals">
+          ${r.whale_win_rate.toFixed(1)}% win rate${r.below_winrate_floor ? ' ⚠️ below min_whale_winrate_pct floor' : ''}
+        </span>`;
+      }
       return `<div class="position-row">
         <div class="name">${esc(seriesLabel(r.series))} <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">${esc(r.series)}</span></div>
-        <div class="nums">${statusHtml} ${reEvalBtn} ${analyzeBtn}</div>
+        <div class="nums">${statusHtml} ${winRateHtml} ${reEvalBtn} ${analyzeBtn}</div>
       </div>`;
     }).join('');
   } catch (e) {
