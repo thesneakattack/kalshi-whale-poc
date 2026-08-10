@@ -1,6 +1,7 @@
 import pytest
 
 from services import confidence_calibration as cc
+from services.whale_simulator import DEFAULT_WEIGHTS
 
 
 def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5):
@@ -102,6 +103,26 @@ def test_missing_factor_key_excluded_not_crashed():
     assert depth_report["discriminates"] is True
 
 
+def test_report_current_weights_defaults_to_default_weights():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    assert result["report"]["current_weights"] == DEFAULT_WEIGHTS
+
+
+def test_report_current_weights_reflects_a_live_config_override():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    custom = {**DEFAULT_WEIGHTS, "depth_factor": 0.5}
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30, current_weights=custom)
+    assert result["report"]["current_weights"]["depth_factor"] == 0.5
+
+
+def test_report_current_weights_fills_in_missing_keys_from_default():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30, current_weights={"depth_factor": 0.5})
+    assert result["report"]["current_weights"]["depth_factor"] == 0.5
+    assert result["report"]["current_weights"]["analyst_factor"] == DEFAULT_WEIGHTS["analyst_factor"]
+
+
 def test_ranked_by_discrimination_puts_the_real_signal_first():
     rows = _discriminating_dataset(n_per_bucket=10)
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
@@ -113,7 +134,7 @@ def test_suggested_weights_favor_the_discriminating_factor():
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
     weights = result["report"]["suggested_weights"]
     assert weights is not None
-    assert weights["depth_factor"] > cc.CURRENT_WEIGHTS["depth_factor"]
+    assert weights["depth_factor"] > DEFAULT_WEIGHTS["depth_factor"]
     assert all(w >= cc._MIN_SUGGESTED_WEIGHT - 1e-9 for w in weights.values())  # nothing zeroed out
     assert sum(weights.values()) == pytest.approx(1.0, abs=0.05)
 

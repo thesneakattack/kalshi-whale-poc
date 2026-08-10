@@ -193,10 +193,22 @@ class ConfidenceBreakdown:
         return asdict(self)
 
 
+# The weights this formula shipped with, before any real calibration data
+# existed to check them against - now the fallback default (and the
+# reference point services/confidence_calibration.py's report compares a
+# live config override against), not the only source of truth. See
+# config/settings.yaml's whale_confidence_weights section - config.
+DEFAULT_WEIGHTS = {
+    "depth_factor": 0.21, "unusualness_factor": 0.09, "proximity_factor": 0.13,
+    "context_factor": 0.08, "agreement_factor": 0.13, "cluster_factor": 0.13,
+    "trend_factor": 0.08, "analyst_factor": 0.15,
+}
+
+
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5,
+    analyst_factor: float = 0.5, weights: dict | None = None,
 ) -> ConfidenceBreakdown:
     """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md),
     extended per docs/prediction-market-strategy-alignment-plan.md: trade
@@ -211,6 +223,22 @@ def composite_confidence_breakdown(
     noise on top, see WhaleSimulator._score_confidence) and any real
     whale-watcher provider scoring an actual trade
     (services/whalewatchers/kalshi_trade_tape.py).
+
+    weights defaults to DEFAULT_WEIGHTS (this formula's original,
+    unvalidated weights) when the caller doesn't pass config -
+    services/whalewatchers/kalshi_trade_tape.py (the real provider) passes
+    config["whale_confidence_weights"] once real calibration data exists to
+    set it from; a caller passing a partial dict only overrides the keys it
+    names, falling back to DEFAULT_WEIGHTS for the rest, so a config that's
+    missing a newer factor's key (e.g. before cluster_factor existed)
+    degrades to that factor's original weight rather than silently scoring
+    it as 0. Direct finding (2026-08-10, services/confidence_calibration.py
+    enabled against real data for the first time): unusualness_factor and
+    agreement_factor both showed NEGATIVE discrimination against ~9200 real
+    resolved signals (the "high" bucket for each actually won LESS often
+    than the "low" bucket) - see config/settings.yaml's
+    whale_confidence_weights comment for the exact reasoning behind the
+    values actually shipped there.
 
     agreement_factor, cluster_factor, trend_factor, and analyst_factor are
     all the caller's responsibility to compute (this function has no access
@@ -333,15 +361,16 @@ def composite_confidence_breakdown(
     # deliberately spent a real API call analyzing this specific market -
     # neutral is the overwhelmingly common case, not an edge case.
 
+    w = {**DEFAULT_WEIGHTS, **(weights or {})}
     score = (
-        0.21 * depth_factor
-        + 0.09 * unusualness_factor
-        + 0.13 * proximity_factor
-        + 0.08 * context_factor
-        + 0.13 * agreement_factor
-        + 0.13 * cluster_factor
-        + 0.08 * trend_factor
-        + 0.15 * analyst_factor
+        w["depth_factor"] * depth_factor
+        + w["unusualness_factor"] * unusualness_factor
+        + w["proximity_factor"] * proximity_factor
+        + w["context_factor"] * context_factor
+        + w["agreement_factor"] * agreement_factor
+        + w["cluster_factor"] * cluster_factor
+        + w["trend_factor"] * trend_factor
+        + w["analyst_factor"] * analyst_factor
     )
     return ConfidenceBreakdown(
         depth_factor=depth_factor, unusualness_factor=unusualness_factor,
@@ -355,7 +384,7 @@ def composite_confidence_breakdown(
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5,
+    analyst_factor: float = 0.5, weights: dict | None = None,
 ) -> float:
     """The blended score only - see composite_confidence_breakdown for the
     full per-factor detail. Kept as its own function so every existing
@@ -363,5 +392,5 @@ def composite_confidence(
     doesn't need to change."""
     return composite_confidence_breakdown(
         market, markets, size, price, now, agreement_factor, cluster_factor, trend_factor,
-        analyst_factor,
+        analyst_factor, weights,
     ).score

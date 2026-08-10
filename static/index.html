@@ -1142,6 +1142,26 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="change-history-list" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Whale-Signal Calibration (services/confidence_calibration.py) - direct
+         request: "study whale prints and their actual outcomes... a more
+         accurate formula." Descriptive/read-only: shows whether each of the
+         8 factors feeding the composite whale-confidence score actually
+         predicts real outcomes, and what config/settings.yaml's
+         whale_confidence_weights currently weights each one at. Editing the
+         weights themselves is config-file/API only for now (no editable
+         fields here yet) - same "backend ships first, dashboard panel is a
+         disclosed follow-up" precedent as market_strategy's own dashboard
+         gap. Disabled by default; needs enough real resolved signals with a
+         factor breakdown to activate (see the gate below). -->
+    <div class="panel-title">Whale-Signal Calibration <span class="data-badge new">🆕 new</span> <span id="calibration-status-badge"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Does each factor in the whale-confidence score actually predict real outcomes? Buckets real resolved
+      signals by each factor's own value and compares low vs. high — a factor showing a real gap
+      "discriminates"; one showing none (or a negative gap) isn't currently earning its weight. Read-only:
+      never changes <span class="config-path" style="margin:0;">whale_confidence_weights</span> itself.
+    </p>
+    <div id="calibration-report"><div class="empty">Loading…</div></div>
+
     <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
          Part 3) - an LLM reading each market's own title/rules/context and
          forming an independent probability estimate, distinct in kind from
@@ -3079,6 +3099,7 @@ async function loadTradingHistory() {
     loadMarketAnalyst();
     loadSeriesEvaluator();
     loadChangeHistory();
+    loadCalibrationReport();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -3294,6 +3315,71 @@ async function loadChangeHistory() {
     }).join('');
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load change history.</div>';
+  }
+}
+
+// Whale-Signal Calibration (services/confidence_calibration.py) - read-only,
+// same two-fetch shape (status always safe, report gated) as advisory/
+// market-analyst above. Direct finding while enabling this against real
+// data for the first time (2026-08-10): unusualness_factor/agreement_factor
+// both discriminated negatively - this panel is what makes that visible
+// without needing to hit the API directly.
+async function loadCalibrationReport() {
+  const badge = $('calibration-status-badge');
+  const el = $('calibration-report');
+  try {
+    const status = await fetchJSON('/api/confidence-calibration/status');
+    if (!status.enabled) {
+      badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
+      el.innerHTML = '<div class="empty">Whale-signal calibration is disabled — enable confidence_calibration.enabled in config to start judging real signal factors against real outcomes.</div>';
+      return;
+    }
+    const resp = await fetchJSON('/api/confidence-calibration/report');
+    if (!resp.report) {
+      badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">enabled</span>';
+      el.innerHTML = `<div class="empty">${esc(resp.gated_reason || 'No report yet.')}</div>`;
+      return;
+    }
+    const r = resp.report;
+    badge.innerHTML = `<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">${r.resolved_count} signals</span>`;
+    const suggested = r.suggested_weights || {};
+    const factorRows = r.per_factor.map(f => {
+      const gapColor = f.discriminates === true ? 'var(--yes)' : (f.discriminates === false && f.gap_pts < 0 ? 'var(--no)' : 'var(--muted)');
+      const gapText = f.gap_pts === null ? 'not enough data' : `${f.gap_pts > 0 ? '+' : ''}${f.gap_pts.toFixed(1)}pts`;
+      const current = r.current_weights[f.factor];
+      const suggest = suggested[f.factor];
+      return `<tr>
+        <td>${esc(f.factor)}</td>
+        <td style="color:${gapColor};">${gapText}</td>
+        <td>${f.discriminates === null ? '—' : (f.discriminates ? 'yes' : 'no')}</td>
+        <td>${current !== undefined ? current.toFixed(2) : '—'}</td>
+        <td>${suggest !== undefined ? suggest.toFixed(2) : '—'}</td>
+      </tr>`;
+    }).join('');
+    const bandsRows = (r.confidence_calibration || []).map(b => `<tr>
+      <td>${esc(b.band)}</td><td>${b.n}</td><td>${b.predicted_pct.toFixed(1)}%</td>
+      <td>${b.observed_win_rate_pct.toFixed(1)}%</td>
+      <td style="color:${Math.abs(b.gap_pts) <= 10 ? 'var(--yes)' : 'var(--no)'};">${b.gap_pts > 0 ? '+' : ''}${b.gap_pts.toFixed(1)}pts</td>
+    </tr>`).join('');
+    el.innerHTML = `
+      <div class="stat-cards" style="margin-bottom:14px;">
+        <div class="cell"><div class="lbl">Resolved Signals</div><div class="val">${r.resolved_count}</div></div>
+        <div class="cell"><div class="lbl">Overall Win Rate</div><div class="val">${r.overall_win_rate.toFixed(1)}%</div></div>
+        <div class="cell"><div class="lbl">Confidence</div><div class="val">${esc(r.confidence_label)}</div></div>
+      </div>
+      <table class="positions-table" style="margin-bottom:14px;">
+        <thead><tr><th>Factor</th><th>High−Low Gap</th><th>Discriminates</th><th>Current Weight</th><th>Suggested Weight</th></tr></thead>
+        <tbody>${factorRows}</tbody>
+      </table>
+      ${bandsRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Confidence bands (predicted vs. observed)</div>
+      <table class="positions-table">
+        <thead><tr><th>Band</th><th>n</th><th>Predicted</th><th>Observed</th><th>Gap</th></tr></thead>
+        <tbody>${bandsRows}</tbody>
+      </table>` : ''}
+    `;
+  } catch (e) {
+    badge.innerHTML = '';
+    el.innerHTML = '<div class="empty">Failed to load calibration report.</div>';
   }
 }
 

@@ -2061,7 +2061,8 @@ async def get_confidence_calibration_report():
         return {"report": None, "gated_reason": "confidence calibration is disabled", "resolved_count": None}
 
     rows = signal_log.resolved_signals_with_factors()
-    return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"])
+    current_weights = config_store.get().get("whale_confidence_weights")
+    return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
 
 
 @app.get("/api/market-analyst/status")

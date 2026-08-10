@@ -1,7 +1,9 @@
 import time
 from datetime import datetime, timedelta, timezone
 
-from services.whale_simulator import WhaleSimulator, composite_confidence
+import pytest
+
+from services.whale_simulator import DEFAULT_WEIGHTS, WhaleSimulator, composite_confidence, composite_confidence_breakdown
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", yes_bid_dollars="0.5", close_time=None, event_ticker=None):
@@ -251,3 +253,55 @@ def test_trend_factor_pass_through_raises_score_above_neutral_default():
     with_trend = composite_confidence(market, [market], size=5000, price=0.5, now=now, trend_factor=1.0)
     against_trend = composite_confidence(market, [market], size=5000, price=0.5, now=now, trend_factor=0.0)
     assert against_trend < neutral < with_trend
+
+
+# ---- weights (deep-scan follow-up, 2026-08-10) - config-editable scoring ----
+# weights - real finding: confidence_calibration.py enabled against ~9200
+# real signals showed unusualness_factor/agreement_factor discriminating
+# NEGATIVELY, so composite_confidence_breakdown's weights became
+# config-editable instead of hardcoded constants.
+
+def test_weights_default_to_default_weights_when_omitted():
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    default_call = composite_confidence(market, [market], size=5000, price=0.5, now=now)
+    explicit_default = composite_confidence(market, [market], size=5000, price=0.5, now=now, weights=DEFAULT_WEIGHTS)
+    assert default_call == explicit_default
+
+
+def test_weights_override_changes_the_score():
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    base = composite_confidence(market, [market], size=5000, price=0.5, now=now, agreement_factor=1.0)
+    # agreement_factor's weight raised way above default - the same input
+    # factor should now move the score more.
+    heavier_agreement = composite_confidence(
+        market, [market], size=5000, price=0.5, now=now, agreement_factor=1.0,
+        weights={**DEFAULT_WEIGHTS, "agreement_factor": 0.9},
+    )
+    assert heavier_agreement > base
+
+
+def test_weights_partial_override_falls_back_to_default_for_missing_keys():
+    # A caller passing a partial dict (e.g. config missing a newer factor's
+    # key) must not silently score that factor as weight 0 - it should fall
+    # back to DEFAULT_WEIGHTS for whatever it didn't override.
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    full_default = composite_confidence_breakdown(market, [market], size=5000, price=0.5, now=now)
+    partial = composite_confidence_breakdown(
+        market, [market], size=5000, price=0.5, now=now, weights={"depth_factor": DEFAULT_WEIGHTS["depth_factor"]},
+    )
+    assert full_default.score == pytest.approx(partial.score)
+
+
+def test_weights_still_sum_reasonably_with_a_full_custom_dict():
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    custom = {
+        "depth_factor": 0.25, "unusualness_factor": 0.03, "proximity_factor": 0.20,
+        "context_factor": 0.13, "agreement_factor": 0.03, "cluster_factor": 0.13,
+        "trend_factor": 0.08, "analyst_factor": 0.15,
+    }
+    breakdown = composite_confidence_breakdown(market, [market], size=5000, price=0.5, now=now, weights=custom)
+    assert 0.0 <= breakdown.score <= 1.0

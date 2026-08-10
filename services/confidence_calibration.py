@@ -17,14 +17,22 @@ generate_calibration_report() enforces the minimum-resolved-signal floor
 built on too little data regardless of config.
 
 Scope boundary, deliberate: this ships strictly read-only/report-only for
-v1, unlike advisory_engine's manual-apply button. composite_confidence_
-breakdown's weights aren't config-editable today - they're hardcoded
-constants in services/whale_simulator.py - so there's no live value to PATCH
-yet. A human reads the report and edits the weights in code if/when the
-finding is worth acting on. Building an apply path is a real follow-up, not
-done here, once a report has actually shipped and proven useful.
+the *weight-suggestion* half (_suggested_weights below) - unlike
+advisory_engine's manual-apply button, there's no "apply this suggestion"
+route here, since blending a suggestion into the 8-factor formula sensibly
+(what to do with a factor that has no data yet, whether to floor a
+negative-discrimination factor to zero or just down-weight it) is a real
+judgment call a human should make explicitly, not something safe to
+automate. What *did* change (2026-08-10, first real report against ~9200
+signals): composite_confidence_breakdown's weights are now config-editable
+(config/settings.yaml's whale_confidence_weights, threaded through
+services/whalewatchers/kalshi_trade_tape.py) instead of hardcoded constants
+- so a human-reviewed weight change is now a config edit with a full
+config_performance audit trail, not a code change. This module still never
+writes that config itself.
 """
 from services import trade_analytics
+from services.whale_simulator import DEFAULT_WEIGHTS
 
 _BUCKET_COUNT = 3
 _FACTOR_NAMES = (
@@ -41,15 +49,6 @@ _MIN_DISCRIMINATION_GAP = 10
 # round, not genuinely useless; never fully strip its future chance to prove
 # otherwise as more data comes in.
 _MIN_SUGGESTED_WEIGHT = 0.05
-
-# The weights actually hardcoded in composite_confidence_breakdown today -
-# kept here only as the "current" reference point a rationale string can
-# compare against, not read by the scoring function itself.
-CURRENT_WEIGHTS = {
-    "depth_factor": 0.21, "unusualness_factor": 0.09, "proximity_factor": 0.13,
-    "context_factor": 0.08, "agreement_factor": 0.13, "cluster_factor": 0.13,
-    "trend_factor": 0.08, "analyst_factor": 0.15,
-}
 
 
 def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
@@ -181,12 +180,20 @@ def _confidence_calibration_bands(rows: list[dict]) -> list[dict]:
     return bands
 
 
-def generate_calibration_report(rows: list[dict], min_resolved_signals: int) -> dict:
+def generate_calibration_report(rows: list[dict], min_resolved_signals: int, current_weights: dict | None = None) -> dict:
     """rows: services.signal_log.resolved_signals_with_factors()'s output -
     already scoped to real (not simulated) signals that carry a factor
     breakdown, nothing more to filter here. Gated entrypoint - see module
     docstring for why the threshold lives inside this function, not a
-    caller."""
+    caller.
+
+    current_weights: the caller's live config["whale_confidence_weights"],
+    so the report's own "current_weights" field reflects whatever's
+    actually scoring real signals right now, not a stale hardcoded mirror -
+    defaults to whale_simulator.DEFAULT_WEIGHTS (this formula's original
+    weights) when the caller has no config override to pass, same fallback
+    composite_confidence_breakdown itself uses."""
+    current_weights = {**DEFAULT_WEIGHTS, **(current_weights or {})}
     resolved_count = len(rows)
     if resolved_count < min_resolved_signals:
         return {
@@ -210,7 +217,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int) -> 
             "resolved_count": resolved_count,
             "overall_win_rate": overall_win_rate,
             "confidence_label": trade_analytics.confidence_label(resolved_count),
-            "current_weights": CURRENT_WEIGHTS,
+            "current_weights": current_weights,
             "per_factor": per_factor,
             "ranked_by_discrimination": [f["factor"] for f in ranked],
             "suggested_weights": _suggested_weights(per_factor),

@@ -72,6 +72,15 @@ market_strategy:
 whale_watcher_kalshi:
   min_notional_usd: 1000
   min_notional_usd_by_series: {}
+whale_confidence_weights:
+  depth_factor: 0.25
+  unusualness_factor: 0.03
+  proximity_factor: 0.2
+  context_factor: 0.13
+  agreement_factor: 0.03
+  cluster_factor: 0.13
+  trend_factor: 0.08
+  analyst_factor: 0.15
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 5
