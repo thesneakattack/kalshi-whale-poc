@@ -128,6 +128,29 @@ works" to "flip it for real" still has open operational questions.
       have a real destination to act on — though editing the weights
       themselves is still config-file/API only, no dashboard form yet.
       Findings 5-7 still fully open.
+      **Full `config/settings.yaml` data review, same session (2026-08-10,
+      commit `20a334a`)** — went through every tunable field against real
+      historical data (`signal_log`, `market_broker`/`paper_broker`
+      history, `series_stats()`, the calibration report above). Applied 3
+      changes with real backing: `strategy.min_resolved_for_whale_filter`
+      1→10 and `advisory.min_resolved_trades_per_variant` 5→10 (both were
+      un-hedged against n=1 samples), `market_strategy.stop_loss_pct`
+      null→0.2 (disclosed as not yet data-calibrated — no stop_loss closes
+      exist for that strategy yet). Deliberately left most other fields
+      alone — `advisory_engine`'s own entry-threshold/longshot-bonus
+      recommendations return `None` against real data, and most discovery
+      filters (`entry_threshold`, `min_notional_usd`, spread/volume/
+      momentum gates) turned out to be structurally untunable with what's
+      currently tracked, not just "no strong signal yet." That
+      distinction, and what would need to be built to close it, is written
+      up in `docs/config-tuning-data-gaps-2026-08-10.md` — 10 concrete
+      gaps (rejected-candidate/counterfactual logging, a backtest replay
+      harness, per-field before/after windowing in `change_effect()`,
+      per-series win-rate × qualifying-rate cross-checks, raw-signal-field
+      logging, calibration-history tracking, cross-strategy comparison,
+      regime segmentation, a documented sample-size convention), with a
+      suggested build order. Not started — this is the analysis pass, not
+      the implementation.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
