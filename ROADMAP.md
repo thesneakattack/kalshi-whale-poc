@@ -105,15 +105,17 @@ works" to "flip it for real" still has open operational questions.
       doesn't exist today, not just the click-to-detail wiring already
       shipped. Trading History rows already show this inline (close type +
       P&L); the signal feed and decision feed do not.
-- [ ] Market analyst agent's `analyze_market()` swallows its real exception
-      (`except Exception:`, not `as e`) and returns a message pointing at
-      "server logs" that don't exist — no logging framework exists
-      anywhere in this app (2026-08-10 audit finding). Needs the real
-      error captured and at least a minimal stdout logger.
-- [ ] Danger Zone is missing a `market_analyst` reset checkbox (the backend
-      already supports the flag) and has no wired reset path at all for
-      `market_catalog`/`market_history` — the two largest files on disk
-      have no self-serve way to clear them (2026-08-10 audit finding).
+- [x] Market analyst agent's `analyze_market()` was swallowing its real
+      exception (`except Exception:`, not `as e`) and returned a message
+      pointing at "server logs" that didn't exist — fixed to capture the
+      real error and print it (`ddev logs -s fastapi`), so that message is
+      now true. 1 new test.
+- [x] Danger Zone was missing a `market_analyst` reset checkbox (backend
+      already supported the flag) and had no wired reset path at all for
+      `market_catalog`/`market_history` — the two largest files on disk.
+      `market_catalog.clear_all()` already existed unused; added the
+      matching `market_history.clear_all()` and wired all three into
+      `POST /api/reset` plus new checkboxes. 3 new tests.
 
 ## Shipped (condensed — see `static/status.html` and
 `docs/roadmap-archive-2026-08-09.md` for full detail)
@@ -190,6 +192,11 @@ works" to "flip it for real" still has open operational questions.
   missing it (real positions, Trading History, paper Trade Log, whale
   signal feed, decision feed); a data-robustness audit fixed a live test
   that had been reading real production data, a catalog-scan bug that
-  marked failed series as healthy, and a backend tick-failure state that
-  existed in the API the whole time with zero UI consumers. 7 new tests.
-  Full suite: 440 (was 433). See `static/status.html` phases 64-66.
+  marked failed series as healthy, a backend tick-failure state that
+  existed in the API the whole time with zero UI consumers, a market
+  analyst agent exception that was discarded entirely with a caller
+  message pointing at server logs that didn't exist, and Danger Zone
+  reset gaps for `market_analyst`/`market_catalog`/`market_history` (the
+  two largest data files on disk previously had no self-serve reset path
+  at all). 11 new tests. Full suite: 442 (was 433). See
+  `static/status.html` phases 64-67.
