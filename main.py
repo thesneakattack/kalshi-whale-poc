@@ -17,6 +17,7 @@ load_dotenv()  # reads .env if present; every var is optional, see .env.example
 from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
+from services import backtest
 from services import candidate_log
 from services import confidence_calibration
 from services import config_performance
@@ -2090,6 +2091,27 @@ async def get_candidate_log_summary():
     # collects passively from every gate check regardless of any config
     # toggle, same as signal_log itself.
     return {"gates": candidate_log.gate_summary()}
+
+
+@app.get("/api/backtest/entry-threshold")
+async def get_backtest_entry_threshold():
+    # services/backtest.py - Gap 2 of docs/config-tuning-data-gaps-2026-08-
+    # 10.md, stateless replay against every already-logged resolved signal.
+    # Always safe to call - pure read, no enable flag.
+    rows = signal_log.resolved_signals_with_factors()
+    current_threshold = config_store.get()["strategy"]["entry_threshold"]
+    return {"current_threshold": current_threshold, "sweep": backtest.entry_threshold_sweep(rows)}
+
+
+@app.get("/api/backtest/min-whale-winrate")
+async def get_backtest_min_whale_winrate():
+    strat_cfg = config_store.get()["strategy"]
+    series_stats = signal_log.all_series_stats(days=30)
+    signal_rows = signal_log.resolved_signals_with_series(days=30)
+    sweep = backtest.min_whale_winrate_pct_sweep(
+        series_stats, signal_rows, min_resolved_for_filter=strat_cfg.get("min_resolved_for_whale_filter", 10),
+    )
+    return {"current_floor": strat_cfg.get("min_whale_winrate_pct", 40), "sweep": sweep}
 
 
 @app.get("/api/market-analyst/status")

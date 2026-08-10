@@ -1177,6 +1177,22 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="candidate-log-summary"><div class="empty">Loading…</div></div>
 
+    <!-- Backtest Sweeps (services/backtest.py, Gap 2 of
+         docs/config-tuning-data-gaps-2026-08-10.md) - stateless replay
+         against every already-logged resolved signal: "if this threshold
+         were a different value, what would the win rate of what it
+         accepted have looked like." Read-only. Scoped to the two fields
+         signal_log's stored columns can actually support (entry_threshold,
+         min_whale_winrate_pct) - see the module docstring for the
+         disclosed limitation on why price/spread/volume-gated fields
+         aren't covered here. -->
+    <div class="panel-title">Backtest Sweeps <span class="data-badge new">🆕 new</span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      What would the win rate of accepted signals have looked like at a different threshold? Replayed against
+      every already-logged resolved signal — the current live value is highlighted in each row.
+    </p>
+    <div id="backtest-sweeps"><div class="empty">Loading…</div></div>
+
     <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
          Part 3) - an LLM reading each market's own title/rules/context and
          forming an independent probability estimate, distinct in kind from
@@ -3116,6 +3132,7 @@ async function loadTradingHistory() {
     loadChangeHistory();
     loadCalibrationReport();
     loadCandidateLogSummary();
+    loadBacktestSweeps();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -3443,6 +3460,46 @@ async function loadCandidateLogSummary() {
     `;
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load rejected-candidate summary.</div>';
+  }
+}
+
+// Backtest Sweeps (services/backtest.py) - read-only, always safe to call.
+function _sweepTableHTML(title, current, currentKey, rows, xKey, xLabel) {
+  const trs = rows.map(r => {
+    const isCurrent = r[xKey] === current;
+    const wr = r.win_rate_pct;
+    const wrText = wr === null ? '—' : `${wr.toFixed(1)}%`;
+    const style = isCurrent ? 'font-weight:600; background:rgba(255,255,255,0.04);' : '';
+    return `<tr style="${style}">
+      <td>${r[xKey]}${isCurrent ? ' <span style="color:var(--whale); font-size:10px; text-transform:uppercase;">live</span>' : ''}</td>
+      <td>${r.n}</td>
+      <td>${wrText}</td>
+    </tr>`;
+  }).join('');
+  return `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin:10px 0 6px;">${esc(title)}</div>
+    <table class="positions-table">
+      <thead><tr><th>${esc(xLabel)}</th><th>n</th><th>Win Rate</th></tr></thead>
+      <tbody>${trs}</tbody>
+    </table>`;
+}
+
+async function loadBacktestSweeps() {
+  const el = $('backtest-sweeps');
+  try {
+    const [et, wr] = await Promise.all([
+      fetchJSON('/api/backtest/entry-threshold'),
+      fetchJSON('/api/backtest/min-whale-winrate'),
+    ]);
+    const etRows = (et.sweep || []).filter(r => r.n > 0);
+    const wrRows = (wr.sweep || []).filter(r => r.n > 0);
+    el.innerHTML = (etRows.length ? _sweepTableHTML(
+      'strategy.entry_threshold', et.current_threshold, 'threshold', etRows, 'threshold', 'Threshold',
+    ) : '<div class="empty">Not enough resolved signals yet for an entry-threshold sweep.</div>')
+      + (wrRows.length ? _sweepTableHTML(
+        'strategy.min_whale_winrate_pct', wr.current_floor, 'floor', wrRows, 'floor', 'Floor',
+      ) : '<div class="empty">Not enough resolved signals yet for a win-rate-floor sweep.</div>');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load backtest sweeps.</div>';
   }
 }
 

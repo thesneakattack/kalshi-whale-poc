@@ -186,6 +186,55 @@ def series_stats(ticker: str, days: int = 30) -> dict:
     }
 
 
+def resolved_signals_with_series(days: int = 30) -> list[dict]:
+    """Every resolved signal's series + outcome, no factors_json filter
+    (unlike resolved_signals_with_factors, which exists for confidence
+    calibration specifically and deliberately excludes simulator-sourced
+    rows) - services/backtest.py's min_whale_winrate_pct_sweep needs the
+    full resolved population, tagged by series, to recombine under a
+    candidate floor."""
+    since = time.time() - days * 86400
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT series, correct FROM signals WHERE seen_at >= ? AND resolved = 1",
+            (since,),
+        ).fetchall()
+    return [{"series": series, "correct": bool(correct)} for series, correct in rows]
+
+
+def all_series_stats(days: int = 30) -> dict[str, dict]:
+    """Same shape as series_stats() but for every series at once (one GROUP
+    BY query instead of N per-series ones) - what services/backtest.py's
+    min_whale_winrate_pct_sweep (Gap 2, docs/config-tuning-data-gaps-
+    2026-08-10.md) needs: "if the floor were X instead of Y, which series
+    would be excluded, and what would the aggregate win rate of what's left
+    look like." win_rate is None for a series with 0 resolved signals in
+    the window, same "don't show a number you can't back" convention as
+    series_stats()."""
+    since = time.time() - days * 86400
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT series, COUNT(*) AS resolved, SUM(correct) AS correct_sum
+            FROM signals WHERE seen_at >= ? AND resolved = 1
+            GROUP BY series
+            """,
+            (since,),
+        ).fetchall()
+    out = {}
+    for series, resolved, correct_sum in rows:
+        resolved = resolved or 0
+        correct_count = correct_sum or 0
+        out[series] = {
+            "series": series,
+            "window_days": days,
+            "resolved": resolved,
+            "correct": correct_count,
+            "win_rate": round(correct_count / resolved * 100, 1) if resolved else None,
+        }
+    return out
+
+
 def signal_count_for_series_since(series: str, since_ts: float) -> int:
     """How many whale-qualifying signals this series has produced since
     since_ts - the numerator services/series_evaluator.py needs for its

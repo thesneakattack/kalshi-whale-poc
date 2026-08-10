@@ -178,7 +178,26 @@ works" to "flip it for real" still has open operational questions.
       clearly labeled, when the strict `effect` is null. 5 new tests, 588
       passing. Verified live — several real `exit_sentiment_*` rows that
       showed `effect: null` now show a real windowed delta (50.0% n=134
-      before → 100.0% n=1 after). Gaps 2, 4-10 still open.
+      before → 100.0% n=1 after).
+      **Gap 2 (stateless backtest replay) is done** — new
+      `services/backtest.py`: `entry_threshold_sweep()` and
+      `min_whale_winrate_pct_sweep()`, pure functions replaying a candidate
+      gate value against every already-logged resolved signal. Real,
+      disclosed scope boundary found while building this: `signal_log`
+      never stored price/spread/volume/notional, only
+      confidence/side/series/correct, so this can only faithfully cover
+      `strategy.entry_threshold`/`min_whale_winrate_pct` — not
+      `market_strategy.py`'s price/spread/volume/momentum gates or the
+      longshot fields, contrary to this doc's own original claim that
+      "signal_log already has the input data." New
+      `GET /api/backtest/entry-threshold`/`.../min-whale-winrate` +
+      read-only "Backtest Sweeps" History-tab panel. 16 new tests, 598
+      passing. Verified live against real history (11.5k-17k resolved
+      signals) — genuinely interesting finding: win rate across the
+      entry-threshold sweep is roughly U-shaped (52.7% at 0.0, dipping to
+      49.7% near 0.30, climbing to 58-65% above 0.45), another data point
+      alongside Gap 6's still-open calibration question. Gaps 4-10 still
+      open (Gap 2's stateful half deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

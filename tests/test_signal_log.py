@@ -67,6 +67,41 @@ def test_window_days_excludes_old_signals(tmp_path, monkeypatch):
     assert stats["total_signals"] == 0
 
 
+def test_all_series_stats_groups_every_series_in_one_call(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("AAA-1", "yes", 1000, 0.8, "simulated", seen_at=now - 100)
+    log.log_signal("BBB-1", "yes", 1000, 0.8, "simulated", seen_at=now - 100)
+    batch = log.unresolved_batch(limit=10, older_than_sec=0)
+    for row in batch:
+        log.mark_resolved(row["id"], correct=(row["ticker"] == "AAA-1"))
+    stats = log.all_series_stats(days=30)
+    assert set(stats.keys()) == {"AAA", "BBB"}
+    assert stats["AAA"]["resolved"] == 1
+    assert stats["AAA"]["win_rate"] == 100.0
+    assert stats["BBB"]["win_rate"] == 0.0
+
+
+def test_all_series_stats_excludes_out_of_window_series(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("AAA-1", "yes", 1000, 0.8, "simulated", seen_at=now - 40 * 86400)
+    stats = log.all_series_stats(days=30)
+    assert stats == {}
+
+
+def test_resolved_signals_with_series_returns_only_resolved_rows(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("AAA-1", "yes", 1000, 0.8, "simulated", seen_at=now - 100)
+    log.log_signal("BBB-1", "yes", 1000, 0.8, "simulated", seen_at=now - 100)  # left unresolved
+    batch = log.unresolved_batch(limit=10, older_than_sec=0)
+    aaa_row = next(r for r in batch if r["ticker"] == "AAA-1")
+    log.mark_resolved(aaa_row["id"], correct=True)
+    rows = log.resolved_signals_with_series(days=30)
+    assert rows == [{"series": "AAA", "correct": True}]
+
+
 def test_clear_all_wipes_every_signal(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated")
