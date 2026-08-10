@@ -88,7 +88,13 @@ works" to "flip it for real" still has open operational questions.
       **Finding 3 (exit-side analyst signal) is done** — a fourth
       `analyst_divergence` factor in `_exit_confidence()`'s composite
       auto-exit score, new `strategy.auto_exit_analyst_weight` config
-      field. 4 new tests, 542 passing. Findings 1/2/4-7 still open.
+      field. 4 new tests, 542 passing.
+      **Finding 2 (concentration risk) is done** — shared
+      `open_position_count_in_series()` helper, wired into both
+      strategies' entry gates; new `strategy.max_open_positions_per_series`/
+      `market_strategy.max_open_positions_per_series` config fields
+      (null = unlimited). 7 new tests, 549 passing. Findings 1/4-7 still
+      open.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
