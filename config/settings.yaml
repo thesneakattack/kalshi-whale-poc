@@ -6,7 +6,7 @@ kalshi:
   max_children_per_parent: null
   min_volume_24h: 1
   categories: []
-  live_markets_only: true
+  live_markets_only: false
   poll_interval_sec: 15
   request_timeout_sec: 10
 whale_signal:
@@ -23,7 +23,7 @@ strategy:
   cooldown_sec: 150
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 1
-  live_markets_only: true
+  live_markets_only: false
   excluded_series: []
   take_profit_pct: null
   stop_loss_pct: null
