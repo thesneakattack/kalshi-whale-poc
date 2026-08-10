@@ -213,4 +213,15 @@ works" to "flip it for real" still has open operational questions.
   judge), with sticky approval, an escalating doubling backoff on repeated
   rejection, a new Config-tab section, and a History-tab log showing every
   series ever evaluated with a manual re-evaluate action. 33 new tests.
-  Full suite: 464 (was 433). See `static/status.html` phases 64-69.
+  Full suite: 464 (was 433). Then, first step of unifying the app's
+  self-tuning subsystem: merged the old purely-descriptive "Config Tuning
+  Hints" panel into Advisory Recommendations — per-field suggestions now
+  read the full trade history instead of being gated to the exact current
+  config fingerprint (the literal reason changing one field used to reset
+  every other field's sample to zero), fixing two real bugs found along the
+  way (a dropped `exit_sentiment_min_signals` suggestion, and a
+  `min_momentum_delta` suggestion that turned out to be unreachable dead
+  code, not just mislabeled, since it was checked against the wrong
+  broker's trade log). Suggestion cards now reuse the Config tab's own
+  path chips as a clickable jump-to-setting link. 466 tests. See
+  `static/status.html` phases 64-70.
