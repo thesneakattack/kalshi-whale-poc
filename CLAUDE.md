@@ -8,27 +8,37 @@ phrase. All P0 code-level safety gates are done; what's still open before
 real capital should depend on this is operational — see ROADMAP.md's "Path
 to production" section.
 
-## Git history + two supplementary docs
+## Git history + supplementary docs
 
 This became a git repository partway through the project's life (see the
 first commit's message for the cutover point) — everything built before that
-has no real commit-by-commit history, which is why two hand-maintained docs
+has no real commit-by-commit history, which is why hand-maintained docs
 exist and remain the primary source for the *why* behind pre-git work:
 
-- **`ROADMAP.md`** — forward-looking, living to-do list. Check items off in
-  place (`- [x]`), add new ones as they turn up. Organized P0 (safety/
-  correctness) → P4 (nice-to-haves). Check the P0 section before touching
-  anything safety-adjacent (kill switch, real trading, CORS, auth).
+- **`ROADMAP.md`** — forward-looking, living to-do list, kept short. Check
+  items off in place (`- [x]`), add new ones as they turn up. Shipped work
+  gets folded into the "Shipped (condensed)" section as a one-line pointer,
+  not a narrative — the real detail belongs in `status.html`. Check the
+  **"Path to production"** section before touching anything safety-adjacent
+  (kill switch, real trading, CORS, auth) — P0 itself is fully shipped, so
+  that's where the remaining open safety/correctness-adjacent questions
+  (shadow-mode review, deployment target, auth model, real position sizing,
+  category-level legal risk) actually live now.
 - **`static/status.html`** (served at `/status`) — backward-looking historical
   record. A manually maintained, chronological timeline of build phases, plus
   reference tables (components, API routes, config, known limitations). This
   is hand-written prose describing what was built and why, not generated —
   it can and does go stale if a change doesn't update it.
+- **`docs/roadmap-archive-2026-08-09.md`** — a frozen, one-time snapshot of
+  `ROADMAP.md`'s full pre-condensing detail (it had grown to 837 lines of
+  mostly-shipped narrative). Not maintained going forward; consult it (or
+  `git log`/`git show` on `ROADMAP.md`) for the full story behind anything
+  checked off before 2026-08-09 that `status.html` doesn't already cover.
 
 For anything committed going forward, prefer `git log` / `git blame` / `git
 diff` as the primary source of "what changed and why" — that's real history,
 not reconstructed prose. Keep using `ROADMAP.md` and `status.html` as the
-living, human-readable layer on top: check the P0 section before
+living, human-readable layer on top: check "Path to production" before
 safety-adjacent work, and still update both when a roadmap item ships.
 
 **When a roadmap item ships, update both.** Use the `/sync-status-docs` skill

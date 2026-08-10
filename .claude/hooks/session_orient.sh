@@ -23,8 +23,13 @@ else
 fi
 
 if [ -f ROADMAP.md ]; then
-  p0_open=$(awk '/^## P0/,/^## P1/' ROADMAP.md | grep -c '^- \[ \]')
-  echo "ROADMAP.md: $p0_open open P0 (safety/correctness) item(s) - check before touching trading, risk, or auth code"
+  # ROADMAP.md was condensed 2026-08-09 (see docs/roadmap-archive-2026-08-09.md
+  # for the pre-condensing full detail) - the standalone "## P0" section is
+  # gone now that it's fully shipped; "## Path to production" is where the
+  # remaining safety/correctness-adjacent open questions (shadow-mode review,
+  # deployment target, auth model, real position sizing, ...) live instead.
+  ptp_open=$(awk '/^## Path to production/,/^## P4/' ROADMAP.md | grep -c '^- \[ \]')
+  echo "ROADMAP.md: $ptp_open open path-to-production item(s) - check before touching trading, risk, or auth code"
 fi
 
 if [ -d data ]; then
