@@ -105,6 +105,18 @@
     cursor: help;
     margin-left: 6px;
   }
+  /* Dotted config-path chip - same monospace style already used on the
+     History tab's Config Tuning Hints/Advisory Recommendations panels
+     (strategy.exit_sentiment_min_signals-style). Direct report: a hint
+     there names a variable with nothing on the Config page to visually
+     match it against - putting the exact same text next to the field
+     itself closes that gap without inventing a new visual language. */
+  .config-path {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-left: 6px;
+  }
   /* Shared Simple/Advanced per-panel toggle — one pattern reused by every
      panel that has a denser "Advanced" view, instead of each panel
      inventing its own. Defaults to Simple; choice persists per panel via
@@ -1139,10 +1151,11 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       brand new with no track record yet, independent of any data quality question.
     </div>
 
-    <details class="config-section" open>
+    <details class="config-section" id="cfg-section-mode" open>
       <summary>Mode</summary>
       <div class="section-body config-group">
-        <div class="field"><label>Trading mode</label>
+        <div class="field"><label>Trading mode <span class="config-path">mode</span>
+          <span class="info-icon" title="Paper: fully simulated, no real account touched. Shadow: runs the exact same strategy logic sized against your real account's real balance and logs what it WOULD have traded, but never places an order - the trust-building step before ever going live. Live: places real orders, still gated behind the separate typed-confirmation-phrase safety switch regardless of this setting.">ⓘ</span></label>
           <select id="cfg-mode">
             <option value="paper">Paper (default)</option>
             <option value="shadow">Shadow — logs intended real trades, executes none</option>
@@ -1152,22 +1165,31 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       </div>
     </details>
 
-    <details class="config-section" open>
+    <details class="config-section" id="cfg-section-strategy" open>
       <summary>Strategy <span class="section-desc">— what the whale-follow strategy trades on</span></summary>
       <div class="section-body config-group">
-        <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label title="Prices at or below this, or at or above (1 - this), count as &quot;longshot&quot; territory - real Kalshi data shows these are systematically overpriced, worse for the taker orders this app uses once real trading is on.">Longshot price zone (0–1, e.g. 0.15 = below 15¢ or above 85¢)</label><input id="cfg-longshot-zone" type="number" step="0.05" min="0" max="0.5"></div>
-        <div class="field"><label title="Added on top of the entry threshold above, only for signals priced inside the longshot zone.">Extra confidence required in the longshot zone (added to threshold above)</label><input id="cfg-longshot-bonus" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
-        <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
-        <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
-        <div class="field"><label>...but only once that market's series has this many resolved signals <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE</label></div>
-        <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
+        <div class="field"><label>Entry confidence threshold (0–1) <span class="config-path">strategy.entry_threshold</span>
+          <span class="info-icon" title="Higher = fewer trades, only the strongest whale signals clear the bar (more selective, higher confidence per trade). Lower = more trades, including weaker signals (more volume, more noise).">ⓘ</span></label><input id="cfg-threshold" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Longshot price zone (0–1, e.g. 0.15 = below 15¢ or above 85¢) <span class="config-path">strategy.longshot_price_threshold</span>
+          <span class="info-icon" title="Prices at or below this, or at or above (1 - this), count as &quot;longshot&quot; territory - real Kalshi data shows these are systematically overpriced, worse for the taker orders this app uses once real trading is on. Wider zone = more signals get the extra scrutiny below; narrower = only the most extreme prices do.">ⓘ</span></label><input id="cfg-longshot-zone" type="number" step="0.05" min="0" max="0.5"></div>
+        <div class="field"><label>Extra confidence required in the longshot zone (added to threshold above) <span class="config-path">strategy.longshot_entry_threshold_bonus</span>
+          <span class="info-icon" title="Added on top of the entry threshold above, only for signals priced inside the longshot zone. Higher = longshot-zone signals need to clear a noticeably higher bar than everything else. 0 = no extra scrutiny at all.">ⓘ</span></label><input id="cfg-longshot-bonus" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Max position size (% of bankroll) <span class="config-path">strategy.max_position_pct</span>
+          <span class="info-icon" title="Higher = bigger bets per trade - faster bankroll growth on wins, bigger drawdowns on losses. Lower = smaller, steadier bets, more trades needed to move the bankroll meaningfully.">ⓘ</span></label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Cooldown per market (seconds) <span class="config-path">strategy.cooldown_sec</span>
+          <span class="info-icon" title="Higher = waits longer before trading the same market again, avoiding rapid back-to-back re-entries on the same signal. Lower = can re-enter the same market sooner if a new qualifying signal shows up.">ⓘ</span></label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="config-path">strategy.min_whale_winrate_pct</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Higher = stricter - excludes more market types (series) whose whale signals have a mixed track record so far. Lower = more permissive, only the worst-performing series get excluded. 0 disables this filter entirely.">ⓘ</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
+        <div class="field"><label>...but only once that market's series has this many resolved signals <span class="config-path">strategy.min_resolved_for_whale_filter</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Higher = waits for more evidence before judging a series' win rate, avoiding a series getting excluded off one unlucky early result. Lower = acts on thinner evidence, reacts faster but noisier.">ⓘ</span></label><input id="cfg-min-resolved" type="number" step="1" min="0"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-live-only"> Only trade markets currently flagged LIVE <span class="config-path">strategy.live_markets_only</span>
+          <span class="info-icon" title="On = a signal on a market that isn't currently flagged live gets skipped, not traded. Off = live status doesn't affect trading decisions at all.">ⓘ</span></label></div>
+        <div class="field"><label>Manually excluded series (comma-separated ticker prefixes, e.g. "KXPGATOUR, KXNFLGAME") <span class="config-path">strategy.excluded_series</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="A human override on top of the automatic win-rate filter above - any series listed here is skipped regardless of its win rate. Leave blank to rely on the automatic filter alone.">ⓘ</span></label><input id="cfg-excluded-series" type="text" placeholder="none"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-exits">
       <summary>Position Management (Exits) <span class="section-desc">— selling before settlement</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -1175,13 +1197,18 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           actively manage positions already opened, closing them at the current market price
           instead of leaving every trade to sit untouched until resolution. All off by default.
         </p>
-        <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
-        <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off)</label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label></div>
-        <div class="field"><label>...requires at least this many recent prints on the ticker</label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
-        <div class="field"><label>...leaning against the position by at least this much (%)</label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
+        <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">strategy.take_profit_pct</span>
+          <span class="info-icon" title="Higher = holds out for a bigger gain before locking in profit, giving more room for the price to keep moving your way but also more room to reverse. Lower = locks in smaller gains sooner, more conservative. Blank = never takes profit early, only settlement closes a winning position.">ⓘ</span></label><input id="cfg-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">strategy.stop_loss_pct</span>
+          <span class="info-icon" title="Higher = tolerates a bigger loss before cutting the position, fewer exits on temporary dips but bigger losses when a position really is going wrong. Lower = cuts losses sooner, protects capital but also exits more false alarms. Blank = never stops out early, only settlement closes a losing position.">ⓘ</span></label><input id="cfg-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-exit-sentiment-reversal"> Close if whale sentiment on this ticker reverses against the held side <span class="config-path">strategy.exit_on_sentiment_reversal</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="On = if enough recent whale prints (see the two settings below) lean decisively against the side you're holding, the position closes. Off = whale sentiment shifts are ignored once a position is open.">ⓘ</span></label></div>
+        <div class="field"><label>...requires at least this many recent prints on the ticker <span class="config-path">strategy.exit_sentiment_min_signals</span>
+          <span class="info-icon" title="Higher = needs more contrary whale prints before treating a reversal as real, fewer false exits from a single noisy print. Lower = reacts to a reversal faster, on thinner evidence.">ⓘ</span></label><input id="cfg-exit-sentiment-min-signals" type="number" step="1" min="1"></div>
+        <div class="field"><label>...leaning against the position by at least this much (%) <span class="config-path">strategy.exit_sentiment_lean_pct</span>
+          <span class="info-icon" title="Higher = requires whales to be more one-sidedly against the held side before exiting (e.g. 80% means the reversal has to be lopsided, not just a slim majority). Lower = exits on a milder shift in sentiment.">ⓘ</span></label><input id="cfg-exit-sentiment-lean-pct" type="number" step="5" min="50" max="100"></div>
 
-        <div class="field" style="margin-top:8px;"><label><input type="checkbox" id="cfg-auto-exit-enabled"> <b>Automated exit algorithm</b> - close based on a tweakable composite confidence score</label></div>
+        <div class="field" style="margin-top:8px;"><label><input type="checkbox" id="cfg-auto-exit-enabled"> <b>Automated exit algorithm</b> - close based on a tweakable composite confidence score <span class="config-path">strategy.auto_exit_enabled</span></label></div>
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
           A fourth, independent layer on top of the hard rules above: blends unrealized P&amp;L
           magnitude, whale-sentiment reversal strength, and how long whale interest in this
@@ -1190,17 +1217,24 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           hard rules above already closed the position this tick. The sentiment and staleness
           factors below are whale-data-driven; the P&amp;L factor is plain market price, not.
         </p>
-        <div class="field"><label>Exit confidence threshold (0–1)</label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label>P&amp;L factor weight</label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
-        <div class="field"><label>Whale sentiment factor weight <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
-        <div class="field"><label>Signal-staleness factor weight <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
-        <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
-        <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor</label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
-        <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="data-badge sim whale-dependent-badge">🧪 sim data</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Exit confidence threshold (0–1) <span class="config-path">strategy.auto_exit_threshold</span>
+          <span class="info-icon" title="Higher = needs a stronger combined signal (P&L + sentiment + staleness, weighted by the three sliders below) before auto-closing. Lower = closes more readily on a weaker combined signal.">ⓘ</span></label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>P&amp;L factor weight <span class="config-path">strategy.auto_exit_pnl_weight</span>
+          <span class="info-icon" title="Higher relative to the two weights below = unrealized profit/loss drives the exit decision more; whale sentiment and staleness matter less. Set to 0 to ignore P&L entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Whale sentiment factor weight <span class="config-path">strategy.auto_exit_sentiment_weight</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Higher relative to the other two weights = whale-sentiment reversal strength drives the exit decision more. Set to 0 to ignore sentiment entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Signal-staleness factor weight <span class="config-path">strategy.auto_exit_staleness_weight</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Higher relative to the other two weights = how long whale interest has gone quiet drives the exit decision more. Set to 0 to ignore staleness entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor <span class="config-path">strategy.auto_exit_gain_reference_pct</span>
+          <span class="info-icon" title="Lower = a smaller unrealized gain already fully maxes out the P&L factor, making the algorithm more eager to treat modest gains as \"good enough to exit.\" Higher = needs a bigger gain before the P&L factor tops out.">ⓘ</span></label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
+        <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor <span class="config-path">strategy.auto_exit_loss_reference_pct</span>
+          <span class="info-icon" title="Lower = a smaller unrealized loss already fully maxes out the P&L factor, making the algorithm more eager to exit a losing position. Higher = tolerates a bigger loss before the P&L factor tops out.">ⓘ</span></label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
+        <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="config-path">strategy.auto_exit_stale_after_sec</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Lower = treats whale silence as \"stale\" sooner, raising the staleness factor faster. Higher = more patient, waits longer before calling a quiet ticker stale.">ⓘ</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-advisory">
       <summary>Advisory Engine <span class="data-badge hist">📉 needs history</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -1211,12 +1245,13 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           is not wired up yet on purpose (ships as its own follow-up, gated behind a confirmation
           step, after the manual "Apply" path above has run for a while).
         </p>
-        <div class="field"><label><input type="checkbox" id="cfg-advisory-enabled"> Enable advisory recommendations</label></div>
-        <div class="field"><label>Minimum resolved trades (per config variant) before recommendations activate</label><input id="cfg-advisory-min-resolved" type="number" step="1" min="1"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-advisory-enabled"> Enable advisory recommendations <span class="config-path">advisory.enabled</span></label></div>
+        <div class="field"><label>Minimum resolved trades (per config variant) before recommendations activate <span class="config-path">advisory.min_resolved_trades_per_variant</span>
+          <span class="info-icon" title="Higher = waits for more resolved trades under this exact config before trusting a recommendation enough to show it - fewer, more reliable suggestions. Lower = suggests sooner, on thinner evidence.">ⓘ</span></label><input id="cfg-advisory-min-resolved" type="number" step="1" min="1"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-market-strategy">
       <summary>Market-Native Strategy <span class="data-badge new">🆕 new</span> <span class="section-desc">— a second, whale-independent paper strategy</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -1228,26 +1263,37 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           see docs/advisory-engine-plan.md. No dashboard panel yet (backend-only for now); this
           is the only place to configure or enable it.
         </p>
-        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-enabled"> Enable market-native strategy</label></div>
-        <div class="field"><label>Starting bankroll ($, its own capital pool)</label><input id="cfg-market-strategy-bankroll" type="number" step="100" min="0"></div>
-        <div class="field"><label>Max position size (% of bankroll)</label><input id="cfg-market-strategy-position-pct" type="number" step="0.01" min="0" max="1"></div>
-        <div class="field"><label>Cooldown per market (seconds)</label><input id="cfg-market-strategy-cooldown" type="number" step="10" min="0"></div>
-        <div class="field"><label>Price band: only trade markets priced between...</label><input id="cfg-market-strategy-min-price" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label>...and</label><input id="cfg-market-strategy-max-price" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label>Max bid/ask spread to trade</label><input id="cfg-market-strategy-max-spread" type="number" step="0.01" min="0" max="1"></div>
-        <div class="field"><label>Minimum 24h volume (contracts)</label><input id="cfg-market-strategy-min-volume" type="number" step="50" min="0"></div>
-        <div class="field"><label>Momentum lookback window (seconds)</label><input id="cfg-market-strategy-momentum-lookback" type="number" step="60" min="60"></div>
-        <div class="field"><label>Minimum price movement over that window to count as momentum</label><input id="cfg-market-strategy-min-momentum" type="number" step="0.01" min="0" max="1"></div>
-        <div class="field"><label>Minimum time-to-close required to enter (seconds)</label><input id="cfg-market-strategy-min-seconds-to-close" type="number" step="60" min="0"></div>
-        <div class="field"><label>Entry confidence threshold (0–1)</label><input id="cfg-market-strategy-confidence" type="number" step="0.05" min="0" max="1"></div>
-        <div class="field"><label>Take-profit (0–1, blank = off)</label><input id="cfg-market-strategy-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
-        <div class="field"><label>Stop-loss (0–1, blank = off)</label><input id="cfg-market-strategy-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side</label></div>
-        <div class="field"><label>Max daily loss (% of its own bankroll)</label><input id="cfg-market-strategy-max-loss" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-enabled"> Enable market-native strategy <span class="config-path">market_strategy.enabled</span></label></div>
+        <div class="field"><label>Starting bankroll ($, its own capital pool) <span class="config-path">market_strategy.starting_bankroll</span></label><input id="cfg-market-strategy-bankroll" type="number" step="100" min="0"></div>
+        <div class="field"><label>Max position size (% of bankroll) <span class="config-path">market_strategy.max_position_pct</span>
+          <span class="info-icon" title="Higher = bigger bets per trade from this strategy's own bankroll. Lower = smaller, steadier bets. Same tradeoff as the whale-follow strategy's equivalent setting, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-position-pct" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Cooldown per market (seconds) <span class="config-path">market_strategy.cooldown_sec</span></label><input id="cfg-market-strategy-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Minimum price to consider trading (0–1) <span class="config-path">market_strategy.min_price</span>
+          <span class="info-icon" title="Only trade markets priced between this and the maximum below (inclusive) - narrows the field to markets in a specific probability band, e.g. avoiding near-certain or near-impossible outcomes where movement is small.">ⓘ</span></label><input id="cfg-market-strategy-min-price" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Maximum price to consider trading (0–1) <span class="config-path">market_strategy.max_price</span></label><input id="cfg-market-strategy-max-price" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Max bid/ask spread to trade <span class="config-path">market_strategy.max_spread</span>
+          <span class="info-icon" title="Higher = tolerates wider, less liquid markets. Lower = only trades tight, well-quoted markets, where the entry price is more trustworthy.">ⓘ</span></label><input id="cfg-market-strategy-max-spread" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Minimum 24h volume (contracts) <span class="config-path">market_strategy.min_volume_24h</span>
+          <span class="info-icon" title="Higher = only trades busier markets, where momentum readings are based on more real activity. Lower = includes quieter markets too.">ⓘ</span></label><input id="cfg-market-strategy-min-volume" type="number" step="50" min="0"></div>
+        <div class="field"><label>Momentum lookback window (seconds) <span class="config-path">market_strategy.momentum_lookback_sec</span>
+          <span class="info-icon" title="Longer = momentum is measured over a wider time window, smoother but slower to react to a recent real move. Shorter = reacts faster, noisier.">ⓘ</span></label><input id="cfg-market-strategy-momentum-lookback" type="number" step="60" min="60"></div>
+        <div class="field"><label>Minimum price movement over that window to count as momentum <span class="config-path">market_strategy.min_momentum_delta</span>
+          <span class="info-icon" title="Higher = requires a bigger real price move before treating it as genuine momentum worth trading. Lower = smaller moves qualify, more entries but more of them may just be noise.">ⓘ</span></label><input id="cfg-market-strategy-min-momentum" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Minimum time-to-close required to enter (seconds) <span class="config-path">market_strategy.min_seconds_to_close</span>
+          <span class="info-icon" title="Higher = only enters markets with plenty of time left before they close, avoiding a position that has no room to develop. Lower = will enter markets closer to settlement.">ⓘ</span></label><input id="cfg-market-strategy-min-seconds-to-close" type="number" step="60" min="0"></div>
+        <div class="field"><label>Entry confidence threshold (0–1) <span class="config-path">market_strategy.entry_confidence_threshold</span>
+          <span class="info-icon" title="Higher = fewer, more selective entries. Lower = more entries, including weaker momentum signals. Same tradeoff as the whale-follow strategy's entry threshold.">ⓘ</span></label><input id="cfg-market-strategy-confidence" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">market_strategy.take_profit_pct</span>
+          <span class="info-icon" title="Higher = holds out for a bigger gain before locking in profit. Lower = locks in smaller gains sooner. Blank = never takes profit early, only settlement closes a winning position. Same mechanic as the whale-follow strategy's take-profit, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-take-profit" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">market_strategy.stop_loss_pct</span>
+          <span class="info-icon" title="Higher = tolerates a bigger loss before cutting the position. Lower = cuts losses sooner. Blank = never stops out early, only settlement closes a losing position. Same mechanic as the whale-follow strategy's stop-loss, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-stop-loss" type="number" step="0.05" min="0" placeholder="off"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side <span class="config-path">market_strategy.exit_on_momentum_reversal</span></label></div>
+        <div class="field"><label>Max daily loss (% of its own bankroll) <span class="config-path">market_strategy.max_daily_loss_pct</span>
+          <span class="info-icon" title="This strategy's own kill switch - once today's realized+unrealized loss on its own bankroll crosses this fraction, it halts for the day. Independent of the whale-follow strategy's kill switch below.">ⓘ</span></label><input id="cfg-market-strategy-max-loss" type="number" step="0.01" min="0" max="1"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-market-analyst">
       <summary>Market Analyst (AI) <span class="data-badge new">🆕 new</span> <span class="section-desc">— an LLM forms its own probability estimate per market</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -1263,9 +1309,10 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           extra API cost to use it there). Still fully advisory: nothing here ever places a trade or
           writes config on its own.
         </p>
-        <div class="field"><label><input type="checkbox" id="cfg-market-analyst-enabled"> Enable Market Analyst</label></div>
-        <div class="field"><label>Model</label><input id="cfg-market-analyst-model" type="text" placeholder="claude-sonnet-5"></div>
-        <div class="field"><label title="Clicking Analyze again on the same market before this much time has passed is refused, to bound accidental repeat API cost.">Re-analysis cooldown per market (seconds)</label><input id="cfg-market-analyst-cooldown" type="number" step="60" min="0"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-market-analyst-enabled"> Enable Market Analyst <span class="config-path">market_analyst.enabled</span></label></div>
+        <div class="field"><label>Model <span class="config-path">market_analyst.model</span></label><input id="cfg-market-analyst-model" type="text" placeholder="claude-sonnet-5"></div>
+        <div class="field"><label>Re-analysis cooldown per market (seconds) <span class="config-path">market_analyst.reanalyze_cooldown_sec</span>
+          <span class="info-icon" title="Clicking Analyze again on the same market before this much time has passed is refused, to bound accidental repeat API cost. Higher = fewer repeat analyses allowed per market per unit time. Lower = can re-analyze sooner, at higher potential cost.">ⓘ</span></label><input id="cfg-market-analyst-cooldown" type="number" step="60" min="0"></div>
       </div>
     </details>
 
@@ -1280,10 +1327,12 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           (<code>WHALE_WATCHER_PROVIDER=generic_rest</code> with no
           <code>WHALE_WATCHER_API_URL</code>, in <code>.env</code>, plus a restart).
         </p>
-        <div class="field"><label>Avg. seconds between prints</label><input id="cfg-freq" type="number" step="1" min="1"></div>
-        <div class="field"><label>Min whale size</label><input id="cfg-size-min" type="number" step="500"></div>
-        <div class="field"><label>Max whale size</label><input id="cfg-size-max" type="number" step="500"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE</label></div>
+        <div class="field"><label>Avg. seconds between prints <span class="config-path">whale_signal.signal_frequency_sec</span>
+          <span class="info-icon" title="Lower = the simulator generates fake whale prints more often. Higher = less frequent. Only matters when the simulator is actually the active source (see the note above).">ⓘ</span></label><input id="cfg-freq" type="number" step="1" min="1"></div>
+        <div class="field"><label>Min whale size <span class="config-path">whale_signal.whale_size_range</span></label><input id="cfg-size-min" type="number" step="500"></div>
+        <div class="field"><label>Max whale size <span class="config-path">whale_signal.whale_size_range</span>
+          <span class="info-icon" title="Sets the (min, max) contract-count range a simulated print's size is randomly drawn from - wider range = more variety in simulated print sizes.">ⓘ</span></label><input id="cfg-size-max" type="number" step="500"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-whale-live-only"> Only generate simulated whale prints on markets currently flagged LIVE <span class="config-path">whale_signal.live_markets_only</span></label></div>
       </div>
     </details>
 
@@ -1299,34 +1348,39 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           restart (<code>ddev restart</code>), to turn it off instead.
         </p>
         <div id="whale-provider-status" style="font-size:12px; margin:0 0 12px;"></div>
-        <div class="field"><label>Minimum trade size to count as a whale print ($ notional)</label><input id="cfg-whale-min-notional" type="number" step="100" min="0"></div>
-        <div class="field"><label>Per-series overrides (comma-separated <code>PREFIX:amount</code> pairs, e.g. "KXATPMATCH:100, KXNFLGAME:5000") — falls back to the amount above for any series not listed</label><input id="cfg-whale-min-notional-by-series" type="text" placeholder="none"></div>
+        <div class="field"><label>Minimum trade size to count as a whale print ($ notional) <span class="config-path">whale_watcher_kalshi.min_notional_usd</span>
+          <span class="info-icon" title="Higher = only bigger real trades count as whale prints, fewer but higher-conviction signals. Lower = smaller trades qualify too, more signals but each one is less exceptional.">ⓘ</span></label><input id="cfg-whale-min-notional" type="number" step="100" min="0"></div>
+        <div class="field"><label>Per-series overrides (comma-separated <code>PREFIX:amount</code> pairs, e.g. "KXATPMATCH:100, KXNFLGAME:5000") — falls back to the amount above for any series not listed <span class="config-path">whale_watcher_kalshi.min_notional_usd_by_series</span>
+          <span class="info-icon" title="Lets a low-liquidity series (e.g. niche tennis) use a much lower threshold than a high-volume one (e.g. a presidential election) instead of one global number trying to fit both.">ⓘ</span></label><input id="cfg-whale-min-notional-by-series" type="text" placeholder="none"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-risk">
       <summary>Risk</summary>
       <div class="section-body config-group">
-        <div class="field"><label>Max daily loss (% of bankroll)</label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Max daily loss before the kill switch halts trading (% of bankroll) <span class="config-path">risk.max_daily_loss_pct</span>
+          <span class="info-icon" title="This is the kill switch (see the Help glossary) - once today's realized + unrealized loss crosses this fraction of the day's starting bankroll, trading halts until manually resumed or the next day. Higher = more room before halting, bigger possible daily loss. Lower = halts sooner, more conservative.">ⓘ</span></label><input id="cfg-max-loss" type="number" step="0.01" min="0" max="1"></div>
       </div>
     </details>
 
-    <details class="config-section">
+    <details class="config-section" id="cfg-section-discovery">
       <summary>Market Discovery <span class="section-desc">— the automatic watchlist</span></summary>
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
           Governs the <i>automatic</i> watchlist only (used when no markets are pinned below). Pinned markets
           always show regardless of these thresholds.
         </p>
-        <div class="field"><label>Minimum 24h volume (contracts) to be considered active</label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
-        <div class="field"><label>Default category filter for search below (comma-separated, blank = all)</label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-discovery-live-only"> Only include markets currently flagged LIVE</label></div>
+        <div class="field"><label>Minimum 24h volume (contracts) to be considered active <span class="config-path">kalshi.min_volume_24h</span>
+          <span class="info-icon" title="Higher = only busier markets are eligible for the automatic watchlist. Lower = quieter markets can qualify too.">ⓘ</span></label><input id="cfg-min-volume" type="number" step="1" min="0"></div>
+        <div class="field"><label>Default category filter for search below (comma-separated, blank = all) <span class="config-path">kalshi.categories</span></label><input id="cfg-categories" type="text" placeholder="Sports, Politics"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-discovery-live-only"> Only include markets currently flagged LIVE <span class="config-path">kalshi.live_markets_only</span></label></div>
         <p style="font-size:12px; color:var(--muted); margin:8px 0 0;">
           Checks live status across the full candidate pool before picking the watchlist, not just after -
           costs more per tick (more markets checked), and the watchlist can end up smaller than the size
           above (down to zero) rather than getting padded with non-live markets to hit that number.
         </p>
-        <div class="field"><label>Max markets watched per parent series (blank = every market)</label><input id="cfg-max-children-per-parent" type="number" step="1" min="1" placeholder="unlimited"></div>
+        <div class="field"><label>Max markets watched per parent series (blank = every market) <span class="config-path">kalshi.max_children_per_parent</span>
+          <span class="info-icon" title="Lower = caps how many child markets one busy series (e.g. a big tournament) can occupy, leaving more watchlist variety for other series. Blank/unlimited = every market under a selected series is watched.">ⓘ</span></label><input id="cfg-max-children-per-parent" type="number" step="1" min="1" placeholder="unlimited"></div>
         <p style="font-size:12px; color:var(--muted); margin:8px 0 0;">
           The watchlist size above now counts distinct <i>parent series</i> (the top-most level of Kalshi's own
           Series → Event → Market hierarchy that still represents one market — e.g. "PGA Head-to-Head Matchups",
