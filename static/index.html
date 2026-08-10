@@ -1295,13 +1295,15 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           factors below are whale-data-driven; the P&amp;L factor is plain market price, not.
         </p>
         <div class="field"><label>Exit confidence threshold (0–1) <span class="config-path">strategy.auto_exit_threshold</span>
-          <span class="info-icon" title="Higher = needs a stronger combined signal (P&L + sentiment + staleness, weighted by the three sliders below) before auto-closing. Lower = closes more readily on a weaker combined signal.">ⓘ</span></label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
+          <span class="info-icon" title="Higher = needs a stronger combined signal (P&L + sentiment + staleness + analyst divergence, weighted by the four sliders below) before auto-closing. Lower = closes more readily on a weaker combined signal.">ⓘ</span></label><input id="cfg-auto-exit-threshold" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>P&amp;L factor weight <span class="config-path">strategy.auto_exit_pnl_weight</span>
-          <span class="info-icon" title="Higher relative to the two weights below = unrealized profit/loss drives the exit decision more; whale sentiment and staleness matter less. Set to 0 to ignore P&L entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
+          <span class="info-icon" title="Higher relative to the weights below = unrealized profit/loss drives the exit decision more; the other factors matter less. Set to 0 to ignore P&L entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-pnl-weight" type="number" step="0.1" min="0"></div>
         <div class="field"><label>Whale sentiment factor weight <span class="config-path">strategy.auto_exit_sentiment_weight</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
-          <span class="info-icon" title="Higher relative to the other two weights = whale-sentiment reversal strength drives the exit decision more. Set to 0 to ignore sentiment entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
+          <span class="info-icon" title="Higher relative to the other weights = whale-sentiment reversal strength drives the exit decision more. Set to 0 to ignore sentiment entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-sentiment-weight" type="number" step="0.1" min="0"></div>
         <div class="field"><label>Signal-staleness factor weight <span class="config-path">strategy.auto_exit_staleness_weight</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
-          <span class="info-icon" title="Higher relative to the other two weights = how long whale interest has gone quiet drives the exit decision more. Set to 0 to ignore staleness entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+          <span class="info-icon" title="Higher relative to the other weights = how long whale interest has gone quiet drives the exit decision more. Set to 0 to ignore staleness entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-staleness-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Market analyst divergence factor weight <span class="config-path">strategy.auto_exit_analyst_weight</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="Higher relative to the other weights = a fresh Market Analyst probability estimate that disagrees with the side you're holding drives the exit decision more (e.g. you're holding yes but the analyst's latest estimate leans no). Needs a recent analysis on file for this specific market to have any effect at all - see the Market Analyst section below. Set to 0 to ignore the analyst entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-analyst-weight" type="number" step="0.1" min="0"></div>
         <div class="field"><label>Unrealized gain (0–1) that maxes out the P&amp;L factor <span class="config-path">strategy.auto_exit_gain_reference_pct</span>
           <span class="info-icon" title="Lower = a smaller unrealized gain already fully maxes out the P&L factor, making the algorithm more eager to treat modest gains as \"good enough to exit.\" Higher = needs a bigger gain before the P&L factor tops out.">ⓘ</span></label><input id="cfg-auto-exit-gain-ref" type="number" step="0.05" min="0.01"></div>
         <div class="field"><label>Unrealized loss (0–1) that maxes out the P&amp;L factor <span class="config-path">strategy.auto_exit_loss_reference_pct</span>
@@ -5084,6 +5086,7 @@ async function loadConfig() {
   $('cfg-auto-exit-pnl-weight').value = cfg.strategy.auto_exit_pnl_weight ?? 1.0;
   $('cfg-auto-exit-sentiment-weight').value = cfg.strategy.auto_exit_sentiment_weight ?? 1.0;
   $('cfg-auto-exit-staleness-weight').value = cfg.strategy.auto_exit_staleness_weight ?? 0.5;
+  $('cfg-auto-exit-analyst-weight').value = cfg.strategy.auto_exit_analyst_weight ?? 0.5;
   $('cfg-auto-exit-gain-ref').value = cfg.strategy.auto_exit_gain_reference_pct ?? 0.5;
   $('cfg-auto-exit-loss-ref').value = cfg.strategy.auto_exit_loss_reference_pct ?? 0.3;
   $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
@@ -5185,6 +5188,7 @@ $('save-config-btn').addEventListener('click', async () => {
       auto_exit_pnl_weight: parseFloat($('cfg-auto-exit-pnl-weight').value),
       auto_exit_sentiment_weight: parseFloat($('cfg-auto-exit-sentiment-weight').value),
       auto_exit_staleness_weight: parseFloat($('cfg-auto-exit-staleness-weight').value),
+      auto_exit_analyst_weight: parseFloat($('cfg-auto-exit-analyst-weight').value),
       auto_exit_gain_reference_pct: parseFloat($('cfg-auto-exit-gain-ref').value),
       auto_exit_loss_reference_pct: parseFloat($('cfg-auto-exit-loss-ref').value),
       auto_exit_stale_after_sec: parseInt($('cfg-auto-exit-stale-sec').value),

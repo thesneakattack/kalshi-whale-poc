@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+from services import market_analyst_agent as maa_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import signal_log
@@ -32,6 +33,14 @@ def _cfg(**overrides):
 def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True, max_daily_loss_pct=0.1):
     monkeypatch.setattr(pb_module, "DB_PATH", tmp_path / "paper_broker.db")
     monkeypatch.setattr(rm_module, "DB_PATH", tmp_path / "risk_state.db")
+    # _exit_confidence's new analyst_divergence factor (deep-scan finding
+    # 2026-08-10) calls market_analyst_agent.analyst_lean() from
+    # check_exits() now - redirect this too, same real-data-contamination
+    # bug class this project has already found and fixed twice this
+    # session (Item 6's audit, Item 1's trade-tape fixture gap). Without
+    # this, every test in this file would read the real
+    # data/market_analyst.db on every check_exits() call.
+    monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
     broker = pb_module.PaperBroker(starting_bankroll=bankroll)
     risk = rm_module.RiskManager(bankroll, max_daily_loss_pct, kill_switch_enabled)
     # Default: no whale-filter opinion at all, so the filter branch is a
@@ -532,6 +541,76 @@ def test_check_exits_auto_exit_staleness_factor_triggers_close(tmp_path, monkeyp
     )
     assert len(decisions) == 1
     assert "staleness=100%" in decisions[0]["reason"]
+
+
+# analyst_divergence factor (deep-scan finding 2026-08-10) - analyst_lean()
+# was already feeding entry confidence on both strategies but nothing ever
+# consulted it on the exit side. Same "left out of the average entirely
+# when absent" idiom as sentiment/staleness above.
+
+def test_check_exits_auto_exit_analyst_divergence_absent_without_a_fresh_estimate(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # No analysis ever recorded for this ticker - analyst_lean() returns
+    # None, so the factor is left out entirely, same as sentiment/staleness
+    # when there's no whale data. With every other weight also zeroed,
+    # total_weight is 0 and nothing should trigger.
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [],
+        _cfg(auto_exit_enabled=True, auto_exit_pnl_weight=0, auto_exit_sentiment_weight=0, auto_exit_staleness_weight=0),
+    )
+    assert decisions == []
+
+
+def test_check_exits_auto_exit_analyst_divergence_factor_triggers_close_on_yes_position(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # A fresh, maximally bearish analyst estimate (0.0 = the model thinks
+    # this can't resolve YES) fully diverges from the held "yes" side -
+    # price hasn't moved, no whale signals, but the analyst_divergence
+    # factor alone should clear the default 0.6 threshold.
+    maa_module.record_analysis(
+        "TICK-A", "TICK", market_price=0.5, estimated_probability=0.0,
+        llm_confidence=0.9, reasoning="r", model="m",
+    )
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [],
+        _cfg(auto_exit_enabled=True, auto_exit_pnl_weight=0, auto_exit_sentiment_weight=0, auto_exit_staleness_weight=0),
+    )
+    assert len(decisions) == 1
+    assert "analyst_divergence=100%" in decisions[0]["reason"]
+
+
+def test_check_exits_auto_exit_analyst_divergence_direction_flips_for_no_side(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.5, reason="entry")
+    # Same strongly bearish estimate now AGREES with a held "no" position -
+    # zero divergence pressure, nothing should trigger.
+    maa_module.record_analysis(
+        "TICK-A", "TICK", market_price=0.5, estimated_probability=0.05,
+        llm_confidence=0.9, reasoning="r", model="m",
+    )
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [],
+        _cfg(auto_exit_enabled=True, auto_exit_pnl_weight=0, auto_exit_sentiment_weight=0, auto_exit_staleness_weight=0),
+    )
+    assert decisions == []
+
+
+def test_check_exits_auto_exit_analyst_divergence_neutral_estimate_no_pressure(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # A neutral 0.5 estimate is neither agreement nor divergence - factor
+    # should be exactly 0, same "50/50 = no pressure" language as sentiment.
+    maa_module.record_analysis(
+        "TICK-A", "TICK", market_price=0.5, estimated_probability=0.5,
+        llm_confidence=0.5, reasoning="r", model="m",
+    )
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [],
+        _cfg(auto_exit_enabled=True, auto_exit_pnl_weight=0, auto_exit_sentiment_weight=0, auto_exit_staleness_weight=0),
+    )
+    assert decisions == []
 
 
 def test_check_exits_auto_exit_yields_to_hard_triggers_when_both_configured(tmp_path, monkeypatch):

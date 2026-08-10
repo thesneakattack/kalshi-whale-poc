@@ -5,10 +5,17 @@ manager, or data sources.
 """
 import time
 
-from services import kalshi_fees, signal_log
+from services import kalshi_fees, market_analyst_agent, signal_log
 from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
+
+# Same freshness window services/market_strategy.py and services/
+# whalewatchers/kalshi_trade_tape.py already use for analyst_lean() on the
+# entry side - the event being estimated is far more stable than a
+# market's own price, so this doesn't need to be tight, just not stale
+# enough to be estimating a different market state entirely.
+_ANALYST_FRESHNESS_SEC = 24 * 3600
 
 
 def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
@@ -354,6 +361,20 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     - staleness: how long since the most recent whale print on this ticker
       (either side) - the original edge that justified the trade going
       quiet is itself a signal, independent of price or lean direction.
+    - analyst_divergence: how far the market analyst agent's own most
+      recent probability estimate (market_analyst_agent.analyst_lean(),
+      the same cheap indexed-read helper already feeding entry confidence
+      in services/market_strategy.py and services/whalewatchers/
+      kalshi_trade_tape.py - never a fresh LLM call) has moved away from
+      the side actually held. Deep-scan finding 2026-08-10: analyst_lean()
+      was already informing whether to get IN to a position on both
+      strategies, but nothing ever consulted it on whether to get OUT -
+      a real asymmetry given the same cheap read was sitting right there.
+      50/50 (lean == 0.5) = no pressure, fully opposite = full pressure,
+      same "50/50 = no pressure" language as the sentiment factor above -
+      absent entirely (not zero) when there's no fresh estimate on file
+      for this ticker at all, same "don't penalize for missing data"
+      idiom every other optional factor here already follows.
 
     Missing factors (e.g. no whale prints on this ticker at all) are left
     out of the average entirely rather than treated as 0 - same "don't
@@ -365,6 +386,7 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     w_pnl = strat_cfg.get("auto_exit_pnl_weight", 1.0)
     w_sentiment = strat_cfg.get("auto_exit_sentiment_weight", 1.0)
     w_staleness = strat_cfg.get("auto_exit_staleness_weight", 0.5)
+    w_analyst = strat_cfg.get("auto_exit_analyst_weight", 0.5)
 
     if pnl_pct >= 0:
         pnl_factor = min(1.0, pnl_pct / gain_ref) if gain_ref > 0 else 0.0
@@ -384,6 +406,12 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
         elapsed = max(0.0, time.time() - last_seen)
         staleness_factor = min(1.0, elapsed / stale_after) if stale_after > 0 else 0.0
         factors["staleness"] = (staleness_factor, w_staleness)
+
+    lean_estimate = market_analyst_agent.analyst_lean(ticker, max_age_sec=_ANALYST_FRESHNESS_SEC)
+    if lean_estimate is not None:
+        divergence = (0.5 - lean_estimate) if pos.side == "yes" else (lean_estimate - 0.5)
+        analyst_factor = max(0.0, min(1.0, divergence / 0.5))
+        factors["analyst_divergence"] = (analyst_factor, w_analyst)
 
     total_weight = sum(w for _, w in factors.values())
     confidence = (sum(f * w for f, w in factors.values()) / total_weight) if total_weight > 0 else 0.0
