@@ -85,6 +85,35 @@ def variant_summaries(rows: list[dict]) -> dict[str, dict]:
     return {fp: trade_analytics.compute_summary(group) for fp, group in by_fp.items()}
 
 
+def change_effect(fingerprint_before: str, fingerprint_after: str, summaries: dict[str, dict]) -> dict | None:
+    """Before/after win-rate + realized-P&L for one logged config change
+    (Item 3D, 2026-08-10) - reuses the same per-variant summaries()
+    cross-variant comparisons already read, real trade-attribution rather
+    than a fabricated number. Only ever meaningful for a change that
+    actually altered the fingerprinted strategy.* subset
+    (config_performance.fingerprint/strategy_subset) - a market_strategy.*
+    or risk.*/etc. change always logs fingerprint_before == fingerprint_
+    after (see main.py's log_applied_change call sites), which this
+    correctly reports as "nothing to compare" rather than pretending a
+    delta exists. Also None before either side has any resolved trades yet
+    - matches this app's own "don't show a number you can't honestly back"
+    practice (shadow mode, market analyst's hedged track record)."""
+    if fingerprint_before == fingerprint_after:
+        return None
+    before = summaries.get(fingerprint_before)
+    after = summaries.get(fingerprint_after)
+    if not before or not after or not before["total_closed"] or not after["total_closed"]:
+        return None
+    return {
+        "before_win_rate_pct": before["win_rate_pct"],
+        "before_n": before["total_closed"],
+        "before_realized_pnl": before["total_realized_pnl"],
+        "after_win_rate_pct": after["win_rate_pct"],
+        "after_n": after["total_closed"],
+        "after_realized_pnl": after["total_realized_pnl"],
+    }
+
+
 def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> dict | None:
     """Same confidence-bucket analysis as trade_analytics.compute_insights,
     but the suggested value is now the actual boundary between the worst-

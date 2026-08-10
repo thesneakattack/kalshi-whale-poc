@@ -1747,7 +1747,7 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
     config_performance.log_applied_change(
         config_path=match["config_path"], old_value=match["current_value"], new_value=match["suggested_value"],
         rationale=match["rationale"], trade_count=match["n"],
-        fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False,
+        fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False, source="unified-advisory",
     )
     _bump_generation()
     return {"applied": match, "new_config": config_store.get()["strategy"]}
@@ -1755,10 +1755,29 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
 
 @app.get("/api/advisory/applied-changes")
 async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
+    # Effect tracking (Item 3D, 2026-08-10): a strategy.* change already
+    # gets a real fingerprint transition logged (fingerprint_before/after) -
+    # attach the same before/after win-rate + realized-P&L a cross-variant
+    # recommendation already computes, via variant_summaries() over the
+    # *current* full trade history (not a snapshot from when the change was
+    # applied), so this reflects everything resolved since, not just what
+    # existed the moment it was logged. Scoped to config_path.startswith
+    # ("strategy.") specifically, not just "fingerprint changed" - a manual
+    # patch can touch a strategy.* field and a non-fingerprinted field (e.g.
+    # risk.*) in the same save, and only the strategy.* row's own change is
+    # what actually caused that transition.
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
+    changes = config_performance.recent_applied_changes(limit=limit, offset=offset)
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    summaries = advisory_engine.variant_summaries(all_rows)
+    for c in changes:
+        c["effect"] = (
+            advisory_engine.change_effect(c["fingerprint_before"], c["fingerprint_after"], summaries)
+            if c["config_path"].startswith("strategy.") else None
+        )
     return {
-        "changes": config_performance.recent_applied_changes(limit=limit, offset=offset),
+        "changes": changes,
         "total": config_performance.applied_changes_count(),
     }
 
@@ -2131,7 +2150,25 @@ async def update_config(body: ConfigPatch):
                 "phrase) or POST /api/advisory/auto-apply/disable."
             ),
         )
+    # Change-history logging (Item 3D, 2026-08-10) - this was the one real
+    # gap in config_performance.log_applied_change()'s coverage: every plain
+    # Config-tab save went completely unlogged before this, even though the
+    # Advisory apply route has always had a full audit trail. Logged AFTER
+    # config_store.update() so fingerprint_after reflects the config that
+    # actually took effect, but the diff itself is computed against the
+    # pre-update snapshot (diff_patch reads old_cfg, not the live store).
+    old_cfg = config_store.get()
+    fp_before = config_performance.fingerprint(old_cfg)
+    changes = config_performance.diff_patch(old_cfg, body.patch)
     new_cfg = config_store.update(body.patch)
+    fp_after = config_performance.fingerprint(new_cfg)
+    for config_path, old_value, new_value in changes:
+        config_performance.log_applied_change(
+            config_path=config_path, old_value=old_value, new_value=new_value,
+            rationale="Manual edit via the Config tab.", trade_count=0,
+            fingerprint_before=fp_before, fingerprint_after=fp_after,
+            auto_applied=False, source="manual",
+        )
     _bump_generation()
     return new_cfg
 
@@ -2149,8 +2186,18 @@ async def enable_trading(body: EnableTradingBody):
             status_code=400,
             detail=f'Confirmation phrase did not match. Type exactly: "{TRADING_CONFIRMATION_PHRASE}"',
         )
+    fp_before = config_performance.fingerprint(config_store.get())
     config_store.update({"kalshi_account": {"trading_enabled": True}})
     account.trading_enabled = True  # take effect immediately, not on the next poll tick
+    # Logged like any other config change (Item 3D) - this is arguably the
+    # single most safety-critical field in the app, so it belongs in the
+    # same change-history audit trail as everything else, not a blind spot
+    # just because it has its own confirmation-gated route.
+    config_performance.log_applied_change(
+        config_path="kalshi_account.trading_enabled", old_value=False, new_value=True,
+        rationale="Enabled via the typed real-trading confirmation phrase.", trade_count=0,
+        fingerprint_before=fp_before, fingerprint_after=fp_before, auto_applied=False, source="manual",
+    )
     _bump_generation()
     return {"trading_enabled": True}
 
@@ -2159,8 +2206,14 @@ async def enable_trading(body: EnableTradingBody):
 async def disable_trading():
     # Always allowed, no confirmation needed — turning real trading back off
     # is never the dangerous direction.
+    fp_before = config_performance.fingerprint(config_store.get())
     config_store.update({"kalshi_account": {"trading_enabled": False}})
     account.trading_enabled = False
+    config_performance.log_applied_change(
+        config_path="kalshi_account.trading_enabled", old_value=True, new_value=False,
+        rationale="Disabled real trading.", trade_count=0,
+        fingerprint_before=fp_before, fingerprint_after=fp_before, auto_applied=False, source="manual",
+    )
     _bump_generation()
     return {"trading_enabled": False}
 

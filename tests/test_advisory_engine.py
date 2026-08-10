@@ -333,3 +333,29 @@ def test_generate_recommendations_includes_market_strategy_suggestions_from_mark
     result = ae.generate_recommendations(rows, _cfg(), "fp1", {}, min_resolved_trades=5, market_rows=market_rows)
     paths = [r["config_path"] for r in result["recommendations"]]
     assert "market_strategy.min_momentum_delta" in paths
+
+
+# --- change_effect (Item 3D, 2026-08-10) --------------------------------------
+
+def test_change_effect_none_when_fingerprint_unchanged():
+    # market_strategy.*/risk.*/etc. changes always log the same fingerprint
+    # on both sides - nothing to compare, not a bug.
+    summaries = {"fp1": {"total_closed": 10, "win_rate_pct": 50.0, "total_realized_pnl": 5.0}}
+    assert ae.change_effect("fp1", "fp1", summaries) is None
+
+
+def test_change_effect_none_when_a_side_has_no_trades_yet():
+    summaries = {"fp1": {"total_closed": 10, "win_rate_pct": 50.0, "total_realized_pnl": 5.0}}
+    assert ae.change_effect("fp1", "fp2", summaries) is None  # fp2 not in summaries at all
+
+
+def test_change_effect_reports_real_before_after_numbers():
+    summaries = {
+        "fp1": {"total_closed": 10, "win_rate_pct": 40.0, "total_realized_pnl": -20.0},
+        "fp2": {"total_closed": 5, "win_rate_pct": 80.0, "total_realized_pnl": 15.0},
+    }
+    effect = ae.change_effect("fp1", "fp2", summaries)
+    assert effect == {
+        "before_win_rate_pct": 40.0, "before_n": 10, "before_realized_pnl": -20.0,
+        "after_win_rate_pct": 80.0, "after_n": 5, "after_realized_pnl": 15.0,
+    }

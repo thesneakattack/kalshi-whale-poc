@@ -84,6 +84,42 @@ def test_config_endpoint_still_allows_other_patches():
     assert main.config_store.get()["strategy"]["entry_threshold"] == 0.7
 
 
+# --- Change-history logging for manual edits (Item 3D, 2026-08-10) -----------
+# config_performance.log_applied_change() used to only ever fire from the
+# Advisory apply route - a plain Config-tab save went completely unlogged.
+
+def test_config_endpoint_logs_a_manual_change_to_history():
+    _reset_trading_state()
+    resp = client.post("/api/config", json={"patch": {"strategy": {"entry_threshold": 0.42}}})
+    assert resp.status_code == 200
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "strategy.entry_threshold" and c["new_value"] == 0.42)
+    assert match["source"] == "manual"
+    assert match["auto_applied"] is False
+
+
+def test_config_endpoint_does_not_log_a_no_op_patch():
+    _reset_trading_state()
+    main.config_store.update({"strategy": {"entry_threshold": 0.33}})
+    before_count = main.config_performance.applied_changes_count()
+    resp = client.post("/api/config", json={"patch": {"strategy": {"entry_threshold": 0.33}}})
+    assert resp.status_code == 200
+    assert main.config_performance.applied_changes_count() == before_count
+
+
+def test_config_endpoint_logs_every_changed_field_across_multiple_sections():
+    _reset_trading_state()
+    resp = client.post("/api/config", json={"patch": {
+        "strategy": {"cooldown_sec": 999},
+        "risk": {"max_daily_loss_pct": 0.11},
+    }})
+    assert resp.status_code == 200
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    paths = {c["config_path"] for c in changes}
+    assert "strategy.cooldown_sec" in paths
+    assert "risk.max_daily_loss_pct" in paths
+
+
 def test_enable_trading_rejected_without_connected_account():
     _reset_trading_state()
     assert main.account.enabled is False  # no SDK client constructed
@@ -124,6 +160,22 @@ def test_disable_trading_always_allowed_no_confirmation_needed(monkeypatch):
     assert resp.json() == {"trading_enabled": False}
     assert main.config_store.get()["kalshi_account"]["trading_enabled"] is False
     assert main.account.trading_enabled is False
+
+
+def test_enable_and_disable_trading_both_log_to_change_history(monkeypatch):
+    # kalshi_account.trading_enabled bypasses POST /api/config entirely (its
+    # own confirmation-gated routes), but it's arguably the single most
+    # safety-critical field in the app - it belongs in the same
+    # change-history audit trail as everything else, not a blind spot.
+    _reset_trading_state()
+    monkeypatch.setattr(main.account, "_client", object())
+    client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
+    client.post("/api/trading/disable")
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    enabled = next(c for c in changes if c["config_path"] == "kalshi_account.trading_enabled" and c["new_value"] is True)
+    disabled = next(c for c in changes if c["config_path"] == "kalshi_account.trading_enabled" and c["new_value"] is False)
+    assert enabled["source"] == "manual"
+    assert disabled["source"] == "manual"
 
 
 def test_state_endpoint_reports_trading_enabled_flag():
@@ -517,6 +569,58 @@ def test_advisory_apply_end_to_end_updates_config_and_logs_change():
     assert changes[0]["config_path"] == "strategy.entry_threshold"
     assert changes[0]["new_value"] == entry_rec["suggested_value"]
     assert changes[0]["auto_applied"] is False
+    # No trades have been placed under the brand-new post-apply fingerprint
+    # yet - effect tracking correctly reports "nothing to compare" rather
+    # than fabricating a delta from zero trades.
+    assert changes[0]["effect"] is None
+
+
+def test_applied_changes_effect_reports_a_real_before_after_win_rate_delta():
+    # Item 3D (2026-08-10) - once real trades exist under BOTH the old and
+    # new fingerprint, the change-history view should show a genuine
+    # measured win-rate/P&L delta, via the same variant_summaries()
+    # cross-variant comparisons already use - not a fabricated number.
+    _reset_advisory_state()
+    main.config_store.update({"strategy": {"entry_threshold": 0.5}})
+    fp_before = main.config_performance.fingerprint(main.config_store.get())
+    for _ in range(3):
+        main.broker.open_position(
+            "OLD-TICK", "yes", size=10, price=0.5, reason="whale print",
+            config_fingerprint=fp_before,
+        )
+        main.broker.close_position("OLD-TICK", exit_price=0.4, reason="stop-loss hit: unrealized loss 20% of cost basis (limit 20%)")
+
+    resp = client.post("/api/config", json={"patch": {"strategy": {"entry_threshold": 0.7}}})
+    assert resp.status_code == 200
+    fp_after = main.config_performance.fingerprint(main.config_store.get())
+
+    for _ in range(3):
+        main.broker.open_position(
+            "NEW-TICK", "yes", size=10, price=0.5, reason="whale print",
+            config_fingerprint=fp_after,
+        )
+        main.broker.close_position("NEW-TICK", exit_price=1.0, reason="market settled YES - position won")
+
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "strategy.entry_threshold" and c["new_value"] == 0.7)
+    assert match["effect"] is not None
+    assert match["effect"]["before_win_rate_pct"] == 0.0
+    assert match["effect"]["before_n"] == 3
+    assert match["effect"]["after_win_rate_pct"] == 100.0
+    assert match["effect"]["after_n"] == 3
+
+
+def test_applied_changes_effect_is_none_for_non_strategy_changes():
+    # market_strategy.*/risk.*/etc. changes never alter the fingerprinted
+    # strategy.* subset, so fingerprint_before always equals
+    # fingerprint_after for them - correctly no effect to report, not a
+    # bug in the logging.
+    _reset_advisory_state()
+    resp = client.post("/api/config", json={"patch": {"risk": {"max_daily_loss_pct": 0.33}}})
+    assert resp.status_code == 200
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "risk.max_daily_loss_pct" and c["new_value"] == 0.33)
+    assert match["effect"] is None
 
 
 def test_advisory_apply_end_to_end_handles_a_market_strategy_recommendation():

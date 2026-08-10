@@ -92,7 +92,49 @@ def test_log_and_read_applied_change(tmp_path, monkeypatch):
     assert c["new_value"] == 0.1
     assert c["trade_count"] == 30
     assert c["auto_applied"] is False
+    assert c["source"] == "manual"  # log_applied_change's own default when unspecified
     assert cp.applied_changes_count() == 1
+
+
+def test_source_column_backfills_pre_existing_rows_as_unified_advisory(tmp_path, monkeypatch):
+    # data/config_performance.db is a live file (CLAUDE.md) - simulates the
+    # real table as it existed before the source column was added (2026-08-10,
+    # Item 3D). Every real row up to that point came from exactly one place
+    # (the Advisory apply route), so the column's own SQL DEFAULT backfilling
+    # them as 'unified-advisory' is factually correct, not a placeholder.
+    import sqlite3
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    conn = sqlite3.connect(cp.DB_PATH)
+    conn.execute(
+        """CREATE TABLE applied_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, applied_at REAL NOT NULL, config_path TEXT NOT NULL,
+            old_value TEXT NOT NULL, new_value TEXT NOT NULL, rationale TEXT NOT NULL,
+            trade_count INTEGER NOT NULL, fingerprint_before TEXT NOT NULL, fingerprint_after TEXT NOT NULL,
+            auto_applied INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
+        "trade_count, fingerprint_before, fingerprint_after) VALUES (0, 'strategy.entry_threshold', "
+        "'0.5', '0.6', 'old row', 10, 'fp1', 'fp2')"
+    )
+    conn.commit()
+    conn.close()
+
+    assert cp.recent_applied_changes()[0]["source"] == "unified-advisory"
+
+
+def test_log_applied_change_records_explicit_source(tmp_path, monkeypatch):
+    # Item 3D (2026-08-10) - source distinguishes a plain Config-tab save
+    # from an Advisory-applied suggestion (and, later, agent-driven ones)
+    # in the same shared change-history table.
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    cp.log_applied_change(
+        config_path="market_strategy.min_momentum_delta", old_value=0.03, new_value=0.04,
+        rationale="r", trade_count=20, fingerprint_before="fp1", fingerprint_after="fp1",
+        source="unified-advisory",
+    )
+    assert cp.recent_applied_changes()[0]["source"] == "unified-advisory"
 
 
 def test_applied_changes_pagination_and_ordering(tmp_path, monkeypatch):
@@ -106,3 +148,42 @@ def test_applied_changes_pagination_and_ordering(tmp_path, monkeypatch):
     assert len(changes) == 2
     # newest first
     assert changes[0]["config_path"] == "strategy.field2"
+
+
+# --- diff_patch (Item 3D, 2026-08-10) -----------------------------------------
+# Mirrors ConfigStore.update()'s own one-level-deep merge exactly, so
+# main.py's POST /api/config can log every field a patch actually changes
+# without reimplementing that merge logic separately.
+
+def test_diff_patch_reports_a_nested_section_field_change():
+    old_cfg = {"strategy": {"entry_threshold": 0.5, "cooldown_sec": 300}}
+    patch = {"strategy": {"entry_threshold": 0.6}}
+    assert cp.diff_patch(old_cfg, patch) == [("strategy.entry_threshold", 0.5, 0.6)]
+
+
+def test_diff_patch_reports_a_bare_top_level_scalar_change():
+    old_cfg = {"mode": "paper"}
+    patch = {"mode": "shadow"}
+    assert cp.diff_patch(old_cfg, patch) == [("mode", "paper", "shadow")]
+
+
+def test_diff_patch_skips_fields_where_the_value_is_unchanged():
+    old_cfg = {"strategy": {"entry_threshold": 0.5}}
+    patch = {"strategy": {"entry_threshold": 0.5}}
+    assert cp.diff_patch(old_cfg, patch) == []
+
+
+def test_diff_patch_handles_multiple_sections_and_fields_in_one_patch():
+    old_cfg = {"strategy": {"entry_threshold": 0.5}, "market_strategy": {"min_momentum_delta": 0.03}}
+    patch = {"strategy": {"entry_threshold": 0.6}, "market_strategy": {"min_momentum_delta": 0.04}}
+    changes = cp.diff_patch(old_cfg, patch)
+    assert set(changes) == {
+        ("strategy.entry_threshold", 0.5, 0.6),
+        ("market_strategy.min_momentum_delta", 0.03, 0.04),
+    }
+
+
+def test_diff_patch_treats_a_field_missing_from_old_cfg_as_none():
+    old_cfg = {"strategy": {}}
+    patch = {"strategy": {"take_profit_pct": 0.5}}
+    assert cp.diff_patch(old_cfg, patch) == [("strategy.take_profit_pct", None, 0.5)]

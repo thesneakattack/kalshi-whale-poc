@@ -32,6 +32,17 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "config_performance.
 _NON_TUNABLE_FIELDS = {"name"}
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/config_performance.db is a live file the running dev server
+    # reads/writes (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't
+    # add a column to an existing table with existing rows, so a new column
+    # needs an explicit, idempotent ALTER TABLE guarded by a check - same
+    # pattern services/market_catalog.py/signal_log.py already established.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -60,6 +71,11 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # 2026-08-10 (Item 3D) - every real row up to this point came from
+    # exactly one place (the Advisory apply route), so backfilling existing
+    # rows as 'unified-advisory' via the column default is factually
+    # correct, not a placeholder guess.
+    _add_column_if_missing(conn, "applied_changes", "source", "TEXT NOT NULL DEFAULT 'unified-advisory'")
     return conn
 
 
@@ -108,16 +124,28 @@ def all_variants() -> list[dict]:
 def log_applied_change(
     config_path: str, old_value, new_value, rationale: str, trade_count: int,
     fingerprint_before: str, fingerprint_after: str, auto_applied: bool = False,
+    source: str = "manual",
 ):
+    # source (2026-08-10, Item 3D): which of this app's config-change
+    # sources produced this row - "manual" (a plain Config-tab save via
+    # POST /api/config, previously never logged at all), "unified-advisory"
+    # (services/advisory_engine.py's apply route), or a future
+    # "series-analyst"/"full-spectrum-analyst" once the market analyst
+    # agent can suggest changes too (Item 3B/3C). Kept as a plain string,
+    # not an enum, so a new source never needs a schema migration - same
+    # "machine-queryable, not simplified" idea as every other field here,
+    # since this table is meant to be read by the engines themselves
+    # eventually (e.g. "was this field changed too recently to have enough
+    # post-change data yet"), not just rendered in a UI table.
     with _connect() as conn:
         conn.execute(
             """INSERT INTO applied_changes
                (applied_at, config_path, old_value, new_value, rationale, trade_count,
-                fingerprint_before, fingerprint_after, auto_applied)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                fingerprint_before, fingerprint_after, auto_applied, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 time.time(), config_path, json.dumps(old_value), json.dumps(new_value), rationale,
-                trade_count, fingerprint_before, fingerprint_after, 1 if auto_applied else 0,
+                trade_count, fingerprint_before, fingerprint_after, 1 if auto_applied else 0, source,
             ),
         )
 
@@ -125,7 +153,7 @@ def log_applied_change(
 def recent_applied_changes(limit: int = 50, offset: int = 0) -> list[dict]:
     cols = [
         "id", "applied_at", "config_path", "old_value", "new_value", "rationale",
-        "trade_count", "fingerprint_before", "fingerprint_after", "auto_applied",
+        "trade_count", "fingerprint_before", "fingerprint_after", "auto_applied", "source",
     ]
     with _connect() as conn:
         rows = conn.execute(
@@ -140,6 +168,30 @@ def recent_applied_changes(limit: int = 50, offset: int = 0) -> list[dict]:
         d["auto_applied"] = bool(d["auto_applied"])
         out.append(d)
     return out
+
+
+def diff_patch(old_cfg: dict, patch: dict) -> list[tuple[str, object, object]]:
+    """Every leaf field a config_store.update(patch) call would actually
+    change, as (config_path, old_value, new_value) - mirrors
+    ConfigStore.update()'s own one-level-deep merge exactly (a patch is
+    always either a bare top-level scalar or one level of {section:
+    {field: value}} nesting, never deeper - see config_store.py), so this
+    never needs to guess at a shape update() itself doesn't support.
+    Skips any field where old_value == new_value - a no-op save (e.g.
+    re-submitting the Config tab's form unchanged) shouldn't manufacture a
+    change-history row."""
+    changes = []
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(old_cfg.get(key), dict):
+            for field, new_value in value.items():
+                old_value = old_cfg[key].get(field)
+                if old_value != new_value:
+                    changes.append((f"{key}.{field}", old_value, new_value))
+        else:
+            old_value = old_cfg.get(key)
+            if old_value != value:
+                changes.append((key, old_value, value))
+    return changes
 
 
 def applied_changes_count() -> int:

@@ -1121,6 +1121,27 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Change History (Item 3D, 2026-08-10) - every config change ever
+         logged, not just Advisory-applied ones: config_performance.
+         log_applied_change() now fires from every config-change source in
+         this app (a plain Config-tab save, the real-trading confirmation
+         toggle, and Advisory apply). A strategy.* change that actually
+         created a new config variant gets a measured before/after
+         win-rate + realized-P&L delta once both variants have real trades
+         (services/advisory_engine.py's change_effect(), same mechanism
+         cross-variant recommendations already use) - other sections
+         (market_strategy.*, risk.*, ...) get a plain logged entry with no
+         fabricated delta, since this app's fingerprinting only ever covers
+         strategy.*. -->
+    <div class="panel-title">Change History</div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Every config change this app has ever recorded, regardless of source (a manual Config-tab save, an
+      applied Advisory suggestion, or the real-trading confirmation toggle) — with a measured before/after
+      win-rate and realized P&amp;L delta wherever a strategy.* change actually created a new config variant
+      with real trades on both sides.
+    </p>
+    <div id="change-history-list" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
          Part 3) - an LLM reading each market's own title/rules/context and
          forming an independent probability estimate, distinct in kind from
@@ -3020,6 +3041,7 @@ async function loadTradingHistory() {
     loadAdvisory();
     loadMarketAnalyst();
     loadSeriesEvaluator();
+    loadChangeHistory();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -3180,9 +3202,61 @@ async function applyAdvisoryRecommendation(id, btn) {
     btn.textContent = 'Applied ✓';
     loadConfig();
     setTimeout(loadAdvisory, 800);
+    setTimeout(loadChangeHistory, 800);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'Apply failed — retry';
+  }
+}
+
+// Change History (Item 3D, 2026-08-10) - every config-change source in
+// this app logs here now (see main.py's update_config/enable_trading/
+// disable_trading and the Advisory apply route), not just Advisory-applied
+// suggestions. effect is attached server-side (services/advisory_engine.py's
+// change_effect()) only for strategy.* changes that actually created a new
+// config variant with real trades on both sides - null otherwise, rendered
+// as a plain logged row with no fabricated delta.
+const CHANGE_SOURCE_LABEL = {
+  manual: 'manual edit', 'unified-advisory': 'advisory', 'series-analyst': 'AI (series)',
+  'full-spectrum-analyst': 'AI (full-spectrum)',
+};
+
+async function loadChangeHistory() {
+  const el = $('change-history-list');
+  if (!el) return;
+  try {
+    const resp = await fetchJSON('/api/advisory/applied-changes?limit=20');
+    const changes = resp.changes || [];
+    if (!changes.length) {
+      el.innerHTML = '<div class="empty">No config changes recorded yet.</div>';
+      return;
+    }
+    el.innerHTML = changes.map(c => {
+      const when = new Date(c.applied_at * 1000).toLocaleString();
+      const sourceLabel = CHANGE_SOURCE_LABEL[c.source] || esc(c.source);
+      let effectHTML = '';
+      if (c.effect) {
+        const wrDelta = c.effect.after_win_rate_pct - c.effect.before_win_rate_pct;
+        const wrColor = wrDelta > 0 ? 'var(--yes)' : (wrDelta < 0 ? 'var(--no)' : 'var(--text)');
+        effectHTML = `<div style="margin-top:6px; font-size:12px; color:${wrColor};">
+          ${c.effect.before_win_rate_pct.toFixed(0)}% win rate (n=${c.effect.before_n}) →
+          ${c.effect.after_win_rate_pct.toFixed(0)}% (n=${c.effect.after_n}) since this change
+        </div>`;
+      }
+      return `
+        <div class="signal-card">
+          <div class="top-row">
+            <span class="config-path">${esc(c.config_path)}</span>
+            <span style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(sourceLabel)} · ${esc(when)}</span>
+          </div>
+          <div style="margin:4px 0;"><b>${esc(String(c.old_value))}</b> → <b style="color:var(--whale);">${esc(String(c.new_value))}</b></div>
+          <div style="color:var(--muted); font-size:13px;">${esc(c.rationale)}</div>
+          ${effectHTML}
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load change history.</div>';
   }
 }
 
@@ -5018,6 +5092,7 @@ $('save-config-btn').addEventListener('click', async () => {
   const btn = $('save-config-btn');
   btn.textContent = 'Saved ✓';
   setTimeout(() => btn.textContent = 'Save Config', 1200);
+  loadChangeHistory();  // a manual save now logs to Change History too (Item 3D)
 });
 
 // Search/browse directly in the Markets tab, direct request ("you never
