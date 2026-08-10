@@ -1118,6 +1118,154 @@ async def _run_series_analysis(cfg: dict, series: str) -> dict:
         _analyzing_series.discard(series)
 
 
+# "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) - only one
+# subject (the whole platform), so a plain bool is enough for the in-flight
+# guard, unlike the ticker/series sets above.
+_full_spectrum_analyzing = False
+
+# The two config paths already protected from generic manual edits (see
+# update_config()'s own guards below) - the full-spectrum agent gets the
+# exact same protection, since its suggestions can otherwise touch ANY
+# config field, a materially wider blast radius than the fixed single-field
+# scope 3B's per-series mode was deliberately limited to.
+_PROTECTED_CONFIG_PATHS = {"kalshi_account.trading_enabled", "advisory.auto_apply_enabled"}
+
+
+def _types_compatible(a, b) -> bool:
+    """Loose type-compatibility check for a full-spectrum suggestion's
+    value against the field's current one - int/float are interchangeable
+    (a human editing the Config tab's number inputs doesn't distinguish
+    them either), bool is checked strictly on both sides since Python's
+    bool is technically an int subclass and a stray True/False landing in
+    a numeric field would be a real, confusing config corruption, not a
+    reasonable suggestion."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return True
+    return type(a) is type(b)
+
+
+def _build_full_spectrum_context(cfg: dict) -> dict:
+    """Assembles services/market_analyst_agent.build_full_spectrum_prompt()'s
+    input (Item 3C) - deliberately every value here is an aggregated
+    rollup (compute_summary(), variant_summaries(), stats()), never raw
+    per-trade/per-signal rows, so prompt size stays bounded regardless of
+    how much history has accumulated (per the plan's own explicit
+    "aggregated/summarized data, not raw per-trade rows" requirement)."""
+    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+    current_fp = config_performance.fingerprint(cfg)
+    variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+    adv_cfg = cfg.get("advisory") or {}
+    recommendations = advisory_engine.generate_recommendations(
+        all_rows, cfg, current_fp, variants, adv_cfg.get("min_resolved_trades_per_variant", 30),
+        market_rows=market_rows,
+    )
+    # Busiest 10 series by observed trade volume - a real, disclosed bound
+    # (not exhaustive) so this section can't grow unbounded as more series
+    # accumulate history over the app's life.
+    busiest_series = sorted(
+        series_evaluator.overview(), key=lambda r: r["trades_observed"], reverse=True,
+    )[:10]
+    per_series_whale = [
+        {**signal_log.series_stats(r["series"], days=30), "evaluator_status": r["status"]}
+        for r in busiest_series
+    ]
+    return {
+        "config": cfg,
+        "trade_summary": trade_analytics.compute_summary(all_rows),
+        "market_strategy_summary": trade_analytics.compute_summary(market_rows),
+        "whale_track_record": signal_log.stats(days=30),
+        "advisory_recommendations": recommendations["recommendations"],
+        "variant_summaries": advisory_engine.variant_summaries(all_rows),
+        "recent_applied_changes": config_performance.recent_applied_changes(limit=20),
+        "per_series_whale_breakdown": per_series_whale,
+        "portfolio": broker.state(state["latest_prices"]),
+    }
+
+
+def _full_spectrum_suggestions_from_raw(cfg: dict, raw_suggestions: list[dict]) -> list[dict]:
+    """Validates + converts the model's raw {"config_path",
+    "suggested_value", "rationale"} output into this app's unified
+    suggestion shape - unlike 3B's fixed-field conversion, this can't trust
+    the model's config_path at all (it can name literally any field), so
+    every suggestion here is checked against the LIVE config before being
+    treated as real: the path must resolve to a section+field that already
+    exists (never inventing a new one), must not be one of the two fields
+    already protected from generic config edits, must actually differ from
+    the current value, and must be a reasonably type-compatible value.
+    Anything that fails any check is silently dropped, not surfaced as an
+    error - matching how 3B's own no-op filtering works, an invalid
+    suggestion just isn't a real suggestion."""
+    out = []
+    for raw in raw_suggestions:
+        config_path = raw.get("config_path") or ""
+        if config_path in _PROTECTED_CONFIG_PATHS:
+            continue
+        section, _, field = config_path.partition(".")
+        if not section or not field:
+            continue
+        section_cfg = cfg.get(section)
+        if not isinstance(section_cfg, dict) or field not in section_cfg:
+            continue  # never touch a field that doesn't already exist in the live config
+        current_value = section_cfg[field]
+        suggested_value = raw.get("suggested_value")
+        if suggested_value == current_value:
+            continue
+        if current_value is not None and not _types_compatible(current_value, suggested_value):
+            continue
+        out.append({
+            "id": advisory_engine.rec_id(config_path, suggested_value, 0),
+            "config_path": config_path,
+            "current_value": current_value,
+            "suggested_value": suggested_value,
+            "rationale": raw.get("rationale") or "",
+            "source": "full-spectrum-analyst",
+        })
+    return out
+
+
+async def _run_full_spectrum_analysis(cfg: dict) -> dict:
+    """On-demand full-platform orchestration (Item 3C) - same gating shape
+    as _run_market_analyst_for_ticker/_run_series_analysis (disabled/no-key/
+    in-flight/cooldown all return a clean {"ok": False, "reason": ...}
+    rather than raising), reuses market_analyst.reanalyze_cooldown_sec
+    rather than a third distinct knob."""
+    global _full_spectrum_analyzing
+    ma_cfg = cfg.get("market_analyst") or {}
+    if not ma_cfg.get("enabled"):
+        return {"ok": False, "reason": "Market Analyst is disabled — enable it in Config → Market Analyst (AI)."}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"ok": False, "reason": "No ANTHROPIC_API_KEY configured in .env."}
+    if _full_spectrum_analyzing:
+        return {"ok": False, "reason": "A full-spectrum scan is already running — try again in a moment."}
+
+    cooldown = ma_cfg.get("reanalyze_cooldown_sec", 1800)
+    now = time.time()
+    last = market_analyst_agent.last_full_spectrum_analyzed_at()
+    if last is not None and (now - last) < cooldown:
+        wait_sec = int(cooldown - (now - last))
+        return {"ok": False, "reason": f"Already analyzed recently — try again in {wait_sec}s."}
+
+    _full_spectrum_analyzing = True
+    try:
+        context = _build_full_spectrum_context(cfg)
+        model = ma_cfg.get("model", "claude-sonnet-5")
+        result = await market_analyst_agent.analyze_full_spectrum(context, model, api_key)
+        if result is None:
+            return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
+        suggestions = _full_spectrum_suggestions_from_raw(cfg, result["suggestions"])
+        analysis_id = market_analyst_agent.record_full_spectrum_analysis(
+            summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
+        )
+        _bump_generation()
+        return {"ok": True, "analysis_id": analysis_id, "summary": result["summary"], "suggestions": suggestions}
+    finally:
+        _full_spectrum_analyzing = False
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -2010,6 +2158,49 @@ async def post_market_analyst_series_apply(body: MarketAnalystSeriesApplyBody):
     )
     _bump_generation()
     return {"applied": match, "new_config": config_store.get()["strategy"]}
+
+
+@app.post("/api/market-analyst/full-spectrum/analyze")
+async def post_market_analyst_full_spectrum_analyze():
+    # "Feed the Analyst" (Item 3C, 2026-08-10, direct request) - one button
+    # (History tab), confirm-gated client-side given this prompt is
+    # materially bigger/costlier than the single-market/per-series modes
+    # and no cost/latency numbers exist anywhere for this agent yet.
+    cfg = config_store.get()
+    return await _run_full_spectrum_analysis(cfg)
+
+
+class MarketAnalystFullSpectrumApplyBody(BaseModel):
+    analysis_id: str
+    suggestion_id: str
+
+
+@app.post("/api/market-analyst/full-spectrum/apply")
+async def post_market_analyst_full_spectrum_apply(body: MarketAnalystFullSpectrumApplyBody):
+    # Same persisted-lookup trust model as the per-series apply route above -
+    # looked up by (analysis_id, suggestion_id) against what was actually
+    # validated and persisted at analysis time (main.py's
+    # _full_spectrum_suggestions_from_raw already confirmed the config_path
+    # exists and isn't one of the two protected fields), never whatever the
+    # request body itself claims.
+    analysis = market_analyst_agent.get_full_spectrum_analysis(body.analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Full-spectrum analysis not found.")
+    match = next((s for s in analysis["suggestions"] if s["id"] == body.suggestion_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found on this analysis.")
+
+    fp_before = config_performance.fingerprint(config_store.get())
+    section, _, field = match["config_path"].partition(".")
+    config_store.update({section: {field: match["suggested_value"]}})
+    fp_after = config_performance.fingerprint(config_store.get())
+    config_performance.log_applied_change(
+        config_path=match["config_path"], old_value=match["current_value"], new_value=match["suggested_value"],
+        rationale=match["rationale"], trade_count=0,
+        fingerprint_before=fp_before, fingerprint_after=fp_after, auto_applied=False, source="full-spectrum-analyst",
+    )
+    _bump_generation()
+    return {"applied": match, "new_config": config_store.get()}
 
 
 @app.get("/api/series-evaluator/status")

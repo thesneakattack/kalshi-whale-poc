@@ -468,3 +468,163 @@ def test_analyze_series_returns_none_when_model_skips_the_tool(tmp_path, monkeyp
 
     result = asyncio.run(agent.analyze_series({"series": "KXTICK"}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
+
+
+# --- "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) -------------
+
+def test_record_full_spectrum_analysis_and_get_round_trip(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    suggestions = [{"id": "abc123", "config_path": "strategy.entry_threshold", "current_value": 0.5,
+                    "suggested_value": 0.6, "rationale": "r", "source": "full-spectrum-analyst"}]
+    analysis_id = agent.record_full_spectrum_analysis("Overall healthy.", suggestions, "claude-sonnet-5")
+    fetched = agent.get_full_spectrum_analysis(analysis_id)
+    assert fetched["summary"] == "Overall healthy."
+    assert fetched["suggestions"] == suggestions
+
+
+def test_get_full_spectrum_analysis_returns_none_for_unknown_id(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    assert agent.get_full_spectrum_analysis("does-not-exist") is None
+
+
+def test_last_full_spectrum_analyzed_at_is_none_when_never_analyzed(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    assert agent.last_full_spectrum_analyzed_at() is None
+
+
+def test_last_full_spectrum_analyzed_at_returns_most_recent(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.record_full_spectrum_analysis("s1", [], "m", analyzed_at=1000.0)
+    agent.record_full_spectrum_analysis("s2", [], "m", analyzed_at=2000.0)
+    assert agent.last_full_spectrum_analyzed_at() == 2000.0
+
+
+def test_recent_full_spectrum_analyses_returns_newest_first(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.record_full_spectrum_analysis("s1", [], "m", analyzed_at=1000.0)
+    agent.record_full_spectrum_analysis("s2", [], "m", analyzed_at=2000.0)
+    rows = agent.recent_full_spectrum_analyses(limit=10)
+    assert [r["summary"] for r in rows] == ["s2", "s1"]
+
+
+def test_clear_all_wipes_full_spectrum_analyses_too(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.record_analysis("TICK-A", "TICK", 0.5, 0.6, 0.7, "r", "m")
+    agent.record_full_spectrum_analysis("s", [], "m")
+    agent.clear_all()
+    assert agent.total_count() == 0
+    assert agent.recent_full_spectrum_analyses() == []
+
+
+def test_build_full_spectrum_prompt_includes_all_context_sections():
+    ctx = {
+        "config": {"strategy": {"entry_threshold": 0.5}},
+        "trade_summary": {"total_closed": 10, "win_rate_pct": 55.0},
+        "market_strategy_summary": {"total_closed": 3, "win_rate_pct": 33.0},
+        "whale_track_record": {"total_signals": 100},
+        "advisory_recommendations": [{"config_path": "strategy.entry_threshold"}],
+        "variant_summaries": {"fp1": {"total_closed": 5}},
+        "recent_applied_changes": [{"config_path": "risk.max_daily_loss_pct"}],
+        "per_series_whale_breakdown": [{"series": "KXPGATOUR"}],
+        "portfolio": {"bankroll": 9000},
+    }
+    prompt = maa.build_full_spectrum_prompt(ctx)
+    assert "entry_threshold" in prompt
+    assert "55.0" in prompt
+    assert "KXPGATOUR" in prompt
+    assert "max_daily_loss_pct" in prompt
+    assert "9000" in prompt
+
+
+def test_analyze_full_spectrum_returns_none_without_api_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = asyncio.run(maa.analyze_full_spectrum({}, model="claude-sonnet-5", api_key=None))
+    assert result is None
+
+
+def test_analyze_full_spectrum_parses_the_forced_tool_call(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    tool_block = SimpleNamespace(
+        type="tool_use", name=maa._FULL_SPECTRUM_TOOL_NAME,
+        input={"summary": "Overall healthy.", "suggestions": [
+            {"config_path": "strategy.entry_threshold", "suggested_value": 0.6, "rationale": "r"},
+        ]},
+    )
+    fake_response = SimpleNamespace(content=[tool_block])
+    seen_kwargs = {}
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            seen_kwargs.update(kwargs)
+            return fake_response
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            self.messages = _FakeMessages()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+
+    result = asyncio.run(agent.analyze_full_spectrum({}, model="claude-sonnet-5", api_key="fake-key"))
+    assert result["summary"] == "Overall healthy."
+    assert result["suggestions"] == [{"config_path": "strategy.entry_threshold", "suggested_value": 0.6, "rationale": "r"}]
+    assert seen_kwargs["tool_choice"] == {"type": "tool", "name": maa._FULL_SPECTRUM_TOOL_NAME}
+
+
+def test_analyze_full_spectrum_defaults_suggestions_to_empty_list_when_absent(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    tool_block = SimpleNamespace(type="tool_use", name=maa._FULL_SPECTRUM_TOOL_NAME, input={"summary": "Fine."})
+    fake_response = SimpleNamespace(content=[tool_block])
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return fake_response
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            self.messages = _FakeMessages()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+
+    result = asyncio.run(agent.analyze_full_spectrum({}, model="claude-sonnet-5", api_key="fake-key"))
+    assert result["suggestions"] == []
+
+
+def test_analyze_full_spectrum_returns_none_when_the_call_raises(tmp_path, monkeypatch, capsys):
+    agent = _agent(tmp_path, monkeypatch)
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            raise RuntimeError("full spectrum network error")
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            self.messages = _FakeMessages()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+
+    result = asyncio.run(agent.analyze_full_spectrum({}, model="claude-sonnet-5", api_key="fake-key"))
+    assert result is None
+    captured = capsys.readouterr()
+    assert "full spectrum network error" in captured.out
+
+
+def test_analyze_full_spectrum_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    fake_response = SimpleNamespace(content=[SimpleNamespace(type="text", text="I refuse.")])
+
+    class _FakeMessages:
+        async def create(self, **kwargs):
+            return fake_response
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            self.messages = _FakeMessages()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+
+    result = asyncio.run(agent.analyze_full_spectrum({}, model="claude-sonnet-5", api_key="fake-key"))
+    assert result is None

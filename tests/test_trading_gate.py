@@ -1549,3 +1549,190 @@ def test_post_market_analyst_series_apply_404s_for_unknown_suggestion(tmp_path, 
         "analysis_id": analysis_id, "suggestion_id": "does-not-exist",
     })
     assert resp.status_code == 404
+
+
+# ---- Market Analyst: "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) ----
+
+def test_types_compatible_treats_int_and_float_as_interchangeable():
+    assert main._types_compatible(0.5, 1) is True
+    assert main._types_compatible(5, 0.1) is True
+
+
+def test_types_compatible_rejects_bool_against_numeric():
+    # bool is technically an int subclass in Python - a stray True/False
+    # landing in a numeric field would be real config corruption, not a
+    # reasonable suggestion, so this must be rejected even though
+    # isinstance(True, int) is True.
+    assert main._types_compatible(0.5, True) is False
+    assert main._types_compatible(True, False) is True
+
+
+def test_types_compatible_requires_exact_match_for_other_types():
+    assert main._types_compatible("a", "b") is True
+    assert main._types_compatible("a", 1) is False
+    assert main._types_compatible([1, 2], [3]) is True
+    assert main._types_compatible([1, 2], "x") is False
+
+
+def test_full_spectrum_suggestions_from_raw_accepts_a_real_existing_field():
+    cfg = {"strategy": {"entry_threshold": 0.5}}
+    raw = [{"config_path": "strategy.entry_threshold", "suggested_value": 0.6, "rationale": "r"}]
+    out = main._full_spectrum_suggestions_from_raw(cfg, raw)
+    assert len(out) == 1
+    assert out[0]["current_value"] == 0.5
+    assert out[0]["suggested_value"] == 0.6
+    assert out[0]["source"] == "full-spectrum-analyst"
+
+
+def test_full_spectrum_suggestions_from_raw_rejects_nonexistent_field():
+    cfg = {"strategy": {"entry_threshold": 0.5}}
+    raw = [{"config_path": "strategy.made_up_field", "suggested_value": 1, "rationale": "r"}]
+    assert main._full_spectrum_suggestions_from_raw(cfg, raw) == []
+
+
+def test_full_spectrum_suggestions_from_raw_rejects_nonexistent_section():
+    cfg = {"strategy": {"entry_threshold": 0.5}}
+    raw = [{"config_path": "made_up_section.field", "suggested_value": 1, "rationale": "r"}]
+    assert main._full_spectrum_suggestions_from_raw(cfg, raw) == []
+
+
+def test_full_spectrum_suggestions_from_raw_rejects_protected_fields():
+    cfg = {"kalshi_account": {"trading_enabled": False}, "advisory": {"auto_apply_enabled": False}}
+    raw = [
+        {"config_path": "kalshi_account.trading_enabled", "suggested_value": True, "rationale": "r"},
+        {"config_path": "advisory.auto_apply_enabled", "suggested_value": True, "rationale": "r"},
+    ]
+    assert main._full_spectrum_suggestions_from_raw(cfg, raw) == []
+
+
+def test_full_spectrum_suggestions_from_raw_drops_no_op_and_type_mismatched():
+    cfg = {"strategy": {"entry_threshold": 0.5, "live_markets_only": False}}
+    raw = [
+        {"config_path": "strategy.entry_threshold", "suggested_value": 0.5, "rationale": "r"},  # no-op
+        {"config_path": "strategy.live_markets_only", "suggested_value": "yes", "rationale": "r"},  # type mismatch
+    ]
+    assert main._full_spectrum_suggestions_from_raw(cfg, raw) == []
+
+
+def test_run_full_spectrum_analysis_gated_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": False}}
+    result = asyncio.run(main._run_full_spectrum_analysis(cfg))
+    assert result["ok"] is False
+    assert "disabled" in result["reason"].lower()
+
+
+def test_run_full_spectrum_analysis_gated_without_api_key(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+    result = asyncio.run(main._run_full_spectrum_analysis(cfg))
+    assert result["ok"] is False
+    assert "api" in result["reason"].lower()
+
+
+def test_run_full_spectrum_analysis_gated_during_cooldown(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "reanalyze_cooldown_sec": 1800}}
+    market_analyst_agent.record_full_spectrum_analysis("s", [], "m", analyzed_at=time.time())
+    result = asyncio.run(main._run_full_spectrum_analysis(cfg))
+    assert result["ok"] is False
+    assert "recently" in result["reason"].lower()
+
+
+def test_run_full_spectrum_analysis_rejects_a_concurrent_request(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    main._full_spectrum_analyzing = False
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True}}
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def slow_analyze_full_spectrum(context, model, api_key):
+        started.set()
+        await proceed.wait()
+        return {"summary": "s", "suggestions": []}
+    monkeypatch.setattr(market_analyst_agent, "analyze_full_spectrum", slow_analyze_full_spectrum)
+
+    async def scenario():
+        task_a = asyncio.create_task(main._run_full_spectrum_analysis(cfg))
+        await started.wait()
+        result_b = await main._run_full_spectrum_analysis(cfg)
+        proceed.set()
+        result_a = await task_a
+        return result_a, result_b
+
+    result_a, result_b = asyncio.run(scenario())
+    assert result_a["ok"] is True
+    assert result_b["ok"] is False
+    assert "already running" in result_b["reason"].lower()
+    main._full_spectrum_analyzing = False
+
+
+def test_run_full_spectrum_analysis_succeeds_and_records_analysis(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    cfg = {**main.config_store.get(), "market_analyst": {"enabled": True, "model": "claude-sonnet-5"}}
+
+    async def fake_analyze_full_spectrum(context, model, api_key):
+        assert "config" in context
+        assert model == "claude-sonnet-5"
+        return {"summary": "Looks healthy overall.",
+                "suggestions": [{"config_path": "risk.max_daily_loss_pct", "suggested_value": 0.3, "rationale": "r"}]}
+    monkeypatch.setattr(market_analyst_agent, "analyze_full_spectrum", fake_analyze_full_spectrum)
+
+    result = asyncio.run(main._run_full_spectrum_analysis(cfg))
+    assert result["ok"] is True
+    assert result["summary"] == "Looks healthy overall."
+    assert len(result["suggestions"]) == 1
+    assert result["suggestions"][0]["config_path"] == "risk.max_daily_loss_pct"
+    assert market_analyst_agent.get_full_spectrum_analysis(result["analysis_id"]) is not None
+
+
+def test_post_market_analyst_full_spectrum_analyze_route_returns_gated_reason_when_disabled(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"market_analyst": {"enabled": False}})
+    resp = client.post("/api/market-analyst/full-spectrum/analyze")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "disabled" in body["reason"].lower()
+
+
+def test_post_market_analyst_full_spectrum_apply_end_to_end(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"risk": {"max_daily_loss_pct": 0.25}})
+    suggestions = main._full_spectrum_suggestions_from_raw(
+        main.config_store.get(),
+        [{"config_path": "risk.max_daily_loss_pct", "suggested_value": 0.3, "rationale": "tighten the kill switch"}],
+    )
+    analysis_id = market_analyst_agent.record_full_spectrum_analysis("s", suggestions, "m")
+
+    resp = client.post("/api/market-analyst/full-spectrum/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": suggestions[0]["id"],
+    })
+    assert resp.status_code == 200
+    assert main.config_store.get()["risk"]["max_daily_loss_pct"] == 0.3
+
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "risk.max_daily_loss_pct")
+    assert match["source"] == "full-spectrum-analyst"
+
+
+def test_post_market_analyst_full_spectrum_apply_404s_for_unknown_analysis(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    resp = client.post("/api/market-analyst/full-spectrum/apply", json={
+        "analysis_id": "does-not-exist", "suggestion_id": "whatever",
+    })
+    assert resp.status_code == 404
+
+
+def test_post_market_analyst_full_spectrum_apply_404s_for_unknown_suggestion(tmp_path, monkeypatch):
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    analysis_id = market_analyst_agent.record_full_spectrum_analysis("s", [], "m")
+    resp = client.post("/api/market-analyst/full-spectrum/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": "does-not-exist",
+    })
+    assert resp.status_code == 404

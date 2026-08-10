@@ -1163,6 +1163,24 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </div>
     <div id="market-analyst-analyses" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) -
+         direct request: a full-spectrum analysis "across all config/
+         history/whale-watching data." Materially bigger/costlier than the
+         single-market or per-series modes above (aggregated platform-wide
+         data, not one market/series), so the button is confirm()-gated,
+         disclosing what's being sent - same severity as Advisory's own
+         apply-confirmation, not the typed phrase reserved for real-money
+         trading. -->
+    <div class="panel-title">Feed the Analyst <span class="data-badge new">🆕 new</span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      One deep scan across every strategy's config, aggregate trade performance, whale-signal accuracy,
+      recent config-change history, and the busiest series' own track record — a broader, costlier
+      question than analyzing one market or series. May suggest multiple config changes at once, each
+      landing in the same suggestion pool as Advisory Recommendations above. Confirms before sending.
+    </p>
+    <button id="feed-the-analyst-btn" onclick="feedTheAnalyst(this)" style="margin-bottom:12px;">🔬 Feed the Analyst (full-spectrum scan)</button>
+    <div id="full-spectrum-result"></div>
+
     <!-- Series Evaluator (Item 1) - the log the user asked for: every series
          ever evaluated, not just what's currently on the watchlist, with a
          manual re-evaluate action per row. Doubles as the persisted
@@ -3454,6 +3472,73 @@ async function applySeriesSuggestion(analysisId, suggestionId, btn) {
     loadConfig();
     setTimeout(loadChangeHistory, 800);
     setTimeout(loadSeriesEvaluator, 800);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Apply failed — retry';
+  }
+}
+
+// "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) - a single
+// deep-scan call, confirm-gated since this prompt is materially bigger/
+// costlier than the single-market or per-series modes and no cost/latency
+// numbers exist anywhere for this agent yet. Same suggestion-card/apply
+// pattern as analyzeSeries()/applySeriesSuggestion() above, just against
+// the full-spectrum-specific routes and result area.
+async function feedTheAnalyst(btn) {
+  if (!confirm(
+    'Send a full-spectrum snapshot to the AI model? This includes your live config (all sections), ' +
+    'aggregate trade performance, whale-signal accuracy, recent config-change history, and the ' +
+    "busiest series' own track record - one real API call, materially larger than a single-market or " +
+    'per-series analysis.'
+  )) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Analyzing…';
+  const el = $('full-spectrum-result');
+  try {
+    const result = await fetchJSON('/api/market-analyst/full-spectrum/analyze', {method: 'POST'});
+    if (!result.ok) {
+      el.innerHTML = `<div class="empty">${esc(result.reason)}</div>`;
+      return;
+    }
+    const suggestionsHTML = result.suggestions.length
+      ? result.suggestions.map(s => `
+        <div class="signal-card">
+          <div class="top-row">
+            <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
+          </div>
+          <div style="margin:4px 0;"><b>${esc(JSON.stringify(s.current_value))}</b> → <b style="color:var(--whale);">${esc(JSON.stringify(s.suggested_value))}</b></div>
+          <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
+          <button class="full-spectrum-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
+        </div>
+      `).join('')
+      : '<div class="empty">No changes suggested — the platform looks fine as-is.</div>';
+    el.innerHTML = `<div class="signal-card" style="margin-bottom:12px;">${esc(result.summary)}</div>${suggestionsHTML}<div style="margin-bottom:12px;"></div>`;
+    el.querySelectorAll('[data-jump-path]').forEach(chip => {
+      chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
+    });
+    el.querySelectorAll('.full-spectrum-suggestion-apply-btn').forEach(applyBtn => {
+      applyBtn.addEventListener('click', () => applyFullSpectrumSuggestion(applyBtn.dataset.analysisId, applyBtn.dataset.suggestionId, applyBtn));
+    });
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to run the full-spectrum scan.</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+async function applyFullSpectrumSuggestion(analysisId, suggestionId, btn) {
+  if (!confirm('Apply this suggested value to the live config? This takes effect on the next trading-loop tick.')) return;
+  btn.disabled = true;
+  try {
+    await fetchJSON('/api/market-analyst/full-spectrum/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({analysis_id: analysisId, suggestion_id: suggestionId}),
+    });
+    btn.textContent = 'Applied ✓';
+    loadConfig();
+    setTimeout(loadChangeHistory, 800);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'Apply failed — retry';
