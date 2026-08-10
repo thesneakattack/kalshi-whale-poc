@@ -111,6 +111,23 @@ works" to "flip it for real" still has open operational questions.
       current positive hardcoded weights in `whale_simulator.py`. Worth a
       human look before finding 4 (or anything else) leans on those
       weights being right.
+      **Acted on, same session** — the weights themselves are no longer
+      hardcoded: new `whale_confidence_weights` config section, threaded
+      through `composite_confidence_breakdown()` (real provider only, not
+      the simulator) via a new `weights` param with partial-override
+      fallback semantics. Retuned from the real finding above -
+      `unusualness_factor`/`agreement_factor` cut to the 0.05 floor,
+      `depth_factor`/`proximity_factor`/`context_factor` raised
+      proportionally to their own real discrimination gap;
+      `cluster_factor`/`trend_factor`/`analyst_factor` left untouched
+      (zero real data exists for any of them yet). New read-only
+      "Whale-Signal Calibration" History-tab panel — the report had zero
+      UI consumer before this. Applied live via `ddev restart` (0 open
+      positions at the time), not just written to disk. 11 new tests, 569
+      passing. This closes finding 4 in spirit — calibration findings now
+      have a real destination to act on — though editing the weights
+      themselves is still config-file/API only, no dashboard form yet.
+      Findings 5-7 still fully open.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
