@@ -233,4 +233,14 @@ works" to "flip it for real" still has open operational questions.
   win-rate + realized-P&L delta once both variants have trades — reusing
   the same variant-comparison machinery cross-variant recommendations
   already use, not a new computation. New "Change History" panel on the
-  History tab. 482 tests. See `static/status.html` phases 64-71.
+  History tab. 482 tests. Then extended the market analyst agent to
+  analyze a whole series, not just one market — a new
+  `record_series_analysis` tool schema, a separate `series_analyses`
+  table (that table's schema can't share the single-market one's NOT
+  NULL columns), scoped deliberately to suggesting `strategy.
+  excluded_series` changes only (a per-series notional-threshold
+  suggestion would need nested-dict apply logic this app doesn't have
+  yet — disclosed, not silently dropped). Suggestions land in the same
+  unified pool as Advisory's, tagged `source='series-analyst'`. New
+  "🔎 Analyze" button on the Series Evaluator panel. 509 tests. See
+  `static/status.html` phases 64-72.
