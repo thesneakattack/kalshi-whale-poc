@@ -1,4 +1,4 @@
-mode: shadow
+mode: paper
 kalshi:
   base_url: https://api.elections.kalshi.com/trade-api/v2
   markets_watchlist: []
@@ -18,7 +18,7 @@ whale_signal:
   live_markets_only: true
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.51
+  entry_threshold: 0.6
   max_position_pct: 0.05
   cooldown_sec: 150
   max_open_positions_per_series: null
@@ -29,8 +29,8 @@ strategy:
   take_profit_pct: null
   stop_loss_pct: null
   exit_on_sentiment_reversal: true
-  exit_sentiment_min_signals: 5
-  exit_sentiment_lean_pct: 65
+  exit_sentiment_min_signals: 9
+  exit_sentiment_lean_pct: 85
   auto_exit_enabled: true
   auto_exit_threshold: 0.6
   auto_exit_pnl_weight: 1
@@ -59,7 +59,7 @@ market_strategy:
   max_spread: 0.05
   min_volume_24h: 500
   momentum_lookback_sec: 1800
-  min_momentum_delta: 0.03
+  min_momentum_delta: 0.04
   min_seconds_to_close: 3600
   entry_confidence_threshold: 0.5
   take_profit_pct: null
@@ -68,7 +68,7 @@ market_strategy:
   max_daily_loss_pct: 0.2
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 500
+  min_notional_usd: 1000
   min_notional_usd_by_series: {}
 advisory:
   enabled: true
@@ -84,9 +84,9 @@ market_analyst:
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
 series_evaluator:
-  enabled: false
+  enabled: true
   min_observation_sec: 3600
-  min_trades_observed: 20
+  min_trades_observed: 1000
   max_observation_sec: 21600
   min_qualify_rate: 0.01
   backoff_base_sec: 1800
