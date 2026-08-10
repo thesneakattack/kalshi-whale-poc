@@ -196,8 +196,22 @@ works" to "flip it for real" still has open operational questions.
       signals) — genuinely interesting finding: win rate across the
       entry-threshold sweep is roughly U-shaped (52.7% at 0.0, dipping to
       49.7% near 0.30, climbing to 58-65% above 0.45), another data point
-      alongside Gap 6's still-open calibration question. Gaps 4-10 still
-      open (Gap 2's stateful half deliberately not attempted).
+      alongside Gap 6's still-open calibration question.
+      **Gap 8 (raw signal fields) is done** — new `WhaleSignal.raw_context`
+      field, populated by `kalshi_trade_tape.py`'s `fetch_signals()` at the
+      exact moment each signal is created (notional/spread/volume were
+      previously computed locally then discarded — only the already-
+      derived factor scores got persisted). Kept separate from `factors`,
+      not folded in, since `confidence_calibration.py`'s bucketing assumes
+      every `factors` value is a 0-1 score. Three new nullable
+      `signal_log` columns (`raw_notional_usd`/`raw_spread`/
+      `raw_volume_24h`); `resolved_signals_with_factors()` now returns
+      them alongside `confidence`/`correct`/`factors`. Pure data-capture,
+      no new UI — zero historical rows exist under this schema until new
+      signals accumulate. 7 new tests, 601 passing. Verified live via
+      direct sqlite3 query — real signals already capturing raw context
+      within seconds of deploy. Gaps 4-7, 9-10 still open (Gap 2's
+      stateful half deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

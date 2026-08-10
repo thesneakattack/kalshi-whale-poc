@@ -109,6 +109,17 @@ def test_fetch_signals_emits_signal_above_threshold():
     assert sig.id == "t1"
 
 
+def test_fetch_signals_captures_raw_context_alongside_the_factor_breakdown():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="yes")
+    ctx = {"markets": [_market(volume_24h_fp="15000")], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    raw = signals[0].raw_context
+    assert raw["notional_usd"] == pytest.approx(6000.0)  # 10000 * 0.60
+    assert raw["spread"] == 0.0  # no yes_ask_dollars in the fixture - falls back to price itself
+    assert raw["volume_24h"] == 15000.0
+
+
 def test_fetch_signals_price_is_always_the_yes_price_regardless_of_side():
     provider = KalshiTradeTapeProvider()
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="no")

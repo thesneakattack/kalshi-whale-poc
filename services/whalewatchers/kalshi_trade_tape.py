@@ -245,6 +245,21 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             )
             timestamp = _parse_trade_time(trade.get("created_time")) or now
 
+            # Gap 8 of docs/config-tuning-data-gaps-2026-08-10.md - the raw
+            # inputs behind the factor breakdown above, captured once here
+            # rather than re-derived later (market_catalog/market_history
+            # are watchlist-scoped and rotate, so they can't reliably answer
+            # "what was this market's spread/volume at the exact moment
+            # this signal fired" after the fact). yes_ask_dollars falls
+            # back to price itself, same "no ask data = assume no spread"
+            # idiom market_strategy.py's own spread calc already uses.
+            yes_ask = float(market.get("yes_ask_dollars") or price)
+            raw_context = {
+                "notional_usd": round(notional, 2),
+                "spread": round(max(yes_ask - price, 0.0), 4),
+                "volume_24h": float(market.get("volume_24h_fp") or 0.0),
+            }
+
             signals.append(WhaleSignal(
                 id=trade_id,
                 ticker=ticker,
@@ -254,6 +269,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 confidence=round(breakdown.score, 2),
                 timestamp=timestamp,
                 factors=breakdown.to_dict(),
+                raw_context=raw_context,
             ))
 
         return signals

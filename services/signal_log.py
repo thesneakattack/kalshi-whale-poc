@@ -63,6 +63,18 @@ def _connect() -> sqlite3.Connection:
     # services/whalewatchers/kalshi_trade_tape.py) - simulator-sourced rows
     # leave it null, and calibration explicitly filters to real ones anyway.
     _add_column_if_missing(conn, "signals", "factors_json", "TEXT")
+    # Gap 8 of docs/config-tuning-data-gaps-2026-08-10.md - the raw inputs
+    # behind the factor breakdown, not just the already-derived 0-1 scores
+    # factors_json holds. Nullable/separate columns rather than folded into
+    # factors_json: these are real dollar/ratio magnitudes, not 0-1 scores,
+    # and confidence_calibration.py's bucketing assumes every factors_json
+    # key IS a 0-1 score - mixing raw magnitudes in there would corrupt
+    # that. Only real providers that capture a raw_context populate these
+    # (see services/whalewatchers/kalshi_trade_tape.py) - simulator-sourced
+    # rows leave them null, same convention as factors_json itself.
+    _add_column_if_missing(conn, "signals", "raw_notional_usd", "REAL")
+    _add_column_if_missing(conn, "signals", "raw_spread", "REAL")
+    _add_column_if_missing(conn, "signals", "raw_volume_24h", "REAL")
     return conn
 
 
@@ -80,15 +92,19 @@ def series_of(ticker: str) -> str:
 
 def log_signal(
     ticker: str, side: str, size: int, confidence: float, source: str,
-    seen_at: float | None = None, factors: dict | None = None,
+    seen_at: float | None = None, factors: dict | None = None, raw_context: dict | None = None,
 ):
+    raw_context = raw_context or {}
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, factors_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO signals "
+            "(ticker, series, side, size, confidence, source, seen_at, factors_json, "
+            "raw_notional_usd, raw_spread, raw_volume_24h) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time(),
                 json.dumps(factors) if factors is not None else None,
+                raw_context.get("notional_usd"), raw_context.get("spread"), raw_context.get("volume_24h"),
             ),
         )
 
@@ -293,16 +309,24 @@ def resolved_signals_with_factors() -> list[dict]:
     tick) that a full scan is cheap."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT confidence, correct, factors_json FROM signals "
-            "WHERE resolved = 1 AND factors_json IS NOT NULL",
+            "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h "
+            "FROM signals WHERE resolved = 1 AND factors_json IS NOT NULL",
         ).fetchall()
     results = []
-    for confidence, correct, factors_json in rows:
+    for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h in rows:
         try:
             factors = json.loads(factors_json)
         except (TypeError, ValueError):
             continue  # malformed row - skip rather than crash the whole report
-        results.append({"confidence": confidence, "correct": bool(correct), "factors": factors})
+        results.append({
+            "confidence": confidence, "correct": bool(correct), "factors": factors,
+            # Gap 8 (docs/config-tuning-data-gaps-2026-08-10.md) - null for
+            # every signal logged before this column existed; a future
+            # analysis over these needs to filter for non-null the same way
+            # confidence_calibration.py already excludes rows missing a
+            # given factors_json key.
+            "raw_notional_usd": raw_notional_usd, "raw_spread": raw_spread, "raw_volume_24h": raw_volume_24h,
+        })
     return results
 
 

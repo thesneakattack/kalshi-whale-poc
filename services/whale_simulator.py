@@ -38,6 +38,20 @@ class WhaleSignal:
     # so a future calibration pass has more than just the final blended
     # number to learn from - see services/confidence_calibration.py.
     factors: dict | None = None
+    # Raw, unscored inputs behind the factor breakdown above - notional
+    # dollar size, market spread, market 24h volume, as they existed at
+    # signal-creation time. Gap 8 of docs/config-tuning-data-gaps-2026-08-
+    # 10.md: factors above are already-derived 0-1 scores, so a future
+    # analysis can ask "does depth_factor discriminate" but never "would a
+    # differently-shaped transform of the same raw depth data discriminate
+    # better" - re-deriving the raw inputs after the fact is unreliable
+    # (market_catalog/market_history are watchlist-scoped and rotate).
+    # Deliberately a separate field, not folded into factors - factors'
+    # every value is a 0-1 score confidence_calibration.py buckets by
+    # tertile; a raw dollar figure mixed into that dict would corrupt that
+    # bucketing. Only populated by providers that compute one - None for
+    # the simulator, same convention as factors itself.
+    raw_context: dict | None = None
 
     def to_dict(self):
         return asdict(self)

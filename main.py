@@ -1521,6 +1521,7 @@ async def trading_loop():
                 signal_log.log_signal(
                     signal.ticker, signal.side, signal.size, signal.confidence,
                     state["whale_source"], signal.timestamp, factors=signal.factors,
+                    raw_context=signal.raw_context,
                 )
 
                 # Same live-status lookup the LIVE badge uses (state["live_status"],

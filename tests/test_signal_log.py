@@ -308,6 +308,27 @@ def test_log_signal_persists_factors_json_roundtrip(tmp_path, monkeypatch):
     assert rows[0]["correct"] is True
 
 
+def test_log_signal_persists_raw_context_roundtrip(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    raw_context = {"notional_usd": 4200.5, "spread": 0.02, "volume_24h": 15000.0}
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5}, raw_context=raw_context)
+    log.mark_resolved(1, correct=True)
+    rows = log.resolved_signals_with_factors()
+    assert rows[0]["raw_notional_usd"] == 4200.5
+    assert rows[0]["raw_spread"] == 0.02
+    assert rows[0]["raw_volume_24h"] == 15000.0
+
+
+def test_log_signal_without_raw_context_leaves_raw_fields_null(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})  # no raw_context
+    log.mark_resolved(1, correct=True)
+    rows = log.resolved_signals_with_factors()
+    assert rows[0]["raw_notional_usd"] is None
+    assert rows[0]["raw_spread"] is None
+    assert rows[0]["raw_volume_24h"] is None
+
+
 def test_resolved_signals_with_factors_excludes_rows_without_a_breakdown(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     log.log_signal("TICK-A", "yes", 500, 0.6, "simulated")  # no factors= passed - simulator-style
