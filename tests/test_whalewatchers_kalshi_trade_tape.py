@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services import market_analyst_agent, market_history, signal_log
+from services import market_analyst_agent, market_history, series_evaluator, signal_log
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
 
 
@@ -21,6 +21,13 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     # fetch_signals() also now queries market_analyst_agent.analyst_lean()
     # for analyst_factor - same real-db-isolation reasoning.
     monkeypatch.setattr(market_analyst_agent, "DB_PATH", tmp_path / "market_analyst.db")
+    # fetch_signals() now also calls series_evaluator.record_trade_observed()
+    # for every newly-seen real trade - same real-db-isolation reasoning.
+    # Found and fixed live during Item 1's own implementation (2026-08-10):
+    # this fixture was missing the redirect, so every test run in this file
+    # was writing to the real data/series_evaluator.db - the exact bug class
+    # this app's own "preserve real data" standing rule exists to prevent.
+    monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):

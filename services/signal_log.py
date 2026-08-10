@@ -186,6 +186,20 @@ def series_stats(ticker: str, days: int = 30) -> dict:
     }
 
 
+def signal_count_for_series_since(series: str, since_ts: float) -> int:
+    """How many whale-qualifying signals this series has produced since
+    since_ts - the numerator services/series_evaluator.py needs for its
+    qualifying-rate verdict. Mirrors series_stats()'s query shape but
+    scoped to an arbitrary timestamp (a series' own first_seen_at) rather
+    than a fixed days window, and without the win/loss resolution logic
+    series_stats needs - series_evaluator only cares about *how many*
+    prints qualified, not whether they were later correct."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE series = ? AND seen_at >= ?", (series, since_ts)
+        ).fetchone()[0]
+
+
 def clear_all():
     """Wipes the entire whale track record - every logged signal and its
     resolution outcome. Only ever triggered deliberately (Config tab's Danger

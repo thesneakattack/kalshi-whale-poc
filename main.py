@@ -23,6 +23,7 @@ from services import market_analyst_agent
 from services import market_catalog
 from services import market_history
 from services import ml_feed
+from services import series_evaluator
 from services import signal_log
 from services import title_cache
 from services import trade_analytics
@@ -375,6 +376,22 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
                 m for m in candidates
                 if candidate_live_status.get(m.get("event_ticker")) == "live"
             ]
+            # series_evaluator's BEFORE-check (direct request): the watchlist
+            # is fully recomputed from scratch every tick with zero memory,
+            # so a series flapping near this filter's own boundary would
+            # otherwise be re-added/re-evaluated/re-removed indefinitely.
+            # Cheap, one batch query, gated behind series_evaluator.enabled
+            # (default off) so this never changes discovery behavior for
+            # anyone who hasn't opted in. Only applies to automatic
+            # discovery, same carve-out kalshi.min_volume_24h already has -
+            # pinned markets (the `if watchlist:` branch above) bypass this
+            # entirely, same as every other automatic-discovery-only filter.
+            if cfg.get("series_evaluator", {}).get("enabled"):
+                ineligible = series_evaluator.ineligible_series(now)
+                live_candidates = [
+                    m for m in live_candidates
+                    if signal_log.series_of(m.get("ticker")) not in ineligible
+                ]
             # Never backfilled with non-live markets to hit watchlist_size -
             # direct choice: the watchlist shrinks (down to zero, if nothing
             # real is live right now) rather than quietly padding it with
@@ -435,6 +452,18 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
             markets = [hydrated_by_ticker.get(m["ticker"], m) for m in markets]
         else:
             top_series = await _get_top_series(client)
+            # series_evaluator's BEFORE-check, same as the live-only branch
+            # above - filtered here (the series pool itself) rather than
+            # after get_top_volume_markets, since that method bundles fetch
+            # + round_robin_select together with no seam to filter between
+            # them. top_series entries are real Kalshi series_ticker values;
+            # this app's own existing precedent (main.py's _series_meta_map)
+            # already treats those as interchangeable with series_of()'s
+            # ticker-prefix heuristic "in practice," so reusing that same
+            # assumption here isn't a new risk.
+            if cfg.get("series_evaluator", {}).get("enabled"):
+                ineligible = series_evaluator.ineligible_series(time.time())
+                top_series = [s for s in top_series if s not in ineligible]
             markets = await client.get_top_volume_markets(
                 cfg["kalshi"]["watchlist_size"], min_volume=min_volume, series_tickers=top_series,
                 max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
@@ -997,6 +1026,15 @@ async def trading_loop():
             # upsert, safe to call every tick even when nothing changed.
             config_fp = config_performance.fingerprint(cfg)
             config_performance.record_variant(config_fp, cfg)
+
+            # Renders a verdict for any series whose observation window
+            # completed since last tick (see services/series_evaluator.py).
+            # Gated behind series_evaluator.enabled, but trades are still
+            # recorded unconditionally (services/whalewatchers/
+            # kalshi_trade_tape.py) - if this gets turned on later, real
+            # accumulated history is already there instead of a cold start.
+            if cfg.get("series_evaluator", {}).get("enabled"):
+                series_evaluator.evaluate_pending(cfg, time.time())
 
             client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
 
@@ -1792,6 +1830,35 @@ async def get_market_analyst_analyses(limit: int = 25, offset: int = 0, resolved
     }
 
 
+@app.get("/api/series-evaluator/status")
+async def get_series_evaluator_status():
+    # Every series ever evaluated, independent of what's on the *current*
+    # watchlist - direct request: the log/history the user wanted, doubling
+    # as the persisted series_status table itself (see services/
+    # series_evaluator.py). Always safe to call regardless of enabled -
+    # same "history stays visible after a feature's turned off" idiom as
+    # market_analyst's own status route above.
+    se_cfg = config_store.get().get("series_evaluator") or {}
+    return {"enabled": bool(se_cfg.get("enabled")), "series": series_evaluator.overview()}
+
+
+class SeriesEvaluatorResetBody(BaseModel):
+    series: str
+
+
+@app.post("/api/series-evaluator/reset")
+async def post_series_evaluator_reset(body: SeriesEvaluatorResetBody):
+    # The manual "Re-evaluate" action - a deliberate fresh start (clears
+    # strike_count too, see series_evaluator.reset's own docstring), not a
+    # continuation of prior escalation. Doesn't force-pin the series back
+    # onto the watchlist - normal volume/live-status ranking still decides
+    # whether it actually reappears.
+    ok = series_evaluator.reset(body.series)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"No series_evaluator record for {body.series!r}")
+    return {"ok": True, "series": body.series}
+
+
 @app.get("/api/market-strategy/state")
 async def get_market_strategy_state():
     # Backend-only for now (docs/advisory-engine-plan.md §9-adjacent,
@@ -2127,6 +2194,10 @@ class ResetBody(BaseModel):
     # written for exactly this, just never called from here.
     market_catalog: bool = False
     market_history: bool = False
+    # Bulk-wipe, separate from the per-row POST /api/series-evaluator/reset
+    # action - that one is a deliberate single-series re-evaluate; this one
+    # is "start the whole series-worthiness log over."
+    series_evaluator: bool = False
 
 
 @app.post("/api/reset")
@@ -2158,6 +2229,9 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.market_history:
         market_history.clear_all()
         cleared.append("market_history")
+    if body.series_evaluator:
+        series_evaluator.clear_all()
+        cleared.append("series_evaluator")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 

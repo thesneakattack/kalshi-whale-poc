@@ -17,7 +17,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import market_analyst_agent, market_history, signal_log
+from services import market_analyst_agent, market_history, series_evaluator, signal_log
 from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
@@ -163,6 +163,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             self._mark_seen(trade_id)  # evaluated once, regardless of outcome below
 
             ticker = trade.get("ticker")
+            # series_evaluator's denominator - "how many real trades has this
+            # series actually produced," regardless of whether this specific
+            # trade goes on to qualify as a whale print below. Recorded
+            # unconditionally (not gated behind series_evaluator.enabled) so
+            # the feature has real accumulated history to act on the moment
+            # it's turned on, rather than a cold start - same "preserve a
+            # robust dataset" principle as everywhere else in this app.
+            if ticker:
+                series_evaluator.record_trade_observed(signal_log.series_of(ticker), now)
             market = markets_by_ticker.get(ticker)
             if not market:
                 continue  # can't score confidence without this market's own volume/close_time - skip, don't fabricate

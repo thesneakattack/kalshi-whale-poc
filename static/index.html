@@ -1127,6 +1127,20 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </div>
     <div id="market-analyst-analyses" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
+    <!-- Series Evaluator (Item 1) - the log the user asked for: every series
+         ever evaluated, not just what's currently on the watchlist, with a
+         manual re-evaluate action per row. Doubles as the persisted
+         series_status table itself - see services/series_evaluator.py. -->
+    <div class="panel-title">Series Evaluator <span class="data-badge new">🆕 new</span> <span id="series-evaluator-status-badge"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Every series (parent market) ever evaluated for whale-signal worthiness, independent of what's
+      currently on the live watchlist. A series approved here stays approved (sticky, never silently
+      revoked) even if it later rotates off the watchlist for unrelated reasons (volume/live-status
+      ranking). A rejected series serves an escalating backoff before it's eligible to be re-observed —
+      click Re-evaluate to override that early; it resets the strike count too, a deliberate fresh start.
+    </p>
+    <div id="series-evaluator-list" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
     <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
     <div id="history-trades"><div class="empty">Loading…</div></div>
   </div>
@@ -1355,6 +1369,39 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       </div>
     </details>
 
+    <details class="config-section" id="cfg-section-series-evaluator">
+      <summary>Series Evaluator <span class="data-badge new">🆕 new</span> <span class="section-desc">— is a series even worth watching for whale signals?</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          The watchlist is fully recomputed every tick with no memory of past ticks, so a series
+          near a volume/live-status cutoff can flap in and out repeatedly. When enabled, a newly
+          admitted series is observed for a while, then judged on the real fraction of its trades
+          that actually clear the whale-notional threshold above. A series that fails gets
+          backed off from re-admission for an escalating period (doubling each repeated failure);
+          approval is sticky and never silently revoked. See the History tab's Series Evaluator
+          panel for the full log, including a manual re-evaluate action. Off by default - trades
+          are still recorded either way, so there's real history to act on the moment this is
+          turned on. All the numeric defaults below are placeholders, not yet retuned against
+          real data.
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-series-evaluator-enabled"> Enable series evaluator <span class="config-path">series_evaluator.enabled</span></label></div>
+        <div class="field"><label>Minimum observation time before judging (seconds) <span class="config-path">series_evaluator.min_observation_sec</span>
+          <span class="info-icon" title="Higher = waits longer (real wall-clock time) after a series is admitted before rendering a verdict, giving more time to accumulate real trades. Lower = judges sooner, on a shorter window.">ⓘ</span></label><input id="cfg-series-evaluator-min-observation-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Minimum real trades observed before judging <span class="config-path">series_evaluator.min_trades_observed</span>
+          <span class="info-icon" title="Higher = requires more real trade activity before trusting a qualifying-rate verdict - fewer false rejections from a tiny sample. Lower = judges on thinner evidence.">ⓘ</span></label><input id="cfg-series-evaluator-min-trades-observed" type="number" step="1" min="0"></div>
+        <div class="field"><label>Hard cap on observation time (seconds) <span class="config-path">series_evaluator.max_observation_sec</span>
+          <span class="info-icon" title="Forces a verdict once this much time has passed, even if the minimum trade count above was never reached - zero real trade activity by then counts as an automatic reject (a clearer 'not worthy' signal than a low rate). Prevents a quiet series from being observed forever.">ⓘ</span></label><input id="cfg-series-evaluator-max-observation-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Minimum qualifying rate to approve (0–1) <span class="config-path">series_evaluator.min_qualify_rate</span>
+          <span class="info-icon" title="The fraction of a series' real observed trades that must clear the whale-notional threshold above for it to be approved. Higher = stricter, more series get rejected. Lower = more permissive.">ⓘ</span></label><input id="cfg-series-evaluator-min-qualify-rate" type="number" step="0.01" min="0" max="1"></div>
+        <div class="field"><label>Backoff base (seconds, first rejection) <span class="config-path">series_evaluator.backoff_base_sec</span>
+          <span class="info-icon" title="How long a series is excluded from re-admission after its first rejection. Each subsequent rejection multiplies this by the backoff multiplier below, up to the cap.">ⓘ</span></label><input id="cfg-series-evaluator-backoff-base-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Backoff multiplier per repeated rejection <span class="config-path">series_evaluator.backoff_multiplier</span>
+          <span class="info-icon" title="Higher = backoff grows faster with each repeated rejection (e.g. 2.0 doubles it every time). 1.0 = no escalation at all, every rejection gets the same flat backoff.">ⓘ</span></label><input id="cfg-series-evaluator-backoff-multiplier" type="number" step="0.1" min="1"></div>
+        <div class="field"><label>Backoff cap (seconds) <span class="config-path">series_evaluator.backoff_max_sec</span>
+          <span class="info-icon" title="The escalating backoff never grows past this, no matter how many times a series has been rejected in a row.">ⓘ</span></label><input id="cfg-series-evaluator-backoff-max-sec" type="number" step="3600" min="0"></div>
+      </div>
+    </details>
+
     <details class="config-section" id="cfg-section-risk">
       <summary>Risk</summary>
       <div class="section-body config-group">
@@ -1434,6 +1481,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label><input type="checkbox" id="reset-cb-market-analyst"> Market analyst — every AI-generated market analysis and its resolved hit/miss record</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-market-catalog"> Market catalog — the incrementally-scanned near-term market list (self-heals via re-scanning, just takes time to rebuild)</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-market-history"> Market history — real per-market price/volume snapshots and settlement outcomes</label></div>
+        <div class="field"><label><input type="checkbox" id="reset-cb-series-evaluator"> Series evaluator — every series' whale-worthiness verdict, strike count, and backoff state</label></div>
         <button class="danger" id="config-reset-btn" style="margin-top:8px;">Reset Selected</button>
       </div>
     </details>
@@ -2956,6 +3004,7 @@ async function loadTradingHistory() {
     renderHistoryTrades();
     loadAdvisory();
     loadMarketAnalyst();
+    loadSeriesEvaluator();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load trading history.</div>';
   }
@@ -3165,6 +3214,76 @@ async function loadMarketAnalyst() {
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load Market Analyst data.</div>';
+  }
+}
+
+// Direct request: the log/history the user wanted - every series ever
+// evaluated, not just what's on the current watchlist. The persisted
+// series_status table itself doubles as this log (see services/
+// series_evaluator.py's overview()) - no separate table needed.
+async function loadSeriesEvaluator() {
+  const badge = $('series-evaluator-status-badge');
+  const el = $('series-evaluator-list');
+  try {
+    const status = await fetchJSON('/api/series-evaluator/status');
+    badge.innerHTML = status.enabled
+      ? '<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">enabled</span>'
+      : '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
+    const rows = status.series || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No series evaluated yet'
+        + (status.enabled ? ' — observing real trade activity as it comes in.' : ' — enable it in Config → Series Evaluator to start judging series (trade activity is still being recorded either way).')
+        + '</div>';
+      return;
+    }
+    // Sort so the most actionable rows (rejected, then observing) surface
+    // above the settled ones (approved) - a human checking this panel most
+    // likely wants to know what's currently backed off, not re-confirm
+    // what's already been approved.
+    const order = { rejected: 0, observing: 1, approved: 2 };
+    rows.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.series.localeCompare(b.series));
+    const now = Date.now() / 1000;
+    el.innerHTML = rows.map(r => {
+      let statusHtml, canReEvaluate = false;
+      if (r.status === 'observing') {
+        statusHtml = `<span style="color:var(--muted);">⏳ observing (${r.trades_observed} trade${r.trades_observed === 1 ? '' : 's'} seen)</span>`;
+      } else if (r.status === 'approved') {
+        statusHtml = '<span style="color:var(--yes);">✅ approved</span>';
+        canReEvaluate = true;
+      } else {
+        const untilStr = r.next_eligible_at ? new Date(r.next_eligible_at * 1000).toLocaleString() : 'unknown';
+        const stillWaiting = r.next_eligible_at && r.next_eligible_at > now;
+        statusHtml = stillWaiting
+          ? `<span style="color:var(--no);">🚫 backed off until ${esc(untilStr)} (strike ${r.strike_count})</span>`
+          : `<span style="color:var(--no);">🚫 rejected (strike ${r.strike_count}) — eligible for re-admission now</span>`;
+        canReEvaluate = true;
+      }
+      const reEvalBtn = canReEvaluate
+        ? `<button style="font-size:11px; padding:2px 8px;" onclick="reEvaluateSeries('${esc(r.series)}', this)">Re-evaluate</button>`
+        : '';
+      return `<div class="position-row">
+        <div class="name">${esc(seriesLabel(r.series))} <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">${esc(r.series)}</span></div>
+        <div class="nums">${statusHtml} ${reEvalBtn}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    badge.innerHTML = '';
+    el.innerHTML = '<div class="empty">Failed to load Series Evaluator data.</div>';
+  }
+}
+
+async function reEvaluateSeries(series, btn) {
+  if (!confirm(`Re-evaluate ${series}? This resets its observation window and strike count to a fresh start.`)) return;
+  btn.disabled = true;
+  btn.textContent = 'Resetting…';
+  try {
+    await fetchJSON('/api/series-evaluator/reset', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({series}),
+    });
+    loadSeriesEvaluator();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Re-evaluate';
   }
 }
 
@@ -4726,6 +4845,15 @@ async function loadConfig() {
   $('cfg-whale-min-notional-by-series').value = Object.entries((cfg.whale_watcher_kalshi || {}).min_notional_usd_by_series || {})
     .map(([series, amount]) => `${series}:${amount}`).join(', ');
   updateWhaleProviderStatus(lastWhaleSource);
+  const seCfg = cfg.series_evaluator || {};
+  $('cfg-series-evaluator-enabled').checked = !!seCfg.enabled;
+  $('cfg-series-evaluator-min-observation-sec').value = seCfg.min_observation_sec ?? 3600;
+  $('cfg-series-evaluator-min-trades-observed').value = seCfg.min_trades_observed ?? 20;
+  $('cfg-series-evaluator-max-observation-sec').value = seCfg.max_observation_sec ?? 21600;
+  $('cfg-series-evaluator-min-qualify-rate').value = seCfg.min_qualify_rate ?? 0.01;
+  $('cfg-series-evaluator-backoff-base-sec').value = seCfg.backoff_base_sec ?? 1800;
+  $('cfg-series-evaluator-backoff-multiplier').value = seCfg.backoff_multiplier ?? 2.0;
+  $('cfg-series-evaluator-backoff-max-sec').value = seCfg.backoff_max_sec ?? 86400;
   $('cfg-max-loss').value = cfg.risk.max_daily_loss_pct;
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
@@ -4745,6 +4873,7 @@ $('config-reset-btn').addEventListener('click', async () => {
     market_analyst: $('reset-cb-market-analyst').checked,
     market_catalog: $('reset-cb-market-catalog').checked,
     market_history: $('reset-cb-market-history').checked,
+    series_evaluator: $('reset-cb-series-evaluator').checked,
   };
   if (!Object.values(body).some(Boolean)) return;
   const picked = Object.entries(body).filter(([, v]) => v).map(([k]) => k).join(', ');
@@ -4827,6 +4956,16 @@ $('save-config-btn').addEventListener('click', async () => {
           .filter(([series, amount]) => series && amount && !isNaN(parseFloat(amount)))
           .map(([series, amount]) => [series.toUpperCase(), parseFloat(amount)])
       ),
+    },
+    series_evaluator: {
+      enabled: $('cfg-series-evaluator-enabled').checked,
+      min_observation_sec: parseInt($('cfg-series-evaluator-min-observation-sec').value),
+      min_trades_observed: parseInt($('cfg-series-evaluator-min-trades-observed').value),
+      max_observation_sec: parseInt($('cfg-series-evaluator-max-observation-sec').value),
+      min_qualify_rate: parseFloat($('cfg-series-evaluator-min-qualify-rate').value),
+      backoff_base_sec: parseInt($('cfg-series-evaluator-backoff-base-sec').value),
+      backoff_multiplier: parseFloat($('cfg-series-evaluator-backoff-multiplier').value),
+      backoff_max_sec: parseInt($('cfg-series-evaluator-backoff-max-sec').value),
     },
     risk: {
       max_daily_loss_pct: parseFloat($('cfg-max-loss').value),

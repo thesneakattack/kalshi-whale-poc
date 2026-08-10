@@ -25,6 +25,7 @@ from services import market_catalog as mc_module
 from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
+from services import series_evaluator as se_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="trading_gate_test_"))
 pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
@@ -32,6 +33,7 @@ rm_module.DB_PATH = _tmp_dir / "risk_state.db"
 cp_module.DB_PATH = _tmp_dir / "config_performance.db"
 mh_module.DB_PATH = _tmp_dir / "market_history.db"
 mc_module.DB_PATH = _tmp_dir / "market_catalog.db"
+se_module.DB_PATH = _tmp_dir / "series_evaluator.db"
 # main.py derives market_broker/market_risk's db_path from broker.db_path/
 # risk.db_path (both already redirected above) rather than a fresh path of
 # their own - see main.py's own comment on this - so no separate redirect
@@ -286,6 +288,110 @@ def test_reset_route_wires_market_catalog_and_market_history_flags():
     assert "market_history" in body["cleared"]
     assert mc_module.scan_progress()["total_markets"] == 0
     assert mh_module.snapshot_count() == 0
+
+
+# --- Series evaluator (Item 1) -----------------------------------------------
+
+def test_series_evaluator_status_route_returns_the_full_overview():
+    se_module.clear_all()
+    se_module.record_trade_observed("SERA", now=1000.0)
+    se_module.record_trade_observed("SERB", now=1000.0)
+    resp = client.get("/api/series-evaluator/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "enabled" in body
+    assert {r["series"] for r in body["series"]} == {"SERA", "SERB"}
+
+
+def test_series_evaluator_reset_route_resets_an_existing_series():
+    se_module.clear_all()
+    se_module.record_trade_observed("SERA", now=1000.0)
+    with se_module._connect() as conn:
+        conn.execute("UPDATE series_status SET status = 'rejected', strike_count = 3 WHERE series = 'SERA'")
+    resp = client.post("/api/series-evaluator/reset", json={"series": "SERA"})
+    assert resp.status_code == 200
+    row = [r for r in se_module.overview() if r["series"] == "SERA"][0]
+    assert row["status"] == "observing"
+    assert row["strike_count"] == 0
+
+
+def test_series_evaluator_reset_route_404s_for_an_unknown_series():
+    se_module.clear_all()
+    resp = client.post("/api/series-evaluator/reset", json={"series": "NEVER-SEEN"})
+    assert resp.status_code == 404
+
+
+def test_reset_route_wires_series_evaluator_flag():
+    se_module.clear_all()
+    se_module.record_trade_observed("SERA", now=1000.0)
+    resp = client.post("/api/reset", json={"paper": False, "series_evaluator": True})
+    assert resp.status_code == 200
+    assert "series_evaluator" in resp.json()["cleared"]
+    assert se_module.overview() == []
+
+
+def test_fetch_markets_live_only_excludes_ineligible_series_when_enabled():
+    # The BEFORE-check (direct request): a series currently serving backoff
+    # must not be re-admitted to the watchlist, regardless of whether it
+    # would otherwise qualify on volume/live-status.
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    se_module.clear_all()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERGOOD", "Sports", [{
+        "ticker": "SERGOOD-M1", "event_ticker": "SERGOOD-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+    }])
+    mc_module.upsert_markets("SERBAD", "Sports", [{
+        "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+    }])
+    se_module.record_trade_observed("SERBAD", now=1000.0)
+    with se_module._connect() as conn:
+        conn.execute(
+            "UPDATE series_status SET status = 'rejected', next_eligible_at = ? WHERE series = 'SERBAD'",
+            (time.time() + 99999,),
+        )
+    cfg = _cfg_live_only()
+    cfg["series_evaluator"] = {"enabled": True}
+    fake = _FakeHydrationClient(
+        hydrated_markets={
+            "SERGOOD-M1": {"ticker": "SERGOOD-M1", "event_ticker": "SERGOOD-EVT1", "yes_bid_dollars": "0.5"},
+        },
+        widget_status="live",
+    )
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    tickers = {m["ticker"] for m in markets}
+    assert "SERGOOD-M1" in tickers
+    assert "SERBAD-M1" not in tickers
+
+
+def test_fetch_markets_live_only_includes_series_when_evaluator_disabled():
+    # series_evaluator.enabled defaults False - a rejected series must not
+    # be filtered when the feature hasn't been opted into.
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    se_module.clear_all()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERBAD", "Sports", [{
+        "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+    }])
+    se_module.record_trade_observed("SERBAD", now=1000.0)
+    with se_module._connect() as conn:
+        conn.execute(
+            "UPDATE series_status SET status = 'rejected', next_eligible_at = ? WHERE series = 'SERBAD'",
+            (time.time() + 99999,),
+        )
+    cfg = _cfg_live_only()  # no series_evaluator key at all, matching a not-yet-upgraded config
+    fake = _FakeHydrationClient(
+        hydrated_markets={
+            "SERBAD-M1": {"ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "yes_bid_dollars": "0.5"},
+        },
+        widget_status="live",
+    )
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    assert "SERBAD-M1" in {m["ticker"] for m in markets}
 
 
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------

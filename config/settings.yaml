@@ -80,5 +80,14 @@ market_analyst:
   enabled: true
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
+series_evaluator:
+  enabled: false
+  min_observation_sec: 3600
+  min_trades_observed: 20
+  max_observation_sec: 21600
+  min_qualify_rate: 0.01
+  backoff_base_sec: 1800
+  backoff_multiplier: 2
+  backoff_max_sec: 86400
 logging:
   level: INFO
