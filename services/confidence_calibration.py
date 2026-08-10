@@ -66,8 +66,21 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
     0.5) sorts stably, so index-based tertiles on a tied value would just
     reflect whatever order the rows happened to arrive in - not anything
     the factor itself explains. Returning {} (gap_pts stays None, "not
-    enough variance to say") is the honest outcome, not a fabricated split."""
-    sorted_rows = sorted(rows, key=lambda r: r["factors"][factor_name])
+    enough variance to say") is the honest outcome, not a fabricated split.
+
+    Rows missing this factor entirely are excluded before bucketing, not
+    treated as a KeyError - real finding (2026-08-10, consulting live
+    data while setting sensible config defaults): cluster_factor/
+    trend_factor/analyst_factor were all added to composite_confidence_
+    breakdown after this app had already logged its first ~9000 real
+    signals, so every one of those older rows' factors_json genuinely
+    lacks those three keys. Without this filter, enabling confidence_
+    calibration against real production history crashes this function
+    outright the first time it's called - same "leave it out of the
+    average entirely when absent" idiom the rest of this app already uses
+    for an optional factor, applied here per-row instead of per-signal."""
+    applicable_rows = [r for r in rows if factor_name in r["factors"]]
+    sorted_rows = sorted(applicable_rows, key=lambda r: r["factors"][factor_name])
     n = len(sorted_rows)
     distinct_values = {r["factors"][factor_name] for r in sorted_rows}
     if n < _BUCKET_COUNT or len(distinct_values) < _BUCKET_COUNT:

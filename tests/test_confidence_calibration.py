@@ -69,6 +69,39 @@ def test_constant_factor_does_not_discriminate():
     assert unusual_report["discriminates"] is None
 
 
+def test_missing_factor_key_excluded_not_crashed():
+    # Real bug found live (2026-08-10, consulting real historical data
+    # while setting sensible config defaults): cluster_factor/trend_factor/
+    # analyst_factor were all added to composite_confidence_breakdown
+    # after this app had already logged its first ~9000 real signals, so
+    # every one of those rows' factors dict genuinely lacks those three
+    # keys - confirmed against the real data/signal_log.db, not assumed.
+    # generate_calibration_report() used to crash with a bare KeyError the
+    # first time this ran against real production history; it must now
+    # exclude those rows from that specific factor's bucketing instead,
+    # same "leave it out when absent" idiom used everywhere else in this
+    # app for an optional factor.
+    rows = []
+    for i in range(30):
+        row = _row(
+            depth=0.1 + (i % 3) * 0.4, unusualness=0.5, proximity=0.5, context=0.5,
+            agreement=0.5, correct=(i % 3 == 2),
+        )
+        del row["factors"]["cluster_factor"]
+        del row["factors"]["trend_factor"]
+        del row["factors"]["analyst_factor"]
+        rows.append(row)
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    assert result["report"] is not None  # did not crash
+    cluster_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "cluster_factor")
+    assert cluster_report["buckets"] == {}
+    assert cluster_report["gap_pts"] is None
+    assert cluster_report["discriminates"] is None
+    # depth_factor is present on every row and still discriminates normally.
+    depth_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "depth_factor")
+    assert depth_report["discriminates"] is True
+
+
 def test_ranked_by_discrimination_puts_the_real_signal_first():
     rows = _discriminating_dataset(n_per_bucket=10)
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
