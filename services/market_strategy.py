@@ -50,7 +50,7 @@ extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 from services import kalshi_fees, market_analyst_agent, market_history
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
-from services.strategy_engine import close_if_settled
+from services.strategy_engine import close_if_settled, open_position_count_in_series
 
 # How fresh a market_analyst_agent estimate must be to fold into this
 # strategy's entry confidence - same freshness window as the whale-follow
@@ -140,6 +140,15 @@ class MarketNativeStrategy:
         if not ticker:
             return None
         if ticker in self.broker.positions:
+            return None
+        # Concentration risk (deep-scan finding 2, 2026-08-10) - same shared
+        # helper/reasoning as FollowTheWhaleStrategy.evaluate()'s own check;
+        # this strategy's own separate bankroll/positions are just as
+        # exposed to a burst of correlated markets (a whole tournament, an
+        # election contract family) each individually clearing every other
+        # filter here.
+        max_open_per_series = strat_cfg.get("max_open_positions_per_series")
+        if max_open_per_series and open_position_count_in_series(self.broker, ticker) >= max_open_per_series:
             return None
         result = (market_results.get(ticker) or "").strip().lower()
         if result in ("yes", "no"):

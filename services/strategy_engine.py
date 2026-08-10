@@ -45,6 +45,22 @@ def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: st
     return {"action": "close", "ticker": ticker, "trade": trade.to_dict(), "reason": reason}
 
 
+def open_position_count_in_series(broker: PaperBroker, ticker: str) -> int:
+    """How many of broker's currently-open positions belong to the same
+    series (signal_log.series_of) as ticker - shared by both strategies'
+    entry gates (deep-scan finding 2, 2026-08-10). Before this, the only
+    per-position entry gate was per-ticker (`if signal.ticker in
+    self.broker.positions`) - nothing aggregated by series, so a burst of
+    correlated signals (a whole tournament, an election contract family)
+    could each individually clear max_position_pct while collectively
+    representing a much bigger bet on one real-world outcome than the risk
+    config implies. Takes a ticker rather than a pre-derived series so
+    callers (including services/market_strategy.py, which doesn't
+    otherwise import signal_log) don't need their own series_of() call."""
+    series = signal_log.series_of(ticker)
+    return sum(1 for open_ticker in broker.positions if signal_log.series_of(open_ticker) == series)
+
+
 class FollowTheWhaleStrategy:
     def __init__(self, broker: PaperBroker, risk: RiskManager):
         self.broker = broker
@@ -144,6 +160,23 @@ class FollowTheWhaleStrategy:
         # actually happened in live trade history before this check existed.
         if signal.ticker in self.broker.positions:
             return self._skip(signal, "position already open on this market")
+
+        # Concentration risk (deep-scan finding 2, 2026-08-10): the check
+        # above only ever guards the exact same ticker - nothing previously
+        # stopped e.g. five different markets in the same tournament from
+        # each individually clearing every other gate and collectively
+        # becoming a much bigger bet on one real-world outcome than
+        # max_position_pct's per-trade cap implies. None (the default) or 0
+        # both mean "no limit," matching kalshi.max_children_per_parent's
+        # existing null-means-unlimited convention elsewhere in this app.
+        max_open_per_series = strat_cfg.get("max_open_positions_per_series")
+        if max_open_per_series:
+            open_in_series = open_position_count_in_series(self.broker, signal.ticker)
+            if open_in_series >= max_open_per_series:
+                return self._skip(
+                    signal,
+                    f'already at the max of {max_open_per_series} open position(s) on series "{series}"',
+                )
 
         if not self.broker.can_trade(signal.ticker, strat_cfg["cooldown_sec"]):
             return self._skip(signal, "cooldown active for this market")

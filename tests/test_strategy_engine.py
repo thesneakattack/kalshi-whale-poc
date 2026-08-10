@@ -199,6 +199,51 @@ def test_skip_when_position_already_open_on_ticker(tmp_path, monkeypatch):
     assert len(broker.trade_log) == 1  # the second signal never touched the broker
 
 
+# ---- max_open_positions_per_series (deep-scan finding 2, 2026-08-10) -----
+# Concentration risk across simultaneously-open positions on the same
+# series - the "already open on ticker" check above only ever guards the
+# exact same ticker, never a burst of correlated markets in one series.
+
+def test_skip_when_series_already_at_max_open_positions(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=1))
+    assert "TICK-A" in broker.positions
+    # TICK-B is a different ticker, same series ("TICK") - already at the
+    # configured cap of 1, so this should be skipped even though the
+    # per-ticker "already open" check alone would have let it through.
+    decision = strategy.evaluate(_signal(ticker="TICK-B", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=1))
+    assert decision["action"] == "skip"
+    assert "TICK" in decision["reason"]
+    assert "TICK-B" not in broker.positions
+
+
+def test_trades_when_series_below_max_open_positions(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=2))
+    decision = strategy.evaluate(_signal(ticker="TICK-B", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=2))
+    assert decision["action"] == "trade"
+    assert "TICK-B" in broker.positions
+
+
+def test_max_open_positions_per_series_does_not_block_a_different_series(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=1))
+    # OTHER-C's series ("OTHER") is unrelated to TICK's - the cap is
+    # per-series, not a global open-position count.
+    decision = strategy.evaluate(_signal(ticker="OTHER-C", confidence=0.9, price=0.5), _cfg(max_open_positions_per_series=1))
+    assert decision["action"] == "trade"
+
+
+def test_max_open_positions_per_series_unset_means_unlimited(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TICK-A", confidence=0.9, price=0.5), _cfg())
+    # No max_open_positions_per_series in _cfg() at all (None default) -
+    # same "null/None means unlimited" convention as kalshi.
+    # max_children_per_parent elsewhere in this app.
+    decision = strategy.evaluate(_signal(ticker="TICK-B", confidence=0.9, price=0.5), _cfg())
+    assert decision["action"] == "trade"
+
+
 def test_skip_when_whale_winrate_below_minimum(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     monkeypatch.setattr(signal_log, "series_stats", lambda ticker, days=30: {

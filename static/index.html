@@ -1255,6 +1255,8 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           <span class="info-icon" title="Higher = bigger bets per trade - faster bankroll growth on wins, bigger drawdowns on losses. Lower = smaller, steadier bets, more trades needed to move the bankroll meaningfully.">ⓘ</span></label><input id="cfg-position-pct" type="number" step="0.01" min="0" max="1"></div>
         <div class="field"><label>Cooldown per market (seconds) <span class="config-path">strategy.cooldown_sec</span>
           <span class="info-icon" title="Higher = waits longer before trading the same market again, avoiding rapid back-to-back re-entries on the same signal. Lower = can re-enter the same market sooner if a new qualifying signal shows up.">ⓘ</span></label><input id="cfg-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Max simultaneously-open positions per series <span class="config-path">strategy.max_open_positions_per_series</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="Caps how many different markets in the same series (e.g. a tournament, an election contract family) can have an open position at once - without this, several individually-small correlated bets can add up to a much bigger real-world bet than the position-size cap alone implies. Blank/0 = unlimited, matching this app's other 'no cap' fields.">ⓘ</span></label><input id="cfg-max-open-per-series" type="number" step="1" min="0" placeholder="unlimited"></div>
         <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="config-path">strategy.min_whale_winrate_pct</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
           <span class="info-icon" title="Higher = stricter - excludes more market types (series) whose whale signals have a mixed track record so far. Lower = more permissive, only the worst-performing series get excluded. 0 disables this filter entirely.">ⓘ</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
         <div class="field"><label>...but only once that market's series has this many resolved signals <span class="config-path">strategy.min_resolved_for_whale_filter</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
@@ -1347,6 +1349,8 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label>Max position size (% of bankroll) <span class="config-path">market_strategy.max_position_pct</span>
           <span class="info-icon" title="Higher = bigger bets per trade from this strategy's own bankroll. Lower = smaller, steadier bets. Same tradeoff as the whale-follow strategy's equivalent setting, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-position-pct" type="number" step="0.01" min="0" max="1"></div>
         <div class="field"><label>Cooldown per market (seconds) <span class="config-path">market_strategy.cooldown_sec</span></label><input id="cfg-market-strategy-cooldown" type="number" step="10" min="0"></div>
+        <div class="field"><label>Max simultaneously-open positions per series <span class="config-path">market_strategy.max_open_positions_per_series</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="Same concentration-risk cap as the whale-follow strategy's equivalent setting, scoped to this strategy's own separate bankroll/positions. Blank/0 = unlimited.">ⓘ</span></label><input id="cfg-market-strategy-max-open-per-series" type="number" step="1" min="0" placeholder="unlimited"></div>
         <div class="field"><label>Minimum price to consider trading (0–1) <span class="config-path">market_strategy.min_price</span>
           <span class="info-icon" title="Only trade markets priced between this and the maximum below (inclusive) - narrows the field to markets in a specific probability band, e.g. avoiding near-certain or near-impossible outcomes where movement is small.">ⓘ</span></label><input id="cfg-market-strategy-min-price" type="number" step="0.05" min="0" max="1"></div>
         <div class="field"><label>Maximum price to consider trading (0–1) <span class="config-path">market_strategy.max_price</span></label><input id="cfg-market-strategy-max-price" type="number" step="0.05" min="0" max="1"></div>
@@ -5072,6 +5076,7 @@ async function loadConfig() {
   $('cfg-longshot-bonus').value = cfg.strategy.longshot_entry_threshold_bonus ?? 0.15;
   $('cfg-position-pct').value = cfg.strategy.max_position_pct;
   $('cfg-cooldown').value = cfg.strategy.cooldown_sec;
+  $('cfg-max-open-per-series').value = cfg.strategy.max_open_positions_per_series ?? '';
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
   $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
   $('cfg-live-only').checked = !!cfg.strategy.live_markets_only;
@@ -5097,6 +5102,7 @@ async function loadConfig() {
   $('cfg-market-strategy-bankroll').value = ms.starting_bankroll ?? 10000;
   $('cfg-market-strategy-position-pct').value = ms.max_position_pct ?? 0.05;
   $('cfg-market-strategy-cooldown').value = ms.cooldown_sec ?? 300;
+  $('cfg-market-strategy-max-open-per-series').value = ms.max_open_positions_per_series ?? '';
   $('cfg-market-strategy-min-price').value = ms.min_price ?? 0.15;
   $('cfg-market-strategy-max-price').value = ms.max_price ?? 0.85;
   $('cfg-market-strategy-max-spread').value = ms.max_spread ?? 0.05;
@@ -5174,6 +5180,7 @@ $('save-config-btn').addEventListener('click', async () => {
       longshot_entry_threshold_bonus: parseFloat($('cfg-longshot-bonus').value),
       max_position_pct: parseFloat($('cfg-position-pct').value),
       cooldown_sec: parseInt($('cfg-cooldown').value),
+      max_open_positions_per_series: $('cfg-max-open-per-series').value === '' ? null : parseInt($('cfg-max-open-per-series').value),
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
       min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
       live_markets_only: $('cfg-live-only').checked,
@@ -5202,6 +5209,7 @@ $('save-config-btn').addEventListener('click', async () => {
       starting_bankroll: parseFloat($('cfg-market-strategy-bankroll').value),
       max_position_pct: parseFloat($('cfg-market-strategy-position-pct').value),
       cooldown_sec: parseInt($('cfg-market-strategy-cooldown').value),
+      max_open_positions_per_series: $('cfg-market-strategy-max-open-per-series').value === '' ? null : parseInt($('cfg-market-strategy-max-open-per-series').value),
       min_price: parseFloat($('cfg-market-strategy-min-price').value),
       max_price: parseFloat($('cfg-market-strategy-max-price').value),
       max_spread: parseFloat($('cfg-market-strategy-max-spread').value),

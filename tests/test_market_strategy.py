@@ -174,6 +174,46 @@ def test_skips_when_position_already_open(tmp_path, monkeypatch):
     assert decisions == []
 
 
+def test_skips_when_series_already_at_max_open_positions(tmp_path, monkeypatch):
+    # Deep-scan finding 2 (2026-08-10) - concentration risk across
+    # simultaneously-open positions on the same series. TICK-B is a
+    # different ticker, same series ("TICK") as the already-open TICK-A -
+    # the per-ticker "already open" check alone would let this through.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="existing")
+    _seed_momentum(tmp_path, "TICK-B", now, 0.4, 0.6)
+    decisions = strategy.evaluate_all(
+        [_market(ticker="TICK-B", now=now)], now, _permissive_cfg(max_open_positions_per_series=1),
+    )
+    assert decisions == []
+    assert "TICK-B" not in broker.positions
+
+
+def test_trades_when_series_below_max_open_positions(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="existing")
+    _seed_momentum(tmp_path, "TICK-B", now, 0.4, 0.6)
+    decisions = strategy.evaluate_all(
+        [_market(ticker="TICK-B", now=now)], now, _permissive_cfg(max_open_positions_per_series=2),
+    )
+    assert len(decisions) == 1
+    assert "TICK-B" in broker.positions
+
+
+def test_max_open_positions_per_series_does_not_block_a_different_series(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="existing")
+    _seed_momentum(tmp_path, "OTHER-C", now, 0.4, 0.6)
+    decisions = strategy.evaluate_all(
+        [_market(ticker="OTHER-C", now=now)], now, _permissive_cfg(max_open_positions_per_series=1),
+    )
+    assert len(decisions) == 1
+    assert "OTHER-C" in broker.positions
+
+
 def test_skips_when_market_already_resolved(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     now = time.time()
