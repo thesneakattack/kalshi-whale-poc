@@ -985,8 +985,9 @@ async def _analyze_market_uncached(
     if adv_cfg["enabled"]:
         current_fp = config_performance.fingerprint(cfg)
         variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+        market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
         recommendations = advisory_engine.generate_recommendations(
-            all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
+            all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
         )
     snapshot = ml_feed.build_context_snapshot(
         cfg=cfg,
@@ -1620,7 +1621,7 @@ async def get_trading_history(limit: int = 50, offset: int = 0):
         "trades": page,
         "total": len(all_rows),
         "summary": trade_analytics.compute_summary(all_rows),
-        "insights": trade_analytics.compute_insights(all_rows),
+        "exit_management_split": trade_analytics.exit_management_split(all_rows),
         "cumulative_pnl_curve": cumulative_pnl_curve,
         "market_titles": _scoped_market_titles({r["ticker"] for r in page}),
     }
@@ -1702,9 +1703,10 @@ async def get_advisory_recommendations():
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
-        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
     )
     return result
 
@@ -1723,9 +1725,10 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
-        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
     )
     match = next((r for r in result["recommendations"] if r["id"] == body.id), None)
     if match is None:
@@ -1734,8 +1737,12 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
             detail="recommendation not found - it may be stale (config or trade history changed since it was fetched)",
         )
 
-    field = match["config_path"].removeprefix("strategy.")
-    config_store.update({"strategy": {field: match["suggested_value"]}})
+    # config_path is always exactly "<top-level section>.<field>" (see every
+    # suggestion function in advisory_engine.py) - strategy.* and, since
+    # 2026-08-10's unified engine, market_strategy.* too, so this can no
+    # longer assume "strategy." is the only prefix a recommendation carries.
+    section, _, field = match["config_path"].partition(".")
+    config_store.update({section: {field: match["suggested_value"]}})
     new_fp = config_performance.fingerprint(config_store.get())
     config_performance.log_applied_change(
         config_path=match["config_path"], old_value=match["current_value"], new_value=match["suggested_value"],

@@ -200,141 +200,42 @@ def test_compute_summary_aggregates_wins_losses_and_by_close_type():
     assert summary["by_close_type"]["stop_loss"]["count"] == 1
 
 
-# ---- compute_insights --------------------------------------------------------
+# ---- exit_management_split ---------------------------------------------------
+# The one piece of the old compute_insights() (removed 2026-08-10, merged
+# into services/advisory_engine.py - see that module's docstring) that
+# doesn't map onto a single tunable config field, so it stayed here as its
+# own descriptive function instead of being forced into advisory_engine's
+# {config_path, suggested_value} suggestion shape.
 
-def _rows_with_confidence_split(n_low, low_win, n_high, high_win):
-    """n_low trades entered at low confidence (win the first `low_win` of
-    them), n_high at high confidence (win the first `high_win`)."""
+def _settled_and_managed_rows(n_settled, settled_win, n_managed, managed_win):
     log = []
-    for i in range(n_low):
-        t = f"LOW{i}"
-        log.append(_open(ticker=t, conf=0.3, ts=1000.0, tid=f"lo{i}"))
-        realized = 10.0 if i < low_win else -10.0
+    for i in range(n_settled):
+        t = f"SETTLED{i}"
+        log.append(_open(ticker=t, ts=1000.0, tid=f"so{i}"))
+        realized = 10.0 if i < settled_win else -10.0
+        log.append(_closed(
+            ticker=t, ts=1100.0, tid=f"sc{i}", realized=realized,
+            inner=("market settled YES - position won" if realized > 0 else "market settled NO - position lost"),
+        ))
+    for i in range(n_managed):
+        t = f"MANAGED{i}"
+        log.append(_open(ticker=t, ts=1000.0, tid=f"mo{i}"))
+        realized = 10.0 if i < managed_win else -10.0
         inner = "take-profit hit: unrealized gain 50% of cost basis (target 50%)" if realized > 0 else "stop-loss hit: unrealized loss 30% of cost basis (limit 30%)"
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"lc{i}", inner=inner, realized=realized))
-    for i in range(n_high):
-        t = f"HIGH{i}"
-        log.append(_open(ticker=t, conf=0.9, ts=1000.0, tid=f"ho{i}"))
-        realized = 10.0 if i < high_win else -10.0
-        inner = "take-profit hit: unrealized gain 50% of cost basis (target 50%)" if realized > 0 else "stop-loss hit: unrealized loss 30% of cost basis (limit 30%)"
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"hc{i}", inner=inner, realized=realized))
+        log.append(_closed(ticker=t, ts=1100.0, tid=f"mc{i}", inner=inner, realized=realized))
     return ta.build_trade_history(log)
 
 
-def test_compute_insights_entry_threshold_hint_fires_on_meaningful_win_rate_gap():
-    rows = _rows_with_confidence_split(n_low=4, low_win=0, n_high=4, high_win=4)  # 0% vs 100%
-    insights = ta.compute_insights(rows)
-    topics = [i["topic"] for i in insights]
-    assert "entry_threshold" in topics
+def test_exit_management_split_none_below_minimum_sample_in_either_group():
+    rows = _settled_and_managed_rows(n_settled=2, settled_win=2, n_managed=3, managed_win=3)
+    assert ta.exit_management_split(rows) is None
 
 
-def test_compute_insights_no_entry_threshold_hint_when_gap_is_small():
-    rows = _rows_with_confidence_split(n_low=4, low_win=2, n_high=4, high_win=2)  # 50% vs 50%
-    insights = ta.compute_insights(rows)
-    topics = [i["topic"] for i in insights]
-    assert "entry_threshold" not in topics
-
-
-def test_compute_insights_respects_minimum_sample_size_for_close_type_hints():
-    # Only 2 stop_loss trades - below the minimum of 3, should not fire.
-    log = [
-        _open(ticker="A", ts=1000.0, tid="o1"),
-        _closed(ticker="A", ts=1100.0, tid="c1", inner="stop-loss hit: unrealized loss 30% of cost basis (limit 30%)", realized=-15.0),
-        _open(ticker="B", ts=1000.0, tid="o2"),
-        _closed(ticker="B", ts=1100.0, tid="c2", inner="stop-loss hit: unrealized loss 30% of cost basis (limit 30%)", realized=-15.0),
-    ]
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    assert not any(i["topic"] == "stop_loss_pct" for i in insights)
-
-
-def test_compute_insights_fires_stop_loss_hint_once_minimum_sample_reached():
-    log = []
-    for i in range(3):
-        t = f"T{i}"
-        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="stop-loss hit: unrealized loss 30% of cost basis (limit 30%)", realized=-15.0))
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    hit = next(i for i in insights if i["topic"] == "stop_loss_pct")
-    assert hit["n"] == 3
-    assert hit["confidence"] == "low"  # n=3 < 5
-
-
-def test_compute_insights_confidence_label_scales_with_sample_size():
-    log = []
-    for i in range(15):
-        t = f"T{i}"
-        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="take-profit hit: unrealized gain 50% of cost basis (target 50%)", realized=10.0))
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    hit = next(i for i in insights if i["topic"] == "take_profit_pct")
-    assert hit["n"] == 15
-    assert hit["confidence"] == "higher"
-
-
-def test_compute_insights_never_mutates_input_rows():
-    rows = _rows_with_confidence_split(n_low=4, low_win=0, n_high=4, high_win=4)
-    snapshot = [dict(r) for r in rows]
-    ta.compute_insights(rows)
-    assert rows == snapshot
-
-
-# sentiment_reversal/momentum_reversal - direct report: "the config tunings
-# hints section... doesn't seem to give me actual advice at all." Confirmed
-# live against real trade history: sentiment_reversal was 81% of all real
-# closed trades, but had no heuristic here at all before this, unlike
-# stop_loss/take_profit/auto_exit above - every other insight happened to
-# need a close type or confidence spread this app's real data didn't
-# produce, so the panel was correctly silent, just silent on the one close
-# type that actually mattered.
-
-def test_compute_insights_respects_minimum_sample_size_for_sentiment_reversal():
-    log = [
-        _open(ticker="A", ts=1000.0, tid="o1"),
-        _closed(ticker="A", ts=1100.0, tid="c1", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0),
-        _open(ticker="B", ts=1000.0, tid="o2"),
-        _closed(ticker="B", ts=1100.0, tid="c2", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0),
-    ]
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    assert not any(i["topic"] == "exit_sentiment_lean_pct" for i in insights)
-
-
-def test_compute_insights_fires_sentiment_reversal_hint_once_minimum_sample_reached():
-    log = []
-    for i in range(3):
-        t = f"T{i}"
-        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=-5.0))
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    hit = next(i for i in insights if i["topic"] == "exit_sentiment_lean_pct")
-    assert hit["n"] == 3
-    assert "raising exit_sentiment_lean_pct" in hit["text"]  # avg_pnl <= 0 -> "reversing out on noise" framing
-
-
-def test_compute_insights_sentiment_reversal_hint_flips_advice_when_net_positive():
-    log = []
-    for i in range(3):
-        t = f"T{i}"
-        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="whale sentiment reversed: 70% of 5 recent prints now lean against this yes position", realized=5.0))
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    hit = next(i for i in insights if i["topic"] == "exit_sentiment_lean_pct")
-    assert "lowering exit_sentiment_lean_pct" in hit["text"]
-
-
-def test_compute_insights_fires_momentum_reversal_hint_once_minimum_sample_reached():
-    log = []
-    for i in range(3):
-        t = f"T{i}"
-        log.append(_open(ticker=t, ts=1000.0, tid=f"o{i}"))
-        log.append(_closed(ticker=t, ts=1100.0, tid=f"c{i}", inner="momentum reversed: price moved 4% against this yes position over 30m", realized=-3.0))
-    rows = ta.build_trade_history(log)
-    insights = ta.compute_insights(rows)
-    hit = next(i for i in insights if i["topic"] == "min_momentum_delta")
-    assert hit["n"] == 3
-    assert "raising min_momentum_delta" in hit["text"]
+def test_exit_management_split_reports_both_win_rates_once_both_groups_qualify():
+    rows = _settled_and_managed_rows(n_settled=4, settled_win=1, n_managed=3, managed_win=3)
+    split = ta.exit_management_split(rows)
+    assert split is not None
+    assert split["n_settled"] == 4
+    assert split["n_managed"] == 3
+    assert split["settled_win_rate_pct"] == 25.0
+    assert split["managed_win_rate_pct"] == 100.0

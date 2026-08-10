@@ -106,16 +106,28 @@
     margin-left: 6px;
   }
   /* Dotted config-path chip - same monospace style already used on the
-     History tab's Config Tuning Hints/Advisory Recommendations panels
-     (strategy.exit_sentiment_min_signals-style). Direct report: a hint
-     there names a variable with nothing on the Config page to visually
-     match it against - putting the exact same text next to the field
-     itself closes that gap without inventing a new visual language. */
+     History tab's Advisory Recommendations panel
+     (strategy.exit_sentiment_min_signals-style). Direct report: a
+     suggestion there names a variable with nothing on the Config page to
+     visually match it against - putting the exact same text next to the
+     field itself closes that gap without inventing a new visual language,
+     and doubles as the jump target for jumpToConfigSetting(). */
   .config-path {
     font-family: var(--mono);
     font-size: 10px;
     color: var(--muted);
     margin-left: 6px;
+  }
+  /* Brief highlight after jumpToConfigSetting() scrolls a suggestion's
+     target field into view (Advisory Recommendations -> Config tab) - the
+     same idea as this app's other "poof, look here" moments (e.g. the
+     apply-button's own "Applied ✓" state), just for navigation instead of
+     an action outcome. */
+  .jump-highlight {
+    outline: 2px solid var(--whale);
+    outline-offset: 3px;
+    border-radius: 4px;
+    transition: outline-color 0.3s;
   }
   /* Shared Simple/Advanced per-panel toggle — one pattern reused by every
      panel that has a denser "Advanced" view, instead of each panel
@@ -1080,29 +1092,32 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     </p>
     <div id="history-close-type-breakdown" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
-    <div class="panel-title">Config Tuning Hints <span id="history-insights-count"></span></div>
+    <div class="panel-title">Exit Management</div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Descriptive patterns in the trade history above, not a recommendation engine — each one names the
-      config field it's about, how many trades it's based on, and a confidence label (low/moderate/higher)
-      so you can judge how much to trust it before acting. Never changes config itself.
+      Win rate for positions held all the way to resolution vs. ones an exit rule actively closed early
+      (take-profit/stop-loss/sentiment- or momentum-reversal/auto-exit) — descriptive only, appears once
+      both groups have at least 3 closed trades.
     </p>
-    <div id="history-insights" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+    <div id="history-exit-mgmt" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
-    <!-- Advisory Recommendations (docs/advisory-engine-plan.md) - the
-         actionable layer next to the descriptive Config Tuning Hints above,
-         not a replacement for it. Deliberately never shows a real
-         recommendation until advisory.enabled is on AND the current config
-         has cleared its own per-variant minimum-resolved-trades floor - see
-         loadAdvisory(). Concrete suggested values, each with an explicit
-         "Apply to config" click; nothing here ever writes config on its
-         own. -->
+    <!-- Advisory Recommendations (docs/advisory-engine-plan.md) - unified
+         2026-08-10 with what used to be a separate, purely-descriptive
+         "Config Tuning Hints" panel (direct report: its hints named config
+         fields with nothing on the Config page to visually match them
+         against - see the .config-path chips below, the same ones every
+         Config-tab field now shows). Every suggestion here is now derived
+         from the FULL trade history (no exact-config-fingerprint gate) and
+         has a concrete "Apply to config" click - nothing here ever writes
+         config on its own. Cross-variant "a fully different past config
+         did better" comparisons still need their own per-variant floor
+         (advisory.min_resolved_trades_per_variant) since that comparison
+         can't mean anything on a thin sample - see loadAdvisory(). -->
     <div class="panel-title">Advisory Recommendations <span id="advisory-status-badge"></span></div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Concrete suggested config values, derived the same way as the hints above but scoped to trades
-      placed under the exact config currently running, plus comparisons against past configs once
-      each has enough resolved trades. Disabled by default; even when enabled, stays empty until the
-      current config has enough resolved trades to trust. Rule-based, not machine learning — see
-      docs/advisory-engine-plan.md for why. Never applies anything without an explicit click.
+      Concrete suggested config values derived from the full trade history above (rule-based, not machine
+      learning — see docs/advisory-engine-plan.md for why), plus comparisons against a fully different past
+      config once each has enough resolved trades to trust. Disabled by default. Click a suggestion's path
+      chip to jump straight to that field on the Config tab. Never applies anything without an explicit click.
     </p>
     <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
@@ -3000,7 +3015,7 @@ async function loadTradingHistory() {
     renderHistorySummary(resp.summary);
     renderHistoryPnlChart(resp.cumulative_pnl_curve || []);
     renderHistoryCloseTypeBreakdown((resp.summary || {}).by_close_type || {});
-    renderHistoryInsights(resp.insights || []);
+    renderExitManagementSplit(resp.exit_management_split || null);
     renderHistoryTrades();
     loadAdvisory();
     loadMarketAnalyst();
@@ -3069,31 +3084,30 @@ function renderHistoryCloseTypeBreakdown(byCloseType) {
 
 const HISTORY_CONFIDENCE_COLOR = { low: 'var(--muted)', moderate: 'var(--whale)', higher: 'var(--yes)' };
 
-function renderHistoryInsights(insights) {
-  const el = $('history-insights');
-  $('history-insights-count').textContent = insights.length ? `(${insights.length})` : '';
-  if (!insights.length) {
-    el.innerHTML = '<div class="empty">Not enough closed trades yet for any tuning hints.</div>';
+function renderExitManagementSplit(split) {
+  const el = $('history-exit-mgmt');
+  if (!split) {
+    el.innerHTML = '<div class="empty">Not enough closed trades yet in both groups.</div>';
     return;
   }
-  el.innerHTML = insights.map(i => `
-    <div class="signal-card">
-      <div class="top-row">
-        <span style="font-family:var(--mono); font-size:11px; color:var(--muted);">strategy.${esc(i.topic)}</span>
-        <span style="color:${HISTORY_CONFIDENCE_COLOR[i.confidence] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(i.confidence)} confidence · n=${i.n}</span>
-      </div>
-      <div>${esc(i.text)}</div>
-    </div>
-  `).join('');
+  el.innerHTML = `
+    <div class="stat-cards">
+      <div class="cell"><div class="lbl">Held to Resolution</div><div class="val">${split.settled_win_rate_pct.toFixed(0)}% <span style="font-size:11px; color:var(--muted); font-weight:400;">(n=${split.n_settled})</span></div></div>
+      <div class="cell"><div class="lbl">Actively Managed</div><div class="val">${split.managed_win_rate_pct.toFixed(0)}% <span style="font-size:11px; color:var(--muted); font-weight:400;">(n=${split.n_managed})</span></div></div>
+    </div>`;
 }
 
 // Advisory Recommendations (docs/advisory-engine-plan.md) - loaded
 // alongside the rest of the History tab whenever it opens (showView). Two
-// separate fetches: /api/advisory/status (always safe, reports progress
-// toward the data threshold even while disabled/gated) and
-// /api/advisory/recommendations (empty + gated_reason until the current
-// config's own resolved-trade count clears advisory.min_resolved_trades_per_variant,
-// enforced server-side in services/advisory_engine.py, not just hidden here).
+// separate fetches: /api/advisory/status (always safe, reports progress)
+// and /api/advisory/recommendations. Unified 2026-08-10 with the old
+// separate "Config Tuning Hints" panel - see services/advisory_engine.py's
+// docstring. No blanket gate anymore: an empty list here just means there's
+// nothing to suggest yet, not that a per-variant floor is blocking output -
+// resolved_count/min_resolved_trades_per_variant are still shown as
+// progress toward unlocking cross-variant ("a fully different past config
+// did better") comparisons specifically, the one suggestion type that still
+// needs it.
 async function loadAdvisory() {
   const badge = $('advisory-status-badge');
   const el = $('advisory-recommendations');
@@ -3110,13 +3124,14 @@ async function loadAdvisory() {
       ? `<span style="color:var(--yes); font-size:11px; text-transform:uppercase;">${recs.length} active</span>`
       : '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">enabled</span>';
     if (!recs.length) {
-      el.innerHTML = `<div class="empty">${esc(resp.gated_reason || 'No recommendations yet.')}</div>`;
+      el.innerHTML = `<div class="empty">No suggestions yet — keep trading to build up history. Cross-config comparisons need ` +
+        `${esc(String(resp.resolved_count ?? 0))}/${esc(String(resp.min_resolved_trades_per_variant ?? '?'))} resolved trades under the current config.</div>`;
       return;
     }
     el.innerHTML = recs.map(r => `
       <div class="signal-card">
         <div class="top-row">
-          <span style="font-family:var(--mono); font-size:11px; color:var(--muted);">${esc(r.config_path)}</span>
+          <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(r.config_path)}" title="Jump to this setting on the Config tab">${esc(r.config_path)}</span>
           <span style="color:${HISTORY_CONFIDENCE_COLOR[r.confidence_label] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(r.confidence_label)} confidence · n=${r.n}</span>
         </div>
         <div style="margin:4px 0;"><b>${esc(String(r.current_value))}</b> → <b style="color:var(--whale);">${esc(String(r.suggested_value))}</b></div>
@@ -3127,10 +3142,32 @@ async function loadAdvisory() {
     el.querySelectorAll('.advisory-apply-btn').forEach(btn => {
       btn.addEventListener('click', () => applyAdvisoryRecommendation(btn.dataset.recId, btn));
     });
+    el.querySelectorAll('[data-jump-path]').forEach(chip => {
+      chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
+    });
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load advisory recommendations.</div>';
   }
+}
+
+// Direct follow-on from the Config tab overhaul (Item 5): every field there
+// already shows the same dotted .config-path chip a suggestion card shows
+// here, so "jump to this setting" needs no per-field id-mapping table -
+// just find the Config tab's own chip with matching text and scroll to it.
+function jumpToConfigSetting(path) {
+  const chip = Array.from(document.querySelectorAll('#view-config .config-path'))
+    .find(el => el.textContent.trim() === path);
+  if (!chip) return;
+  showView('config');
+  const details = chip.closest('details.config-section');
+  if (details) details.open = true;
+  requestAnimationFrame(() => {
+    const field = chip.closest('.field') || chip;
+    field.scrollIntoView({behavior: 'smooth', block: 'center'});
+    field.classList.add('jump-highlight');
+    setTimeout(() => field.classList.remove('jump-highlight'), 1600);
+  });
 }
 
 async function applyAdvisoryRecommendation(id, btn) {

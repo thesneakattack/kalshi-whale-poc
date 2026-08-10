@@ -5,28 +5,50 @@ system... keep it disabled until that data threshold has been reached."
 
 Builds on services/trade_analytics.py (row shape, confidence_label,
 compute_summary) and services/config_performance.py (per-trade config
-fingerprint). Two upgrades over trade_analytics.compute_insights():
+fingerprint). Emits a concrete suggested value pulled directly out of the
+observed data (never a fitted/trained model - see the plan doc's
+"rule-based, not ML" decision), not just hedged prose.
 
-1. Scoped per config-variant instead of blended across every config the
-   user has ever run - a trade placed under last week's entry_threshold
-   shouldn't quietly influence today's recommendation for a different
-   value.
-2. Emits a concrete suggested value pulled directly out of the observed
-   data (never a fitted/trained model - see the plan doc's "rule-based,
-   not ML" decision), not just hedged prose.
+Unified with what used to be a separate, purely-descriptive "Config Tuning
+Hints" panel (trade_analytics.compute_insights(), removed 2026-08-10) -
+direct report: that panel named config fields the Config tab's own labels
+didn't visually match, and separately, this engine's per-field suggestions
+were scoped to trades placed under the *exact* current config
+(config_fingerprint == current_fp), so changing any one strategy field
+invalidated every prior trade's eligibility for suggesting a value for any
+*other* field. Per-field suggestions below (_within_variant_recommendations,
+_market_strategy_recommendations - the naming is legacy, they no longer
+filter by variant) now read the FULL trade history, matching
+compute_insights()'s old broad scope, while gaining this module's concrete-
+suggestion/apply shape it never had. Only _cross_variant_recommendations
+still needs real per-variant scoping - "did a fully different past config
+perform better as a whole" is a different question that can't mean
+anything without it.
+
+Two brokers feed this: services/paper_broker.py (strategy.* fields -
+entry_threshold, longshot bonus, exit_* fields) and the separate
+market-native strategy's own broker (market_strategy.* fields -
+currently just min_momentum_delta), since momentum_reversal closes are only
+ever produced by services/market_strategy.py against ITS OWN trade log, never
+the whale-follow broker's. Passed as two separate row lists rather than one
+merged list so each suggestion function only ever reasons about the broker
+it actually came from.
 
 Deterministic and explainable throughout. Still never writes config on its
 own initiative - generate_recommendations() only ever returns data;
 whatever calls it (a manual "Apply" click, or later an opt-in auto-apply
 path) is responsible for actually calling config_store.update().
 
-Safety gating (the actual point of "keep it disabled until enough data"):
-generate_recommendations() enforces the per-variant minimum-resolved-trades
-floor *inside this function*, not in the UI or the route layer - there is
-no way to reach a real recommendation for an under-sampled variant through
-any caller, regardless of the advisory.enabled flag (that flag only
-controls whether callers show what this module says at all; this module
-itself never hands back a real recommendation without enough data).
+Safety gating: per-field suggestions are hedged the same way
+compute_insights() always was - each one has its own minimum sample size
+(n>=3 for a close-type group, 2+ populated confidence/price buckets for the
+entry-threshold/longshot checks) baked into the function itself, not a
+blanket per-variant floor. advisory.min_resolved_trades_per_variant still
+gates _cross_variant_recommendations specifically (a whole-config
+comparison is never trustworthy on a thin sample), and advisory.enabled
+still gates whether any of this is shown/appliable at all (checked by
+callers, e.g. main.py's routes) - but a real per-field suggestion no longer
+requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
@@ -197,7 +219,123 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
     }
 
 
+def _auto_exit_threshold_recommendation(rows: list[dict], strat_cfg: dict) -> dict | None:
+    """Ported from trade_analytics.compute_insights (the old Config Tuning
+    Hints panel) - now a concrete suggested value instead of hedged prose,
+    same shape as every other suggestion here."""
+    group = [r for r in rows if r["close_type"] == "auto_exit"]
+    if len(group) < 3:
+        return None
+    n = len(group)
+    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    current_value = strat_cfg.get("auto_exit_threshold", 0.6)
+    if avg_pnl > 0:
+        suggested = round(min(0.95, current_value + 0.05), 3)
+        tail = "closing winners too early on average - raising the threshold asks for more conviction before auto-exiting."
+    else:
+        suggested = round(max(0.05, current_value - 0.05), 3)
+        tail = "not cutting losses fast enough on average - lowering the threshold reacts sooner."
+    if suggested == current_value:
+        return None
+    return {
+        "id": _rec_id("strategy.auto_exit_threshold", suggested, n),
+        "config_path": "strategy.auto_exit_threshold",
+        "current_value": current_value,
+        "suggested_value": suggested,
+        "rationale": f"auto_exit closed {n} position(s), averaging {avg_pnl:+.2f} realized - {tail}",
+        "n": n,
+        "confidence_label": trade_analytics.confidence_label(n),
+    }
+
+
+def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[dict]:
+    """Ported from trade_analytics.compute_insights, fixing a real bug found
+    there: the old insight's `topic` only ever named exit_sentiment_lean_pct
+    even though its own text recommended tuning exit_sentiment_min_signals
+    too. Emits both as separate, independently-appliable suggestions
+    instead of one field silently standing in for two."""
+    group = [r for r in rows if r["close_type"] == "sentiment_reversal"]
+    if len(group) < 3:
+        return []
+    n = len(group)
+    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    current_lean = strat_cfg.get("exit_sentiment_lean_pct", 65)
+    current_min_signals = strat_cfg.get("exit_sentiment_min_signals", 3)
+    if avg_pnl <= 0:
+        lean_suggested = min(95, current_lean + 5)
+        signals_suggested = current_min_signals + 2
+        tail = (
+            "reversed out on noise before a real trend formed, on average losing money - requiring a "
+            "stronger/more-confirmed signal before triggering asks for more confirmation."
+        )
+    else:
+        lean_suggested = max(50, current_lean - 5)
+        signals_suggested = max(1, current_min_signals - 2)
+        tail = "paid off on average - reacting faster (less lean required, fewer signals) may capture more of these."
+    rationale = f"sentiment_reversal closed {n} position(s), averaging {avg_pnl:+.2f} realized - {tail}"
+    out = []
+    if lean_suggested != current_lean:
+        out.append({
+            "id": _rec_id("strategy.exit_sentiment_lean_pct", lean_suggested, n),
+            "config_path": "strategy.exit_sentiment_lean_pct",
+            "current_value": current_lean,
+            "suggested_value": lean_suggested,
+            "rationale": rationale,
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+        })
+    if signals_suggested != current_min_signals:
+        out.append({
+            "id": _rec_id("strategy.exit_sentiment_min_signals", signals_suggested, n),
+            "config_path": "strategy.exit_sentiment_min_signals",
+            "current_value": current_min_signals,
+            "suggested_value": signals_suggested,
+            "rationale": rationale,
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+        })
+    return out
+
+
+def _momentum_exit_recommendation(rows: list[dict], market_cfg: dict) -> dict | None:
+    """market_strategy.py's whale-independent analog to sentiment-reversal
+    exits - closes market_broker positions, never the whale-follow broker's,
+    so this must be called with market_broker's own rows (see
+    _market_strategy_recommendations), not the strategy.* rows every other
+    function here reads. Ported from trade_analytics.compute_insights,
+    fixing the second real bug found there: the old renderer hardcoded a
+    `strategy.` prefix on this topic, but min_momentum_delta actually lives
+    under market_strategy.* - config_path here is correct from the start."""
+    group = [r for r in rows if r["close_type"] == "momentum_reversal"]
+    if len(group) < 3:
+        return None
+    n = len(group)
+    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    current_value = market_cfg.get("min_momentum_delta", 0.03)
+    if avg_pnl <= 0:
+        suggested = round(current_value + 0.01, 3)
+        tail = "reversed out on noise before a real trend formed, on average losing money - raising the required delta asks for a stronger move before reacting."
+    else:
+        suggested = round(max(0.005, current_value - 0.01), 3)
+        tail = "paid off on average - lowering the required delta may react faster to similar moves."
+    if suggested == current_value:
+        return None
+    return {
+        "id": _rec_id("market_strategy.min_momentum_delta", suggested, n),
+        "config_path": "market_strategy.min_momentum_delta",
+        "current_value": current_value,
+        "suggested_value": suggested,
+        "rationale": f"momentum_reversal closed {n} position(s) under Market-Native Strategy, averaging {avg_pnl:+.2f} realized - {tail}",
+        "n": n,
+        "confidence_label": trade_analytics.confidence_label(n),
+    }
+
+
 def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[dict]:
+    """Despite the name (kept for continuity with _cross_variant_
+    recommendations below), this no longer filters to one config variant -
+    see the module docstring. `rows` is the full whale-follow trade
+    history."""
     out = []
     rec = _entry_threshold_recommendation(rows, strat_cfg["entry_threshold"])
     if rec:
@@ -209,6 +347,21 @@ def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     if rec:
         out.append(rec)
     rec = _exit_pct_recommendation(rows, "stop_loss", "stop_loss_pct", strat_cfg.get("stop_loss_pct"))
+    if rec:
+        out.append(rec)
+    rec = _auto_exit_threshold_recommendation(rows, strat_cfg)
+    if rec:
+        out.append(rec)
+    out += _sentiment_exit_recommendations(rows, strat_cfg)
+    return out
+
+
+def _market_strategy_recommendations(market_rows: list[dict], market_cfg: dict) -> list[dict]:
+    """market_strategy.* suggestions, scored against market_broker's own
+    trade history - see _momentum_exit_recommendation's docstring for why
+    this can't just be folded into _within_variant_recommendations."""
+    out = []
+    rec = _momentum_exit_recommendation(market_rows, market_cfg)
     if rec:
         out.append(rec)
     return out
@@ -267,27 +420,27 @@ def _cross_variant_recommendations(
 
 def generate_recommendations(
     rows: list[dict], cfg: dict, current_fp: str, variants: dict[str, dict], min_resolved_trades: int,
+    market_rows: list[dict] | None = None,
 ) -> dict:
-    """The gated entrypoint. Returns {"recommendations": [...], "gated_reason": str|None}.
-    gated_reason is set (and recommendations is always []) whenever the
-    *current* variant hasn't cleared min_resolved_trades yet - this is the
-    literal mechanism behind "disabled until the data threshold is
-    reached," independent of whatever advisory.enabled says."""
+    """The unified entrypoint - see the module docstring for what changed
+    2026-08-10. Returns {"recommendations": [...], "resolved_count": int,
+    "min_resolved_trades_per_variant": int}. No blanket gate on the whole
+    return value anymore: per-field suggestions (_within_variant_
+    recommendations, _market_strategy_recommendations) read the full
+    history and hedge on their own per-field sample size, same as
+    compute_insights() always did. resolved_count/min_resolved_trades_per_
+    variant are still reported so a caller can show progress toward
+    unlocking _cross_variant_recommendations specifically, the one thing
+    here that still needs the current variant to clear a floor."""
     summaries = variant_summaries(rows)
     current_summary = summaries.get(current_fp)
     resolved_count = current_summary["total_closed"] if current_summary else 0
 
-    if resolved_count < min_resolved_trades:
-        return {
-            "recommendations": [],
-            "gated_reason": (
-                f"current config has {resolved_count}/{min_resolved_trades} resolved trades - "
-                "recommendations activate once that's reached"
-            ),
-            "resolved_count": resolved_count,
-        }
-
-    current_rows = [r for r in rows if r.get("config_fingerprint") == current_fp]
-    recs = _within_variant_recommendations(current_rows, cfg["strategy"])
+    recs = _within_variant_recommendations(rows, cfg["strategy"])
+    recs += _market_strategy_recommendations(market_rows or [], cfg.get("market_strategy") or {})
     recs += _cross_variant_recommendations(current_fp, summaries, variants, min_resolved_trades)
-    return {"recommendations": recs, "gated_reason": None, "resolved_count": resolved_count}
+    return {
+        "recommendations": recs,
+        "resolved_count": resolved_count,
+        "min_resolved_trades_per_variant": min_resolved_trades,
+    }

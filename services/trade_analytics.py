@@ -12,10 +12,19 @@ services/strategy_engine.py already write (see close_position()'s
 the string, not a new column" idiom used to add close trades to the
 existing trades table in the first place.
 
-Deliberately NOT a recommendation engine: compute_insights() only ever
-describes what already happened, tagged with how many trades it's based on
-- it never edits config, and every insight is explicit about being a
-correlation on a possibly-small sample, not a proven cause.
+The per-field "which config knob might be worth adjusting" heuristics used
+to live here too (compute_insights()), separate from services/
+advisory_engine.py's own concrete-suggestion machinery - two engines
+answering the same underlying question in two different shapes, one of them
+(this module's) unable to ever suggest a real value or be applied. Merged
+into advisory_engine.generate_recommendations() (2026-08-10, direct
+report: hints here named config fields with nothing on the Config page to
+match them against) - see that module for the unified suggestion pool.
+What's left here is exit_management_split(): a real observation
+(held-to-resolution vs. actively-managed win rate) that doesn't map onto
+any single tunable field, so it never fit the suggestion shape either
+engine uses - kept as its own descriptive function rather than forced into
+one.
 """
 import re
 
@@ -194,148 +203,25 @@ def confidence_label(n: int) -> str:
     return "higher"
 
 
-def compute_insights(rows: list[dict]) -> list[dict]:
-    """Heuristic, human-facing hints about which config knob a pattern in
-    the trade history might argue for adjusting - deliberately conservative:
-    every insight names the config field it's about, the trade count it's
-    based on, and a confidence label, and none of them ever fires below a
-    minimum sample size. This never writes config; it only describes what
-    already happened."""
-    insights = []
+def exit_management_split(rows: list[dict]) -> dict | None:
+    """Held-to-resolution vs actively-managed (take-profit/stop-loss/
+    sentiment- or momentum-reversal/auto-exit) win rate. Purely descriptive,
+    like compute_summary - not folded into advisory_engine's unified
+    suggestion pool because it doesn't map onto any single tunable
+    config field the way every other migrated insight did. Returns None
+    (not zeros) until both groups clear the same n>=3 hedge every other
+    insight in this app uses, rather than showing a rate computed off 1-2
+    trades."""
     closed = [r for r in rows if r["close_type"]]
-
-    # 1. Win rate by entry-confidence bucket -> entry_threshold.
-    buckets: dict[str, list[dict]] = {"low (<0.5)": [], "medium (0.5-0.75)": [], "high (>0.75)": []}
-    for r in closed:
-        c = r["entry_confidence"]
-        if c is None:
-            continue
-        key = "low (<0.5)" if c < 0.5 else ("medium (0.5-0.75)" if c <= 0.75 else "high (>0.75)")
-        buckets[key].append(r)
-    populated = {k: v for k, v in buckets.items() if len(v) > 0}
-    if len(populated) >= 2:
-        win_rates = {k: sum(1 for r in v if r["won"]) / len(v) * 100 for k, v in populated.items()}
-        worst_key = min(win_rates, key=win_rates.get)
-        best_key = max(win_rates, key=win_rates.get)
-        if win_rates[best_key] - win_rates[worst_key] >= 15:  # not just sample-size noise
-            n = sum(len(v) for v in populated.values())
-            insights.append({
-                "topic": "entry_threshold",
-                "text": (
-                    f"Trades entered at {worst_key} confidence won {win_rates[worst_key]:.0f}% of the time "
-                    f"vs {win_rates[best_key]:.0f}% at {best_key} confidence - raising strategy.entry_threshold "
-                    f"may filter out the weaker end."
-                ),
-                "n": n, "confidence": confidence_label(n),
-            })
-
-    # 2. Per-close-type outcomes -> which exit mechanism is helping/hurting.
-    by_type: dict[str, list[dict]] = {}
-    for r in closed:
-        by_type.setdefault(r["close_type"], []).append(r)
-
-    stop_loss_group = by_type.get("stop_loss", [])
-    if len(stop_loss_group) >= 3:
-        avg_pnl = sum(r["realized_pnl"] for r in stop_loss_group if r["realized_pnl"] is not None) / len(stop_loss_group)
-        n = len(stop_loss_group)
-        insights.append({
-            "topic": "stop_loss_pct",
-            "text": (
-                f"stop_loss closed {n} position(s), avg realized {avg_pnl:+.2f}. If similar setups often "
-                f"recovered afterward, stop_loss_pct may be too tight; if losses kept deepening, it's doing its job."
-            ),
-            "n": n, "confidence": confidence_label(n),
-        })
-
-    take_profit_group = by_type.get("take_profit", [])
-    if len(take_profit_group) >= 3:
-        avg_pnl = sum(r["realized_pnl"] for r in take_profit_group if r["realized_pnl"] is not None) / len(take_profit_group)
-        left = [r["left_on_table"] for r in take_profit_group if r["left_on_table"]]
-        avg_left = sum(left) / len(left) if left else 0.0
-        n = len(take_profit_group)
-        insights.append({
-            "topic": "take_profit_pct",
-            "text": (
-                f"take_profit closed {n} position(s), avg realized {avg_pnl:+.2f}, averaging {avg_left:.1f}c/contract "
-                f"left on the table versus a full $1 win. Consider raising take_profit_pct if this feels too eager."
-            ),
-            "n": n, "confidence": confidence_label(n),
-        })
-
-    auto_exit_group = by_type.get("auto_exit", [])
-    if len(auto_exit_group) >= 3:
-        avg_pnl = sum(r["realized_pnl"] for r in auto_exit_group if r["realized_pnl"] is not None) / len(auto_exit_group)
-        n = len(auto_exit_group)
-        advice = (
-            "Consider raising auto_exit_threshold if it's closing winners too early."
-            if avg_pnl > 0 else
-            "Consider lowering auto_exit_threshold or increasing the pnl/sentiment weights if it's not cutting losses fast enough."
-        )
-        insights.append({
-            "topic": "auto_exit_threshold",
-            "text": f"auto_exit closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
-            "n": n, "confidence": confidence_label(n),
-        })
-
-    # sentiment_reversal (whale-follow) and its market-native analog
-    # momentum_reversal - direct report: "the config tunings hints section...
-    # doesn't seem to give me actual advice at all." Investigated against
-    # real trade history rather than assumed: confirmed live, 84 of 103 real
-    # closed trades (81%) were sentiment_reversal - by far the dominant real
-    # exit mechanism this app produces - yet neither of these two close
-    # types had a heuristic here at all, unlike stop_loss/take_profit/
-    # auto_exit above. Every other insight this function can produce
-    # happened to need a close type or a spread of confidence buckets this
-    # dataset didn't have, so the panel was correctly staying silent rather
-    # than fabricating something - but silence on the single most common
-    # real close type is exactly the gap worth closing.
-    sentiment_reversal_group = by_type.get("sentiment_reversal", [])
-    if len(sentiment_reversal_group) >= 3:
-        avg_pnl = sum(r["realized_pnl"] for r in sentiment_reversal_group if r["realized_pnl"] is not None) / len(sentiment_reversal_group)
-        n = len(sentiment_reversal_group)
-        advice = (
-            "Consider raising exit_sentiment_lean_pct or exit_sentiment_min_signals if it's reversing out on "
-            "noise before a real trend forms."
-            if avg_pnl <= 0 else
-            "Consider lowering exit_sentiment_lean_pct or exit_sentiment_min_signals to react faster if similar "
-            "reversals keep paying off."
-        )
-        insights.append({
-            "topic": "exit_sentiment_lean_pct",
-            "text": f"sentiment_reversal closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
-            "n": n, "confidence": confidence_label(n),
-        })
-
-    momentum_reversal_group = by_type.get("momentum_reversal", [])
-    if len(momentum_reversal_group) >= 3:
-        avg_pnl = sum(r["realized_pnl"] for r in momentum_reversal_group if r["realized_pnl"] is not None) / len(momentum_reversal_group)
-        n = len(momentum_reversal_group)
-        advice = (
-            "Consider raising min_momentum_delta if it's reversing out on noise before a real trend forms."
-            if avg_pnl <= 0 else
-            "Consider lowering min_momentum_delta to react faster if similar reversals keep paying off."
-        )
-        insights.append({
-            "topic": "min_momentum_delta",
-            "text": f"momentum_reversal closed {n} position(s), avg realized {avg_pnl:+.2f}. {advice}",
-            "n": n, "confidence": confidence_label(n),
-        })
-
-    # 3. Settled-only (never actively exited) vs actively-managed win rate.
     settled = [r for r in closed if r["close_type"] in ("settled_win", "settled_loss")]
     managed = [r for r in closed if r["close_type"] not in ("settled_win", "settled_loss")]
-    if len(settled) >= 3 and len(managed) >= 3:
-        settled_wr = sum(1 for r in settled if r["won"]) / len(settled) * 100
-        managed_wr = sum(1 for r in managed if r["won"]) / len(managed) * 100
-        n = len(settled) + len(managed)
-        insights.append({
-            "topic": "exit_management_overall",
-            "text": (
-                f"Positions held to resolution won {settled_wr:.0f}% of the time (n={len(settled)}); "
-                f"actively-managed exits (take-profit/stop-loss/reversal/auto-exit) won {managed_wr:.0f}% "
-                f"of the time (n={len(managed)})."
-            ),
-            "n": n, "confidence": confidence_label(n),
-        })
+    if len(settled) < 3 or len(managed) < 3:
+        return None
+    return {
+        "settled_win_rate_pct": round(sum(1 for r in settled if r["won"]) / len(settled) * 100, 1),
+        "managed_win_rate_pct": round(sum(1 for r in managed if r["won"]) / len(managed) * 100, 1),
+        "n_settled": len(settled),
+        "n_managed": len(managed),
+    }
 
     return insights

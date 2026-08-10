@@ -457,14 +457,18 @@ def test_advisory_apply_404_for_unknown_id_when_enabled():
     assert resp.status_code == 404
 
 
-def test_advisory_recommendations_reports_gated_reason_under_threshold():
+def test_advisory_recommendations_reports_resolved_count_with_no_trade_history():
+    # No blanket gate anymore (2026-08-10 unified-engine merge) - an empty
+    # recommendations list here just means there's no trade history to
+    # suggest anything from, not that a per-variant floor is blocking it.
     _reset_advisory_state()
     main.config_store.update({"advisory": {"enabled": True, "min_resolved_trades_per_variant": 30}})
     resp = client.get("/api/advisory/recommendations")
     assert resp.status_code == 200
     body = resp.json()
     assert body["recommendations"] == []
-    assert "resolved trades" in body["gated_reason"]
+    assert body["resolved_count"] == 0
+    assert body["min_resolved_trades_per_variant"] == 30
 
 
 def test_advisory_apply_end_to_end_updates_config_and_logs_change():
@@ -513,6 +517,45 @@ def test_advisory_apply_end_to_end_updates_config_and_logs_change():
     assert changes[0]["config_path"] == "strategy.entry_threshold"
     assert changes[0]["new_value"] == entry_rec["suggested_value"]
     assert changes[0]["auto_applied"] is False
+
+
+def test_advisory_apply_end_to_end_handles_a_market_strategy_recommendation():
+    # 2026-08-10 unified-engine merge: recommendations can now carry a
+    # market_strategy.* config_path (min_momentum_delta), not just
+    # strategy.* - this exercises the apply route's generalized
+    # `section, _, field = config_path.partition(".")` against a real,
+    # non-"strategy" section end to end, seeded via market_broker (the
+    # separate MarketNativeStrategy broker momentum_reversal closes
+    # actually come from), not the whale-follow broker.
+    _reset_advisory_state()
+    main.config_store.update({
+        "advisory": {"enabled": True, "min_resolved_trades_per_variant": 5},
+        "market_strategy": {"min_momentum_delta": 0.03},
+    })
+    main.market_broker.reset(starting_bankroll=10000.0)
+    for i in range(3):
+        main.market_broker.open_position(
+            f"MTICK-{i}", "yes", size=10, price=0.5, reason="momentum entry",
+        )
+        main.market_broker.close_position(
+            f"MTICK-{i}", exit_price=0.4,
+            reason="momentum reversed: price moved 4% against this yes position over 30m",
+        )
+
+    resp = client.get("/api/advisory/recommendations")
+    assert resp.status_code == 200
+    recs = resp.json()["recommendations"]
+    mom_rec = next(r for r in recs if r["config_path"] == "market_strategy.min_momentum_delta")
+    assert mom_rec["current_value"] == 0.03
+    assert mom_rec["suggested_value"] == 0.04
+
+    apply_resp = client.post("/api/advisory/recommendations/apply", json={"id": mom_rec["id"]})
+    assert apply_resp.status_code == 200
+    assert main.config_store.get()["market_strategy"]["min_momentum_delta"] == 0.04
+
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    assert changes[0]["config_path"] == "market_strategy.min_momentum_delta"
+    assert changes[0]["new_value"] == 0.04
 
 
 # --- MarketNativeStrategy / market_history debug endpoints -------------------

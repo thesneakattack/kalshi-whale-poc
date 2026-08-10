@@ -18,9 +18,10 @@ def _cfg(**overrides):
     strategy = dict(
         name="follow_the_whale", entry_threshold=0.5, max_position_pct=0.05,
         cooldown_sec=300, take_profit_pct=None, stop_loss_pct=None,
+        auto_exit_threshold=0.6, exit_sentiment_lean_pct=65, exit_sentiment_min_signals=3,
     )
     strategy.update(overrides)
-    return {"strategy": strategy}
+    return {"strategy": strategy, "market_strategy": {"min_momentum_delta": 0.03}}
 
 
 # --- variant_summaries -------------------------------------------------------
@@ -213,44 +214,122 @@ def test_cross_variant_current_below_min_resolved_yields_nothing():
     assert ae._cross_variant_recommendations("fp1", summaries, variants, min_resolved=5) == []
 
 
-# --- generate_recommendations (the gated entrypoint) --------------------------
+# --- new per-field suggestion functions (merged in from the old
+# trade_analytics.compute_insights, see advisory_engine.py's docstring) ------
 
-def test_generate_recommendations_gated_below_threshold():
+def test_auto_exit_threshold_recommendation_raises_when_net_positive():
+    rows = [_row(close_type="auto_exit", realized_pnl=10.0) for _ in range(3)]
+    rec = ae._auto_exit_threshold_recommendation(rows, _cfg()["strategy"])
+    assert rec is not None
+    assert rec["config_path"] == "strategy.auto_exit_threshold"
+    assert rec["suggested_value"] == 0.65
+    assert rec["n"] == 3
+
+
+def test_auto_exit_threshold_recommendation_lowers_when_net_negative():
+    rows = [_row(close_type="auto_exit", realized_pnl=-10.0) for _ in range(3)]
+    rec = ae._auto_exit_threshold_recommendation(rows, _cfg()["strategy"])
+    assert rec["suggested_value"] == 0.55
+
+
+def test_auto_exit_threshold_recommendation_none_below_minimum_sample():
+    rows = [_row(close_type="auto_exit", realized_pnl=10.0) for _ in range(2)]
+    assert ae._auto_exit_threshold_recommendation(rows, _cfg()["strategy"]) is None
+
+
+def test_sentiment_exit_recommendations_tightens_both_fields_when_net_negative():
+    rows = [_row(close_type="sentiment_reversal", realized_pnl=-5.0) for _ in range(3)]
+    recs = ae._sentiment_exit_recommendations(rows, _cfg()["strategy"])
+    paths = {r["config_path"]: r for r in recs}
+    assert paths["strategy.exit_sentiment_lean_pct"]["suggested_value"] == 70
+    assert paths["strategy.exit_sentiment_min_signals"]["suggested_value"] == 5
+
+
+def test_sentiment_exit_recommendations_loosens_both_fields_when_net_positive():
+    rows = [_row(close_type="sentiment_reversal", realized_pnl=5.0) for _ in range(3)]
+    recs = ae._sentiment_exit_recommendations(rows, _cfg()["strategy"])
+    paths = {r["config_path"]: r for r in recs}
+    assert paths["strategy.exit_sentiment_lean_pct"]["suggested_value"] == 60
+    assert paths["strategy.exit_sentiment_min_signals"]["suggested_value"] == 1
+
+
+def test_sentiment_exit_recommendations_none_below_minimum_sample():
+    rows = [_row(close_type="sentiment_reversal", realized_pnl=-5.0) for _ in range(2)]
+    assert ae._sentiment_exit_recommendations(rows, _cfg()["strategy"]) == []
+
+
+def test_momentum_exit_recommendation_uses_market_strategy_prefix_not_strategy():
+    # Real bug fixed by the merge: the old compute_insights-based renderer
+    # hardcoded a "strategy." prefix on this topic, but min_momentum_delta
+    # actually lives under market_strategy.*.
+    rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(3)]
+    rec = ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"])
+    assert rec is not None
+    assert rec["config_path"] == "market_strategy.min_momentum_delta"
+    assert rec["suggested_value"] == 0.04
+
+
+def test_momentum_exit_recommendation_lowers_when_net_positive():
+    rows = [_row(close_type="momentum_reversal", realized_pnl=3.0) for _ in range(3)]
+    rec = ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"])
+    assert rec["suggested_value"] == 0.02
+
+
+def test_momentum_exit_recommendation_none_below_minimum_sample():
+    rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(2)]
+    assert ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"]) is None
+
+
+# --- generate_recommendations (the unified entrypoint) -----------------------
+# No blanket gate anymore (2026-08-10) - per-field suggestions read the full
+# trade history and hedge on their own per-field sample size, same as
+# compute_insights() always did; only _cross_variant_recommendations still
+# needs the current variant to clear min_resolved_trades, tested separately
+# above.
+
+def test_generate_recommendations_reports_resolved_count_without_gating_output():
     rows = [_row(config_fingerprint="fp1") for _ in range(5)]
     result = ae.generate_recommendations(rows, _cfg(), "fp1", {}, min_resolved_trades=30)
-    assert result["recommendations"] == []
-    assert result["gated_reason"] is not None
-    assert "5/30" in result["gated_reason"]
     assert result["resolved_count"] == 5
+    assert result["min_resolved_trades_per_variant"] == 30
+    assert "gated_reason" not in result
 
 
-def test_generate_recommendations_not_gated_at_exact_boundary():
-    rows = [_row(config_fingerprint="fp1") for _ in range(5)]
-    result = ae.generate_recommendations(rows, _cfg(), "fp1", {}, min_resolved_trades=5)
-    assert result["gated_reason"] is None
-
-
-def test_generate_recommendations_returns_within_variant_hints_once_unlocked():
+def test_generate_recommendations_returns_within_variant_hints_regardless_of_resolved_count():
     rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
     for r in rows:
         r["config_fingerprint"] = "fp1"
     variants = {"fp1": _variant("fp1", entry_threshold=0.5)}
-    result = ae.generate_recommendations(rows, _cfg(entry_threshold=0.5), "fp1", variants, min_resolved_trades=5)
-    assert result["gated_reason"] is None
+    # min_resolved_trades set far above what this variant has - would have
+    # blocked everything under the old blanket gate.
+    result = ae.generate_recommendations(rows, _cfg(entry_threshold=0.5), "fp1", variants, min_resolved_trades=100)
     paths = [r["config_path"] for r in result["recommendations"]]
     assert "strategy.entry_threshold" in paths
 
 
-def test_generate_recommendations_ignores_other_variants_trades_for_within_variant_hints():
-    # Trades under a *different* fingerprint shouldn't influence the current
-    # variant's own within-variant recommendations - the whole point of
-    # scoping per-variant instead of blending like compute_insights does.
-    current_rows = [_row(config_fingerprint="fp1", entry_confidence=0.6, won=True) for _ in range(5)]
+def test_generate_recommendations_now_blends_other_variants_trades_for_within_variant_hints():
+    # This is the exact bug fix the merge exists for: a suggestion for one
+    # field used to be scoped to trades placed under the *exact* current
+    # config fingerprint, so changing any other field reset the sample to
+    # zero. Per-field suggestions now read the full trade history regardless
+    # of which fingerprint each trade carries.
+    # current_rows carry no entry_confidence at all - under the old
+    # fp-filtered behavior there'd be nothing to bucket, so the only way
+    # this recommendation can appear is if other_rows' fp-other trades are
+    # now blended in too.
+    current_rows = [_row(config_fingerprint="fp1", entry_confidence=None, won=True) for _ in range(5)]
     other_rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
     for r in other_rows:
         r["config_fingerprint"] = "fp-other"
     rows = current_rows + other_rows
     result = ae.generate_recommendations(rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=5)
-    assert result["gated_reason"] is None
     paths = [r["config_path"] for r in result["recommendations"]]
-    assert "strategy.entry_threshold" not in paths
+    assert "strategy.entry_threshold" in paths
+
+
+def test_generate_recommendations_includes_market_strategy_suggestions_from_market_rows():
+    rows = [_row(config_fingerprint="fp1") for _ in range(5)]
+    market_rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(3)]
+    result = ae.generate_recommendations(rows, _cfg(), "fp1", {}, min_resolved_trades=5, market_rows=market_rows)
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "market_strategy.min_momentum_delta" in paths
