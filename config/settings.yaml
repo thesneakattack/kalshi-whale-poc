@@ -30,8 +30,8 @@ strategy:
   take_profit_pct: null
   stop_loss_pct: null
   exit_on_sentiment_reversal: true
-  exit_sentiment_min_signals: 9
-  exit_sentiment_lean_pct: 85
+  exit_sentiment_min_signals: 11
+  exit_sentiment_lean_pct: 90
   auto_exit_enabled: true
   auto_exit_threshold: 0.6
   auto_exit_pnl_weight: 1
@@ -61,7 +61,7 @@ market_strategy:
   max_spread: 0.05
   min_volume_24h: 500
   momentum_lookback_sec: 1800
-  min_momentum_delta: 0.04
+  min_momentum_delta: 0.05
   min_seconds_to_close: 3600
   entry_confidence_threshold: 0.5
   take_profit_pct: null
@@ -79,7 +79,7 @@ advisory:
   auto_apply_min_confidence: higher
   auto_apply_cooldown_sec: 86400
 confidence_calibration:
-  enabled: false
+  enabled: true
   min_resolved_signals: 50
 market_analyst:
   enabled: true
