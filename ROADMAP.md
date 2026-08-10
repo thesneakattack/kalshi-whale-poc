@@ -76,6 +76,15 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
+- [ ] `docs/platform-deep-scan-findings-2026-08-10.md` — 7 concrete,
+      cited strategy/risk gaps found by re-reading the prediction-market
+      research against the actual current engine code (edge-aware
+      position sizing, cross-position concentration risk, exit-side
+      analyst signal, calibration-band feedback, wash-trading detection,
+      market_strategy calibration parity, time-of-day regime awareness).
+      Recommended sequencing is in the doc itself — start with the
+      exit-side analyst signal (cheapest) and concentration risk
+      (highest safety payoff) before touching position sizing.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
