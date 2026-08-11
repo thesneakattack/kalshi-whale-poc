@@ -33,6 +33,7 @@ from services import series_evaluator
 from services import signal_log
 from services import title_cache
 from services import trade_analytics
+from services import trade_category
 from services.config_store import config_store
 from services.http_client import close_client
 from services.kalshi_client import KalshiClient
@@ -1553,6 +1554,16 @@ async def trading_loop():
             # direct request) needed a real feed to show.
             for decision in market_strategy.evaluate_all(markets, tick_now, cfg, market_results):
                 state["market_decision_feed"].insert(0, decision)
+                if decision["action"] == "trade":
+                    # Same category-at-entry-time capture as the whale-follow
+                    # side above - one shared table across both strategies,
+                    # since Gap 9's segmentation reads either strategy's own
+                    # trade history the same way.
+                    m_ticker = decision["ticker"]
+                    m_event_ticker = (state["market_titles"].get(m_ticker) or {}).get("event_ticker")
+                    trade_category.record_category(
+                        m_ticker, (state["event_titles"].get(m_event_ticker) or {}).get("category"), tick_now,
+                    )
             markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
             for decision in market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results):
                 state["market_decision_feed"].insert(0, decision)
@@ -1697,6 +1708,18 @@ async def trading_loop():
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
+                if decision["action"] == "trade":
+                    # Category-at-entry-time capture (deferred half of Gap
+                    # 9, docs/config-tuning-data-gaps-2026-08-10.md, direct
+                    # follow-up request) - reuses the event_ticker lookup
+                    # already computed above for the live-markets-only gate,
+                    # zero new API calls. market_catalog.category is
+                    # watchlist-scoped and rotates, so this has to be
+                    # captured now, at the moment of entry, not
+                    # reconstructed later.
+                    trade_category.record_category(
+                        signal.ticker, (state["event_titles"].get(event_ticker) or {}).get("category"), tick_now,
+                    )
 
                 # Independent of the paper decision above - shadow mode asks
                 # the same question against real-account-sized bankroll,
@@ -2381,6 +2404,18 @@ async def get_regime_by_day_of_week(strategy: str = "whale_follow"):
     return {"strategy": strategy, "buckets": regime_analytics.by_day_of_week(rows)}
 
 
+@app.get("/api/regime/by-category")
+async def get_regime_by_category(strategy: str = "whale_follow"):
+    # services/trade_category.py - the deferred category half of Gap 9,
+    # docs/config-tuning-data-gaps-2026-08-10.md. Always safe to call -
+    # naturally empty until enough trades placed after this shipped have a
+    # recorded category, same "auto-enables once there's real data"
+    # pattern every other gate in this app already uses.
+    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
+    return {"strategy": strategy, "buckets": regime_analytics.by_category(rows)}
+
+
 @app.get("/api/backtest/entry-threshold")
 async def get_backtest_entry_threshold():
     # services/backtest.py - Gap 2 of docs/config-tuning-data-gaps-2026-08-
@@ -3026,6 +3061,7 @@ class ResetBody(BaseModel):
     # short of editing data/market_risk_state.db by hand). Off by default,
     # same convention as everything except paper itself.
     market_native: bool = False
+    trade_category: bool = False
 
 
 @app.post("/api/reset")
@@ -3071,6 +3107,9 @@ async def reset_broker(body: ResetBody = ResetBody()):
         market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
         state["market_decision_feed"] = []
         cleared.append("market_native")
+    if body.trade_category:
+        trade_category.clear_all()
+        cleared.append("trade_category")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 

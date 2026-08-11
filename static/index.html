@@ -1226,19 +1226,19 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     <div id="cross-strategy-comparison"><div class="empty">Loading…</div></div>
 
     <!-- Regime Segmentation (services/regime_analytics.py, Gap 9 of
-         docs/config-tuning-data-gaps-2026-08-10.md) - a partial
-         implementation, disclosed: hour-of-day/day-of-week only, both
-         derivable from entry_timestamp. Category segmentation (the other
-         half deep-scan Finding 7 also names) isn't attempted - would need
-         a new category-at-entry-time persistence layer, not just an
-         aggregation pass over data that already exists. Whale-follow only
-         (135 closed positions vs. market-native's 22 - too thin to
-         segment further right now). -->
+         docs/config-tuning-data-gaps-2026-08-10.md) - hour-of-day/day-of-
+         week/category. Category (2026-08-10, direct follow-up request)
+         needed services/trade_category.py's new category-at-entry-time
+         persistence layer first - market_catalog.category is watchlist-
+         scoped and rotates, so it couldn't be reconstructed after the
+         fact. Naturally empty until trades placed since that module
+         shipped accumulate. Whale-follow only (135 closed positions vs.
+         market-native's 22 - too thin to segment further right now). -->
     <div class="panel-title">Regime Segmentation <span class="data-badge new">🆕 new</span></div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Whale-follow win rate by hour-of-day (UTC) and day-of-week — every global threshold in Config applies
-      identically regardless of when a signal fires; this shows whether that's actually a safe assumption.
-      Category segmentation isn't built yet (see the plan doc).
+      Whale-follow win rate by hour-of-day (UTC), day-of-week, and category — every global threshold in Config
+      applies identically regardless of when a signal fires or what it's about; this shows whether that's
+      actually a safe assumption. Category rows only cover trades placed since this shipped.
     </p>
     <div id="regime-segmentation"><div class="empty">Loading…</div></div>
 
@@ -3687,9 +3687,10 @@ const DAY_OF_WEEK_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 async function loadRegimeSegmentation() {
   const el = $('regime-segmentation');
   try {
-    const [byHour, byDow] = await Promise.all([
+    const [byHour, byDow, byCategory] = await Promise.all([
       fetchJSON('/api/regime/by-hour?strategy=whale_follow'),
       fetchJSON('/api/regime/by-day-of-week?strategy=whale_follow'),
+      fetchJSON('/api/regime/by-category?strategy=whale_follow'),
     ]);
     const wrColor = v => v === null || v === undefined ? 'var(--muted)' : (v >= 50 ? 'var(--yes)' : 'var(--no)');
     const bucketRows = (buckets, labelFn) => buckets.map(b => `<tr>
@@ -3699,6 +3700,7 @@ async function loadRegimeSegmentation() {
     </tr>`).join('');
     const hourRows = bucketRows(byHour.buckets || [], b => `${String(b.hour_utc).padStart(2, '0')}:00 UTC`);
     const dowRows = bucketRows(byDow.buckets || [], b => DAY_OF_WEEK_LABELS[b.day_of_week]);
+    const categoryRows = bucketRows(byCategory.buckets || [], b => b.category);
     el.innerHTML = `
       ${hourRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By hour of day</div>
       <table class="positions-table" style="margin-bottom:14px;">
@@ -3706,10 +3708,15 @@ async function loadRegimeSegmentation() {
         <tbody>${hourRows}</tbody>
       </table>` : '<div class="empty">Not enough closed positions yet to segment by hour.</div>'}
       ${dowRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By day of week</div>
-      <table class="positions-table">
+      <table class="positions-table" style="margin-bottom:14px;">
         <thead><tr><th>Day</th><th>Closed</th><th>Win Rate</th></tr></thead>
         <tbody>${dowRows}</tbody>
       </table>` : ''}
+      ${categoryRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By category</div>
+      <table class="positions-table">
+        <thead><tr><th>Category</th><th>Closed</th><th>Win Rate</th></tr></thead>
+        <tbody>${categoryRows}</tbody>
+      </table>` : '<div class="empty" style="margin-top:8px;">No category data yet — only trades placed since this shipped have a recorded category (services/trade_category.py).</div>'}
     `;
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load regime segmentation.</div>';

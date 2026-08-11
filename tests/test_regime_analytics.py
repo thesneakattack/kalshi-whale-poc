@@ -1,14 +1,22 @@
 import calendar
 import time
 
+import pytest
+
 from services import regime_analytics as ra
+from services import trade_category as tc
 
 
-def _row(entry_timestamp, won=True, realized_pnl=10.0):
+@pytest.fixture(autouse=True)
+def _redirect_trade_category_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(tc, "DB_PATH", tmp_path / "trade_category.db")
+
+
+def _row(entry_timestamp, won=True, realized_pnl=10.0, ticker="TICK-A"):
     return {
         "entry_timestamp": entry_timestamp, "won": won, "realized_pnl": realized_pnl,
         "hold_sec": 100.0, "left_on_table": None, "cost_basis": 50.0,
-        "close_type": "settled_win" if won else "settled_loss",
+        "close_type": "settled_win" if won else "settled_loss", "ticker": ticker,
     }
 
 
@@ -76,3 +84,36 @@ def test_by_day_of_week_sorted_ascending():
 def test_by_day_of_week_skips_rows_with_no_entry_timestamp():
     rows = [_row(None)]
     assert ra.by_day_of_week(rows) == []
+
+
+# --- by_category (2026-08-10, category-at-entry-time capture) --------------
+
+def test_by_category_groups_correctly():
+    tc.record_category("TICK-A", "Sports")
+    tc.record_category("TICK-B", "Politics")
+    rows = [_row(1000.0, ticker="TICK-A"), _row(1000.0, won=False, ticker="TICK-A"), _row(1000.0, ticker="TICK-B")]
+    result = ra.by_category(rows)
+    by_cat = {r["category"]: r for r in result}
+    assert by_cat["Sports"]["total_closed"] == 2
+    assert by_cat["Politics"]["total_closed"] == 1
+
+
+def test_by_category_excludes_tickers_with_no_recorded_category():
+    # A trade entered before trade_category.py existed, or otherwise never
+    # captured - excluded, not backfilled with a guess.
+    rows = [_row(1000.0, ticker="TICK-UNKNOWN")]
+    assert ra.by_category(rows) == []
+
+
+def test_by_category_sorted_by_count_descending():
+    tc.record_category("TICK-A", "Sports")
+    tc.record_category("TICK-B", "Politics")
+    rows = [_row(1000.0, ticker="TICK-A"), _row(1000.0, ticker="TICK-B"),
+            _row(1000.0, ticker="TICK-B"), _row(1000.0, ticker="TICK-B")]
+    result = ra.by_category(rows)
+    assert result[0]["category"] == "Politics"  # 3 trades, vs Sports' 1
+    assert result[0]["total_closed"] == 3
+
+
+def test_by_category_empty_rows_returns_empty_list():
+    assert ra.by_category([]) == []

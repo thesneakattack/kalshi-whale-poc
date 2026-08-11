@@ -424,6 +424,33 @@ works" to "flip it for real" still has open operational questions.
       button — none of them resolve to one clean config value the way a
       sweep row or an Advisory recommendation does. Verified live via
       selenium-chrome.
+- [x] **Category segmentation - the deferred half of Gap 9 (2026-08-10,
+      direct follow-up request: "add those things, and have them auto-
+      enable... once there *is* enough data")** — regime segmentation
+      could only ever cover hour-of-day/day-of-week when it first
+      shipped; category needed a real new persistence layer first, since
+      `market_catalog.category` is watchlist-scoped and rotates, so a
+      historical trade couldn't be reliably joined back to its category
+      after the fact (exactly the limitation the doc originally
+      disclosed, not worked around with a guess). New
+      `services/trade_category.py` — records `ticker -> category` once
+      per position OPEN, looked up from `state["market_titles"]`/
+      `state["event_titles"]` (already cached every tick, zero new API
+      calls) at the exact moment either strategy places a trade. New
+      `regime_analytics.by_category()` joins onto it, same shape as the
+      other two bucket functions. New `GET /api/regime/by-category` + a
+      `trade_category` Danger Zone reset flag; the existing Regime
+      Segmentation panel gains a third table. Naturally "auto-enables"
+      the same way every other real-data-gated panel in this app does —
+      empty until enough trades placed *after this shipped* have a
+      recorded category, not backfilled with a guess for older ones.
+      28 new tests, 668 passing. Verified live: confirmed the app
+      imported and the trading loop kept running with zero tick errors
+      after deploy — but no NEW whale-follow position had opened in the
+      few minutes since deploy by the time this was checked (entry rate
+      depends on a real signal actually clearing the threshold, not every
+      tick), so an actual captured category row is disclosed as pending
+      the next real trade, not fabricated as already confirmed.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
