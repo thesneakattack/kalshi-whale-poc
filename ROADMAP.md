@@ -51,11 +51,17 @@ works" to "flip it for real" still has open operational questions.
 - [ ] Auth is optional, single-operator Google OAuth (`services/auth.py`) —
       fine for "just me," but confirm that's still the model before real
       money sits behind it. No user table, no session-invalidation UI, no 2FA.
-- [ ] `advisory.auto_apply_enabled` is deliberately unbuilt — config changes
-      only happen via manual apply with an audit trail
-      (`POST /api/advisory/recommendations/apply`). Keep it that way until
-      there's a real track record; don't build the auto-apply endpoint as a
-      drive-by later.
+- [ ] `advisory.auto_apply_enabled`/`confidence_calibration.auto_apply_enabled`
+      shipped 2026-08-10 (direct request), off/on by default respectively,
+      typed-confirmation gated, with their own sample-size floors on top of
+      manual-apply's bar (`advisory.auto_apply_min_n`,
+      `confidence_calibration.auto_apply_min_resolved_signals`, both
+      2026-08-11 hardening) and a full audit trail either way
+      (`config_performance.applied_changes`, `source`-tagged). Real-money
+      readiness is still an open question independent of the code, though:
+      this has only ever run against paper-mode trade history — confirm it
+      should stay on (or get a stricter/zero floor) before real capital is
+      ever behind the config it's tuning.
 - [ ] Have a human, not a default, set real position-size/kill-switch
       numbers in `config/settings.yaml` before the first live dollar —
       today's defaults were picked for exercising paper-mode logic, not
@@ -684,3 +690,48 @@ works" to "flip it for real" still has open operational questions.
   This completes Item 3 (the unified self-tuning subsystem) entirely —
   3A/3B/3C/3D have all shipped. 538 tests. See `static/status.html`
   phases 64-73.
+- **2026-08-11 session — auto-apply hardening**, four direct reports acted
+  on together: (1) "the apply button should only appear next to config
+  change options the system agrees with" — Advisory Recommendations now
+  hides the manual "Apply to config" button for `confidence_label ==
+  'low'` suggestions (still shown, just without a one-click action - the
+  system itself is hedging on n<5, so it shouldn't offer a one-click way
+  to act on its own low-confidence read). (2) "auto apply should wait for
+  a significant dataset... and predict how those changes may improve (or
+  worsen) before applying" — both auto-apply paths get a dedicated,
+  stricter-than-manual sample-size floor on top of what already existed
+  (`advisory.auto_apply_min_n`, default 25, on top of the existing
+  confidence-tier check; `confidence_calibration.
+  auto_apply_min_resolved_signals`, default 150, vs. the report's own
+  50-signal display floor) - both new, Config-tab-editable, and neither
+  affects manual Apply clicks. Calibration auto-apply's logged rationale
+  now cites the specific calibration gap (factor + pts) the reweighting
+  was derived to address, rather than a fabricated forward win-rate
+  number this app has no way to honestly back before the new weights have
+  scored anything. (3) "make sure the suggested values arent stale" — a
+  real gap found: the series-analyst/full-spectrum-analyst apply routes
+  (`POST /api/market-analyst/series/apply`,
+  `.../full-spectrum/apply`) applied a suggestion's `suggested_value`
+  using its analysis-time `current_value` with no check that the live
+  config still matched - unlike the rule-based Advisory apply route
+  (which recomputes fresh every time and already 404s on drift), a config
+  change between analysis and apply (a manual edit, another analysis,
+  auto-apply) would silently overwrite based on a stale premise and log a
+  fabricated "before" value. New `_config_value_at_path()` helper backs a
+  check that now 409s with a clear message if the live value has moved.
+  4 new tests. (4)
+  "the config change log shows [Object object]" — real bug: multi-value
+  auto-applied changes (calibration replaces the whole
+  `whale_confidence_weights` dict in one shot) hit a bare `String(value)`
+  call, which just invokes an object's default `toString()`. New shared
+  `formatConfigValue()` (JSON.stringify for objects, plain string
+  otherwise) used everywhere a config value renders — Change History,
+  Advisory Recommendations, series/full-spectrum suggestion cards.
+  (History-list length was already capped at 20 via the existing
+  `?limit=20` fetch - confirmed, not changed.) New Config-tab "Whale-Signal
+  Calibration" section (previously had zero Config-tab presence at all,
+  despite being a live, auto-applying feature) plus one new field on the
+  existing Advisory Engine section. 672 tests (was 668). Verified live via
+  curl (a real pre-existing calibration-auto-apply row's dict value
+  confirmed rendering as JSON, not `[object Object]`) and
+  `selenium-chrome` (both new Config-tab fields, zero console errors).

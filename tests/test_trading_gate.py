@@ -1551,6 +1551,43 @@ def test_post_market_analyst_series_apply_404s_for_unknown_suggestion(tmp_path, 
     assert resp.status_code == 404
 
 
+def test_post_market_analyst_series_apply_rejects_stale_suggestion(tmp_path, monkeypatch):
+    # Direct report (2026-08-11): "make sure the suggested values arent
+    # stale." The suggestion's current_value ("KXTICK" not yet excluded) was
+    # captured when the analysis ran - if strategy.excluded_series has since
+    # changed (a manual edit here, simulating any intervening change), the
+    # live value no longer matches what the suggestion assumed, and applying
+    # it anyway would silently overwrite based on a stale premise.
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"strategy": {"excluded_series": []}})
+    suggestions = main._series_suggestions_from_raw(
+        main.config_store.get(), "KXTICK", [{"action": "exclude", "rationale": "weak whale accuracy"}],
+    )
+    analysis_id = market_analyst_agent.record_series_analysis("KXTICK", "s", suggestions, "m")
+
+    # Something else changes strategy.excluded_series after analysis time.
+    main.config_store.update({"strategy": {"excluded_series": ["KXOTHER"]}})
+
+    resp = client.post("/api/market-analyst/series/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": suggestions[0]["id"],
+    })
+    assert resp.status_code == 409
+    assert "stale" in resp.json()["detail"].lower()
+    # The stale apply must not have gone through - KXTICK was never added.
+    assert main.config_store.get()["strategy"]["excluded_series"] == ["KXOTHER"]
+
+
+def test_config_value_at_path_reads_nested_field():
+    cfg = {"strategy": {"entry_threshold": 0.6}}
+    assert main._config_value_at_path(cfg, "strategy.entry_threshold") == 0.6
+
+
+def test_config_value_at_path_missing_section_or_field_returns_none():
+    cfg = {"strategy": {"entry_threshold": 0.6}}
+    assert main._config_value_at_path(cfg, "nonexistent.field") is None
+    assert main._config_value_at_path(cfg, "strategy.nonexistent") is None
+
+
 # ---- Market Analyst: "Feed the Analyst" full-spectrum scan (Item 3C, 2026-08-10) ----
 
 def test_types_compatible_treats_int_and_float_as_interchangeable():
@@ -1736,6 +1773,30 @@ def test_post_market_analyst_full_spectrum_apply_404s_for_unknown_suggestion(tmp
         "analysis_id": analysis_id, "suggestion_id": "does-not-exist",
     })
     assert resp.status_code == 404
+
+
+def test_post_market_analyst_full_spectrum_apply_rejects_stale_suggestion(tmp_path, monkeypatch):
+    # Same staleness guard as the series-apply route above - the suggestion
+    # assumed risk.max_daily_loss_pct was 0.25 when the analysis ran; if it's
+    # since moved (a manual edit here, standing in for any intervening
+    # change - another analyst suggestion, a plain Config-tab save, etc.),
+    # applying the old suggestion would silently clobber the newer value.
+    _isolate_market_analyst_dbs(tmp_path, monkeypatch)
+    main.config_store.update({"risk": {"max_daily_loss_pct": 0.25}})
+    suggestions = main._full_spectrum_suggestions_from_raw(
+        main.config_store.get(),
+        [{"config_path": "risk.max_daily_loss_pct", "suggested_value": 0.3, "rationale": "tighten the kill switch"}],
+    )
+    analysis_id = market_analyst_agent.record_full_spectrum_analysis("s", suggestions, "m")
+
+    main.config_store.update({"risk": {"max_daily_loss_pct": 0.4}})
+
+    resp = client.post("/api/market-analyst/full-spectrum/apply", json={
+        "analysis_id": analysis_id, "suggestion_id": suggestions[0]["id"],
+    })
+    assert resp.status_code == 409
+    assert "stale" in resp.json()["detail"].lower()
+    assert main.config_store.get()["risk"]["max_daily_loss_pct"] == 0.4
 
 
 # --- _enrich_recent_trades (2026-08-10 - Portfolio Trade Log real-outcome fix) ---

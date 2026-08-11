@@ -1209,6 +1209,22 @@ _PROTECTED_CONFIG_PATHS = {
 _CONFIDENCE_RANK = {"low": 0, "moderate": 1, "higher": 2}
 
 
+def _config_value_at_path(cfg: dict, config_path: str):
+    """Reads a "section.field" path out of a live config dict - the read
+    side of the same section/field split every apply route already does
+    for writes (config_store.update({section: {field: value}})). Used to
+    catch a stale suggestion: an LLM-derived suggestion (series/full-
+    spectrum analyst) is looked up from what was persisted at analysis
+    time, not recomputed fresh the way a rule-based Advisory recommendation
+    is - if the live config's actual current value has since drifted from
+    what the suggestion assumed (a manual edit, an auto-apply, or a second
+    analysis elsewhere), blindly applying it would silently overwrite based
+    on a stale premise and log a fabricated "before" value that was never
+    actually live. Missing section/field reads as None, same as dict.get."""
+    section, _, field = config_path.partition(".")
+    return (cfg.get(section) or {}).get(field)
+
+
 def _types_compatible(a, b) -> bool:
     """Loose type-compatibility check for a full-spectrum suggestion's
     value against the field's current one - int/float are interchangeable
@@ -1494,7 +1510,18 @@ async def trading_loop():
                     if cc_cfg.get("auto_apply_enabled"):
                         last_auto = config_performance.last_applied_at("calibration-auto-apply")
                         cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
-                        if last_auto is None or (tick_now - last_auto) >= cooldown:
+                        # Direct report (2026-08-11): "auto apply should wait for a
+                        # significant dataset... before applying changes." The report
+                        # itself only needs min_resolved_signals (default 50) to exist
+                        # at all - reasonable for a human reading a read-only panel, too
+                        # thin a bar for the system to act on unsupervised. A separate,
+                        # stricter floor specifically for the automatic-write path, same
+                        # "manual can be more permissive than automatic" split
+                        # auto_apply_min_n below applies to advisory.
+                        auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
+                        if (
+                            last_auto is None or (tick_now - last_auto) >= cooldown
+                        ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
                             current_weights = cfg.get("whale_confidence_weights") or {}
                             blended = confidence_calibration.blended_weights_for_auto_apply(
                                 current_weights, cc_result["report"].get("suggested_weights"),
@@ -1503,12 +1530,33 @@ async def trading_loop():
                                 fp_before = config_performance.fingerprint(cfg)
                                 config_store.update({"whale_confidence_weights": blended})
                                 fp_after = config_performance.fingerprint(config_store.get())
+                                # "predict how those changes may improve (or worsen)"
+                                # (direct report) - the biggest observed calibration
+                                # gap is exactly what suggested_weights was derived to
+                                # address (services/confidence_calibration.py's
+                                # _suggested_weights renormalizes toward the
+                                # best-discriminating factors) - cite it plainly rather
+                                # than fabricate a forward win-rate number this app has
+                                # no way to honestly back before the new weights have
+                                # actually scored any signals yet.
+                                ranked = cc_result["report"].get("ranked_by_discrimination") or []
+                                top_factor = ranked[0] if ranked else None
+                                top_gap = next(
+                                    (f["gap_pts"] for f in cc_result["report"]["per_factor"] if f["factor"] == top_factor),
+                                    None,
+                                ) if top_factor else None
+                                predicted = (
+                                    f" Largest observed calibration gap was {top_factor} at {top_gap:+.1f}pts - "
+                                    f"this reweighting shifts weight toward the factors that discriminate best."
+                                    if top_factor and top_gap is not None else ""
+                                )
                                 config_performance.log_applied_change(
                                     config_path="whale_confidence_weights",
                                     old_value=current_weights, new_value=blended,
                                     rationale=(
                                         f"Auto-applied calibration-suggested weights "
                                         f"(n={cc_result['report']['resolved_count']} resolved signals)."
+                                        f"{predicted}"
                                     ),
                                     trade_count=cc_result["report"]["resolved_count"],
                                     fingerprint_before=fp_before, fingerprint_after=fp_after,
@@ -1543,9 +1591,19 @@ async def trading_loop():
                         adv_cfg["min_resolved_trades_per_variant"], market_rows=adv_market_rows,
                     )
                     min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
+                    # Direct report (2026-08-11): "auto apply should wait for a
+                    # significant dataset... before applying changes." confidence_
+                    # label's "higher" tier already starts at n=15 (trade_analytics.
+                    # confidence_label) - a reasonable bar for a human to read a
+                    # suggestion, thinner than what should trigger an unsupervised
+                    # config write. A dedicated, separately-tunable floor for the
+                    # automatic path only - manual Apply (see apply_advisory_
+                    # recommendation) is untouched by this, same "manual can be more
+                    # permissive than automatic" split as the calibration side above.
+                    min_n = adv_cfg.get("auto_apply_min_n", 25)
                     qualifying = [
                         r for r in adv_result.get("recommendations", [])
-                        if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank
+                        if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
                     ]
                     if qualifying:
                         rec = qualifying[0]
@@ -2540,6 +2598,24 @@ async def post_market_analyst_series_apply(body: MarketAnalystSeriesApplyBody):
         raise HTTPException(status_code=404, detail="Suggestion not found on this analysis.")
 
     cfg_before = config_store.get()
+    # Staleness check (direct report 2026-08-11: "make sure the suggested
+    # values arent stale") - this suggestion's current_value was captured
+    # when the analysis ran, not recomputed just now (see the docstring
+    # above on why this route can't do what the rule-based Advisory apply
+    # route does). If the live config has moved since - a manual edit, an
+    # auto-apply, or a second analysis touching the same field - applying
+    # this suggestion would silently overwrite based on a premise that's no
+    # longer true, and the audit trail would log a "before" value that was
+    # never actually live at apply time.
+    live_value = _config_value_at_path(cfg_before, match["config_path"])
+    if live_value != match["current_value"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Stale suggestion - {match['config_path']} is now {live_value!r}, not the "
+                f"{match['current_value']!r} this suggestion was based on. Re-run the analysis and try again."
+            ),
+        )
     fp_before = config_performance.fingerprint(cfg_before)
     section, _, field = match["config_path"].partition(".")
     config_store.update({section: {field: match["suggested_value"]}})
@@ -2583,7 +2659,19 @@ async def post_market_analyst_full_spectrum_apply(body: MarketAnalystFullSpectru
     if match is None:
         raise HTTPException(status_code=404, detail="Suggestion not found on this analysis.")
 
-    fp_before = config_performance.fingerprint(config_store.get())
+    cfg_before = config_store.get()
+    # Staleness check - see the identical guard on the series-apply route
+    # above for the full reasoning.
+    live_value = _config_value_at_path(cfg_before, match["config_path"])
+    if live_value != match["current_value"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Stale suggestion - {match['config_path']} is now {live_value!r}, not the "
+                f"{match['current_value']!r} this suggestion was based on. Re-run the analysis and try again."
+            ),
+        )
+    fp_before = config_performance.fingerprint(cfg_before)
     section, _, field = match["config_path"].partition(".")
     config_store.update({section: {field: match["suggested_value"]}})
     fp_after = config_performance.fingerprint(config_store.get())

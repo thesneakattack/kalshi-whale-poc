@@ -1458,13 +1458,35 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           Rule-based config-tuning recommendations, scoped per exact config variant (see the
           Trading History tab). Disabled by default — even once enabled, a recommendation only
           appears once the current config has enough of its own resolved trades to trust. See
-          docs/advisory-engine-plan.md for the full design, including opt-in auto-apply, which
-          is not wired up yet on purpose (ships as its own follow-up, gated behind a confirmation
-          step, after the manual "Apply" path above has run for a while).
+          docs/advisory-engine-plan.md for the full design. Opt-in auto-apply is wired up (toggle
+          it from the History tab's Advisory panel, typed-confirmation gated) — the two fields
+          below control how cautious the *automatic* path is specifically; manual "Apply to
+          config" clicks on the History tab aren't affected by either.
         </p>
         <div class="field"><label><input type="checkbox" id="cfg-advisory-enabled"> Enable advisory recommendations <span class="config-path">advisory.enabled</span></label></div>
         <div class="field"><label>Minimum resolved trades (per config variant) before recommendations activate <span class="config-path">advisory.min_resolved_trades_per_variant</span>
           <span class="info-icon" title="Higher = waits for more resolved trades under this exact config before trusting a recommendation enough to show it - fewer, more reliable suggestions. Lower = suggests sooner, on thinner evidence.">ⓘ</span></label><input id="cfg-advisory-min-resolved" type="number" step="1" min="1"></div>
+        <div class="field"><label>Auto-apply: minimum sample size (n) before an automatic apply fires <span class="config-path">advisory.auto_apply_min_n</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="Auto-apply already requires a recommendation to clear a confidence tier (Higher = n≥15, see the History tab panel); this is a separate, stricter floor on top of that for the unsupervised path specifically. Higher = waits for a more significant dataset before writing to config with no human click. Lower = auto-applies sooner. Manual Apply clicks are never affected by this.">ⓘ</span></label><input id="cfg-advisory-auto-apply-min-n" type="number" step="1" min="1"></div>
+      </div>
+    </details>
+
+    <details class="config-section" id="cfg-section-calibration">
+      <summary>Whale-Signal Calibration <span class="data-badge hist">📉 needs history</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Checks whether a resolved real signal's composite confidence score actually predicted its
+          real outcome (see the History tab's Whale-Signal Calibration panel) and can suggest
+          reweighting <span class="config-path" style="margin:0;">whale_confidence_weights</span>
+          toward whichever factors discriminate winners from losers best. Auto-apply is
+          typed-confirmation gated from that same History-tab panel — the field below controls how
+          cautious the automatic path is specifically.
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-calibration-enabled"> Enable calibration tracking <span class="config-path">confidence_calibration.enabled</span></label></div>
+        <div class="field"><label>Minimum resolved real signals before a calibration report activates <span class="config-path">confidence_calibration.min_resolved_signals</span>
+          <span class="info-icon" title="Higher = waits for more resolved real (non-simulated) signals before showing a calibration report at all - fewer, more reliable findings. Lower = reports sooner, on thinner evidence.">ⓘ</span></label><input id="cfg-calibration-min-resolved" type="number" step="1" min="1"></div>
+        <div class="field"><label>Auto-apply: minimum resolved signals before an automatic reweight fires <span class="config-path">confidence_calibration.auto_apply_min_resolved_signals</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="A separate, stricter floor than the one above - that one only gates showing a read-only report to a human; this one gates the unsupervised auto-apply path writing new weights with nobody reviewing first. Higher = waits for a materially bigger dataset before acting automatically. Lower = auto-applies sooner.">ⓘ</span></label><input id="cfg-calibration-auto-apply-min-resolved" type="number" step="1" min="1"></div>
       </div>
     </details>
 
@@ -1711,6 +1733,19 @@ let accountMode = localStorage.getItem('whale-signal-account-mode') || 'paper'; 
 
 function esc(str) {
   return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// A config value being logged/shown isn't always a scalar - calibration
+// auto-apply replaces the whole whale_confidence_weights dict in one shot
+// (direct report, 2026-08-11: "the config change log shows [Object object]
+// instead"), and a plain String(v) on an object/array just calls its
+// default toString(), which is literally the string "[object Object]".
+// JSON.stringify is a good-enough plain-text rendering for a dict this
+// small (8 weight fields) without needing per-field formatting logic.
+function formatConfigValue(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
 }
 
 // Kalshi contracts settle to $1 or $0 each - a position/trade/fill row's max
@@ -3442,17 +3477,32 @@ async function loadAdvisory() {
         `${esc(String(resp.resolved_count ?? 0))}/${esc(String(resp.min_resolved_trades_per_variant ?? '?'))} resolved trades under the current config.</div>`;
       return;
     }
-    el.innerHTML = recs.map(r => `
+    el.innerHTML = recs.map(r => {
+      // Direct report (2026-08-11): "the apply button should only appear
+      // next to config change options the system agrees with." A 'low'
+      // confidence_label (n<5, see trade_analytics.confidence_label) is
+      // this app's own rule engine saying it doesn't trust this suggestion
+      // enough to act on - the card still shows (transparency: here's what
+      // the data hints at), just without a one-click way to act on
+      // something the system itself is hedging on. 'moderate'/'higher'
+      // still get the button - only auto-apply needs the stricter
+      // auto_apply_min_n floor (main.py), since that path has no human
+      // in the loop to catch a thin-sample mistake.
+      const applyHTML = r.confidence_label === 'low'
+        ? `<div style="margin-top:8px; font-size:11px; color:var(--muted);">Not enough data yet for the system to endorse an automatic apply — shown for visibility only.</div>`
+        : `<button class="advisory-apply-btn" data-rec-id="${esc(r.id)}" style="margin-top:8px;">Apply to config</button>`;
+      return `
       <div class="signal-card">
         <div class="top-row">
           <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(r.config_path)}" title="Jump to this setting on the Config tab">${esc(r.config_path)}</span>
           <span style="color:${HISTORY_CONFIDENCE_COLOR[r.confidence_label] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(r.confidence_label)} confidence · n=${r.n}</span>
         </div>
-        <div style="margin:4px 0;"><b>${esc(String(r.current_value))}</b> → <b style="color:var(--whale);">${esc(String(r.suggested_value))}</b></div>
+        <div style="margin:4px 0;"><b>${esc(formatConfigValue(r.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(r.suggested_value))}</b></div>
         <div style="color:var(--muted); font-size:13px;">${esc(r.rationale)}</div>
-        <button class="advisory-apply-btn" data-rec-id="${esc(r.id)}" style="margin-top:8px;">Apply to config</button>
+        ${applyHTML}
       </div>
-    `).join('');
+    `;
+    }).join('');
     el.querySelectorAll('.advisory-apply-btn').forEach(btn => {
       btn.addEventListener('click', () => applyAdvisoryRecommendation(btn.dataset.recId, btn));
     });
@@ -3554,7 +3604,7 @@ async function loadChangeHistory() {
             <span class="config-path">${esc(c.config_path)}</span>
             <span style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(sourceLabel)} · ${esc(when)}</span>
           </div>
-          <div style="margin:4px 0;"><b>${esc(String(c.old_value))}</b> → <b style="color:var(--whale);">${esc(String(c.new_value))}</b></div>
+          <div style="margin:4px 0;"><b>${esc(formatConfigValue(c.old_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(c.new_value))}</b></div>
           <div style="color:var(--muted); font-size:13px;">${esc(c.rationale)}</div>
           ${effectHTML}
         </div>
@@ -4162,7 +4212,7 @@ async function analyzeSeries(series, btn) {
           <div class="top-row">
             <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
           </div>
-          <div style="margin:4px 0;"><b>${esc(JSON.stringify(s.current_value))}</b> → <b style="color:var(--whale);">${esc(JSON.stringify(s.suggested_value))}</b></div>
+          <div style="margin:4px 0;"><b>${esc(formatConfigValue(s.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(s.suggested_value))}</b></div>
           <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
           <button class="series-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
         </div>
@@ -4233,7 +4283,7 @@ async function feedTheAnalyst(btn) {
           <div class="top-row">
             <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
           </div>
-          <div style="margin:4px 0;"><b>${esc(JSON.stringify(s.current_value))}</b> → <b style="color:var(--whale);">${esc(JSON.stringify(s.suggested_value))}</b></div>
+          <div style="margin:4px 0;"><b>${esc(formatConfigValue(s.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(s.suggested_value))}</b></div>
           <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
           <button class="full-spectrum-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
         </div>
@@ -5847,6 +5897,11 @@ async function loadConfig() {
   $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
   $('cfg-advisory-enabled').checked = !!(cfg.advisory && cfg.advisory.enabled);
   $('cfg-advisory-min-resolved').value = (cfg.advisory && cfg.advisory.min_resolved_trades_per_variant) ?? 30;
+  $('cfg-advisory-auto-apply-min-n').value = (cfg.advisory && cfg.advisory.auto_apply_min_n) ?? 25;
+  const ccCfg = cfg.confidence_calibration || {};
+  $('cfg-calibration-enabled').checked = !!ccCfg.enabled;
+  $('cfg-calibration-min-resolved').value = ccCfg.min_resolved_signals ?? 50;
+  $('cfg-calibration-auto-apply-min-resolved').value = ccCfg.auto_apply_min_resolved_signals ?? 150;
   const ms = cfg.market_strategy || {};
   $('cfg-market-strategy-enabled').checked = !!ms.enabled;
   $('cfg-market-strategy-bankroll').value = ms.starting_bankroll ?? 10000;
@@ -5955,6 +6010,12 @@ $('save-config-btn').addEventListener('click', async () => {
     advisory: {
       enabled: $('cfg-advisory-enabled').checked,
       min_resolved_trades_per_variant: parseInt($('cfg-advisory-min-resolved').value),
+      auto_apply_min_n: parseInt($('cfg-advisory-auto-apply-min-n').value),
+    },
+    confidence_calibration: {
+      enabled: $('cfg-calibration-enabled').checked,
+      min_resolved_signals: parseInt($('cfg-calibration-min-resolved').value),
+      auto_apply_min_resolved_signals: parseInt($('cfg-calibration-auto-apply-min-resolved').value),
     },
     market_strategy: {
       enabled: $('cfg-market-strategy-enabled').checked,
