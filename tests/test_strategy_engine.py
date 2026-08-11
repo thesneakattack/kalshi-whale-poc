@@ -128,6 +128,45 @@ def test_longshot_threshold_and_bonus_are_configurable(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
 
 
+# ---- category-conditional entry threshold ("web of expertise" audit, 2026-08-11) ----
+
+def test_category_override_replaces_the_flat_threshold(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg, category="Sports")
+    # 0.6 clears the flat 0.5 default but not the Sports-specific 0.9 override
+    assert decision["action"] == "skip"
+    assert "confidence" in decision["reason"]
+
+
+def test_category_override_does_not_affect_other_categories(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg, category="Politics")
+    assert decision["action"] == "trade"  # Politics has no override - flat 0.5 applies
+
+
+def test_category_override_ignored_when_category_not_passed(tmp_path, monkeypatch):
+    # No caller before this feature passed category at all - must behave
+    # exactly as before for anyone who still doesn't.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg)
+    assert decision["action"] == "trade"  # category=None -> flat threshold, no override lookup
+
+
+def test_category_override_combines_with_the_longshot_bonus(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(
+        entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.6},
+        longshot_price_threshold=0.15, longshot_entry_threshold_bonus=0.15,
+    )
+    # Sports base is 0.6, longshot zone adds +0.15 = 0.75 effective bar.
+    decision = strategy.evaluate(_signal(confidence=0.70, price=0.10), cfg, category="Sports")
+    assert decision["action"] == "skip"
+    assert "longshot zone" in decision["reason"]
+
+
 def test_trade_when_conditions_met(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg())

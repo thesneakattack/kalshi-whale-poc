@@ -527,6 +527,9 @@ def test_build_full_spectrum_prompt_includes_all_context_sections():
         "recent_applied_changes": [{"config_path": "risk.max_daily_loss_pct"}],
         "per_series_whale_breakdown": [{"series": "KXPGATOUR"}],
         "portfolio": {"bankroll": 9000},
+        "rejected_candidate_gates": [{"gate_name": "entry_threshold", "hypothetical_win_rate": 40.0}],
+        "regime_by_category": [{"category": "Sports", "win_rate_pct": 60.0}],
+        "regime_by_hour": [{"hour_utc": 14, "win_rate_pct": 45.0}],
     }
     prompt = maa.build_full_spectrum_prompt(ctx)
     assert "entry_threshold" in prompt
@@ -534,6 +537,20 @@ def test_build_full_spectrum_prompt_includes_all_context_sections():
     assert "KXPGATOUR" in prompt
     assert "max_daily_loss_pct" in prompt
     assert "9000" in prompt
+    # 2026-08-11 "web of expertise" audit - two previously-missing datasets
+    assert "40.0" in prompt  # rejected-candidate hypothetical win rate
+    assert '"Sports"' in prompt  # regime by-category
+    assert '"hour_utc": 14' in prompt  # regime by-hour
+
+
+def test_build_full_spectrum_prompt_handles_missing_new_sections_gracefully():
+    # Real callers always pass these (main.py's _build_full_spectrum_context
+    # always includes them now), but a minimal/legacy context dict must not
+    # crash the prompt builder.
+    prompt = maa.build_full_spectrum_prompt({})
+    assert "none logged yet" in prompt
+    assert "not enough categorized trades yet" in prompt
+    assert "not enough trades yet" in prompt
 
 
 def test_analyze_full_spectrum_returns_none_without_api_key(monkeypatch):

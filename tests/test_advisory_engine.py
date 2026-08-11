@@ -335,6 +335,192 @@ def test_generate_recommendations_includes_market_strategy_suggestions_from_mark
     assert "market_strategy.min_momentum_delta" in paths
 
 
+# --- stale-suggestion filter (direct bug report, 2026-08-11: "if i click ----
+# apply it just gives me the same evaluation and same potential increase
+# value... suggesting a massive bug") ----------------------------------------
+
+def test_generate_recommendations_drops_suggestion_stale_since_last_apply():
+    # All evidence entered before the field was last changed - clicking
+    # Apply again would just repeat the exact same stale verdict.
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)  # every row entry_timestamp=None
+    for r in rows:
+        r["entry_timestamp"] = 1000.0
+    result = ae.generate_recommendations(
+        rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100,
+        last_applied_by_path={"strategy.entry_threshold": 2000.0},  # changed AFTER every row entered
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" not in paths
+
+
+def test_generate_recommendations_keeps_suggestion_with_fresh_evidence_since_last_apply():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["entry_timestamp"] = 1000.0
+    rows[0]["entry_timestamp"] = 3000.0  # one trade entered AFTER the last change - real new evidence
+    result = ae.generate_recommendations(
+        rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100,
+        last_applied_by_path={"strategy.entry_threshold": 2000.0},
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" in paths
+
+
+def test_generate_recommendations_never_stale_when_path_was_never_applied_before():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["entry_timestamp"] = 1000.0
+    result = ae.generate_recommendations(
+        rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100,
+        last_applied_by_path={"strategy.longshot_entry_threshold_bonus": 2000.0},  # a different path
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" in paths
+
+
+def test_generate_recommendations_staleness_check_is_per_config_path_not_global():
+    # A market_strategy.* suggestion must be checked against market_rows'
+    # own entry_timestamps, not the whale-follow rows'.
+    rows = [_row(config_fingerprint="fp1", entry_timestamp=1000.0) for _ in range(5)]
+    market_rows = [
+        _row(close_type="momentum_reversal", realized_pnl=-3.0, entry_timestamp=3000.0) for _ in range(3)
+    ]
+    result = ae.generate_recommendations(
+        rows, _cfg(), "fp1", {}, min_resolved_trades=5, market_rows=market_rows,
+        last_applied_by_path={"market_strategy.min_momentum_delta": 2000.0},  # before market_rows' own timestamps
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "market_strategy.min_momentum_delta" in paths  # fresh market_rows evidence exists
+
+
+def test_generate_recommendations_with_no_last_applied_by_path_is_unaffected():
+    # Omitting the param entirely (every pre-existing call site before this
+    # fix) must behave exactly as before - no regression for callers that
+    # haven't been updated.
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    result = ae.generate_recommendations(rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100)
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" in paths
+
+
+# --- series_evaluator cross-reference ("web of expertise" audit, gap #4) ----
+
+def _series_row(series, **overrides):
+    base = dict(series=series, status="observing", strike_count=0, whale_resolved=10, whale_win_rate=50.0,
+                below_winrate_floor=False)
+    base.update(overrides)
+    return base
+
+
+def test_series_evaluator_recommendation_fires_for_a_rejected_series():
+    rows = [_series_row("KXBAD", status="rejected", strike_count=2)]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": []})
+    assert len(recs) == 1
+    assert recs[0]["config_path"] == "strategy.excluded_series"
+    assert recs[0]["suggested_value"] == ["KXBAD"]
+    assert "rejected" in recs[0]["rationale"]
+
+
+def test_series_evaluator_recommendation_fires_for_below_winrate_floor():
+    rows = [_series_row("KXBAD", below_winrate_floor=True, whale_win_rate=25.0)]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": []})
+    assert len(recs) == 1
+    assert "25%" in recs[0]["rationale"]
+
+
+def test_series_evaluator_recommendation_none_when_series_already_excluded():
+    rows = [_series_row("KXBAD", status="rejected")]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": ["KXBAD"]})
+    assert recs == []
+
+
+def test_series_evaluator_recommendation_none_when_neither_flag_set():
+    rows = [_series_row("KXFINE", status="observing", below_winrate_floor=False)]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": []})
+    assert recs == []
+
+
+def test_series_evaluator_recommendation_none_below_min_sample_size():
+    rows = [_series_row("KXBAD", status="rejected", whale_resolved=2)]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": []})
+    assert recs == []
+
+
+def test_series_evaluator_recommendation_preserves_existing_excluded_series():
+    rows = [_series_row("KXBAD", status="rejected")]
+    recs = ae._series_evaluator_recommendations(rows, {"excluded_series": ["KXOTHER"]})
+    assert recs[0]["suggested_value"] == ["KXBAD", "KXOTHER"]
+    assert recs[0]["current_value"] == ["KXOTHER"]
+
+
+def test_generate_recommendations_includes_series_evaluator_suggestions():
+    rows = [_row(config_fingerprint="fp1") for _ in range(5)]
+    series_rows = [_series_row("KXBAD", status="rejected")]
+    result = ae.generate_recommendations(
+        rows, _cfg(), "fp1", {}, min_resolved_trades=5, series_evaluator_rows=series_rows,
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.excluded_series" in paths
+
+
+# --- category-conditional recommendations ("web of expertise" audit, gap #2) --
+
+def _category_row(category, total_closed, win_rate_pct):
+    return {"category": category, "total_closed": total_closed, "win_rate_pct": win_rate_pct}
+
+
+def test_category_recommendation_fires_when_category_underperforms():
+    rows = [_category_row("Sports", 10, 20.0)]  # 20% vs an overall 60%
+    recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert len(recs) == 1
+    assert recs[0]["config_path"] == "strategy.entry_threshold_by_category"
+    assert recs[0]["suggested_value"] == {"Sports": 0.55}  # raised - more selective
+    assert "worse" in recs[0]["rationale"]
+
+
+def test_category_recommendation_fires_when_category_outperforms():
+    rows = [_category_row("Politics", 10, 90.0)]  # 90% vs an overall 60%
+    recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert recs[0]["suggested_value"] == {"Politics": 0.45}  # lowered - capture more
+    assert "better" in recs[0]["rationale"]
+
+
+def test_category_recommendation_none_when_gap_small():
+    rows = [_category_row("Sports", 10, 55.0)]  # only 5pts off 60%
+    recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert recs == []
+
+
+def test_category_recommendation_none_below_min_sample():
+    rows = [_category_row("Sports", 2, 0.0)]
+    recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert recs == []
+
+
+def test_category_recommendation_none_when_overall_win_rate_unknown():
+    rows = [_category_row("Sports", 10, 0.0)]
+    recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=None)
+    assert recs == []
+
+
+def test_category_recommendation_preserves_existing_overrides():
+    rows = [_category_row("Sports", 10, 20.0)]
+    strat_cfg = {"entry_threshold": 0.5, "entry_threshold_by_category": {"Politics": 0.4}}
+    recs = ae._category_conditional_recommendations(rows, strat_cfg, overall_win_rate=60.0)
+    assert recs[0]["suggested_value"] == {"Politics": 0.4, "Sports": 0.55}
+    assert recs[0]["current_value"] == {"Politics": 0.4}
+
+
+def test_generate_recommendations_includes_category_conditional_suggestions():
+    rows = [_row(config_fingerprint="fp1", won=True) for _ in range(10)]
+    category_rows = [_category_row("Sports", 10, 20.0)]
+    result = ae.generate_recommendations(
+        rows, _cfg(), "fp1", {}, min_resolved_trades=5, category_rows=category_rows,
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold_by_category" in paths
+
+
 # --- change_effect (Item 3D, 2026-08-10) --------------------------------------
 
 def test_change_effect_none_when_fingerprint_unchanged():

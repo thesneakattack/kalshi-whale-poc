@@ -185,6 +185,42 @@ def test_last_applied_at_scoped_to_the_given_source_only(tmp_path, monkeypatch):
     assert cp.last_applied_at("calibration-auto-apply") is None
 
 
+# --- all_last_applied_by_path (2026-08-11, stale-suggestion bug fix) -------
+
+def test_all_last_applied_by_path_empty_when_nothing_logged(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    assert cp.all_last_applied_by_path() == {}
+
+
+def test_all_last_applied_by_path_one_entry_per_distinct_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.5, new_value=0.6,
+        rationale="r", trade_count=10, fingerprint_before="a", fingerprint_after="b", source="manual",
+    )
+    cp.log_applied_change(
+        config_path="market_strategy.min_momentum_delta", old_value=0.03, new_value=0.04,
+        rationale="r", trade_count=3, fingerprint_before="a", fingerprint_after="a", source="manual",
+    )
+    result = cp.all_last_applied_by_path()
+    assert set(result.keys()) == {"strategy.entry_threshold", "market_strategy.min_momentum_delta"}
+
+
+def test_all_last_applied_by_path_returns_the_most_recent_timestamp_per_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.5, new_value=0.6,
+        rationale="first", trade_count=10, fingerprint_before="a", fingerprint_after="b", source="manual",
+    )
+    first = cp.all_last_applied_by_path()["strategy.entry_threshold"]
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.6, new_value=0.7,
+        rationale="second", trade_count=10, fingerprint_before="b", fingerprint_after="c", source="manual",
+    )
+    second = cp.all_last_applied_by_path()["strategy.entry_threshold"]
+    assert second >= first
+
+
 # --- diff_patch (Item 3D, 2026-08-10) -----------------------------------------
 # Mirrors ConfigStore.update()'s own one-level-deep merge exactly, so
 # main.py's POST /api/config can log every field a patch actually changes

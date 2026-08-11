@@ -317,6 +317,66 @@ works" to "flip it for real" still has open operational questions.
       gaps-2026-08-10.md** (Gap 5's stop-loss calibration was never on the
       build list — it needs time with the field live, not tooling; Gap 2's
       stateful replay half was explicitly deferred within Gap 2 itself).
+      **Part 2 ("web of expertise" cross-engine audit) is done — all 6
+      confirmed gaps shipped, plus a real bug found along the way
+      (2026-08-11).** Item 6 (full-spectrum LLM context): `_build_full_
+      spectrum_context()` now includes `rejected_candidate_gates`
+      (`candidate_log.gate_summary()`, reused from an already-computed
+      local var — no duplicate DB call) and `regime_by_category`/
+      `regime_by_hour` (`regime_analytics.by_category`/`by_hour_of_day`).
+      Item 1 (rejected-candidate counterfactuals → `advisory_engine`): new
+      `_rejected_candidate_recommendations()` — a `(strategy, gate_name)`
+      →`(config_path, direction)` map covers 9 real gates; suggests
+      loosening a threshold when ≥5 rejected candidates would have won.
+      Item 4 (`series_evaluator` verdicts → `advisory_engine`): new
+      `_series_evaluator_recommendations()` suggests adding a series to
+      `strategy.excluded_series` when its win rate sits below the floor
+      with real sample size — confirmed live against a real
+      `KXMLBGAME` exclusion suggestion. Item 2 (category-conditional
+      tuning): new `strategy.entry_threshold_by_category` override dict
+      (mirrors the existing `min_notional_usd_by_series` precedent),
+      `FollowTheWhaleStrategy.evaluate()` now takes an optional `category`
+      param read from `state["event_titles"]`, and
+      `_category_conditional_recommendations()` suggests per-category
+      overrides off ≥5-sample category win-rate gaps. Item 3 (regime-aware
+      *live entry gating*, as opposed to Item 2's threshold-only wiring) is
+      deliberately scoped out of this pass and left open — `regime_
+      analytics` stays advisory-only for now, disclosed rather than
+      silently dropped, given the genuine plumbing complexity and the
+      direct instruction to not risk the live trading path twice in one
+      pass. Item 5 (`market_strategy` calibration parity): new `services/
+      market_strategy_calibration.py` — confidence-band calibration only
+      (not per-factor discrimination, disclosed in the module's own
+      docstring: market_strategy has no per-candidate factor persistence
+      like `signal_log.factors_json`, only a placed trade's blended score
+      via `trade_analytics.build_trade_history()`'s `entry_confidence`
+      field), new `market_strategy_calibration.{enabled, min_resolved_
+      trades}` config, `GET /api/market-strategy-calibration/status`/
+      `.../report`. Verified live against real data (n=80): a genuinely
+      useful finding on its first run — every confidence band's observed
+      win rate sits far below its predicted midpoint (e.g. 90-100%
+      predicted 95%, observed 26.7%), meaning market_strategy's composite
+      confidence score is currently a poor predictor of its own outcomes —
+      flagged here, not acted on, since this tool's job is exposing that
+      gap, not auto-correcting it. **Real bug found and fixed in the same
+      pass, direct report** ("apply button gives the same suggestion
+      again immediately"): every advisory suggestion function recomputed
+      from full trade history on every call with no awareness a
+      config_path had just been changed, so clicking Apply repeatedly with
+      no new trades in between kept re-suggesting the same nudge off
+      stale evidence. Fixed with `_drop_stale_recommendations()`, reusing
+      the existing `entry_timestamp`/`applied_at` before/after convention
+      from `change_effect()` rather than inventing a new one — a
+      suggestion is now dropped if `config_performance.
+      all_last_applied_by_path()` shows its `config_path` was changed more
+      recently than the newest trade behind the suggestion. 86 new tests,
+      722 passing. Verified live end-to-end via curl (real recommendations
+      including rejected-candidate and series-evaluator suggestions
+      appearing in `GET /api/advisory/recommendations`) and
+      `selenium-chrome` against the Whale Watch terminal specifically, per
+      direct instruction — 20 real market cards, whale signal breakdowns,
+      and trade tape all rendering correctly, confirming the trade-tape/
+      SQLite hardening from phase 97 wasn't disturbed by this pass.
 - [x] **Daily-loss kill switch never actually rolled over daily — three
       real, connected bugs found and fixed in one investigation (2026-08-
       10)**, triggered by a direct report ("market-native strategy seems

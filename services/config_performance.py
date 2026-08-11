@@ -217,3 +217,23 @@ def last_applied_at(source: str) -> float | None:
             "SELECT MAX(applied_at) FROM applied_changes WHERE source = ?", (source,)
         ).fetchone()
     return row[0] if row and row[0] is not None else None
+
+
+def all_last_applied_by_path() -> dict[str, float]:
+    """One query, not one per config_path - the freshness check every
+    per-field advisory suggestion needs. Direct, confirmed-live bug report
+    (2026-08-11): "if i click apply it just gives me the same evaluation
+    and same potential increase value... suggesting a massive bug." Root
+    cause: every per-field suggestion function in advisory_engine.py
+    recomputes its verdict from the full trade history on every call, with
+    no idea whether its own config_path was JUST changed - if zero new
+    trades have entered since the last apply, the exact same stale
+    evidence (an old avg_pnl/win-rate gap from trades that closed under
+    the *previous* value) justifies suggesting yet another nudge in the
+    same direction, chaining indefinitely off evidence that never
+    actually validated the prior change. advisory_engine.generate_
+    recommendations() uses this to drop any suggestion for a field
+    changed more recently than the newest trade entered since."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT config_path, MAX(applied_at) FROM applied_changes GROUP BY config_path").fetchall()
+    return {path: ts for path, ts in rows}

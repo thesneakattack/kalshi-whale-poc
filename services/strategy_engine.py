@@ -98,7 +98,7 @@ class FollowTheWhaleStrategy:
 
     def evaluate(
         self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None, market_results: dict | None = None,
-        config_fingerprint: str | None = None, latest_prices: dict | None = None,
+        config_fingerprint: str | None = None, latest_prices: dict | None = None, category: str | None = None,
     ) -> dict:
         """Returns a decision dict describing what happened (trade or skip + why).
         is_live comes from main.py's milestone/live-data lookup (see
@@ -110,7 +110,18 @@ class FollowTheWhaleStrategy:
         against a market that's already resolved (a narrow but real window:
         e.g. it settled between polls, or it's only in this tick's markets
         list because an unrelated open position pulled it in) doesn't open a
-        brand-new position with a predetermined, already-known outcome."""
+        brand-new position with a predetermined, already-known outcome.
+
+        category ("web of expertise" audit, 2026-08-11): main.py resolves
+        this from state["market_titles"]/state["event_titles"] before
+        calling in, same lookup services/trade_category.py's own
+        record_category() already uses - optional (None from any caller
+        that doesn't pass it, same backward-compatible default every other
+        optional param here already follows). When given and
+        strategy.entry_threshold_by_category has an override for it, that
+        replaces the flat strategy.entry_threshold as the base before the
+        longshot bonus is added on top - same override-dict shape as
+        whale_watcher_kalshi.min_notional_usd_by_series, not a new pattern."""
         strat_cfg = cfg["strategy"]
 
         # Audit finding (2026-08-09): this used to be self.broker.equity({})
@@ -162,7 +173,13 @@ class FollowTheWhaleStrategy:
         longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
         longshot_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
         is_longshot = signal.price <= longshot_zone or signal.price >= (1 - longshot_zone)
-        effective_threshold = strat_cfg["entry_threshold"] + (longshot_bonus if is_longshot else 0.0)
+        # Category-conditional base threshold ("web of expertise" audit,
+        # 2026-08-11) - falls back to the flat global value whenever category
+        # is unknown (e.g. a ticker main.py hasn't resolved a category for
+        # yet) or has no override entry, so this is a no-op for anyone who
+        # hasn't populated entry_threshold_by_category.
+        base_threshold = strat_cfg.get("entry_threshold_by_category", {}).get(category, strat_cfg["entry_threshold"])
+        effective_threshold = base_threshold + (longshot_bonus if is_longshot else 0.0)
         if signal.confidence < effective_threshold:
             reason = f"confidence {signal.confidence} below threshold ({effective_threshold:.2f}"
             reason += " - longshot zone)" if is_longshot else ")"

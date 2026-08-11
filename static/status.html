@@ -3714,6 +3714,78 @@
           <code>tests/test_signal_log.py</code> · <code>tests/test_trading_gate.py</code> · <code>.gitignore</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 98 · a web of expertise, wired for real</div>
+        <h4>Six cross-engine gaps closed, plus a real "apply does nothing" bug</h4>
+        <p>Direct instruction after phase 97's incident and the resulting hardening doc: "keep in mind that all of
+          the analyzers, engines, heuristics, should have the potential to inform each other, like a web of
+          expertise" - followed by a request to write a comprehensive hardening/accuracy to-do list
+          (<code>docs/hardening-and-accuracy-roadmap-2026-08-11.md</code>), then "fill these cross engine gaps so
+          they actually work, make sure nothing is broken particularly the whale watcher terminal." Every one of
+          the doc's 6 claimed gaps was re-verified against the actual code via <code>grep</code> before being
+          trusted, not assumed from the doc alone.</p>
+        <p>Item 6 - candidate_log/regime_analytics reaching the full-spectrum LLM scan:
+          <code>_build_full_spectrum_context()</code> in <code>main.py</code> now includes
+          <code>rejected_candidate_gates</code> (<code>candidate_log.gate_summary()</code>) and
+          <code>regime_by_category</code>/<code>regime_by_hour</code> (<code>regime_analytics.by_category</code>/
+          <code>by_hour_of_day</code>). Item 1 - rejected-candidate counterfactuals reaching
+          <code>advisory_engine</code>: new <code>_rejected_candidate_recommendations()</code>, a
+          <code>(strategy, gate_name)</code> -&gt; <code>(config_path, direction)</code> map covering 9 real gates,
+          suggests loosening a threshold once &ge;5 rejected candidates would have won. Item 4 -
+          <code>series_evaluator</code> verdicts reaching <code>advisory_engine</code>: new
+          <code>_series_evaluator_recommendations()</code> suggests adding a series to
+          <code>strategy.excluded_series</code> when its real win rate sits below the floor with enough sample
+          size - confirmed live against a real <code>KXMLBGAME</code> exclusion suggestion.</p>
+        <p>Item 2 - category-conditional tuning: new <code>strategy.entry_threshold_by_category</code> override
+          dict, mirroring the existing <code>min_notional_usd_by_series</code> precedent exactly.
+          <code>FollowTheWhaleStrategy.evaluate()</code> gained an optional <code>category</code> parameter
+          (backward compatible - default <code>None</code> changes nothing for any existing caller), read live in
+          the trading loop from <code>state["event_titles"]</code>; <code>_category_conditional_recommendations()</code>
+          suggests per-category overrides off &ge;5-sample category win-rate gaps. Item 3 (the harder half - using
+          <code>regime_analytics</code> to actually gate live entries, not just inform suggestions) was
+          deliberately scoped out of this pass and left open, disclosed rather than silently dropped - the direct
+          instruction to make sure nothing broke, especially the whale watcher, argued against risking a second
+          live-trading-path change in the same pass as Item 2's.</p>
+        <p>Item 5 - calibration parity for <code>market_strategy</code>'s own confidence score: new
+          <code>services/market_strategy_calibration.py</code>, deliberately scoped smaller than the whale-side
+          <code>confidence_calibration.py</code> and disclosed as such in its own docstring - confidence-band
+          calibration only, not per-factor discrimination, since <code>market_strategy</code> has no per-candidate
+          factor log like <code>signal_log.factors_json</code>, only a placed trade's blended score (via
+          <code>trade_analytics.build_trade_history()</code>'s <code>entry_confidence</code> field). New
+          <code>market_strategy_calibration.{enabled, min_resolved_trades}</code> config,
+          <code>GET /api/market-strategy-calibration/status</code>/<code>.../report</code>. First live run against
+          real data (n=80) surfaced a genuine finding: every confidence band's observed win rate sits far below
+          its predicted midpoint (90-100% predicted 95%, observed 26.7%) - market_strategy's composite confidence
+          score is currently a poor predictor of its own outcomes. Flagged, not auto-corrected - that's this
+          tool's job.</p>
+        <p>Separate direct bug report mid-arc, treated as a stop-the-line fix: "if i click apply it just gives me
+          the same evaluation and same potential increase value... suggesting a massive bug." Root cause: every
+          advisory suggestion function recomputed from the full trade history on every call, with no awareness a
+          <code>config_path</code> had just been changed - clicking Apply repeatedly with no new trades in between
+          kept re-suggesting the identical nudge off the same stale evidence. Fixed with a new
+          <code>_drop_stale_recommendations()</code>, reusing the existing <code>entry_timestamp</code>/
+          <code>applied_at</code> before/after convention <code>change_effect()</code> already established rather
+          than inventing a new one - a new <code>config_performance.all_last_applied_by_path()</code> lets the
+          filter drop any suggestion whose <code>config_path</code> was changed more recently than the newest
+          trade behind it.</p>
+        <p>86 new tests, 722 passing (was 636). Verified live end-to-end: curl against
+          <code>GET /api/advisory/recommendations</code> showing real rejected-candidate and series-evaluator
+          suggestions mixed into the same pool as the pre-existing suggestion types, and
+          <code>GET /api/market-strategy-calibration/report</code> returning the real n=80 finding above. Per the
+          direct instruction to make sure nothing broke, particularly the whale watcher terminal: full regression
+          suite green, and a live <code>selenium-chrome</code> pass against the running Whale Watch tab specifically
+          confirmed 20 real market cards, whale-signal breakdowns, and a populated trade tape all still rendering
+          correctly - the phase 97 trade-tape/SQLite hardening was undisturbed by this pass.</p>
+        <div class="files"><code>main.py</code> · <code>services/advisory_engine.py</code> ·
+          <code>services/strategy_engine.py</code> · <code>services/config_performance.py</code> ·
+          <code>services/market_analyst_agent.py</code> ·
+          <code>services/market_strategy_calibration.py</code> (new) ·
+          <code>config/settings.yaml</code> · <code>tests/test_advisory_engine.py</code> ·
+          <code>tests/test_strategy_engine.py</code> · <code>tests/test_config_performance.py</code> ·
+          <code>tests/test_market_analyst_agent.py</code> ·
+          <code>tests/test_market_strategy_calibration.py</code> (new)</div>
+      </div>
+
     </div>
   </section>
 
@@ -3779,6 +3851,7 @@
           <tr><td class="mod">services/whalewatchers/generic_rest.py</td><td class="note">configurable REST + field mapping provider, for pointing at an external whale-watcher tool</td><td class="loc">89</td><td><span class="pill dormant">dormant</span></td></tr>
           <tr><td class="mod">services/whalewatchers/kalshi_trade_tape.py</td><td class="note">real, size-based whale-watcher provider — classifies Kalshi's own public trade feed (already fetched every tick, no extra API cost, no credentials) into whale prints by real notional dollar size (side-aware), scored via <code>whale_simulator.composite_confidence_breakdown()</code> (looks up recent same-market signal agreement via <code>signal_log</code>, 6h lookback, <code>cluster_factor</code>/<code>trend_factor</code> via <code>signal_log.cluster_factor()</code>/<code>market_history.momentum()</code>, and <code>analyst_factor</code> via <code>market_analyst_agent.analyst_lean()</code>, 24h freshness window, phase 56) and persists the full factor breakdown alongside each signal. Kalshi has no public trader identity/leaderboard, so this is strictly size-based, never reputation-based. Per-series notional threshold overrides (<code>min_notional_usd_by_series</code>, keyed by <code>signal_log.series_of()</code>, falls back to the global default) as of phase 63. Every newly-seen real trade now also calls <code>series_evaluator.record_trade_observed()</code> unconditionally (phase 69 — the series-worthiness denominator, recorded regardless of whether that feature is enabled). <b>Active by default</b> since 2026-08-08. Phase 77: now passes <code>cfg["whale_confidence_weights"]</code> through to the scoring call, so this is the one call site real config-driven weight changes actually reach. Phase 78: <code>min_notional_usd</code> rejections now logged to <code>candidate_log.record_rejection()</code> (side computed earlier in the loop specifically to support this). Phase 81: now captures <code>notional_usd</code>/<code>spread</code>/<code>volume_24h</code> into <code>WhaleSignal.raw_context</code> at signal-creation time - previously computed locally then discarded. Phase 97: <code>fetch_signals()</code> restructured so its entire per-trade loop (every blocking DB call - <code>record_rejection</code>, <code>recent_sides_for_ticker</code>, <code>cluster_factor</code>, <code>_trend_factor</code>, <code>_analyst_factor</code>, the new bulk write) runs inside a synchronous <code>_process_trades_sync()</code> via <code>asyncio.to_thread()</code>, after removing the trade-tape's platform-wide cap (a real live incident - see <code>status.html</code> phase 97) turned thousands of previously-inline blocking SQLite round trips into a multi-minute event-loop freeze</td><td class="loc">322</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/confidence_calibration.py</td><td class="note">gated, rule-based tool that buckets resolved real whale signals (with a factor breakdown) into low/mid/high tertiles per confidence factor (all 8, incl. <code>analyst_factor</code> as of phase 56) and reports which ones actually predicted correctness, plus concrete suggested reweightings, plus a fixed-width confidence-band report (&lt;50/50-60/60-70/70-80/80-90/90-100%) alongside the tertile split — reflecting the hit-rate-vs-calibration distinction (a Brier-score-style concern) the prediction-markets research surfaced — read-only for the weight-suggestion half (no apply route — a human-reviewed judgment call, not automated). Dormant until <code>confidence_calibration.min_resolved_signals</code> (default 50) is reached. Phase 76: fixed a real crash bug where rows missing a newer factor key (all ~9200 real signals predate <code>cluster_factor</code>/<code>trend_factor</code>/<code>analyst_factor</code>) raised <code>KeyError</code> instead of being excluded from that factor's bucketing; now enabled live against real data, which surfaced a real finding (<code>unusualness_factor</code>/<code>agreement_factor</code> both discriminate negatively). Phase 77: acted on that finding — <code>generate_calibration_report()</code> now takes a <code>current_weights</code> param reflecting live config instead of a hardcoded mirror, and a new History-tab panel is its first real UI consumer. Phase 90: new <code>blended_weights_for_auto_apply()</code> - the weight-suggestion half is no longer read-only-only, a real opt-in auto-apply path now exists (confirmation-gated, off by default) alongside the original manual-review path, which stays fully intact</td><td class="loc">264</td><td><span class="pill good">enabled, real data</span></td></tr>
+          <tr><td class="mod">services/market_strategy_calibration.py</td><td class="note">phase 98 - calibration parity for <code>market_strategy</code>'s own composite confidence score, the parallel dataset to <code>confidence_calibration.py</code>'s whale-signal side. Deliberately scoped smaller, disclosed in its own docstring: confidence-band calibration only (does the blended score predict its own outcomes), not per-factor discrimination (which factor drives that) — <code>market_strategy</code> has no per-candidate factor log like <code>signal_log.factors_json</code>, only a placed trade's blended score via <code>trade_analytics.build_trade_history()</code>'s <code>entry_confidence</code> field. Gated behind <code>market_strategy_calibration.min_resolved_trades</code> (default 20). First live run (n=80) surfaced a real finding: every confidence band's observed win rate sits far below its predicted midpoint — flagged, not auto-corrected</td><td class="loc">101</td><td><span class="pill good">enabled, real data</span></td></tr>
           <tr><td class="mod">services/whalewatchers/template_provider.py</td><td class="note">copy-paste starting point for a new named provider</td><td class="loc">37</td><td><span class="pill planned">not registered</span></td></tr>
           <tr><td class="mod">services/whalewatchers/__init__.py</td><td class="note">provider registry, selects active one via env var — defaults to <code>kalshi_trade_tape</code> (real data, no setup needed) as of 2026-08-08, was <code>generic_rest</code> (silently simulator-only with no URL configured)</td><td class="loc">30</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/strategy_engine.py</td><td class="note">follow-the-whale entry logic (now threads <code>config_fingerprint</code> into <code>open_position</code>), including the optional live-markets-only gate, manual excluded-series denylist, already-open/already-resolved guards, a favorite-longshot-bias-aware entry threshold (<code>strategy.longshot_price_threshold</code>/<code>longshot_entry_threshold_bonus</code> — extra confidence required for markets priced in the longshot zone, since FLB is confirmed worse for takers and this app's real order path is taker-only); <code>check_exits</code> (settlement via the shared <code>close_if_settled()</code> + take-profit/stop-loss/sentiment-reversal/auto-exit) with fee-inclusive <code>pnl_pct</code> and confidence-weighted <code>_whale_lean()</code> (phase 58), and the <code>_exit_confidence</code> composite scoring algorithm (phase 74: gained a fourth <code>analyst_divergence</code> factor consulting <code>market_analyst_agent.analyst_lean()</code> on exits, not just entries); <code>evaluate()</code>'s kill-switch check now uses real, this-tick equity (<code>latest_prices</code> param) instead of the old always-bankroll-only <code>equity({})</code>. <code>close_if_settled()</code> is module-level, shared with <code>market_strategy.py</code>'s own <code>check_exits</code>. Phase 75: new shared <code>open_position_count_in_series()</code> concentration-risk helper, also imported by <code>market_strategy.py</code>. Phase 76: new shared <code>kelly_scaled_max_size()</code> edge-aware sizing helper, also imported by <code>market_strategy.py</code>. Phase 78: <code>entry_threshold</code>/<code>min_whale_winrate_pct</code> rejections now logged to <code>candidate_log.record_rejection()</code></td><td class="loc">496</td><td><span class="pill good">done</span></td></tr>

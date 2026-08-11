@@ -24,6 +24,7 @@ from services import cross_strategy
 from services import regime_analytics
 from services import stats_power
 from services import confidence_calibration
+from services import market_strategy_calibration
 from services import config_performance
 from services import market_analyst_agent
 from services import market_catalog
@@ -1153,6 +1154,10 @@ async def _analyze_market_uncached(
         market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
         recommendations = advisory_engine.generate_recommendations(
             all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+            gate_summaries=candidate_log.gate_summary(),
+            last_applied_by_path=config_performance.all_last_applied_by_path(),
+            series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+            category_rows=regime_analytics.by_category(all_rows),
         )
     snapshot = ml_feed.build_context_snapshot(
         cfg=cfg,
@@ -1350,9 +1355,13 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
     current_fp = config_performance.fingerprint(cfg)
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     adv_cfg = cfg.get("advisory") or {}
+    gate_summaries = candidate_log.gate_summary()
     recommendations = advisory_engine.generate_recommendations(
         all_rows, cfg, current_fp, variants, adv_cfg.get("min_resolved_trades_per_variant", 30),
-        market_rows=market_rows,
+        market_rows=market_rows, gate_summaries=gate_summaries,
+        last_applied_by_path=config_performance.all_last_applied_by_path(),
+        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+        category_rows=regime_analytics.by_category(all_rows),
     )
     # Busiest 10 series by observed trade volume - a real, disclosed bound
     # (not exhaustive) so this section can't grow unbounded as more series
@@ -1374,6 +1383,19 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
         "recent_applied_changes": config_performance.recent_applied_changes(limit=20),
         "per_series_whale_breakdown": per_series_whale,
         "portfolio": broker.state(state["latest_prices"]),
+        # Two real gaps closed here (2026-08-11 hardening pass, "web of
+        # expertise" audit) - both datasets already existed and were
+        # already aggregated rollups (no raw per-trade rows, consistent
+        # with this function's own bound), just never assembled into this
+        # context before. gate_summary() is the rejected-candidate
+        # counterfactual data (what would have happened to a candidate a
+        # gate turned down) - the model previously only ever saw the
+        # accepted side of every threshold. by_category/by_hour_of_day are
+        # the same segmentation the History tab's Regime panel already
+        # shows a human, now available to the model too.
+        "rejected_candidate_gates": gate_summaries,
+        "regime_by_category": regime_analytics.by_category(all_rows),
+        "regime_by_hour": regime_analytics.by_hour_of_day(all_rows),
     }
 
 
@@ -1687,6 +1709,14 @@ async def trading_loop():
                     adv_result = advisory_engine.generate_recommendations(
                         adv_all_rows, cfg, adv_current_fp, adv_variants,
                         adv_cfg["min_resolved_trades_per_variant"], market_rows=adv_market_rows,
+                        gate_summaries=candidate_log.gate_summary(),
+                        # Staleness filter (2026-08-11, direct bug report) matters most
+                        # right here - unlike a manual click, auto-apply has no human
+                        # to notice it's repeatedly nudging the same field off the
+                        # exact same stale evidence every cooldown window.
+                        last_applied_by_path=config_performance.all_last_applied_by_path(),
+                        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+                        category_rows=regime_analytics.by_category(adv_all_rows),
                     )
                     min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
                     # Direct report (2026-08-11): "auto apply should wait for a
@@ -1885,10 +1915,17 @@ async def trading_loop():
                 market_info = state["market_titles"].get(signal.ticker) or {}
                 event_ticker = market_info.get("event_ticker")
                 is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
+                # Category resolution ("web of expertise" audit, 2026-08-11) -
+                # the exact same event_ticker/state["event_titles"] lookup
+                # trade_category.record_category() below already uses, just
+                # computed once up front so strategy.evaluate() can also see
+                # it (for strategy.entry_threshold_by_category) before a
+                # trade decision is even made, not only after one is placed.
+                category = (state["event_titles"].get(event_ticker) or {}).get("category")
 
                 decision = strategy.evaluate(
                     signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
-                    latest_prices=state["latest_prices"],
+                    latest_prices=state["latest_prices"], category=category,
                 )
                 state["decision_feed"].insert(0, decision)
                 state["decision_feed"] = state["decision_feed"][:50]
@@ -1896,15 +1933,12 @@ async def trading_loop():
                 if decision["action"] == "trade":
                     # Category-at-entry-time capture (deferred half of Gap
                     # 9, docs/config-tuning-data-gaps-2026-08-10.md, direct
-                    # follow-up request) - reuses the event_ticker lookup
-                    # already computed above for the live-markets-only gate,
+                    # follow-up request) - reuses the category resolved above,
                     # zero new API calls. market_catalog.category is
                     # watchlist-scoped and rotates, so this has to be
                     # captured now, at the moment of entry, not
                     # reconstructed later.
-                    trade_category.record_category(
-                        signal.ticker, (state["event_titles"].get(event_ticker) or {}).get("category"), tick_now,
-                    )
+                    trade_category.record_category(signal.ticker, category, tick_now)
 
                 # Independent of the paper decision above - shadow mode asks
                 # the same question against real-account-sized bankroll,
@@ -2423,6 +2457,10 @@ async def get_advisory_recommendations():
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
         all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+        gate_summaries=candidate_log.gate_summary(),
+        last_applied_by_path=config_performance.all_last_applied_by_path(),
+        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+        category_rows=regime_analytics.by_category(all_rows),
     )
     return result
 
@@ -2445,6 +2483,10 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
         all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+        gate_summaries=candidate_log.gate_summary(),
+        last_applied_by_path=config_performance.all_last_applied_by_path(),
+        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+        category_rows=regime_analytics.by_category(all_rows),
     )
     match = next((r for r in result["recommendations"] if r["id"] == body.id), None)
     if match is None:
@@ -2548,6 +2590,29 @@ async def get_confidence_calibration_history(limit: int = 100):
     # snapshots build up, distinct from the live report above.
     limit = min(max(limit, 1), 500)
     return {"snapshots": calibration_history.history(limit=limit)}
+
+
+@app.get("/api/market-strategy-calibration/status")
+async def get_market_strategy_calibration_status():
+    # "Web of expertise" audit (2026-08-11) gap #5 - same status-route shape
+    # as the whale-side /api/confidence-calibration/status above.
+    msc_cfg = config_store.get()["market_strategy_calibration"]
+    resolved_count = len(trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log]))
+    return {
+        "enabled": msc_cfg["enabled"],
+        "min_resolved_trades": msc_cfg["min_resolved_trades"],
+        "resolved_count": resolved_count,
+        "ready": resolved_count >= msc_cfg["min_resolved_trades"],
+    }
+
+
+@app.get("/api/market-strategy-calibration/report")
+async def get_market_strategy_calibration_report():
+    msc_cfg = config_store.get()["market_strategy_calibration"]
+    if not msc_cfg["enabled"]:
+        return {"report": None, "gated_reason": "market-native calibration is disabled", "resolved_count": None}
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+    return market_strategy_calibration.generate_calibration_report(rows, msc_cfg["min_resolved_trades"])
 
 
 @app.get("/api/candidate-log/summary")
@@ -2791,24 +2856,18 @@ async def post_market_analyst_full_spectrum_apply(body: MarketAnalystFullSpectru
     return {"applied": match, "new_config": config_store.get()}
 
 
-@app.get("/api/series-evaluator/status")
-async def get_series_evaluator_status():
-    # Every series ever evaluated, independent of what's on the *current*
-    # watchlist - direct request: the log/history the user wanted, doubling
-    # as the persisted series_status table itself (see services/
-    # series_evaluator.py). Always safe to call regardless of enabled -
-    # same "history stays visible after a feature's turned off" idiom as
-    # market_analyst's own status route above.
-    se_cfg = config_store.get().get("series_evaluator") or {}
-    # Gap 4 of docs/config-tuning-data-gaps-2026-08-10.md - series_evaluator
-    # judges a series by *qualifying rate* (real trades observed vs. how
-    # many cleared the notional threshold), strategy_engine.py's own
-    # min_whale_winrate_pct gate judges it by *realized win rate* - two
-    # genuinely independent mechanisms that had never been cross-checked
-    # against each other before this. all_series_stats() (Gap 2) already
-    # computes every series' win rate in one query - attach it here rather
-    # than adding a second per-series persistence layer.
-    strat_cfg = config_store.get()["strategy"]
+def _series_evaluator_overview_with_crosscheck(cfg: dict) -> list[dict]:
+    """series_evaluator.overview() enriched with the real win-rate
+    cross-check (Gap 4/10 of docs/config-tuning-data-gaps-2026-08-10.md) -
+    factored out of GET /api/series-evaluator/status (phase 82) so
+    advisory_engine's own series-evaluator suggestions (2026-08-11, "web
+    of expertise" audit) can reuse the exact same enrichment instead of
+    duplicating it. series_evaluator judges a series by *qualifying rate*
+    (real trades observed vs. how many cleared the notional threshold),
+    strategy_engine.py's own min_whale_winrate_pct gate judges it by
+    *realized win rate* - two genuinely independent mechanisms this
+    attaches to each other."""
+    strat_cfg = cfg["strategy"]
     win_rate_floor = strat_cfg.get("min_whale_winrate_pct", 40)
     min_resolved_for_filter = strat_cfg.get("min_resolved_for_whale_filter", 10)
     win_stats = signal_log.all_series_stats(days=30)
@@ -2830,6 +2889,19 @@ async def get_series_evaluator_status():
             stats_power.margin_of_error_pts(stat["resolved"], stat["win_rate"])
             if stat["win_rate"] is not None else None
         )
+    return series_rows
+
+
+@app.get("/api/series-evaluator/status")
+async def get_series_evaluator_status():
+    # Every series ever evaluated, independent of what's on the *current*
+    # watchlist - direct request: the log/history the user wanted, doubling
+    # as the persisted series_status table itself (see services/
+    # series_evaluator.py). Always safe to call regardless of enabled -
+    # same "history stays visible after a feature's turned off" idiom as
+    # market_analyst's own status route above.
+    se_cfg = config_store.get().get("series_evaluator") or {}
+    series_rows = _series_evaluator_overview_with_crosscheck(config_store.get())
     return {"enabled": bool(se_cfg.get("enabled")), "series": series_rows}
 
 

@@ -43,6 +43,7 @@ strategy:
   auto_exit_stale_after_sec: 1800
   longshot_price_threshold: 0.15
   longshot_entry_threshold_bonus: 0.15
+  entry_threshold_by_category: {}
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.25
@@ -95,6 +96,9 @@ confidence_calibration:
   snapshot_interval_sec: 21600
   auto_apply_enabled: true
   auto_apply_cooldown_sec: 86400
+market_strategy_calibration:
+  enabled: true
+  min_resolved_trades: 20
 market_analyst:
   enabled: true
   model: claude-sonnet-5

@@ -552,6 +552,18 @@ def build_full_spectrum_prompt(context: dict) -> str:
 
 {json.dumps(context.get("advisory_recommendations")) or "none currently"}
 
+## Rejected-candidate counterfactuals (per entry/discovery gate, what would have happened if a rejected candidate had been let through)
+
+{json.dumps(context["rejected_candidate_gates"]) if context.get("rejected_candidate_gates") else "none logged yet"}
+
+## Performance by category (Politics, Sports, Crypto, etc. - whale-follow strategy)
+
+{json.dumps(context["regime_by_category"]) if context.get("regime_by_category") else "not enough categorized trades yet"}
+
+## Performance by hour of day, UTC (whale-follow strategy)
+
+{json.dumps(context["regime_by_hour"]) if context.get("regime_by_hour") else "not enough trades yet"}
+
 ## Recent applied config changes (most recent 20, any source)
 
 {json.dumps(context.get("recent_applied_changes"))}

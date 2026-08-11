@@ -496,9 +496,254 @@ def _cross_variant_recommendations(
     return out
 
 
+# "Web of expertise" audit (2026-08-11, direct instruction: "all of the
+# analyzers, engines, heuristics, should have the potential to inform each
+# other") - gap #1: services/candidate_log.py's rejected-candidate
+# counterfactual data (gate_summary()'s hypothetical_win_rate - what would
+# have happened to a candidate a gate turned down) never reached this
+# engine, even though every other suggestion function here only ever sees
+# the *accepted* side of a threshold. Maps each loggable (strategy,
+# gate_name) pair to the config field it gates and which direction a
+# "rejected candidates did fine" finding argues for moving it - "min" gates
+# reject values BELOW the threshold (comparable/better rejected performance
+# argues for LOWERING it, admitting more candidates), "max" gates reject
+# values ABOVE it (argues for RAISING it). Deliberately only the gates
+# listed here are eligible - an unmapped gate is skipped, never guessed at,
+# since a wrong-direction suggestion would be worse than none at all.
+_GATE_CONFIG_PATH_AND_DIRECTION = {
+    ("whale_follow", "entry_threshold"): ("strategy.entry_threshold", "min"),
+    ("whale_follow", "min_whale_winrate_pct"): ("strategy.min_whale_winrate_pct", "min"),
+    ("market_native", "min_price"): ("market_strategy.min_price", "min"),
+    ("market_native", "max_price"): ("market_strategy.max_price", "max"),
+    ("market_native", "max_spread"): ("market_strategy.max_spread", "max"),
+    ("market_native", "min_volume_24h"): ("market_strategy.min_volume_24h", "min"),
+    ("market_native", "min_seconds_to_close"): ("market_strategy.min_seconds_to_close", "min"),
+    ("market_native", "min_momentum_delta"): ("market_strategy.min_momentum_delta", "min"),
+    ("market_native", "entry_confidence_threshold"): ("market_strategy.entry_confidence_threshold", "min"),
+}
+_REJECTED_CANDIDATE_MIN_N = 5  # matches trade_analytics.confidence_label's own low/moderate boundary
+_REJECTED_CANDIDATE_NUDGE_PCT = 0.10  # a 10% step toward "admit more"/"restrict more", same
+# fixed-nudge idiom _auto_exit_threshold_recommendation/_sentiment_exit_recommendations already use
+
+
+def _rejected_candidate_recommendations(
+    gate_summaries: list[dict], strat_cfg: dict, market_cfg: dict,
+    whale_summary: dict | None, market_summary: dict | None,
+) -> list[dict]:
+    """One suggestion per mapped gate where candidate_log has enough
+    resolved rejections to judge - compares what accepted trades actually
+    did against what rejected candidates would have done. Only suggests a
+    change when rejected candidates did comparably or better (>= accepted
+    win rate minus the same _COMPARABLE_MIN_WIN_RATE_GAP tolerance every
+    other bucket-comparison here uses) - a gate correctly filtering out
+    worse candidates needs no comment."""
+    out = []
+    for (strategy_key, gate_name), (config_path, direction) in _GATE_CONFIG_PATH_AND_DIRECTION.items():
+        row = next(
+            (g for g in gate_summaries if g["strategy"] == strategy_key and g["gate_name"] == gate_name), None,
+        )
+        if row is None or row["hypothetical_win_rate"] is None:
+            continue
+        rejected_n = row["hypothetical_win_rate_n"]
+        if rejected_n < _REJECTED_CANDIDATE_MIN_N:
+            continue
+        accepted_summary = whale_summary if strategy_key == "whale_follow" else market_summary
+        if not accepted_summary:
+            continue
+        accepted_wr = accepted_summary.get("win_rate_pct")
+        accepted_n = accepted_summary.get("total_closed", 0)
+        if accepted_wr is None or accepted_n < _REJECTED_CANDIDATE_MIN_N:
+            continue
+        rejected_wr = row["hypothetical_win_rate"]
+        if rejected_wr < accepted_wr - _COMPARABLE_MIN_WIN_RATE_GAP:
+            continue  # rejected candidates did meaningfully worse - the gate is working, nothing to suggest
+        section, _, field = config_path.partition(".")
+        current_value = (strat_cfg if section == "strategy" else market_cfg).get(field)
+        if current_value is None or isinstance(current_value, bool):
+            continue  # field not present in this config section, or not a plain number - nothing safe to nudge
+        step = abs(current_value) * _REJECTED_CANDIDATE_NUDGE_PCT if current_value else _REJECTED_CANDIDATE_NUDGE_PCT
+        suggested = round(current_value - step if direction == "min" else current_value + step, 4)
+        if suggested == current_value:
+            continue
+        n = min(rejected_n, accepted_n)
+        out.append({
+            "id": rec_id(config_path, suggested, n),
+            "config_path": config_path,
+            "current_value": current_value,
+            "suggested_value": suggested,
+            "rationale": (
+                f"Candidates rejected by the {gate_name} gate would have won {rejected_wr:.0f}% of the time "
+                f"(n={rejected_n} resolved), comparable to or better than accepted trades' actual "
+                f"{accepted_wr:.0f}% (n={accepted_n}) - the gate may be filtering out perfectly good "
+                f"candidates. Based on rejected-candidate counterfactual data (services/candidate_log.py), "
+                f"not the accepted-trade history every other suggestion here uses."
+            ),
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+            "source": "rejected-candidate-counterfactual",
+        })
+    return out
+
+
+_SERIES_EVALUATOR_MIN_N = 5  # same floor as every other sample-size-hedged suggestion here
+
+
+def _series_evaluator_recommendations(series_rows: list[dict], strat_cfg: dict) -> list[dict]:
+    """"Web of expertise" audit (2026-08-11) gap #4: services/series_
+    evaluator.py already renders a real whale-worthiness verdict
+    (qualifying rate) per series, and GET /api/series-evaluator/status
+    already cross-checks it against realized win rate
+    (below_winrate_floor, phase 82/86) - but that disagreement was purely
+    read-only, surfaced to a human on the History tab and nowhere else.
+    A series either rejected by series_evaluator's own verdict or flagged
+    below_winrate_floor, and not already in strategy.excluded_series, is a
+    concrete, actionable candidate to add - one suggestion per series
+    rather than one big batch, so each can be reviewed/applied
+    independently like every other suggestion here."""
+    excluded = set(strat_cfg.get("excluded_series") or [])
+    out = []
+    for row in series_rows:
+        series = row.get("series")
+        if not series or series in excluded:
+            continue
+        reasons = []
+        if row.get("status") == "rejected":
+            reasons.append(
+                f"series_evaluator rejected it on qualifying rate (strike {row.get('strike_count', 0)})"
+            )
+        if row.get("below_winrate_floor"):
+            wr = row.get("whale_win_rate")
+            reasons.append(
+                f"realized whale win rate is {wr:.0f}%, below strategy.min_whale_winrate_pct" if wr is not None
+                else "realized whale win rate is below strategy.min_whale_winrate_pct"
+            )
+        if not reasons:
+            continue
+        n = row.get("whale_resolved", 0)
+        if n < _SERIES_EVALUATOR_MIN_N:
+            continue
+        new_excluded = sorted(excluded | {series})
+        out.append({
+            "id": rec_id("strategy.excluded_series", new_excluded, n),
+            "config_path": "strategy.excluded_series",
+            "current_value": sorted(excluded),
+            "suggested_value": new_excluded,
+            "rationale": (
+                f"{series}: " + "; ".join(reasons) + f" (n={n} resolved whale signals, last 30 days). "
+                f"Cross-referencing services/series_evaluator.py's own verdict with realized signal_log "
+                f"win-rate data, not just accepted-trade history."
+            ),
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+            "source": "series-evaluator-crosscheck",
+        })
+    return out
+
+
+_CATEGORY_MIN_N = 5
+
+
+def _category_conditional_recommendations(
+    category_rows: list[dict], strat_cfg: dict, overall_win_rate: float | None,
+) -> list[dict]:
+    """"Web of expertise" audit (2026-08-11) gap #2: no suggestion here has
+    ever been category-conditional, even though services/regime_analytics.py's
+    by_category() already computes exactly the per-category win rate needed
+    to judge one - trade_category.py's category-at-entry-time capture and
+    the History tab's Regime Segmentation panel both already exist, this
+    was purely a missing connection. category_rows: regime_analytics.
+    by_category()'s own output. Compares each category's win rate against
+    the OVERALL win rate (not confidence-bucket boundaries like
+    _entry_threshold_recommendation - a category-level suggestion is a
+    coarser question, "should this whole category get a different bar,"
+    not "where exactly is the crossover point"). Writes to strategy.
+    entry_threshold_by_category (mirrors whale_watcher_kalshi.
+    min_notional_usd_by_series's own override-dict shape, read live by
+    services/strategy_engine.py's evaluate() - not just advisory-only),
+    one category at a time so each can be reviewed/applied independently."""
+    if overall_win_rate is None:
+        return []
+    overrides = dict(strat_cfg.get("entry_threshold_by_category") or {})
+    base_threshold = strat_cfg.get("entry_threshold", 0.5)
+    out = []
+    for row in category_rows:
+        category = row.get("category")
+        n = row.get("total_closed", 0)
+        wr = row.get("win_rate_pct")
+        if not category or wr is None or n < _CATEGORY_MIN_N:
+            continue
+        gap = wr - overall_win_rate
+        if abs(gap) < _COMPARABLE_MIN_WIN_RATE_GAP:
+            continue
+        current = overrides.get(category, base_threshold)
+        step = 0.05
+        suggested = round(min(0.95, current + step) if gap < 0 else max(0.05, current - step), 3)
+        if suggested == current:
+            continue
+        new_overrides = {**overrides, category: suggested}
+        tail = (
+            f"performs {abs(gap):.0f}pts worse than the overall {overall_win_rate:.0f}% win rate - a higher "
+            f"category-specific threshold asks for more conviction here specifically."
+            if gap < 0 else
+            f"performs {gap:.0f}pts better than the overall {overall_win_rate:.0f}% win rate - a lower "
+            f"category-specific threshold could capture more of these."
+        )
+        out.append({
+            "id": rec_id("strategy.entry_threshold_by_category", new_overrides, n),
+            "config_path": "strategy.entry_threshold_by_category",
+            "current_value": overrides,
+            "suggested_value": new_overrides,
+            "rationale": f"{category} (n={n} resolved, {wr:.0f}% win rate) {tail}",
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+            "source": "category-conditional",
+        })
+    return out
+
+
+def _drop_stale_recommendations(
+    recs: list[dict], rows: list[dict], market_rows: list[dict], last_applied_by_path: dict[str, float],
+) -> list[dict]:
+    """Direct, confirmed-live bug report (2026-08-11): "if i click apply it
+    just gives me the same evaluation and same potential increase value
+    for that factor... suggesting a massive bug." Confirmed: every
+    per-field suggestion function above recomputes its verdict from the
+    full trade history every call and reads current_value fresh from cfg
+    (so it does reflect a just-applied change) - but the underlying
+    evidence (e.g. _auto_exit_threshold_recommendation's avg_pnl over
+    trades with close_type == "auto_exit") is the exact same stale group
+    of past trades until a genuinely new one closes. Clicking Apply
+    repeatedly against that same stale evidence just walks the value
+    further in the same direction each time, off information that never
+    actually validated whether the previous nudge helped. Drops any
+    recommendation whose config_path was changed more recently than the
+    newest trade *entered* under the relevant row set - entry_timestamp
+    vs. applied_at is the same before/after convention change_effect()
+    above already uses, not a new comparison invented for this. A
+    config_path never applied before (not in last_applied_by_path) is
+    never stale by definition."""
+    if not last_applied_by_path:
+        return recs
+    out = []
+    for rec in recs:
+        last_applied = last_applied_by_path.get(rec["config_path"])
+        if last_applied is None:
+            out.append(rec)
+            continue
+        relevant = market_rows if rec["config_path"].startswith("market_strategy.") else rows
+        has_fresh_evidence = any(
+            r.get("entry_timestamp") is not None and r["entry_timestamp"] > last_applied for r in relevant
+        )
+        if has_fresh_evidence:
+            out.append(rec)
+    return out
+
+
 def generate_recommendations(
     rows: list[dict], cfg: dict, current_fp: str, variants: dict[str, dict], min_resolved_trades: int,
-    market_rows: list[dict] | None = None,
+    market_rows: list[dict] | None = None, gate_summaries: list[dict] | None = None,
+    last_applied_by_path: dict[str, float] | None = None, series_evaluator_rows: list[dict] | None = None,
+    category_rows: list[dict] | None = None,
 ) -> dict:
     """The unified entrypoint - see the module docstring for what changed
     2026-08-10. Returns {"recommendations": [...], "resolved_count": int,
@@ -517,6 +762,18 @@ def generate_recommendations(
     recs = _within_variant_recommendations(rows, cfg["strategy"])
     recs += _market_strategy_recommendations(market_rows or [], cfg.get("market_strategy") or {})
     recs += _cross_variant_recommendations(current_fp, summaries, variants, min_resolved_trades)
+    if gate_summaries:
+        recs += _rejected_candidate_recommendations(
+            gate_summaries, cfg["strategy"], cfg.get("market_strategy") or {},
+            trade_analytics.compute_summary(rows), trade_analytics.compute_summary(market_rows or []),
+        )
+    if series_evaluator_rows:
+        recs += _series_evaluator_recommendations(series_evaluator_rows, cfg["strategy"])
+    if category_rows:
+        recs += _category_conditional_recommendations(
+            category_rows, cfg["strategy"], trade_analytics.compute_summary(rows).get("win_rate_pct"),
+        )
+    recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
     return {
         "recommendations": recs,
         "resolved_count": resolved_count,
