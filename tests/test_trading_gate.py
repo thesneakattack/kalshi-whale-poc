@@ -1736,3 +1736,89 @@ def test_post_market_analyst_full_spectrum_apply_404s_for_unknown_suggestion(tmp
         "analysis_id": analysis_id, "suggestion_id": "does-not-exist",
     })
     assert resp.status_code == 404
+
+
+# --- _enrich_recent_trades (2026-08-10 - Portfolio Trade Log real-outcome fix) ---
+# Direct report: "not seeing the results of the positions in the trade log" -
+# a close row rendered identically to a still-open entry, since PaperBroker.
+# state()'s raw recent_trades carry no close_type/realized_pnl/won at all.
+# Uses a fresh, isolated PaperBroker (not main.broker, the shared module-level
+# singleton other tests in this file touch) so this can't pollute anything else.
+
+def test_enrich_recent_trades_leaves_a_still_open_entry_unenriched(tmp_path):
+    fresh_broker = pb_module.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "fresh_broker_open.db")
+    fresh_broker.open_position(ticker="TICK-A", side="yes", size=100, price=0.5, reason="test entry")
+    enriched = main._enrich_recent_trades(fresh_broker)
+    assert len(enriched) == 1
+    assert enriched[0].get("close_type") is None
+    assert enriched[0].get("realized_pnl") is None
+
+
+def test_enrich_recent_trades_attaches_real_close_outcome(tmp_path):
+    fresh_broker = pb_module.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "fresh_broker_close.db")
+    fresh_broker.open_position(ticker="TICK-A", side="yes", size=100, price=0.5, reason="test entry")
+    # A reason trade_analytics.classify_close_type actually recognizes
+    # (see its _CLOSE_TYPE_PATTERNS) - close_position() prepends "closed: "
+    # and appends "(realized ...)" itself, so this must match starting
+    # right after "closed: ".
+    close_trade = fresh_broker.close_position("TICK-A", 0.8, "take-profit hit: unrealized gain 60% of cost basis")
+    enriched = main._enrich_recent_trades(fresh_broker)
+    close_row = next(r for r in enriched if r["id"] == close_trade.id)
+    assert close_row["close_type"] == "take_profit"
+    assert close_row["won"] is True
+    assert isinstance(close_row["realized_pnl"], float)
+    assert close_row["realized_pnl"] > 0
+
+
+def test_enrich_recent_trades_pairs_correctly_even_when_entry_is_outside_the_tail_25(tmp_path):
+    # The real reason this re-derives over the FULL trade_log rather than
+    # just the displayed tail-25 slice: an entry more than 25 trades back
+    # must still pair correctly with a close inside the recent window.
+    fresh_broker = pb_module.PaperBroker(starting_bankroll=100000.0, db_path=tmp_path / "fresh_broker_many.db")
+    fresh_broker.open_position(ticker="OLD-A", side="yes", size=10, price=0.5, reason="old entry")
+    for i in range(30):
+        fresh_broker.open_position(ticker=f"FILLER-{i}", side="yes", size=1, price=0.5, reason="filler")
+        fresh_broker.close_position(f"FILLER-{i}", 0.5, "take-profit hit: filler")
+    close_trade = fresh_broker.close_position("OLD-A", 0.9, "take-profit hit: unrealized gain 80% of cost basis")
+    enriched = main._enrich_recent_trades(fresh_broker)
+    close_row = next(r for r in enriched if r["id"] == close_trade.id)
+    assert close_row["close_type"] == "take_profit"
+    assert close_row["won"] is True
+
+
+# --- market-native / shadow un-halt routes (2026-08-10) --------------------
+# Real bug found live investigating a direct report ("market-native strategy
+# seems to have stalled"): market_strategy.py's own risk manager had tripped
+# its kill switch with no route to ever clear it - and services/shadow_mode.py
+# had the identical gap (confirmed live, dormant only because mode was
+# "paper" at the time).
+
+def test_market_risk_halt_and_resume_routes():
+    resp = client.post("/api/market-risk/halt")
+    assert resp.status_code == 200
+    assert resp.json()["halted"] is True
+    assert main.market_risk.halted is True
+
+    resp = client.post("/api/market-risk/resume")
+    assert resp.status_code == 200
+    assert resp.json()["halted"] is False
+    assert main.market_risk.halted is False
+
+
+def test_shadow_risk_resume_route():
+    main.shadow.halted = True
+    main.shadow.halt_reason = "test halt"
+    resp = client.post("/api/shadow-risk/resume")
+    assert resp.status_code == 200
+    assert resp.json()["halted"] is False
+    assert main.shadow.halted is False
+
+
+def test_reset_endpoint_market_native_flag_resets_broker_and_risk():
+    main.market_broker.open_position(ticker="TICK-A", side="yes", size=10, price=0.5, reason="test")
+    main.market_risk.manual_halt("test halt")
+    resp = client.post("/api/reset", json={"paper": False, "market_native": True})
+    assert resp.status_code == 200
+    assert "market_native" in resp.json()["cleared"]
+    assert main.market_broker.positions == {}
+    assert main.market_risk.halted is False

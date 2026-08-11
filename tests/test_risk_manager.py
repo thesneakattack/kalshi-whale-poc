@@ -1,3 +1,5 @@
+import time
+
 from services import risk_manager as rm
 
 
@@ -57,6 +59,82 @@ def test_reset_day_clears_halt_and_rebases_baseline(tmp_path, monkeypatch):
     risk.reset_day(700.0)
     assert risk.halted is False
     assert risk.day_start_bankroll == 700.0
+
+
+# --- automatic daily rollover -----------------------------------------------
+
+def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch):
+    # day1 must land on the *same* UTC calendar date the freshly-constructed
+    # RiskManager itself seeded day_start_date from (real wall-clock time)
+    # for this to actually exercise "no rollover yet" rather than
+    # accidentally triggering one from date mismatch alone.
+    day1 = time.time()
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    risk.check_daily_loss(890.0, now=day1)
+    assert risk.halted is True
+    # Later the same UTC day - still halted, no rollover yet.
+    assert risk.check_daily_loss(1000.0, now=day1 + 60) is False
+    assert risk.halted is True
+
+
+def test_check_daily_loss_auto_rolls_over_on_a_new_utc_day(tmp_path, monkeypatch):
+    day1 = time.time()
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    risk.check_daily_loss(890.0, now=day1)
+    assert risk.halted is True
+    day2 = day1 + 86400  # 24h later - a new UTC calendar date
+    # The real bug this fixes: this must NOT stay permanently halted.
+    assert risk.check_daily_loss(890.0, now=day2) is True
+    assert risk.halted is False
+    assert risk.day_start_bankroll == 890.0  # rebased to the bankroll at rollover time
+
+
+def test_rollover_rebases_day_start_bankroll_even_without_a_prior_halt(tmp_path, monkeypatch):
+    day1 = time.time()
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    risk.check_daily_loss(980.0, now=day1)  # small loss, never halts
+    day2 = day1 + 86400
+    risk.check_daily_loss(950.0, now=day2)
+    assert risk.day_start_bankroll == 950.0  # rebased, not still 1000.0
+
+
+def test_rollover_persists_across_a_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "risk_state.db"
+    monkeypatch.setattr(rm, "DB_PATH", db_path)
+    day1 = time.time()
+    risk = rm.RiskManager(starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    risk.check_daily_loss(890.0, now=day1)
+    assert risk.halted is True
+
+    day2 = day1 + 86400
+    resumed = rm.RiskManager(starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    assert resumed.halted is True  # restart alone doesn't roll over
+    assert resumed.check_daily_loss(890.0, now=day2) is True
+    assert resumed.halted is False
+
+
+def test_a_pre_existing_row_with_no_day_start_date_does_not_immediately_rollover(tmp_path, monkeypatch):
+    # Migration safety: a row written before day_start_date existed (NULL)
+    # must seed from *today*, not be treated as instantly stale - an
+    # existing halt shouldn't silently clear itself the moment this code
+    # ships, only at a genuine subsequent day boundary.
+    db_path = tmp_path / "risk_state.db"
+    monkeypatch.setattr(rm, "DB_PATH", db_path)
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE risk_meta (id INTEGER PRIMARY KEY CHECK (id = 1), day_start_bankroll REAL NOT NULL, "
+        "halted INTEGER NOT NULL, halt_reason TEXT)"
+    )
+    conn.execute("INSERT INTO risk_meta VALUES (1, 1000.0, 1, 'pre-existing halt')")
+    conn.commit()
+    conn.close()
+
+    risk = rm.RiskManager(starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    assert risk.halted is True
+    same_day_now = time.time()
+    assert risk.check_daily_loss(1000.0, now=same_day_now) is False  # still halted, no rollover today
+    assert risk.halted is True
 
 
 def test_max_trade_size(tmp_path, monkeypatch):

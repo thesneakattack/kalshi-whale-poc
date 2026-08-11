@@ -165,6 +165,38 @@ def _slim_market(m: dict) -> dict:
     return {k: m.get(k) for k in _MARKET_FIELDS}
 
 
+def _enrich_recent_trades(paper_broker_instance: PaperBroker) -> list[dict]:
+    """PaperBroker.state()'s recent_trades are raw Trade rows - a close
+    trade among them carries no realized_pnl/close_type/won at all, the
+    same "displayed value doesn't match its label" bug class CLAUDE.md
+    already documents once (the Portfolio header's old Unrealized P&L).
+    Real bug found live (2026-08-10, direct user report: "not seeing the
+    results of the positions in the trade log") - every row in the
+    Portfolio Trade Log rendered identically whether it was a still-open
+    entry or an already-settled close, showing "cost to enter"/"payout if
+    right" even for a trade that had already won or lost.
+
+    Re-derives via trade_analytics.build_trade_history() over the FULL
+    trade_log (not just the tail-25 slice state() itself returns) so an
+    entry outside the recent window still pairs correctly with a close
+    inside it, then merges the derived fields back onto just the recent-25
+    raw rows by (ticker, timestamp) - a close trade's own timestamp is
+    exactly build_trade_history()'s exit_timestamp for that row, a stable,
+    unambiguous join key requiring no new IDs."""
+    full_history = trade_analytics.build_trade_history([t.to_dict() for t in paper_broker_instance.trade_log])
+    by_key = {(r["ticker"], r["exit_timestamp"]): r for r in full_history}
+    recent = [t.to_dict() for t in paper_broker_instance.trade_log[-25:][::-1]]
+    for t in recent:
+        derived = by_key.get((t["ticker"], t["timestamp"]))
+        if derived is not None:
+            t["close_type"] = derived["close_type"]
+            t["realized_pnl"] = derived["realized_pnl"]
+            t["won"] = derived["won"]
+            t["entry_price"] = derived["entry_price"]
+            t["hold_sec"] = derived["hold_sec"]
+    return recent
+
+
 _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
 # change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
 
@@ -2389,8 +2421,9 @@ async def get_market_strategy_state():
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     return {
         "enabled": market_cfg["enabled"],
-        "broker": market_broker.state(state["latest_prices"]),
+        "broker": {**market_broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(market_broker)},
         "summary": trade_analytics.compute_summary(all_rows),
+        "risk": {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason},
     }
 
 
@@ -2562,7 +2595,7 @@ def _build_state_body() -> dict:
         "error": state["error"],
         "whale_source": state["whale_source"],
         "risk": {"halted": risk.halted, "halt_reason": risk.halt_reason},
-        "broker": broker.state(state["latest_prices"]),
+        "broker": {**broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(broker)},
         "account": state["account"],
         "exchange_status": state["exchange_status"],
         "shadow": _shadow_state(),
@@ -2731,6 +2764,36 @@ async def resume_trading():
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
 
 
+@app.post("/api/market-risk/halt")
+async def halt_market_native():
+    # Same manual halt as /api/risk/halt above, for market_strategy.py's
+    # own independent risk manager - previously had no route at all (real
+    # gap found live 2026-08-10: market-native's kill switch had tripped
+    # and had no way to be manually managed, only services/risk_manager.py's
+    # automatic daily rollover fix - see reset_day - could ever clear it).
+    market_risk.manual_halt("Manually halted from dashboard")
+    _bump_generation()
+    return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
+
+
+@app.post("/api/market-risk/resume")
+async def resume_market_native():
+    market_risk.resume()
+    _bump_generation()
+    return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
+
+
+@app.post("/api/shadow-risk/resume")
+async def resume_shadow():
+    # Same manual un-halt as the two routes above, for shadow_mode.py's own
+    # independent risk tracker - previously had no route at all. Confirmed
+    # live (2026-08-10) it had been stuck halted (-99.7%) with no recovery
+    # path, dormant only because mode was "paper" at the time.
+    shadow.resume()
+    _bump_generation()
+    return {"halted": shadow.halted, "halt_reason": shadow.halt_reason}
+
+
 class ResetBody(BaseModel):
     # Each flag wipes an independently-persisted domain — see the Danger Zone
     # panel in the Config tab. Paper defaults on (matches the button's
@@ -2752,6 +2815,12 @@ class ResetBody(BaseModel):
     series_evaluator: bool = False
     candidate_log: bool = False
     calibration_history: bool = False
+    # market_strategy.py's own capital pool/risk state previously had no
+    # reset path at all (real gap found live 2026-08-10 investigating why
+    # it "stalled" - its kill switch had tripped with no way to recover
+    # short of editing data/market_risk_state.db by hand). Off by default,
+    # same convention as everything except paper itself.
+    market_native: bool = False
 
 
 @app.post("/api/reset")
@@ -2792,6 +2861,10 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.calibration_history:
         calibration_history.clear_all()
         cleared.append("calibration_history")
+    if body.market_native:
+        market_broker.reset(cfg["market_strategy"]["starting_bankroll"])
+        market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
+        cleared.append("market_native")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 

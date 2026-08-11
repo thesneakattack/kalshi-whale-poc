@@ -199,6 +199,50 @@ def test_reset_day_clears_halt(tmp_path, monkeypatch):
     assert trader.day_start_bankroll == 7000.0
 
 
+# --- automatic daily rollover (same fix class as services/risk_manager.py) --
+
+def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch):
+    day1 = time.time()
+    trader = _trader(tmp_path, monkeypatch, default_bankroll=1000.0)
+    trader.check_daily_loss(890.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1)
+    assert trader.halted is True
+    assert trader.check_daily_loss(1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1 + 60) is False
+    assert trader.halted is True
+
+
+def test_check_daily_loss_auto_rolls_over_on_a_new_utc_day(tmp_path, monkeypatch):
+    day1 = time.time()
+    trader = _trader(tmp_path, monkeypatch, default_bankroll=1000.0)
+    trader.check_daily_loss(890.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1)
+    assert trader.halted is True
+    day2 = day1 + 86400
+    # The real bug this fixes: shadow mode must not stay permanently halted
+    # once tripped - confirmed live (2026-08-10) it had been stuck at
+    # halted=1 ("-99.7%") with no automatic recovery path.
+    assert trader.check_daily_loss(890.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day2) is True
+    assert trader.halted is False
+    assert trader.day_start_bankroll == 890.0
+
+
+def test_a_pre_existing_row_with_no_day_start_date_does_not_immediately_rollover(tmp_path, monkeypatch):
+    db_path = tmp_path / "shadow_mode.db"
+    monkeypatch.setattr(sm, "DB_PATH", db_path)
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE shadow_risk (id INTEGER PRIMARY KEY CHECK (id = 1), day_start_bankroll REAL NOT NULL, "
+        "halted INTEGER NOT NULL, halt_reason TEXT)"
+    )
+    conn.execute("INSERT INTO shadow_risk VALUES (1, 1000.0, 1, 'pre-existing halt')")
+    conn.commit()
+    conn.close()
+
+    trader = sm.ShadowTrader(default_bankroll=1000.0)
+    assert trader.halted is True
+    assert trader.check_daily_loss(1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=time.time()) is False
+    assert trader.halted is True
+
+
 def test_clear_wipes_trades_and_resets_baseline(tmp_path, monkeypatch):
     trader = _trader(tmp_path, monkeypatch, default_bankroll=10000.0)
     _no_opinion_series_stats(monkeypatch)

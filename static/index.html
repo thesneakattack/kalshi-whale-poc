@@ -2471,6 +2471,16 @@ function renderTrades(trades, prices) {
       const label = marketLabel(t.ticker);
       const when = new Date(t.timestamp * 1000).toLocaleTimeString();
       const tEt = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
+      // A close trade (t.close_type set server-side - see main.py's
+      // _enrich_recent_trades) gets its real result shown, not the entry-
+      // style cost/payout framing that made every closed position look
+      // identical to a still-open one (real bug, direct report 2026-08-10:
+      // "not seeing the results of the positions in the trade log").
+      const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
+      const resultHtml = isClose
+        ? `<span style="color:${t.won ? 'var(--yes)' : 'var(--no)'}; font-weight:600;">${t.won ? '✅ Won' : '❌ Lost'} ${fmt(t.realized_pnl ?? 0)}</span>
+           <span style="color:var(--muted); font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
+        : `${costHTML(t.size, t.side === 'yes' ? t.price : (1 - t.price))} ${payoutHTML(t.size)}`;
       return `
       <div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
         <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
@@ -2479,8 +2489,7 @@ function renderTrades(trades, prices) {
         <div class="nums">
           <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
           <span style="color: var(--muted)">${when}</span>
-          ${costHTML(t.size, t.side === 'yes' ? t.price : (1 - t.price))}
-          ${payoutHTML(t.size)}
+          ${resultHtml}
         </div>
       </div>`;
     }).join('');
@@ -2510,13 +2519,25 @@ function renderTradeLogTable() {
     if (t.size < tradeLogFilter.minSize) return false;
     return true;
   }).map(t => {
-    const current = lastTradeLogPrices[t.ticker] ?? t.price;
-    // direction-aware, same as PaperBroker.mark_to_market - without it a
-    // "no" row's gain/loss showed with the sign flipped (a no position
-    // gaining when price falls read as a loss here, and vice versa).
-    const direction = t.side === 'yes' ? 1 : -1;
-    const pnl = direction * (current - t.price) * t.size;
-    return Object.assign({}, t, { pnl, confidence: parseConfidence(t.reason) });
+    const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
+    let pnl;
+    if (isClose) {
+      // Real bug (direct report 2026-08-10): this used to run the same
+      // mark-to-market formula below for EVERY row, close or not - for a
+      // close row that compares the close price against whatever the
+      // market happens to be trading at *now*, not the P&L actually
+      // realized when the position closed. t.realized_pnl (server-side,
+      // see main.py's _enrich_recent_trades) is the real number.
+      pnl = t.realized_pnl ?? 0;
+    } else {
+      const current = lastTradeLogPrices[t.ticker] ?? t.price;
+      // direction-aware, same as PaperBroker.mark_to_market - without it a
+      // "no" row's gain/loss showed with the sign flipped (a no position
+      // gaining when price falls read as a loss here, and vice versa).
+      const direction = t.side === 'yes' ? 1 : -1;
+      pnl = direction * (current - t.price) * t.size;
+    }
+    return Object.assign({}, t, { pnl, isClose, confidence: parseConfidence(t.reason) });
   });
 
   rows = sortRows(rows, tradeLogFilter.sortKey, tradeLogFilter.sortDir);
@@ -2527,13 +2548,16 @@ function renderTradeLogTable() {
   }
 
   const cols = [['timestamp', 'Time'], ['ticker', 'Ticker'], ['side', 'Side'], ['size', 'Size'],
-    ['price', 'Price'], ['confidence', 'Confidence'], ['pnl', 'P&L']];
+    ['price', 'Price'], ['confidence', 'Confidence'], ['pnl', 'P&L'], ['close_type', 'Result']];
   const headerHtml = cols.map(([key, label]) =>
     sortHeaderHTML(tradeLogFilter, key, label, `toggleSort(tradeLogFilter,'${key}',renderTradeLogTable)`)
   ).join('');
 
   const bodyRows = rows.map(r => {
     const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+    const resultCell = r.isClose
+      ? `<span style="color:${r.won ? 'var(--yes)' : 'var(--no)'};">${r.won ? 'Won' : 'Lost'} · ${esc(HISTORY_CLOSE_TYPE_LABELS[r.close_type] || r.close_type)}</span>`
+      : '<span style="color:var(--muted);">open</span>';
     return `<tr title="${esc(marketLabel(r.ticker).full)} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
     <td>${esc(marketLabel(r.ticker).short)}</td>
@@ -2542,6 +2566,7 @@ function renderTradeLogTable() {
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence != null ? (r.confidence*100).toFixed(0) + '%' : '—'}</td>
     <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${fmt(r.pnl)}</td>
+    <td>${resultCell}</td>
   </tr>`;
   }).join('');
 

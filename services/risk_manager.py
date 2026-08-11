@@ -10,12 +10,39 @@ bankroll but reset this file's loss baseline to config/settings.yaml's
 starting_bankroll every time — either mismeasuring today's loss against a
 stale number, or silently un-halting a kill switch that had actually
 tripped. A plain restart resumes; reset_day() (called from POST
-/api/reset) is the only thing that clears it.
+/api/reset) is the only thing that clears it - or, as of the automatic
+rollover below, a genuinely new calendar day.
+
+Real bug found live (2026-08-10): "daily loss limit" had never actually
+been daily - reset_day() was only ever called manually (POST /api/reset,
+or the two /api/risk/halt|resume-style routes), with nothing rolling the
+baseline over at a real day boundary. services/market_strategy.py's own
+kill switch tripped once, then stayed permanently halted for 55+ hours
+with zero automatic recovery path - the strategy looked "stalled" from
+the outside, but it was actually just correctly, silently obeying a kill
+switch nothing had ever cleared. check_daily_loss() now rolls the day over
+automatically (once per real UTC calendar day, not once per tick) before
+doing its own check - every existing call site gets this for free with no
+new call needed.
 """
 import sqlite3
+import time
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "risk_state.db"
+
+
+def _today(now: float | None = None) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(now if now is not None else time.time()))
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # Same idiom as services/signal_log.py/config_performance.py -
+    # CREATE TABLE IF NOT EXISTS alone doesn't add a column to an existing
+    # table with existing rows.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -31,6 +58,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    # Nullable on purpose - a pre-existing row from before this column
+    # existed has no real "day" to compare against yet; _load() below seeds
+    # it from today's date on first read rather than assuming a rollover is
+    # due immediately (that decision belongs to a deliberate one-time
+    # /api/risk/resume-style action, not an automatic migration side effect).
+    _add_column_if_missing(conn, "risk_meta", "day_start_date", "TEXT")
     return conn
 
 
@@ -52,19 +85,25 @@ class RiskManager:
 
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT day_start_bankroll, halted, halt_reason FROM risk_meta WHERE id = 1"
+                "SELECT day_start_bankroll, halted, halt_reason, day_start_date FROM risk_meta WHERE id = 1"
             ).fetchone()
             if row is None:
                 self.day_start_bankroll = starting_bankroll
                 self.halted = False
                 self.halt_reason = None
+                self.day_start_date = _today()
                 conn.execute(
-                    "INSERT INTO risk_meta (id, day_start_bankroll, halted, halt_reason) VALUES (1, ?, 0, NULL)",
-                    (self.day_start_bankroll,),
+                    "INSERT INTO risk_meta (id, day_start_bankroll, halted, halt_reason, day_start_date) "
+                    "VALUES (1, ?, 0, NULL, ?)",
+                    (self.day_start_bankroll, self.day_start_date),
                 )
             else:
-                self.day_start_bankroll, halted, self.halt_reason = row
+                self.day_start_bankroll, halted, self.halt_reason, day_start_date = row
                 self.halted = bool(halted)
+                # A row from before day_start_date existed - seed it from
+                # today rather than treating a pre-existing halt as due for
+                # an immediate silent rollover (see the module docstring).
+                self.day_start_date = day_start_date or _today()
 
     def _connect(self) -> sqlite3.Connection:
         return _connect(self.db_path)
@@ -72,15 +111,21 @@ class RiskManager:
     def _persist(self):
         with self._connect() as conn:
             conn.execute(
-                "UPDATE risk_meta SET day_start_bankroll = ?, halted = ?, halt_reason = ? WHERE id = 1",
-                (self.day_start_bankroll, int(self.halted), self.halt_reason),
+                "UPDATE risk_meta SET day_start_bankroll = ?, halted = ?, halt_reason = ?, day_start_date = ? "
+                "WHERE id = 1",
+                (self.day_start_bankroll, int(self.halted), self.halt_reason, self.day_start_date),
             )
 
     def max_trade_size(self, bankroll: float, max_position_pct: float) -> float:
         return round(bankroll * max_position_pct, 2)
 
-    def check_daily_loss(self, current_bankroll: float) -> bool:
-        """Returns True if trading should continue; flips the kill switch if not."""
+    def check_daily_loss(self, current_bankroll: float, now: float | None = None) -> bool:
+        """Returns True if trading should continue; flips the kill switch if
+        not. Runs the automatic daily rollover first (see module docstring)
+        - a halt from a stale, day-old baseline gets cleared here the same
+        way every other part of this state already self-manages, not left
+        for a human to notice and clear by hand."""
+        self._maybe_rollover_day(current_bankroll, now)
         if not self.kill_switch_enabled or self.halted:
             return not self.halted
         loss_pct = (self.day_start_bankroll - current_bankroll) / self.day_start_bankroll
@@ -91,10 +136,23 @@ class RiskManager:
             return False
         return True
 
-    def reset_day(self, current_bankroll: float):
+    def _maybe_rollover_day(self, current_bankroll: float, now: float | None = None) -> bool:
+        """Rolls the baseline (and any halt) over exactly once per real UTC
+        calendar-date change, not once per tick - direct fix for a real bug
+        found live (2026-08-10): market_strategy.py's kill switch tripped
+        once and then stayed permanently halted for 55+ hours, since
+        nothing had ever called reset_day() automatically. Returns True if
+        a rollover happened."""
+        if _today(now) != self.day_start_date:
+            self.reset_day(current_bankroll, now)
+            return True
+        return False
+
+    def reset_day(self, current_bankroll: float, now: float | None = None):
         self.day_start_bankroll = current_bankroll
         self.halted = False
         self.halt_reason = None
+        self.day_start_date = _today(now)
         self._persist()
 
     def manual_halt(self, reason: str = "Manually halted"):

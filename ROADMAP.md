@@ -286,6 +286,44 @@ works" to "flip it for real" still has open operational questions.
       gaps-2026-08-10.md** (Gap 5's stop-loss calibration was never on the
       build list — it needs time with the field live, not tooling; Gap 2's
       stateful replay half was explicitly deferred within Gap 2 itself).
+- [x] **Daily-loss kill switch never actually rolled over daily — three
+      real, connected bugs found and fixed in one investigation (2026-08-
+      10)**, triggered by a direct report ("market-native strategy seems
+      to have stalled"). Root cause: `reset_day()` was only ever called
+      manually (`POST /api/reset`, or a dashboard halt/resume click) —
+      nothing rolled the baseline over at a real day boundary, so once a
+      kill switch tripped it stayed tripped indefinitely.
+      `market_strategy.py`'s own risk manager had tripped
+      (`-43.1%`) and sat halted for 55+ hours with zero recovery path — it
+      wasn't stalled, it was correctly, silently obeying a kill switch
+      nothing had ever cleared. `services/risk_manager.py`'s
+      `check_daily_loss()` now runs an automatic rollover first (new
+      `day_start_date` column, once per real UTC calendar-date change, not
+      once per tick) — every existing call site gets this for free.
+      `services/shadow_mode.py` had the exact same bug, independently
+      confirmed live (`-99.7%`, dormant only because `mode` was `paper` at
+      the time) and fixed the same way, per direct follow-up ("i think the
+      same or similar problem is happening in shadow mode"). New
+      `POST /api/market-risk/halt`/`.../resume` and
+      `POST /api/shadow-risk/resume` (neither had any route before this),
+      plus a `market_native` `POST /api/reset` flag. All three trackers
+      manually un-halted live as part of this fix; market-native confirmed
+      evaluating real candidates again within a minute. Separately found
+      and fixed while investigating: the Portfolio Trade Log (both Simple
+      and Advanced views) never showed a closed position's real outcome —
+      every row rendered identically whether still open or already
+      settled, showing "cost to enter"/"payout if right" even for an
+      already-won-or-lost trade (direct report: "not seeing the results of
+      the positions in the trade log"). New `main.py`
+      `_enrich_recent_trades()` re-derives `close_type`/`realized_pnl`/
+      `won` via the existing `trade_analytics.build_trade_history()` over
+      the full trade log (not just the displayed tail-25, so pairing stays
+      correct) and merges it onto both brokers' `recent_trades`; the
+      Advanced table's P&L column also stopped using a mark-to-market
+      formula that was meaningless for a closed trade. 14 new tests (649
+      passing). Also cleaned up 9 stray `TICK-A` test-fixture rows a
+      pre-isolation-fixture pytest run had written into the real
+      `data/candidate_log.db` earlier this same session.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
