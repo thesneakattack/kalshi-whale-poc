@@ -22,6 +22,7 @@ from services import calibration_history
 from services import candidate_log
 from services import cross_strategy
 from services import regime_analytics
+from services import stats_power
 from services import confidence_calibration
 from services import config_performance
 from services import market_analyst_agent
@@ -2346,6 +2347,15 @@ async def get_series_evaluator_status():
         row["below_winrate_floor"] = (
             stat["resolved"] >= min_resolved_for_filter
             and stat["win_rate"] is not None and stat["win_rate"] < win_rate_floor
+        )
+        # Gap 10 (docs/config-tuning-data-gaps-2026-08-10.md) - the real
+        # margin of error around this series' observed win rate, so
+        # "below_winrate_floor" reads as more than a bare true/false: a
+        # series barely under the floor with a wide margin (thin n) is a
+        # different situation than one clearly under it with a tight one.
+        row["whale_win_rate_margin_pts"] = (
+            stats_power.margin_of_error_pts(stat["resolved"], stat["win_rate"])
+            if stat["win_rate"] is not None else None
         )
     return {"enabled": bool(se_cfg.get("enabled")), "series": series_rows}
 

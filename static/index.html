@@ -3785,8 +3785,14 @@ async function loadSeriesEvaluator() {
       let winRateHtml = '';
       if (r.whale_win_rate !== null) {
         const wrColor = r.below_winrate_floor ? 'var(--no)' : 'var(--muted)';
-        winRateHtml = `<span style="color:${wrColor}; font-size:11px;" title="whale win rate over ${r.whale_resolved} resolved signals">
-          ${r.whale_win_rate.toFixed(1)}% win rate${r.below_winrate_floor ? ' ⚠️ below min_whale_winrate_pct floor' : ''}
+        // Gap 10 (docs/config-tuning-data-gaps-2026-08-10.md) - the real
+        // margin of error, not just a bare win rate - a series barely
+        // under the floor with a wide margin (thin n) reads differently
+        // than one clearly under it with a tight one.
+        const margin = r.whale_win_rate_margin_pts;
+        const marginText = margin !== null && isFinite(margin) ? ` ±${margin.toFixed(1)}pts` : '';
+        winRateHtml = `<span style="color:${wrColor}; font-size:11px;" title="whale win rate over ${r.whale_resolved} resolved signals, 95% CI margin of error">
+          ${r.whale_win_rate.toFixed(1)}%${marginText} win rate${r.below_winrate_floor ? ' ⚠️ below min_whale_winrate_pct floor' : ''}
         </span>`;
       }
       return `<div class="position-row">

@@ -195,7 +195,14 @@ def compute_summary(rows: list[dict]) -> dict:
 
 def confidence_label(n: int) -> str:
     """Sample-size-only hedge, not a statistical test - just says how much
-    weight a human should put on the insight before acting on it."""
+    weight a human should put on the insight before acting on it. The 5/15
+    cutoffs are a reasonable-looking round-number convention, not derived
+    from a power calculation (Gap 10, docs/config-tuning-data-gaps-2026-
+    08-10.md) - for reference, services/stats_power.py's real margin-of-
+    error math puts n=5 at roughly +/-44 points and n=15 at roughly +/-25
+    points around a 50% observed rate (95% CI) - both genuinely wide, which
+    is exactly why "low"/"moderate" undersell rather than oversell what
+    this size of sample can support."""
     if n < 5:
         return "low"
     if n < 15:

@@ -265,8 +265,27 @@ works" to "flip it for real" still has open operational questions.
       Segmentation" History-tab panel (whale-follow only — market-native's
       22 closed positions are too thin to segment further). 8 new tests,
       624 passing. Verified live — real variation across hours (e.g. 18:00
-      UTC: 70.0% win rate n=20, vs. 20:00 UTC: 23.1% n=13). Gap 10 still
-      open (Gap 2's stateful half deliberately not attempted).
+      UTC: 70.0% win rate n=20, vs. 20:00 UTC: 23.1% n=13).
+      **Gap 10 (documented sample-size/power convention) is done** — new
+      `services/stats_power.py`: `margin_of_error_pts()`/
+      `min_n_for_margin()`, the real normal-approximation (Wald) margin-
+      of-error math behind "is n big enough to trust this," replacing this
+      session's own "eyeballing `sqrt(p(1-p)/n)` by hand." Doesn't rewrite
+      any existing ad hoc threshold (`confidence_label`'s 5/15,
+      `min_resolved_trades_per_variant`'s 10, etc. — each was chosen for
+      its own local reason) — documents them instead:
+      `trade_analytics.confidence_label()`'s docstring now states the real
+      margin at n=5 (~±44pts) and n=15 (~±25pts) at a 50% base rate, both
+      genuinely wide. Wired into one concrete consumer: Gap 4's
+      series-evaluator win-rate cross-check now shows each series' real
+      margin of error next to its win rate (e.g. "34.4% ±1.9pts"). 11 new
+      tests, 635 passing. Verified live via curl (real margins, no
+      `Infinity`-in-JSON risk — confirmed structurally unreachable given
+      the call site's own gating) and selenium-chrome.
+      **This closes all 9 buildable gaps from docs/config-tuning-data-
+      gaps-2026-08-10.md** (Gap 5's stop-loss calibration was never on the
+      build list — it needs time with the field live, not tooling; Gap 2's
+      stateful replay half was explicitly deferred within Gap 2 itself).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
