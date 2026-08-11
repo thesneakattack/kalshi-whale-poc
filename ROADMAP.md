@@ -225,7 +225,20 @@ works" to "flip it for real" still has open operational questions.
       though this one approved it. Series Evaluator panel now shows win
       rate inline, flagged when below the floor. No new tests (thin
       inline join over two already-tested functions); verified live via
-      curl + selenium-chrome. 601 tests passing, unchanged. Gaps 6, 7, 9,
+      curl + selenium-chrome. 601 tests passing, unchanged.
+      **Gap 6 (calibration-history tracking) is done** — new
+      `services/calibration_history.py`, own SQLite file. A cheap
+      `due()` MAX()-query check runs every tick; only when a snapshot is
+      actually due (default every `confidence_calibration.
+      snapshot_interval_sec` = 6h, new config field) does the expensive
+      full-table-scan report computation run, then `record_snapshot()`
+      persists overall win rate, per-factor gaps, and the live weights.
+      New `GET /api/confidence-calibration/history` + a `calibration_
+      history` Danger Zone reset flag. History table added to the
+      Whale-Signal Calibration panel, hidden until ≥2 snapshots exist (one
+      point can't show a trend). 8 new tests, 609 passing. Verified live —
+      the very first snapshot recorded automatically within one tick of
+      deploy (11,859 resolved signals, 52.6% overall win rate). Gaps 7, 9,
       10 still open (Gap 2's stateful half deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an

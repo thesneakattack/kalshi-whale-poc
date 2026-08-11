@@ -90,6 +90,7 @@ advisory:
 confidence_calibration:
   enabled: true
   min_resolved_signals: 50
+  snapshot_interval_sec: 21600
 market_analyst:
   enabled: true
   model: claude-sonnet-5

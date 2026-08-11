@@ -18,6 +18,7 @@ from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
 from services import backtest
+from services import calibration_history
 from services import candidate_log
 from services import confidence_calibration
 from services import config_performance
@@ -1388,6 +1389,27 @@ async def trading_loop():
                 if result in ("yes", "no") and m.get("ticker"):
                     market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
 
+            # Calibration-history tracking (Gap 6, docs/config-tuning-data-
+            # gaps-2026-08-10.md) - confidence_calibration.py already
+            # computes a real report on demand, but only ever as a single
+            # point-in-time snapshot, discarded the moment the request
+            # ends. due() is a single cheap MAX() query, so this tick's
+            # cost stays negligible unless a snapshot is actually due; only
+            # then does the expensive full-table-scan report computation
+            # run. Costs zero API tokens (pure local computation), unlike
+            # the market analyst - automatic background capture is fine
+            # here.
+            cc_cfg = cfg.get("confidence_calibration") or {}
+            if cc_cfg.get("enabled") and calibration_history.due(
+                tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
+            ):
+                cc_rows = signal_log.resolved_signals_with_factors()
+                cc_result = confidence_calibration.generate_calibration_report(
+                    cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
+                )
+                if cc_result["report"] is not None:
+                    calibration_history.record_snapshot(cc_result["report"], tick_now)
+
             # MarketNativeStrategy (services/market_strategy.py) - runs every
             # tick alongside the whale-follow strategy below, entirely off
             # its own real-market-data heuristic. No-op (returns []) when
@@ -2085,6 +2107,15 @@ async def get_confidence_calibration_report():
     return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
 
 
+@app.get("/api/confidence-calibration/history")
+async def get_confidence_calibration_history(limit: int = 100):
+    # services/calibration_history.py - Gap 6 of docs/config-tuning-data-
+    # gaps-2026-08-10.md. Always safe to call - the trend line these
+    # snapshots build up, distinct from the live report above.
+    limit = min(max(limit, 1), 500)
+    return {"snapshots": calibration_history.history(limit=limit)}
+
+
 @app.get("/api/candidate-log/summary")
 async def get_candidate_log_summary():
     # services/candidate_log.py - Gap 1 of docs/config-tuning-data-gaps-
@@ -2678,6 +2709,7 @@ class ResetBody(BaseModel):
     # is "start the whole series-worthiness log over."
     series_evaluator: bool = False
     candidate_log: bool = False
+    calibration_history: bool = False
 
 
 @app.post("/api/reset")
@@ -2715,6 +2747,9 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.candidate_log:
         candidate_log.clear_all()
         cleared.append("candidate_log")
+    if body.calibration_history:
+        calibration_history.clear_all()
+        cleared.append("calibration_history")
     _bump_generation()
     return {"ok": True, "cleared": cleared}
 

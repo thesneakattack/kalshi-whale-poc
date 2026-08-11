@@ -1161,6 +1161,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       never changes <span class="config-path" style="margin:0;">whale_confidence_weights</span> itself.
     </p>
     <div id="calibration-report"><div class="empty">Loading…</div></div>
+    <div id="calibration-history"></div>
 
     <!-- Rejected Candidates (services/candidate_log.py, Gap 1 of
          docs/config-tuning-data-gaps-2026-08-10.md) - the "counterfactual"
@@ -3131,6 +3132,7 @@ async function loadTradingHistory() {
     loadSeriesEvaluator();
     loadChangeHistory();
     loadCalibrationReport();
+    loadCalibrationHistory();
     loadCandidateLogSummary();
     loadBacktestSweeps();
   } catch (e) {
@@ -3426,6 +3428,45 @@ async function loadCalibrationReport() {
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load calibration report.</div>';
+  }
+}
+
+// Calibration history (services/calibration_history.py, Gap 6 of
+// docs/config-tuning-data-gaps-2026-08-10.md) - a trend line the live
+// report above can't show on its own: is overall win rate / a given
+// factor's discrimination gap improving as more data (and retuned
+// weights) accumulate, or stuck? One row is recorded automatically per
+// confidence_calibration.snapshot_interval_sec (default 6h) - this panel
+// stays empty until at least two snapshots exist.
+async function loadCalibrationHistory() {
+  const el = $('calibration-history');
+  try {
+    const resp = await fetchJSON('/api/confidence-calibration/history?limit=30');
+    const snaps = resp.snapshots || [];
+    if (snaps.length < 2) {
+      el.innerHTML = '';
+      return;
+    }
+    const rows = snaps.map(s => {
+      const when = new Date(s.recorded_at * 1000).toLocaleString();
+      const depth = s.per_factor.depth_factor;
+      const depthText = depth && depth.gap_pts !== null ? `${depth.gap_pts > 0 ? '+' : ''}${depth.gap_pts.toFixed(1)}pts` : '—';
+      return `<tr>
+        <td>${esc(when)}</td>
+        <td>${s.resolved_count}</td>
+        <td>${s.overall_win_rate_pct !== null ? s.overall_win_rate_pct.toFixed(1) + '%' : '—'}</td>
+        <td>${depthText}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `
+      <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin:14px 0 6px;">History (one snapshot per confidence_calibration.snapshot_interval_sec)</div>
+      <table class="positions-table">
+        <thead><tr><th>Recorded</th><th>Resolved n</th><th>Overall Win Rate</th><th>depth_factor Gap</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    el.innerHTML = '';
   }
 }
 
