@@ -251,8 +251,22 @@ works" to "flip it for real" still has open operational questions.
       state, not fabricated). Found and fixed a real double-escaping bug
       live during verification (`esc()` called on an already-HTML-escaped
       label string). 7 new tests, 616 passing. Verified via curl and
-      selenium-chrome. Gaps 9, 10 still open (Gap 2's stateful half
-      deliberately not attempted).
+      selenium-chrome.
+      **Gap 9 (time-of-day regime segmentation) is done, partially** —
+      disclosed scope: hour-of-day/day-of-week only, both derivable
+      directly from `entry_timestamp`. Category segmentation (the other
+      half this gap and deep-scan Finding 7 both name) is NOT attempted —
+      `market_catalog.category` is watchlist-scoped and rotates, so it
+      would need a new category-snapshot-at-entry-time persistence layer,
+      not just an aggregation pass. New `services/regime_analytics.py`:
+      `by_hour_of_day()`/`by_day_of_week()`, both reusing
+      `trade_analytics.compute_summary()` per bucket. New
+      `GET /api/regime/by-hour`/`.../by-day-of-week` + a new "Regime
+      Segmentation" History-tab panel (whale-follow only — market-native's
+      22 closed positions are too thin to segment further). 8 new tests,
+      624 passing. Verified live — real variation across hours (e.g. 18:00
+      UTC: 70.0% win rate n=20, vs. 20:00 UTC: 23.1% n=13). Gap 10 still
+      open (Gap 2's stateful half deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

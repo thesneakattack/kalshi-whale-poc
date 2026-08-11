@@ -21,6 +21,7 @@ from services import backtest
 from services import calibration_history
 from services import candidate_log
 from services import cross_strategy
+from services import regime_analytics
 from services import confidence_calibration
 from services import config_performance
 from services import market_analyst_agent
@@ -2138,6 +2139,22 @@ async def get_cross_strategy_comparison():
         "aggregate": cross_strategy.aggregate_comparison(whale_rows, market_rows),
         "ticker_overlap": cross_strategy.ticker_overlap(whale_rows, market_rows),
     }
+
+
+@app.get("/api/regime/by-hour")
+async def get_regime_by_hour(strategy: str = "whale_follow"):
+    # services/regime_analytics.py - Gap 9 of docs/config-tuning-data-gaps-
+    # 2026-08-10.md. Always safe to call, no enable flag.
+    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
+    return {"strategy": strategy, "buckets": regime_analytics.by_hour_of_day(rows)}
+
+
+@app.get("/api/regime/by-day-of-week")
+async def get_regime_by_day_of_week(strategy: str = "whale_follow"):
+    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
+    return {"strategy": strategy, "buckets": regime_analytics.by_day_of_week(rows)}
 
 
 @app.get("/api/backtest/entry-threshold")
