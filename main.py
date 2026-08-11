@@ -548,6 +548,33 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     if missing:
         results = await asyncio.gather(*(client.get_market(t) for t in missing), return_exceptions=True)
         markets.extend(m for m in results if isinstance(m, dict))
+
+    # Direct report (2026-08-11): "watchlist groupings is broken... likely a
+    # result of the active removal of watchlist items. reorganization should
+    # occur at the same time the watchlist updates." Confirmed: an open
+    # position kept alive above after rotating out of round_robin_select's
+    # own selection lands at the *end* of markets regardless of series - if
+    # that position's series still has other members earlier in the list
+    # (only this one ticker dropped, not the whole series), the frontend
+    # (renderMarketCards' seriesRuns) - which assumes same-series markets are
+    # always consecutive, since round_robin_select's own output guarantees
+    # that - splits one series into two separate on-screen sections instead
+    # of merging them. Re-groups by series here, preserving each series'
+    # first-occurrence order (not an alphabetical sort, which would destroy
+    # round_robin_select's volume-priority ordering) so any appended
+    # straggler rejoins its series' existing run. Cheap - one pass, no extra
+    # fetches - and also covers the manually-pinned kalshi.markets_watchlist
+    # branch above, whose ticker order is whatever the user typed, not
+    # necessarily grouped at all.
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for m in markets:
+        key = signal_log.series_of(m.get("ticker") or "")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(m)
+    markets = [m for key in order for m in groups[key]]
     return markets
 
 

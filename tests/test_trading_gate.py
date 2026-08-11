@@ -382,6 +382,37 @@ def test_reset_route_wires_series_evaluator_flag():
     assert se_module.overview() == []
 
 
+class _FakePinnedMarketClient:
+    def __init__(self, markets_by_ticker):
+        self.markets_by_ticker = markets_by_ticker
+
+    async def get_market(self, ticker):
+        return self.markets_by_ticker[ticker]
+
+
+def test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run():
+    # Direct report (2026-08-11): "watchlist groupings is broken... likely a
+    # result of the active removal of watchlist items. reorganization should
+    # occur at the same time the watchlist updates." Confirmed root cause:
+    # extra_tickers (open positions kept alive after rotating off the main
+    # selection) used to be appended at the very end regardless of series,
+    # which the frontend's renderMarketCards assumes never happens (it
+    # groups by treating same-series markets as always consecutive). Here,
+    # SERA appears once in the pinned watchlist and again only via
+    # extra_tickers (simulating a position whose series otherwise dropped
+    # off) - without the fix, the second SERA ticker would land after SERB,
+    # splitting one series into two non-adjacent runs.
+    cfg = {"kalshi": {"markets_watchlist": ["SERA-M1", "SERB-M1"]}}
+    fake = _FakePinnedMarketClient({
+        "SERA-M1": {"ticker": "SERA-M1", "event_ticker": "SERA-EVT1"},
+        "SERB-M1": {"ticker": "SERB-M1", "event_ticker": "SERB-EVT1"},
+        "SERA-M2": {"ticker": "SERA-M2", "event_ticker": "SERA-EVT2"},
+    })
+    markets = asyncio.run(main._fetch_markets(fake, cfg, extra_tickers=["SERA-M2"]))
+    tickers = [m["ticker"] for m in markets]
+    assert tickers == ["SERA-M1", "SERA-M2", "SERB-M1"]
+
+
 def test_fetch_markets_live_only_excludes_ineligible_series_when_enabled():
     # The BEFORE-check (direct request): a series currently serving backoff
     # must not be re-admitted to the watchlist, regardless of whether it

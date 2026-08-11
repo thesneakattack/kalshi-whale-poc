@@ -6,7 +6,7 @@ kalshi:
   max_children_per_parent: null
   min_volume_24h: 1
   categories: []
-  live_markets_only: true
+  live_markets_only: false
   poll_interval_sec: 15
   request_timeout_sec: 10
 whale_signal:

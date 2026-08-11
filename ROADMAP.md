@@ -735,3 +735,31 @@ works" to "flip it for real" still has open operational questions.
   curl (a real pre-existing calibration-auto-apply row's dict value
   confirmed rendering as JSON, not `[object Object]`) and
   `selenium-chrome` (both new Config-tab fields, zero console errors).
+  Then a real, root-caused fix for "the watchlist groupings is broken" —
+  the user's own diagnosis ("likely a result of the active removal of
+  watchlist items") was exactly right: `main.py`'s `_fetch_markets()`
+  appends an open position that rotated off `round_robin_select`'s own
+  selection (`extra_tickers`) to the *end* of the markets list regardless
+  of series, but `renderMarketCards()` assumes same-series markets are
+  always consecutive — true of `round_robin_select`'s own output, not of
+  the post-append result. One series could render as two separate,
+  non-adjacent sections. Fixed on both sides: the backend re-groups by
+  series after the append (first-occurrence order preserved, not an
+  alphabetical sort, so `round_robin_select`'s volume-priority ordering
+  survives — also now covers the manually-pinned watchlist branch, whose
+  order was never guaranteed grouped at all); the frontend's own
+  `seriesRuns` builder switched from an adjacent-only scan to a
+  `Map`-keyed merge, belt-and-suspenders on top of the backend fix. 1 new
+  test. 673 tests (was 672). Verified live: queried the real DOM after
+  the fix and confirmed zero duplicate series sections across the
+  actual, currently-live watchlist. Two other reports investigated in the
+  same pass — "price fluctuations arent showing" and "very few whale
+  prints for baseball despite a low $500 threshold" — turned out **not**
+  to be code bugs: `signal_log` showed 302 real MLB whale signals in a
+  single recent 6-hour window (all above threshold), and the price-update/
+  live-badge mechanisms both checked out correctly end-to-end once the
+  trading loop was running undisturbed. The live Signal Feed panel's
+  existing 50-item cap (shared across every concurrently-active sport,
+  not baseball-specific) is the more likely source of the "few prints"
+  impression — no code change made for either, since nothing was actually
+  broken.
