@@ -1208,6 +1208,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     <div id="calibration-auto-apply-toggle" style="margin:0 0 14px;"></div>
     <div id="calibration-report"><div class="empty">Loading…</div></div>
     <div id="calibration-history"></div>
+    <div id="calibration-history-chart"></div>
 
     <!-- Cross-Strategy Comparison (services/cross_strategy.py, Gap 7 of
          docs/config-tuning-data-gaps-2026-08-10.md, and the user's own
@@ -1241,6 +1242,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       actually a safe assumption. Category rows only cover trades placed since this shipped.
     </p>
     <div id="regime-segmentation"><div class="empty">Loading…</div></div>
+    <div id="regime-hour-chart"></div>
 
     <!-- Rejected Candidates (services/candidate_log.py, Gap 1 of
          docs/config-tuning-data-gaps-2026-08-10.md) - the "counterfactual"
@@ -1272,6 +1274,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       every already-logged resolved signal — the current live value is highlighted in each row.
     </p>
     <div id="backtest-sweeps"><div class="empty">Loading…</div></div>
+    <div id="backtest-entry-threshold-chart"></div>
 
     <!-- Market Analyst (docs/prediction-market-strategy-alignment-plan.md
          Part 3) - an LLM reading each market's own title/rules/context and
@@ -3607,6 +3610,7 @@ async function loadCalibrationHistory() {
     const snaps = resp.snapshots || [];
     if (snaps.length < 2) {
       el.innerHTML = '';
+      $('calibration-history-chart').innerHTML = '';
       return;
     }
     const rows = snaps.map(s => {
@@ -3627,6 +3631,14 @@ async function loadCalibrationHistory() {
         <tbody>${rows}</tbody>
       </table>
     `;
+    // Graph view (direct request 2026-08-10: "useful graph views") - is
+    // calibration improving as more data accumulates, or stuck? snaps is
+    // newest-first (services/calibration_history.py's own order); the
+    // chart needs chronological (oldest-first) left-to-right.
+    renderEquityChart(
+      [...snaps].reverse(), 50, 'overall_win_rate_pct', 'coin-flip baseline', 'calibration-history-chart',
+      {emptyMessage: 'Not enough calibration snapshots yet for a trend chart.', valueFormatter: v => `${v.toFixed(1)}%`},
+    );
   } catch (e) {
     el.innerHTML = '';
   }
@@ -3718,6 +3730,13 @@ async function loadRegimeSegmentation() {
         <tbody>${categoryRows}</tbody>
       </table>` : '<div class="empty" style="margin-top:8px;">No category data yet — only trades placed since this shipped have a recorded category (services/trade_category.py).</div>'}
     `;
+    // Graph view (direct request 2026-08-10: "useful graph views") - real
+    // hour-to-hour variation is much easier to see as a curve than
+    // scanning a ~19-row table.
+    renderEquityChart(
+      byHour.buckets || [], 50, 'win_rate_pct', 'coin-flip baseline', 'regime-hour-chart',
+      {emptyMessage: 'Not enough closed positions yet for an hour-of-day chart.', valueFormatter: v => `${v.toFixed(1)}%`},
+    );
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load regime segmentation.</div>';
   }
@@ -3817,6 +3836,14 @@ async function loadBacktestSweeps() {
       + (wrRows.length ? _sweepTableHTML(
         'strategy.min_whale_winrate_pct', 'strategy.min_whale_winrate_pct', wr.current_floor, 'floor', wrRows, 'floor', 'Floor',
       ) : '<div class="empty">Not enough resolved signals yet for a win-rate-floor sweep.</div>');
+    // Graph view (direct request 2026-08-10: "useful graph views") - the
+    // shape of this curve is the actual finding (a real U-shape was found
+    // live this session), much clearer visually than scanning a table of
+    // 20 rows for it.
+    renderEquityChart(
+      etRows, 50, 'win_rate_pct', 'coin-flip baseline', 'backtest-entry-threshold-chart',
+      {emptyMessage: 'Not enough resolved signals yet for a sweep chart.', valueFormatter: v => `${v.toFixed(1)}%`},
+    );
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load backtest sweeps.</div>';
   }
@@ -4279,12 +4306,21 @@ function renderHistoryTrades() {
 // Shared by both the paper equity curve and the real-balance curve — valueKey
 // picks which field each point uses ("equity" vs "balance"), baselineLabel
 // just changes the caption underneath.
-function renderEquityChart(history, baseline, valueKey, baselineLabel, elId) {
+function renderEquityChart(history, baseline, valueKey, baselineLabel, elId, opts) {
+  // opts (2026-08-10, direct request: "useful graph views") - optional so
+  // every existing call site (Portfolio/Market-Native equity charts) is
+  // unaffected: {emptyMessage, valueFormatter}. valueFormatter defaults to
+  // fmt() (dollar formatting) since that's what every pre-existing caller
+  // actually wants; the new History-tab charts below pass a percent
+  // formatter instead - this is a threshold-sweep/win-rate curve, not a
+  // dollar figure, and fmt() would render it as literal, nonsensical cents.
+  opts = opts || {};
+  const valueFormatter = opts.valueFormatter || fmt;
   valueKey = valueKey || 'equity';
   baselineLabel = baselineLabel || 'starting bankroll';
   const el = $(elId || 'equity-chart');
   if (!history || history.length < 2 || baseline === undefined || baseline === null) {
-    el.innerHTML = '<div class="empty">Not enough history yet — check back in a minute</div>';
+    el.innerHTML = `<div class="empty">${esc(opts.emptyMessage || 'Not enough history yet — check back in a minute')}</div>`;
     return;
   }
   const w = 900, h = 180, pad = 10;
@@ -4307,7 +4343,7 @@ function renderEquityChart(history, baseline, valueKey, baselineLabel, elId) {
       <polyline points="${points}" style="fill:none; stroke:${color}; stroke-width:2;" />
     </svg>
     <div style="font-family:var(--mono); font-size:10px; color:var(--muted); display:flex; justify-content:space-between;">
-      <span>${baselineLabel} ${fmt(baseline)}</span>
+      <span>${baselineLabel} ${valueFormatter(baseline)}</span>
       <span>${history.length} samples</span>
     </div>
   `;

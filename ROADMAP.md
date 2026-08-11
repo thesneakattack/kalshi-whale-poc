@@ -451,6 +451,21 @@ works" to "flip it for real" still has open operational questions.
       depends on a real signal actually clearing the threshold, not every
       tick), so an actual captured category row is disclosed as pending
       the next real trade, not fabricated as already confirmed.
+- [x] **Graph views for the History tab (2026-08-10, direct request: "i
+      want to add useful graph views to the history tab")** — three new
+      charts, reusing the existing `renderEquityChart()` SVG line-chart
+      renderer (already generic enough — no new charting mechanism, no
+      external library) rather than building bar charts from scratch:
+      calibration-history win-rate trend (is calibration improving as
+      data accumulates, or stuck?), the entry-threshold backtest sweep
+      curve (makes the real U-shaped finding from earlier this session
+      visible at a glance instead of scanning a 20-row table for it), and
+      the hour-of-day win-rate curve. `renderEquityChart()` gained an
+      optional `opts` param (`{emptyMessage, valueFormatter}`) so these
+      percent-based charts don't get dollar-formatted like every
+      pre-existing equity chart — fully backward compatible, every
+      existing call site untouched. Verified live via selenium-chrome:
+      all three render a real `<svg>` with zero console errors.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
