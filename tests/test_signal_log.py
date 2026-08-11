@@ -340,3 +340,15 @@ def test_resolved_signals_with_factors_excludes_unresolved_rows(tmp_path, monkey
     log = _log(tmp_path, monkeypatch)
     log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})
     assert log.resolved_signals_with_factors() == []  # never resolved
+
+
+def test_connect_enables_wal_mode(tmp_path, monkeypatch):
+    # Real live incident (2026-08-11) - signal_log.py is on the exact hot
+    # path (recent_sides_for_ticker/cluster_factor read from it on every
+    # qualifying whale print) that froze the app when trade-tape volume
+    # went uncapped; WAL mode lets readers proceed concurrently with a
+    # writer instead of serializing every access.
+    log = _log(tmp_path, monkeypatch)
+    with log._connect() as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"

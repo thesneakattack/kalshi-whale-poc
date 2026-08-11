@@ -50,6 +50,13 @@ _STATUS_REJECTED = "rejected"
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS series_status (
@@ -108,6 +115,53 @@ def record_trade_observed(series: str, now: float | None = None) -> None:
         conn.execute(
             "UPDATE series_status SET trades_observed = trades_observed + 1 WHERE series = ?", (series,)
         )
+
+
+def record_trades_observed_bulk(counts_by_series: dict[str, int], now: float | None = None) -> None:
+    """Same effect as calling record_trade_observed() once per trade, but
+    one connection for the whole batch instead of one per trade - direct,
+    confirmed-live incident (2026-08-11): removing the trade-tape cap
+    ("i want trade tape to be unlimited, never capped") multiplied real
+    per-tick trade volume by 10-30x, and record_trade_observed's per-call
+    _connect() (a fresh sqlite3.connect() plus a CREATE TABLE IF NOT
+    EXISTS check every single time) is synchronous, blocking Python's
+    single-threaded asyncio event loop for its full duration - thousands
+    of those in one tick froze the whole app for several minutes, not a
+    network/rate-limit issue as first suspected. counts_by_series is
+    "how many raw trades this tick observed per series" (pre-aggregated
+    by the caller) - collapses what used to be N per-trade round trips
+    into at most len(counts_by_series) per-series ones. Reactivation
+    (rejected, backoff served) credits the WHOLE batch count to the fresh
+    observing window, not just 1 - all of them genuinely occurred inside
+    it."""
+    if not counts_by_series:
+        return
+    now = now if now is not None else time.time()
+    with _connect() as conn:
+        for series, count in counts_by_series.items():
+            row = conn.execute(
+                "SELECT status, next_eligible_at FROM series_status WHERE series = ?", (series,)
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO series_status (series, status, first_seen_at, trades_observed) VALUES (?, ?, ?, ?)",
+                    (series, _STATUS_OBSERVING, now, count),
+                )
+                continue
+            status, next_eligible_at = row
+            if status == _STATUS_REJECTED:
+                if next_eligible_at is not None and now >= next_eligible_at:
+                    conn.execute(
+                        "UPDATE series_status SET status = ?, first_seen_at = ?, trades_observed = ?, "
+                        "next_eligible_at = NULL WHERE series = ?",
+                        (_STATUS_OBSERVING, now, count, series),
+                    )
+                continue
+            if status == _STATUS_APPROVED:
+                continue
+            conn.execute(
+                "UPDATE series_status SET trades_observed = trades_observed + ? WHERE series = ?", (count, series)
+            )
 
 
 def ineligible_series(now: float | None = None) -> set[str]:

@@ -13,6 +13,7 @@ provider runs), passed in via fetch_signals()'s market_context param. Zero
 extra API cost, same "already-fetched, don't fetch again" discipline
 services/market_history.py uses.
 """
+import asyncio
 import time
 from collections import deque
 from datetime import datetime
@@ -144,17 +145,69 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
     async def fetch_signals(
         self, since_ts: float | None = None, market_context: dict | None = None,
     ) -> list[WhaleSignal]:
+        # Thin async wrapper - all the real work (including every blocking
+        # SQLite call this loop makes: record_rejection per rejected trade,
+        # recent_sides_for_ticker/cluster_factor/_trend_factor/_analyst_
+        # factor per qualifying one) runs in _process_trades_sync on a
+        # worker thread via asyncio.to_thread, never on the event loop that
+        # also has to keep serving /api/state and every other request.
+        # Direct, confirmed-live incident (2026-08-11): removing the
+        # trade-tape cap ("i want trade tape to be unlimited, never
+        # capped") multiplied real per-tick trade volume 10-30x; every one
+        # of those blocking DB round trips (each opening its own fresh
+        # connection) ran synchronously in-line before this fix, and
+        # thousands of them in one tick froze the entire app - not a
+        # network/rate-limit issue, a single-threaded event loop fully
+        # occupied by sequential disk I/O. Follow-up, explicit: "i want to
+        # be able to handle this massive influx of data confidently...
+        # this needs to be handled expertly" - moving the blocking work off
+        # the event loop, not just reducing its volume, is what makes that
+        # true regardless of how much real trade data flows through any
+        # single tick from here on.
         market_context = market_context or {}
         markets = market_context.get("markets") or []
         trade_tape = market_context.get("trade_tape") or []
         cfg = market_context.get("cfg") or {}
+        markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
+        now = time.time()
+        return await asyncio.to_thread(
+            self._process_trades_sync, trade_tape, markets, markets_by_ticker, cfg, now,
+        )
+
+    def _process_trades_sync(
+        self, trade_tape: list[dict], markets: list[dict], markets_by_ticker: dict[str, dict],
+        cfg: dict, now: float,
+    ) -> list[WhaleSignal]:
+        """Synchronous by design - see fetch_signals' docstring above for
+        why. Every blocking call in here (record_rejection,
+        recent_sides_for_ticker, cluster_factor, _trend_factor,
+        _analyst_factor, record_trades_observed_bulk) is exactly what used
+        to run in-line on the event loop; nothing about the business logic
+        itself changed, only where it executes. Safe to run on a worker
+        thread: self._seen_trade_ids/_seen_order are only ever touched from
+        within one in-flight fetch_signals() call at a time (the trading
+        loop awaits each tick's whale-provider call before starting the
+        next), and every SQLite connection opened below is created and used
+        entirely within this same thread, never shared across threads."""
         wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
         default_min_notional = float(wwk_cfg.get("min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD))
         min_notional_by_series = wwk_cfg.get("min_notional_usd_by_series") or {}
-
-        markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
-        now = time.time()
         signals: list[WhaleSignal] = []
+        # series_evaluator's denominator - "how many real trades has this
+        # series actually produced," regardless of whether a given trade
+        # goes on to qualify as a whale print below. Aggregated in Python
+        # and written once via record_trades_observed_bulk() at the end of
+        # this loop, not once per trade inline - direct, confirmed-live
+        # incident (2026-08-11): removing the trade-tape cap multiplied
+        # real per-tick trade volume 10-30x, and a per-trade DB round trip
+        # (record_trade_observed's own fresh _connect() + CREATE TABLE
+        # check every call) is synchronous, blocking the whole asyncio
+        # event loop for its duration - thousands of those in one tick
+        # froze the app for several minutes. Recorded unconditionally (not
+        # gated behind series_evaluator.enabled) so the feature has real
+        # accumulated history the moment it's turned on, same "preserve a
+        # robust dataset" principle as everywhere else in this app.
+        trades_observed_by_series: dict[str, int] = {}
 
         for trade in trade_tape:
             trade_id = trade.get("trade_id")
@@ -163,15 +216,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             self._mark_seen(trade_id)  # evaluated once, regardless of outcome below
 
             ticker = trade.get("ticker")
-            # series_evaluator's denominator - "how many real trades has this
-            # series actually produced," regardless of whether this specific
-            # trade goes on to qualify as a whale print below. Recorded
-            # unconditionally (not gated behind series_evaluator.enabled) so
-            # the feature has real accumulated history to act on the moment
-            # it's turned on, rather than a cold start - same "preserve a
-            # robust dataset" principle as everywhere else in this app.
             if ticker:
-                series_evaluator.record_trade_observed(signal_log.series_of(ticker), now)
+                series = signal_log.series_of(ticker)
+                trades_observed_by_series[series] = trades_observed_by_series.get(series, 0) + 1
             market = markets_by_ticker.get(ticker)
             if not market:
                 continue  # can't score confidence without this market's own volume/close_time - skip, don't fabricate

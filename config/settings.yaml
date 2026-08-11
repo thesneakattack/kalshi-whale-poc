@@ -31,7 +31,7 @@ strategy:
   stop_loss_pct: 0.2
   exit_on_sentiment_reversal: true
   exit_sentiment_min_signals: 7
-  exit_sentiment_lean_pct: 80
+  exit_sentiment_lean_pct: 85
   auto_exit_enabled: true
   auto_exit_threshold: 0.6
   auto_exit_pnl_weight: 1
@@ -84,7 +84,7 @@ whale_confidence_weights:
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 10
-  auto_apply_enabled: false
+  auto_apply_enabled: true
   auto_apply_min_confidence: higher
   auto_apply_min_n: 25
   auto_apply_cooldown_sec: 86400

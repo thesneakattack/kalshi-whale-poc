@@ -252,8 +252,20 @@ class KalshiClient:
         )
         return resp.model_dump(mode="json")
 
-    async def get_trades(self, ticker: str | None = None, limit: int = 25) -> dict:
-        resp = await call_with_backoff(self._client.get_trades, ticker=ticker, limit=limit)
+    async def get_trades(
+        self, ticker: str | None = None, limit: int = 25, min_ts: int | None = None, cursor: str | None = None,
+    ) -> dict:
+        # min_ts (real, SDK-confirmed param - "filter items after this Unix
+        # timestamp") lets a caller fetch every trade since a known
+        # watermark instead of just "the most recent N," which used to
+        # silently drop real trades on any market busy enough to produce
+        # more than N of them within one poll interval. cursor is the real
+        # pagination token (empty string on the response = no more pages) -
+        # see main.py's _fetch_trade_tape, which pages through every
+        # ticker's full result set rather than keeping only the first page.
+        resp = await call_with_backoff(
+            self._client.get_trades, ticker=ticker, limit=limit, min_ts=min_ts, cursor=cursor,
+        )
         return resp.model_dump(mode="json")
 
     async def get_exchange_status(self) -> dict:

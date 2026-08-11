@@ -390,6 +390,104 @@ class _FakePinnedMarketClient:
         return self.markets_by_ticker[ticker]
 
 
+class _FakeTradeTapeClient:
+    """pages_by_ticker: ticker -> list of pages, each page a
+    (trades, cursor) tuple in the order they'd be returned across
+    successive calls. An empty-string cursor signals no more pages,
+    matching Kalshi's own documented contract."""
+    def __init__(self, pages_by_ticker):
+        self.pages_by_ticker = pages_by_ticker
+        self.calls = []
+
+    async def get_trades(self, ticker=None, limit=25, min_ts=None, cursor=None):
+        self.calls.append({"ticker": ticker, "limit": limit, "min_ts": min_ts, "cursor": cursor})
+        pages = self.pages_by_ticker.get(ticker, [])
+        page_index = 0 if cursor is None else next(
+            i for i, (_, c) in enumerate(pages[:-1]) if c == cursor
+        ) + 1
+        trades, next_cursor = pages[page_index]
+        return {"trades": trades, "cursor": next_cursor}
+
+
+def _trade(trade_id, ticker, created_time):
+    return {"trade_id": trade_id, "ticker": ticker, "created_time": created_time}
+
+
+def test_fetch_trades_for_ticker_pages_until_cursor_is_empty():
+    # Direct instruction (2026-08-11): "i want trade tape to be unlimited,
+    # never capped, for whale-watch-worthy markets." A ticker with more
+    # trades than one page holds must still return every one of them, not
+    # just the first page. Pagination only applies once min_ts is set
+    # (i.e. every tick after the first) - see the next test for why
+    # min_ts=None deliberately does NOT paginate (a real incident this
+    # exact function caused when it did).
+    fake = _FakeTradeTapeClient({
+        "T-A": [
+            ([_trade("1", "T-A", "t1"), _trade("2", "T-A", "t2")], "cursor-1"),
+            ([_trade("3", "T-A", "t3")], ""),
+        ],
+    })
+    trades = asyncio.run(main._fetch_trades_for_ticker(fake, "T-A", min_ts=1000))
+    assert {t["trade_id"] for t in trades} == {"1", "2", "3"}
+    assert len(fake.calls) == 2
+
+
+def test_fetch_trades_for_ticker_does_not_paginate_on_cold_start():
+    # Real, confirmed-live incident (2026-08-11): with min_ts=None (no
+    # watermark yet), Kalshi has no natural stopping point short of a
+    # ticker's entire history - pagination would fire up to
+    # _TRADE_TAPE_MAX_PAGES_PER_TICKER pages per ticker, on every watched
+    # ticker, simultaneously, on every cold start. This must return the
+    # first page only and stop, not walk the cursor.
+    fake = _FakeTradeTapeClient({
+        "T-A": [
+            ([_trade("1", "T-A", "t1")], "cursor-1"),
+            ([_trade("2", "T-A", "t2")], ""),
+        ],
+    })
+    trades = asyncio.run(main._fetch_trades_for_ticker(fake, "T-A", min_ts=None))
+    assert {t["trade_id"] for t in trades} == {"1"}
+    assert len(fake.calls) == 1
+
+
+def test_fetch_trades_for_ticker_stops_on_first_empty_page():
+    fake = _FakeTradeTapeClient({"T-A": [([], "")]})
+    trades = asyncio.run(main._fetch_trades_for_ticker(fake, "T-A", min_ts=None))
+    assert trades == []
+    assert len(fake.calls) == 1
+
+
+def test_fetch_trade_tape_returns_more_than_the_old_flat_cap():
+    # Direct instruction: genuinely unbounded, not just a bigger number.
+    # Simulates a single ticker alone producing more trades than the old
+    # 100-item platform-wide cap ever allowed through to whale detection -
+    # since_ts set so this exercises the paginated (post-cold-start) path.
+    many_trades = [_trade(str(i), "T-A", f"t{i:04d}") for i in range(150)]
+    fake = _FakeTradeTapeClient({
+        "T-A": [
+            (many_trades[:100], "cursor-1"),
+            (many_trades[100:], ""),
+        ],
+    })
+    markets = [{"ticker": "T-A"}]
+    trades = asyncio.run(main._fetch_trade_tape(fake, markets, since_ts=1000.0))
+    assert len(trades) == 150
+
+
+def test_fetch_trade_tape_passes_min_ts_with_overlap_margin_when_since_ts_given():
+    fake = _FakeTradeTapeClient({"T-A": [([], "")]})
+    markets = [{"ticker": "T-A"}]
+    asyncio.run(main._fetch_trade_tape(fake, markets, since_ts=1000.0))
+    assert fake.calls[0]["min_ts"] == 990  # 1000 - 10s overlap margin
+
+
+def test_fetch_trade_tape_uses_no_min_ts_on_first_call():
+    fake = _FakeTradeTapeClient({"T-A": [([], "")]})
+    markets = [{"ticker": "T-A"}]
+    asyncio.run(main._fetch_trade_tape(fake, markets, since_ts=None))
+    assert fake.calls[0]["min_ts"] is None
+
+
 def test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run():
     # Direct report (2026-08-11): "watchlist groupings is broken... likely a
     # result of the active removal of watchlist items. reorganization should
@@ -489,7 +587,19 @@ def test_fetch_markets_live_only_includes_series_when_evaluator_disabled():
 
 def _reset_advisory_state():
     main.broker.reset(starting_bankroll=10000.0)
-    main.config_store.update({"advisory": {"enabled": False, "min_resolved_trades_per_variant": 30}})
+    # auto_apply_enabled reset explicitly, not just enabled/min_resolved -
+    # this test file's config starting point is a *copy of the real, live*
+    # config/settings.yaml (see the module-level shutil.copy above), and
+    # this field is meant to reflect live operator intent (toggled via the
+    # History tab's confirmation-gated button, not this file's own tests) -
+    # a real live session enabling it left it True in the copied baseline,
+    # breaking every test here that assumed a False default. advisory.
+    # auto_apply_enabled is one of the two fields POST /api/config always
+    # refuses to touch (see _PROTECTED_CONFIG_PATHS), so it must be reset
+    # here directly rather than through the route these tests exercise.
+    main.config_store.update({
+        "advisory": {"enabled": False, "min_resolved_trades_per_variant": 30, "auto_apply_enabled": False},
+    })
 
 
 def test_config_endpoint_refuses_auto_apply_enabled_patch():

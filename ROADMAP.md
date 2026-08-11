@@ -735,6 +735,51 @@ works" to "flip it for real" still has open operational questions.
   curl (a real pre-existing calibration-auto-apply row's dict value
   confirmed rendering as JSON, not `[object Object]`) and
   `selenium-chrome` (both new Config-tab fields, zero console errors).
+  Then a real live incident, start to finish, triggered by fixing a real
+  gap the wrong way at first: investigating "very few whale prints for
+  baseball despite a low threshold" found `main.py`'s `_fetch_trade_tape()`
+  capping the platform-wide trade tape at 100 items and fetching only the
+  last 10 trades per ticker with no `min_ts`/cursor - both silently
+  dropped real trades before whale detection ever saw them. Direct
+  instruction to make it genuinely unbounded ("i want trade tape to be
+  unlimited, never capped") shipped a **second, more severe incident**:
+  `series_evaluator.record_trade_observed()`/`candidate_log.
+  record_rejection()` each open a fresh SQLite connection per individual
+  raw trade, and removing the cap multiplied per-tick trade volume
+  10-30x - thousands of blocking synchronous DB round trips froze the
+  single-threaded event loop for several minutes (confirmed via nginx
+  "upstream timed out" + an internal request timing out against
+  `localhost:8000` from inside the same container). User proposed
+  migrating off SQLite to a real DB server; recommended against it
+  (`AskUserQuestion`, agreed) since the actual bug was blocking I/O on an
+  async event loop, not a SQLite capacity problem. Fixed properly instead:
+  `KalshiClient.get_trades()` gained real `min_ts`/`cursor` params (SDK-
+  confirmed, already supported by Kalshi, never wired up); `_fetch_trade_
+  tape()` now pages every ticker to completion via a new `_fetch_trades_
+  for_ticker()`, deliberately skipping pagination when there's no
+  watermark yet (a second bug caught mid-fix - unpaginated cold-start
+  would walk every watched ticker's entire history at once); a new
+  `state["trade_tape_last_fetch_ts"]` watermark makes every later tick
+  incremental; the UI panel stays capped at 100 for display, decoupled
+  from detection's now-uncapped input. `kalshi_trade_tape.fetch_signals()`
+  restructured so its entire per-trade loop (every blocking DB call it
+  makes) runs via `asyncio.to_thread()`, never on the event loop.
+  `series_evaluator.record_trades_observed_bulk()` collapses what used to
+  be one connection per trade into one per tick. WAL mode
+  (`PRAGMA journal_mode=WAL`) added to all 14 `services/*.py` modules
+  sharing the `_connect()` idiom - readers no longer block behind a
+  writer. A real editing mistake happened and was caught before it ever
+  reached the live server: a scripted WAL-mode rollout had an unescaped
+  `\3` in a non-raw Python string, silently interpreted as the octal
+  escape `\x03` instead of a regex backreference, deleting a line from
+  all 14 files - caught via `ast.parse` failing on every one, fixed with
+  a corrected script, reverified before restarting. 15 new tests, 687
+  passing (was 672). Verified live after a full restart: the first
+  cold-start tick (513 markets) took ~74s but the app stayed fully
+  responsive the entire time (the actual fix, not just "it didn't crash
+  this time") - confirmed via `selenium-chrome` that the market-detail
+  modal still opens quickly with accurate data. See `static/status.html`
+  phase 97 for the full incident writeup.
   Then a real, root-caused fix for "the watchlist groupings is broken" —
   the user's own diagnosis ("likely a result of the active removal of
   watchlist items") was exactly right: `main.py`'s `_fetch_markets()`

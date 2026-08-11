@@ -110,6 +110,7 @@ state = {
     "market_titles": title_cache.load_market_titles(),
     "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category", "mutually_exclusive"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
+    "trade_tape_last_fetch_ts": None,  # watermark for _fetch_trade_tape's incremental min_ts fetch - None until the first successful tick
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
     # Survives across ticks (unlike live_status above, still replaced wholesale
     # every tick for the current-tick view) - event_ticker -> {"status",
@@ -578,32 +579,102 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     return markets
 
 
-_TRADE_TAPE_TOTAL_CAP = 100  # scales with kalshi.watchlist_size - this is also
-# services/whalewatchers/kalshi_trade_tape.py's entire input now, not just the
-# UI panel's; too tight a cap here silently shrinks real whale-detection
-# coverage back down even if the watchlist itself is wide.
+_TRADE_TAPE_UI_CAP = 100  # display-only cap for state["trade_tape"] (the Trade
+# Tape panel) - a human never needs to scroll more than this. Used to be the
+# SAME cap whale-signal detection's input was truncated to as well (direct
+# report, 2026-08-11: "i feel like... its not the only reason whale
+# positions were undercounted" - correct: confirmed live, this cap was
+# filling up within ~2 minutes under real load, meaning every trade past the
+# 100 most-recent *platform-wide, across every watched market combined* was
+# silently dropped before whale-filtering ever saw it, real size/threshold
+# irrelevant). Detection input is not sliced to this at all anymore - see
+# _fetch_trade_tape below, which is genuinely unbounded per direct
+# follow-up: "i want trade tape to be unlimited, never capped, for
+# whale-watch-worthy markets" (i.e. whatever's on the current watchlist -
+# the same scope series_evaluator.py already judges as "whale-worthy").
+_TRADE_TAPE_FETCH_LIMIT = 100  # per-ticker get_trades() page size - Kalshi's
+# own API default. Not a data limit - _fetch_trades_for_ticker below pages
+# via cursor until Kalshi itself reports no more pages, so a ticker with
+# more real trades than one page holds still gets every one of them, not
+# just the first 100.
+_TRADE_TAPE_MAX_PAGES_PER_TICKER = 50  # pure infinite-loop circuit breaker
+# (5000 trades on one ticker within one poll interval) in case the API ever
+# returns a non-empty cursor forever - not a designed cap, astronomically
+# above anything real trading volume should ever produce per ticker per
+# tick; matches the documented "empty cursor = no more pages" contract.
 
 
-async def _fetch_trade_tape(client: KalshiClient, markets: list[dict]) -> list[dict]:
+async def _fetch_trades_for_ticker(client: KalshiClient, ticker: str, min_ts: int | None) -> list[dict]:
+    """Pages through every real trade on this one ticker since min_ts,
+    newest-first (Kalshi's real ordering, confirmed directly) - stops only
+    when the API's own cursor comes back empty (its documented "no more
+    pages" signal), not after some fixed count. A single ticker producing
+    more than one page's worth of trades within one poll interval is a
+    genuine edge case, but this must hold even then per direct instruction
+    ("never capped").
+
+    min_ts=None (no watermark yet - the very first tick after a cold
+    start/restart) is deliberately NOT paginated - a real bug caught live
+    while shipping this fix: with no min_ts floor, Kalshi has no natural
+    stopping point short of a ticker's entire trade history, so every
+    watched ticker would page up to _TRADE_TAPE_MAX_PAGES_PER_TICKER pages
+    each on that first tick, all concurrently - confirmed live as the
+    direct cause of a real request timeout right after a restart. Once
+    min_ts is set (every tick after the first), the query is naturally
+    bounded to "since last successful fetch," which is what actually makes
+    unbounded pagination safe."""
+    if min_ts is None:
+        resp = await client.get_trades(ticker=ticker, limit=_TRADE_TAPE_FETCH_LIMIT, min_ts=None)
+        return resp.get("trades") or []
+    trades = []
+    cursor = None
+    for _ in range(_TRADE_TAPE_MAX_PAGES_PER_TICKER):
+        resp = await client.get_trades(ticker=ticker, limit=_TRADE_TAPE_FETCH_LIMIT, min_ts=min_ts, cursor=cursor)
+        page = resp.get("trades") or []
+        trades.extend(page)
+        cursor = resp.get("cursor") or None
+        if not cursor or not page:
+            break
+    return trades
+
+
+async def _fetch_trade_tape(
+    client: KalshiClient, markets: list[dict], since_ts: float | None = None,
+) -> list[dict]:
     """Full-exchange trade tape (ROADMAP.md Phase 0.5), scoped to the current
     watchlist rather than the whole exchange - get_trades with no ticker
     filter returns trades across every Kalshi market, most of which aren't
     on anyone's watchlist here and would just be noise next to the
-    whale-signal concept this ties into. One small get_trades() per watched
-    market, concurrently (same pattern _fetch_markets already uses for its
-    explicit-watchlist branch), merged and sorted newest-first."""
+    whale-signal concept this ties into. One fully-paginated fetch per
+    watched market, concurrently (same pattern _fetch_markets already uses
+    for its explicit-watchlist branch), merged and sorted newest-first.
+    Genuinely unbounded - no cap anywhere in this function - per direct
+    instruction (2026-08-11): "i want trade tape to be unlimited, never
+    capped, for whale-watch-worthy markets." Any display-size limiting
+    (e.g. the Trade Tape UI panel) happens at the call site, not here.
+
+    since_ts (real, SDK-confirmed min_ts param): when given, fetches every
+    real trade on each ticker since that watermark instead of just "the
+    most recent page" - a small overlap margin is subtracted so a trade
+    landing right at the boundary can't fall through a gap between two
+    polls; the whale-watcher provider already dedupes by trade_id
+    (services/whalewatchers/kalshi_trade_tape.py's _seen_trade_ids), so a
+    little re-fetched overlap is harmless. None on the very first call
+    (no watermark yet) falls back to "just show recent activity," same as
+    before this fix."""
     tickers = [m["ticker"] for m in markets if m.get("ticker")]
     if not tickers:
         return []
+    min_ts = int(since_ts) - 10 if since_ts is not None else None
     results = await asyncio.gather(
-        *(client.get_trades(ticker=t, limit=10) for t in tickers), return_exceptions=True
+        *(_fetch_trades_for_ticker(client, t, min_ts) for t in tickers), return_exceptions=True
     )
     trades = []
     for result in results:
-        if isinstance(result, dict):
-            trades.extend(result.get("trades") or [])
+        if isinstance(result, list):
+            trades.extend(result)
     trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
-    return trades[:_TRADE_TAPE_TOTAL_CAP]
+    return trades
 
 
 _LIVE_STATUS_LOOKBACK_SEC = 6 * 3600  # keep tracking an event up to 6h after its scheduled start
@@ -1675,13 +1746,22 @@ async def trading_loop():
             state["market_decision_feed"] = state["market_decision_feed"][:50]
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
+            trade_tape_since = state.get("trade_tape_last_fetch_ts")
             event_titles, trade_tape, live_status = await asyncio.gather(
-                _fetch_event_titles(client, markets), _fetch_trade_tape(client, markets),
+                _fetch_event_titles(client, markets),
+                _fetch_trade_tape(client, markets, since_ts=trade_tape_since),
                 _fetch_live_status(client, markets),
             )
+            state["trade_tape_last_fetch_ts"] = tick_now
             state["event_titles"].update(event_titles)
             title_cache.save_event_titles(event_titles)  # event_titles here is already just this tick's new entries, see _fetch_event_titles
-            state["trade_tape"] = trade_tape
+            # trade_tape itself (the incremental, uncapped-beyond-a-sanity-
+            # ceiling result) is what whale detection reads below - only the
+            # UI-facing copy gets sliced down to a human-scannable size
+            # (direct report, 2026-08-11: the two used to share one 100-item
+            # cap, which was silently dropping real trades from detection
+            # under normal load, not just trimming the display).
+            state["trade_tape"] = trade_tape[:_TRADE_TAPE_UI_CAP]
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
