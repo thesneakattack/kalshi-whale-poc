@@ -120,6 +120,14 @@ state = {
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
+    # market_strategy.py's own decision feed - deliberately separate from
+    # decision_feed above (not merged), same "each strategy's performance
+    # cleanly, independently measurable" principle already documented at
+    # the trading-loop call site. Existed as a real gap until the
+    # Market-Native tab (2026-08-10, direct request) needed somewhere to
+    # show it - evaluate_all()/check_exits()'s return values were
+    # previously computed then discarded every tick.
+    "market_decision_feed": [],
     "stats": {"signals_seen": 0, "trades_placed": 0, "skipped": 0},
     "equity_history": [],  # [{"t": unix_ts, "equity": float}, ...], capped, for the Portfolio view's chart
     "real_balance_history": [],  # same shape, for the real-account toggle — only grows if a real account is connected
@@ -1450,13 +1458,19 @@ async def trading_loop():
             # its own real-market-data heuristic. No-op (returns []) when
             # market_strategy.enabled is false, same disabled-by-default
             # precedent as the rest of this app's opt-in automation.
-            # Intentionally NOT appended to state["decision_feed"] - that
-            # feed is the whale-follow strategy's own record; blending the
-            # two would defeat the point of each strategy's performance
-            # being cleanly, independently measurable (see the plan doc).
-            market_strategy.evaluate_all(markets, tick_now, cfg, market_results)
+            # Appended to its own state["market_decision_feed"], NOT
+            # state["decision_feed"] - that feed is the whale-follow
+            # strategy's own record; blending the two would defeat the
+            # point of each strategy's performance being cleanly,
+            # independently measurable (see the plan doc). Was computed and
+            # discarded every tick until the Market-Native tab (2026-08-10,
+            # direct request) needed a real feed to show.
+            for decision in market_strategy.evaluate_all(markets, tick_now, cfg, market_results):
+                state["market_decision_feed"].insert(0, decision)
             markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
-            market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results)
+            for decision in market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results):
+                state["market_decision_feed"].insert(0, decision)
+            state["market_decision_feed"] = state["market_decision_feed"][:50]
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
             event_titles, trade_tape, live_status = await asyncio.gather(
@@ -2411,19 +2425,24 @@ async def post_series_evaluator_reset(body: SeriesEvaluatorResetBody):
 
 @app.get("/api/market-strategy/state")
 async def get_market_strategy_state():
-    # Backend-only for now (docs/advisory-engine-plan.md §9-adjacent,
-    # direct request 2026-08-08) - no dedicated dashboard panel yet, but a
-    # real, inspectable endpoint so this data pipeline can't silently
-    # drift unnoticed while nothing in the UI reads it. Reuses
-    # trade_analytics as-is (strategy-agnostic - it only ever reads Trade
-    # dicts) rather than reimplementing summary stats for a second broker.
+    # Backend-only at first (docs/advisory-engine-plan.md §9-adjacent,
+    # direct request 2026-08-08) - now the real data source for the
+    # dedicated Market-Native tab (2026-08-10, direct request: "the
+    # market-native strategy seems to have stalled, and i think itd be
+    # good to have its own tab now"). Reuses trade_analytics as-is
+    # (strategy-agnostic - it only ever reads Trade dicts) rather than
+    # reimplementing summary stats for a second broker.
     market_cfg = config_store.get()["market_strategy"]
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+    scoped_market_titles = _scoped_market_titles(_relevant_tickers())
     return {
         "enabled": market_cfg["enabled"],
         "broker": {**market_broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(market_broker)},
         "summary": trade_analytics.compute_summary(all_rows),
         "risk": {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason},
+        "decision_feed": state["market_decision_feed"],
+        "market_titles": scoped_market_titles,
+        "latest_prices": state["latest_prices"],
     }
 
 
@@ -2864,6 +2883,7 @@ async def reset_broker(body: ResetBody = ResetBody()):
     if body.market_native:
         market_broker.reset(cfg["market_strategy"]["starting_bankroll"])
         market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
+        state["market_decision_feed"] = []
         cleared.append("market_native")
     _bump_generation()
     return {"ok": True, "cleared": cleared}

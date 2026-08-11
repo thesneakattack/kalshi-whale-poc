@@ -342,6 +342,35 @@ works" to "flip it for real" still has open operational questions.
       the tab is open, and confirmed Trading History's own
       `historyFilter.offset` (paging position) survives an 11s wait
       completely unchanged.
+- [x] **Dedicated Market-Native tab (2026-08-10, direct request)** — its
+      own view, entirely separate from the whale-follow Portfolio tab:
+      status/bankroll/equity/unrealized-P&L stat cards, a halt banner
+      with a one-click resume when its kill switch is tripped, open
+      positions, a trade log (real won/lost results via the same
+      `_enrich_recent_trades()` the Portfolio fix above added), and its
+      own decision feed. That last one closed a real gap found while
+      building this: `market_strategy.evaluate_all()`/`check_exits()`'s
+      return values were computed every tick and silently discarded —
+      new `state["market_decision_feed"]` (deliberately kept separate
+      from whale-follow's own `decision_feed`, matching the existing
+      "each strategy's performance independently measurable" principle).
+      `GET /api/market-strategy/state` extended with `decision_feed`/
+      `market_titles`/`latest_prices`. Single-density, no Simple/Advanced
+      toggle — a disclosed smaller scope than Portfolio's own depth,
+      matching this strategy's much lower trade volume. Verified live:
+      confirmed the halt banner renders with the real live reason
+      (market-native's kill switch had actually tripped *again* since
+      being un-halted a few minutes earlier, at `-21.3%` this time — a
+      fresh, genuine trip consistent with its known ~13.6% win rate, not
+      a recurrence of the rollover bug), positions/trade-log render
+      correctly against real data, and double-checked what looked like a
+      P&L discrepancy (Unrealized P&L showing $0.00 next to a $423
+      equity-bankroll gap) — confirmed correct, not a bug:
+      `equity() = bankroll + cost_basis + unrealized_pnl` by design, and
+      the $423 gap was exactly the two open positions' cost basis, with
+      `unrealized_pnl` legitimately at 0 since no live price is currently
+      cached for those tickers (falls back to entry price, same
+      documented convention as everywhere else in this app).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),
