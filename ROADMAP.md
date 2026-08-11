@@ -371,6 +371,44 @@ works" to "flip it for real" still has open operational questions.
       `unrealized_pnl` legitimately at 0 since no live price is currently
       cached for those tickers (falls back to entry price, same
       documented convention as everywhere else in this app).
+- [x] **Auto-apply for whale-signal calibration weights (2026-08-10,
+      direct request), plus a real bug found and fixed along the way** —
+      `advisory.auto_apply_enabled` was already protected from generic
+      config edits with an error message pointing at `POST /api/advisory/
+      auto-apply/enable`/`.../disable`, but those routes never existed
+      and nothing anywhere read `auto_apply_min_confidence`/
+      `auto_apply_cooldown_sec` either — the feature was reachable from
+      no path at all. Fixed alongside building the equivalent for
+      `confidence_calibration`. Both now use the same typed-confirmation-
+      phrase gate as real trading (asymmetric — disabling needs no
+      phrase). New `services/confidence_calibration.blended_weights_
+      for_auto_apply()` automates the exact blend a human did by hand
+      earlier this session (redistribute only factors with real
+      discrimination data, leave data-less factors completely untouched,
+      renormalize the whole set to sum to 1.0) — this reverses that
+      module's own earlier-documented "read-only, a human must apply
+      this by hand" decision, deliberately, at direct request, with the
+      same opt-in/confirmation-gated/cooldown safety rails as everything
+      else. New `config_performance.last_applied_at(source)` for the
+      cooldown check (reuses `applied_changes`' own timestamps, no new
+      tracker). Both auto-apply blocks wired into the trading loop
+      (advisory: applies the single highest-priority recommendation
+      clearing `auto_apply_min_confidence` per cooldown window, not a
+      burst of every qualifying one). 14 new tests, 656 passing.
+      Verified live end-to-end, not just unit-tested: enabled calibration
+      auto-apply via the real route (wrong phrase rejected, right phrase
+      accepted), then forced an immediate cycle by briefly dropping
+      `snapshot_interval_sec` to 1s — confirmed a real
+      `calibration-auto-apply`-sourced entry landed in the audit trail,
+      `whale_confidence_weights` updated to real, correctly-renormalized
+      values (sum ≈ 1.0), and the tick loop kept running with no error.
+      Restored `snapshot_interval_sec` to 21600 afterward. Left
+      **calibration** auto-apply enabled live (directly requested,
+      already past its data-sample gate) but left **advisory** auto-apply
+      at its default off — fixing the broken mechanism wasn't the same as
+      being asked to turn it on, and it's a materially broader blast
+      radius (any qualifying `strategy.*`/`market_strategy.*` field, not
+      one well-scoped config section).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

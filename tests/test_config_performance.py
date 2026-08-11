@@ -150,6 +150,41 @@ def test_applied_changes_pagination_and_ordering(tmp_path, monkeypatch):
     assert changes[0]["config_path"] == "strategy.field2"
 
 
+# --- last_applied_at (2026-08-10, auto-apply cooldown checks) --------------
+
+def test_last_applied_at_none_when_nothing_logged_for_that_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    assert cp.last_applied_at("calibration-auto-apply") is None
+
+
+def test_last_applied_at_returns_the_most_recent_timestamp_for_that_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    cp.log_applied_change(
+        config_path="whale_confidence_weights", old_value={}, new_value={},
+        rationale="r1", trade_count=0, fingerprint_before="a", fingerprint_after="a",
+        source="calibration-auto-apply",
+    )
+    first = cp.last_applied_at("calibration-auto-apply")
+    assert first is not None
+    cp.log_applied_change(
+        config_path="whale_confidence_weights", old_value={}, new_value={},
+        rationale="r2", trade_count=0, fingerprint_before="a", fingerprint_after="a",
+        source="calibration-auto-apply",
+    )
+    second = cp.last_applied_at("calibration-auto-apply")
+    assert second >= first
+
+
+def test_last_applied_at_scoped_to_the_given_source_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.5, new_value=0.6,
+        rationale="r", trade_count=10, fingerprint_before="a", fingerprint_after="b",
+        source="unified-advisory",
+    )
+    assert cp.last_applied_at("calibration-auto-apply") is None
+
+
 # --- diff_patch (Item 3D, 2026-08-10) -----------------------------------------
 # Mirrors ConfigStore.update()'s own one-level-deep merge exactly, so
 # main.py's POST /api/config can log every field a patch actually changes

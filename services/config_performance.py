@@ -197,3 +197,16 @@ def diff_patch(old_cfg: dict, patch: dict) -> list[tuple[str, object, object]]:
 def applied_changes_count() -> int:
     with _connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM applied_changes").fetchone()[0]
+
+
+def last_applied_at(source: str) -> float | None:
+    """The cooldown check every auto-apply path (2026-08-10) needs - "how
+    long since we last auto-applied a change from this source" - reusing
+    applied_changes' own timestamps rather than a second, parallel
+    last-applied tracker that could drift out of sync with the real audit
+    trail."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(applied_at) FROM applied_changes WHERE source = ?", (source,)
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None

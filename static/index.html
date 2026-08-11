@@ -1158,8 +1158,10 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       Concrete suggested config values derived from the full trade history above (rule-based, not machine
       learning — see docs/advisory-engine-plan.md for why), plus comparisons against a fully different past
       config once each has enough resolved trades to trust. Disabled by default. Click a suggestion's path
-      chip to jump straight to that field on the Config tab. Never applies anything without an explicit click.
+      chip to jump straight to that field on the Config tab. Applies nothing without an explicit click unless
+      auto-apply is turned on below (off by default, typed confirmation required).
     </p>
+    <div id="advisory-auto-apply-toggle" style="margin:0 0 14px;"></div>
     <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
     <!-- Change History (Item 3D, 2026-08-10) - every config change ever
@@ -1198,9 +1200,12 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
       Does each factor in the whale-confidence score actually predict real outcomes? Buckets real resolved
       signals by each factor's own value and compares low vs. high — a factor showing a real gap
-      "discriminates"; one showing none (or a negative gap) isn't currently earning its weight. Read-only:
-      never changes <span class="config-path" style="margin:0;">whale_confidence_weights</span> itself.
+      "discriminates"; one showing none (or a negative gap) isn't currently earning its weight.
+      <span class="config-path" style="margin:0;">whale_confidence_weights</span> is only ever changed by a
+      manual Config-tab edit unless auto-apply is explicitly turned on below (off by default, typed confirmation
+      required — see <span class="config-path" style="margin:0;">confidence_calibration.auto_apply_enabled</span>).
     </p>
+    <div id="calibration-auto-apply-toggle" style="margin:0 0 14px;"></div>
     <div id="calibration-report"><div class="empty">Loading…</div></div>
     <div id="calibration-history"></div>
 
@@ -3324,11 +3329,62 @@ function renderExitManagementSplit(split) {
 // progress toward unlocking cross-variant ("a fully different past config
 // did better") comparisons specifically, the one suggestion type that still
 // needs it.
+// Shared auto-apply toggle (2026-08-10) - used by both Advisory
+// Recommendations and Whale-Signal Calibration. Real bug found live:
+// advisory.auto_apply_enabled was already a protected config field with an
+// error message pointing at /api/advisory/auto-apply/enable|disable, but
+// those routes never existed and nothing ever read auto_apply_min_confidence/
+// auto_apply_cooldown_sec - the feature was reachable from no path at all.
+// Fixed alongside adding the equivalent for confidence_calibration (direct
+// request: "i want the option to enable auto whale-signal calibration").
+// Disabling never needs the phrase (asymmetric friction, same as real
+// trading); enabling does, via a plain prompt() rather than a full modal -
+// this is real-money-adjacent but paper-mode-only, the same severity tier
+// full-spectrum scanning's confirm() dialog already established, not real
+// trading's own typed-input modal.
+async function renderAutoApplyToggle(elId, enabled, enableUrl, disableUrl, confirmPhrase, warningText) {
+  const el = $(elId);
+  if (!el) return;
+  if (enabled) {
+    el.innerHTML = `<span style="color:var(--yes); font-size:12px;">✅ Auto-apply is ON</span>
+      <button style="margin-left:8px; font-size:11px; padding:2px 8px;" onclick="toggleAutoApply('${elId}', false, '${enableUrl}', '${disableUrl}', '', '')">Turn off</button>`;
+  } else {
+    el.innerHTML = `<span style="color:var(--muted); font-size:12px;">Auto-apply is off</span>
+      <button style="margin-left:8px; font-size:11px; padding:2px 8px;" onclick="toggleAutoApply('${elId}', true, '${enableUrl}', '${disableUrl}', '${esc(confirmPhrase)}', this)">Turn on…</button>`;
+  }
+}
+
+async function toggleAutoApply(elId, enable, enableUrl, disableUrl, confirmPhrase, btn) {
+  if (enable) {
+    const phrase = prompt(
+      `Type exactly: ${confirmPhrase}\n\nThis lets the app automatically apply a real suggested config change on ` +
+      `its own cooldown, with no manual review step each time. You can turn it back off anytime with one click.`
+    );
+    if (phrase === null) return;
+    const result = await fetchJSON(enableUrl, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirmation_phrase: phrase}),
+    });
+    if (!result.auto_apply_enabled) {
+      alert(result.detail || 'Confirmation phrase did not match.');
+      return;
+    }
+  } else {
+    await fetchJSON(disableUrl, {method: 'POST'});
+  }
+  loadAdvisory();
+  loadCalibrationReport();
+}
+
 async function loadAdvisory() {
   const badge = $('advisory-status-badge');
   const el = $('advisory-recommendations');
   try {
     const status = await fetchJSON('/api/advisory/status');
+    renderAutoApplyToggle(
+      'advisory-auto-apply-toggle', status.auto_apply_enabled,
+      '/api/advisory/auto-apply/enable', '/api/advisory/auto-apply/disable',
+      'ENABLE ADVISORY AUTO APPLY',
+    );
     if (!status.enabled) {
       badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
       el.innerHTML = '<div class="empty">Advisory recommendations are disabled — enable them in Config → Advisory Engine.</div>';
@@ -3478,6 +3534,11 @@ async function loadCalibrationReport() {
   const el = $('calibration-report');
   try {
     const status = await fetchJSON('/api/confidence-calibration/status');
+    renderAutoApplyToggle(
+      'calibration-auto-apply-toggle', status.auto_apply_enabled,
+      '/api/confidence-calibration/auto-apply/enable', '/api/confidence-calibration/auto-apply/disable',
+      'ENABLE CALIBRATION AUTO APPLY',
+    );
     if (!status.enabled) {
       badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
       el.innerHTML = '<div class="empty">Whale-signal calibration is disabled — enable confidence_calibration.enabled in config to start judging real signal factors against real outcomes.</div>';

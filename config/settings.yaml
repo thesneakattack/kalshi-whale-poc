@@ -73,14 +73,14 @@ whale_watcher_kalshi:
   min_notional_usd: 1000
   min_notional_usd_by_series: {}
 whale_confidence_weights:
-  depth_factor: 0.25
-  unusualness_factor: 0.03
-  proximity_factor: 0.2
-  context_factor: 0.13
-  agreement_factor: 0.03
-  cluster_factor: 0.13
-  trend_factor: 0.08
-  analyst_factor: 0.15
+  depth_factor: 0.3333
+  unusualness_factor: 0.0296
+  proximity_factor: 0.3111
+  context_factor: 0.0296
+  agreement_factor: 0.0296
+  cluster_factor: 0.0963
+  trend_factor: 0.0593
+  analyst_factor: 0.1111
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 10
@@ -91,6 +91,8 @@ confidence_calibration:
   enabled: true
   min_resolved_signals: 50
   snapshot_interval_sec: 21600
+  auto_apply_enabled: true
+  auto_apply_cooldown_sec: 86400
 market_analyst:
   enabled: true
   model: claude-sonnet-5

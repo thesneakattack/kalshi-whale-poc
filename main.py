@@ -1174,7 +1174,18 @@ _full_spectrum_analyzing = False
 # exact same protection, since its suggestions can otherwise touch ANY
 # config field, a materially wider blast radius than the fixed single-field
 # scope 3B's per-series mode was deliberately limited to.
-_PROTECTED_CONFIG_PATHS = {"kalshi_account.trading_enabled", "advisory.auto_apply_enabled"}
+_PROTECTED_CONFIG_PATHS = {
+    "kalshi_account.trading_enabled", "advisory.auto_apply_enabled",
+    # Same protection, same reasoning (2026-08-10, direct request to add a
+    # calibration auto-apply path) - a typed-confirmation-gated route is
+    # the only way to flip this on, not a plain Config-tab checkbox.
+    "confidence_calibration.auto_apply_enabled",
+}
+
+# trade_analytics.confidence_label()'s three tiers, ranked so
+# advisory.auto_apply_min_confidence (a config string) can be compared
+# against a real recommendation's own confidence_label with a single >=.
+_CONFIDENCE_RANK = {"low": 0, "moderate": 1, "higher": 2}
 
 
 def _types_compatible(a, b) -> bool:
@@ -1452,6 +1463,81 @@ async def trading_loop():
                 )
                 if cc_result["report"] is not None:
                     calibration_history.record_snapshot(cc_result["report"], tick_now)
+                    # Auto-apply (2026-08-10, direct request) - off by
+                    # default, only reachable via the typed-confirmation-
+                    # gated /api/confidence-calibration/auto-apply/enable.
+                    # Same cooldown idiom as the snapshot check itself:
+                    # last_applied_at() is one cheap indexed query, so this
+                    # only pays for the real work (blend + config write)
+                    # once the cooldown has actually elapsed.
+                    if cc_cfg.get("auto_apply_enabled"):
+                        last_auto = config_performance.last_applied_at("calibration-auto-apply")
+                        cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
+                        if last_auto is None or (tick_now - last_auto) >= cooldown:
+                            current_weights = cfg.get("whale_confidence_weights") or {}
+                            blended = confidence_calibration.blended_weights_for_auto_apply(
+                                current_weights, cc_result["report"].get("suggested_weights"),
+                            )
+                            if blended is not None and blended != current_weights:
+                                fp_before = config_performance.fingerprint(cfg)
+                                config_store.update({"whale_confidence_weights": blended})
+                                fp_after = config_performance.fingerprint(config_store.get())
+                                config_performance.log_applied_change(
+                                    config_path="whale_confidence_weights",
+                                    old_value=current_weights, new_value=blended,
+                                    rationale=(
+                                        f"Auto-applied calibration-suggested weights "
+                                        f"(n={cc_result['report']['resolved_count']} resolved signals)."
+                                    ),
+                                    trade_count=cc_result["report"]["resolved_count"],
+                                    fingerprint_before=fp_before, fingerprint_after=fp_after,
+                                    auto_applied=True, source="calibration-auto-apply",
+                                )
+                                _bump_generation()
+
+            # Advisory auto-apply - real bug found live (2026-08-10):
+            # advisory.auto_apply_enabled was already protected from
+            # generic config edits and had a min_confidence/cooldown_sec
+            # config surface, but nothing anywhere actually read those
+            # fields or auto-applied anything - the feature was reachable
+            # from no path at all (see the two new /api/advisory/auto-
+            # apply/* routes' own comment for the full story). Same
+            # cheap-cooldown-check-first shape as calibration's own
+            # auto-apply above; only applies the single highest-priority
+            # (first) recommendation clearing auto_apply_min_confidence
+            # per cooldown window, not a burst of every qualifying one at
+            # once - same "auto-apply is inherently conservative" posture
+            # calibration's own auto-apply follows.
+            adv_cfg = cfg.get("advisory") or {}
+            if adv_cfg.get("enabled") and adv_cfg.get("auto_apply_enabled"):
+                last_adv_auto = config_performance.last_applied_at("unified-advisory-auto")
+                adv_cooldown = adv_cfg.get("auto_apply_cooldown_sec", 86400)
+                if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
+                    adv_current_fp = config_performance.fingerprint(cfg)
+                    adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+                    adv_market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+                    adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+                    adv_result = advisory_engine.generate_recommendations(
+                        adv_all_rows, cfg, adv_current_fp, adv_variants,
+                        adv_cfg["min_resolved_trades_per_variant"], market_rows=adv_market_rows,
+                    )
+                    min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
+                    qualifying = [
+                        r for r in adv_result.get("recommendations", [])
+                        if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank
+                    ]
+                    if qualifying:
+                        rec = qualifying[0]
+                        section, _, field = rec["config_path"].partition(".")
+                        config_store.update({section: {field: rec["suggested_value"]}})
+                        adv_new_fp = config_performance.fingerprint(config_store.get())
+                        config_performance.log_applied_change(
+                            config_path=rec["config_path"], old_value=rec["current_value"],
+                            new_value=rec["suggested_value"], rationale=rec["rationale"], trade_count=rec["n"],
+                            fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
+                            auto_applied=True, source="unified-advisory-auto",
+                        )
+                        _bump_generation()
 
             # MarketNativeStrategy (services/market_strategy.py) - runs every
             # tick alongside the whale-follow strategy below, entirely off
@@ -2021,6 +2107,96 @@ async def get_advisory_status():
     }
 
 
+# Real bug found live (2026-08-10): advisory.auto_apply_enabled was already
+# protected from generic /api/config edits, with an error message pointing
+# at these exact two routes - but they never actually existed, and nothing
+# anywhere read auto_apply_min_confidence/auto_apply_cooldown_sec either.
+# The feature was reachable from no path at all. Fixed alongside adding the
+# equivalent for confidence_calibration (direct request: "i want the option
+# to enable auto whale-signal calibration... have them auto-enable and
+# start getting put into play with my whole system once there *is* enough
+# data") - same typed-confirmation-phrase gate as real trading, since
+# auto-applying a config change with no human in the loop is a genuinely
+# consequential action, not a plain checkbox.
+ADVISORY_AUTO_APPLY_CONFIRMATION_PHRASE = "ENABLE ADVISORY AUTO APPLY"
+CALIBRATION_AUTO_APPLY_CONFIRMATION_PHRASE = "ENABLE CALIBRATION AUTO APPLY"
+
+
+class EnableAutoApplyBody(BaseModel):
+    confirmation_phrase: str
+
+
+@app.post("/api/advisory/auto-apply/enable")
+async def enable_advisory_auto_apply(body: EnableAutoApplyBody):
+    if body.confirmation_phrase != ADVISORY_AUTO_APPLY_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation phrase did not match. Type exactly: "{ADVISORY_AUTO_APPLY_CONFIRMATION_PHRASE}"',
+        )
+    old_value = config_store.get()["advisory"]["auto_apply_enabled"]
+    fp = config_performance.fingerprint(config_store.get())
+    config_store.update({"advisory": {"auto_apply_enabled": True}})
+    config_performance.log_applied_change(
+        config_path="advisory.auto_apply_enabled", old_value=old_value, new_value=True,
+        rationale="Enabled via the typed advisory-auto-apply confirmation phrase.", trade_count=0,
+        fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
+    )
+    _bump_generation()
+    return {"auto_apply_enabled": True}
+
+
+@app.post("/api/advisory/auto-apply/disable")
+async def disable_advisory_auto_apply():
+    # Disabling never needs the confirmation phrase - same asymmetric
+    # safety convention as real trading (enabling something consequential
+    # needs friction, turning it back off shouldn't).
+    old_value = config_store.get()["advisory"]["auto_apply_enabled"]
+    fp = config_performance.fingerprint(config_store.get())
+    config_store.update({"advisory": {"auto_apply_enabled": False}})
+    if old_value:
+        config_performance.log_applied_change(
+            config_path="advisory.auto_apply_enabled", old_value=True, new_value=False,
+            rationale="Disabled via the dashboard.", trade_count=0,
+            fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
+        )
+    _bump_generation()
+    return {"auto_apply_enabled": False}
+
+
+@app.post("/api/confidence-calibration/auto-apply/enable")
+async def enable_calibration_auto_apply(body: EnableAutoApplyBody):
+    if body.confirmation_phrase != CALIBRATION_AUTO_APPLY_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation phrase did not match. Type exactly: "{CALIBRATION_AUTO_APPLY_CONFIRMATION_PHRASE}"',
+        )
+    old_value = config_store.get()["confidence_calibration"]["auto_apply_enabled"]
+    fp = config_performance.fingerprint(config_store.get())
+    config_store.update({"confidence_calibration": {"auto_apply_enabled": True}})
+    config_performance.log_applied_change(
+        config_path="confidence_calibration.auto_apply_enabled", old_value=old_value, new_value=True,
+        rationale="Enabled via the typed calibration-auto-apply confirmation phrase.", trade_count=0,
+        fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
+    )
+    _bump_generation()
+    return {"auto_apply_enabled": True}
+
+
+@app.post("/api/confidence-calibration/auto-apply/disable")
+async def disable_calibration_auto_apply():
+    old_value = config_store.get()["confidence_calibration"]["auto_apply_enabled"]
+    fp = config_performance.fingerprint(config_store.get())
+    config_store.update({"confidence_calibration": {"auto_apply_enabled": False}})
+    if old_value:
+        config_performance.log_applied_change(
+            config_path="confidence_calibration.auto_apply_enabled", old_value=True, new_value=False,
+            rationale="Disabled via the dashboard.", trade_count=0,
+            fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
+        )
+    _bump_generation()
+    return {"auto_apply_enabled": False}
+
+
 @app.get("/api/advisory/recommendations")
 async def get_advisory_recommendations():
     # Always safe to call regardless of advisory.enabled - the per-variant
@@ -2138,6 +2314,7 @@ async def get_confidence_calibration_status():
         "min_resolved_signals": cc_cfg["min_resolved_signals"],
         "resolved_count": resolved_count,
         "ready": resolved_count >= cc_cfg["min_resolved_signals"],
+        "auto_apply_enabled": cc_cfg.get("auto_apply_enabled", False),
     }
 
 
@@ -2692,6 +2869,15 @@ async def update_config(body: ConfigPatch):
                 "advisory.auto_apply_enabled can't be changed through /api/config — "
                 "use POST /api/advisory/auto-apply/enable (requires a typed confirmation "
                 "phrase) or POST /api/advisory/auto-apply/disable."
+            ),
+        )
+    if "confidence_calibration" in body.patch and "auto_apply_enabled" in (body.patch.get("confidence_calibration") or {}):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confidence_calibration.auto_apply_enabled can't be changed through /api/config — "
+                "use POST /api/confidence-calibration/auto-apply/enable (requires a typed "
+                "confirmation phrase) or POST /api/confidence-calibration/auto-apply/disable."
             ),
         )
     # Change-history logging (Item 3D, 2026-08-10) - this was the one real

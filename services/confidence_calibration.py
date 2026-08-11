@@ -16,20 +16,29 @@ generate_calibration_report() enforces the minimum-resolved-signal floor
 *inside this function*, not the route or UI - no caller can reach a report
 built on too little data regardless of config.
 
-Scope boundary, deliberate: this ships strictly read-only/report-only for
-the *weight-suggestion* half (_suggested_weights below) - unlike
-advisory_engine's manual-apply button, there's no "apply this suggestion"
-route here, since blending a suggestion into the 8-factor formula sensibly
-(what to do with a factor that has no data yet, whether to floor a
-negative-discrimination factor to zero or just down-weight it) is a real
-judgment call a human should make explicitly, not something safe to
-automate. What *did* change (2026-08-10, first real report against ~9200
-signals): composite_confidence_breakdown's weights are now config-editable
-(config/settings.yaml's whale_confidence_weights, threaded through
-services/whalewatchers/kalshi_trade_tape.py) instead of hardcoded constants
-- so a human-reviewed weight change is now a config edit with a full
-config_performance audit trail, not a code change. This module still never
-writes that config itself.
+Scope boundary, UPDATED (2026-08-10, direct follow-up request: "i want the
+option to enable auto whale-signal calibration... have them auto-enable
+and start getting put into play with my whole system once there *is*
+enough data"): this module's weight-suggestion half (_suggested_weights
+below) was originally strictly read-only/report-only, on the reasoning
+that blending a suggestion into the 8-factor formula (what to do with a
+factor that has no data yet, whether to floor a negative-discrimination
+factor to zero) was a real judgment call a human should make explicitly.
+That default-safe judgment call still holds - blended_weights_for_auto_apply()
+below applies the exact same blend a human already did by hand earlier
+this same session (redistribute only the factors with real discrimination
+data, leave data-less factors completely untouched, renormalize to sum to
+1.0) - but it's now available as an opt-in automatic path
+(confidence_calibration.auto_apply_enabled, default false, gated behind a
+typed confirmation phrase same as every other consequential automation in
+this app - see main.py's POST /api/confidence-calibration/auto-apply/
+enable) rather than exclusively a human copying numbers by hand. Composite_
+confidence_breakdown's weights are config-editable (config/settings.yaml's
+whale_confidence_weights, threaded through services/whalewatchers/
+kalshi_trade_tape.py) - this module still never writes that config itself,
+main.py's trading loop does, the same way every other auto-apply path in
+this app keeps the actual config_store.update() call at the call site, not
+buried in a service module.
 """
 from services import trade_analytics
 from services.whale_simulator import DEFAULT_WEIGHTS
@@ -128,6 +137,33 @@ def _suggested_weights(per_factor: list[dict]) -> dict | None:
     floored = {k: max(v / total, _MIN_SUGGESTED_WEIGHT) for k, v in clamped.items()}
     floor_total = sum(floored.values())
     return {k: round(v / floor_total, 2) for k, v in floored.items()}
+
+
+def blended_weights_for_auto_apply(current_weights: dict, suggested_weights: dict | None) -> dict | None:
+    """The auto-apply path (2026-08-10, direct request) - automates the
+    exact blend a human did by hand earlier this same session, not a new
+    algorithm: suggested_weights only ever covers factors WITH real
+    discrimination data (see _suggested_weights above), renormalized among
+    just that subset - naively overwriting whale_confidence_weights with
+    it wholesale would silently zero out every factor with no data yet
+    (cluster_factor/trend_factor/analyst_factor as of this writing). This
+    keeps every factor missing from suggested_weights completely
+    unchanged at its current value, then renormalizes the WHOLE set back
+    to sum to 1.0 so the blend is a real, valid weight distribution, not
+    just the untouched factors' old values plus a subset that no longer
+    sums with them correctly.
+
+    Returns None when there's nothing to apply - no discriminating factor
+    yet (suggested_weights is None/empty) or a degenerate all-zero blend -
+    "keep current weights" stays a legitimate outcome, not an error."""
+    if not suggested_weights:
+        return None
+    blended = dict(current_weights)
+    blended.update(suggested_weights)
+    total = sum(blended.values())
+    if total <= 0:
+        return None
+    return {k: round(v / total, 4) for k, v in blended.items()}
 
 
 # Fixed-width bands, not tertiles - unlike _bucket_win_rates above (which

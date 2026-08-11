@@ -150,6 +150,47 @@ def test_suggested_weights_is_none_when_nothing_discriminates():
     assert result["report"]["suggested_weights"] is None
 
 
+# --- blended_weights_for_auto_apply (2026-08-10, auto-apply path) -----------
+
+def test_blended_weights_none_when_no_suggestion():
+    assert cc.blended_weights_for_auto_apply(DEFAULT_WEIGHTS, None) is None
+    assert cc.blended_weights_for_auto_apply(DEFAULT_WEIGHTS, {}) is None
+
+
+def test_blended_weights_leaves_factors_with_no_data_untouched():
+    current = dict(DEFAULT_WEIGHTS)
+    # Only depth_factor/unusualness_factor have a real suggestion - the
+    # other 6 factors (including cluster/trend/analyst, which as of this
+    # writing have zero real discrimination data) must keep their current
+    # *relative* proportions to each other untouched - the raw numbers all
+    # shift slightly on renormalization (checked separately below), but
+    # cluster_factor:trend_factor's own ratio shouldn't move just because
+    # depth_factor/unusualness_factor changed.
+    suggested = {"depth_factor": 0.5, "unusualness_factor": 0.1}
+    blended = cc.blended_weights_for_auto_apply(current, suggested)
+    assert blended is not None
+    current_ratio = current["cluster_factor"] / current["trend_factor"]
+    blended_ratio = blended["cluster_factor"] / blended["trend_factor"]
+    assert blended_ratio == pytest.approx(current_ratio, rel=0.01)  # blended() rounds to 4dp
+
+
+def test_blended_weights_sums_to_one():
+    current = dict(DEFAULT_WEIGHTS)
+    suggested = {"depth_factor": 0.4, "unusualness_factor": 0.2, "proximity_factor": 0.1}
+    blended = cc.blended_weights_for_auto_apply(current, suggested)
+    assert sum(blended.values()) == pytest.approx(1.0, abs=1e-3)  # blended() rounds each value to 4dp
+
+
+def test_blended_weights_uses_suggested_value_for_covered_factors_proportionally():
+    # Before renormalization, depth_factor's suggested share (0.5) is 5x
+    # unusualness_factor's (0.1) - that 5:1 ratio must survive
+    # renormalization even though the absolute numbers change.
+    current = dict(DEFAULT_WEIGHTS)
+    suggested = {"depth_factor": 0.5, "unusualness_factor": 0.1}
+    blended = cc.blended_weights_for_auto_apply(current, suggested)
+    assert blended["depth_factor"] / blended["unusualness_factor"] == pytest.approx(5.0, abs=0.01)
+
+
 def test_overall_win_rate_and_confidence_label_present():
     rows = _discriminating_dataset(n_per_bucket=10)  # 20 wrong, 10 right = 33.3%
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
