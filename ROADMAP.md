@@ -238,8 +238,21 @@ works" to "flip it for real" still has open operational questions.
       Whale-Signal Calibration panel, hidden until ≥2 snapshots exist (one
       point can't show a trend). 8 new tests, 609 passing. Verified live —
       the very first snapshot recorded automatically within one tick of
-      deploy (11,859 resolved signals, 52.6% overall win rate). Gaps 7, 9,
-      10 still open (Gap 2's stateful half deliberately not attempted).
+      deploy (11,859 resolved signals, 52.6% overall win rate).
+      **Gap 7 (cross-strategy comparison) is done** — new
+      `services/cross_strategy.py`: `aggregate_comparison()` (both
+      strategies' `compute_summary()` side by side, reused as-is) and
+      `ticker_overlap()` (every ticker where whale-follow and
+      market-native independently opened a position — two fully separate
+      capital pools/gates/entry logic — with `agreed`/win/loss per side).
+      New `GET /api/cross-strategy/comparison` + a new History-tab panel.
+      Real live numbers: whale-follow 50.4% win rate/135 closed vs.
+      market-native 13.6%/22 closed — no ticker overlap yet (honest empty
+      state, not fabricated). Found and fixed a real double-escaping bug
+      live during verification (`esc()` called on an already-HTML-escaped
+      label string). 7 new tests, 616 passing. Verified via curl and
+      selenium-chrome. Gaps 9, 10 still open (Gap 2's stateful half
+      deliberately not attempted).
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

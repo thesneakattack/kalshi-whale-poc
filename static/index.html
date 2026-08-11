@@ -1163,6 +1163,22 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     <div id="calibration-report"><div class="empty">Loading…</div></div>
     <div id="calibration-history"></div>
 
+    <!-- Cross-Strategy Comparison (services/cross_strategy.py, Gap 7 of
+         docs/config-tuning-data-gaps-2026-08-10.md, and the user's own
+         direct question this session) - whale-follow and market-native
+         write to fully separate storage; nothing had ever joined them
+         before this. Aggregate side-by-side is always available; the
+         ticker-overlap table (did both strategies independently trade the
+         same market, and did they agree) only has rows once real overlap
+         exists. -->
+    <div class="panel-title">Cross-Strategy Comparison <span class="data-badge new">🆕 new</span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Whale-follow (order-flow signal) and market-native (real price momentum) are two fully independent
+      strategies with their own capital and their own gates. Side-by-side track record, plus every ticker
+      both strategies have independently traded — a real natural experiment when it happens.
+    </p>
+    <div id="cross-strategy-comparison"><div class="empty">Loading…</div></div>
+
     <!-- Rejected Candidates (services/candidate_log.py, Gap 1 of
          docs/config-tuning-data-gaps-2026-08-10.md) - the "counterfactual"
          data every gate/threshold field in Config lacked before this: what
@@ -3133,6 +3149,7 @@ async function loadTradingHistory() {
     loadChangeHistory();
     loadCalibrationReport();
     loadCalibrationHistory();
+    loadCrossStrategyComparison();
     loadCandidateLogSummary();
     loadBacktestSweeps();
   } catch (e) {
@@ -3467,6 +3484,54 @@ async function loadCalibrationHistory() {
     `;
   } catch (e) {
     el.innerHTML = '';
+  }
+}
+
+// Cross-Strategy Comparison (services/cross_strategy.py) - read-only,
+// always safe to call.
+async function loadCrossStrategyComparison() {
+  const el = $('cross-strategy-comparison');
+  try {
+    const resp = await fetchJSON('/api/cross-strategy/comparison');
+    const wf = resp.aggregate.whale_follow, mn = resp.aggregate.market_native;
+    const cell = (label, wfVal, mnVal) => `
+      <tr><td>${esc(label)}</td><td>${wfVal}</td><td>${mnVal}</td></tr>`;
+    const wrColor = v => v === null ? 'inherit' : (v >= 50 ? 'var(--yes)' : 'var(--no)');
+    let html = `
+      <table class="positions-table" style="margin-bottom:14px;">
+        <thead><tr><th></th><th>Whale-Follow</th><th>Market-Native</th></tr></thead>
+        <tbody>
+          ${cell('Closed positions', wf.total_closed, mn.total_closed)}
+          <tr><td>Win rate</td>
+            <td style="color:${wrColor(wf.win_rate_pct)};">${wf.win_rate_pct !== null ? wf.win_rate_pct.toFixed(1) + '%' : '—'}</td>
+            <td style="color:${wrColor(mn.win_rate_pct)};">${mn.win_rate_pct !== null ? mn.win_rate_pct.toFixed(1) + '%' : '—'}</td>
+          </tr>
+          ${cell('Total realized P&L', fmt(wf.total_realized_pnl ?? 0), fmt(mn.total_realized_pnl ?? 0))}
+          ${cell('Avg hold time', historyDurationHTML(wf.avg_hold_sec), historyDurationHTML(mn.avg_hold_sec))}
+        </tbody>
+      </table>
+    `;
+    const overlap = resp.ticker_overlap || [];
+    if (overlap.length) {
+      const rows = overlap.map(o => `<tr>
+        <td>${esc(seriesLabel(o.ticker))}</td>
+        <td>${esc(o.whale_side)} ${o.whale_won ? '✅' : '❌'} (${fmt(o.whale_realized_pnl ?? 0)})</td>
+        <td>${esc(o.market_side)} ${o.market_won ? '✅' : '❌'} (${fmt(o.market_realized_pnl ?? 0)})</td>
+        <td style="color:${o.agreed ? 'var(--yes)' : 'var(--no)'};">${o.agreed ? 'agreed' : 'disagreed'}</td>
+      </tr>`).join('');
+      html += `
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Same-ticker overlap — both strategies traded this market independently</div>
+        <table class="positions-table">
+          <thead><tr><th>Ticker</th><th>Whale-Follow</th><th>Market-Native</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    } else {
+      html += '<div class="empty">No ticker overlap yet — the two strategies haven\'t independently traded the same market.</div>';
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load cross-strategy comparison.</div>';
   }
 }
 

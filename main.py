@@ -20,6 +20,7 @@ from services import auth as auth_service
 from services import backtest
 from services import calibration_history
 from services import candidate_log
+from services import cross_strategy
 from services import confidence_calibration
 from services import config_performance
 from services import market_analyst_agent
@@ -2123,6 +2124,20 @@ async def get_candidate_log_summary():
     # collects passively from every gate check regardless of any config
     # toggle, same as signal_log itself.
     return {"gates": candidate_log.gate_summary()}
+
+
+@app.get("/api/cross-strategy/comparison")
+async def get_cross_strategy_comparison():
+    # services/cross_strategy.py - Gap 7 of docs/config-tuning-data-gaps-
+    # 2026-08-10.md, and the user's own direct question this session.
+    # Always safe to call, no enable flag - a pure read over trades both
+    # strategies have already placed.
+    whale_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
+    return {
+        "aggregate": cross_strategy.aggregate_comparison(whale_rows, market_rows),
+        "ticker_overlap": cross_strategy.ticker_overlap(whale_rows, market_rows),
+    }
 
 
 @app.get("/api/backtest/entry-threshold")
