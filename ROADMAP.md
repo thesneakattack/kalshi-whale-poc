@@ -409,6 +409,21 @@ works" to "flip it for real" still has open operational questions.
       being asked to turn it on, and it's a materially broader blast
       radius (any qualifying `strategy.*`/`market_strategy.*` field, not
       one well-scoped config section).
+- [x] **Click-to-apply on the Backtest Sweeps panel (2026-08-10, direct
+      request: "click to apply buttons throughout... where suggestions
+      are made so i dont have to switch to the config tab")** — every
+      non-current row in both sweeps (`strategy.entry_threshold`,
+      `strategy.min_whale_winrate_pct`) now has an Apply button, gated
+      behind a `confirm()` dialog that honestly discloses this is a raw
+      sweep value, not a hedged Advisory recommendation (the stateless
+      replay it's based on doesn't account for cooldowns/concentration
+      limits/other fields changing at the same time — Gap 2's own
+      disclosed limitation). Other new panels this session (Rejected
+      Candidates, Regime Segmentation, Series Evaluator cross-check,
+      Cross-Strategy Comparison) were deliberately left without an apply
+      button — none of them resolve to one clean config value the way a
+      sweep row or an Advisory recommendation does. Verified live via
+      selenium-chrome.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

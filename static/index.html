@@ -3751,23 +3751,48 @@ async function loadCandidateLogSummary() {
 }
 
 // Backtest Sweeps (services/backtest.py) - read-only, always safe to call.
-function _sweepTableHTML(title, current, currentKey, rows, xKey, xLabel) {
+function _sweepTableHTML(title, configPath, current, currentKey, rows, xKey, xLabel) {
   const trs = rows.map(r => {
     const isCurrent = r[xKey] === current;
     const wr = r.win_rate_pct;
     const wrText = wr === null ? '—' : `${wr.toFixed(1)}%`;
     const style = isCurrent ? 'font-weight:600; background:rgba(255,255,255,0.04);' : '';
+    // Click-to-apply (direct request 2026-08-10: "i want click to apply
+    // buttons throughout... where suggestions are made so i dont have to
+    // switch to the config tab") - the current/live row gets no button,
+    // applying its own value is a no-op.
+    const applyBtn = isCurrent ? '' :
+      `<button style="font-size:10px; padding:1px 6px;" onclick="applyBacktestValue('${esc(configPath)}', ${r[xKey]}, this)">Apply</button>`;
     return `<tr style="${style}">
       <td>${r[xKey]}${isCurrent ? ' <span style="color:var(--whale); font-size:10px; text-transform:uppercase;">live</span>' : ''}</td>
       <td>${r.n}</td>
       <td>${wrText}</td>
+      <td>${applyBtn}</td>
     </tr>`;
   }).join('');
   return `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin:10px 0 6px;">${esc(title)}</div>
     <table class="positions-table">
-      <thead><tr><th>${esc(xLabel)}</th><th>n</th><th>Win Rate</th></tr></thead>
+      <thead><tr><th>${esc(xLabel)}</th><th>n</th><th>Win Rate</th><th></th></tr></thead>
       <tbody>${trs}</tbody>
     </table>`;
+}
+
+async function applyBacktestValue(configPath, value, btn) {
+  if (!confirm(`Set ${configPath} to ${value}? This takes effect on the next trading-loop tick. This is a raw backtest sweep value, not a hedged Advisory recommendation - the stateless replay it's based on doesn't account for cooldowns/concentration limits/other config fields changing at the same time (see docs/config-tuning-data-gaps-2026-08-10.md Gap 2).`)) return;
+  btn.disabled = true;
+  const [section, field] = configPath.split('.');
+  try {
+    await fetchJSON('/api/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({patch: {[section]: {[field]: value}}}),
+    });
+    btn.textContent = 'Applied ✓';
+    loadConfig();
+    setTimeout(loadBacktestSweeps, 800);
+    setTimeout(loadChangeHistory, 800);
+  } catch (e) {
+    btn.disabled = false;
+  }
 }
 
 async function loadBacktestSweeps() {
@@ -3780,10 +3805,10 @@ async function loadBacktestSweeps() {
     const etRows = (et.sweep || []).filter(r => r.n > 0);
     const wrRows = (wr.sweep || []).filter(r => r.n > 0);
     el.innerHTML = (etRows.length ? _sweepTableHTML(
-      'strategy.entry_threshold', et.current_threshold, 'threshold', etRows, 'threshold', 'Threshold',
+      'strategy.entry_threshold', 'strategy.entry_threshold', et.current_threshold, 'threshold', etRows, 'threshold', 'Threshold',
     ) : '<div class="empty">Not enough resolved signals yet for an entry-threshold sweep.</div>')
       + (wrRows.length ? _sweepTableHTML(
-        'strategy.min_whale_winrate_pct', wr.current_floor, 'floor', wrRows, 'floor', 'Floor',
+        'strategy.min_whale_winrate_pct', 'strategy.min_whale_winrate_pct', wr.current_floor, 'floor', wrRows, 'floor', 'Floor',
       ) : '<div class="empty">Not enough resolved signals yet for a win-rate-floor sweep.</div>');
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load backtest sweeps.</div>';
