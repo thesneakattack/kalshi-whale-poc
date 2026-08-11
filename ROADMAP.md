@@ -91,6 +91,31 @@ works" to "flip it for real" still has open operational questions.
       Recommended sequencing is in the doc itself — start with the
       exit-side analyst signal (cheapest) and concentration risk
       (highest safety payoff) before touching position sizing.
+- [ ] `docs/hardening-and-accuracy-roadmap-2026-08-11.md` — direct request
+      after the phase 97 trade-tape incident, covering four areas: (1)
+      event-lifecycle awareness (pre-tail/mid-series/post-tail activity
+      phases) for watchlist ranking, `series_evaluator`'s verdict window,
+      and whale-confidence scoring — a real screenshot (a months-out
+      tournament-champion futures market with vol-5 outcomes) confirmed
+      the current 24h-cumulative-volume ranking has no idea an event
+      hasn't started yet; (2) a "web of expertise" cross-engine audit,
+      direct instruction — every pairing checked against the actual code
+      (not assumed), confirming 6 real gaps: `candidate_log`'s rejected-
+      candidate data never reaches `advisory_engine`, no category-
+      conditional tuning exists despite the data already being collected,
+      `regime_analytics` is read-only/never fed into live entry gating,
+      `series_evaluator` verdicts never reach `advisory_engine` despite
+      the disagreement already being surfaced read-only, `market_strategy`
+      has zero calibration tooling, and the full-spectrum LLM scan is
+      missing two datasets it could cheaply include; (3) resilience
+      follow-ups the incident exposed but didn't fix (the same unthrottled
+      per-ticker concurrency pattern exists in three other fetch loops, no
+      visible slow-tick/rate-limit indicator, other high-frequency write
+      paths not yet audited for the same blocking-I/O risk); (4) smaller
+      accuracy items (write-only `market_history` columns, no margin-of-
+      error framing on calibration auto-apply, no engine ever suggests a
+      per-series notional override despite having the data to). Sequencing
+      recommendation is in the doc itself.
       **Finding 3 (exit-side analyst signal) is done** — a fourth
       `analyst_divergence` factor in `_exit_confidence()`'s composite
       auto-exit score, new `strategy.auto_exit_analyst_weight` config
