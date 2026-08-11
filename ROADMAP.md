@@ -324,6 +324,24 @@ works" to "flip it for real" still has open operational questions.
       passing). Also cleaned up 9 stray `TICK-A` test-fixture rows a
       pre-isolation-fixture pytest run had written into the real
       `data/candidate_log.db` earlier this same session.
+- [x] **History tab panels never auto-refreshed while the tab stayed
+      open (2026-08-10)** — direct report: "the advisory recommendations
+      seem out-of-date, and should update." Root cause:
+      `loadTradingHistory()` was deliberately only ever called once, on
+      tab-open, to protect the paginated Trading History table's own
+      paging/sort state from a 5s poll reset — but that meant *every*
+      panel on the tab (Advisory, Change History, Calibration, Cross-
+      Strategy, Regime Segmentation, Rejected Candidates, Backtest
+      Sweeps, Series Evaluator, Market Analyst) inherited the same
+      staleness even though none of them have any pagination of their
+      own to lose. New `refreshHistoryInsightsIfActive()`, called from
+      the existing `refresh()` 5s poll, re-fetches just those panels —
+      the paginated trade-log table is untouched, still tab-open-only.
+      Verified live: intercepted `fetch()` and confirmed
+      `/api/advisory/recommendations` refetches every poll cycle while
+      the tab is open, and confirmed Trading History's own
+      `historyFilter.offset` (paging position) survives an 11s wait
+      completely unchanged.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

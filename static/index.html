@@ -5426,6 +5426,8 @@ async function refresh() {
     // The market-detail modal can be open regardless of which tab is behind
     // it, so it isn't covered by the active-tab branches above.
     if (marketDetailTicker) refreshMarketDetail();
+
+    refreshHistoryInsightsIfActive();
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;
@@ -5883,7 +5885,10 @@ async function loadSession() {
 }
 
 const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'history', 'config'];
+let currentView = 'portfolio';
+
 function showView(name) {
+  currentView = name;
   VIEWS.forEach(v => {
     $('view-' + v).classList.toggle('active', v === name);
     $('tab-btn-' + v).classList.toggle('active', v === name);
@@ -5898,6 +5903,33 @@ function showView(name) {
   if (name === 'history') { loadTradingHistory(); }
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
+
+// History tab staleness fix (direct report 2026-08-10: "the advisory
+// recommendations seem out-of-date, and should update") - loadTradingHistory()
+// only ever ran once, on tab-open, deliberately (see its own comment above,
+// preserving Trading History's own pagination/sort state from a 5s poll
+// reset). But that meant EVERY panel on the tab - Advisory, Change History,
+// Calibration, Cross-Strategy, Regime, Rejected Candidates, Backtest Sweeps,
+// Series Evaluator, Market Analyst - looked frozen the moment the tab was
+// opened, none of them auto-refreshing while it stayed open. None of these
+// panels have any pagination/sort state of their own to lose, unlike the
+// paginated trade-log table (deliberately left untouched here, still only
+// refreshed on tab-open/explicit navigation) - so they're safe to refresh
+// on a timer without the original regression this file's own history
+// warns about.
+function refreshHistoryInsightsIfActive() {
+  if (currentView !== 'history') return;
+  loadAdvisory();
+  loadChangeHistory();
+  loadCalibrationReport();
+  loadCalibrationHistory();
+  loadCrossStrategyComparison();
+  loadRegimeSegmentation();
+  loadCandidateLogSummary();
+  loadBacktestSweeps();
+  loadSeriesEvaluator();
+  loadMarketAnalyst();
+}
 
 // First-run walkthrough (ROADMAP.md P1) - auto-opens the Help modal once,
 // on a browser that's never seen this app before (localStorage flag set by
