@@ -483,11 +483,52 @@ works" to "flip it for real" still has open operational questions.
       pts more bullish/bearish than the market implies" framing is already
       validated as the right idea (matches WhaleScanr/Upside's core
       approach); this would lean into it further, not replace it.
-- [ ] Finish migrating the rest of the render sites (Advanced fills/orders
+- [x] Finish migrating the rest of the render sites (Advanced fills/orders
       tables, the screener table) onto the child-label/price-aware display
       pattern shipped 2026-08-10 for positions/market cards/the
       market-detail modal — those three call the older `marketLabel()`
       alone and still don't show `yes_sub_title`/per-leg combo data.
+      **Done (2026-08-11), plus two real bugs found along the way** —
+      direct reports: "Cleveland vs Detroit Winner? YES but not the
+      winner...semantically it doesnt even make sense", rows "extremely
+      wide" from cramming series + child market + side onto one line, and
+      the market-detail modal's own Recent Trades panel showing the same
+      ambiguous "Taker bought no" with no indication of what "no" meant.
+      Root causes: (1) a real Kalshi API data quirk, not a caching bug —
+      confirmed directly against `KalshiClient.get_market()` that for many
+      simple 2-way matchup markets Kalshi's own `yes_sub_title`/
+      `no_sub_title` come back identical (both say the same team name);
+      `marketContext()`/`marketCardHTML()` (`static/index.html`) now detect
+      that degenerate case and show an honest "not {yes_sub_title}" for the
+      NO side instead of the misleading duplicate. (2) `main.py`'s
+      `_relevant_tickers()` only ever scoped the whale-follow broker's
+      positions/trade log for title-resolution data, never `market_broker`'s
+      — so `GET /api/market-strategy/state`'s own lookups were scoped wrong
+      for its own strategy's tickers; a fresh page load showed raw ticker
+      IDs on the Market-Native tab, worse than before context lines were
+      even added, because earlier testing had been masked by the browser's
+      stale cached titles. Fixed by adding `market_broker.positions`/
+      `trade_log[-25:]`/`market_decision_feed` tickers into the scoped set.
+      For the width complaint: instead of a full resolver migration, added
+      a smaller-font "Betting: {what this side means}" second line
+      (`contextLineHTML()`/inline equivalents) below the market name at
+      every remaining site that shows a ticker+side — Signal History,
+      Possible Accumulation, the live Signal Feed, Trade Tape, the Portfolio
+      Trade Log and Decision Feed table, real-account Positions/Fills/Orders
+      (Simple and Advanced), Trading History, Market-Native positions/
+      trades/decisions, Shadow Mode's trade log, the Market Analyst's
+      track-record/single-analysis panels, and the market-detail modal's
+      Recent Trades. `.decision-row` had never actually been styled (only
+      `.position-row`/`.trade-row` were) — added to the shared row rule.
+      Deliberately left the Advanced screener table alone — its dense
+      multi-column layout is a different, already-settled design boundary
+      (see Item 4/`status.html` phase 62), not an oversight. 668 tests
+      passing (unchanged — display-only plus the one backend scope fix, no
+      new persisted state). Verified live via `selenium-chrome`: the
+      Jodar-vs-Fils modal now shows "Taker bought NO / Betting: not Rafael
+      Jodar"; Signal History/Possible Accumulation show correct sub-lines
+      across real live rows including several genuinely degenerate-case
+      tickers; zero new console errors.
 - [ ] Clicking a logged position/signal/decision should also show whether
       that specific position ultimately closed/won/lost, not just the
       market's current state (direct request, 2026-08-10) — needs new

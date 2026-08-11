@@ -355,13 +355,33 @@ def _relevant_tickers() -> set[str]:
     whole lifetime now (see services/title_cache.py) so history/clusters can
     still resolve an old ticker's title on their own separately-scoped
     requests, but /api/state itself must stay scoped to this same small set
-    - same reasoning, same ~1MB regression risk, as _series_meta_map above."""
+    - same reasoning, same ~1MB regression risk, as _series_meta_map above.
+
+    Real bug found live (2026-08-10, direct report - a Market-Native trade
+    log row showing a raw ticker like "KXMLBGAME-26AUG101940BALMIN-BAL"
+    instead of its resolved title): this only ever included the
+    whale-follow `broker`'s own positions/trade_log, the exact same gap
+    already found and fixed once for `broker` itself (see this docstring's
+    own history above) - just never extended to `market_broker` when the
+    Market-Native tab was built, since GET /api/market-strategy/state
+    reuses this same function to scope its own market_titles. A market-
+    native trade that ages out of the current watchlist had no title-
+    resolution path at all, not even a lagging one - it rendered fine only
+    as long as an EARLIER poll had already cached the title client-side;
+    a fresh page load (or a long-since-closed market-native position)
+    never got the chance."""
     tickers = {m["ticker"] for m in state["markets"] if m.get("ticker")}
     tickers |= set(broker.positions.keys())
     tickers |= {t.ticker for t in broker.trade_log[-25:]}
+    tickers |= set(market_broker.positions.keys())
+    tickers |= {t.ticker for t in market_broker.trade_log[-25:]}
     tickers |= {s["ticker"] for s in state["signal_feed"] if s.get("ticker")}
     for d in state["decision_feed"]:
         t = d.get("ticker") or (d.get("signal") or {}).get("ticker")
+        if t:
+            tickers.add(t)
+    for d in state["market_decision_feed"]:
+        t = d.get("ticker")
         if t:
             tickers.add(t)
     account = state.get("account") or {}

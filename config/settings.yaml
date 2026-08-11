@@ -6,7 +6,7 @@ kalshi:
   max_children_per_parent: null
   min_volume_24h: 1
   categories: []
-  live_markets_only: false
+  live_markets_only: true
   poll_interval_sec: 15
   request_timeout_sec: 10
 whale_signal:
@@ -18,7 +18,7 @@ whale_signal:
   live_markets_only: true
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.6
+  entry_threshold: 0.5
   max_position_pct: 0.05
   cooldown_sec: 150
   max_open_positions_per_series: null
@@ -30,8 +30,8 @@ strategy:
   take_profit_pct: null
   stop_loss_pct: 0.2
   exit_on_sentiment_reversal: true
-  exit_sentiment_min_signals: 11
-  exit_sentiment_lean_pct: 90
+  exit_sentiment_min_signals: 7
+  exit_sentiment_lean_pct: 80
   auto_exit_enabled: true
   auto_exit_threshold: 0.6
   auto_exit_pnl_weight: 1
@@ -70,7 +70,7 @@ market_strategy:
   max_daily_loss_pct: 0.2
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 1000
+  min_notional_usd: 500
   min_notional_usd_by_series: {}
 whale_confidence_weights:
   depth_factor: 0.3333

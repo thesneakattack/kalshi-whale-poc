@@ -195,7 +195,7 @@
   .series-section-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
   .series-section .cards-grid { margin: 0; }
 
-  .position-row, .trade-row {
+  .position-row, .trade-row, .decision-row {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
@@ -208,8 +208,8 @@
     font-family: var(--mono);
     font-size: 12px;
   }
-  .position-row .name, .trade-row .name { flex: 1; min-width: 0; }
-  .position-row .nums, .trade-row .nums {
+  .position-row .name, .trade-row .name, .decision-row .name { flex: 1; min-width: 0; }
+  .position-row .nums, .trade-row .nums, .decision-row .nums {
     text-align: right; white-space: nowrap; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
   }
   .pnl.pos { color: var(--yes); }
@@ -1905,10 +1905,24 @@ function dedupeInversionPairs(markets, prices) {
 function marketContext(ticker, side) {
   const info = marketTitles[ticker] || {};
   const event = info.event_ticker ? eventTitles[info.event_ticker] : null;
+  // Real bug found live (2026-08-10, direct report: "Cleveland vs Detroit
+  // Winner? YES but not the winner... semantically it doesnt even make
+  // sense") - confirmed directly against Kalshi's real API (not a caching
+  // bug in this app): for a simple 2-way matchup market, Kalshi's own
+  // no_sub_title often comes back IDENTICAL to yes_sub_title (e.g. both
+  // say "Baltimore" for "Baltimore vs Minnesota Winner?"). Showing that
+  // duplicate value for the NO side would be actively wrong - it would
+  // read as "NO also means Baltimore." When detected, falls back to an
+  // honest "not {yes label}" instead of asserting a specific opposing
+  // name Kalshi never actually gave this app.
+  const degenerate = info.no_sub_title && info.no_sub_title === info.yes_sub_title;
+  const positionMeans = side === 'no'
+    ? (degenerate ? (info.yes_sub_title ? `not ${info.yes_sub_title}` : null) : info.no_sub_title)
+    : info.yes_sub_title;
   return {
     category: event ? event.category : null,
     matchup: event ? (event.sub_title || event.title) : null,
-    positionMeans: side === 'no' ? info.no_sub_title : info.yes_sub_title,
+    positionMeans,
   };
 }
 
@@ -2159,6 +2173,7 @@ function renderSignals(signals) {
         <span>${stealthTag}${esc(label.short)} <span class="side-tag ${s.side}">${s.side}</span></span>
         <span style="color: var(--whale)">${s.size.toLocaleString()} ct${dollarSize ? ' · ' + dollarSize : ''}</span>
       </div>
+      ${contextLineHTML(s.ticker, s.side)}
       <div style="color: var(--muted)">@ ${(s.price*100).toFixed(0)}¢ · confidence ${(s.confidence*100).toFixed(0)}% ${impactTag}</div>
       <div class="conf-bar"><div class="conf-fill" style="width:${s.confidence*100}%"></div></div>
     </div>
@@ -2334,9 +2349,12 @@ function renderDecisionTable() {
 
   const bodyRows = rows.map(r => {
     const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+    const rCtx = marketContext(r.ticker, r.side);
+    const rSubLine = rCtx.positionMeans
+      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(rCtx.positionMeans)}</div>` : '';
     return `<tr title="${esc(r.reason || '')} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
-    <td>${esc(marketLabel(r.ticker).short)}</td>
+    <td>${esc(marketLabel(r.ticker).short)}${rSubLine}</td>
     <td><span class="action-tag ${r.action}">${r.action}</span></td>
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
     <td>${r.size.toLocaleString()}</td>
@@ -2607,9 +2625,14 @@ function renderTradeLogTable() {
     const resultCell = r.isClose
       ? `<span style="color:${r.won ? 'var(--yes)' : 'var(--no)'};">${r.won ? 'Won' : 'Lost'} · ${esc(HISTORY_CLOSE_TYPE_LABELS[r.close_type] || r.close_type)}</span>`
       : '<span style="color:var(--muted);">open</span>';
+    // Smaller second line under the title (2026-08-10 report: "YES"/"NO"
+    // alone not saying who/what it means, plus rows going extremely wide).
+    const rCtx = marketContext(r.ticker, r.side);
+    const rSubLine = rCtx.positionMeans
+      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(rCtx.positionMeans)}</div>` : '';
     return `<tr title="${esc(marketLabel(r.ticker).full)} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
-    <td>${esc(marketLabel(r.ticker).short)}</td>
+    <td>${esc(marketLabel(r.ticker).short)}${rSubLine}</td>
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
     <td>${r.size.toLocaleString()}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
@@ -2694,8 +2717,10 @@ function renderRealPositions(positions) {
       // Direct request: real positions should open to full market detail the
       // same way paper positions/every market card already do - this table
       // was the one place in Portfolio missing it.
+      const rSubLine = r.side && marketContext(r.ticker, r.side).positionMeans
+        ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(marketContext(r.ticker, r.side).positionMeans)}</div>` : '';
       return `<tr title="${esc(JSON.stringify(r.p))} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(et)}')">
-        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${r.side}">${r.side}</span>` : ''}</td>
+        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${r.side}">${r.side}</span>` : ''}${rSubLine}</td>
         <td>${isNaN(r.qty) ? '—' : r.qty.toLocaleString()}</td>
         <td>${r.heldPrice != null ? (r.heldPrice*100).toFixed(0)+'¢' : '—'}</td>
         <td>${r.exposure != null ? fmt(r.exposure) : '—'}</td>
@@ -2821,8 +2846,10 @@ function renderRealFills(fills) {
     const sortCall = (key) => `toggleSort(realFillsState, '${key}', renderRealFillsFromLast)`;
     const bodyRows = rows.map(r => {
       const label = marketLabel(r.ticker);
+      const rSubLine = r.side && marketContext(r.ticker, r.side).positionMeans
+        ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(marketContext(r.ticker, r.side).positionMeans)}</div>` : '';
       return `<tr title="${esc(JSON.stringify(r.f))}">
-        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${esc(r.side)}">${esc(r.side)}</span>` : ''}</td>
+        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${esc(r.side)}">${esc(r.side)}</span>` : ''}${rSubLine}</td>
         <td>${esc(r.action || '—')}</td>
         <td>${isNaN(r.count) ? '—' : r.count.toLocaleString()}</td>
         <td>${isNaN(r.price) ? '—' : (r.price * 100).toFixed(0) + '¢'}</td>
@@ -2934,8 +2961,10 @@ function renderRealOrders() {
     const sortCall = (key) => `toggleSort(realOrdersState, '${key}', renderRealOrders)`;
     const bodyRows = rows.map(r => {
       const label = marketLabel(r.ticker);
+      const rSubLine = r.side && marketContext(r.ticker, r.side).positionMeans
+        ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(marketContext(r.ticker, r.side).positionMeans)}</div>` : '';
       return `<tr title="${esc(JSON.stringify(r.o))}">
-        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${esc(r.side)}">${esc(r.side)}</span>` : ''}</td>
+        <td style="text-align:left;">${esc(label.short)} ${r.side ? `<span class="side-tag ${esc(r.side)}">${esc(r.side)}</span>` : ''}${rSubLine}</td>
         <td>${esc(r.action || '—')}</td>
         <td>${esc(r.type || '—')}</td>
         <td>${esc(r.status || '—')}</td>
@@ -3011,7 +3040,9 @@ function tradeRowHTML(t, plainEnglish) {
     ? `Someone bought <b>${count}</b> <span class="side-tag ${side}">${side}</span> on ${esc(label.short)}`
     : `${esc(label.short)} <span class="side-tag ${side}">${side}</span>`;
   return `<div class="trade-row" title="${esc(label.full)}">
-    <div class="name">${name}</div>
+    <div class="name">${name}
+      ${contextLineHTML(t.ticker, side)}
+    </div>
     <div class="nums"><span>${count} ct @ ${price}</span><span style="color: var(--muted)">${esc(when)}</span></div>
   </div>`;
 }
@@ -3134,8 +3165,15 @@ function renderSignalHistory() {
     if (!r.resolved) outcome = '<span style="color:var(--muted);">pending</span>';
     else if (r.correct) outcome = '<span style="color:var(--yes); font-weight:700;">✓ correct</span>';
     else outcome = '<span style="color:var(--no); font-weight:700;">✗ miss</span>';
+    // Smaller second line under the title, not crammed onto one - direct
+    // report (2026-08-10): "Cleveland vs Detroit Winner? YES" with no
+    // indication of who YES means, plus a separate report that cramming
+    // everything onto one line was making rows extremely wide.
+    const ctx = marketContext(r.ticker, r.side);
+    const subLine = ctx.positionMeans
+      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(ctx.positionMeans)}</div>` : '';
     return `<tr title="${esc(label.full)}">
-      <td>${esc(label.short)}</td>
+      <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${r.side}">${esc(r.side)}</span></td>
       <td>${r.size.toLocaleString()}</td>
       <td>${(r.confidence * 100).toFixed(0)}%</td>
@@ -3207,6 +3245,7 @@ function renderSignalClusters(clusters) {
         <span>${esc(label.short)} <span class="side-tag ${c.side}">${c.side}</span></span>
         <span style="color: var(--whale)">${c.total_size.toLocaleString()} ct total</span>
       </div>
+      ${contextLineHTML(c.ticker, c.side)}
       <div style="color: var(--muted)">${c.print_count} prints over ${spanMin} min · ~${pct}% cluster confidence</div>
     </div>`;
   }).join('');
@@ -3891,7 +3930,9 @@ async function loadMarketNativeState() {
       const direction = p.side === 'yes' ? 1 : -1;
       const pnl = direction * (current - p.entry_price) * p.size;
       return `<div class="position-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(p.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span></div>
+        <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span>
+          ${contextLineHTML(p.ticker, p.side)}
+        </div>
         <div class="nums">
           <span>${p.size.toLocaleString()} @ ${(p.entry_price*100).toFixed(0)}¢</span>
           <span style="color:${pnl >= 0 ? 'var(--yes)' : 'var(--no)'};">${fmt(pnl)}</span>
@@ -3910,7 +3951,9 @@ async function loadMarketNativeState() {
            <span style="color:var(--muted); font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
         : '<span style="color:var(--muted);">open</span>';
       return `<div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span></div>
+        <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
+          ${contextLineHTML(t.ticker, t.side)}
+        </div>
         <div class="nums">
           <span>${t.size.toLocaleString()} @ ${(t.price*100).toFixed(0)}¢</span>
           <span style="color:var(--muted);">${when}</span>
@@ -3926,7 +3969,9 @@ async function loadMarketNativeState() {
       const trade = d.trade || {};
       const when = trade.timestamp ? new Date(trade.timestamp * 1000).toLocaleString() : '';
       return `<div class="decision-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(d.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span style="color:var(--muted); font-size:11px; text-transform:uppercase;">${esc(d.action)}</span></div>
+        <div class="name">${esc(label.short)} <span style="color:var(--muted); font-size:11px; text-transform:uppercase;">${esc(d.action)}</span>
+          ${trade.side ? contextLineHTML(d.ticker, trade.side) : ''}
+        </div>
         <div class="nums"><span style="color:var(--muted); font-size:12px;">${esc(trade.reason || d.reason || '')}</span> <span style="color:var(--muted);">${esc(when)}</span></div>
       </div>`;
     }).join('');
@@ -4001,6 +4046,7 @@ async function loadMarketAnalyst() {
             <span>${esc(label.short)}</span>
             ${outcomeHtml}
           </div>
+          ${contextLineHTML(r.ticker, 'yes')}
           <div style="margin:4px 0;">
             Model: <b class="side-tag ${lean.toLowerCase()}">${lean} ${leanPct}%</b>
             <span style="color:var(--muted);"> · Market was pricing YES at ${marketPct}% ·
@@ -4260,8 +4306,13 @@ function renderHistoryTrades() {
     // position/market card already has - entry/exit price and close
     // type/P&L (the "did this win or lose" answer) are already shown
     // inline in this row; the modal adds the market's fuller context.
+    // Smaller second line under the title (2026-08-10 report: rows going
+    // extremely wide, plus "YES"/"NO" alone not saying who/what it means).
+    const ctx = marketContext(t.ticker, t.side);
+    const subLine = ctx.positionMeans
+      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(ctx.positionMeans)}</div>` : '';
     return `<tr title="${esc(title)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
-      <td>${esc(label.short)}</td>
+      <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>
       <td>${t.size.toLocaleString()}</td>
       <td>${t.entry_price !== null ? (t.entry_price * 100).toFixed(0) + '¢' : '—'}</td>
@@ -4454,8 +4505,15 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   // Only shown when it says something the main title doesn't already say.
   const info = marketTitles[m.ticker] || {};
   const yesSub = info.yes_sub_title && info.yes_sub_title !== label.full ? esc(info.yes_sub_title) : null;
-  const noSub = info.no_sub_title && info.no_sub_title !== label.full && info.no_sub_title !== info.yes_sub_title
-    ? esc(info.no_sub_title) : null;
+  // Real bug found live (2026-08-10): Kalshi's own API often returns an
+  // IDENTICAL no_sub_title/yes_sub_title for a simple 2-way matchup market
+  // (see marketContext()'s own fuller explanation) - falls back to "not
+  // {yes label}" in that case rather than just going blank, same honest
+  // disambiguation marketContext() now provides everywhere else.
+  const degenerate = info.no_sub_title && info.no_sub_title === info.yes_sub_title;
+  const noSub = degenerate
+    ? (yesSub ? `not ${yesSub}` : null)
+    : (info.no_sub_title && info.no_sub_title !== label.full ? esc(info.no_sub_title) : null);
 
   return `
   <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
@@ -4863,6 +4921,7 @@ async function triggerMarketAnalystAnalysis(ticker) {
             <span>Model estimate: <b class="side-tag ${lean.toLowerCase()}">${lean} ${leanPct}%</b></span>
             <span style="color:var(--muted); font-size:12px;">market was pricing YES ${marketPct}% · model confidence ${Math.round(result.confidence * 100)}%</span>
           </div>
+          ${contextLineHTML(ticker, 'yes')}
           <div style="color:var(--muted); font-size:13px; margin-top:6px;">${esc(result.reasoning)}</div>
         </div>
       `;
@@ -4971,7 +5030,7 @@ async function refreshMarketDetail() {
   const chartHtml = !eventTicker
     ? ''  // no event_ticker known (shouldn't normally happen - every call site passes one) - skip rather than guess
     : candlesFailed ? '<div class="empty">Failed to load price history.</div>' : renderCandlestickHTML(candles);
-  const tradesHtml = tradesFailed ? '<div class="empty">Failed to load recent trades.</div>' : renderMarketTradesHTML(trades);
+  const tradesHtml = tradesFailed ? '<div class="empty">Failed to load recent trades.</div>' : renderMarketTradesHTML(trades, ticker);
   const hr = '<hr style="border-color: var(--panel-border); margin: 20px 0;">';
   $('market-detail-body').innerHTML = infoHtml + hr + chartHtml + hr + bookHtml + hr + tradesHtml;
 }
@@ -5063,7 +5122,7 @@ function renderMarketInfoHTML(d) {
 // ROADMAP.md). No Simple/Advanced split here, unlike the book/chart above -
 // a short recent-trades list doesn't have a meaningfully denser "Advanced"
 // form the way a full order book or candlestick history does.
-function renderMarketTradesHTML(trades) {
+function renderMarketTradesHTML(trades, ticker) {
   if (!trades || !trades.length) {
     return '<div class="panel-title" style="margin-top:0;">Recent Trades</div><div class="empty">No recent trades on this market.</div>';
   }
@@ -5074,7 +5133,9 @@ function renderMarketTradesHTML(trades) {
     const count = t.count_fp != null ? parseFloat(t.count_fp).toLocaleString() : '—';
     const when = t.created_time ? new Date(t.created_time).toLocaleTimeString() : '';
     return `<div class="trade-row">
-      <div class="name">Taker bought <span class="side-tag ${side}">${side}</span></div>
+      <div class="name">Taker bought <span class="side-tag ${side}">${side}</span>
+        ${ticker ? contextLineHTML(ticker, side) : ''}
+      </div>
       <div class="nums"><span>${count} contracts @ ${price}</span><span style="color: var(--muted)">${esc(when)}</span></div>
     </div>`;
   }).join('');
@@ -5609,7 +5670,9 @@ function renderShadow(shadow) {
     const sourceNote = usingRealBankroll ? 'real balance' : 'fallback: configured bankroll, no real account connected';
     return `
     <div class="trade-row" title="${esc(label.full)}">
-      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span></div>
+      <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
+        ${contextLineHTML(t.ticker, t.side)}
+      </div>
       <div class="nums">
         <span>${t.size.toLocaleString()} ct @ ${(t.price*100).toFixed(0)}¢ · sized against ${fmt(t.reference_bankroll)} (${sourceNote})</span>
         <span style="color: var(--muted)">${when}</span>
