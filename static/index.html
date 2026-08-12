@@ -2631,6 +2631,7 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
     const size = (d.signal && d.signal.size) || (d.trade && d.trade.size) || 0;
     const price = (d.signal && d.signal.price) || (d.trade && d.trade.price) || 0;
     const conf = (d.signal && d.signal.confidence) || 0;
+    const dollarSize = price != null ? fmt(size * ((d.side || 'yes') === 'yes' ? price : (1 - price))) : null;
     const detail = d.action === 'trade'
       ? `${(d.signal && d.signal.side || '').toUpperCase()} × ${size} @ ${(price*100).toFixed(0)}¢`
       : d.action === 'skip'
@@ -2650,12 +2651,13 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
       <div class="signal-card ${d.status}" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(d.ticker)}', '${esc(dEt)}')">
         <div class="top-row">
           <span>${esc(label.short)} <span class="side-tag ${d.side}">${d.side}</span> ${liveMarker} ${closingBadge}</span>
-          <span class="action-tag ${d.status}">${d.status}</span>
+          <span style="color: var(--whale)">${size ? `${size.toLocaleString()} ct${dollarSize ? ' · ' + dollarSize : ''}` : `<span class="action-tag ${d.status}">${d.status}</span>`}</span>
         </div>
         ${contextLineHTML(d.ticker, d.side)}
         ${marketTaxonomyHTML(d.ticker)}
         ${eventLiveDataLineHTML(eventT, true)}
-        <div style="color: var(--muted)">${detail}${conf ? ` · confidence ${(conf*100).toFixed(0)}%` : ''} ${impactTag}</div>
+        <div style="color: var(--muted)">${detail}${conf ? ` · confidence ${(conf*100).toFixed(0)}%` : ''} <span class="action-tag ${d.status}">${d.status}</span> ${impactTag}</div>
+        ${conf ? `<div class="conf-bar"><div class="conf-fill" style="width:${conf*100}%"></div></div>` : ''}
         <div style="color: var(--muted); font-size:12px; margin-top:6px;">${reasonText}</div>
       </div>
     `;
@@ -2690,14 +2692,21 @@ function renderDecisionTable() {
     if (q && !ticker.toLowerCase().includes(q)) return false;
     return true;
   }).map(d => {
+    const side = d.action === 'close' ? d.trade.side : (d.action === 'trade' ? d.trade.side : d.signal.side);
+    const size = d.action === 'close' ? d.trade.size : (d.action === 'trade' ? d.trade.size : d.signal.size);
+    const price = d.action === 'close' ? d.trade.price : (d.action === 'trade' ? d.trade.price : d.signal.price);
+    const notional = (size != null && price != null)
+      ? size * (side === 'yes' ? price : (1 - price))
+      : null;
     if (d.action === 'close') {
       return {
         timestamp: d.trade.timestamp,
         ticker: d.ticker,
         action: d.action,
-        side: d.trade.side,
-        size: d.trade.size,
-        price: d.trade.price,
+        side,
+        size,
+        price,
+        notional,
         confidence: null,
         reason: d.trade.reason,
       };
@@ -2706,9 +2715,10 @@ function renderDecisionTable() {
       timestamp: d.signal.timestamp,
       ticker: d.signal.ticker,
       action: d.action,
-      side: d.action === 'trade' ? d.trade.side : d.signal.side,
-      size: d.action === 'trade' ? d.trade.size : d.signal.size,
-      price: d.action === 'trade' ? d.trade.price : d.signal.price,
+      side,
+      size,
+      price,
+      notional,
       confidence: d.signal.confidence,
       reason: d.action === 'trade' ? d.trade.reason : d.reason,
     };
@@ -2722,7 +2732,7 @@ function renderDecisionTable() {
   }
 
   const cols = [['timestamp', 'Time'], ['ticker', 'Ticker'], ['action', 'Action'], ['side', 'Side'],
-    ['size', 'Size'], ['price', 'Price'], ['confidence', 'Confidence']];
+    ['size', 'Shares'], ['notional', 'Bet Value'], ['price', 'Price'], ['confidence', 'Confidence']];
   const headerHtml = cols.map(([key, label]) =>
     sortHeaderHTML(decisionFilter, key, label, `toggleSort(decisionFilter,'${key}',renderDecisionTable)`)
   ).join('');
@@ -2741,6 +2751,7 @@ function renderDecisionTable() {
     <td><span class="action-tag ${r.action}">${r.action}</span></td>
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
     <td>${r.size.toLocaleString()}</td>
+    <td>${r.notional === null ? '—' : fmt(r.notional)}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence === null ? '—' : (r.confidence*100).toFixed(0) + '%'}</td>
   </tr>`;
