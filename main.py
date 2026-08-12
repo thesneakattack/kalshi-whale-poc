@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import secrets
 import time
@@ -6,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -39,6 +40,7 @@ from services.config_store import config_store
 from services.http_client import close_client
 from services.kalshi_client import KalshiClient
 from services.kalshi_account_client import KalshiAccountClient
+from services.kalshi_trade_ws import KalshiTradeWebSocketClient
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
 from services.market_strategy import MarketNativeStrategy
@@ -98,6 +100,7 @@ account = KalshiAccountClient(
     cfg["kalshi"]["request_timeout_sec"],
     cfg["kalshi_account"]["trading_enabled"],
 )  # real account — only active if KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH are set in .env
+trade_stream = KalshiTradeWebSocketClient(account_base_url)
 
 state = {
     "running": True,
@@ -112,7 +115,10 @@ state = {
     "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category", "mutually_exclusive"}, see _fetch_event_titles
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "trade_tape_last_fetch_ts": None,  # watermark for _fetch_trade_tape's incremental min_ts fetch - None until the first successful tick
+    "market_results": {},
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
+    "event_live_data": {},  # event_ticker -> live_data payload from /live_data/events/{event_ticker}
+    "category_metadata": {"fetched_at": 0.0, "tags_by_categories": {}, "filters_by_sports": {}, "sport_ordering": []},
     # Survives across ticks (unlike live_status above, still replaced wholesale
     # every tick for the current-tick view) - event_ticker -> {"status",
     # "checked_at"}, the memory that lets _fetch_live_status poll lightly
@@ -137,6 +143,13 @@ state = {
     "exchange_status": None,  # {"exchange_active": bool, "trading_active": bool, ...} — see _fetch_exchange_status
     "last_poll": None,
     "error": None,
+    "trade_stream_status": {
+        "enabled": whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled,
+        "connected": False,
+        "error": None,
+        "ws_url": trade_stream.status.get("ws_url"),
+        "mode": "stream" if whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled else "poll",
+    },
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
     "account": {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,
@@ -153,8 +166,161 @@ state = {
 }
 
 
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+        self.lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self.lock:
+            self.active_connections.append(websocket)
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self.lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict) -> None:
+        text = json.dumps(message)
+        async with self.lock:
+            connections = list(self.active_connections)
+        for connection in connections:
+            try:
+                await connection.send_text(text)
+            except Exception:
+                await self.disconnect(connection)
+
+
+ws_manager = WebSocketManager()
+
+
+def _streaming_trade_tape_enabled() -> bool:
+    # Kalshi's websocket market-data stream is authenticated, so this can only
+    # replace the polled trade tape when the real trade-tape provider is active
+    # AND websocket credentials loaded successfully. Fallback stays on the
+    # existing REST polling path otherwise.
+    return whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled
+
 def _bump_generation():
     state["generation"] += 1
+
+
+async def _broadcast_signal_decision(signal_payload: dict | None, decision_payload: dict) -> None:
+    await ws_manager.broadcast({
+        "type": "signal_decision",
+        "signal": signal_payload,
+        "decision": decision_payload,
+    })
+
+
+async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str, tick_now: float) -> dict:
+    state["signal_feed"].insert(0, signal.to_dict())
+    state["signal_feed"] = state["signal_feed"][:50]
+    state["stats"]["signals_seen"] += 1
+    signal_log.log_signal(
+        signal.ticker, signal.side, signal.size, signal.confidence,
+        state["whale_source"], signal.timestamp, factors=signal.factors,
+        raw_context=signal.raw_context,
+    )
+
+    market_info = state["market_titles"].get(signal.ticker) or {}
+    event_ticker = market_info.get("event_ticker")
+    is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
+    category = (state["event_titles"].get(event_ticker) or {}).get("category")
+
+    decision = strategy.evaluate(
+        signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
+        latest_prices=state["latest_prices"], category=category,
+    )
+    state["decision_feed"].insert(0, decision)
+    state["decision_feed"] = state["decision_feed"][:50]
+    state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
+    asyncio.create_task(_broadcast_signal_decision(signal.to_dict(), decision))
+    if decision["action"] == "trade":
+        trade_category.record_category(signal.ticker, category, tick_now)
+
+    if cfg.get("mode") in ("shadow", "live"):
+        shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(state.get("account") or {}, cfg)
+        shadow.evaluate(
+            signal, cfg, shadow_bankroll, shadow_bankroll_source,
+            is_live=is_live, market_results=market_results,
+        )
+    return decision
+
+
+async def _handle_close_decision(close_decision: dict) -> None:
+    state["decision_feed"].insert(0, close_decision)
+    state["decision_feed"] = state["decision_feed"][:50]
+    state["stats"]["trades_placed"] += 1
+    asyncio.create_task(_broadcast_signal_decision(None, close_decision))
+
+
+async def _process_stream_trade(trade: dict) -> None:
+    if not trade.get("trade_id"):
+        return
+    state["trade_tape"].insert(0, trade)
+    state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
+    state["trade_tape_last_fetch_ts"] = time.time()
+    if not state["running"] or not _streaming_trade_tape_enabled():
+        _bump_generation()
+        return
+
+    cfg_now = config_store.get()
+    config_fp = config_performance.fingerprint(cfg_now)
+    signals = await whale_provider.fetch_signals(
+        market_context={"markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now},
+    )
+    if not signals:
+        _bump_generation()
+        return
+
+    now = time.time()
+    for signal in signals:
+        await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
+    for close_decision in strategy.check_exits(
+        state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
+    ):
+        await _handle_close_decision(close_decision)
+    _bump_generation()
+
+
+async def _process_stream_ticker(ticker_msg: dict) -> None:
+    ticker = ticker_msg.get("market_ticker")
+    if not ticker:
+        return
+    try:
+        state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
+    except (TypeError, ValueError):
+        return
+    for market in state["markets"]:
+        if market.get("ticker") == ticker:
+            market["yes_ask_dollars"] = ticker_msg.get("yes_ask_dollars")
+            break
+    if state["running"] and state.get("signal_feed"):
+        cfg_now = config_store.get()
+        for close_decision in strategy.check_exits(
+            state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
+        ):
+            await _handle_close_decision(close_decision)
+    _bump_generation()
+
+
+async def _handle_trade_stream_status(status: dict) -> None:
+    state["trade_stream_status"] = {
+        "enabled": _streaming_trade_tape_enabled(),
+        "connected": bool(status.get("connected")),
+        "error": status.get("error"),
+        "ws_url": status.get("ws_url") or trade_stream.status.get("ws_url"),
+        "mode": "stream" if _streaming_trade_tape_enabled() else "poll",
+    }
+    if status.get("error"):
+        state["error"] = status["error"]
+    asyncio.create_task(ws_manager.broadcast({
+        "type": "trade_stream_status",
+        "status": state["trade_stream_status"],
+    }))
+    _bump_generation()
 
 
 async def propagate_milestone_winners(client: KalshiClient, markets: list[dict]) -> dict:
@@ -475,6 +641,32 @@ def _scoped_market_titles(tickers: set[str]) -> dict:
 def _scoped_event_titles(market_titles: dict) -> dict:
     event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
     return {et: state["event_titles"][et] for et in event_tickers if et in state["event_titles"]}
+
+
+def _scoped_event_live_data(market_titles: dict) -> dict:
+    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
+    return {et: state["event_live_data"][et] for et in event_tickers if et in state["event_live_data"]}
+
+
+async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) -> dict:
+    cache = state["category_metadata"]
+    now = time.time()
+    if cache.get("fetched_at") and (now - cache["fetched_at"]) < ttl_sec:
+        return cache
+    try:
+        tags_resp, sports_resp = await asyncio.gather(
+            client.get_tags_for_series_categories(),
+            client.get_filters_for_sports(),
+        )
+        cache.update({
+            "fetched_at": now,
+            "tags_by_categories": (tags_resp or {}).get("tags_by_categories") or {},
+            "filters_by_sports": (sports_resp or {}).get("filters_by_sports") or {},
+            "sport_ordering": (sports_resp or {}).get("sport_ordering") or [],
+        })
+    except Exception:
+        pass
+    return cache
 
 
 async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[str] | None = None) -> list[dict]:
@@ -1051,11 +1243,21 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
     since none of them had ever been "not yet cached" again). This
     self-heals over the next few ticks as each event naturally reappears in
     the watchlist, no one-time backfill script or DB wipe needed."""
+    required_event_fields = {
+        "mutually_exclusive", "series_ticker", "available_on_brokers",
+        "product_metadata", "settlement_sources", "strike_date",
+        "strike_period", "fee_type_override", "fee_multiplier_override",
+        "last_updated_ts",
+    }
     to_fetch = [
         m["event_ticker"] for m in markets
         if m.get("event_ticker") and (
             m["event_ticker"] not in state["event_titles"]
             or state["event_titles"][m["event_ticker"]].get("mutually_exclusive") is None
+            or any(
+                field not in state["event_titles"][m["event_ticker"]]
+                for field in required_event_fields
+            )
         )
     ]
     to_fetch = list(dict.fromkeys(to_fetch))  # de-dupe, preserve order
@@ -1070,6 +1272,8 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
                 "title": event.get("title") or et,
                 "sub_title": event.get("sub_title"),
                 "category": event.get("category"),
+                "series_ticker": event.get("series_ticker"),
+                "available_on_brokers": event.get("available_on_brokers"),
                 "collateral_return_type": event.get("collateral_return_type"),
                 # Kalshi's own real field for "exactly one of this event's
                 # sibling markets resolves YES" - already present in every
@@ -1101,7 +1305,40 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
                 # above.
                 "competition": (event.get("product_metadata") or {}).get("competition"),
                 "competition_scope": (event.get("product_metadata") or {}).get("competition_scope"),
+                "product_metadata": event.get("product_metadata") or {},
+                "settlement_sources": event.get("settlement_sources") or [],
+                "strike_date": event.get("strike_date"),
+                "strike_period": event.get("strike_period"),
+                "fee_type_override": event.get("fee_type_override"),
+                "fee_multiplier_override": event.get("fee_multiplier_override"),
+                "last_updated_ts": event.get("last_updated_ts"),
             }
+    return fetched
+
+
+async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> dict:
+    event_tickers = list(dict.fromkeys(
+        m["event_ticker"] for m in markets if m.get("event_ticker")
+    ))
+    if not event_tickers:
+        return {}
+    results = await asyncio.gather(
+        *(client.get_event_live_data(et) for et in event_tickers), return_exceptions=True
+    )
+    fetched = {}
+    for et, result in zip(event_tickers, results):
+        if not isinstance(result, dict):
+            continue
+        live_data = result.get("live_data") or {}
+        if not live_data:
+            continue
+        fetched[et] = {
+            "type": live_data.get("type"),
+            "details": live_data.get("details") or {},
+            "is_historical": live_data.get("is_historical"),
+            "default_range": live_data.get("default_range"),
+            "range_options": live_data.get("range_options") or [],
+        }
     return fetched
 
 
@@ -1623,6 +1860,7 @@ async def trading_loop():
                 _fetch_exchange_status(client), _check_signal_resolutions(client),
                 _scan_catalog_batch(client, cfg),
             )
+            await _fetch_category_metadata(client)
             state["account"] = account_snapshot
             if exchange_status is not None:
                 state["exchange_status"] = exchange_status
@@ -1847,17 +2085,34 @@ async def trading_loop():
             for decision in market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results):
                 state["market_decision_feed"].insert(0, decision)
             state["market_decision_feed"] = state["market_decision_feed"][:50]
+            state["market_results"] = market_results
+            if _streaming_trade_tape_enabled():
+                await trade_stream.set_market_tickers([m["ticker"] for m in markets if m.get("ticker")])
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
             trade_tape_since = state.get("trade_tape_last_fetch_ts")
-            event_titles, trade_tape, live_status = await asyncio.gather(
-                _fetch_event_titles(client, markets),
-                _fetch_trade_tape(client, markets, since_ts=trade_tape_since),
-                _fetch_live_status(client, markets),
-            )
-            state["trade_tape_last_fetch_ts"] = tick_now
+            if _streaming_trade_tape_enabled():
+                event_titles, event_live_data, live_status = await asyncio.gather(
+                    _fetch_event_titles(client, markets),
+                    _fetch_event_live_data(client, markets),
+                    _fetch_live_status(client, markets),
+                )
+                trade_tape = state["trade_tape"]
+            else:
+                event_titles, event_live_data, trade_tape, live_status = await asyncio.gather(
+                    _fetch_event_titles(client, markets),
+                    _fetch_event_live_data(client, markets),
+                    _fetch_trade_tape(client, markets, since_ts=trade_tape_since),
+                    _fetch_live_status(client, markets),
+                )
+                state["trade_tape_last_fetch_ts"] = tick_now
             state["event_titles"].update(event_titles)
+            tags_by_categories = state["category_metadata"].get("tags_by_categories") or {}
+            for et, event_meta in state["event_titles"].items():
+                category = event_meta.get("category")
+                event_meta["category_tags"] = tags_by_categories.get(category, []) if category else []
             title_cache.save_event_titles(event_titles)  # event_titles here is already just this tick's new entries, see _fetch_event_titles
+            state["event_live_data"].update(event_live_data)
             # trade_tape itself (the incremental, uncapped-beyond-a-sanity-
             # ceiling result) is what whale detection reads below - only the
             # UI-facing copy gets sliced down to a human-scannable size
@@ -1938,7 +2193,9 @@ async def trading_loop():
                     pass
 
             new_signals = []
-            if whale_provider.enabled:
+            if _streaming_trade_tape_enabled():
+                state["whale_source"] = f"{whale_provider.name} (websocket)"
+            elif whale_provider.enabled:
                 try:
                     new_signals = await whale_provider.fetch_signals(
                         market_context={"markets": markets, "trade_tape": trade_tape, "cfg": cfg},
@@ -1966,58 +2223,8 @@ async def trading_loop():
                 new_signals = [sig] if sig else []
                 state["whale_source"] = "simulated"
 
-            shadow_active = cfg.get("mode") in ("shadow", "live")
-            if shadow_active:
-                shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(account_snapshot, cfg)
-
             for signal in new_signals:
-                state["signal_feed"].insert(0, signal.to_dict())
-                state["signal_feed"] = state["signal_feed"][:50]
-                state["stats"]["signals_seen"] += 1
-                signal_log.log_signal(
-                    signal.ticker, signal.side, signal.size, signal.confidence,
-                    state["whale_source"], signal.timestamp, factors=signal.factors,
-                    raw_context=signal.raw_context,
-                )
-
-                # Same live-status lookup the LIVE badge uses (state["live_status"],
-                # keyed by event_ticker, see _fetch_live_status) - reused here so
-                # "live markets only" (config: strategy.live_markets_only) means
-                # the exact same thing the dashboard's LIVE badge already shows,
-                # not a second, possibly-inconsistent definition of "live."
-                market_info = state["market_titles"].get(signal.ticker) or {}
-                event_ticker = market_info.get("event_ticker")
-                is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
-                # Category resolution ("web of expertise" audit, 2026-08-11) -
-                # the exact same event_ticker/state["event_titles"] lookup
-                # trade_category.record_category() below already uses, just
-                # computed once up front so strategy.evaluate() can also see
-                # it (for strategy.entry_threshold_by_category) before a
-                # trade decision is even made, not only after one is placed.
-                category = (state["event_titles"].get(event_ticker) or {}).get("category")
-
-                decision = strategy.evaluate(
-                    signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
-                    latest_prices=state["latest_prices"], category=category,
-                )
-                state["decision_feed"].insert(0, decision)
-                state["decision_feed"] = state["decision_feed"][:50]
-                state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
-                if decision["action"] == "trade":
-                    # Category-at-entry-time capture (deferred half of Gap
-                    # 9, docs/config-tuning-data-gaps-2026-08-10.md, direct
-                    # follow-up request) - reuses the category resolved above,
-                    # zero new API calls. market_catalog.category is
-                    # watchlist-scoped and rotates, so this has to be
-                    # captured now, at the moment of entry, not
-                    # reconstructed later.
-                    trade_category.record_category(signal.ticker, category, tick_now)
-
-                # Independent of the paper decision above - shadow mode asks
-                # the same question against real-account-sized bankroll,
-                # and only ever logs, never executes. See services/shadow_mode.py.
-                if shadow_active:
-                    shadow.evaluate(signal, cfg, shadow_bankroll, shadow_bankroll_source, is_live=is_live, market_results=market_results)
+                await _handle_signal(signal, cfg, market_results, config_fp, tick_now)
 
             # Active position management - runs every tick regardless of
             # whether any new signal came in this tick, since a position can
@@ -2034,9 +2241,7 @@ async def trading_loop():
             for close_decision in strategy.check_exits(
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
             ):
-                state["decision_feed"].insert(0, close_decision)
-                state["decision_feed"] = state["decision_feed"][:50]
-                state["stats"]["trades_placed"] += 1
+                await _handle_close_decision(close_decision)
 
         except Exception as e:
             state["error"] = str(e)
@@ -2055,7 +2260,15 @@ async def trading_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(trading_loop())
+    trade_stream_task = None
+    if _streaming_trade_tape_enabled():
+        trade_stream_task = asyncio.create_task(
+            trade_stream.run(_process_stream_trade, _process_stream_ticker, _handle_trade_stream_status)
+        )
     yield
+    if trade_stream_task is not None:
+        await trade_stream.close()
+        trade_stream_task.cancel()
     task.cancel()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data
@@ -3178,6 +3391,7 @@ def _build_state_body() -> dict:
     # Augment market_titles with any event-level flags (so the UI can read
     # `mutually_exclusive` / `collateral_return_type` without an extra lookup)
     event_info = _scoped_event_titles(scoped_market_titles)
+    event_live_data = _scoped_event_live_data(scoped_market_titles)
     augmented_market_titles = {}
     for t, mt in scoped_market_titles.items():
         et = mt.get("event_ticker")
@@ -3188,6 +3402,12 @@ def _build_state_body() -> dict:
         "markets": state["markets"],
         "market_titles": augmented_market_titles,
         "event_titles": event_info,
+        "event_live_data": event_live_data,
+        "category_metadata": {
+            "tags_by_categories": state["category_metadata"].get("tags_by_categories") or {},
+            "filters_by_sports": state["category_metadata"].get("filters_by_sports") or {},
+            "sport_ordering": state["category_metadata"].get("sport_ordering") or [],
+        },
         "trade_tape": state["trade_tape"],
         "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],
@@ -3206,6 +3426,7 @@ def _build_state_body() -> dict:
         "broker": {**broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(broker)},
         "account": state["account"],
         "exchange_status": state["exchange_status"],
+        "trade_stream_status": state["trade_stream_status"],
         "shadow": _shadow_state(),
     }
     _state_body_cache["generation"] = state["generation"]
@@ -3227,6 +3448,16 @@ def _if_none_match_hits(header_value: str | None, etag: str) -> bool:
     if incoming.startswith("W/"):
         incoming = incoming[2:]
     return incoming == etag
+
+
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await ws_manager.disconnect(websocket)
 
 
 @app.get("/api/state")

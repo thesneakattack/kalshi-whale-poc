@@ -1,0 +1,1544 @@
+{
+  "fetched_at": 1786507323.4831526,
+  "filters_by_sports": {
+    "All sports": {
+      "competitions": {},
+      "scopes": [
+        "Games",
+        "Futures",
+        "Win Totals",
+        "AP Poll",
+        "Award Finalists",
+        "Award Specials",
+        "Awards",
+        "Chess Ratings",
+        "City Titles",
+        "Coaches",
+        "College GameDay",
+        "Conference Championship",
+        "Conference Realignment",
+        "Conference Tournament",
+        "Divisions",
+        "Draft",
+        "End of Round Leader",
+        "Exact Match Score",
+        "Extra Innings",
+        "Fantasy Leaders",
+        "Fantasy Season Leaders",
+        "Finishing Position",
+        "Golfer O/U Scores",
+        "H2H Win Total",
+        "Hall of Fame",
+        "Host",
+        "KenPom",
+        "League Leader",
+        "Managers",
+        "Map Winner",
+        "Matchups",
+        "Mid-Season Cup",
+        "Next Club",
+        "Next Team",
+        "Player Debut",
+        "Player Goals",
+        "Player Return",
+        "Players to Compete",
+        "Players To Compete",
+        "Playoff Seeds",
+        "Receiving",
+        "Reg Season Futures",
+        "Relegation",
+        "Retirement",
+        "Round 1 Leader",
+        "Round 2 Finishing Position",
+        "Round 2 Leader",
+        "Round 3 Finishing Position",
+        "Round 3 Leader",
+        "Rushing",
+        "Season Milestones",
+        "Season Specials",
+        "Season Stats",
+        "Set Winner",
+        "Stage of Elimination",
+        "Starting Lineups",
+        "Team Points",
+        "Team Specials",
+        "To Advance",
+        "To Compete",
+        "Top 100 List",
+        "Top Finishers",
+        "Top Team",
+        "Total Games",
+        "Total Maps",
+        "Tournament Seeds",
+        "Tournament Specials",
+        "Trades",
+        "Winner Specials",
+        "Wins",
+        "World Records",
+        "Events"
+      ]
+    },
+    "Aussie Rules": {
+      "competitions": {
+        "AFL": {
+          "scopes": [
+            "Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games"
+      ]
+    },
+    "Baseball": {
+      "competitions": {
+        "Japan NPB": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Korea KBO": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Mexico LMB": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Pro Baseball": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Win totals",
+            "Award Finalists",
+            "Awards",
+            "Divisions",
+            "Extra Innings",
+            "League Leader",
+            "Managers",
+            "Next Team",
+            "Player Debut",
+            "Season Milestones",
+            "Season Stats",
+            "Events"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Award Finalists",
+        "Awards",
+        "Divisions",
+        "Extra Innings",
+        "League Leader",
+        "Managers",
+        "Next Team",
+        "Player Debut",
+        "Season Milestones",
+        "Season Stats",
+        "Wins",
+        "Events"
+      ]
+    },
+    "Basketball": {
+      "competitions": {
+        "BIG3": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "BSN Puerto Rico": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Canada CEBL": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "College Basketball (M)": {
+          "scopes": [
+            "Futures",
+            "Win Totals",
+            "AP Poll",
+            "Coaches",
+            "Conference Tournament",
+            "KenPom",
+            "Reg Season Futures",
+            "Tournament Seeds"
+          ]
+        },
+        "College Basketball (W)": {
+          "scopes": [
+            "Futures",
+            "Win Totals",
+            "Tournament Seeds"
+          ]
+        },
+        "Mexico LNBP": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Philippines PBA": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Pro Basketball (M)": {
+          "scopes": [
+            "Futures",
+            "Win Totals",
+            "Awards",
+            "Coaches",
+            "Divisions",
+            "Draft",
+            "Hall of Fame",
+            "Mid-Season Cup",
+            "Next Team",
+            "Retirement",
+            "Season Specials",
+            "Starting Lineups",
+            "Trades",
+            "Winner Specials",
+            "Events"
+          ]
+        },
+        "Pro Basketball (W)": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Win Totals",
+            "Awards",
+            "League Leader",
+            "Next Team",
+            "Season Specials",
+            "Events"
+          ]
+        },
+        "Vietnam VBA": {
+          "scopes": [
+            "Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Win Totals",
+        "AP Poll",
+        "Awards",
+        "Coaches",
+        "Conference Tournament",
+        "Divisions",
+        "Draft",
+        "Hall of Fame",
+        "KenPom",
+        "League Leader",
+        "Mid-Season Cup",
+        "Next Team",
+        "Reg Season Futures",
+        "Retirement",
+        "Season Specials",
+        "Starting Lineups",
+        "Tournament Seeds",
+        "Trades",
+        "Winner Specials",
+        "Events"
+      ]
+    },
+    "Boxing": {
+      "competitions": {
+        "Alvarez vs Mbilli": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Boxing": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Events"
+          ]
+        },
+        "Garcia vs Benn": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Mayweather vs Pacquiao": {
+          "scopes": [
+            "Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Events"
+      ]
+    },
+    "Chess": {
+      "competitions": {
+        "Chess Awards": {
+          "scopes": [
+            "Awards"
+          ]
+        },
+        "Chess Tournaments": {
+          "scopes": [
+            "Futures",
+            "Events"
+          ]
+        },
+        "FIDE Ratings": {
+          "scopes": [
+            "Chess Ratings"
+          ]
+        },
+        "Titled Tuesday": {
+          "scopes": [
+            "Games",
+            "Top 3 Finishers",
+            "Top 5 Finishers",
+            "Top 8 Finishers"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Awards",
+        "Chess Ratings",
+        "Top Finishers",
+        "Events"
+      ]
+    },
+    "Cities": {
+      "competitions": {
+        "City Titles": {
+          "scopes": [
+            "City Titles"
+          ]
+        }
+      },
+      "scopes": [
+        "City Titles"
+      ]
+    },
+    "Cricket": {
+      "competitions": {
+        "Caribbean Premier League": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "IPL": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "ODI (M)": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "One-Day Cup": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "T20 (M)": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "T20 (W)": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "T20 International (M)": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Test Series Australia vs Bangladesh": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "The Hundred": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "The Hundred (M)": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "The Hundred (W)": {
+          "scopes": [
+            "Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures"
+      ]
+    },
+    "Darts": {
+      "competitions": {
+        "PDC": {
+          "scopes": [
+            "Futures"
+          ]
+        }
+      },
+      "scopes": [
+        "Futures"
+      ]
+    },
+    "Esports": {
+      "competitions": {
+        "CS2": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Map 1 Winner",
+            "Map 2 Winner",
+            "Total Maps"
+          ]
+        },
+        "Dota 2": {
+          "scopes": [
+            "Games",
+            "Map 1 Winner",
+            "Map 2 Winner",
+            "Total Maps"
+          ]
+        },
+        "League of Legends": {
+          "scopes": [
+            "Games",
+            "Map 1 Winner",
+            "Map 2 Winner",
+            "Map 3 Winner",
+            "Total Maps"
+          ]
+        },
+        "R6": {
+          "scopes": [
+            "Games",
+            "Map 1 Winner",
+            "Map 2 Winner"
+          ]
+        },
+        "Rocket League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Valorant": {
+          "scopes": [
+            "Games",
+            "Map 1 Winner",
+            "Map 2 Winner",
+            "Total Maps"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Map Winner",
+        "Total Maps"
+      ]
+    },
+    "Football": {
+      "competitions": {
+        "CFL": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "NCAA Football": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Win Totals",
+            "AP Poll",
+            "Award Specials",
+            "Awards",
+            "Coaches",
+            "College GameDay",
+            "Conference Championship",
+            "Conference Realignment",
+            "H2H Win Total",
+            "Playoff Seeds",
+            "Reg Season Futures"
+          ]
+        },
+        "Pro Football": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Win Totals",
+            "Award Finalists",
+            "Awards",
+            "Coaches",
+            "Divisions",
+            "Draft",
+            "Fantasy Season Leaders",
+            "H2H Win Total",
+            "Hall of Fame",
+            "League Leader",
+            "Next Team",
+            "Players to Compete",
+            "Playoff Seeds",
+            "Retirement",
+            "Season Specials",
+            "Season Stats",
+            "Stage of Elimination",
+            "Streaks",
+            "Team Specials",
+            "Top 100 List",
+            "Events"
+          ]
+        },
+        "Pro Football Preseason": {
+          "scopes": [
+            "Games",
+            "Receiving Yards",
+            "Rushing Yards",
+            "Events"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Win Totals",
+        "AP Poll",
+        "Award Finalists",
+        "Award Specials",
+        "Awards",
+        "Coaches",
+        "College GameDay",
+        "Conference Championship",
+        "Conference Realignment",
+        "Divisions",
+        "Draft",
+        "Fantasy Leaders",
+        "Fantasy Season Leaders",
+        "H2H Win Total",
+        "Hall of Fame",
+        "League Leader",
+        "Next Team",
+        "Player Return",
+        "Players To Compete",
+        "Players to Compete",
+        "Playoff Seeds",
+        "Receiving",
+        "Reg Season Futures",
+        "Retirement",
+        "Rushing",
+        "Season Specials",
+        "Season Stats",
+        "Stage of Elimination",
+        "Team Specials",
+        "Top 100 List",
+        "Events"
+      ]
+    },
+    "Golf": {
+      "competitions": {
+        "Albertsons Boise Open presented by Chevron": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Boeing Classic": {
+          "scopes": [
+            "Games",
+            "Round 1 Leader"
+          ]
+        },
+        "Danish Golf Championship": {
+          "scopes": [
+            "Games",
+            "End of Round 2 Leader",
+            "End of Round 3 Leader",
+            "Round 1 Leader"
+          ]
+        },
+        "FedEx St. Jude Championship": {
+          "scopes": [
+            "Games",
+            "1st Round Matchups",
+            "End of Round 2 Leader",
+            "End of Round 3 Leader",
+            "R1 - Golfer Scores",
+            "R2 Top 10 Finishers",
+            "R3 Top 10 Finishers",
+            "Round 1 Leader",
+            "Top 10 Finishers",
+            "Top 20 Finishers",
+            "Top 5 Finishers"
+          ]
+        },
+        "LIV": {
+          "scopes": [
+            "Events"
+          ]
+        },
+        "PGA": {
+          "scopes": [
+            "Future Majors",
+            "Majors",
+            "Next Win",
+            "Events"
+          ]
+        },
+        "PGA TOUR Championship": {
+          "scopes": [
+            "Events"
+          ]
+        },
+        "Presidents Cup": {
+          "scopes": [
+            "Games",
+            "To Compete"
+          ]
+        },
+        "Ryder Cup": {
+          "scopes": [
+            "Games",
+            "Events"
+          ]
+        },
+        "The Standard Portland Classic": {
+          "scopes": [
+            "Games",
+            "End of Round 1 Leader",
+            "End of Round 2 Leader",
+            "End of Round 3 Leader"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "End of Round Leader",
+        "Finishing Position",
+        "Golfer O/U Scores",
+        "Matchups",
+        "Round 1 Leader",
+        "Round 2 Finishing Position",
+        "Round 2 Leader",
+        "Round 3 Finishing Position",
+        "Round 3 Leader",
+        "Events"
+      ]
+    },
+    "Hockey": {
+      "competitions": {
+        "Pro Hockey": {
+          "scopes": [
+            "Futures",
+            "Awards",
+            "Next Team",
+            "Events"
+          ]
+        }
+      },
+      "scopes": [
+        "Futures",
+        "Next Team",
+        "Events"
+      ]
+    },
+    "Lacrosse": {
+      "competitions": {
+        "College Lacrosse": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Premier Lacrosse League": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Women's Lacrosse League": {
+          "scopes": [
+            "Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures"
+      ]
+    },
+    "MMA": {
+      "competitions": {
+        "330": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "MMA": {
+          "scopes": [
+            "Futures",
+            "Events"
+          ]
+        },
+        "MVP MMA": {
+          "scopes": [
+            "Events"
+          ]
+        },
+        "WWE": {
+          "scopes": [
+            "Events"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "To Compete",
+        "Events"
+      ]
+    },
+    "Motorsport": {
+      "competitions": {
+        "F1": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Awards",
+            "Next Team",
+            "Podium Finishers",
+            "Top 10 Finishers",
+            "Top 5 Finishers",
+            "Events"
+          ]
+        },
+        "IndyCar": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Top 10 Finishers",
+            "Top 3 Finishers"
+          ]
+        },
+        "MotoGP": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "NASCAR Cup Series": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Top 10 Finishers",
+            "Top 20 Finishers",
+            "Top 3 Finishers",
+            "Top 5 Finishers",
+            "Top Team"
+          ]
+        },
+        "NASCAR O'Reilly Auto Parts Series": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "NASCAR Truck Series": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Top 10 Finishers",
+            "Top 3 Finishers",
+            "Top Team"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Awards",
+        "Finishing Position",
+        "Next Team",
+        "Top Team",
+        "Events"
+      ]
+    },
+    "Other": {
+      "competitions": {
+        "MLP": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "SailGP": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Surfing": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Track & Field": {
+          "scopes": [
+            "World Records"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "World Records"
+      ]
+    },
+    "Rugby": {
+      "competitions": {
+        "National Rugby League": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Super League Rugby": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures"
+      ]
+    },
+    "Soccer": {
+      "competitions": {
+        "AFC Asian Cup": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "AFCON": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "APF Division de Honor": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ASEAN Championship": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Allsvenskan": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Argentina Primera Division": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Argentine Nacional B": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Belgian Pro League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Bolivia Premier Division": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Brasileiro Serie A": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Brasileiro Serie B": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Brasileiro Serie C": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Bundesliga": {
+          "scopes": [
+            "Futures",
+            "Team Points"
+          ]
+        },
+        "Bundesliga 2": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "CONCACAF Gold Cup": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "CONCACAF Nations League": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "CONMEBOL Libertadores": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "CONMEBOL Sudamericana": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Canadian Premier League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Champions League": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Award Specials"
+          ]
+        },
+        "Chile Liga de Primera": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Chinese Super League": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Club Friendlies": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Club World Cup": {
+          "scopes": [
+            "Host"
+          ]
+        },
+        "Colombian Liga DIMAYOR": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Community Shield": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Conference League": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Copa America": {
+          "scopes": [
+            "Futures",
+            "Host"
+          ]
+        },
+        "Copa do Brasil": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Coppa Italia": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Croatia HNL": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Czech First League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "DFB Pokal": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Danish Superliga": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "EFL Championship": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "EFL League One": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "EPL": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Awards",
+            "League Leader",
+            "Relegation",
+            "Team Points",
+            "Events"
+          ]
+        },
+        "Ecuador LigaPro": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Ekstraklasa": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Eliteserien": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Eredivisie": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Europa League": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "European Championship": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Euros": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "FIFA World Cup": {
+          "scopes": [
+            "Futures",
+            "Managers",
+            "Player Goals",
+            "Retirement",
+            "Events"
+          ]
+        },
+        "FIFA World Cup (W)": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "France Super Cup": {
+          "scopes": [
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Japan J1 League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Korea K League 1": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "La Liga": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Relegation",
+            "Team Points",
+            "Events"
+          ]
+        },
+        "La Liga 2": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Leagues Cup": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Liga MX": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "League Leader"
+          ]
+        },
+        "Liga Portugal": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Liga de Expansion MX": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Ligue 1": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Relegation",
+            "Team Points"
+          ]
+        },
+        "MLS": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "League Leader",
+            "Next Club"
+          ]
+        },
+        "NWSL": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "Peru Liga 1": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Peru Liga 1 ": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Saudi Pro League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Scottish League Cup": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Serie A": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Team Points"
+          ]
+        },
+        "Super Lig": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "UAE Pro League": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "UEFA Super Cup": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "USL Championship": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        },
+        "USL Cup": {
+          "scopes": [
+            "Games",
+            "Regulation Time Moneyline"
+          ]
+        },
+        "Uruguay Primera Division": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "Uruguayan Primera Division": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "Venezuela Liga FUTVE": {
+          "scopes": [
+            "Games",
+            "Futures"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Award Specials",
+        "Awards",
+        "Host",
+        "League Leader",
+        "Managers",
+        "Next Club",
+        "Player Goals",
+        "Relegation",
+        "Retirement",
+        "Team Points",
+        "To Advance",
+        "Top Finishers",
+        "Tournament Specials",
+        "Events"
+      ]
+    },
+    "Tennis": {
+      "competitions": {
+        "ATP": {
+          "scopes": [
+            "Futures",
+            "Events"
+          ]
+        },
+        "ATP Challenger Astana": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ATP Challenger Brownsburg": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ATP Challenger Hamburg": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ATP Challenger Todi": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ATP Cincinnati": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Exact Match Score",
+            "Set 1 Winner",
+            "Set 2 Winner",
+            "Total Games"
+          ]
+        },
+        "ATP Montreal": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Exact Match Score",
+            "Set 1 Winner",
+            "Set 2 Winner",
+            "Total Games"
+          ]
+        },
+        "ITF": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "ITF Doubles": {
+          "scopes": [
+            "Games"
+          ]
+        },
+        "US Open": {
+          "scopes": [
+            "Futures",
+            "Events"
+          ]
+        },
+        "WTA": {
+          "scopes": [
+            "Futures"
+          ]
+        },
+        "WTA Cincinnati": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Set 1 Winner",
+            "Set 2 Winner",
+            "Total Games"
+          ]
+        },
+        "WTA Toronto": {
+          "scopes": [
+            "Games",
+            "Futures",
+            "Set 1 Winner",
+            "Set 2 Winner",
+            "Total Games"
+          ]
+        }
+      },
+      "scopes": [
+        "Games",
+        "Futures",
+        "Exact Match Score",
+        "Set Winner",
+        "Total Games",
+        "Events"
+      ]
+    }
+  },
+  "sport_ordering": [
+    "All sports",
+    "Basketball",
+    "Baseball",
+    "Tennis",
+    "Soccer",
+    "Hockey",
+    "Golf",
+    "MMA",
+    "Cricket",
+    "Football",
+    "Esports",
+    "Motorsport",
+    "Aussie Rules",
+    "Boxing",
+    "Lacrosse",
+    "Rugby",
+    "Darts",
+    "Chess",
+    "Cities",
+    "Other"
+  ],
+  "tags_by_categories": {
+    "Climate and Weather": [
+      "Daily temperature",
+      "Snow and rain",
+      "Hurricanes",
+      "Climate change",
+      "Natural disasters",
+      "Hourly temperature"
+    ],
+    "Commodities": [
+      "Oil & Gas",
+      "Compute",
+      "Tech",
+      "Metals",
+      "Tokens"
+    ],
+    "Companies": null,
+    "Crypto": [
+      "BTC",
+      "15 min",
+      "Hourly",
+      "ETH",
+      "SOL",
+      "DOGE",
+      "XRP",
+      "BNB",
+      "HYPE",
+      "ZEC",
+      "NEAR",
+      "Pre-Market"
+    ],
+    "Economics": [
+      "Inflation",
+      "Growth",
+      "Jobs & Economy",
+      "Oil and energy",
+      "Fed",
+      "Global Central Banks",
+      "Housing",
+      "Econ Weekly",
+      "GDP",
+      "Econ Daily"
+    ],
+    "Elections": [
+      "US Elections",
+      "International elections",
+      "House",
+      "Senate",
+      "Governor",
+      "Other US Elections",
+      "Primaries",
+      "Election Combos",
+      "2028",
+      "Mixed Combos",
+      "Brazil",
+      "Senate Combos",
+      "House Combos",
+      "Governor Combos"
+    ],
+    "Entertainment": [
+      "Music",
+      "Television",
+      "Awards",
+      "People",
+      "Music charts",
+      "Oscars",
+      "Movies",
+      "Emmys",
+      "Live Music",
+      "Views",
+      "Video games",
+      "Reality TV",
+      "Achievements",
+      "Grammys",
+      "Collectibles",
+      "Art",
+      "Music Industry",
+      "TV Charts",
+      "Movie Charts",
+      "New Music",
+      "Big Brother",
+      "Rotten Tomatoes",
+      "Head to Head",
+      "Music Streams",
+      "Pok\u00e9mon",
+      "Venice Film Festival"
+    ],
+    "Financials": [
+      "KPIs",
+      "Companies",
+      "Markets",
+      "Indices",
+      "Product launches",
+      "IPOs",
+      "Industries",
+      "Foreign Exchange",
+      "Interest Rates",
+      "Compute",
+      "M&A",
+      "Biotech",
+      "CEOs",
+      "Credit Card Spend",
+      "App Downloads",
+      "Foot Traffic",
+      "Match Ups"
+    ],
+    "Mentions": [
+      "Earnings",
+      "Politicians",
+      "Trump"
+    ],
+    "Politics": [
+      "Trump",
+      "Congress",
+      "International",
+      "SCOTUS & courts",
+      "Local",
+      "Recurring",
+      "NYC",
+      "Iran"
+    ],
+    "Science and Technology": [
+      "AI",
+      "Medicine",
+      "Space",
+      "Big Tech & Business",
+      "Public Health",
+      "Physics & Math",
+      "Education",
+      "Energy",
+      "Market Share",
+      "Tokens"
+    ],
+    "Social": null,
+    "Sports": [
+      "Soccer",
+      "Football",
+      "Basketball",
+      "Baseball",
+      "Golf",
+      "Tennis",
+      "Motorsport",
+      "Esports",
+      "MMA",
+      "Boxing",
+      "Cricket",
+      "Chess",
+      "Hockey",
+      "Other",
+      "Lacrosse",
+      "Rugby",
+      "Aussie Rules",
+      "Cities",
+      "Darts"
+    ],
+    "Transportation": null
+  }
+}

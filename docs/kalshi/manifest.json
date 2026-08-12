@@ -1,0 +1,12 @@
+{
+  "base_url": "https://api.elections.kalshi.com/trade-api/v2",
+  "fetched_at": 1786507324.2562902,
+  "files": [
+    "category_metadata.json",
+    "event_live_data.json",
+    "event_titles.json",
+    "markets.json",
+    "sample_event_response.json",
+    "sample_market_response.json"
+  ]
+}

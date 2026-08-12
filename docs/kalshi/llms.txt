@@ -1,0 +1,28 @@
+Source: https://docs.kalshi.com/llms.txt
+
+# API Documentation
+
+## Docs
+
+- [Introduction](https://docs.kalshi.com/welcome/index.md): Welcome to the Kalshi API documentation
+- [API Environments and Endpoints](https://docs.kalshi.com/getting_started/api_environments.md): REST and WebSocket base URLs for production and demo
+- [Quick Start: Market Data](https://docs.kalshi.com/getting_started/quick_start_market_data.md): Learn how to access real-time market data without authentication
+- [Quick Start: Authenticated Request](https://docs.kalshi.com/getting_started/quick_start_authenticated_requests.md): Three simple steps to make your first authenticated API request to Kalshi
+- [Quick Start: Create your first order](https://docs.kalshi.com/getting_started/quick_start_create_order.md)
+- [Quick Start: WebSockets](https://docs.kalshi.com/getting_started/quick_start_websockets.md)
+- [Kalshi SDKs](https://docs.kalshi.com/sdks/overview.md)
+- [API Keys](https://docs.kalshi.com/getting_started/api_keys.md)
+- [Rate Limits and Tiers](https://docs.kalshi.com/getting_started/rate_limits.md)
+- [Get Market](https://docs.kalshi.com/api-reference/market/get-market.md)
+- [Get Event](https://docs.kalshi.com/api-reference/events/get-event.md)
+- [Get Tags for Series Categories](https://docs.kalshi.com/api-reference/search/get-tags-for-series-categories.md)
+- [Get Filters for Sports](https://docs.kalshi.com/api-reference/search/get-filters-for-sports.md)
+- [Get Event Live Data](https://docs.kalshi.com/api-reference/live-data/get-event-live-data.md)
+- [WebSocket API](https://docs.kalshi.com/websockets.md)
+- [WebSocket Connection](https://docs.kalshi.com/websockets/websocket-connection.md)
+- [Market Ticker](https://docs.kalshi.com/websockets/market-ticker.md)
+- [Public Trades](https://docs.kalshi.com/websockets/public-trades.md)
+
+## Notes
+
+This is a local copy of the fetched `llms.txt` index context used during the session. The original remote file contains many more entries; these are the portions surfaced during fetches in this session.

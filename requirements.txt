@@ -16,6 +16,7 @@ kalshi-python-async==3.27.0
 # Not declared as a kalshi-python-async dependency despite being imported
 # directly by its configuration.py - a real packaging gap on Kalshi's side.
 urllib3==2.7.0
+websockets==17.0.1
 # services/market_analyst_agent.py - optional, only imported/used when
 # ANTHROPIC_API_KEY is set and market_analyst.enabled is true (see that
 # module's docstring). Version confirmed directly via `pip index versions`

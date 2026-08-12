@@ -19,10 +19,11 @@ names flow through as-is either way, since Pydantic's field names already
 match the wire JSON.
 """
 import asyncio
+from urllib.parse import urljoin
 
 import kalshi_python_async as kpa
 
-from services.http_client import call_with_backoff
+from services.http_client import call_with_backoff, get_client
 from services.signal_log import series_of
 
 # self.timeout is intentionally unused below except where noted. The SDK's
@@ -41,8 +42,17 @@ from services.signal_log import series_of
 class KalshiClient:
     def __init__(self, base_url: str, timeout: float = 10.0):
         self.timeout = timeout
+        self.base_url = base_url.rstrip("/")
         config = kpa.Configuration(host=base_url.rstrip("/"))
         self._client = kpa.KalshiClient(config)
+
+    async def _get_json(self, path: str, params: dict | None = None) -> dict:
+        async def do_get():
+            resp = await get_client().get(urljoin(self.base_url + "/", path.lstrip("/")), params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+
+        return await call_with_backoff(do_get)
 
     async def close(self):
         """main.py constructs a fresh KalshiClient every poll tick (so a live
@@ -276,3 +286,13 @@ class KalshiClient:
         from the outside."""
         resp = await call_with_backoff(self._client.get_exchange_status)
         return resp.model_dump(mode="json")
+
+    async def get_event_live_data(self, event_ticker: str, range_hint: str | None = None) -> dict:
+        params = {"range": range_hint} if range_hint else None
+        return await self._get_json(f"/live_data/events/{event_ticker}", params=params)
+
+    async def get_tags_for_series_categories(self) -> dict:
+        return await self._get_json("/search/tags_by_categories")
+
+    async def get_filters_for_sports(self) -> dict:
+        return await self._get_json("/search/filters_by_sport")

@@ -1,0 +1,1349 @@
+{
+  "KXATPCHALLENGERMATCH-26AUG10BLASAK": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Challenger Brownsburg",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Challenger Brownsburg",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPCHALLENGERMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Blanchet vs Sakamoto (Aug 10)",
+    "title": "Blanchet vs Sakamoto"
+  },
+  "KXATPCHALLENGERMATCH-26AUG10SMIGIL": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Challenger Brownsburg",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Challenger Brownsburg",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPCHALLENGERMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Smith vs Gill (Aug 10)",
+    "title": "Smith vs Gill"
+  },
+  "KXATPCHALLENGERMATCH-26AUG11BROSUR": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Challenger Brownsburg",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Challenger Brownsburg",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPCHALLENGERMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Broady vs Suresh (Aug 11)",
+    "title": "Broady vs Suresh"
+  },
+  "KXATPCHALLENGERMATCH-26AUG11KOZMAY": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Challenger Brownsburg",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Challenger Brownsburg",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPCHALLENGERMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Kozlov vs Mayo (Aug 11)",
+    "title": "Kozlov vs Mayo"
+  },
+  "KXATPCHALLENGERMATCH-26AUG11ONCZIN": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Challenger Brownsburg",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Challenger Brownsburg",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPCHALLENGERMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Onclin vs Zink (Aug 11)",
+    "title": "Onclin vs Zink"
+  },
+  "KXATPMATCH-26AUG11GIRROC": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Giron vs Rocha (Aug 11)",
+    "title": "Giron vs Rocha"
+  },
+  "KXATPMATCH-26AUG11LAJSVR": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Lajal vs Svrcina (Aug 11)",
+    "title": "Lajal vs Svrcina"
+  },
+  "KXATPMATCH-26AUG11MEJFEA": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Mejia vs Fearnley (Aug 11)",
+    "title": "Mejia vs Fearnley"
+  },
+  "KXATPMATCH-26AUG11VUKBLA": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Vukic vs Blanch (Aug 11)",
+    "title": "Vukic vs Blanch"
+  },
+  "KXATPMATCH-26AUG11WOLMOC": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Wolf vs Mochizuki (Aug 11)",
+    "title": "Wolf vs Mochizuki"
+  },
+  "KXATPMATCH-26AUG12JODNAK": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Montreal",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Montreal",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Jodar vs Nakashima (Aug 12)",
+    "title": "Jodar vs Nakashima"
+  },
+  "KXATPMATCH-26AUG12TIESHE": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Montreal",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Montreal",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Tien vs Shelton (Aug 12)",
+    "title": "Tien vs Shelton"
+  },
+  "KXATPMATCH-26AUG12WONVIR": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "ATP Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "ATP Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXATPMATCH",
+    "settlement_sources": [
+      {
+        "name": "ATP",
+        "url": "https://www.atptour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Wong vs Virtanen (Aug 12)",
+    "title": "Wong vs Virtanen"
+  },
+  "KXBTC15M-26AUG120015": {
+    "available_on_brokers": true,
+    "category": "Crypto",
+    "collateral_return_type": "",
+    "competition": null,
+    "competition_scope": null,
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": false,
+    "product_metadata": {
+      "cadence": "fifteen_min"
+    },
+    "series_ticker": "KXBTC15M",
+    "settlement_sources": [
+      {
+        "name": "CF Benchmarks",
+        "url": "https://www.cfbenchmarks.com/"
+      }
+    ],
+    "strike_date": "2026-08-12T04:15:00Z",
+    "strike_period": "",
+    "sub_title": "Aug 12 - 12:00AM EDT to 12:15AM EDT",
+    "title": "BTC 15 min \u00b7 $63,771.95 target"
+  },
+  "KXMARMAD-27": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "College Basketball (M)",
+    "competition_scope": "Future",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "College Basketball (M)",
+      "competition_scope": "Future"
+    },
+    "series_ticker": "KXMARMAD",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Kalshi using information originating from the NCAA",
+        "url": "https://www.ncaa.com/sports/basketball-men/d1"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "2026-27 Season",
+    "title": "Men's 2027 College Basketball Champion"
+  },
+  "KXMLBGAME-26AUG112140COLAZ": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic_with_maker_fees",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "COL vs AZ (Aug 11)",
+    "title": "Colorado vs Arizona"
+  },
+  "KXMLBGAME-26AUG112140MILSD": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic_with_maker_fees",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "MIL vs SD (Aug 11)",
+    "title": "Milwaukee vs San Diego"
+  },
+  "KXMLBGAME-26AUG112140TBATH": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic_with_maker_fees",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "TB vs ATH (Aug 11)",
+    "title": "Tampa Bay vs A's"
+  },
+  "KXMLBGAME-26AUG112145HOUSF": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic_with_maker_fees",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "HOU vs SF (Aug 11)",
+    "title": "Houston vs San Francisco"
+  },
+  "KXMLBGAME-26AUG112210KCLAD": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic_with_maker_fees",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "KC vs LAD (Aug 11)",
+    "title": "Kansas City vs Los Angeles D"
+  },
+  "KXMLBGAME-26AUG121340BALMIN": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "BAL vs MIN (Aug 12)",
+    "title": "Baltimore vs Minnesota"
+  },
+  "KXMLBGAME-26AUG121505TBATH": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "TB vs ATH (Aug 12)",
+    "title": "Tampa Bay vs A's"
+  },
+  "KXMLBGAME-26AUG122210KCLAD": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Baseball",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXMLBGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "KC vs LAD (Aug 12)",
+    "title": "Kansas City vs Los Angeles D"
+  },
+  "KXMLBSPREAD-26AUG112140MILSD": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "",
+    "competition": "Pro Baseball",
+    "competition_scope": "Spread",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": false,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Spread"
+    },
+    "series_ticker": "KXMLBSPREAD",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "MIL vs SD (Aug 11)",
+    "title": "Milwaukee vs San Diego: Spread"
+  },
+  "KXMLBSPREAD-26AUG112140TBATH": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "",
+    "competition": "Pro Baseball",
+    "competition_scope": "Spread",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": false,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Spread"
+    },
+    "series_ticker": "KXMLBSPREAD",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "TB vs ATH (Aug 11)",
+    "title": "Tampa Bay vs A's: Spread"
+  },
+  "KXMLBSPREAD-26AUG112145HOUSF": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "",
+    "competition": "Pro Baseball",
+    "competition_scope": "Spread",
+    "fee_multiplier_override": 1,
+    "fee_type_override": "quadratic",
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": false,
+    "product_metadata": {
+      "competition": "Pro Baseball",
+      "competition_scope": "Spread"
+    },
+    "series_ticker": "KXMLBSPREAD",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.mlb.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "HOU vs SF (Aug 11)",
+    "title": "Houston vs San Francisco: Spread"
+  },
+  "KXNCAAFGAME-26AUG29SJSUUSC": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "NCAA Football",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "NCAA Football",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNCAAFGAME",
+    "settlement_sources": [
+      {
+        "name": "Fox Sports",
+        "url": "https://foxsports.com"
+      },
+      {
+        "name": "Kalshi using information originating from the NCAA",
+        "url": "https://www.ncaa.com/sports/football/fbs"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "SJSU vs USC (Aug 29)",
+    "title": "San Jose St. vs USC"
+  },
+  "KXNFLGAME-26AUG13ARILV": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "ARI vs LV (Aug 13)",
+    "title": "Arizona vs Las Vegas"
+  },
+  "KXNFLGAME-26AUG13DETCIN": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "DET vs CIN (Aug 13)",
+    "title": "Detroit vs Cincinnati"
+  },
+  "KXNFLGAME-26AUG13GBPIT": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "GB vs PIT (Aug 13)",
+    "title": "Green Bay vs Pittsburgh"
+  },
+  "KXNFLGAME-26AUG13INDNE": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "IND vs NE (Aug 13)",
+    "title": "Indianapolis vs New England"
+  },
+  "KXNFLGAME-26AUG13TENSF": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "TEN vs SF (Aug 13)",
+    "title": "Tennessee vs San Francisco"
+  },
+  "KXNFLGAME-26AUG15MINNYG": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Football Preseason",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Football Preseason",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXNFLGAME",
+    "settlement_sources": [
+      {
+        "name": "the Governing League",
+        "url": "https://www.nfl.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "MIN vs NYG (Aug 15)",
+    "title": "Minnesota vs New York G"
+  },
+  "KXPGATOUR-FESJC26": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "FedEx St. Jude Championship",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "FedEx St. Jude Championship",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXPGATOUR",
+    "settlement_sources": [
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.pgatour.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "2026 FedEx St. Jude Championship",
+    "title": "FedEx St. Jude Championship Winner"
+  },
+  "KXUFCFIGHT-26AUG15ABDSTO": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Abdul-Malik vs Stoltzfus",
+    "title": "330: Abdul-Malik vs Stoltzfus"
+  },
+  "KXUFCFIGHT-26AUG15DERROB": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Dern vs Robertson",
+    "title": "330: Dern vs Robertson"
+  },
+  "KXUFCFIGHT-26AUG15LUQGOR": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Luque vs Gore",
+    "title": "330: Luque vs Gore"
+  },
+  "KXUFCFIGHT-26AUG15MAGBRA": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Magny vs Brahimaj",
+    "title": "330: Magny vs Brahimaj"
+  },
+  "KXUFCFIGHT-26AUG15MAKMGI": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Makhachev vs Garry",
+    "title": "330: Makhachev vs Garry"
+  },
+  "KXUFCFIGHT-26AUG15WELORO": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "330",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "330",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXUFCFIGHT",
+    "settlement_sources": [
+      {
+        "name": "The Wall Street Journal",
+        "url": "https://www.wsj.com/"
+      },
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com/"
+      },
+      {
+        "name": "Fox Sports",
+        "url": "https://www.foxsports.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Wells vs Uulu",
+    "title": "330: Wells vs Uulu"
+  },
+  "KXWNBAGAME-26AUG11PHXLA": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Basketball (W)",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Basketball (W)",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWNBAGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.wnba.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Phoenix vs Los Angeles (Aug 11)",
+    "title": "Phoenix vs Los Angeles"
+  },
+  "KXWNBAGAME-26AUG11WSHLV": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Basketball (W)",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Basketball (W)",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWNBAGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.wnba.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Washington vs Las Vegas (Aug 11)",
+    "title": "Washington vs Las Vegas"
+  },
+  "KXWNBAGAME-26AUG12MINPDX": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Basketball (W)",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Basketball (W)",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWNBAGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.wnba.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Minnesota vs Portland (Aug 12)",
+    "title": "Minnesota vs Portland"
+  },
+  "KXWNBAGAME-26AUG12TORDAL": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "Pro Basketball (W)",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "Pro Basketball (W)",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWNBAGAME",
+    "settlement_sources": [
+      {
+        "name": "ESPN",
+        "url": "https://www.espn.com"
+      },
+      {
+        "name": "the Governing League",
+        "url": "https://www.wnba.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Toronto vs Dallas (Aug 12)",
+    "title": "Toronto vs Dallas"
+  },
+  "KXWTAMATCH-26AUG11SRAJAC": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "WTA Cincinnati",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "WTA Cincinnati",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWTAMATCH",
+    "settlement_sources": [
+      {
+        "name": "WTA",
+        "url": "https://www.wtatennis.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Sramkova vs Jacquemot (Aug 11)",
+    "title": "Sramkova vs Jacquemot"
+  },
+  "KXWTAMATCH-26AUG12SVISWI": {
+    "available_on_brokers": true,
+    "category": "Sports",
+    "collateral_return_type": "MECNET",
+    "competition": "WTA Toronto",
+    "competition_scope": "Game",
+    "fee_multiplier_override": null,
+    "fee_type_override": null,
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "mutually_exclusive": true,
+    "product_metadata": {
+      "competition": "WTA Toronto",
+      "competition_scope": "Game"
+    },
+    "series_ticker": "KXWTAMATCH",
+    "settlement_sources": [
+      {
+        "name": "WTA",
+        "url": "https://www.wtatennis.com/"
+      }
+    ],
+    "strike_date": null,
+    "strike_period": "",
+    "sub_title": "Svitolina vs Swiatek (Aug 12)",
+    "title": "Svitolina vs Swiatek"
+  }
+}

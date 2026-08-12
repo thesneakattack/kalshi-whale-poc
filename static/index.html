@@ -75,6 +75,8 @@
     background: var(--panel-border);
     height: calc(100vh - 57px);
   }
+  .view#view-terminal > .col { display: flex; flex-direction: column; min-height: 0; }
+  .view#view-terminal > .col > div:not(#signal-decision-feed), .view#view-terminal > .col > .panel-title { flex-shrink: 0; }
   .col { background: var(--bg); overflow-y: auto; padding: 16px; }
   .panel-title {
     font-size: 11px;
@@ -234,6 +236,9 @@
 
   .signal-card, .decision-card {
     border: 1px solid var(--panel-border);
+    border-left-width: 8px;
+    border-left-style: solid;
+    border-left-color: transparent;
     background: var(--panel);
     border-radius: 8px;
     padding: 10px 12px;
@@ -242,6 +247,11 @@
     font-size: 12px;
     animation: slide-in 0.3s ease;
   }
+  .signal-card.opening { border-left-color: var(--yes); }
+  .signal-card.skipped { border-left-color: rgba(148,163,184,0.3); }
+  .signal-card.won { border-left-color: var(--yes); }
+  .signal-card.lost { border-left-color: var(--no); }
+  .signal-card.closed { border-left-color: var(--whale); }
   @keyframes slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
   .signal-card .top-row, .decision-card .top-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
   .side-tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
@@ -252,6 +262,19 @@
      of a bare ticker and a side tag. See marketContext()/contextLineHTML(). */
   .context-line { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .cat-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--whale); }
+  .scope-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--yes); }
+  .meta-chip {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.04em; color: var(--muted); background: rgba(148,163,184,0.12); margin-right: 4px;
+  }
+  .live-data-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.04em; color: #04231c; background: rgba(45,212,191,0.75); margin-right: 6px;
+  }
+  .live-data-box {
+    margin: 10px 0 14px; padding: 10px 12px; border-radius: 8px; background: rgba(45,212,191,0.08);
+    border: 1px solid rgba(45,212,191,0.2); font-size: 12px; line-height: 1.5;
+  }
   .position-means { color: var(--text); }
   /* Signal card "impact" tag (ROADMAP.md Phase 0.5) - low/medium/high,
      relative to the currently visible feed, matched against Polywhaler's
@@ -315,6 +338,12 @@
   .decision-card.trade { border-left: 3px solid var(--yes); }
   .decision-card.skip { border-left: 3px solid var(--panel-border); opacity: 0.7; }
   .decision-card.close { border-left: 3px solid var(--whale); }
+  .positions-table tr.opening > td:first-child,
+  .positions-table tr.won > td:first-child { border-left: 6px solid var(--yes); }
+  .positions-table tr.skipped > td:first-child { border-left: 6px solid rgba(148,163,184,0.3); }
+  .positions-table tr.lost > td:first-child { border-left: 6px solid var(--no); }
+  .positions-table tr.closed > td:first-child { border-left: 6px solid var(--whale); }
+  .positions-table td:first-child { padding-left: 10px; }
   .action-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
   .action-tag.trade { color: var(--yes); }
   .action-tag.close { color: var(--whale); }
@@ -531,6 +560,10 @@
      whole premise is "watch this and trust what it shows you." */
   #connectivity-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
   #connectivity-badge.stale { color: var(--danger); background: rgba(229,72,77,0.15); animation: connectivity-pulse 1.6s ease-in-out infinite; }
+  #trade-stream-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #trade-stream-badge.connected { color: var(--yes); border: 1px solid rgba(45,212,191,0.35); background: rgba(45,212,191,0.1); }
+  #trade-stream-badge.degraded { color: var(--whale); border: 1px solid rgba(245,185,66,0.35); background: rgba(245,185,66,0.12); }
+  #trade-stream-badge.error { color: var(--danger); border: 1px solid rgba(229,72,77,0.35); background: rgba(229,72,77,0.12); }
   @keyframes connectivity-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   /* "Live" the way Kalshi's own UI badges it - see isLive()'s comment for
      what this is actually based on (occurrence_datetime + status), not
@@ -540,6 +573,12 @@
     font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
     color: white; background: var(--danger); padding: 1px 6px; border-radius: 4px;
     animation: pulse 1.6s infinite;
+  }
+
+  .closing-badge {
+    display: inline-block; white-space: nowrap;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+    color: white; background: var(--whale); padding: 1px 6px; border-radius: 4px;
   }
 
   .tab-bar {
@@ -660,6 +699,9 @@
      whole page huge. Same pattern as .raw-json/.col above, just applied to
      list panels that previously had no height constraint at all. */
   .scroll-panel { max-height: 420px; overflow-y: auto; padding-right: 2px; }
+  #signal-decision-feed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  #signal-decision-feed-filter { flex: 0 0 auto; }
+  #signal-decision-feed-list { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
   /* Same idea as .scroll-panel above, just taller - this bounds the
      Markets/Whale Watch market-card grid (#markets-cards/#whale-cards),
      which is this tab's primary content (not a secondary feed) and can run
@@ -817,7 +859,7 @@
 </div>
 
 <header>
-  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span> <span id="connectivity-badge"></span> <span id="tick-health-badge"></span></h1>
+  <h1><span class="dot live" id="live-dot"></span> WHALE SIGNAL — PAPER TRADING TERMINAL <span id="whale-source" style="color:var(--muted); font-weight:400; font-size:11px; text-transform:none;"></span> <span id="exchange-status-badge"></span> <span id="trade-stream-badge"></span> <span id="connectivity-badge"></span> <span id="tick-health-badge"></span></h1>
   <div class="equity-strip">
     <span class="mode-tag" id="header-mode-tag">PAPER</span>
     <div class="item"><div class="label" id="header-bankroll-label">Bankroll</div><div class="value" id="bankroll">—</div></div>
@@ -969,14 +1011,16 @@
     </p>
     <div class="field" style="display:flex; gap:8px; align-items:flex-end; margin-bottom:12px;">
       <div style="flex:2;"><label>Search (title or ticker)</label><input id="markets-tab-search-q" type="text" placeholder="e.g. Trump, Bitcoin, NBA"></div>
-      <div style="flex:1;"><label>Category</label><input id="markets-tab-search-category" type="text" placeholder="Sports"></div>
+      <div style="flex:1;"><label>Category</label><input id="markets-tab-search-category" type="text" placeholder="Sports" list="market-category-suggestions"></div>
       <div><label><input type="checkbox" id="markets-tab-search-dormant"> Include dormant</label></div>
       <div><label><input type="checkbox" id="markets-tab-search-live-only"> LIVE only</label></div>
       <button id="markets-tab-search-btn" style="height:34px;">Search</button>
     </div>
+    <datalist id="market-category-suggestions"></datalist>
     <div id="markets-tab-search-results"></div>
 
     <div class="panel-title">Watchlist <span id="markets-card-count"></span> <span id="markets-toggle" style="float:right;"></span></div>
+    <div id="markets-watchlist-filter"></div>
     <div id="markets-cards" class="cards-scroll-panel"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
@@ -1008,6 +1052,7 @@
     <div id="trade-tape" class="scroll-panel" style="margin-bottom:24px;"><div class="empty">Loading trades…</div></div>
 
     <div class="panel-title">Whale Watch — market view + how whales are betting <span id="whale-cards-toggle" style="float:right;"></span></div>
+    <div id="whale-watch-filter"></div>
     <div id="whale-cards" class="cards-scroll-panel"><div class="empty">Loading markets…</div></div>
   </div>
 </div>
@@ -1026,19 +1071,14 @@
   <div class="col">
     <div id="halted-banner-slot"></div>
     <div id="funnel-bar" class="funnel-bar"></div>
-    <div class="panel-title">Whale Signals (simulated or live feed) <span class="info-icon" title="HOW IT WORKS: a whale signal is either a real trade from Kalshi's own public trade tape whose dollar size clears a threshold (default $2,500 - side-aware, since Kalshi has no public trader identity, only size), or a simulated print if no real feed is available.
+    <div class="panel-title">Whale Signals + Decisions <span id="signal-decision-toggle"></span> <span class="info-icon" title="HOW IT WORKS: a whale signal is either a real trade from Kalshi's own public trade tape whose dollar size clears a threshold (default $2,500 - side-aware, since Kalshi has no public trader identity, only size), or a simulated print if no real feed is available.
 
 TRADE DECISION: a signal becomes an actual trade once its confidence clears the entry threshold (0.6 default - raised further, to 0.75 by default, for signals priced in the longshot zone near 15¢/85¢, since favorite-longshot bias is confirmed worse for takers on real Kalshi data), the market/series isn't in cooldown, manually excluded, or auto-filtered because that market's series has a poor whale-signal win-rate track record (Kalshi is anonymous, so this is tracked per market type, not per trader), and (if enabled) the market is currently live.
 
 CONFIDENCE: a weighted blend of eight factors - how large the print is relative to that market's own volume (21%), how close the price is to a coin flip vs. already-decided (9%), how close the market is to resolving (13%), how active this market is relative to others being watched (8%), whether recent prints on this same market agree with this one (13%), whether this print looks like part of a same-actor accumulation run rather than an isolated block (13%), whether it agrees with or fights the market's own recent price trend (8%), and - only once a market has been manually analyzed - whether an AI market analyst's own independent read agrees (15%).">ⓘ</span></div>
-    <div id="signal-feed">
-      <div id="signal-feed-filter"></div>
-      <div id="signal-feed-list" class="scroll-panel"><div class="empty">Waiting for signals…</div></div>
-    </div>
-    <div class="panel-title" style="margin-top:20px;">Strategy Decisions <span id="decision-toggle"></span></div>
-    <div id="decision-feed">
-      <div id="decision-feed-filter"></div>
-      <div id="decision-feed-list" class="scroll-panel"><div class="empty">No decisions yet…</div></div>
+    <div id="signal-decision-feed">
+      <div id="signal-decision-feed-filter"></div>
+      <div id="signal-decision-feed-list" class="scroll-panel"><div class="empty">Waiting for signals and decisions…</div></div>
     </div>
   </div>
 
@@ -1735,6 +1775,19 @@ async function fetchJSON(url, opts) {
 let marketTitles = {};
 let eventTitles = {};  // event_ticker -> {title, subtitle, category} — see renderMarketCards' grouping
 let seriesMeta = {};  // series ticker -> {title, category, tags} — real Kalshi series metadata, see main.py's _series_meta_map
+let eventLiveData = {};
+let categoryMetadata = { tags_by_categories: {}, filters_by_sports: {}, sport_ordering: [] };
+let terminalSignalFeed = [];
+let terminalDecisionFeed = [];
+let marketPanelState = {
+  markets: { markets: [], prices: {}, signals: [], includeWhale: false, seriesTrackRecord: {} },
+  'whale-cards': { markets: [], prices: {}, signals: [], includeWhale: true, seriesTrackRecord: {} },
+};
+let marketPanelFilters = {
+  markets: { category: '', scope: '', tag: '' },
+  'whale-cards': { category: '', scope: '', tag: '' },
+};
+let wsReconnectDelayMs = 1000;
 let accountMode = localStorage.getItem('whale-signal-account-mode') || 'paper'; // 'paper' | 'real' — Portfolio view toggle
 
 function esc(str) {
@@ -1963,8 +2016,194 @@ function marketContext(ticker, side) {
   return {
     category: event ? event.category : null,
     matchup: event ? (event.sub_title || event.title) : null,
+    competition: event ? event.competition : null,
+    competitionScope: event ? event.competition_scope : null,
+    categoryTags: event ? (event.category_tags || []) : [],
     positionMeans,
   };
+}
+
+function eventLiveDataForTicker(ticker) {
+  const info = marketTitles[ticker] || {};
+  return info.event_ticker ? eventLiveData[info.event_ticker] : null;
+}
+
+function compactLiveValue(v) {
+  if (typeof v === 'number') return Math.abs(v) >= 1000 ? v.toLocaleString() : String(Math.round(v * 100) / 100);
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  return String(v);
+}
+
+function formatTsMs(tsMs) {
+  if (tsMs === undefined || tsMs === null || tsMs === '') return null;
+  const n = Number(tsMs);
+  if (!Number.isFinite(n)) return null;
+  return new Date(n).toLocaleString();
+}
+
+function cryptoLiveSummary(details) {
+  const coin = details.coin || 'crypto';
+  const candles = details.candlesticks || {};
+  const preferred = candles['1M'] || candles['5M'] || candles['15M'] || Object.values(candles)[0] || [];
+  const last = preferred.length ? preferred[preferred.length - 1] : null;
+  const lastClose = last && last.close != null ? Number(last.close) : null;
+  const maturity = formatTsMs(details.maturity_ts_ms);
+  const bits = [String(coin).toUpperCase()];
+  if (lastClose != null) bits.push(`spot ${compactLiveValue(lastClose)}`);
+  if (preferred.length) bits.push(`${preferred.length} candles`);
+  if (maturity) bits.push(`matures ${maturity}`);
+  return bits.join(' · ');
+}
+
+function sportsLiveSummary(details) {
+  const parts = [];
+  const home = details.home_team || details.home || details.team_a || details.team1;
+  const away = details.away_team || details.away || details.team_b || details.team2;
+  const homeScore = details.home_score ?? details.score_home ?? details.team_a_score ?? details.team1_score;
+  const awayScore = details.away_score ?? details.score_away ?? details.team_b_score ?? details.team2_score;
+  if (home || away) {
+    const matchup = [home, away].filter(Boolean).join(' vs ');
+    if (matchup) parts.push(matchup);
+  }
+  if (homeScore != null || awayScore != null) parts.push(`${homeScore ?? '—'}-${awayScore ?? '—'}`);
+  if (details.period || details.inning || details.quarter || details.half) {
+    parts.push(details.period || details.inning || details.quarter || details.half);
+  }
+  if (details.clock || details.time_remaining) parts.push(details.clock || details.time_remaining);
+  if (details.status || details.widget_status) parts.push(details.status || details.widget_status);
+  if (details.winner) parts.push(`winner ${details.winner}`);
+  return parts.filter(Boolean).join(' · ');
+}
+
+function weatherLiveSummary(details) {
+  const parts = [];
+  if (details.location || details.city || details.station) parts.push(details.location || details.city || details.station);
+  if (details.temperature != null) parts.push(`temp ${compactLiveValue(details.temperature)}`);
+  if (details.observed_value != null) parts.push(`value ${compactLiveValue(details.observed_value)}`);
+  if (details.humidity != null) parts.push(`humidity ${compactLiveValue(details.humidity)}`);
+  if (details.wind_speed != null) parts.push(`wind ${compactLiveValue(details.wind_speed)}`);
+  if (details.status || details.widget_status) parts.push(details.status || details.widget_status);
+  return parts.filter(Boolean).join(' · ');
+}
+
+function genericLiveSummary(details) {
+  const bits = [];
+  const seen = new Set();
+  ['widget_status', 'status', 'winner'].forEach(k => {
+    if (details[k] !== undefined && details[k] !== null && details[k] !== '') {
+      bits.push(`${k.replaceAll('_', ' ')} ${esc(compactLiveValue(details[k]))}`);
+      seen.add(k);
+    }
+  });
+  Object.entries(details).forEach(([k, v]) => {
+    if (bits.length >= 4 || seen.has(k)) return;
+    if (v === null || v === '' || Array.isArray(v) || typeof v === 'object') return;
+    bits.push(`${k.replaceAll('_', ' ')} ${esc(compactLiveValue(v))}`);
+  });
+  return bits.join(' · ');
+}
+
+function eventLiveDataSummary(eventTicker) {
+  const live = eventTicker ? eventLiveData[eventTicker] : null;
+  if (!live) return null;
+  const details = live.details || {};
+  const type = String(live.type || 'live-data').toLowerCase();
+  let summary = '';
+  if (type.includes('crypto')) {
+    summary = cryptoLiveSummary(details);
+  } else if (type.includes('weather')) {
+    summary = weatherLiveSummary(details);
+  } else if (type.includes('sport') || details.home_score != null || details.away_score != null || details.winner) {
+    summary = sportsLiveSummary(details);
+  }
+  if (!summary) summary = genericLiveSummary(details);
+  return {
+    type: live.type || 'live-data',
+    summary,
+    defaultRange: live.default_range || null,
+  };
+}
+
+function eventLiveDataLineHTML(eventTicker, compact = false) {
+  const summary = eventLiveDataSummary(eventTicker);
+  if (!summary) return '';
+  const range = summary.defaultRange ? ` · default ${esc(summary.defaultRange)}` : '';
+  const line = `${summary.summary || 'Live event feed available'}${range}`;
+  const separator = compact ? ' · ' : ' ';
+  return `<div class="${compact ? 'context-line' : 'live-data-box'}"><span class="live-data-tag">${esc(summary.type)}</span>${separator}${line}</div>`;
+}
+
+function marketTaxonomyHTML(ticker) {
+  const ctx = marketContext(ticker, null);
+  const bits = [];
+  if (ctx.competitionScope) bits.push(`<span class="scope-tag">${esc(ctx.competitionScope)}</span>`);
+  if (ctx.competition) bits.push(esc(ctx.competition));
+  const tags = (ctx.categoryTags || []).slice(0, 3).map(tag => `<span class="meta-chip">${esc(tag)}</span>`).join('');
+  if (!bits.length && !tags) return '';
+  return `<div class="context-line">${bits.join(' · ')}${tags ? (bits.length ? ' · ' : '') + tags : ''}</div>`;
+}
+
+function uniqueSorted(items) {
+  return Array.from(new Set(items.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function applyMarketPanelFilters(panelKey, markets) {
+  const f = marketPanelFilters[panelKey];
+  return (markets || []).filter(m => {
+    const ctx = marketContext(m.ticker, null);
+    if (f.category && ctx.category !== f.category) return false;
+    if (f.scope && ctx.competitionScope !== f.scope) return false;
+    if (f.tag && !(ctx.categoryTags || []).includes(f.tag)) return false;
+    return true;
+  });
+}
+
+function renderMarketCategorySuggestions() {
+  $('market-category-suggestions').innerHTML = uniqueSorted(Object.keys(categoryMetadata.tags_by_categories || {}))
+    .map(c => `<option value="${esc(c)}"></option>`).join('');
+}
+
+function renderMarketPanelFilters(panelKey, markets, shownCount) {
+  const targetId = panelKey === 'markets' ? 'markets-watchlist-filter' : 'whale-watch-filter';
+  const el = $(targetId);
+  const f = marketPanelFilters[panelKey];
+  const categories = uniqueSorted((markets || []).map(m => marketContext(m.ticker, null).category));
+  const scopes = uniqueSorted((markets || []).map(m => marketContext(m.ticker, null).competitionScope));
+  const tags = uniqueSorted((markets || []).flatMap(m => marketContext(m.ticker, null).categoryTags || []));
+  el.innerHTML = `<div class="table-filter-row" style="margin:0 0 12px;">
+    <select onchange="marketPanelFilters['${panelKey}'].category = this.value; rerenderMarketPanel('${panelKey}')">
+      <option value="">All categories</option>
+      ${categories.map(c => `<option value="${esc(c)}" ${f.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+    </select>
+    <select onchange="marketPanelFilters['${panelKey}'].scope = this.value; rerenderMarketPanel('${panelKey}')">
+      <option value="">All scopes</option>
+      ${scopes.map(s => `<option value="${esc(s)}" ${f.scope === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}
+    </select>
+    <select onchange="marketPanelFilters['${panelKey}'].tag = this.value; rerenderMarketPanel('${panelKey}')">
+      <option value="">All tags</option>
+      ${tags.map(t => `<option value="${esc(t)}" ${f.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
+    </select>
+    <span style="margin-left:auto;">Showing ${shownCount} of ${(markets || []).length}</span>
+  </div>`;
+}
+
+function rerenderMarketPanel(panelKey) {
+  const st = marketPanelState[panelKey];
+  const filtered = applyMarketPanelFilters(panelKey, st.markets);
+  renderMarketPanelFilters(panelKey, st.markets, filtered.length);
+  if (panelKey === 'markets') {
+    if (isAdvanced('markets')) {
+      renderScreenerTable('markets', 'markets-cards', 'markets-card-count', filtered, st.prices, false, st.signals || []);
+    } else {
+      renderMarketCards('markets-cards', 'markets-card-count', filtered, st.prices, false, st.signals || [], st.seriesTrackRecord || {});
+    }
+    return;
+  }
+  if (isAdvanced('whale-cards')) {
+    renderScreenerTable('whale-cards', 'whale-cards', null, filtered, st.prices, true, st.signals || []);
+  } else {
+    renderMarketCards('whale-cards', null, filtered, st.prices, true, st.signals || [], st.seriesTrackRecord || {});
+  }
 }
 
 // "Live" the way Kalshi's own UI shows it - the real signal, not a
@@ -2015,6 +2254,7 @@ function contextLineHTML(ticker, side) {
   const ctx = marketContext(ticker, side);
   const bits = [];
   if (ctx.category) bits.push(`<span class="cat-tag">${esc(ctx.category)}</span>`);
+  if (ctx.competitionScope) bits.push(`<span class="scope-tag">${esc(ctx.competitionScope)}</span>`);
   if (ctx.matchup) bits.push(esc(ctx.matchup));
   if (ctx.positionMeans) bits.push(`<span class="position-means">Betting: ${esc(ctx.positionMeans)}</span>`);
   return bits.length ? `<div class="context-line">${bits.join(' · ')}</div>` : '';
@@ -2120,6 +2360,7 @@ function renderFeedListSmooth(containerId, items, buildCardHtml, getId) {
 // rewards neither a huge-but-low-confidence print nor a tiny-but-certain
 // one on its own.
 let signalFilter = { timeRange: 'all', side: '', sortKey: 'timestamp', sortDir: 'desc', groupByPosition: false };
+let signalDecisionFilter = { timeRange: 'all', side: '', status: '', sortKey: 'timestamp', sortDir: 'desc', groupByPosition: false };
 let lastSignals = [];
 
 const SIGNAL_TIME_RANGES = { 'all': null, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 7 * 86400, '30d': 30 * 86400 };
@@ -2281,48 +2522,146 @@ function plainEnglishSkipReason(reason) {
   return reason;
 }
 
-function renderDecisions(decisions) {
-  lastDecisions = decisions || [];
-  $('decision-toggle').innerHTML = advToggleHTML('decisions');
-  const listEl = $('decision-feed-list');
+function renderSignalDecisionFeed(signalFeed, decisionFeed) {
+  lastDecisions = decisionFeed || [];
+  $('signal-decision-toggle').innerHTML = advToggleHTML('decisions');
+  const listEl = $('signal-decision-feed-list');
 
   if (isAdvanced('decisions')) {
-    // Advanced's table replaces this container's content wholesale every
-    // render (sorting/filtering already forces that) - reset the smooth-
-    // render tracking for it so a later switch back to Simple doesn't
-    // mistake the table's leftover DOM for an up-to-date card list and
-    // wrongly no-op instead of rebuilding (see renderFeedListSmooth).
-    delete _feedListState['decision-feed-list'];
+    delete _feedListState['signal-decision-feed-list'];
     renderDecisionTable();
     return;
   }
 
-  $('decision-feed-filter').innerHTML = '';
-  if (!lastDecisions.length) { listEl.innerHTML = '<div class="empty">No decisions yet…</div>'; _feedListState['decision-feed-list'] = []; return; }
+  $('signal-decision-feed-filter').innerHTML = `<div class="table-filter-row">
+    <select onchange="signalDecisionFilter.timeRange = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+      ${Object.keys(SIGNAL_TIME_RANGES).map(k => `<option value="${k}" ${signalDecisionFilter.timeRange === k ? 'selected' : ''}>${k === 'all' ? 'All time' : 'Last ' + k}</option>`).join('')}
+    </select>
+    <select onchange="signalDecisionFilter.side = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+      <option value="" ${signalDecisionFilter.side === '' ? 'selected' : ''}>Yes + No</option>
+      <option value="yes" ${signalDecisionFilter.side === 'yes' ? 'selected' : ''}>Yes only</option>
+      <option value="no" ${signalDecisionFilter.side === 'no' ? 'selected' : ''}>No only</option>
+    </select>
+    <select onchange="signalDecisionFilter.status = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+      <option value="" ${signalDecisionFilter.status === '' ? 'selected' : ''}>All statuses</option>
+      <option value="opening" ${signalDecisionFilter.status === 'opening' ? 'selected' : ''}>Opening</option>
+      <option value="skipped" ${signalDecisionFilter.status === 'skipped' ? 'selected' : ''}>Skipped</option>
+      <option value="won" ${signalDecisionFilter.status === 'won' ? 'selected' : ''}>Won</option>
+      <option value="lost" ${signalDecisionFilter.status === 'lost' ? 'selected' : ''}>Lost</option>
+    </select>
+    <select onchange="signalDecisionFilter.sortKey = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+      <option value="timestamp" ${signalDecisionFilter.sortKey === 'timestamp' ? 'selected' : ''}>Sort: recency</option>
+      <option value="impact" ${signalDecisionFilter.sortKey === 'impact' ? 'selected' : ''}>Sort: impact</option>
+    </select>
+    <label><input type="checkbox" ${signalDecisionFilter.groupByPosition ? 'checked' : ''} onchange="signalDecisionFilter.groupByPosition = this.checked; renderSignalDecisionFeed(signalFeed, decisionFeed);"> Group by market</label>
+  </div>`;
 
-  const buildDecisionCardHtml = (d) => {
-    const ticker = d.action === 'close' ? d.ticker : d.signal.ticker;
-    const label = marketLabel(ticker);
-    let detail;
+  const rows = (decisionFeed || []).map((d, idx) => {
+    const signal = d.signal || {};
+    const ticker = signal.ticker || d.ticker || '';
+    const side = signal.side || (d.trade && d.trade.side) || 'yes';
+    const timestamp = signal.timestamp || (d.trade && d.trade.timestamp) || 0;
+    let status = 'unknown';
     if (d.action === 'trade') {
-      detail = `${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢`;
+      status = 'opening';
+    } else if (d.action === 'skip') {
+      status = 'skipped';
     } else if (d.action === 'close') {
-      detail = `Closed ${d.trade.side.toUpperCase()} × ${d.trade.size} @ ${(d.trade.price*100).toFixed(0)}¢ — ${esc(d.reason)}`;
+      if (/won/i.test(d.reason || '')) {
+        status = 'won';
+      } else if (/lost/i.test(d.reason || '')) {
+        status = 'lost';
+      } else {
+        status = 'closed';
+      }
     } else {
-      detail = esc(plainEnglishSkipReason(d.reason));
+      status = d.action;
     }
-    const dEt = (marketTitles[ticker] && marketTitles[ticker].event_ticker) || '';
+    return { ...d, signal, ticker, side, timestamp, status, _uid: `${d.action}-${ticker}-${timestamp}-${idx}` };
+  });
+
+  const rangeSec = SIGNAL_TIME_RANGES[signalDecisionFilter.timeRange];
+  const cutoff = rangeSec ? (Date.now() / 1000 - rangeSec) : null;
+  let filtered = rows.filter(d => {
+    if (cutoff !== null && d.timestamp < cutoff) return false;
+    if (signalDecisionFilter.side && d.side !== signalDecisionFilter.side) return false;
+    if (signalDecisionFilter.status && d.status !== signalDecisionFilter.status) return false;
+    return true;
+  });
+
+  if (!filtered.length) { listEl.innerHTML = '<div class="empty">No signals or decisions match these filters.</div>'; _feedListState['signal-decision-feed-list'] = []; return; }
+
+  if (signalDecisionFilter.groupByPosition) {
+    const groups = new Map();
+    filtered.forEach(d => {
+      const key = `${d.ticker}::${d.side}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
+    });
+    filtered = Array.from(groups.values()).map(group => {
+      const latest = group.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+      const totalSize = group.reduce((sum, d) => sum + ((d.signal && d.signal.size) || (d.trade && d.trade.size) || 0), 0);
+      const avgConfidence = group.reduce((sum, d) => sum + ((d.signal && d.signal.confidence) || 0), 0) / group.length;
+      return { ...latest, size: totalSize, confidence: avgConfidence, _printCount: group.length };
+    });
+  }
+
+  filtered = filtered.slice().sort((a, b) => {
+    const av = signalDecisionFilter.sortKey === 'impact' ? ((a.signal && a.signal.size && a.signal.confidence) ? a.signal.size * a.signal.confidence : 0) : a.timestamp;
+    const bv = signalDecisionFilter.sortKey === 'impact' ? ((b.signal && b.signal.size && b.signal.confidence) ? b.signal.size * b.signal.confidence : 0) : b.timestamp;
+    return (signalDecisionFilter.sortDir === 'asc' ? av - bv : bv - av);
+  });
+
+  const impactValues = filtered.map(d => ((d.signal && d.signal.size && d.signal.confidence) ? d.signal.size * d.signal.confidence : 0)).sort((a, b) => a - b);
+  const impactTier = (d) => {
+    if (!impactValues.length) return 'low';
+    const rank = impactValues.filter(v => v <= ((d.signal && d.signal.size && d.signal.confidence) ? d.signal.size * d.signal.confidence : 0)).length / impactValues.length;
+    return rank >= 0.8 ? 'high' : rank >= 0.4 ? 'medium' : 'low';
+  };
+
+  const buildRowHtml = (d) => {
+    const label = marketLabel(d.ticker);
+    const eventT = (marketTitles[d.ticker] && marketTitles[d.ticker].event_ticker) || '';
+    const liveMarker = liveBadgeHTML({ event_ticker: eventT });
+    const closeTime = d.signal && d.signal.close_time ? new Date(d.signal.close_time) : null;
+    const secondsToClose = closeTime ? (closeTime.getTime() - Date.now()) / 1000 : null;
+    const closingBadge = secondsToClose !== null && secondsToClose > 0 && secondsToClose <= 900 ? '<span class="closing-badge">CLOSING SOON</span>' : '';
+    const tier = impactTier(d);
+    const impactTag = `<span class="impact-tag ${tier}" title="Impact tier relative to what's currently on the feed (size x confidence)">${tier}</span>`;
+    const size = (d.signal && d.signal.size) || (d.trade && d.trade.size) || 0;
+    const price = (d.signal && d.signal.price) || (d.trade && d.trade.price) || 0;
+    const conf = (d.signal && d.signal.confidence) || 0;
+    const detail = d.action === 'trade'
+      ? `${(d.signal && d.signal.side || '').toUpperCase()} × ${size} @ ${(price*100).toFixed(0)}¢`
+      : d.action === 'skip'
+        ? 'Skipped'
+        : d.action === 'close'
+          ? `Closed ${(d.trade && d.trade.side || '').toUpperCase()} × ${size} @ ${(price*100).toFixed(0)}¢`
+          : '';
+    const reasonText = d.action === 'trade'
+      ? `Opened because ${esc((d.trade && d.trade.reason) || '')}`
+      : d.action === 'skip'
+        ? esc(plainEnglishSkipReason(d.reason))
+        : d.action === 'close'
+          ? esc(d.reason || '')
+          : esc(d.reason || '');
+    const dEt = (marketTitles[d.ticker] && marketTitles[d.ticker].event_ticker) || '';
     return `
-      <div class="decision-card ${d.action}" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(ticker)}', '${esc(dEt)}')">
+      <div class="signal-card ${d.status}" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(d.ticker)}', '${esc(dEt)}')">
         <div class="top-row">
-          <span>${esc(label.short)}</span>
-          <span class="action-tag ${d.action}">${d.action}</span>
+          <span>${esc(label.short)} <span class="side-tag ${d.side}">${d.side}</span> ${liveMarker} ${closingBadge}</span>
+          <span class="action-tag ${d.status}">${d.status}</span>
         </div>
-        <div style="color: var(--muted)">${detail}</div>
+        ${contextLineHTML(d.ticker, d.side)}
+        ${marketTaxonomyHTML(d.ticker)}
+        ${eventLiveDataLineHTML(eventT, true)}
+        <div style="color: var(--muted)">${detail}${conf ? ` · confidence ${(conf*100).toFixed(0)}%` : ''} ${impactTag}</div>
+        <div style="color: var(--muted); font-size:12px; margin-top:6px;">${reasonText}</div>
       </div>
     `;
   };
-  renderFeedListSmooth('decision-feed-list', lastDecisions, buildDecisionCardHtml, d => d.action === 'close' ? d.trade.id : d.signal.id);
+
+  renderFeedListSmooth('signal-decision-feed-list', filtered, buildRowHtml, d => d._uid);
 }
 
 // Advanced: the same decision data (ROADMAP.md Phase 0.5's "Trade log /
@@ -2330,8 +2669,8 @@ function renderDecisions(decisions) {
 // numbers and every field instead of today's strict reverse-chronological
 // card feed with no sort/filter/search.
 function renderDecisionTable() {
-  const el = $('decision-feed-list');
-  $('decision-feed-filter').innerHTML = `<div class="table-filter-row">
+  const el = $('signal-decision-feed-list');
+  $('signal-decision-feed-filter').innerHTML = `<div class="table-filter-row">
     <label>Ticker: <input type="text" value="${esc(decisionFilter.query)}"
       oninput="decisionFilter.query = this.value; renderDecisionTable();" placeholder="search…" style="width:120px;"></label>
     <label>Action:
@@ -2391,9 +2730,12 @@ function renderDecisionTable() {
   const bodyRows = rows.map(r => {
     const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
     const rCtx = marketContext(r.ticker, r.side);
-    const rSubLine = rCtx.positionMeans
-      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(rCtx.positionMeans)}</div>` : '';
-    return `<tr title="${esc(r.reason || '')} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
+    const rBits = [];
+    if (rCtx.positionMeans) rBits.push(`Betting: ${esc(rCtx.positionMeans)}`);
+    if (rCtx.competitionScope) rBits.push(`Scope: ${esc(rCtx.competitionScope)}`);
+    const rSubLine = rBits.length
+      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">${rBits.join(' · ')}</div>` : '';
+    return `<tr class="${r.action}" title="${esc(r.reason || '')} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
     <td>${esc(marketLabel(r.ticker).short)}${rSubLine}</td>
     <td><span class="action-tag ${r.action}">${r.action}</span></td>
@@ -4550,6 +4892,8 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   const ctx = marketContext(m.ticker, null);
   const metaRight = ctx.category ? esc(ctx.category) : esc(m.ticker.split('-')[0]);
   const matchupHtml = ctx.matchup ? `<div class="context-line" style="margin:0 0 6px;">${esc(ctx.matchup)}</div>` : '';
+  const taxonomyHtml = marketTaxonomyHTML(m.ticker);
+  const liveDataHtml = eventLiveDataLineHTML(m.event_ticker || (marketTitles[m.ticker] || {}).event_ticker, true);
   // yes_sub_title/no_sub_title say what each side actually MEANS for a
   // multi-child-market question (e.g. "Golf / Golfer / Golfing" for one
   // "what will they say" child, or "Over 8.5" for one Total Runs
@@ -4581,6 +4925,8 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   <div class="market-card" title="${esc(label.full)}" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')" style="cursor:pointer;">
     <div class="title">${esc(label.short)} ${liveBadgeHTML(m)}</div>
     ${matchupHtml}
+    ${taxonomyHtml}
+    ${liveDataHtml}
     ${comboLegsHTML(m.ticker)}
     <div class="prices">
       <div class="price-btn yes"><div class="lbl">Yes${yesSub ? ` <span style="font-weight:400; opacity:0.8;">(${yesSub})</span>` : ''}</div><div class="val">${yesPrice !== null ? yesPrice + '¢' : '—'}</div>${priceChangeHTML(m.ticker, yesBid)}</div>
@@ -4661,8 +5007,14 @@ function eventGroupCardHTML(group, eventInfo, prices) {
   // text, rather than showing "Dota 2" redundantly next to a title that
   // already says Dota 2.
   const competition = eventInfo && eventInfo.competition;
+  const competitionScope = eventInfo && eventInfo.competition_scope;
+  const liveDataHtml = eventInfo ? eventLiveDataLineHTML(group[0].event_ticker, true) : '';
+  const tagsHtml = eventInfo && eventInfo.category_tags && eventInfo.category_tags.length
+    ? `<div class="context-line">${eventInfo.category_tags.slice(0, 3).map(tag => `<span class="meta-chip">${esc(tag)}</span>`).join('')}</div>`
+    : '';
   const competitionHtml = competition && !title.toLowerCase().includes(competition.toLowerCase())
-    ? `<div class="context-line">${esc(competition)}</div>` : '';
+    ? `<div class="context-line">${competitionScope ? `<span class="scope-tag">${esc(competitionScope)}</span> · ` : ''}${esc(competition)}</div>`
+    : (competitionScope ? `<div class="context-line"><span class="scope-tag">${esc(competitionScope)}</span></div>` : '');
   return `<div class="event-card">
     <div class="event-card-header">
       ${category ? `<span class="cat-tag">${esc(category)}</span>` : ''}
@@ -4670,6 +5022,8 @@ function eventGroupCardHTML(group, eventInfo, prices) {
       ${liveBadgeHTML(group[0])}
     </div>
     ${competitionHtml}
+    ${tagsHtml}
+    ${liveDataHtml}
     <div class="outcome-rows">${rows}</div>
     <div class="meta"><span>vol ${Math.round(totalVol).toLocaleString()}</span><span>${group.length} markets</span></div>
   </div>`;
@@ -4743,12 +5097,16 @@ function renderMarketCards(containerId, countId, markets, prices, includeWhale, 
     if (eventGroups.size === 1) return cardsHtml;  // one event - nothing to nest, render exactly as before
 
     const totalVol = run.markets.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
+    const sharedScope = (() => {
+      const scopes = uniqueSorted(run.markets.map(m => marketContext(m.ticker, null).competitionScope));
+      return scopes.length === 1 ? scopes[0] : null;
+    })();
     const isOpen = prevSeriesOpenState.has(run.series)
       ? prevSeriesOpenState.get(run.series)
       : run.markets.length <= _SERIES_COLLAPSE_THRESHOLD;
     return `<details class="series-section" data-series="${esc(run.series)}"${isOpen ? ' open' : ''}>
       <summary class="series-section-header">
-        <span class="series-section-title">${esc(seriesLabel(run.series))}</span>
+        <span class="series-section-title">${sharedScope ? `<span class="scope-tag">${esc(sharedScope)}</span> · ` : ''}${esc(seriesLabel(run.series))}</span>
         <span class="series-section-meta">${eventGroups.size} events · ${run.markets.length} markets · vol ${Math.round(totalVol).toLocaleString()}</span>
       </summary>
       <div class="cards-grid">${cardsHtml}</div>
@@ -5117,9 +5475,12 @@ function renderMarketInfoHTML(d) {
   const category = d.event ? d.event.category : null;
   const title = (d.event && d.event.title) || d.title;
   const subtitle = (d.event && d.event.sub_title) || d.subtitle;
+  const eventTicker = d.event_ticker || (d.event && d.event.event_ticker);
   const catLine = category || subtitle
     ? `<div class="context-line">${category ? `<span class="cat-tag">${esc(category)}</span> · ` : ''}${subtitle ? esc(subtitle) : ''}</div>`
     : '';
+  const taxonomyHtml = marketTaxonomyHTML(d.ticker);
+  const liveDataHtml = eventLiveDataLineHTML(eventTicker, false);
 
   const yesPrice = d.yes_bid != null ? Math.round(d.yes_bid * 100) : null;
   const noPrice = d.no_bid != null ? Math.round(d.no_bid * 100) : (yesPrice != null ? 100 - yesPrice : null);
@@ -5184,7 +5545,7 @@ function renderMarketInfoHTML(d) {
     siblingsHtml = `<div class="panel-title" style="margin-top:0;">Other Outcomes In This Event</div><div class="outcome-rows" style="margin-bottom:14px;">${rows}</div>`;
   }
 
-  return catLine + prices + stats + rules + siblingsHtml;
+  return catLine + taxonomyHtml + liveDataHtml + prices + stats + rules + siblingsHtml;
 }
 
 // Recent trades for this one market - distinct from the full-exchange trade
@@ -5589,6 +5950,34 @@ function renderConnectivity() {
     + `what you're seeing may be out of date. This is a connectivity problem, not a sign the strategy is stuck.`;
 }
 
+function renderTradeStreamStatus(status) {
+  const el = $('trade-stream-badge');
+  if (!el) return;
+  if (!status) {
+    el.textContent = '';
+    el.className = '';
+    el.title = '';
+    return;
+  }
+  if (status.mode === 'poll' || !status.enabled) {
+    el.textContent = 'trade feed: poll';
+    el.className = 'degraded';
+    el.title = 'Using the older polled trade-tape path instead of the upstream Kalshi websocket stream.';
+    return;
+  }
+  if (status.connected) {
+    el.textContent = 'trade feed: live';
+    el.className = 'connected';
+    el.title = `Connected to the upstream Kalshi trade websocket (${status.ws_url || 'configured endpoint'}).`;
+    return;
+  }
+  el.textContent = 'trade feed: degraded';
+  el.className = status.error ? 'error' : 'degraded';
+  el.title = status.error
+    ? `Upstream Kalshi trade websocket problem: ${status.error}`
+    : 'Upstream Kalshi trade websocket is not currently connected.';
+}
+
 // Data-robustness audit finding (2026-08-10): the entire trading-loop tick
 // runs under one umbrella try/except that sets state["error"] on failure -
 // that field has existed in /api/state's response the whole time, but had
@@ -5767,6 +6156,12 @@ async function refresh() {
     // "successfully" and be treated as a real update instead of the
     // connectivity failure it actually is.
     const res = await fetch('/api/state');
+    if (res.status === 304) {
+      lastSuccessfulRefresh = Date.now();
+      consecutiveRefreshFailures = 0;
+      renderConnectivity();
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const state = await res.json();
 
@@ -5780,8 +6175,11 @@ async function refresh() {
     lastWhaleSource = state.whale_source;
     updateWhaleProviderStatus(lastWhaleSource);
     renderExchangeStatus(state.exchange_status);
+    renderTradeStreamStatus(state.trade_stream_status);
     $('toggle-btn').textContent = state.running ? 'Pause' : 'Resume Loop';
 
+    terminalSignalFeed = state.signal_feed || [];
+    terminalDecisionFeed = state.decision_feed || [];
     const broker = state.broker;
     renderHeaderStrip(broker, state.account, state.real_balance_history || []);
 
@@ -5794,8 +6192,11 @@ async function refresh() {
     // instead of disappearing the next time this wholesale-replaced.
     Object.assign(marketTitles, state.market_titles || {});
     Object.assign(eventTitles, state.event_titles || {});
+    Object.assign(eventLiveData, state.event_live_data || {});
+    categoryMetadata = state.category_metadata || { tags_by_categories: {}, filters_by_sports: {}, sport_ordering: [] };
     seriesMeta = state.series_meta || {};
     liveStatus = state.live_status || {};
+    renderMarketCategorySuggestions();
     renderRealMoneyBanner(state.account); // always visible, above everything
     renderAccount(state.account); // always visible, above the tabs
 
@@ -5810,27 +6211,26 @@ async function refresh() {
         renderMarkets(state.markets, state.latest_prices || {});
       }
       renderFunnel(state.stats);
-      renderSignals(state.signal_feed);
-      renderDecisions(state.decision_feed);
+      renderSignalDecisionFeed(state.signal_feed, state.decision_feed);
       renderHalted(state.risk);
     } else if (active === 'portfolio') {
       renderPortfolio(state, broker);
     } else if (active === 'markets') {
+      marketPanelState.markets = {
+        markets: state.markets || [], prices: state.latest_prices || {}, signals: [], includeWhale: false,
+        seriesTrackRecord: state.series_track_record || {},
+      };
       $('markets-toggle').innerHTML = advToggleHTML('markets');
-      if (isAdvanced('markets')) {
-        renderScreenerTable('markets', 'markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
-      } else {
-        renderMarketCards('markets-cards', 'markets-card-count', state.markets, state.latest_prices || {}, false, []);
-      }
+      rerenderMarketPanel('markets');
     } else if (active === 'whale') {
       renderWhaleTrackRecord(state.whale_track_record, state.whale_source);
       renderTradeTape(state.trade_tape);
+      marketPanelState['whale-cards'] = {
+        markets: state.markets || [], prices: state.latest_prices || {}, signals: state.signal_feed || [], includeWhale: true,
+        seriesTrackRecord: state.series_track_record || {},
+      };
       $('whale-cards-toggle').innerHTML = advToggleHTML('whale-cards');
-      if (isAdvanced('whale-cards')) {
-        renderScreenerTable('whale-cards', 'whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || []);
-      } else {
-        renderMarketCards('whale-cards', null, state.markets, state.latest_prices || {}, true, state.signal_feed || [], state.series_track_record || {});
-      }
+      rerenderMarketPanel('whale-cards');
     }
 
     // The market-detail modal can be open regardless of which tab is behind
@@ -5845,6 +6245,51 @@ async function refresh() {
     consecutiveRefreshFailures++;
     renderConnectivity();
   }
+}
+
+function connectWebSocket() {
+  const wsUrl = new URL('/api/ws', location.href);
+  wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(wsUrl.toString());
+
+  socket.addEventListener('open', () => {
+    console.log('WebSocket connected');
+    wsReconnectDelayMs = 1000;
+  });
+
+  socket.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.type === 'signal_decision') {
+        if (payload.signal) {
+          terminalSignalFeed.unshift(payload.signal);
+          terminalSignalFeed = terminalSignalFeed.slice(0, 50);
+        }
+        if (payload.decision) {
+          terminalDecisionFeed.unshift(payload.decision);
+          terminalDecisionFeed = terminalDecisionFeed.slice(0, 50);
+        }
+        if (currentView === 'terminal') {
+          renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);
+        }
+      } else if (payload.type === 'trade_stream_status') {
+        renderTradeStreamStatus(payload.status);
+      }
+    } catch (err) {
+      console.error('Invalid websocket event', err, event.data);
+    }
+  });
+
+  socket.addEventListener('close', (event) => {
+    console.warn('WebSocket closed', event.code, event.reason);
+    setTimeout(connectWebSocket, wsReconnectDelayMs);
+    wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 1.5, 30000);
+  });
+
+  socket.addEventListener('error', (event) => {
+    console.error('WebSocket error', event);
+    socket.close();
+  });
 }
 
 // Called from refresh() (every poll, so this stays live rather than frozen
@@ -6390,6 +6835,7 @@ function setAccountMode(mode) {
 loadConfig();
 loadSession();
 refresh();
+connectWebSocket();
 // refresh interval is scheduled from the config load so it matches
 // kalshi.poll_interval_sec instead of remaining hardcoded.
 if (!refreshTimer) scheduleRefreshTimer(refreshIntervalMs);
