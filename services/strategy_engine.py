@@ -5,7 +5,7 @@ manager, or data sources.
 """
 import time
 
-from services import candidate_log, kalshi_fees, market_analyst_agent, signal_log
+from services import candidate_log, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
@@ -16,6 +16,7 @@ from services.risk_manager import RiskManager
 # market's own price, so this doesn't need to be tight, just not stale
 # enough to be estimating a different market state entirely.
 _ANALYST_FRESHNESS_SEC = 24 * 3600
+_MAX_CLOSE_WINDOW_SEC = 2 * 3600
 
 
 def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
@@ -146,6 +147,57 @@ class FollowTheWhaleStrategy:
         if strat_cfg.get("live_markets_only") and not is_live:
             return self._skip(signal, "market is not currently live")
 
+        # Whale watcher's input can include markets from a broad feed; only the
+        # actual whale-follow auto-trades are restricted to markets closing in
+        # the next 2 hours. This keeps the upstream signal source unrestricted
+        # while enforcing the requested execution window here. If the market
+        # is currently LIVE (in-play), ignore the scheduled close time protections
+        # — live status implies the scheduled close may not be authoritative.
+        seconds_to_close = market_history.seconds_to_close(signal.close_time, time.time())
+        # allow signals with no close_time to proceed; only reject when a close_time
+        # is present and it's outside the permitted window — but skip this rule
+        # when the market is currently live (is_live truthy).
+        if not is_live and seconds_to_close is not None and not (0 < seconds_to_close <= _MAX_CLOSE_WINDOW_SEC):
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "close_window",
+                seconds_to_close, _MAX_CLOSE_WINDOW_SEC, side=signal.side,
+            )
+            return self._skip(signal, "close time is not within the 2h trade window")
+
+        # Conservative gate for markets with early-close or special settlement
+        try:
+            # lazy import main to avoid circular import at module load time
+            import main as _main
+            m_info = (_main.state.get("market_titles") or {}).get(signal.ticker) or {}
+            et = m_info.get("event_ticker")
+            ev = (_main.state.get("event_titles") or {}).get(et) or {}
+            special_flags = {
+                "can_close_early": False,
+                "collateral_return_type": None,
+                "mutually_exclusive": False,
+            }
+            # market-level can_close_early is exposed in state["markets"] slim maps
+            for m in (_main.state.get("markets") or []):
+                if m.get("ticker") == signal.ticker:
+                    special_flags["can_close_early"] = bool(m.get("can_close_early"))
+                    break
+            special_flags["collateral_return_type"] = ev.get("collateral_return_type")
+            special_flags["mutually_exclusive"] = bool(ev.get("mutually_exclusive"))
+            # Only apply the special-market conservative gate when the market
+            # is not currently live. If live, ignore scheduled close/grace
+            # windows since the event is in-play and scheduled times may be
+            # overridden by live milestones.
+            if (special_flags["can_close_early"] or special_flags["collateral_return_type"] or special_flags["mutually_exclusive"]) and not is_live:
+                grace = strat_cfg.get("special_market_min_seconds_to_close", 300)
+                if seconds_to_close is not None and seconds_to_close < grace:
+                    candidate_log.record_rejection(
+                        signal.ticker, "whale_follow", "special_market_gate", seconds_to_close, grace, side=signal.side
+                    )
+                    return self._skip(signal, "market has special settlement/early-close — skipping close-in-time")
+        except Exception:
+            # best-effort only - don't break trading on inspection failure
+            pass
+
         # Manual override on top of the automatic win-rate filter below - for
         # a series the user has out-of-band reason to distrust before it's
         # racked up enough resolved signals for the automatic cutoff to ever
@@ -275,6 +327,7 @@ class FollowTheWhaleStrategy:
 
     def check_exits(
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
+        opened_since: float | None = None,
     ) -> list[dict]:
         """Actively manages already-open positions instead of leaving them
         untouched until settlement - direct request: this app had zero exit
@@ -322,6 +375,27 @@ class FollowTheWhaleStrategy:
           predictable safety rails; this is the adaptive layer for
           everything in between.
 
+        opened_since (real live bug, 2026-08-11 - direct report: whale
+        trades opening and never showing up as open positions): main.py
+        calls this once per tick, right after that same tick's signal loop
+        may have just opened brand-new positions, using the SAME
+        latest_prices snapshot that was fetched at the top of the tick -
+        before this tick's trade-tape read, which can carry a real trade a
+        few seconds *newer* than the quote poll on a fast-moving market. A
+        position's entry_price can therefore already be more current than
+        latest_prices[ticker], so marking it to market against that stale
+        snapshot manufactures a fake swing out of nothing but polling
+        order, not an actual price move - confirmed live on a 15-minute
+        BTC market: a whale bought yes at 0.82 while latest_prices still
+        held a 0.67 quote from moments earlier, computing an instant fake
+        -21% "loss" and stop-lossing a position that went on to settle at
+        0.999. Passing tick_now here as opened_since skips any position
+        with pos.opened_at >= opened_since - i.e. anything opened this same
+        tick - leaving it untouched until the next tick's latest_prices has
+        actually caught up to its own entry price. None (the default)
+        checks every position regardless of age, matching every existing
+        caller/test.
+
         Returns decision dicts in the same shape evaluate() returns for a
         trade, so main.py can log them into decision_feed/stats the same
         way."""
@@ -345,6 +419,9 @@ class FollowTheWhaleStrategy:
                 if closed is not None:
                     decisions.append(closed)
                 continue  # settled - the opt-in checks below no longer apply to this position
+
+            if opened_since is not None and pos.opened_at >= opened_since:
+                continue  # opened this same tick - latest_prices predates its entry_price, see opened_since above
 
             current_price = latest_prices.get(ticker, pos.entry_price)
             # broker.cost_basis(), not pos.size * pos.entry_price directly -

@@ -824,6 +824,12 @@
     <div class="item"><div class="label" id="header-equity-label">Equity</div><div class="value" id="equity">—</div></div>
     <div class="item"><div class="label" id="header-pnl-label">Unrealized P&amp;L</div><div class="value" id="pnl">—</div></div>
   </div>
+  <div id="special-flags-legend" style="padding:6px 20px 0 20px; color:var(--muted); font-size:12px;">
+    <span class="special-flag" title="Mutually Exclusive Contract: sibling outcomes inversely sum to 100%">🔁 <b>MEC</b></span>
+    <span style="margin-left:10px;" class="special-flag" title="MECNET/MECNET-like collateral: special settlement handling may apply">⚖️ <b>MECNET</b></span>
+    <span style="margin-left:10px;" class="special-flag" title="May close early based on event milestone/live data">⏱️ <b>Early-close</b></span>
+    <span style="margin-left:14px; color:var(--muted);">These flags cause conservative auto-trading gates.</span>
+  </div>
 </header>
 
 <div id="account-panel"></div>
@@ -4554,6 +4560,12 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
   // series/event title, losing which child a price actually referred to).
   // Only shown when it says something the main title doesn't already say.
   const info = marketTitles[m.ticker] || {};
+  const specialFlagHtml = (info.mutually_exclusive || info.collateral_return_type || (m.can_close_early)) ?
+    `<div style="margin-top:6px; font-size:11px; color:var(--muted);">` +
+      `${info.mutually_exclusive ? '<span title="This event is mutually exclusive">🔁 MEC</span> ' : ''}` +
+      `${info.collateral_return_type ? `<span title="Collateral return type: ${esc(info.collateral_return_type)}">⚖️ ${esc(info.collateral_return_type)}</span> ` : ''}` +
+      `${m.can_close_early ? '<span title="May close early based on event milestone">⏱️ Early-close</span>' : ''}` +
+    `</div>` : '';
   const yesSub = info.yes_sub_title && info.yes_sub_title !== label.full ? esc(info.yes_sub_title) : null;
   // Real bug found live (2026-08-10): Kalshi's own API often returns an
   // IDENTICAL no_sub_title/yes_sub_title for a simple 2-way matchup market
@@ -4577,6 +4589,7 @@ function marketCardHTML(m, prices, includeWhale, signals, seriesTrackRecord) {
     <div class="prob-bar"><div class="fill" style="width:${yesPrice ?? 50}%"></div></div>
     <div class="meta"><span>vol ${vol !== undefined ? Math.round(vol).toLocaleString() : '—'}</span><span>${metaRight}</span></div>
     ${whaleHtml}
+    ${specialFlagHtml}
   </div>`;
 }
 
@@ -5550,6 +5563,14 @@ function renderExchangeStatus(status) {
 let lastSuccessfulRefresh = Date.now();
 let consecutiveRefreshFailures = 0;
 let lastWhaleSource = null;  // set from each poll's state.whale_source - see loadConfig()'s real-provider status note
+let refreshTimer = null;
+let refreshIntervalMs = 5000;
+
+function scheduleRefreshTimer(ms) {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshIntervalMs = ms;
+  refreshTimer = setInterval(refresh, refreshIntervalMs);
+}
 
 function renderConnectivity() {
   const el = $('connectivity-badge');
@@ -5817,6 +5838,7 @@ async function refresh() {
     if (marketDetailTicker) refreshMarketDetail();
 
     refreshHistoryInsightsIfActive();
+    refreshActiveViewPanels();
     if (currentView === 'market-native') loadMarketNativeState();
   } catch (e) {
     console.error('refresh failed', e);
@@ -5940,6 +5962,8 @@ async function loadConfig() {
   $('cfg-whale-min-notional-by-series').value = Object.entries((cfg.whale_watcher_kalshi || {}).min_notional_usd_by_series || {})
     .map(([series, amount]) => `${series}:${amount}`).join(', ');
   updateWhaleProviderStatus(lastWhaleSource);
+  const pollIntervalMs = ((cfg.kalshi && cfg.kalshi.poll_interval_sec) || 15) * 1000;
+  scheduleRefreshTimer(pollIntervalMs);
   const seCfg = cfg.series_evaluator || {};
   $('cfg-series-evaluator-enabled').checked = !!seCfg.enabled;
   $('cfg-series-evaluator-min-observation-sec').value = seCfg.min_observation_sec ?? 3600;
@@ -6295,6 +6319,18 @@ function showView(name) {
     $('tab-btn-' + v).classList.toggle('active', v === name);
   });
   localStorage.setItem('whale-signal-view', name);
+  // Clear feed-list render caches when switching away from the Terminal
+  // view to avoid keeping stale id arrays that can prevent a later full
+  // rebuild when the view or rendering mode changes.
+  function clearTerminalFeedCaches() {
+    try {
+      delete _feedListState['signal-feed-list'];
+      delete _feedListState['decision-feed-list'];
+    } catch (e) {
+      // defensive: ignore if _feedListState not present
+    }
+  }
+  if (name !== 'terminal') clearTerminalFeedCaches();
   // Signal history / trading history are separate on-demand fetches, not
   // part of the /api/state poll cycle (see loadSignalHistory,
   // loadTradingHistory) - load fresh whenever the tab is opened, rather
@@ -6308,17 +6344,9 @@ showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorag
 
 // History tab staleness fix (direct report 2026-08-10: "the advisory
 // recommendations seem out-of-date, and should update") - loadTradingHistory()
-// only ever ran once, on tab-open, deliberately (see its own comment above,
-// preserving Trading History's own pagination/sort state from a 5s poll
-// reset). But that meant EVERY panel on the tab - Advisory, Change History,
-// Calibration, Cross-Strategy, Regime, Rejected Candidates, Backtest Sweeps,
-// Series Evaluator, Market Analyst - looked frozen the moment the tab was
-// opened, none of them auto-refreshing while it stayed open. None of these
-// panels have any pagination/sort state of their own to lose, unlike the
-// paginated trade-log table (deliberately left untouched here, still only
-// refreshed on tab-open/explicit navigation) - so they're safe to refresh
-// on a timer without the original regression this file's own history
-// warns about.
+// only ever ran once, on tab-open, deliberately preserving the paginated
+// trade-log table's current page. But the rest of the tab is live data and
+// should still refresh while the History tab remains visible.
 function refreshHistoryInsightsIfActive() {
   if (currentView !== 'history') return;
   loadAdvisory();
@@ -6331,6 +6359,16 @@ function refreshHistoryInsightsIfActive() {
   loadBacktestSweeps();
   loadSeriesEvaluator();
   loadMarketAnalyst();
+}
+
+function refreshActiveViewPanels() {
+  if (currentView === 'whale') {
+    loadSignalHistory();
+    loadSignalClusters();
+  }
+  if (currentView === 'history') {
+    loadTradingHistory();
+  }
 }
 
 // First-run walkthrough (ROADMAP.md P1) - auto-opens the Help modal once,
@@ -6352,7 +6390,9 @@ function setAccountMode(mode) {
 loadConfig();
 loadSession();
 refresh();
-setInterval(refresh, 5000); // backend only updates every poll_interval_sec (15s default) — polling every 3s was fetching identical data ~5x per real update
+// refresh interval is scheduled from the config load so it matches
+// kalshi.poll_interval_sec instead of remaining hardcoded.
+if (!refreshTimer) scheduleRefreshTimer(refreshIntervalMs);
 </script>
 
 </body>

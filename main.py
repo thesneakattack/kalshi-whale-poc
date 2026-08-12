@@ -157,6 +157,78 @@ def _bump_generation():
     state["generation"] += 1
 
 
+async def propagate_milestone_winners(client: KalshiClient, markets: list[dict]) -> dict:
+    """Best-effort: fetch first milestone per event, inspect its live-data
+    for a declared `details.winner`, map that winner to a related market
+    ticker when possible and set market_results for the related tickers
+    (yes/no). Also records outcomes via market_history.record_outcome()
+    so check_exits can close positions this tick. Returns the market_results
+    mapping (ticker -> result) built from the provided markets plus any
+    propagated winners. This is kept separate so it can be unit-tested.
+    """
+    market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
+    try:
+        event_tickers = {m.get("event_ticker") for m in markets if m.get("event_ticker")}
+        milestone_tasks = await asyncio.gather(*(client.get_milestones_for_event(et) for et in event_tickers), return_exceptions=True)
+        for et, ms_result in zip(list(event_tickers), milestone_tasks):
+            if not isinstance(ms_result, list) or not ms_result:
+                continue
+            ms = ms_result[0]
+            ms_id = ms.get("id")
+            ms_type = ms.get("type")
+            if not ms_id or not ms_type:
+                continue
+            try:
+                ld = await client.get_live_data(ms_type, ms_id)
+            except Exception:
+                continue
+            details = (ld.get("live_data") or {}).get("details") or {}
+            winner = details.get("winner")
+            related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
+            if not winner or not related:
+                continue
+            related_markets = await asyncio.gather(*(client.get_market(t) for t in related), return_exceptions=True)
+            mapped_winner_ticker = None
+            for rm in related_markets:
+                if not isinstance(rm, dict):
+                    continue
+                cs = rm.get("custom_strike") or {}
+                try:
+                    if isinstance(cs, dict) and any(str(winner).lower() in str(v).lower() for v in cs.values()):
+                        mapped_winner_ticker = rm.get("ticker")
+                        break
+                except Exception:
+                    pass
+                yst = (rm.get("yes_sub_title") or "")
+                nst = (rm.get("no_sub_title") or "")
+                if isinstance(winner, str) and winner:
+                    wlow = winner.lower()
+                    if yst and wlow in yst.lower():
+                        mapped_winner_ticker = rm.get("ticker")
+                        break
+                    if nst and wlow in nst.lower():
+                        mapped_winner_ticker = rm.get("ticker")
+                        break
+                    title = (rm.get("title") or "")
+                    if title and wlow in title.lower():
+                        mapped_winner_ticker = rm.get("ticker")
+                        break
+            if mapped_winner_ticker:
+                for rt in related:
+                    if rt == mapped_winner_ticker:
+                        market_results[rt] = "yes"
+                    else:
+                        market_results[rt] = "no"
+                now_ts = time.time()
+                for rt, res in ((t, market_results.get(t)) for t in related):
+                    if res in ("yes", "no"):
+                        market_history.record_outcome(rt, res, resolved_at=now_ts)
+                _bump_generation()
+    except Exception:
+        pass
+    return market_results
+
+
 # Kalshi's full market object carries 40+ fields (rules text, combo-leg
 # lists, ...); trimming to what's actually used cuts the /api/state payload
 # for 8 markets from ~34KB to well under 1KB. event_ticker/close_time/
@@ -168,7 +240,7 @@ def _bump_generation():
 # object _fetch_markets gets back, so exposing it costs nothing extra.
 _MARKET_FIELDS = (
     "ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type",
-    "occurrence_datetime", "status", "yes_ask_dollars",
+    "occurrence_datetime", "status", "yes_ask_dollars", "can_close_early",
 )
 
 
@@ -998,6 +1070,7 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
                 "title": event.get("title") or et,
                 "sub_title": event.get("sub_title"),
                 "category": event.get("category"),
+                "collateral_return_type": event.get("collateral_return_type"),
                 # Kalshi's own real field for "exactly one of this event's
                 # sibling markets resolves YES" - already present in every
                 # get_event() response above, previously discarded. Lets
@@ -1561,7 +1634,7 @@ async def trading_loop():
             # full (pre-_slim_market) markets list since result isn't one of
             # _MARKET_FIELDS (that trimming is only for the /api/state
             # payload, not internal use).
-            market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
+            market_results = await propagate_milestone_winners(client, markets)
             state["markets"] = [_slim_market(m) for m in markets]
             # Cheap, pure-DB check (no new API calls - see the docstring on
             # resolve_from_market_results) - runs every tick regardless of
@@ -1951,7 +2024,16 @@ async def trading_loop():
             # need closing (take-profit/stop-loss/sentiment-reversal) purely
             # because the market moved or whale flow shifted, not because a
             # fresh signal arrived. See FollowTheWhaleStrategy.check_exits.
-            for close_decision in strategy.check_exits(state["latest_prices"], state["signal_feed"], cfg, market_results):
+            # opened_since=tick_now (real live bug, 2026-08-11): without
+            # this, a position the signal loop just opened above gets
+            # exit-checked in this same pass against state["latest_prices"],
+            # which was snapshotted at the top of this tick - before that
+            # position's own entry price, if it came from a live trade-tape
+            # print newer than the last quote poll. See check_exits's
+            # docstring for the live incident this fixes.
+            for close_decision in strategy.check_exits(
+                state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
+            ):
                 state["decision_feed"].insert(0, close_decision)
                 state["decision_feed"] = state["decision_feed"][:50]
                 state["stats"]["trades_placed"] += 1
@@ -3093,11 +3175,19 @@ def _build_state_body() -> dict:
     if _state_body_cache["generation"] == state["generation"]:
         return _state_body_cache["body"]
     scoped_market_titles = _scoped_market_titles(_relevant_tickers())
+    # Augment market_titles with any event-level flags (so the UI can read
+    # `mutually_exclusive` / `collateral_return_type` without an extra lookup)
+    event_info = _scoped_event_titles(scoped_market_titles)
+    augmented_market_titles = {}
+    for t, mt in scoped_market_titles.items():
+        et = mt.get("event_ticker")
+        ev = event_info.get(et) or {}
+        augmented_market_titles[t] = {**mt, "mutually_exclusive": ev.get("mutually_exclusive"), "collateral_return_type": ev.get("collateral_return_type")}
     body = {
         "running": state["running"],
         "markets": state["markets"],
-        "market_titles": scoped_market_titles,
-        "event_titles": _scoped_event_titles(scoped_market_titles),
+        "market_titles": augmented_market_titles,
+        "event_titles": event_info,
         "trade_tape": state["trade_tape"],
         "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],
