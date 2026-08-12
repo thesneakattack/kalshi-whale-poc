@@ -52,6 +52,7 @@ class WhaleSignal:
     # bucketing. Only populated by providers that compute one - None for
     # the simulator, same convention as factors itself.
     raw_context: dict | None = None
+    close_time: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -119,7 +120,7 @@ class WhaleSimulator:
         yes_bid = float(market.get("yes_bid_dollars") or 0)
         price = yes_bid if yes_bid > 0 else random.uniform(0.05, 0.95)
         size = self._size_for(market)
-        confidence = self._score_confidence(market, candidates, size, price, now)
+        confidence = self._score_confidence(market, candidates, size, price, now, side=side)
 
         signal = WhaleSignal(
             id=str(uuid.uuid4())[:8],
@@ -168,7 +169,7 @@ class WhaleSimulator:
         return int(min(max(size, lo), hi))
 
     def _score_confidence(
-        self, market: dict, markets: list[dict], size: int, price: float, now: float
+        self, market: dict, markets: list[dict], size: int, price: float, now: float, side: str = "yes"
     ) -> float:
         """Composite score plus a little synthetic noise, so repeated
         simulated prints against the same market don't all land on the exact
@@ -182,7 +183,7 @@ class WhaleSimulator:
         has services/market_history.py's real snapshots to work from for
         any real market) doesn't reach for real price-trend data just to
         score a synthetic print."""
-        base = composite_confidence(market, markets, size, price, now)
+        base = composite_confidence(market, markets, size, price, now, side=side)
         noise = random.uniform(-0.1, 0.1)
         return min(max(base + noise, 0.0), 1.0)
 
@@ -222,7 +223,7 @@ DEFAULT_WEIGHTS = {
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5, weights: dict | None = None,
+    analyst_factor: float = 0.5, weights: dict | None = None, side: str = "yes",
 ) -> ConfidenceBreakdown:
     """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md),
     extended per docs/prediction-market-strategy-alignment-plan.md: trade
@@ -292,11 +293,14 @@ def composite_confidence_breakdown(
     depth_ratio = size / max(market_volume, 1.0)
     depth_factor = 1.0 - math.exp(-_DEPTH_SATURATION_K * depth_ratio)
 
-    # (2) How unusual the price is - closer to a coin-flip (0.5) means the
-    # market's genuinely undecided, so a big directional bet there is more
-    # informationally loaded than one piling onto an already near-certain
-    # 5c/95c market where there's little edge left to have.
-    unusualness_factor = 1.0 - abs(price - 0.5) * 2
+    # (2) How unusual the price is — interpret the traded-side price so
+    # that a "no"-side print at a 1c yes-price (yes=0.01) is treated the
+    # same as a "yes"-side print at 99c (yes=0.99). Use the traded side's
+    # implied probability when measuring distance from a coinflip. This
+    # makes the market's current outcome estimate (the cost) an explicit
+    # input to the confidence computation.
+    traded_side_price = price if str(side).lower() == "yes" else (1.0 - price)
+    unusualness_factor = 1.0 - abs(traded_side_price - 0.5) * 2
 
     # (3) Proximity to the market's own resolution/close time - no
     # close_time (or one already past) contributes nothing rather than
@@ -398,7 +402,7 @@ def composite_confidence_breakdown(
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5, weights: dict | None = None,
+    analyst_factor: float = 0.5, weights: dict | None = None, side: str = "yes",
 ) -> float:
     """The blended score only - see composite_confidence_breakdown for the
     full per-factor detail. Kept as its own function so every existing
@@ -406,5 +410,5 @@ def composite_confidence(
     doesn't need to change."""
     return composite_confidence_breakdown(
         market, markets, size, price, now, agreement_factor, cluster_factor, trend_factor,
-        analyst_factor, weights,
+        analyst_factor, weights, side=side,
     ).score

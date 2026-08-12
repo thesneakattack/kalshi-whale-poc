@@ -288,7 +288,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             breakdown = composite_confidence_breakdown(
                 market, markets, size, price, now,
                 agreement_factor=agreement_factor, cluster_factor=cluster, trend_factor=trend,
-                analyst_factor=analyst, weights=cfg.get("whale_confidence_weights"),
+                analyst_factor=analyst, weights=cfg.get("whale_confidence_weights"), side=side,
             )
             timestamp = _parse_trade_time(trade.get("created_time")) or now
 
@@ -317,6 +317,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 timestamp=timestamp,
                 factors=breakdown.to_dict(),
                 raw_context=raw_context,
+                close_time=market.get("close_time"),
             ))
 
         return signals

@@ -224,7 +224,14 @@ class FollowTheWhaleStrategy:
         # be worth it even in that zone.
         longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
         longshot_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
+        longshot_close_window = strat_cfg.get("longshot_close_window_sec", 900)
         is_longshot = signal.price <= longshot_zone or signal.price >= (1 - longshot_zone)
+        is_near_close = (
+            seconds_to_close is not None
+            and seconds_to_close <= longshot_close_window
+        )
+        if is_longshot and (is_live or is_near_close):
+            longshot_bonus = 0.0
         # Category-conditional base threshold ("web of expertise" audit,
         # 2026-08-11) - falls back to the flat global value whenever category
         # is unknown (e.g. a ticker main.py hasn't resolved a category for

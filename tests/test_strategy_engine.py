@@ -85,6 +85,25 @@ def test_skip_below_min_whale_winrate_logs_a_rejected_candidate(tmp_path, monkey
     assert gates[0]["gate_name"] == "min_whale_winrate_pct"
 
 
+def test_skip_when_close_time_is_more_than_two_hours_away(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3 * 3600))
+    decision = strategy.evaluate(_signal(confidence=0.9, close_time=close_time), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "skip"
+    assert "close time is not within the 2h trade window" in decision["reason"]
+    gates = cl_module.gate_summary()
+    assert any(g["gate_name"] == "close_window" for g in gates)
+
+
+def test_trade_when_close_time_is_within_two_hours(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 60 * 60))
+    decision = strategy.evaluate(_signal(confidence=0.9, close_time=close_time), _cfg(entry_threshold=0.65))
+    assert decision["action"] == "trade"
+
+
 # ---- favorite-longshot-bias-aware entry threshold (docs/prediction-market-strategy-alignment-plan.md Part 2.3) ----
 
 def test_longshot_price_requires_a_higher_confidence_bar(tmp_path, monkeypatch):
@@ -101,6 +120,29 @@ def test_longshot_price_still_trades_above_the_raised_bar(tmp_path, monkeypatch)
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     decision = strategy.evaluate(_signal(confidence=0.85, price=0.10), _cfg(entry_threshold=0.65))
     assert decision["action"] == "trade"
+
+
+def test_longshot_price_trades_near_close_without_bonus(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 10 * 60))
+    decision = strategy.evaluate(
+        _signal(confidence=0.70, price=0.10, close_time=close_time),
+        _cfg(entry_threshold=0.65),
+    )
+    assert decision["action"] == "trade"
+
+
+def test_longshot_price_skips_when_far_from_close(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 60 * 60))
+    decision = strategy.evaluate(
+        _signal(confidence=0.70, price=0.10, close_time=close_time),
+        _cfg(entry_threshold=0.65),
+    )
+    assert decision["action"] == "skip"
+    assert "longshot zone" in decision["reason"]
 
 
 def test_longshot_zone_applies_symmetrically_to_high_prices(tmp_path, monkeypatch):
@@ -534,6 +576,38 @@ def test_check_exits_stop_loss_does_not_trigger_above_limit(tmp_path, monkeypatc
     # only -10% loss, limit is -30%
     decisions = strategy.check_exits({"TICK-A": 0.45}, [], _cfg(stop_loss_pct=0.3))
     assert decisions == []
+
+
+def test_check_exits_skips_position_opened_this_same_tick(tmp_path, monkeypatch):
+    # Live bug, 2026-08-11: a position the signal loop just opened this
+    # tick was immediately stop-lossed against latest_prices snapshotted
+    # at the *top* of the same tick - stale relative to a real trade-tape
+    # print used as this position's own entry_price on a fast-moving
+    # market. opened_since (main.py passes tick_now) must make check_exits
+    # skip anything opened at/after it, even though the raw price move
+    # here would otherwise clear the stop-loss.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    tick_now = time.time()
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # -40% of cost basis - would trigger a 30% stop-loss if evaluated.
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.3}, [], _cfg(stop_loss_pct=0.3), opened_since=tick_now,
+    )
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+
+
+def test_check_exits_still_applies_to_positions_opened_before_this_tick(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    broker.positions["TICK-A"].opened_at = time.time() - 300  # opened 5 minutes ago, a prior tick
+    tick_now = time.time()
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.3}, [], _cfg(stop_loss_pct=0.3), opened_since=tick_now,
+    )
+    assert len(decisions) == 1
+    assert "stop-loss" in decisions[0]["reason"]
+    assert "TICK-A" not in broker.positions
 
 
 def test_check_exits_sentiment_reversal_closes_position(tmp_path, monkeypatch):

@@ -4,10 +4,16 @@ kalshi:
   markets_watchlist: []
   watchlist_size: 50
   max_children_per_parent: null
-  min_volume_24h: 1
-  categories: []
+  min_volume_24h: 10000
+  categories:
+  - Sports
+  - Politics
+  - Mentions
+  - Crypto
+  - Entertainment
+  - Climate and Weather
   live_markets_only: false
-  poll_interval_sec: 15
+  poll_interval_sec: 5
   request_timeout_sec: 10
 whale_signal:
   signal_frequency_sec: 12
@@ -18,35 +24,36 @@ whale_signal:
   live_markets_only: true
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.5
+  entry_threshold: 0.25
   max_position_pct: 0.05
-  cooldown_sec: 150
+  cooldown_sec: 60
   max_open_positions_per_series: null
-  kelly_fraction_of_cap: 0
-  min_whale_winrate_pct: 40
+  kelly_fraction_of_cap: 0.1
+  min_whale_winrate_pct: 0
   min_resolved_for_whale_filter: 10
   live_markets_only: false
   excluded_series: []
   take_profit_pct: null
-  stop_loss_pct: 0.2
+  stop_loss_pct: null
   exit_on_sentiment_reversal: true
+  longshot_close_window_sec: 900
   exit_sentiment_min_signals: 7
   exit_sentiment_lean_pct: 85
   auto_exit_enabled: true
-  auto_exit_threshold: 0.6
+  auto_exit_threshold: 0.7
   auto_exit_pnl_weight: 1
   auto_exit_sentiment_weight: 1
   auto_exit_staleness_weight: 0.5
   auto_exit_analyst_weight: 0.5
-  auto_exit_gain_reference_pct: 0.5
-  auto_exit_loss_reference_pct: 0.3
+  auto_exit_gain_reference_pct: 0.85
+  auto_exit_loss_reference_pct: 0.5
   auto_exit_stale_after_sec: 1800
-  longshot_price_threshold: 0.15
-  longshot_entry_threshold_bonus: 0.15
+  longshot_price_threshold: 0.05
+  longshot_entry_threshold_bonus: 0.05
   entry_threshold_by_category: {}
 risk:
   starting_bankroll: 10000
-  max_daily_loss_pct: 0.25
+  max_daily_loss_pct: 1
   kill_switch_enabled: true
 kalshi_account:
   trading_enabled: false
@@ -62,7 +69,7 @@ market_strategy:
   max_spread: 0.05
   min_volume_24h: 500
   momentum_lookback_sec: 1800
-  min_momentum_delta: 0.05
+  min_momentum_delta: 0.08
   min_seconds_to_close: 3600
   entry_confidence_threshold: 0.5
   take_profit_pct: null
@@ -71,28 +78,28 @@ market_strategy:
   max_daily_loss_pct: 1
   kill_switch_enabled: true
 whale_watcher_kalshi:
-  min_notional_usd: 500
+  min_notional_usd: 1000
   min_notional_usd_by_series: {}
 whale_confidence_weights:
-  depth_factor: 0.3333
-  unusualness_factor: 0.0296
-  proximity_factor: 0.3111
-  context_factor: 0.0296
-  agreement_factor: 0.0296
-  cluster_factor: 0.0963
-  trend_factor: 0.0593
-  analyst_factor: 0.1111
+  depth_factor: 0.30
+  unusualness_factor: 0.20
+  proximity_factor: 0.18
+  context_factor: 0.07
+  agreement_factor: 0.06
+  cluster_factor: 0.06
+  trend_factor: 0.05
+  analyst_factor: 0.08
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 10
   auto_apply_enabled: true
   auto_apply_min_confidence: higher
-  auto_apply_min_n: 25
+  auto_apply_min_n: 100
   auto_apply_cooldown_sec: 86400
 confidence_calibration:
   enabled: true
   min_resolved_signals: 50
-  auto_apply_min_resolved_signals: 150
+  auto_apply_min_resolved_signals: 50
   snapshot_interval_sec: 21600
   auto_apply_enabled: true
   auto_apply_cooldown_sec: 86400
@@ -104,7 +111,7 @@ market_analyst:
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
 series_evaluator:
-  enabled: true
+  enabled: false
   min_observation_sec: 3600
   min_trades_observed: 1000
   max_observation_sec: 21600
