@@ -162,7 +162,7 @@ class FollowTheWhaleStrategy:
                 signal.ticker, "whale_follow", "close_window",
                 seconds_to_close, _MAX_CLOSE_WINDOW_SEC, side=signal.side,
             )
-            return self._skip(signal, "close time is not within the 2h trade window")
+            return self._skip(signal, "close time is not within the trade window")
 
         # Conservative gate for markets with early-close or special settlement
         try:

@@ -639,6 +639,26 @@ works" to "flip it for real" still has open operational questions.
       matching `market_history.clear_all()` and wired all three into
       `POST /api/reset` plus new checkboxes. 3 new tests.
 
+- [ ] **Whale trades opening and instantly stop-lossing before ever showing
+      as an open position (2026-08-11, direct report: "MASSIVE bug...
+      likely theres a problem with the whole stream itself")** — the
+      stream/detection side was fine; real root cause was
+      `FollowTheWhaleStrategy.check_exits()` (`services/strategy_engine.py`)
+      marking a position to market, in the same tick it just opened,
+      against `state["latest_prices"]` — snapshotted at the *top* of that
+      tick, before the trade-tape read that generated the new position.
+      Confirmed against real data: a whale bought yes @ 0.82 on a 15-minute
+      BTC market while `latest_prices` still held a stale 0.67 from the
+      prior poll, computing a fabricated -21% loss and stop-lossing the
+      position 0.146 seconds after opening — a market that then went on to
+      settle at 0.999. Fix: `check_exits()` gained an `opened_since` param
+      (main.py passes `tick_now`) that skips any position opened this same
+      tick, leaving it for the next tick's fresh price. 2 new tests, 724
+      passing. **Fix is written and unit-tested but not yet committed or
+      confirmed live against a real trade** — see
+      `docs/session-2026-08-11-whale-exit-stale-price-bug.md` for the full
+      incident writeup and the exact pickup checklist.
+
 ## Shipped (condensed — see `static/status.html` and
 `docs/roadmap-archive-2026-08-09.md` for full detail)
 
