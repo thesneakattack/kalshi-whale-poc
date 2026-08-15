@@ -40,3 +40,21 @@ def test_taker_fee_is_maximal_at_fifty_cents():
     assert fee_at_mid == pytest.approx(0.0175, abs=0.0001)
     assert taker_fee(1, 0.2) < fee_at_mid
     assert taker_fee(1, 0.8) < fee_at_mid
+
+
+def test_taker_fee_is_zero_for_real_zero_fee_series():
+    # docs/kalshi/kalshi-fee-schedule.pdf's "Non-Standard Fees" table lists
+    # a real multiplier of 0 (full fee waiver) for these ten series -
+    # 2026-08-14 direct request to reconcile the app's fee model against
+    # the real schedule.
+    assert taker_fee(100, 0.5, ticker="KXETHY-26-T5000") == 0.0
+    assert taker_fee(100, 0.5, ticker="KXBTCY-26-T150000") == 0.0
+    assert taker_fee(100, 0.5, ticker="KXGREENLAND-26") == 0.0
+
+
+def test_taker_fee_ticker_omitted_or_ordinary_series_is_unaffected():
+    # Every series not in the real schedule's zero-multiplier list uses the
+    # default multiplier of 1 - identical to omitting ticker entirely, and
+    # identical to every pre-2026-08-14 call site's behavior.
+    assert taker_fee(100, 0.5, ticker="KXNFLGAME-26AUG15MINNYG-MIN") == taker_fee(100, 0.5)
+    assert taker_fee(100, 0.5, ticker=None) == taker_fee(100, 0.5)

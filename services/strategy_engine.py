@@ -105,6 +105,7 @@ class FollowTheWhaleStrategy:
     def evaluate(
         self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None, market_results: dict | None = None,
         config_fingerprint: str | None = None, latest_prices: dict | None = None, category: str | None = None,
+        me_complement: str | None = None,
     ) -> dict:
         """Returns a decision dict describing what happened (trade or skip + why).
         is_live comes from main.py's milestone/live-data lookup (see
@@ -127,7 +128,20 @@ class FollowTheWhaleStrategy:
         strategy.entry_threshold_by_category has an override for it, that
         replaces the flat strategy.entry_threshold as the base before the
         longshot bonus is added on top - same override-dict shape as
-        whale_watcher_kalshi.min_notional_usd_by_series, not a new pattern."""
+        whale_watcher_kalshi.min_notional_usd_by_series, not a new pattern.
+
+        me_complement (2026-08-14 direct request): the other ticker in a
+        confirmed 2-outcome mutually-exclusive pair (services/
+        mutual_exclusivity.py), when signal.ticker is one half of one -
+        main.py resolves this once per tick from already-fetched
+        state["markets"]/state["event_titles"], zero new API calls. When
+        given and a position is already open on that complement ticker,
+        this signal is skipped - holding both halves of a genuine 2-way
+        matchup (e.g. yes on "Team A to win" AND yes on "Team B to win")
+        is a real offsetting-bet risk, the same "betting against yourself"
+        shape as the whipsaw pattern found in this session's trade-history
+        review, just across two different tickers instead of one ticker
+        re-entered over time."""
         strat_cfg = cfg["strategy"]
 
         # Audit finding (2026-08-09): this used to be self.broker.equity({})
@@ -281,6 +295,19 @@ class FollowTheWhaleStrategy:
         # actually happened in live trade history before this check existed.
         if signal.ticker in self.broker.positions:
             return self._skip(signal, "position already open on this market")
+
+        # Mutually-exclusive complement check (2026-08-14 direct request,
+        # see this method's own me_complement docstring) - the same
+        # "silently overwrites/duplicates exposure" risk as the same-ticker
+        # check above, just across two tickers that are economically one
+        # bet instead of one ticker held twice.
+        if me_complement and me_complement in self.broker.positions:
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "mutually_exclusive_duplicate", 1.0, 0.0, side=signal.side,
+            )
+            return self._skip(
+                signal, f'already holding a position on "{me_complement}", this market\'s mutually-exclusive complement',
+            )
 
         # Concentration risk (deep-scan finding 2, 2026-08-10): the check
         # above only ever guards the exact same ticker - nothing previously
@@ -456,7 +483,7 @@ class FollowTheWhaleStrategy:
             # before fees make it worse." services/kalshi_fees.py's formula
             # is symmetric/deterministic, so estimating the not-yet-incurred
             # close fee here is exact, not a guess.
-            close_fee = kalshi_fees.taker_fee(pos.size, current_price)
+            close_fee = kalshi_fees.taker_fee(pos.size, current_price, ticker=ticker)
             pnl_pct = (self.broker.mark_to_market(ticker, current_price) - pos.entry_fee - close_fee) / cost_basis
 
             reason = None
@@ -470,23 +497,43 @@ class FollowTheWhaleStrategy:
                     f"stop-loss hit: unrealized loss {-pnl_pct:.0%} of cost basis "
                     f"(limit {stop_loss_pct:.0%})"
                 )
-            elif exit_on_reversal:
-                lean = _whale_lean(ticker, signal_feed)
-                if lean and lean["count"] >= min_signals:
-                    opposite_pct = (100 - lean["yes_pct"]) if pos.side == "yes" else lean["yes_pct"]
-                    if opposite_pct >= reversal_lean_pct:
+            else:
+                # Real bug found 2026-08-14: this used to be `elif
+                # exit_on_reversal:` / `elif auto_exit_enabled:` - two
+                # separate elif branches off the SAME chain as take_profit/
+                # stop_loss above. Those two are safe as elif because their
+                # own condition already tests both "enabled" and "actually
+                # triggered" in one expression. exit_on_reversal wasn't: the
+                # elif only tested the enabled flag, so whenever it was
+                # True the branch was taken unconditionally, and if the
+                # sentiment check inside then found nothing (the common
+                # case - most ticks, most tickers), reason stayed None and
+                # the chain had already used its one shot, so `elif
+                # auto_exit_enabled` below never even ran - auto_exit was
+                # completely unreachable for the entire time
+                # exit_on_sentiment_reversal was also on (which, per
+                # config/settings.yaml's history, was simultaneously true
+                # with auto_exit_enabled for a long stretch). Docstring
+                # above (`auto_exit_enabled`'s own line) always said this
+                # should run "only when none of the three hard rules
+                # already decided to close" - decided, not merely enabled.
+                if exit_on_reversal:
+                    lean = _whale_lean(ticker, signal_feed)
+                    if lean and lean["count"] >= min_signals:
+                        opposite_pct = (100 - lean["yes_pct"]) if pos.side == "yes" else lean["yes_pct"]
+                        if opposite_pct >= reversal_lean_pct:
+                            reason = (
+                                f"whale sentiment reversed: {opposite_pct:.0f}% of {lean['count']} recent "
+                                f"prints now lean against this {pos.side} position"
+                            )
+                if reason is None and auto_exit_enabled:
+                    confidence, factors = _exit_confidence(pos, pnl_pct, ticker, signal_feed, strat_cfg)
+                    if confidence >= auto_exit_threshold:
+                        breakdown = ", ".join(f"{name}={factor:.0%}" for name, (factor, _weight) in factors.items())
                         reason = (
-                            f"whale sentiment reversed: {opposite_pct:.0f}% of {lean['count']} recent "
-                            f"prints now lean against this {pos.side} position"
+                            f"auto-exit: composite confidence {confidence:.0%} >= {auto_exit_threshold:.0%} "
+                            f"threshold (factors: {breakdown})"
                         )
-            elif auto_exit_enabled:
-                confidence, factors = _exit_confidence(pos, pnl_pct, ticker, signal_feed, strat_cfg)
-                if confidence >= auto_exit_threshold:
-                    breakdown = ", ".join(f"{name}={factor:.0%}" for name, (factor, _weight) in factors.items())
-                    reason = (
-                        f"auto-exit: composite confidence {confidence:.0%} >= {auto_exit_threshold:.0%} "
-                        f"threshold (factors: {breakdown})"
-                    )
 
             if reason is None:
                 continue
@@ -561,6 +608,15 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
       absent entirely (not zero) when there's no fresh estimate on file
       for this ticker at all, same "don't penalize for missing data"
       idiom every other optional factor here already follows.
+    - series_track_record: this series' real whale-follow win rate
+      (signal_log.series_stats, same source the entry-side
+      min_whale_winrate_pct filter already uses) - independent evidence a
+      currently-open position sits in a series that's proven unreliable
+      for this strategy, even if this specific position's own price/
+      sentiment/analyst factors haven't yet turned against it. Off by
+      default (auto_exit_series_track_record_weight: 0.0) - new,
+      unvalidated against real data yet, same "ships fully built, opt-in"
+      precedent as kelly_fraction_of_cap.
 
     Missing factors (e.g. no whale prints on this ticker at all) are left
     out of the average entirely rather than treated as 0 - same "don't
@@ -573,6 +629,30 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     w_sentiment = strat_cfg.get("auto_exit_sentiment_weight", 1.0)
     w_staleness = strat_cfg.get("auto_exit_staleness_weight", 0.5)
     w_analyst = strat_cfg.get("auto_exit_analyst_weight", 0.5)
+    w_series = strat_cfg.get("auto_exit_series_track_record_weight", 0.0)
+
+    # Volatility-normalize the pnl reference points (2026-08-14 direct
+    # request - "look at it from all angles... volatility" - a real gap:
+    # gain_ref/loss_ref were flat percentages applied identically to a
+    # slow-moving political market and a fast 15-minute crypto market, so
+    # the same raw move read as equally "decisive" on both, a real
+    # contributor to the whipsaw pattern found in this session's trade-
+    # history review (auto-exit firing on a ticker's normal noise, not a
+    # genuine reversal). Wider references (harder to trigger) when this
+    # ticker is currently more volatile than the configured "typical"
+    # baseline, tighter when it's calmer than usual. vol_ratio clamped to
+    # [0.25, 4.0] so one noisy volatility reading can't send a reference
+    # to zero or to an unreachable extreme. Strictly backward compatible:
+    # vol_ratio falls back to 1.0 (today's unscaled behavior) whenever
+    # there isn't yet enough snapshot history to measure volatility, or
+    # when auto_exit_normal_volatility is set to 0/null (explicit opt-out,
+    # same "0 disables" convention as kelly_fraction_of_cap).
+    normal_vol = strat_cfg.get("auto_exit_normal_volatility", 0.02)
+    vol_lookback = strat_cfg.get("auto_exit_volatility_lookback_sec", 1800)
+    vol = market_history.volatility(ticker, vol_lookback) if normal_vol else None
+    vol_ratio = max(0.25, min(4.0, vol / normal_vol)) if vol is not None and normal_vol else 1.0
+    gain_ref *= vol_ratio
+    loss_ref *= vol_ratio
 
     if pnl_pct >= 0:
         pnl_factor = min(1.0, pnl_pct / gain_ref) if gain_ref > 0 else 0.0
@@ -598,6 +678,21 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
         divergence = (0.5 - lean_estimate) if pos.side == "yes" else (lean_estimate - 0.5)
         analyst_factor = max(0.0, min(1.0, divergence / 0.5))
         factors["analyst_divergence"] = (analyst_factor, w_analyst)
+
+    # Off by default (see docstring) - only queried at all when a nonzero
+    # weight opts in, so a position-management tick doesn't pay for a
+    # series_stats() read on every open position for a factor nobody's
+    # using yet.
+    if w_series > 0:
+        min_resolved = strat_cfg.get("min_resolved_for_whale_filter", 5)
+        series_record = signal_log.series_stats(ticker, days=30)
+        if series_record["resolved"] >= min_resolved and series_record["win_rate"] is not None:
+            # Anchored at 50% (coin-flip = neutral), same convention as the
+            # sentiment/analyst_divergence factors above - a series win
+            # rate at or above 50% contributes no pressure; below it scales
+            # linearly up to full pressure at 0%.
+            series_factor = max(0.0, min(1.0, (50 - series_record["win_rate"]) / 50))
+            factors["series_track_record"] = (series_factor, w_series)
 
     total_weight = sum(w for _, w in factors.values())
     confidence = (sum(f * w for f, w in factors.values()) / total_weight) if total_weight > 0 else 0.0

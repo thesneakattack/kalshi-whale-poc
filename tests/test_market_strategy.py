@@ -176,6 +176,32 @@ def test_skips_when_position_already_open(tmp_path, monkeypatch):
     assert decisions == []
 
 
+def test_skips_when_position_already_open_on_me_complement(tmp_path, monkeypatch):
+    # 2026-08-14 direct request - TEAM-B is a different ticker, confirmed
+    # (via me_pairs) as TEAM-A's 2-outcome mutually-exclusive complement.
+    # Holding both would be an offsetting bet on the same underlying event.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    broker.open_position("TEAM-A", "yes", size=10, price=0.6, reason="existing")
+    _seed_momentum(tmp_path, "TEAM-B", now, 0.4, 0.6)
+    decisions = strategy.evaluate_all(
+        [_market(ticker="TEAM-B", now=now)], now, _permissive_cfg(), me_pairs={"TEAM-B": "TEAM-A", "TEAM-A": "TEAM-B"},
+    )
+    assert decisions == []
+    assert "TEAM-B" not in broker.positions
+
+
+def test_trades_when_me_complement_has_no_open_position(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TEAM-B", now, 0.4, 0.6)
+    decisions = strategy.evaluate_all(
+        [_market(ticker="TEAM-B", now=now)], now, _permissive_cfg(), me_pairs={"TEAM-B": "TEAM-A", "TEAM-A": "TEAM-B"},
+    )
+    assert len(decisions) == 1
+    assert "TEAM-B" in broker.positions
+
+
 def test_skips_when_series_already_at_max_open_positions(tmp_path, monkeypatch):
     # Deep-scan finding 2 (2026-08-10) - concentration risk across
     # simultaneously-open positions on the same series. TICK-B is a

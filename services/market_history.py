@@ -149,6 +149,40 @@ def momentum(ticker: str, lookback_sec: float, as_of: float | None = None) -> di
     }
 
 
+def volatility(ticker: str, lookback_sec: float, as_of: float | None = None) -> float | None:
+    """Realized-volatility proxy: population stdev of consecutive-snapshot
+    price deltas within the trailing lookback_sec window - "how much does
+    this ticker's price normally wiggle," deliberately orthogonal to
+    momentum() (net direction/magnitude of the move, not its noisiness).
+    2026-08-14 direct request (auto-exit deep-dive): the pnl factor in
+    services/strategy_engine.py's _exit_confidence compared the same raw
+    percentage move the same way for every ticker regardless of how much
+    that ticker normally moves - a real move on a slow-moving political
+    market and routine noise on a fast in-play sports market read as
+    equally "decisive," a real contributor to the whipsaw pattern found in
+    that session's trade-history review (auto-exit firing on what was
+    normal volatility for that specific ticker, not a genuine signal).
+    None when there isn't enough history to trust a reading (fewer than 3
+    snapshots in window - need at least 2 deltas to measure spread at
+    all), same "missing data is 'no signal,' never a false zero" idiom as
+    momentum()."""
+    as_of = as_of if as_of is not None else time.time()
+    window_start = as_of - lookback_sec
+    with _connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT yes_price FROM snapshots WHERE ticker = ? AND timestamp <= ? AND timestamp >= ? "
+            "ORDER BY timestamp ASC",
+            (ticker, as_of, window_start),
+        ).fetchall()
+    if len(rows) < 3:
+        return None
+    prices = [r[0] for r in rows]
+    deltas = [prices[i + 1] - prices[i] for i in range(len(prices) - 1)]
+    mean_delta = sum(deltas) / len(deltas)
+    variance = sum((d - mean_delta) ** 2 for d in deltas) / len(deltas)
+    return variance ** 0.5
+
+
 def snapshot_count(ticker: str | None = None) -> int:
     with _connect(DB_PATH) as conn:
         if ticker:

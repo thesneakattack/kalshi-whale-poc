@@ -94,6 +94,9 @@ strategy:
   auto_exit_gain_reference_pct: 0.95
   auto_exit_loss_reference_pct: 0.9
   auto_exit_stale_after_sec: 7200
+  auto_exit_normal_volatility: 0.02
+  auto_exit_volatility_lookback_sec: 1800
+  auto_exit_series_track_record_weight: 0
   longshot_price_threshold: 0.05
   longshot_entry_threshold_bonus: 0.05
   entry_threshold_by_category: {}

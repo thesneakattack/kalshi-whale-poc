@@ -11,6 +11,166 @@ Plus an 8-angle code review of the "heuristics and suggestions" subsystem
 `stats_power.py`). This doc is the detail; `ROADMAP.md` has the one-line
 pointer per this repo's usual split.
 
+## Part 2 (same session, continued): exit-strategy deep dive, fee schedule
+reconciliation, mutually-exclusive pair detection
+
+Three more direct requests handled in the same session, after the Part 1
+work below had already shipped:
+
+### Exit-strategy deep dive ("look at it from all angles - volatility,
+whale signals, confidence, time til close, the series or market itself")
+
+**Critical bug found and fixed**: `strategy_engine.py`'s `check_exits()`
+had `exit_on_sentiment_reversal` and `auto_exit_enabled` as two separate
+`elif` branches on the same chain as `take_profit_pct`/`stop_loss_pct`.
+Those two are safe as `elif` because their own condition tests both
+"enabled" and "actually triggered" in one expression - `exit_on_reversal`'s
+`elif` only tested the enabled flag, so whenever it was simply `True` that
+branch was taken regardless of whether sentiment had actually reversed,
+and if the check inside then found nothing (too few signals - the common
+case, most ticks, most tickers), `reason` stayed `None` and the chain had
+already used its one shot: `auto_exit_enabled` never even ran.
+`config/settings.yaml`'s own history shows both flags were simultaneously
+`True` in real production config, not just a hypothetical - meaning
+**auto-exit's composite scoring system was completely dead code for the
+entire time that config was live**. Fixed by restructuring so `auto_exit`
+runs whenever sentiment-reversal doesn't itself decide to close, matching
+what the function's own docstring always said the intent was. New
+regression test (`test_check_exits_auto_exit_still_runs_when_sentiment_
+reversal_also_enabled`) - no prior test exercised both flags together,
+which is exactly how this shipped unnoticed.
+
+**New: volatility-aware pnl thresholds.** `_exit_confidence()`'s
+`gain_ref`/`loss_ref` were flat percentages applied identically to a
+slow-moving political market and a fast 15-minute crypto market - a real
+contributor to the whipsaw pattern found in Part 1's trade-history review
+(auto-exit firing on a ticker's normal noise, not a genuine reversal). New
+`services/market_history.volatility()` (population stdev of consecutive-
+snapshot price deltas - real data, already being collected for every
+watchlist ticker regardless of strategy) scales both references by how
+unusual a ticker's current volatility is relative to a configurable
+"typical" baseline (`strategy.auto_exit_normal_volatility`, default 0.02;
+`strategy.auto_exit_volatility_lookback_sec`, default 1800). Strictly
+backward compatible - falls back to unscaled behavior whenever there's
+insufficient snapshot history, or when `auto_exit_normal_volatility` is
+set to 0 (explicit opt-out, same convention as `kelly_fraction_of_cap`).
+
+**New: series-track-record factor.** `_exit_confidence()` can now weigh a
+currently-open position's own series' real whale-follow win rate
+(`signal_log.series_stats()`, the same source the entry-side
+`min_whale_winrate_pct` filter already uses) as independent exit pressure
+- a series that's proven unreliable is evidence for exiting even before
+this specific position's own price/sentiment/analyst factors turn
+against it. Off by default (`strategy.auto_exit_series_track_record_
+weight: 0`), same "ships fully built, opt-in" precedent as
+`kelly_fraction_of_cap`.
+
+**`market_native` deliberately out of scope** - direct clarification
+mid-session: "ignore the market native strategy, my intent is for it to be
+a control to test against whale watching strat and its not ready yet."
+Its 98.9%-bankroll-loss finding from Part 1 stands as a data point, not an
+action item.
+
+**Deliberately deferred, not half-implemented**: a time-til-close factor
+(urgency should rise as a losing position nears its market's close, since
+there's no time left to recover - but NOT push out a winning position
+early, that's `take_profit_pct`'s job specifically). Needs `close_time`
+threaded through `check_exits()` and all 3 of its call sites in `main.py`
+(it currently receives no market-metadata dict at all, unlike
+`evaluate()`), plus a real design decision on how it should interact with
+the now-two other reference-point modifiers (volatility already scales
+`loss_ref`/`gain_ref` - stacking a third multiplier without careful
+reasoning risks an uninterpretable combined threshold). Sketch: an
+`auto_exit_time_urgency_window_sec` config field, tightening `loss_ref`
+only (not `gain_ref`) as `seconds_to_close` shrinks below it.
+
+### Fee schedule reconciliation (`docs/kalshi/kalshi-fee-schedule.pdf`,
+effective 2026-07-07)
+
+Read the real official schedule and checked it against `services/
+kalshi_fees.py`. The core formula and rounding were already correct -
+independently verified against 3 real fills back in the 2026-08-09 work,
+now cross-confirmed against the official PDF too. Two real gaps found:
+
+1. **A real per-series fee waiver was completely unmodeled.** The
+   schedule's "Non-Standard Fees" table lists a maker/taker multiplier per
+   series (default 1 for everything not listed) - ten series have
+   multiplier **0**, a full fee waiver: `KXBTCY`, `KXCITRINI`, `KXDOED`,
+   `KXELECTIRAN`, `KXGAMBLINGREPEAL`, `KXGREENLAND`, `KXIRANDEMOCRACY`,
+   `KXLAYOFFSYINFO`, `KXPAHLAVIHEAD`, `KXETHY`. `taker_fee()` took no
+   ticker/series at all, so every trade on these (if any had ever
+   happened) would have been overcharged. **Checked real trade history
+   before writing the fix**: zero trades in either strategy's trade log
+   have ever touched any of these ten series (confirmed via direct SQLite
+   query against both `paper_broker.db` and `market_broker.db`) - nothing
+   to correct retroactively, this was a forward-looking fix only. New
+   optional `ticker` param on `taker_fee()`, wired through all 4
+   production call sites (`paper_broker.py`'s open/close,
+   `strategy_engine.py` and `market_strategy.py`'s `check_exits`
+   estimates). Fully backward compatible - every pre-existing call site
+   that doesn't pass `ticker` keeps the exact prior behavior.
+2. **A second, related gap found but deliberately not acted on**: Kalshi's
+   real per-event API response includes `fee_type_override`/`fee_
+   multiplier_override` fields - `main.py`'s `_fetch_event_titles` has
+   been fetching and caching these since before this session (confirmed
+   via grep), but nothing has ever read them. This would be a MORE robust
+   source than the hardcoded ten-series list above (always current, vs. a
+   snapshot of one PDF dated 2026-07-07 that could go stale if Kalshi
+   changes the list) - but wiring it in means threading live event data
+   into `taker_fee()`'s call sites, a real plumbing change, not a one-line
+   fix. Worth doing; not rushed into this same session.
+
+### Mutually-exclusive pair detection ("any series/market that contains a
+2x2 matrix of yes/no where the top row is the inversion of the bottom
+row... needs to be accounted for algorithmically, data-wise")
+
+Found that detection logic for this already existed twice, unused both
+times: `services/event_inspector.py` (a manual, standalone inspection
+script - `mutually_exclusive` flag + a price-sum-to-~1.0 fallback
+heuristic - never imported by any live code path) and `main.py`'s own
+`_fetch_event_titles`, which has cached Kalshi's real `mutually_exclusive`
+event flag every tick since before this session, used only for display
+(`eventGroupCardHTML`) and one conservative settlement-timing gate -
+never to detect or prevent an offsetting position across a pair.
+
+New `services/mutual_exclusivity.find_me_pairs(markets, event_titles)` -
+pure function, extracts/generalizes `event_inspector.py`'s heuristic:
+Kalshi's own flag is authoritative when present, price-sum fallback only
+when it's genuinely missing (`None`, meaning "not backfilled yet" per
+`main.py`'s own established convention for that field). Deliberately
+conservative - only pairs an event with exactly two currently-fetched
+sibling markets, never a real N-way mutually-exclusive event (e.g. a
+60-golfer tournament winner). Recomputed fresh every tick from
+already-fetched data (zero new API calls), stored in `state["me_pairs"]`
+(exposed via `/api/state` for inspection), shared by both strategies
+rather than each computing its own copy.
+
+**Algorithmic use**: both `FollowTheWhaleStrategy.evaluate()` and
+`MarketNativeStrategy._evaluate_one()` now reject a signal/candidate whose
+confirmed mutually-exclusive complement ticker already has an open
+position - the same "silently duplicates exposure" risk the existing
+same-ticker check guards, just across two tickers that are economically
+one bet instead of one ticker held twice. New `candidate_log` gate
+(`mutually_exclusive_duplicate`) for both strategies, consistent with
+every other entry gate's rejection-logging convention. 13 new tests (9
+pure detection-function tests + 4 integration tests, 2 per strategy).
+
+**Deliberately deferred** (explicit "your call" from the user on whether
+to also merge ME pairs' order flow into signal analysis, not just gate
+entries): folding a complement ticker's inverted-side whale prints into
+`_whale_lean()`'s sentiment read (a whale buying YES on "Team B" is
+informationally equivalent to buying NO on "Team A," currently invisible
+to `TEAM-A`'s own sentiment factor). Not implemented this session -
+`_whale_lean()` is called from both `exit_on_sentiment_reversal` and
+`_exit_confidence()`'s sentiment factor, so this would need `me_complement`
+threaded through `check_exits()` too (a new param, on top of the three
+factor changes above, on the same function in the same session - real risk
+of stacking too many simultaneous behavior changes on the safety-relevant
+exit path without room to test each in isolation). The entry-gate
+duplicate-position check above is the higher-confidence, lower-risk half
+of "account for it" and is what shipped; the signal-merging half is a
+clean, well-specified next step, not an oversight.
+
 ## Already fixed this session (see git log / commit for the exact diff)
 
 - `strategy_engine.py`'s close-window was a hardcoded `_MAX_CLOSE_WINDOW_SEC`

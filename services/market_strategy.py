@@ -95,7 +95,10 @@ class MarketNativeStrategy:
         self.broker = broker
         self.risk = risk
 
-    def evaluate_all(self, markets: list[dict], now: float, cfg: dict, market_results: dict | None = None) -> list[dict]:
+    def evaluate_all(
+        self, markets: list[dict], now: float, cfg: dict, market_results: dict | None = None,
+        me_pairs: dict[str, str] | None = None,
+    ) -> list[dict]:
         """Scans every currently-fetched real market once per trading-loop
         tick and opens a position on any that clears every filter. Unlike
         FollowTheWhaleStrategy.evaluate() (one call per incoming signal),
@@ -103,7 +106,14 @@ class MarketNativeStrategy:
         actually qualify produce a decision; a market that doesn't isn't
         logged as a skip, since a skip-per-market-per-tick would flood the
         decision feed for zero benefit (this strategy is backend-only for
-        now, see docs/advisory-engine-plan.md)."""
+        now, see docs/advisory-engine-plan.md).
+
+        me_pairs (2026-08-14 direct request): {ticker: complement_ticker}
+        from services/mutual_exclusivity.find_me_pairs() - main.py computes
+        this once per tick (shared with FollowTheWhaleStrategy, same
+        already-fetched markets/event_titles, zero new API calls) and
+        passes it straight through rather than this strategy recomputing
+        its own copy."""
         strat_cfg = cfg["market_strategy"]
         if not strat_cfg.get("enabled"):
             return []
@@ -128,18 +138,30 @@ class MarketNativeStrategy:
             return []  # halted - same hard rail as the whale strategy
 
         market_results = market_results or {}
+        me_pairs = me_pairs or {}
         decisions = []
         for market in markets:
-            decision = self._evaluate_one(market, now, strat_cfg, market_results)
+            decision = self._evaluate_one(market, now, strat_cfg, market_results, me_pairs.get(market.get("ticker")))
             if decision is not None:
                 decisions.append(decision)
         return decisions
 
-    def _evaluate_one(self, market: dict, now: float, strat_cfg: dict, market_results: dict) -> dict | None:
+    def _evaluate_one(
+        self, market: dict, now: float, strat_cfg: dict, market_results: dict, me_complement: str | None = None,
+    ) -> dict | None:
         ticker = market.get("ticker")
         if not ticker:
             return None
         if ticker in self.broker.positions:
+            return None
+        # Mutually-exclusive complement check (2026-08-14 direct request) -
+        # same reasoning as FollowTheWhaleStrategy.evaluate()'s own check:
+        # holding both halves of a genuine 2-way matchup is an offsetting
+        # bet, not two independent positions.
+        if me_complement and me_complement in self.broker.positions:
+            candidate_log.record_rejection(
+                ticker, "market_native", "mutually_exclusive_duplicate", 1.0, 0.0,
+            )
             return None
         # Concentration risk (deep-scan finding 2, 2026-08-10) - same shared
         # helper/reasoning as FollowTheWhaleStrategy.evaluate()'s own check;
@@ -276,7 +298,7 @@ class MarketNativeStrategy:
             # check_exits: a stop_loss_pct/take_profit_pct should mean "X%
             # of what was actually put in," not "X% of the raw price move
             # before fees make it worse."
-            close_fee = kalshi_fees.taker_fee(pos.size, current_price)
+            close_fee = kalshi_fees.taker_fee(pos.size, current_price, ticker=ticker)
             pnl_pct = (self.broker.mark_to_market(ticker, current_price) - pos.entry_fee - close_fee) / cost_basis
 
             reason = None

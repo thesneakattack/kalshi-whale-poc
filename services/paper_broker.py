@@ -194,7 +194,7 @@ class PaperBroker:
         # paper POC (see the "never go negative in the POC" comment above,
         # already an approximation, not a hard invariant), not worth the
         # complexity of solving cost+fee<=bankroll simultaneously.
-        fee = kalshi_fees.taker_fee(actual_size, price)
+        fee = kalshi_fees.taker_fee(actual_size, price, ticker=ticker)
 
         self.bankroll -= (cost + fee)
         self.positions[ticker] = Position(
@@ -253,7 +253,7 @@ class PaperBroker:
         # subtracting it again here (alongside this leg's own close_fee)
         # makes the reported number match bankroll's actual net change
         # across the full round trip, not just the raw price move.
-        close_fee = kalshi_fees.taker_fee(pos.size, exit_price)
+        close_fee = kalshi_fees.taker_fee(pos.size, exit_price, ticker=ticker)
         gross_cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
         cash_back = gross_cash_back - close_fee
         realized_pnl = self.mark_to_market(ticker, exit_price) - pos.entry_fee - close_fee

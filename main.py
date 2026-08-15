@@ -31,6 +31,7 @@ from services import market_analyst_agent
 from services import market_catalog
 from services import market_history
 from services import ml_feed
+from services import mutual_exclusivity
 from services import series_evaluator
 from services import signal_log
 from services import title_cache
@@ -113,6 +114,7 @@ state = {
     # watchlist or the dev server reloads.
     "market_titles": title_cache.load_market_titles(),
     "event_titles": title_cache.load_event_titles(),  # event_ticker -> {"title", "sub_title", "category", "mutually_exclusive"}, see _fetch_event_titles
+    "me_pairs": {},  # ticker -> complement_ticker, confirmed 2-outcome mutually-exclusive pairs, see services/mutual_exclusivity.py
     "trade_tape": [],  # real trades across the current watchlist, newest first, see _fetch_trade_tape
     "trade_tape_last_fetch_ts": None,  # watermark for _fetch_trade_tape's incremental min_ts fetch - None until the first successful tick
     "market_results": {},
@@ -228,10 +230,11 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     event_ticker = market_info.get("event_ticker")
     is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
     category = (state["event_titles"].get(event_ticker) or {}).get("category")
+    me_complement = (state.get("me_pairs") or {}).get(signal.ticker)
 
     decision = strategy.evaluate(
         signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
-        latest_prices=state["latest_prices"], category=category,
+        latest_prices=state["latest_prices"], category=category, me_complement=me_complement,
     )
     state["decision_feed"].insert(0, decision)
     state["decision_feed"] = state["decision_feed"][:50]
@@ -2069,7 +2072,7 @@ async def trading_loop():
             # independently measurable (see the plan doc). Was computed and
             # discarded every tick until the Market-Native tab (2026-08-10,
             # direct request) needed a real feed to show.
-            for decision in market_strategy.evaluate_all(markets, tick_now, cfg, market_results):
+            for decision in market_strategy.evaluate_all(markets, tick_now, cfg, market_results, state.get("me_pairs")):
                 state["market_decision_feed"].insert(0, decision)
                 if decision["action"] == "trade":
                     # Same category-at-entry-time capture as the whale-follow
@@ -2107,6 +2110,14 @@ async def trading_loop():
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
             state["event_titles"].update(event_titles)
+            # Mutually-exclusive pair detection (2026-08-14 direct request,
+            # services/mutual_exclusivity.py) - recomputed fresh every tick
+            # from this tick's markets/event_titles (cheap, pure, zero new
+            # API calls), not persisted, so a sibling set or Kalshi's own
+            # flag changing is reflected immediately instead of going
+            # stale. Shared by both strategies below rather than each
+            # computing its own copy.
+            state["me_pairs"] = mutual_exclusivity.find_me_pairs(markets, state["event_titles"])
             tags_by_categories = state["category_metadata"].get("tags_by_categories") or {}
             for et, event_meta in state["event_titles"].items():
                 category = event_meta.get("category")

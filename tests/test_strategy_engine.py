@@ -4,6 +4,7 @@ import pytest
 
 from services import candidate_log as cl_module
 from services import market_analyst_agent as maa_module
+from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import signal_log
@@ -43,6 +44,12 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     # data/market_analyst.db on every check_exits() call.
     monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(cl_module, "DB_PATH", tmp_path / "candidate_log.db")
+    # _exit_confidence's new volatility-normalization (2026-08-14 auto-exit
+    # deep-dive) calls market_history.volatility() whenever auto_exit_
+    # enabled is on - redirect this too, same real-data-contamination bug
+    # class this project has already found and fixed for market_analyst_
+    # agent/candidate_log above.
+    monkeypatch.setattr(mh_module, "DB_PATH", tmp_path / "market_history.db")
     broker = pb_module.PaperBroker(starting_bankroll=bankroll)
     risk = rm_module.RiskManager(bankroll, max_daily_loss_pct, kill_switch_enabled)
     # Default: no whale-filter opinion at all, so the filter branch is a
@@ -395,6 +402,32 @@ def test_skip_when_position_already_open_on_ticker(tmp_path, monkeypatch):
     assert decision["action"] == "skip"
     assert "already open" in decision["reason"]
     assert len(broker.trade_log) == 1  # the second signal never touched the broker
+
+
+# ---- me_complement (mutually-exclusive pair) check (2026-08-14) ----------
+
+def test_skip_when_position_already_open_on_me_complement(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(ticker="TEAM-A", confidence=0.9, price=0.6), _cfg())
+    assert "TEAM-A" in broker.positions
+    # TEAM-B is a different ticker, confirmed as TEAM-A's 2-outcome
+    # mutually-exclusive complement - holding both would be an offsetting
+    # bet on the same underlying event, not two independent positions.
+    decision = strategy.evaluate(
+        _signal(ticker="TEAM-B", confidence=0.9, price=0.4), _cfg(), me_complement="TEAM-A",
+    )
+    assert decision["action"] == "skip"
+    assert "mutually-exclusive complement" in decision["reason"]
+    assert "TEAM-B" not in broker.positions
+
+
+def test_trades_when_me_complement_has_no_open_position(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TEAM-B", confidence=0.9, price=0.4), _cfg(), me_complement="TEAM-A",
+    )
+    assert decision["action"] == "trade"
+    assert "TEAM-B" in broker.positions
 
 
 # ---- max_open_positions_per_series (deep-scan finding 2, 2026-08-10) -----
@@ -800,6 +833,78 @@ def test_check_exits_auto_exit_sentiment_factor_contributes_to_confidence(tmp_pa
     )
     assert len(decisions) == 1
     assert "sentiment=100%" in decisions[0]["reason"]
+
+
+def test_check_exits_auto_exit_still_runs_when_sentiment_reversal_also_enabled(tmp_path, monkeypatch):
+    # Real bug found 2026-08-14: exit_on_sentiment_reversal and
+    # auto_exit_enabled used to be two separate `elif` branches on the same
+    # chain as take_profit/stop_loss. Those two are safe as elif because
+    # their own condition tests both "enabled" and "actually triggered" -
+    # exit_on_reversal's elif only tested the enabled flag, so whenever it
+    # was simply True the branch was taken regardless of whether sentiment
+    # actually reversed, and if it then found nothing (too few signals,
+    # the common case), the chain had already used its one shot -
+    # auto_exit was completely unreachable for as long as both flags were
+    # on together, which config/settings.yaml's history shows was real
+    # production config, not just a hypothetical. This reproduces exactly
+    # that combination with a feed too thin to clear exit_sentiment_min_
+    # signals, and confirms auto_exit still fires.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    feed = [_signal_dict(ticker="TICK-A", side="no", size=1000)]  # only 1, below min_signals=3 below
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.35}, feed,
+        _cfg(
+            exit_on_sentiment_reversal=True, exit_sentiment_min_signals=3, exit_sentiment_lean_pct=65,
+            auto_exit_enabled=True,
+        ),
+    )
+    assert len(decisions) == 1
+    assert "auto-exit" in decisions[0]["reason"]
+    assert "TICK-A" not in broker.positions
+
+
+def test_check_exits_auto_exit_volatility_dampens_loss_factor(tmp_path, monkeypatch):
+    # 2026-08-14 direct request ("look at it from all angles... volatility"):
+    # gain_ref/loss_ref used to be flat percentages applied identically
+    # regardless of how much a ticker normally moves. Seed a genuinely
+    # volatile recent price history for TICK-A (swings well past the
+    # default auto_exit_normal_volatility=0.02 baseline), then confirm the
+    # same -0.3-ish pnl_pct that maxes pnl_factor to 1.0 with no volatility
+    # data (test_check_exits_auto_exit_pnl_loss_triggers) no longer clears
+    # the default 0.6 threshold once loss_ref widens to reflect this
+    # ticker's real recent noise.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    now = time.time()
+    for i, price in enumerate([0.5, 0.75, 0.35, 0.8, 0.3]):
+        mh_module.record_snapshots([{"ticker": "TICK-A", "yes_price": price}], timestamp=now - 1800 + i * 400)
+    decisions = strategy.check_exits({"TICK-A": 0.35}, [], _cfg(auto_exit_enabled=True))
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+
+
+def test_check_exits_auto_exit_series_track_record_factor_contributes(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # Override _strategy()'s default no-opinion series_stats with a real,
+    # 0%-win-rate track record, well past min_resolved_for_whale_filter's
+    # default floor (5) - off by default (weight 0.0), only contributes
+    # once explicitly opted in via the cfg override below.
+    monkeypatch.setattr(signal_log, "series_stats", lambda ticker, days=30: {
+        "series": "TICK", "window_days": days, "total_signals": 20,
+        "resolved": 20, "correct": 0, "win_rate": 0.0,
+    })
+    entry_fee = taker_fee(100, 0.5)
+    close_fee = taker_fee(100, 0.6)
+    pnl_factor = min(1.0, (((0.6 - 0.5) * 100 - entry_fee - close_fee) / 50) / 0.5)
+    assert (pnl_factor + 1.0) / 2 >= 0.6  # sanity: combined with a maxed series_factor, this should clear threshold
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.6}, [],
+        _cfg(auto_exit_enabled=True, auto_exit_series_track_record_weight=1.0),
+    )
+    assert len(decisions) == 1
+    assert "series_track_record=100%" in decisions[0]["reason"]
 
 
 def test_check_exits_auto_exit_staleness_factor_triggers_close(tmp_path, monkeypatch):

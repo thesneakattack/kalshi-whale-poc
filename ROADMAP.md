@@ -94,11 +94,27 @@ works" to "flip it for real" still has open operational questions.
       bug in confidence_calibration's near-constant-factor guard. Root-
       caused the profit question against real data (asymmetric win/loss
       payoff, not a bug) and found a real "betting against myself" whipsaw
-      pattern on 17 tickers. Most urgent open item: **market_native has
-      lost 98.9% of its paper bankroll** (23.6% win rate, -$9,806
-      realized), never halted since the kill switch only checks daily
-      loss, not cumulative drawdown. Full findings, data gaps, and a
-      suggested order are in the doc itself.
+      pattern on 17 tickers (market_native's own 98.9%-bankroll-loss
+      finding is a data point, not an action item - direct clarification:
+      it's a deliberate control group being tested against whale-follow,
+      not ready to be judged yet). Same session, continued: fixed a
+      critical bug where auto_exit_enabled was completely dead code
+      whenever exit_on_sentiment_reversal was also on (real production
+      config, not hypothetical) - the two were separate `elif` branches
+      and the reversal one only tested "enabled," not "actually
+      triggered," using up the chain's one shot either way. Added real
+      volatility-aware pnl thresholds and an opt-in series-track-record
+      exit factor. Reconciled services/kalshi_fees.py against the real
+      fee schedule PDF - formula/rounding were already correct, but a real
+      10-series fee waiver was completely unmodeled (zero historical
+      trades affected, so no retroactive correction needed). Built real
+      mutually-exclusive pair detection (services/mutual_exclusivity.py)
+      off Kalshi's own event flag, already being cached but never used for
+      anything but display - both strategies now refuse to open a
+      position whose confirmed 2-outcome complement is already held. Full
+      findings, deferred next-steps (a time-til-close exit factor, folding
+      ME-pair order flow into sentiment analysis), and a suggested order
+      are in the doc itself.
 - [ ] `docs/platform-deep-scan-findings-2026-08-10.md` — 7 concrete,
       cited strategy/risk gaps found by re-reading the prediction-market
       research against the actual current engine code (edge-aware
