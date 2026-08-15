@@ -111,6 +111,7 @@ state = {
     "last_tick_rate_limit_hits": 0,  # 429s hit during that same tick - services/http_client.py's rolling counter
     "markets": [],
     "latest_prices": {},
+    "latest_asks": {},  # maker/limit-order path (2026-08-15) - see check_pending_fills wiring below
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
     # than {} - these two accumulate over the app's whole lifetime, not just
     # since the last uvicorn --reload restart, so a ticker/event learned
@@ -143,7 +144,7 @@ state = {
     # show it - evaluate_all()/check_exits()'s return values were
     # previously computed then discarded every tick.
     "market_decision_feed": [],
-    "stats": {"signals_seen": 0, "trades_placed": 0, "skipped": 0},
+    "stats": {"signals_seen": 0, "trades_placed": 0, "skipped": 0, "limit_orders_placed": 0},
     "equity_history": [],  # [{"t": unix_ts, "equity": float}, ...], capped, for the Portfolio view's chart
     "real_balance_history": [],  # same shape, for the real-account toggle — only grows if a real account is connected
     "exchange_status": None,  # {"exchange_active": bool, "trading_active": bool, ...} — see _fetch_exchange_status
@@ -256,7 +257,17 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     )
     state["decision_feed"].insert(0, decision)
     state["decision_feed"] = state["decision_feed"][:50]
-    state["stats"]["trades_placed" if decision["action"] == "trade" else "skipped"] += 1
+    # limit_order_placed (2026-08-15, strategy.use_limit_orders) is neither
+    # a completed trade nor a skip - it's still pending, resolved later by
+    # PaperBroker.check_pending_fills (see _handle_fill_decision, which
+    # records the eventual fill's own trades_placed/category the same way
+    # a market-order trade already does here).
+    if decision["action"] == "trade":
+        state["stats"]["trades_placed"] += 1
+    elif decision["action"] == "limit_order_placed":
+        state["stats"]["limit_orders_placed"] += 1
+    else:
+        state["stats"]["skipped"] += 1
     asyncio.create_task(_broadcast_signal_decision(signal.to_dict(), decision))
     if decision["action"] == "trade":
         trade_category.record_category(signal.ticker, category, tick_now)
@@ -275,6 +286,22 @@ async def _handle_close_decision(close_decision: dict) -> None:
     state["decision_feed"] = state["decision_feed"][:50]
     state["stats"]["trades_placed"] += 1
     asyncio.create_task(_broadcast_signal_decision(None, close_decision))
+
+
+async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
+    # Maker/limit-order path (2026-08-15) - a resting order that just
+    # filled is an ENTRY event (mirrors _handle_signal's own tail: decision
+    # feed, trades_placed stat, category capture), not a close, even though
+    # it's discovered via PaperBroker.check_pending_fills rather than
+    # strategy.evaluate(). category_by_ticker() is already cheap/cached
+    # per-tick (see its own docstring) - fine to call again here.
+    state["decision_feed"].insert(0, fill_decision)
+    state["decision_feed"] = state["decision_feed"][:50]
+    state["stats"]["trades_placed"] += 1
+    asyncio.create_task(_broadcast_signal_decision(None, fill_decision))
+    ticker = fill_decision["trade"]["ticker"]
+    category = _category_by_ticker().get(ticker)
+    trade_category.record_category(ticker, category, tick_now)
 
 
 async def _process_stream_trade(trade: dict) -> None:
@@ -2176,6 +2203,15 @@ async def trading_loop():
             state["latest_prices"] = {
                 m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
             }
+            # Maker/limit-order path (2026-08-15) - genuinely missing, not
+            # defaulted like latest_prices above: check_pending_fills needs
+            # to tell "no fresh ask this tick" apart from "a real 0.5 ask,"
+            # since guessing an ask would mean guessing whether a resting
+            # order should fill - the one thing this mechanism must never do.
+            state["latest_asks"] = {
+                m["ticker"]: float(m["yes_ask_dollars"]) for m in markets
+                if m.get("ticker") and m.get("yes_ask_dollars") not in (None, "")
+            }
             _join_real_position_prices(state["account"], state["latest_prices"])
             # Human-readable label for a ticker — whale signals/decisions/positions
             # only carry the raw ticker string, so the dashboard looks this up to
@@ -2234,9 +2270,28 @@ async def trading_loop():
             # have silently rendered as "$100,000.00".
             real_balance = (account_snapshot.get("balance") or {}) if account_snapshot.get("connected") else {}
             real_balance_value = real_balance.get("balance") if isinstance(real_balance, dict) else None
+            # portfolio_value (cash + open positions' value) alongside balance
+            # (cash only) - real bug found live (2026-08-15): renderHeaderStrip's
+            # "Change (session)" diffed the CURRENT portfolio_value against
+            # this history's cash-only "balance" field as if they were the
+            # same scope. static/index.html's own comment already documents
+            # these as genuinely different, non-interchangeable numbers - the
+            # header diff just wasn't following it. An account with $500 cash
+            # and one already-open $500 position would show portfolio_value
+            # ($1,000) minus a cash-only baseline ($500) = a fabricated +$500
+            # "change" the instant a real account with open positions was
+            # first polled after a restart, before anything actually moved.
+            # Recorded alongside (not instead of) balance so both history
+            # series stay available; None when portfolio_value is absent
+            # rather than guessed, same "missing isn't zero" idiom as every
+            # other optional figure in this app.
+            real_portfolio_value = real_balance.get("portfolio_value") if isinstance(real_balance, dict) else None
             if real_balance_value is not None:
                 try:
-                    state["real_balance_history"].append({"t": state["last_poll"], "balance": float(real_balance_value) / 100.0})
+                    entry = {"t": state["last_poll"], "balance": float(real_balance_value) / 100.0}
+                    if real_portfolio_value is not None:
+                        entry["portfolio_value"] = float(real_portfolio_value) / 100.0
+                    state["real_balance_history"].append(entry)
                     state["real_balance_history"] = state["real_balance_history"][-200:]
                 except (TypeError, ValueError):
                     pass
@@ -2274,6 +2329,16 @@ async def trading_loop():
 
             for signal in new_signals:
                 await _handle_signal(signal, cfg, market_results, config_fp, tick_now)
+
+            # Maker/limit-order path (2026-08-15) - resolves resting limit
+            # orders strategy.evaluate() may have placed above (opt-in,
+            # strategy.use_limit_orders) against this tick's real bid/ask.
+            # Runs before check_exits below (same reasoning as the
+            # opened_since guard immediately below) so a just-filled
+            # position isn't exit-checked this same tick against
+            # state["latest_prices"], snapshotted before this fill happened.
+            for fill_decision in broker.check_pending_fills(state["latest_prices"], state["latest_asks"]):
+                await _handle_fill_decision(fill_decision, tick_now)
 
             # Active position management - runs every tick regardless of
             # whether any new signal came in this tick, since a position can

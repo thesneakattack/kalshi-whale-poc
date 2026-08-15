@@ -666,6 +666,75 @@ works" to "flip it for real" still has open operational questions.
       pre-existing equity chart — fully backward compatible, every
       existing call site untouched. Verified live via selenium-chrome:
       all three render a real `<svg>` with zero console errors.
+- [x] `docs/profit-maximization-assessment-2026-08-15.md` — direct request
+      to re-read the handoff doc, assess the app for logic holes/gaps/
+      quirks/bugs, and produce a profit-maximization plan given the real
+      68.4% win rate. Two confirmed bugs, not yet fixed: (1)
+      `strategy.kelly_fraction_of_cap: null` crashes `kelly_scaled_max_size`
+      (`None <= 0` TypeError) — was the committed default until this
+      session and live for 14.3 real hours; a crash here also skips that
+      tick's `check_exits`/`position_netting.review` since all three share
+      one `try` block in `main.py`. (2) the real-account (not paper) header's
+      "Change (session)" figure diffs current `portfolio_value`
+      (cash+positions) against a cash-only historical baseline — real-money
+      display path. Also found: `advisory_engine._rejected_candidate_
+      recommendations`'s comparability check is a flat 15-point tolerance
+      with no significance test, and verified via a real z-test that
+      today's applied `min_whale_winrate_pct: 76.5` suggestion is actually
+      ~2σ backwards (its rejected pool did worse than accepted, not
+      "comparable or better" as generated). Data findings: fees consumed
+      ~60% of gross profit this book ($934.69 of $1,557.82 gross, no maker-
+      order path exists yet); `kelly_fraction_of_cap` is 0 for both
+      strategies so the already-shipped confidence-aware sizing engine is
+      fully inert; `take_profit` is the single best-performing close type
+      (+$85.97 avg, n=28) yet is currently disabled. Full detail,
+      prioritized to-do list, and the "are the 4 exit strategies redundant"
+      / "should whale-sizing be volume-relative" analysis in the doc itself.
+      **Direct follow-up, same session: "fix the bugs, act on the data-
+      driven recommendations, implement new analyzers if needed" — done.**
+      Both confirmed bugs fixed and tested; the advisory-engine
+      significance-test gap turned out to be systemic (the same flat
+      15-point tolerance was used in 6 places across `advisory_engine.py`,
+      not 1) and all 6 now go through a real `_comparability_margin_pts()`
+      helper built on `services/stats_power.py`'s existing math. Config
+      applied: `min_whale_winrate_pct` reverted 76.5→85, then dropped
+      further to 50 after a live-reported symptom ("why is the system
+      avoiding crypto markets with super high whale winrates") traced to
+      a real design flaw — the flat global floor at 85% was blocking
+      `KXBTCD` (80.5% win rate), a **proven** top performer already sized
+      up via `strategy_overrides`, since any global floor above the
+      book's own 68.4% average rejects roughly half of all series by
+      construction; `take_profit_pct` enabled at 0.2 (corrected down from
+      an initially-considered ~0.5-0.95 once analysis found all 28
+      historical `take_profit` trades were priced *outside* the current
+      0.5-0.8 `unit_cost` band, so that history doesn't transfer);
+      `kelly_fraction_of_cap` raised to 0.3 for `strategy.*` only. New:
+      a full maker/limit-order path for the paper book — `kalshi_fees.
+      maker_fee()`, `PaperBroker.PendingOrder`/`place_limit_order()`/
+      `check_pending_fills()` (own SQLite table, side-aware fill check
+      against real bid/ask, expires unfilled rather than chasing a stale
+      price), `strategy.use_limit_orders`/`limit_order_timeout_sec` opt-in
+      wiring in `strategy_engine.py` and `main.py`. Off by default, same
+      "ships fully built, opt-in" precedent as every other mechanism here;
+      the real-account order path was deliberately not extended (real
+      trading stays gated regardless). Diagnostic research resolved two
+      open questions from the original pass: `market_native`'s apparent
+      27σ `min_momentum_delta` inversion was a confound (mixing eventual-
+      settlement-match win rate with realized-P&L win rate, where
+      `stop_loss` mechanically scores 0%) — real effect is 10.1pts/z=5.12,
+      still real, much smaller; and `depth_factor`'s non-discrimination
+      has a confirmed root cause for `KXBTC15M` specifically (Kalshi's
+      `volume_24h_fp` behaves like a shared/rolling figure for that
+      15-minute series, not real per-contract volume). Separately, direct
+      request to re-run the full sigma-vetted series/category analysis
+      against the fresh 607-trade book: no new `strategy_overrides` entry
+      currently warranted — all three existing ones (`KXBTC15M`,
+      `KXMLBSPREAD`, `KXBTCD`) reconfirm unchanged, `KXMLBGAME`'s bimodal
+      pattern reconfirms real but still correctly unshippable (no
+      unit_cost-bucket-scoped override tier exists), `by_category`
+      confirmed should stay empty. 17 new tests, 827 passing (was 810).
+      Full detail in the doc's own "Resolution (same session, continued)"
+      section.
 - [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
       Advanced view needs sub-poll freshness — partially addressed by an
       ETag/304 pass already shipped (an unchanged poll is now nearly free),

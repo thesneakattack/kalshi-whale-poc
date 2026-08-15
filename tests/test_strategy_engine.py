@@ -328,6 +328,17 @@ def test_kelly_scaled_max_size_handles_effective_threshold_of_one():
     assert result == 500.0
 
 
+def test_kelly_scaled_max_size_treats_none_fraction_as_off():
+    # Real live bug (2026-08-15): kelly_fraction_of_cap: null (Python None)
+    # used to crash `None <= 0` here - null is this app's own established
+    # "disabled" convention (take_profit_pct/stop_loss_pct/
+    # max_open_positions_per_series all treat it that way), and was the
+    # committed config default at the time. Must behave identically to
+    # kelly_fraction=0.0, not raise.
+    result = kelly_scaled_max_size(500.0, confidence=0.9, effective_threshold=0.6, kelly_fraction=None)
+    assert result == 500.0
+
+
 # ---- Position sizing scales with confidence when kelly_fraction_of_cap is set ----
 
 def test_position_size_unaffected_by_confidence_when_kelly_fraction_unset(tmp_path, monkeypatch):
@@ -1179,3 +1190,39 @@ def test_evaluate_config_fingerprint_defaults_to_none(tmp_path, monkeypatch):
     decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg())
     assert decision["action"] == "trade"
     assert broker.positions["TICK-A"].config_fingerprint is None
+
+
+# ---- use_limit_orders (2026-08-15 maker-order path) -----------------------
+
+def test_evaluate_places_a_limit_order_instead_of_a_market_trade_when_enabled(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.8, price=0.5), _cfg(use_limit_orders=True, limit_order_timeout_sec=30),
+    )
+    assert decision["action"] == "limit_order_placed"
+    assert decision["order"]["ticker"] == "TICK-A"
+    assert decision["order"]["limit_price"] == 0.5
+    # No cash committed and no position opened yet - it's only resting.
+    assert broker.positions == {}
+    assert broker.trade_log == []
+    assert "TICK-A" in broker.pending_orders
+
+
+def test_evaluate_use_limit_orders_off_by_default_unchanged_behavior(tmp_path, monkeypatch):
+    # No use_limit_orders key at all in cfg (not even explicitly False) -
+    # existing callers/tests must be completely unaffected.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), _cfg())
+    assert decision["action"] == "trade"
+    assert broker.pending_orders == {}
+
+
+def test_evaluate_skips_when_a_limit_order_is_already_pending_on_the_ticker(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(use_limit_orders=True, cooldown_sec=0)
+    first = strategy.evaluate(_signal(confidence=0.8, price=0.5), cfg)
+    assert first["action"] == "limit_order_placed"
+    second = strategy.evaluate(_signal(confidence=0.9, price=0.4), cfg)
+    assert second["action"] == "skip"
+    assert "already resting" in second["reason"]
+    assert len(broker.pending_orders) == 1  # the first order, untouched

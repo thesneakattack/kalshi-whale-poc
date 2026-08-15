@@ -89,8 +89,20 @@ def kelly_scaled_max_size(max_size: float, confidence: float, effective_threshol
     threshold gets close to 0 size, one at confidence 1.0 gets the full
     ceiling. Values between blend the two. max_position_pct/
     max_trade_size stays the hard ceiling this only ever shrinks toward,
-    never exceeds - this never returns more than max_size."""
-    if kelly_fraction <= 0 or effective_threshold >= 1.0:
+    never exceeds - this never returns more than max_size.
+
+    kelly_fraction is treated as "off" for None the same as for 0 - real
+    live bug (2026-08-15): callers read this via strat_cfg.get(
+    "kelly_fraction_of_cap", 0.0), which only applies that default when
+    the key is *missing*; a key present with value null (Python None, a
+    normal way to try to "turn a field off" in this app's own config
+    conventions - take_profit_pct/stop_loss_pct/max_open_positions_per_
+    series all treat null that way) reached here unchanged and crashed
+    `None <= 0` on every signal that reached this call - which also
+    skipped that tick's check_exits/position_netting.review, since all
+    three share one try block in main.py's tick loop. kelly_fraction_of_
+    cap: null was the committed config default until this same fix."""
+    if kelly_fraction is None or kelly_fraction <= 0 or effective_threshold >= 1.0:
         return max_size
     raw_scale = min(1.0, max(0.0, (confidence - effective_threshold) / (1.0 - effective_threshold)))
     scale = 1.0 - kelly_fraction * (1.0 - raw_scale)
@@ -376,8 +388,10 @@ class FollowTheWhaleStrategy:
         # by how far this signal's confidence cleared effective_threshold
         # (the real bar it had to pass, including the longshot bonus if
         # applicable) - off by default (kelly_fraction_of_cap: 0.0), see
-        # kelly_scaled_max_size's own docstring for the full reasoning.
-        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap", 0.0)
+        # kelly_scaled_max_size's own docstring for the full reasoning
+        # (including its own None-guard - `or 0.0` here is belt-and-
+        # suspenders, not the only fix).
+        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap") or 0.0
         max_size = kelly_scaled_max_size(max_size, signal.confidence, effective_threshold, kelly_fraction)
         # signal.price is always the YES price (see whale_simulator.py) - a NO
         # print's real per-contract cost is (1 - price), not price itself.
@@ -391,12 +405,45 @@ class FollowTheWhaleStrategy:
         if contracts <= 0:
             return self._skip(signal, "position size rounds to zero")
 
+        reason = f"whale print {signal.size} @ {signal.price} (conf {signal.confidence})"
+
+        # Maker/limit-order path (2026-08-15, docs/profit-maximization-
+        # assessment-2026-08-15.md direct request: fees were consuming
+        # ~60% of gross profit on this book). Off by default - same
+        # "ships fully built, opt-in" precedent as kelly_fraction_of_cap/
+        # auto_exit_enabled/position_netting.enabled elsewhere in this
+        # app. When on, rests a limit order AT the signal's own observed
+        # price (a maker fill, 1/4 the taker rate - services/kalshi_fees.
+        # py's maker_fee()) instead of taking the market immediately.
+        # Deliberately no fallback to a market order on timeout - see
+        # PaperBroker.check_pending_fills's own docstring for why this
+        # never chases a price the signal that justified it has moved
+        # past. This changes WHEN/AT WHAT FEE a signal that already
+        # cleared every gate above gets filled, not whether it's worth
+        # taking - identical sizing/entry logic either way.
+        if strat_cfg.get("use_limit_orders", False):
+            timeout_sec = strat_cfg.get("limit_order_timeout_sec", 60)
+            order = self.broker.place_limit_order(
+                ticker=signal.ticker, side=signal.side, size=contracts, limit_price=signal.price,
+                reason=reason, expires_at=time.time() + timeout_sec, config_fingerprint=config_fingerprint,
+            )
+            if order is None:
+                return self._skip(signal, "a limit order is already resting on this ticker")
+            return {
+                "action": "limit_order_placed",
+                "signal": signal.to_dict(),
+                "order": {
+                    "ticker": order.ticker, "side": order.side, "size": order.size,
+                    "limit_price": order.limit_price, "expires_at": order.expires_at,
+                },
+            }
+
         trade = self.broker.open_position(
             ticker=signal.ticker,
             side=signal.side,
             size=contracts,
             price=signal.price,
-            reason=f"whale print {signal.size} @ {signal.price} (conf {signal.confidence})",
+            reason=reason,
             config_fingerprint=config_fingerprint,
         )
         return {

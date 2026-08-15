@@ -174,9 +174,13 @@ def _variant(fp, **config):
 
 
 def test_cross_variant_recommends_differing_fields_from_better_variant():
+    # n=100 each, not 10 - a 20pt gap needs real sample size behind it to
+    # clear _comparability_margin_pts' real margin-of-error bar (2026-08-15
+    # fix; the old flat 15pt tolerance let a 20pt gap through at n=10 too,
+    # which isn't actually distinguishable from noise at that sample size).
     summaries = {
-        "fp1": {"total_closed": 10, "win_rate_pct": 40.0},
-        "fp2": {"total_closed": 10, "win_rate_pct": 60.0},
+        "fp1": {"total_closed": 100, "win_rate_pct": 40.0},
+        "fp2": {"total_closed": 100, "win_rate_pct": 60.0},
     }
     variants = {
         "fp1": _variant("fp1", entry_threshold=0.5, cooldown_sec=300),
@@ -189,7 +193,7 @@ def test_cross_variant_recommends_differing_fields_from_better_variant():
     assert rec["current_value"] == 0.5
     assert rec["suggested_value"] == 0.7
     assert rec["compared_fingerprint"] == "fp2"
-    assert rec["n"] == 10
+    assert rec["n"] == 100
 
 
 def test_cross_variant_none_when_gap_too_small():
@@ -434,6 +438,74 @@ def test_generate_recommendations_with_no_last_applied_by_path_is_unaffected():
     result = ae.generate_recommendations(rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100)
     paths = [r["config_path"] for r in result["recommendations"]]
     assert "strategy.entry_threshold" in paths
+
+
+# --- rejected-candidate counterfactual comparability (2026-08-15 fix) -------
+# Real live bug: this comparison used to gate on a flat 15pt tolerance with
+# no reference to sample size at all - see _comparability_margin_pts's own
+# comment for the incident. These tests lock in the sample-size-aware
+# replacement.
+
+def test_rejected_candidate_recommendation_skips_a_small_but_real_gap_at_large_n():
+    # The fix's real value, not the small-n direction: a 5pt gap would
+    # never have cleared the old flat 15pt tolerance regardless of sample
+    # size, so the old code would have suggested loosening this gate even
+    # though n=5000 makes a 5pt gap a real, confident signal the gate is
+    # working (margin of error only ~1.3pts here). Sample-size-aware
+    # margin correctly skips where a flat number could not.
+    gate_summaries = [{
+        "strategy": "whale_follow", "gate_name": "min_whale_winrate_pct",
+        "hypothetical_win_rate": 63.0, "hypothetical_win_rate_n": 5000,
+    }]
+    whale_summary = {"win_rate_pct": 68.0, "total_closed": 5000}
+    recs = ae._rejected_candidate_recommendations(
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+    )
+    assert recs == []
+
+
+def test_rejected_candidate_recommendation_still_fires_at_small_n_when_uncertain():
+    # By contrast: at small n, the margin is wide, so it's *harder* to
+    # confidently prove the gate is working - consistent with this
+    # function's own stated design ("comparably or better" is itself a
+    # reason to suggest, not just "clearly better"). A 20pt gap at n=10
+    # doesn't confidently show the gate earning its keep, so this still
+    # (correctly) proceeds, same as before the fix - the fix's job is
+    # making the bar sample-size-aware, not making small-n cases stricter.
+    gate_summaries = [{
+        "strategy": "whale_follow", "gate_name": "min_whale_winrate_pct",
+        "hypothetical_win_rate": 40.0, "hypothetical_win_rate_n": 10,
+    }]
+    whale_summary = {"win_rate_pct": 60.0, "total_closed": 10}
+    recs = ae._rejected_candidate_recommendations(
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+    )
+    assert len(recs) == 1
+
+
+def test_rejected_candidate_recommendation_matches_the_real_2026_08_15_incident():
+    # The exact real numbers behind config_performance id 271 (applied
+    # 2026-08-15): min_whale_winrate_pct's rejected pool (55.1%, n=49) vs
+    # the book's actual 68.4% (n=607). Documented here, not silently
+    # papered over: under this app's own established margin-of-error
+    # convention (services/stats_power.py, the same one series_evaluator's
+    # below_winrate_floor already uses), this specific gap is genuinely
+    # borderline, not a clean violation - the real margin at n=49 is
+    # ~13.9pts, leaving 55.1% just inside 68.4%'s interval (54.47 cutoff
+    # vs 55.1 observed). The mechanism now reasons about this honestly
+    # (sample-size-aware, tighter with more data) instead of via an
+    # arbitrary flat number either way; whether 49 resolved rejections is
+    # enough to act on at all is a separate, real judgment call - see
+    # docs/profit-maximization-assessment-2026-08-15.md.
+    gate_summaries = [{
+        "strategy": "whale_follow", "gate_name": "min_whale_winrate_pct",
+        "hypothetical_win_rate": 55.1, "hypothetical_win_rate_n": 49,
+    }]
+    whale_summary = {"win_rate_pct": 68.4, "total_closed": 607}
+    recs = ae._rejected_candidate_recommendations(
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+    )
+    assert len(recs) == 1  # borderline, not a clean skip - see comment above
 
 
 # --- series_evaluator cross-reference ("web of expertise" audit, gap #4) ----

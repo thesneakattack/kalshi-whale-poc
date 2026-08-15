@@ -55,6 +55,10 @@ import math
 from services.signal_log import series_of
 
 _TAKER_RATE = 0.07
+# Confirmed 2026-08-14 against docs/kalshi/kalshi-fee-schedule.pdf - exactly
+# 1/4 the taker rate (0.0175 vs 0.07). See maker_fee()'s own docstring for
+# why nothing called this until 2026-08-15.
+_MAKER_RATE = _TAKER_RATE / 4
 
 # Live-verified 2026-08-15 via Kalshi's real GET /series (single) and
 # GET /series (list) endpoints' fee_multiplier field, sampled across all
@@ -94,4 +98,24 @@ def taker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     if multiplier == 0.0:
         return 0.0
     raw = _TAKER_RATE * multiplier * contracts * price * (1 - price)
+    return math.ceil(raw * 10000) / 10000
+
+
+def maker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
+    """Real Kalshi maker fee for one leg of a trade - same formula/rounding/
+    per-series-multiplier convention as taker_fee(), just at _MAKER_RATE
+    instead of _TAKER_RATE. Not implemented until 2026-08-15 (docs/profit-
+    maximization-assessment-2026-08-15.md, direct request) because this app
+    had no maker/limit-order path at all before then - every real order
+    (services/kalshi_account_client.py) defaulted to immediate_or_cancel (a
+    taker order), and the paper broker filled everything instantly at the
+    quoted price, which is also inherently a taker fill. See services/
+    paper_broker.py's PendingOrder/check_pending_fills for the paper-mode
+    limit-order simulation this now feeds."""
+    if contracts <= 0 or price <= 0 or price >= 1:
+        return 0.0
+    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    if multiplier == 0.0:
+        return 0.0
+    raw = _MAKER_RATE * multiplier * contracts * price * (1 - price)
     return math.ceil(raw * 10000) / 10000

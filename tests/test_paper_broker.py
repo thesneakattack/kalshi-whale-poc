@@ -3,7 +3,7 @@ import time
 import pytest
 
 from services import paper_broker as pb
-from services.kalshi_fees import taker_fee
+from services.kalshi_fees import maker_fee, taker_fee
 
 
 def _broker(tmp_path, monkeypatch, starting_bankroll=1000.0):
@@ -400,3 +400,117 @@ def test_two_broker_instances_with_different_db_paths_do_not_collide(tmp_path, m
     assert list(resumed_a.positions.keys()) == ["TICK-A"]
     assert resumed_b.bankroll == broker_b.bankroll
     assert list(resumed_b.positions.keys()) == ["TICK-B"]
+
+
+# ---- maker/limit-order path (2026-08-15) ----------------------------------
+
+def test_place_limit_order_does_not_touch_bankroll(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    order = broker.place_limit_order(
+        "TICK-A", "yes", size=100, limit_price=0.5, reason="test", expires_at=time.time() + 60,
+    )
+    assert order is not None
+    assert broker.bankroll == 1000.0  # no cash/collateral reserved for a resting order
+    assert "TICK-A" in broker.pending_orders
+    assert broker.positions == {}
+    assert broker.trade_log == []
+
+
+def test_place_limit_order_refuses_a_second_order_on_the_same_ticker(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    first = broker.place_limit_order("TICK-A", "yes", 100, 0.5, "first", time.time() + 60)
+    second = broker.place_limit_order("TICK-A", "yes", 50, 0.4, "second", time.time() + 60)
+    assert first is not None
+    assert second is None
+    assert broker.pending_orders["TICK-A"].reason == "first"  # unchanged, not replaced
+
+
+def test_check_pending_fills_yes_side_fills_when_ask_reaches_limit(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    # Ask still above the limit - order shouldn't fill yet.
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.48}, latest_asks={"TICK-A": 0.52})
+    assert fills == []
+    assert "TICK-A" in broker.pending_orders
+    # Ask has come down to the limit - fills now, at the real (maker) fee.
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.49}, latest_asks={"TICK-A": 0.50})
+    assert len(fills) == 1
+    assert "TICK-A" not in broker.pending_orders
+    assert "TICK-A" in broker.positions
+    fee = maker_fee(100, 0.5)
+    assert broker.bankroll == pytest.approx(1000.0 - 50.0 - fee)
+    assert broker.positions["TICK-A"].entry_fee == fee
+    assert fills[0]["trade"]["fee"] == fee
+
+
+def test_check_pending_fills_fills_at_the_real_better_price_not_the_limit(tmp_path, monkeypatch):
+    # A resting buy limit at 0.5 asks for "at most 0.5" - if the real ask is
+    # already better (lower) than that when checked, it should fill at the
+    # real, better price, same as a genuine resting limit order would.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.40}, latest_asks={"TICK-A": 0.42})
+    assert len(fills) == 1
+    assert broker.positions["TICK-A"].entry_price == 0.42
+    assert fills[0]["trade"]["price"] == 0.42
+
+
+def test_check_pending_fills_no_side_uses_inverted_price(tmp_path, monkeypatch):
+    # A "no" limit buy at limit_price=0.3 (yes-denominated) wants a no-side
+    # unit cost of at most 0.7 - fills once the real yes-bid has risen to
+    # (or above) 0.3, i.e. (1 - bid) <= 0.7.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order("TICK-A", "no", size=100, limit_price=0.3, reason="r", expires_at=time.time() + 60)
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.20}, latest_asks={"TICK-A": 0.22})
+    assert fills == []  # 1 - 0.20 = 0.80 > 0.70, hasn't come to the order yet
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.30}, latest_asks={"TICK-A": 0.32})
+    assert len(fills) == 1
+    assert broker.positions["TICK-A"].side == "no"
+    assert broker.positions["TICK-A"].entry_price == pytest.approx(0.30)
+
+
+def test_check_pending_fills_expires_unfilled_without_charging_anything(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.3, reason="r", expires_at=time.time() + 30)
+    # Market never comes to the order's price, and time passes the expiry.
+    fills = broker.check_pending_fills(
+        latest_bids={"TICK-A": 0.48}, latest_asks={"TICK-A": 0.52}, now=time.time() + 31,
+    )
+    assert fills == []
+    assert broker.pending_orders == {}
+    assert broker.positions == {}
+    assert broker.bankroll == 1000.0  # nothing ever charged for an unfilled, expired order
+
+
+def test_check_pending_fills_leaves_order_pending_without_a_fresh_quote(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    fills = broker.check_pending_fills(latest_bids={}, latest_asks={})  # ticker not in this tick's quotes at all
+    assert fills == []
+    assert "TICK-A" in broker.pending_orders  # not guessed at, not dropped either
+
+
+def test_pending_orders_persist_across_restart(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=1234567890.0)
+    resumed = pb.PaperBroker(starting_bankroll=1000.0)
+    assert "TICK-A" in resumed.pending_orders
+    assert resumed.pending_orders["TICK-A"].limit_price == 0.5
+    assert resumed.pending_orders["TICK-A"].expires_at == 1234567890.0
+
+
+def test_reset_clears_pending_orders(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    broker.reset(starting_bankroll=500.0)
+    assert broker.pending_orders == {}
+    resumed = pb.PaperBroker(starting_bankroll=500.0)
+    assert resumed.pending_orders == {}
+
+
+def test_state_includes_pending_orders(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    state = broker.state(latest_prices={})
+    assert len(state["pending_orders"]) == 1
+    assert state["pending_orders"][0]["ticker"] == "TICK-A"

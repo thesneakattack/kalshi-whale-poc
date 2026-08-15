@@ -252,7 +252,9 @@ class MarketNativeStrategy:
         max_size = self.risk.max_trade_size(self.broker.bankroll, strat_cfg["max_position_pct"])
         # Deep-scan finding 1 (2026-08-10) - same shared helper/reasoning as
         # FollowTheWhaleStrategy.evaluate()'s own scaling; off by default.
-        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap", 0.0)
+        # `or 0.0`, not just .get's default - see kelly_scaled_max_size's
+        # own docstring for the null-crash bug this guards against.
+        kelly_fraction = strat_cfg.get("kelly_fraction_of_cap") or 0.0
         max_size = kelly_scaled_max_size(max_size, confidence, strat_cfg["entry_confidence_threshold"], kelly_fraction)
         unit_cost = price if side == "yes" else (1 - price)
         contracts = int(max_size / unit_cost) if unit_cost > 0 else 0

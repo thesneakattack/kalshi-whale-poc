@@ -2980,7 +2980,12 @@ function renderPositions(positions, prices, recentTrades, signals) {
       // real cost is size*(1-entry_price), not size*entry_price) and this
       // way there's exactly one place that math can be wrong, not two.
       // value follows the same side-aware convention for the same reason.
-      const cost = p.cost_basis ?? (p.size * p.entry_price);
+      // No local fallback formula - PaperBroker.state() always populates
+      // cost_basis (real bug found 2026-08-15: the old `?? (p.size *
+      // p.entry_price)` fallback was never actually reachable, but was
+      // missing the no-side (1-price) inversion and would have silently
+      // under-costed any "no" position the day it somehow did fire).
+      const cost = p.cost_basis;
       const value = p.side === 'yes' ? p.size * current : p.size * (1 - current);
       const ret = value - cost;
       const retPct = cost ? (ret / cost * 100) : 0;
@@ -5592,7 +5597,15 @@ function renderHeaderStrip(broker, account, realBalanceHistory) {
     const cash = bal.balance != null ? bal.balance / 100 : null;
     const portfolioValue = bal.portfolio_value != null ? bal.portfolio_value / 100 : null;
     const first = realBalanceHistory[0];
-    const pnl = (portfolioValue != null && first) ? portfolioValue - first.balance : null;
+    // Real bug fixed 2026-08-15: this used to diff the current
+    // portfolio_value (cash + open positions) against first.balance
+    // (cash-only) - two genuinely different scopes, not interchangeable
+    // (see the "balance vs portfolio_value" info-icon copy below). Now
+    // diffs like-for-like against first.portfolio_value, which is only
+    // present on history entries recorded after this fix - null (not a
+    // guessed number) until one exists.
+    const firstPortfolioValue = (first && first.portfolio_value != null) ? first.portfolio_value : null;
+    const pnl = (portfolioValue != null && firstPortfolioValue != null) ? portfolioValue - firstPortfolioValue : null;
     $('header-bankroll-label').textContent = 'Cash Balance';
     $('header-equity-label').textContent = 'Portfolio Value';
     $('header-pnl-label').textContent = 'Change (session)';
@@ -6396,7 +6409,8 @@ function renderDummiesPanel(positions, prices, signals, startingBankroll) {
     const sideClass = p.side === 'yes' ? 'hl-yes' : 'hl-no';
     const currentYes = prices[p.ticker] ?? p.entry_price;
     const likelihood = Math.round((p.side === 'yes' ? currentYes : (1 - currentYes)) * 100);
-    const capitalAtRisk = p.cost_basis ?? (p.size * p.entry_price);
+    // No local fallback - see the identical fix/comment in renderPositionsTable above.
+    const capitalAtRisk = p.cost_basis;
     const riskPct = startingBankroll ? (capitalAtRisk / startingBankroll * 100) : 0;
     const lean = computeWhaleLean(p.ticker, signals);
 

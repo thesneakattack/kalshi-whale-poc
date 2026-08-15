@@ -52,12 +52,27 @@ requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
-from services import config_overrides, trade_analytics
+from services import config_overrides, stats_power, trade_analytics
 
-# Cross-variant comparisons only recommend adopting a value for a field
-# where the two variants actually differ - nothing to say about a field
-# that's identical between them.
-_COMPARABLE_MIN_WIN_RATE_GAP = 15  # pts - matches trade_analytics' own confidence-bucket threshold
+# Real bug found live (2026-08-15, docs/profit-maximization-assessment-
+# 2026-08-15.md): every "is this win-rate gap big enough to act on"
+# check in this module used to compare against a single flat 15-point
+# tolerance, with no reference to sample size at all - the same bar
+# whether n was 5 or 5,000. Concretely wrong at least once: comparing
+# min_whale_winrate_pct's rejected pool (55.1%, n=49) against accepted
+# trades (68.4%) via the real margin-of-error math below shows that gap
+# is NOT clearly outside sampling noise at that n - yet the flat
+# tolerance let a "comparable to or better than" suggestion through, and
+# it was applied. _comparability_margin_pts replaces the flat constant
+# with services/stats_power.py's real Wald-interval math, scaled to
+# whichever side of a comparison has the smaller (less confident)
+# sample - same "a comparison is never more confident than its weaker
+# side" principle _cross_variant_recommendations already used for its
+# own confidence_label. Tighter (more demanding) with more data, wider
+# (more lenient) with less, instead of one arbitrary number either way.
+def _comparability_margin_pts(n_a: int, wr_a: float, n_b: int, wr_b: float) -> float:
+    n, wr = (n_a, wr_a) if n_a <= n_b else (n_b, wr_b)
+    return stats_power.margin_of_error_pts(n, observed_pct=wr)
 
 
 def rec_id(config_path: str, suggested_value, n: int) -> str:
@@ -181,7 +196,10 @@ def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> d
     win_rates = {k: sum(1 for r in v if r["won"]) / len(v) * 100 for k, v in populated.items()}
     worst_key = min(win_rates, key=win_rates.get)
     best_key = max(win_rates, key=win_rates.get)
-    if win_rates[best_key] - win_rates[worst_key] < _COMPARABLE_MIN_WIN_RATE_GAP:
+    margin = _comparability_margin_pts(
+        len(populated[best_key]), win_rates[best_key], len(populated[worst_key]), win_rates[worst_key],
+    )
+    if win_rates[best_key] - win_rates[worst_key] < margin:
         return None
     n = sum(len(v) for v in populated.values())
     suggested = max(current_value, bucket_floor[best_key])
@@ -225,7 +243,8 @@ def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | 
         return None
     longshot_wr = sum(1 for r in longshot_rows if r["won"]) / len(longshot_rows) * 100
     non_longshot_wr = sum(1 for r in non_longshot_rows if r["won"]) / len(non_longshot_rows) * 100
-    if non_longshot_wr - longshot_wr < _COMPARABLE_MIN_WIN_RATE_GAP:
+    margin = _comparability_margin_pts(len(non_longshot_rows), non_longshot_wr, len(longshot_rows), longshot_wr)
+    if non_longshot_wr - longshot_wr < margin:
         return None  # longshot entries aren't meaningfully underperforming under this config's current bonus
     n = len(longshot_rows) + len(non_longshot_rows)
     suggested = round(min(0.5, current_bonus + 0.1), 3)
@@ -477,7 +496,10 @@ def _cross_variant_recommendations(
         if fp == current_fp or summary["total_closed"] < min_resolved:
             continue
         other_wr = summary["win_rate_pct"]
-        if other_wr is None or other_wr - current_wr < _COMPARABLE_MIN_WIN_RATE_GAP:
+        if other_wr is None:
+            continue
+        margin = _comparability_margin_pts(summary["total_closed"], other_wr, current_summary["total_closed"], current_wr)
+        if other_wr - current_wr < margin:
             continue  # only surface variants that clearly outperformed the current one
         other_variant = variants.get(fp)
         if other_variant is None:
@@ -562,10 +584,9 @@ def _rejected_candidate_recommendations(
     """One suggestion per mapped gate where candidate_log has enough
     resolved rejections to judge - compares what accepted trades actually
     did against what rejected candidates would have done. Only suggests a
-    change when rejected candidates did comparably or better (>= accepted
-    win rate minus the same _COMPARABLE_MIN_WIN_RATE_GAP tolerance every
-    other bucket-comparison here uses) - a gate correctly filtering out
-    worse candidates needs no comment."""
+    change when rejected candidates did comparably or better (real margin
+    of error, not a flat tolerance - see _comparability_margin_pts) - a
+    gate correctly filtering out worse candidates needs no comment."""
     out = []
     for (strategy_key, gate_name), (config_path, direction) in _GATE_CONFIG_PATH_AND_DIRECTION.items():
         row = next(
@@ -584,7 +605,8 @@ def _rejected_candidate_recommendations(
         if accepted_wr is None or accepted_n < _REJECTED_CANDIDATE_MIN_N:
             continue
         rejected_wr = row["hypothetical_win_rate"]
-        if rejected_wr < accepted_wr - _COMPARABLE_MIN_WIN_RATE_GAP:
+        margin = _comparability_margin_pts(rejected_n, rejected_wr, accepted_n, accepted_wr)
+        if rejected_wr < accepted_wr - margin:
             continue  # rejected candidates did meaningfully worse - the gate is working, nothing to suggest
         section, _, field = config_path.partition(".")
         current_value = (strat_cfg if section == "strategy" else market_cfg).get(field)
@@ -602,8 +624,8 @@ def _rejected_candidate_recommendations(
             "suggested_value": suggested,
             "rationale": (
                 f"Candidates rejected by the {gate_name} gate would have won {rejected_wr:.0f}% of the time "
-                f"(n={rejected_n} resolved), comparable to or better than accepted trades' actual "
-                f"{accepted_wr:.0f}% (n={accepted_n}) - the gate may be filtering out perfectly good "
+                f"(n={rejected_n} resolved), within real sampling margin ({margin:.1f}pts) of accepted trades' "
+                f"actual {accepted_wr:.0f}% (n={accepted_n}) - the gate may be filtering out perfectly good "
                 f"candidates. Based on rejected-candidate counterfactual data (services/candidate_log.py), "
                 f"not the accepted-trade history every other suggestion here uses."
             ),
@@ -712,7 +734,11 @@ def _category_conditional_recommendations(
         if not category or wr is None or n < _CATEGORY_MIN_N:
             continue
         gap = wr - overall_win_rate
-        if abs(gap) < _COMPARABLE_MIN_WIN_RATE_GAP:
+        # overall_win_rate is the whole book - always a much larger sample
+        # than any one category, so the category's own n is the real
+        # limiting factor here (see _comparability_margin_pts above for
+        # the two-sample version of this same fix).
+        if abs(gap) < stats_power.margin_of_error_pts(n, observed_pct=wr):
             continue
         current = by_category.get(category, {}).get("entry_threshold", base_threshold)
         step = 0.05

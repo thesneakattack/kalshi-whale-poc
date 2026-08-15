@@ -37,6 +37,24 @@ class Position:
 
 
 @dataclass
+class PendingOrder:
+    """A resting limit order - the paper-mode maker-order simulation
+    (services/kalshi_fees.py's maker_fee(), 2026-08-15 direct request).
+    Unlike Position/Trade, limit_price is a target, not yet a fill - see
+    PaperBroker.check_pending_fills for how/when this becomes a real
+    Position. One pending order per ticker at a time, same constraint as
+    positions itself."""
+    ticker: str
+    side: str
+    size: int  # contracts, not a dollar budget - caller's responsibility, same convention as open_position
+    limit_price: float  # always the YES price, same convention as Position.entry_price
+    placed_at: float
+    expires_at: float
+    reason: str
+    config_fingerprint: str | None = None
+
+
+@dataclass
 class Trade:
     id: str
     ticker: str
@@ -119,6 +137,25 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # handled explicitly wherever these are reconstructed from the DB below.
     _add_column_if_missing(conn, "positions", "entry_fee", "REAL")
     _add_column_if_missing(conn, "trades", "fee", "REAL")
+    # Maker/limit-order path (2026-08-15, docs/profit-maximization-
+    # assessment-2026-08-15.md direct request) - own table, same
+    # persistence idiom as positions/trades, so a resting order survives a
+    # restart instead of silently vanishing (or worse, silently
+    # "un-resting" into a market fill on resume).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_orders (
+            ticker TEXT PRIMARY KEY,
+            side TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            limit_price REAL NOT NULL,
+            placed_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            reason TEXT NOT NULL,
+            config_fingerprint TEXT
+        )
+        """
+    )
     return conn
 
 
@@ -135,6 +172,7 @@ class PaperBroker:
         self.positions: dict[str, Position] = {}   # keyed by ticker
         self.trade_log: list[Trade] = []
         self.last_trade_time: dict[str, float] = {}  # ticker -> timestamp
+        self.pending_orders: dict[str, PendingOrder] = {}   # keyed by ticker, same as positions
 
         with self._connect() as conn:
             row = conn.execute(
@@ -161,6 +199,13 @@ class PaperBroker:
                 ):
                     self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
+                for ticker, side, size, limit_price, placed_at, expires_at, reason, fp in conn.execute(
+                    "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint "
+                    "FROM pending_orders"
+                ):
+                    self.pending_orders[ticker] = PendingOrder(
+                        ticker, side, size, limit_price, placed_at, expires_at, reason, fp,
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         return _connect(self.db_path)
@@ -171,7 +216,7 @@ class PaperBroker:
 
     def open_position(
         self, ticker: str, side: str, size: int, price: float, reason: str,
-        config_fingerprint: str | None = None,
+        config_fingerprint: str | None = None, fee_fn=kalshi_fees.taker_fee,
     ) -> Trade:
         # price is always the YES price (see module docstring/mark_to_market) -
         # a NO contract's real per-unit cost is (1 - price), not price itself.
@@ -185,8 +230,8 @@ class PaperBroker:
         cost = min(cost, self.bankroll)          # never go negative in the POC
         actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
 
-        # Real Kalshi taker fee (services/kalshi_fees.py), deducted as an
-        # additional cash outflow on top of cost - not folded into the
+        # Real Kalshi taker fee (services/kalshi_fees.py) by default, deducted
+        # as an additional cash outflow on top of cost - not folded into the
         # position-sizing math above, which stays exactly as already tested/
         # correct. This means a trade landing right at the bankroll limit
         # can push bankroll fractionally (cents) below zero once the fee is
@@ -194,7 +239,13 @@ class PaperBroker:
         # paper POC (see the "never go negative in the POC" comment above,
         # already an approximation, not a hard invariant), not worth the
         # complexity of solving cost+fee<=bankroll simultaneously.
-        fee = kalshi_fees.taker_fee(actual_size, price, ticker=ticker)
+        #
+        # fee_fn (2026-08-15, maker/limit-order path): a resting limit order
+        # that fills (see check_pending_fills below) pays kalshi_fees.
+        # maker_fee() instead - the entire point of resting an order rather
+        # than taking the market. Defaults to taker_fee so every existing
+        # caller (a plain market-order entry) is completely unaffected.
+        fee = fee_fn(actual_size, price, ticker=ticker)
 
         self.bankroll -= (cost + fee)
         self.positions[ticker] = Position(
@@ -229,6 +280,112 @@ class PaperBroker:
                  config_fingerprint, fee),
             )
         return trade
+
+    def place_limit_order(
+        self, ticker: str, side: str, size: int, limit_price: float, reason: str,
+        expires_at: float, config_fingerprint: str | None = None,
+    ) -> PendingOrder | None:
+        """Rests a limit order instead of filling instantly at the quoted
+        price - the paper-mode maker-order simulation (2026-08-15, docs/
+        profit-maximization-assessment-2026-08-15.md direct request:
+        fees were consuming ~60% of gross profit, and this app had no
+        maker/limit-order path at all). Unlike open_position, this does
+        NOT touch bankroll yet - no cash/collateral is reserved for a
+        resting order, same "explicitly accepted approximation" tolerance
+        as open_position's own "never go negative" cost clamp; a real
+        exchange would reserve margin against a resting order, this paper
+        POC doesn't model that.
+
+        size is already in contracts (the caller's responsibility, same
+        convention as open_position's own actual_size) - not a dollar
+        budget, since the caller already knows the limit_price it's
+        asking for and can size off that the same way evaluate() already
+        sizes a market order.
+
+        One resting order per ticker at a time, same constraint
+        positions already has - returns None (no-op, not an error) if
+        one's already pending on this ticker, rather than silently
+        replacing/duplicating it."""
+        if ticker in self.pending_orders or size <= 0:
+            return None
+        order = PendingOrder(
+            ticker=ticker, side=side, size=size, limit_price=limit_price,
+            placed_at=time.time(), expires_at=expires_at, reason=reason,
+            config_fingerprint=config_fingerprint,
+        )
+        self.pending_orders[ticker] = order
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_orders "
+                "(ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (order.ticker, order.side, order.size, order.limit_price, order.placed_at,
+                 order.expires_at, order.reason, order.config_fingerprint),
+            )
+        return order
+
+    def _cancel_pending(self, ticker: str) -> None:
+        del self.pending_orders[ticker]
+        with self._connect() as conn:
+            conn.execute("DELETE FROM pending_orders WHERE ticker = ?", (ticker,))
+
+    def check_pending_fills(
+        self, latest_bids: dict[str, float], latest_asks: dict[str, float], now: float | None = None,
+    ) -> list[dict]:
+        """Runs once per tick (main.py, right after the signal-evaluation
+        loop) - resolves every resting limit order against this tick's
+        real bid/ask. A yes-side buy fills once the real ask has come
+        down to (or below) the limit price - someone's willing to sell at
+        or better than what this order is bidding. A no-side buy fills
+        once (1 - the real yes-bid) has come down to (or below) the
+        limit's own no-side unit cost - the mirror-image condition, same
+        side-aware convention as everywhere else in this app (price is
+        always expressed in YES terms; unit_cost = price if side=='yes'
+        else 1-price).
+
+        Filled orders pay kalshi_fees.maker_fee() instead of taker_fee()
+        via open_position's fee_fn param - the entire point of resting an
+        order instead of taking the market. Fills at the real available
+        price, which may be better than the limit (the order asked for
+        "at most this," not "exactly this," same as a real resting limit
+        order) - never worse.
+
+        An order past its own expires_at is dropped unfilled (cancelled),
+        not resubmitted as a market order - this never chases a price
+        that's moved past what the order actually asked for; a signal
+        that goes stale before the market comes to it is exactly the kind
+        of trade this mechanism is supposed to skip, not force through at
+        a worse (taker) price. No fresh quote this tick (ticker rotated
+        off the watchlist, etc.) leaves the order pending untouched rather
+        than guessing.
+
+        Returns one decision dict per fill, in the same shape evaluate()'s
+        caller already expects from a market-order trade."""
+        now = now if now is not None else time.time()
+        fills = []
+        for ticker in list(self.pending_orders):
+            order = self.pending_orders[ticker]
+            if now >= order.expires_at:
+                self._cancel_pending(ticker)
+                continue
+            if order.side == "yes":
+                available_unit_cost = latest_asks.get(ticker)
+            else:
+                bid = latest_bids.get(ticker)
+                available_unit_cost = (1 - bid) if bid is not None else None
+            if available_unit_cost is None:
+                continue  # no fresh quote this tick - wait, don't guess
+            limit_unit_cost = order.limit_price if order.side == "yes" else (1 - order.limit_price)
+            if available_unit_cost > limit_unit_cost:
+                continue  # market hasn't come to this order's price yet
+            fill_price = available_unit_cost if order.side == "yes" else (1 - available_unit_cost)
+            self._cancel_pending(ticker)  # remove from pending before opening - a different dict than positions
+            trade = self.open_position(
+                ticker=order.ticker, side=order.side, size=order.size, price=fill_price,
+                reason=order.reason, config_fingerprint=order.config_fingerprint, fee_fn=kalshi_fees.maker_fee,
+            )
+            fills.append({"action": "trade", "trade": trade.to_dict(), "reason": order.reason, "source": "limit_order"})
+        return fills
 
     def close_position(self, ticker: str, exit_price: float, reason: str) -> Trade | None:
         """Sells an open position back at exit_price instead of holding it
@@ -298,9 +455,11 @@ class PaperBroker:
         self.positions.clear()
         self.trade_log.clear()
         self.last_trade_time.clear()
+        self.pending_orders.clear()
         with self._connect() as conn:
             conn.execute("DELETE FROM positions")
             conn.execute("DELETE FROM trades")
+            conn.execute("DELETE FROM pending_orders")
             conn.execute(
                 "INSERT OR REPLACE INTO broker_meta (id, bankroll, starting_bankroll) VALUES (1, ?, ?)",
                 (starting_bankroll, starting_bankroll),
@@ -381,4 +540,9 @@ class PaperBroker:
                 {**asdict(p), "cost_basis": round(self.cost_basis(p.ticker), 2)} for p in self.positions.values()
             ],
             "recent_trades": [t.to_dict() for t in self.trade_log[-25:][::-1]],
+            # Resting limit orders (2026-08-15 maker-order path) - real
+            # visibility into "what's waiting to fill," same reasoning as
+            # exposing positions rather than leaving them invisible until a
+            # fill/close event shows up in recent_trades.
+            "pending_orders": [asdict(o) for o in self.pending_orders.values()],
         }
