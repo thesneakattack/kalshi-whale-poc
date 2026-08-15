@@ -47,7 +47,7 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_catalog.db"
 # scan, once it's actually near-term) - skipping it now keeps the catalog
 # itself small and the scan cheap, rather than accumulating months of
 # far-future markets nobody's asking about yet.
-_MAX_PAST_HORIZON_SEC = 7 * 24 * 3600  # 1 week
+_MAX_PAST_HORIZON_SEC = 1 * 24 * 3600  # 1 day
 _MAX_FUTURE_HORIZON_SEC = 21 * 24 * 3600  # 3 weeks
 
 

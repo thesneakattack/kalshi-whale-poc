@@ -91,7 +91,7 @@ def test_skip_when_close_time_is_more_than_two_hours_away(tmp_path, monkeypatch)
     close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3 * 3600))
     decision = strategy.evaluate(_signal(confidence=0.9, close_time=close_time), _cfg(entry_threshold=0.65))
     assert decision["action"] == "skip"
-    assert "close time is not within the 2h trade window" in decision["reason"]
+    assert "close time is not within the trade window" in decision["reason"]
     gates = cl_module.gate_summary()
     assert any(g["gate_name"] == "close_window" for g in gates)
 
