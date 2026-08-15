@@ -39,7 +39,7 @@ from services import title_cache
 from services import trade_analytics
 from services import trade_category
 from services.config_store import config_store
-from services.http_client import close_client
+from services.http_client import close_client, get_and_reset_rate_limit_hits
 from services.kalshi_client import KalshiClient
 from services.kalshi_account_client import KalshiAccountClient
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
@@ -106,6 +106,8 @@ trade_stream = KalshiTradeWebSocketClient(account_base_url)
 
 state = {
     "running": True,
+    "last_tick_duration_sec": None,  # wall-clock time of the most recently completed tick, see trading_loop
+    "last_tick_rate_limit_hits": 0,  # 429s hit during that same tick - services/http_client.py's rolling counter
     "markets": [],
     "latest_prices": {},
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
@@ -248,7 +250,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
         shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(state.get("account") or {}, cfg)
         shadow.evaluate(
             signal, cfg, shadow_bankroll, shadow_bankroll_source,
-            is_live=is_live, market_results=market_results,
+            is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
         )
     return decision
 
@@ -1809,6 +1811,12 @@ async def trading_loop():
             await asyncio.sleep(1)
             continue
         client = None
+        # Real incident evidence this exists to catch next time (hardening-
+        # and-accuracy-roadmap-2026-08-11.md Part 3 Item 2, closed
+        # 2026-08-15): a genuine 502 was hit during the phase-97 cold-start
+        # incident, but nothing in state could show a tick running long or
+        # rate-limit hits piling up before it actually broke something.
+        tick_start_wall = time.time()
         try:
             # Config-variant fingerprint (docs/advisory-engine-plan.md) -
             # computed once per tick, same cfg snapshot every trade decision
@@ -2273,6 +2281,8 @@ async def trading_loop():
             if client is not None:
                 await client.close()
 
+        state["last_tick_duration_sec"] = round(time.time() - tick_start_wall, 2)
+        state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
         _bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
@@ -3479,6 +3489,20 @@ def _build_state_body() -> dict:
         "series_track_record": state["series_track_record"],
         "series_meta": _series_meta_map({r["series"] for r in state["series_track_record"].values()}),
         "last_poll": state["last_poll"],
+        "last_tick_duration_sec": state["last_tick_duration_sec"],
+        "last_tick_rate_limit_hits": state["last_tick_rate_limit_hits"],
+        # Real bug found and fixed 2026-08-15, same session that added
+        # me_pairs in the first place: _build_state_body() is a curated
+        # whitelist, not a passthrough of the whole state dict, and this key
+        # was never added to it - the ME-pair entry gate itself worked
+        # correctly (main.py's own internal use of state["me_pairs"] never
+        # went through this function), but nothing outside the process could
+        # ever see which pairs were currently detected. An earlier "curl and
+        # check" verification missed this because it read
+        # `(resp.get("me_pairs") or {})` - the `or {}` silently produced the
+        # same empty-looking result whether the key was present-but-empty or
+        # missing entirely.
+        "me_pairs": state["me_pairs"],
         "error": state["error"],
         "whale_source": state["whale_source"],
         "risk": {"halted": risk.halted, "halt_reason": risk.halt_reason},

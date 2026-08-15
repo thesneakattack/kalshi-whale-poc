@@ -305,3 +305,38 @@ def test_weights_still_sum_reasonably_with_a_full_custom_dict():
     }
     breakdown = composite_confidence_breakdown(market, [market], size=5000, price=0.5, now=now, weights=custom)
     assert 0.0 <= breakdown.score <= 1.0
+
+
+# ---- block_trade_factor (docs/kalshi/public-trades.md's is_block_trade -
+# a real first-party Kalshi signal, added 2026-08-15 after finding it parsed
+# by services/kalshi_trade_ws.py and never read anywhere downstream) --------
+
+def test_block_trade_factor_defaults_to_zero_not_neutral():
+    # Same "known-and-negative is itself informative" idiom as cluster_factor -
+    # Kalshi tells every real trade's block-trade status explicitly, so "not
+    # a block trade" is a real, known 0.0, not a neutral 0.5 the way an
+    # entirely-absent signal (e.g. no analyst estimate on file) would be.
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    omitted = composite_confidence_breakdown(market, [market], size=5000, price=0.5, now=now)
+    explicit_false = composite_confidence_breakdown(
+        market, [market], size=5000, price=0.5, now=now, block_trade_factor=0.0,
+    )
+    assert omitted.block_trade_factor == explicit_false.block_trade_factor == 0.0
+
+
+def test_block_trade_factor_true_raises_the_score():
+    market = _market(volume_24h_fp="10000")
+    now = time.time()
+    not_block = composite_confidence(market, [market], size=5000, price=0.5, now=now, block_trade_factor=0.0)
+    is_block = composite_confidence(market, [market], size=5000, price=0.5, now=now, block_trade_factor=1.0)
+    assert is_block > not_block
+
+
+def test_block_trade_factor_present_in_default_weights():
+    # Real bug class this app has hit before (confidence_calibration.py's
+    # _FACTOR_NAMES drifting out of sync with DEFAULT_WEIGHTS) - guard that
+    # a newly added factor always has a real weight, not a silent 0/missing
+    # key once someone edits DEFAULT_WEIGHTS again later.
+    assert "block_trade_factor" in DEFAULT_WEIGHTS
+    assert DEFAULT_WEIGHTS["block_trade_factor"] > 0

@@ -13,6 +13,24 @@ import httpx
 
 _client: httpx.AsyncClient | None = None
 
+# Rolling rate-limit-hit visibility (2026-08-15, hardening-and-accuracy-
+# roadmap-2026-08-11.md Part 3 Item 2 - "no tick-duration/rate-limit
+# visibility," confirmed still open: real incident evidence exists, a
+# genuine 502 was hit during the phase-97 cold-start incident, but nothing
+# in `state` could show it coming next time). Single-threaded asyncio event
+# loop, so a plain module-level int needs no lock. main.py's trading_loop
+# reads and resets this once per tick via get_and_reset_rate_limit_hits() -
+# a per-tick count, not an ever-growing lifetime total, so it stays a
+# meaningful "is this happening right now" signal.
+_rate_limit_hits_since_reset = 0
+
+
+def get_and_reset_rate_limit_hits() -> int:
+    global _rate_limit_hits_since_reset
+    count = _rate_limit_hits_since_reset
+    _rate_limit_hits_since_reset = 0
+    return count
+
 
 def get_client() -> httpx.AsyncClient:
     global _client
@@ -41,6 +59,7 @@ async def call_with_backoff(coro_func, *args, max_retries: int = 4, base_delay: 
     expose .status) rather than an HTTP response object. Only a 429-shaped
     exception triggers a retry; anything else propagates immediately,
     including on the final attempt."""
+    global _rate_limit_hits_since_reset
     delay = base_delay
     for attempt in range(max_retries + 1):
         try:
@@ -48,5 +67,6 @@ async def call_with_backoff(coro_func, *args, max_retries: int = 4, base_delay: 
         except Exception as e:
             if getattr(e, "status", None) != 429 or attempt == max_retries:
                 raise
+            _rate_limit_hits_since_reset += 1
             await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter
             delay *= 2

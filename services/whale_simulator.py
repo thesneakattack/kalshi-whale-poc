@@ -202,6 +202,7 @@ class ConfidenceBreakdown:
     cluster_factor: float
     trend_factor: float
     analyst_factor: float
+    block_trade_factor: float
     score: float
 
     def to_dict(self) -> dict:
@@ -213,17 +214,28 @@ class ConfidenceBreakdown:
 # reference point services/confidence_calibration.py's report compares a
 # live config override against), not the only source of truth. See
 # config/settings.yaml's whale_confidence_weights section - config.
+# block_trade_factor added 2026-08-15 (consuming docs/kalshi/public-trades.md
+# in full for the first time this session surfaced a real gap: Kalshi's own
+# is_block_trade flag on every real trade - an authoritative first-party
+# signal, not an inferred one - was being parsed by
+# services/kalshi_trade_ws.py and then never read by anything). Given a real
+# starting weight rather than 0, same "ships with a reasoned value, gets
+# recalibrated once real data exists" precedent as cluster_factor/
+# trend_factor/analyst_factor when each was added - the other 8 weights
+# proportionally scaled down (×0.85) to make room, preserving their
+# pre-existing relative proportions rather than resetting them.
 DEFAULT_WEIGHTS = {
-    "depth_factor": 0.21, "unusualness_factor": 0.09, "proximity_factor": 0.13,
-    "context_factor": 0.08, "agreement_factor": 0.13, "cluster_factor": 0.13,
-    "trend_factor": 0.08, "analyst_factor": 0.15,
+    "depth_factor": 0.18, "unusualness_factor": 0.08, "proximity_factor": 0.11,
+    "context_factor": 0.07, "agreement_factor": 0.11, "cluster_factor": 0.11,
+    "trend_factor": 0.07, "analyst_factor": 0.13, "block_trade_factor": 0.15,
 }
 
 
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5, weights: dict | None = None, side: str = "yes",
+    analyst_factor: float = 0.5, block_trade_factor: float = 0.0,
+    weights: dict | None = None, side: str = "yes",
 ) -> ConfidenceBreakdown:
     """Matches Polywhaler's stated "Insider Score" shape (see ROADMAP.md),
     extended per docs/prediction-market-strategy-alignment-plan.md: trade
@@ -379,6 +391,20 @@ def composite_confidence_breakdown(
     # deliberately spent a real API call analyzing this specific market -
     # neutral is the overwhelmingly common case, not an edge case.
 
+    # (9) Was this trade designated a block trade by Kalshi itself?
+    # (docs/kalshi/public-trades.md's is_block_trade field, consumed in full
+    # for the first time 2026-08-15 - previously parsed by services/
+    # kalshi_trade_ws.py and never read anywhere downstream). Unlike every
+    # other factor here, this isn't inferred from this app's own math - it's
+    # Kalshi's own first-party classification of the trade. Defaults to 0.0,
+    # not 0.5 - same "known-and-negative is itself informative, not merely
+    # unknown" idiom as cluster_factor: Kalshi tells every real trade's
+    # block-trade status explicitly, so "no" is a real, known answer, not
+    # missing data. Computed by the caller (services/whalewatchers/
+    # kalshi_trade_tape.py, the only real, non-simulated caller with an
+    # actual is_block_trade field to read) - the simulator has no equivalent
+    # concept and always passes the default.
+
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
     score = (
         w["depth_factor"] * depth_factor
@@ -389,12 +415,14 @@ def composite_confidence_breakdown(
         + w["cluster_factor"] * cluster_factor
         + w["trend_factor"] * trend_factor
         + w["analyst_factor"] * analyst_factor
+        + w["block_trade_factor"] * block_trade_factor
     )
     return ConfidenceBreakdown(
         depth_factor=depth_factor, unusualness_factor=unusualness_factor,
         proximity_factor=proximity_factor, context_factor=context_factor,
         agreement_factor=agreement_factor, cluster_factor=cluster_factor,
         trend_factor=trend_factor, analyst_factor=analyst_factor,
+        block_trade_factor=block_trade_factor,
         score=min(max(score, 0.0), 1.0),
     )
 
@@ -402,13 +430,15 @@ def composite_confidence_breakdown(
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
     agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
-    analyst_factor: float = 0.5, weights: dict | None = None, side: str = "yes",
+    analyst_factor: float = 0.5, block_trade_factor: float = 0.0,
+    weights: dict | None = None, side: str = "yes",
 ) -> float:
     """The blended score only - see composite_confidence_breakdown for the
     full per-factor detail. Kept as its own function so every existing
     caller that only ever wanted a plain float (WhaleSimulator, tests)
     doesn't need to change."""
     return composite_confidence_breakdown(
-        market, markets, size, price, now, agreement_factor, cluster_factor, trend_factor,
-        analyst_factor, weights, side=side,
+        market, markets, size, price, now, agreement_factor=agreement_factor, cluster_factor=cluster_factor,
+        trend_factor=trend_factor, analyst_factor=analyst_factor, block_trade_factor=block_trade_factor,
+        weights=weights, side=side,
     ).score

@@ -23,6 +23,16 @@ class _FakeApiException(Exception):
         super().__init__(f"status {status}")
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_counter():
+    # Module-level global (services/http_client.py's own single-threaded-
+    # asyncio design, no lock needed) - reset around every test so one
+    # test's retries can't leak into the next's assertions.
+    http_client.get_and_reset_rate_limit_hits()
+    yield
+    http_client.get_and_reset_rate_limit_hits()
+
+
 def _no_sleep(monkeypatch):
     sleeps = []
 
@@ -108,3 +118,45 @@ def test_exceptions_without_a_status_attribute_are_not_retried(monkeypatch):
 
     assert attempts["n"] == 1
     assert sleeps == []
+
+
+# ---- rate-limit-hit visibility (2026-08-15, hardening-and-accuracy-
+# roadmap-2026-08-11.md Part 3 Item 2, real incident evidence: a genuine 502
+# was hit during the phase-97 cold-start incident with no way to see it
+# coming) -------------------------------------------------------------------
+
+def test_rate_limit_hits_counted_on_429_retry(monkeypatch):
+    _no_sleep(monkeypatch)
+    attempts = {"n": 0}
+
+    async def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise _FakeApiException(429)
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(flaky, base_delay=1.0))
+    assert http_client.get_and_reset_rate_limit_hits() == 2  # 2 retries, not the final success
+
+
+def test_get_and_reset_rate_limit_hits_resets_to_zero(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def always_429():
+        raise _FakeApiException(429)
+
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_429, max_retries=2))
+    assert http_client.get_and_reset_rate_limit_hits() == 2
+    assert http_client.get_and_reset_rate_limit_hits() == 0  # already reset by the read above
+
+
+def test_non_429_failures_dont_count_as_rate_limit_hits(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def always_500():
+        raise _FakeApiException(500)
+
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_500))
+    assert http_client.get_and_reset_rate_limit_hits() == 0

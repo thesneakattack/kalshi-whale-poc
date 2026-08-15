@@ -88,6 +88,14 @@ def _connect() -> sqlite3.Connection:
     # the time - the instant mode flips to "shadow"/"live" this would have
     # silently blocked every shadow evaluation with no recovery path).
     _add_column_if_missing(conn, "shadow_risk", "day_start_date", "TEXT")
+    # docs/advisory-engine-plan.md §1's own disclosed v1-scope gap, closed
+    # 2026-08-15: shadow trades never carried config_fingerprint the way
+    # paper trades do (services/paper_broker.py's Position/Trade), so a
+    # shadow trade could never be attributed to a specific config variant
+    # the way config_performance.py already attributes paper trades.
+    # Nullable/additive, same idiom as every other schema change in this
+    # app - existing rows predate the column and stay NULL, not backfilled.
+    _add_column_if_missing(conn, "shadow_trades", "config_fingerprint", "TEXT")
     return conn
 
 
@@ -184,13 +192,21 @@ class ShadowTrader:
     def evaluate(
         self, signal, cfg: dict, reference_bankroll: float, bankroll_source: str,
         is_live: bool | None = None, market_results: dict | None = None,
+        config_fingerprint: str | None = None,
     ) -> dict | None:
         """Mirrors FollowTheWhaleStrategy.evaluate's gates (same order, same
         thresholds) but against reference_bankroll instead of the paper
         broker's, and only ever logs - never executes. Returns the logged
         row, or None if the signal didn't clear the bar - only intended
         trades are logged, not every skip, matching the roadmap's own
-        wording ("logs intended real trades")."""
+        wording ("logs intended real trades").
+
+        config_fingerprint (2026-08-15, closing a gap disclosed since
+        docs/advisory-engine-plan.md §1): same config_performance.
+        fingerprint() value main.py already computes once per tick for the
+        paper broker's own Position/Trade - passed straight through here,
+        not recomputed, so a shadow trade can finally be attributed to a
+        config variant the same way a paper trade already can."""
         strat_cfg = cfg["strategy"]
         risk_cfg = cfg["risk"]
 
@@ -236,19 +252,24 @@ class ShadowTrader:
             "reference_bankroll": round(reference_bankroll, 2),
             "bankroll_source": bankroll_source,
             "timestamp": time.time(),
+            "config_fingerprint": config_fingerprint,
         }
         with _connect() as conn:
             conn.execute(
                 "INSERT INTO shadow_trades "
-                "(id, ticker, side, size, price, reason, reference_bankroll, bankroll_source, timestamp) "
-                "VALUES (:id, :ticker, :side, :size, :price, :reason, :reference_bankroll, :bankroll_source, :timestamp)",
+                "(id, ticker, side, size, price, reason, reference_bankroll, bankroll_source, timestamp, config_fingerprint) "
+                "VALUES (:id, :ticker, :side, :size, :price, :reason, :reference_bankroll, :bankroll_source, "
+                ":timestamp, :config_fingerprint)",
                 row,
             )
         self.last_trade_time[signal.ticker] = row["timestamp"]
         return row
 
     def recent(self, limit: int = 25) -> list[dict]:
-        cols = ["id", "ticker", "side", "size", "price", "reason", "reference_bankroll", "bankroll_source", "timestamp"]
+        cols = [
+            "id", "ticker", "side", "size", "price", "reason", "reference_bankroll", "bankroll_source",
+            "timestamp", "config_fingerprint",
+        ]
         with _connect() as conn:
             rows = conn.execute(
                 f"SELECT {', '.join(cols)} FROM shadow_trades ORDER BY timestamp DESC LIMIT ?", (limit,)

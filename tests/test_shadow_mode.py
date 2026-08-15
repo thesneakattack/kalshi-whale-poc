@@ -55,6 +55,20 @@ def test_logs_an_intended_trade_when_conditions_met(tmp_path, monkeypatch):
     assert trader.recent(10)[0]["id"] == row["id"]
 
 
+def test_logged_trade_carries_config_fingerprint(tmp_path, monkeypatch):
+    # 2026-08-15, closing a gap disclosed since docs/advisory-engine-plan.md
+    # §1: shadow trades never carried config_fingerprint the way paper
+    # trades already do, so they couldn't be attributed to a config variant.
+    trader = _trader(tmp_path, monkeypatch)
+    _no_opinion_series_stats(monkeypatch)
+    row = trader.evaluate(
+        _signal(confidence=0.8, price=0.5), _cfg(), reference_bankroll=10000.0,
+        bankroll_source="real_account", config_fingerprint="fp-abc123",
+    )
+    assert row["config_fingerprint"] == "fp-abc123"
+    assert trader.recent(10)[0]["config_fingerprint"] == "fp-abc123"
+
+
 def test_no_side_sizes_off_inverted_price(tmp_path, monkeypatch):
     trader = _trader(tmp_path, monkeypatch)
     _no_opinion_series_stats(monkeypatch)

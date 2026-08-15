@@ -427,7 +427,64 @@ def test_trades_when_me_complement_has_no_open_position(tmp_path, monkeypatch):
         _signal(ticker="TEAM-B", confidence=0.9, price=0.4), _cfg(), me_complement="TEAM-A",
     )
     assert decision["action"] == "trade"
-    assert "TEAM-B" in broker.positions
+
+
+# ---- min_unit_cost/max_unit_cost price-band gate (2026-08-15, real
+# trade-history finding: only unit_cost 0.5-0.8 was net profitable across
+# 606 real settled trades) --------------------------------------------------
+
+def test_skip_when_unit_cost_below_minimum(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    # yes side: unit_cost == signal.price directly
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.3, side="yes"), _cfg(min_unit_cost=0.5, max_unit_cost=0.8),
+    )
+    assert decision["action"] == "skip"
+    assert "below the minimum unit cost" in decision["reason"]
+    assert "TICK-A" not in broker.positions
+
+
+def test_skip_when_unit_cost_above_maximum(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.9, side="yes"), _cfg(min_unit_cost=0.5, max_unit_cost=0.8),
+    )
+    assert decision["action"] == "skip"
+    assert "above the maximum unit cost" in decision["reason"]
+
+
+def test_trades_when_unit_cost_inside_the_band(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.6, side="yes"), _cfg(min_unit_cost=0.5, max_unit_cost=0.8),
+    )
+    assert decision["action"] == "trade"
+
+
+def test_unit_cost_gate_is_side_aware_for_no(tmp_path, monkeypatch):
+    # no side: unit_cost = 1 - signal.price, so a "cheap-looking" yes price
+    # of 0.15 is actually an 0.85 unit_cost on the no side - well above a
+    # 0.8 ceiling, should still be rejected on that basis, not let through
+    # just because the raw yes-price looks low.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, price=0.15, side="no"), _cfg(min_unit_cost=0.5, max_unit_cost=0.8),
+    )
+    assert decision["action"] == "skip"
+    assert "above the maximum unit cost" in decision["reason"]
+    gates = cl_module.gate_summary()
+    assert any(g["gate_name"] == "max_unit_cost" for g in gates)
+
+
+def test_unit_cost_gate_is_a_noop_when_bounds_are_none(tmp_path, monkeypatch):
+    # Default _cfg() sets neither bound - every existing test in this file
+    # trades at a variety of prices with no min_unit_cost/max_unit_cost
+    # passed, so the gate must be a true no-op (None means "no limit"),
+    # not silently reject anything, when omitted.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(confidence=0.9, price=0.05, side="yes"), _cfg())
+    assert decision["action"] == "trade"
+    assert "TICK-A" in broker.positions
 
 
 # ---- max_open_positions_per_series (deep-scan finding 2, 2026-08-10) -----

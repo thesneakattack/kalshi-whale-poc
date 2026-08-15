@@ -43,11 +43,12 @@ def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):
 def _trade(
     trade_id="t1", ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.6000",
     no_price_dollars="0.4000", taker_side="yes", created_time="2026-08-08T12:00:00Z",
+    is_block_trade=False,
 ):
     return {
         "trade_id": trade_id, "ticker": ticker, "count_fp": count_fp,
         "yes_price_dollars": yes_price_dollars, "no_price_dollars": no_price_dollars,
-        "taker_side": taker_side, "created_time": created_time,
+        "taker_side": taker_side, "created_time": created_time, "is_block_trade": is_block_trade,
     }
 
 
@@ -219,6 +220,25 @@ def test_signal_carries_a_full_factor_breakdown():
     for key in ("depth_factor", "unusualness_factor", "proximity_factor", "context_factor", "agreement_factor", "score"):
         assert key in factors
         assert 0.0 <= factors[key] <= 1.0
+
+
+def test_block_trade_factor_reflects_kalshis_own_is_block_trade_flag():
+    # docs/kalshi/public-trades.md's is_block_trade - Kalshi's own real
+    # first-party signal, found 2026-08-15 to have been parsed by services/
+    # kalshi_trade_ws.py and never consumed anywhere downstream until now.
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes", is_block_trade=True)
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["block_trade_factor"] == 1.0
+
+
+def test_block_trade_factor_is_zero_when_not_a_block_trade():
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes", is_block_trade=False)
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert signals[0].factors["block_trade_factor"] == 0.0
 
 
 def test_agreement_factor_is_neutral_with_no_recent_history():

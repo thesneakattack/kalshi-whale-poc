@@ -198,6 +198,20 @@ def test_overall_win_rate_and_confidence_label_present():
     assert result["report"]["confidence_label"] == "higher"  # n=30
 
 
+def test_overall_win_rate_margin_of_error_present_and_reasonable():
+    # 2026-08-15, real gap closed: the auto-apply gate was a bare sample-
+    # size floor with no confidence-interval framing, despite services/
+    # stats_power.py's real margin-of-error math already existing and
+    # already being used for this exact question elsewhere (main.py's
+    # series-evaluator win-rate cross-check).
+    rows = _discriminating_dataset(n_per_bucket=10)  # n=30, ~33.3% win rate
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    from services import stats_power
+    expected = round(stats_power.margin_of_error_pts(30, result["report"]["overall_win_rate"]), 1)
+    assert result["report"]["overall_win_rate_margin_pts"] == expected
+    assert 0 < result["report"]["overall_win_rate_margin_pts"] < 50  # a real, finite, sane margin at n=30
+
+
 # ---- overall confidence-score calibration (distinct from per-factor discrimination) ----
 
 def test_well_calibrated_band_shows_a_small_gap():

@@ -82,6 +82,30 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
+- [ ] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
+      to consume every research/planning doc in the repo (10 docs) and
+      produce a comprehensive forward-looking plan, cross-checked against
+      real code, not just the docs' own claims. **Headline finding, direct
+      escalated priority mid-session**: root-caused "near 70% win rate but
+      only pennies earned, portfolio looking like a straight line" against
+      606 real settled trades - bucketed by unit_cost (real side-aware price
+      paid), the strategy was net-losing outside a narrow 0.5-0.8 band
+      (-$1,588 below it, -$314 above it despite 78-94% win rates there,
+      +$1,152 only inside it). Fixed directly: `strategy.min_unit_cost`/
+      `max_unit_cost` (0.5/0.8), a real price-band entry gate on
+      `strategy_engine.py`, same precedent `market_strategy.py` already used
+      successfully. Also closed while consuming `docs/kalshi/`'s real API
+      reference docs in full for the first time: Kalshi's own `is_block_trade`
+      flag was parsed and never consumed - now a real 9th whale-confidence
+      factor. Plus: `ShadowTrader` config_fingerprint, margin-of-error
+      framing on calibration auto-apply, tick-duration/rate-limit visibility
+      (which immediately found a real live issue - 45-66 rate-limit hits
+      every tick, escalating the long-open "no concurrency throttling"
+      item), and a real bug in this session's own earlier work
+      (`me_pairs` missing from `GET /api/state` since it shipped). Full
+      prioritized list of everything else still open across all 10 docs -
+      small/medium/large, with an explicit non-goals section - is in the
+      doc itself. 778 tests passing.
 - [ ] `docs/todo-2026-08-14-heuristics-audit-and-exit-tuning.md` — direct
       request after CI broke and a "70% win rate but only pennies of
       profit" report. Fixed same-session: close_window_sec/special_market_

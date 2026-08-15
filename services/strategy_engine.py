@@ -309,6 +309,49 @@ class FollowTheWhaleStrategy:
                 signal, f'already holding a position on "{me_complement}", this market\'s mutually-exclusive complement',
             )
 
+        # Price-band gate (2026-08-15, direct priority: "figure out why even
+        # with a near 70% winrate only pennies are earned"). Real trade-
+        # history analysis (606 settled trades) found the answer precisely:
+        # bucketing every settled trade by unit_cost (the actual side-aware
+        # price paid per contract - signal.price if yes, 1-signal.price if
+        # no) showed real money is made almost entirely in one band and lost
+        # everywhere else:
+        #   unit_cost 0.1-0.5: net -$1,588 (155 trades) - buying cheap/
+        #     underdog contracts, the classic favorite-longshot-bias losing
+        #     side, already partially addressed by longshot_price_threshold/
+        #     longshot_entry_threshold_bonus below but that only scrutinizes
+        #     the extreme ends (<=5c/>=95c) - this data shows real losses
+        #     extend across the whole sub-50c range, not just the extremes.
+        #   unit_cost 0.5-0.8: net +$1,152 (230 trades, the only
+        #     consistently profitable band)
+        #   unit_cost 0.8-1.0: net -$314 (208 trades) - the counterintuitive
+        #     half of the finding: 78-94% win rates in this band (buying
+        #     heavy favorites) still net NEGATIVE, because a win only pays a
+        #     few cents while a loss costs nearly the full dollar paid - the
+        #     textbook "high win rate, thin edge" trap, not visible from win
+        #     rate alone.
+        # A hard band, not another graduated bonus - the existing longshot
+        # bonus already tried "graduated" for the extremes and the losses
+        # persisted well inside where that bonus ever applies. Same
+        # min_price/max_price precedent market_strategy.py already uses
+        # successfully, adapted to unit_cost (side-aware) since whale-follow
+        # trades both sides under one signal.price (always the yes price).
+        # None (either bound) means "no limit," same convention as every
+        # other optional bound in this app.
+        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+        min_unit_cost = strat_cfg.get("min_unit_cost")
+        max_unit_cost = strat_cfg.get("max_unit_cost")
+        if min_unit_cost is not None and unit_cost < min_unit_cost:
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "min_unit_cost", unit_cost, min_unit_cost, side=signal.side,
+            )
+            return self._skip(signal, f"price {unit_cost:.2f} is below the minimum unit cost of {min_unit_cost:.2f}")
+        if max_unit_cost is not None and unit_cost > max_unit_cost:
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "max_unit_cost", unit_cost, max_unit_cost, side=signal.side,
+            )
+            return self._skip(signal, f"price {unit_cost:.2f} is above the maximum unit cost of {max_unit_cost:.2f}")
+
         # Concentration risk (deep-scan finding 2, 2026-08-10): the check
         # above only ever guards the exact same ticker - nothing previously
         # stopped e.g. five different markets in the same tournament from

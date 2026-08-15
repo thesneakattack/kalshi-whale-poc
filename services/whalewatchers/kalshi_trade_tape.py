@@ -285,10 +285,20 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # never a new API call.
             analyst = _analyst_factor(ticker, side)
 
+            # Was this trade designated a block trade by Kalshi itself
+            # (docs/kalshi/public-trades.md's is_block_trade field)? A real
+            # first-party signal - already parsed into every trade dict by
+            # services/kalshi_trade_ws.py, previously never read by anything
+            # downstream (found 2026-08-15 while consuming the API reference
+            # docs in full). See composite_confidence_breakdown's own (9)
+            # for why False scores 0.0, not neutral 0.5.
+            is_block_trade = 1.0 if trade.get("is_block_trade") else 0.0
+
             breakdown = composite_confidence_breakdown(
                 market, markets, size, price, now,
                 agreement_factor=agreement_factor, cluster_factor=cluster, trend_factor=trend,
-                analyst_factor=analyst, weights=cfg.get("whale_confidence_weights"), side=side,
+                analyst_factor=analyst, block_trade_factor=is_block_trade,
+                weights=cfg.get("whale_confidence_weights"), side=side,
             )
             timestamp = _parse_trade_time(trade.get("created_time")) or now
 

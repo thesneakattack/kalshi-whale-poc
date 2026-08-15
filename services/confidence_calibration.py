@@ -40,14 +40,17 @@ main.py's trading loop does, the same way every other auto-apply path in
 this app keeps the actual config_store.update() call at the call site, not
 buried in a service module.
 """
-from services import trade_analytics
+from services import stats_power, trade_analytics
 from services.whale_simulator import DEFAULT_WEIGHTS
 
 _BUCKET_COUNT = 3
-_FACTOR_NAMES = (
-    "depth_factor", "unusualness_factor", "proximity_factor", "context_factor",
-    "agreement_factor", "cluster_factor", "trend_factor", "analyst_factor",
-)
+# Derived from DEFAULT_WEIGHTS' own keys, not a second hand-maintained list -
+# real reuse gap found and fixed 2026-08-15 (Angle I code review, same
+# session): a hardcoded copy here meant a new factor (block_trade_factor,
+# added the same session) would silently never get bucket-analyzed/
+# discrimination-scored unless someone remembered this second, unrelated
+# list. tuple() preserves DEFAULT_WEIGHTS' own insertion order.
+_FACTOR_NAMES = tuple(DEFAULT_WEIGHTS)
 # How much a factor's high-bucket win rate must beat its low-bucket win rate
 # to count as "this factor actually discriminates outcomes" - a smaller bar
 # than advisory_engine's 15pt (trade-level comparisons carry more real-world
@@ -259,6 +262,16 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
         "report": {
             "resolved_count": resolved_count,
             "overall_win_rate": overall_win_rate,
+            # 2026-08-15, real gap closed: the auto-apply gate
+            # (auto_apply_min_resolved_signals) was a bare sample-size
+            # floor with no confidence-interval framing, despite
+            # services/stats_power.py's real margin-of-error math already
+            # existing and already being used for exactly this question
+            # elsewhere (main.py's series-evaluator win-rate cross-check).
+            # Same formula, reused here rather than re-derived.
+            "overall_win_rate_margin_pts": round(
+                stats_power.margin_of_error_pts(resolved_count, overall_win_rate), 1,
+            ),
             "confidence_label": trade_analytics.confidence_label(resolved_count),
             "current_weights": current_weights,
             "per_factor": per_factor,

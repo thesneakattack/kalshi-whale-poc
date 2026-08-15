@@ -75,6 +75,12 @@ strategy:
   special_market_min_seconds_to_close: 300
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: null
+  # 2026-08-15: data-backed price band from 606 real settled trades - the
+  # only unit_cost range (side-aware price actually paid per contract) that
+  # was net profitable. See services/strategy_engine.py's own comment at
+  # this gate for the full per-band breakdown.
+  min_unit_cost: 0.5
+  max_unit_cost: 0.8
   min_whale_winrate_pct: 85
   min_resolved_for_whale_filter: 20
   live_markets_only: false
@@ -137,14 +143,15 @@ whale_watcher_kalshi:
     KXTRUMPMENTION: 500
     KXMAMDANIMENTION: 500
 whale_confidence_weights:
-  depth_factor: 0.04
+  depth_factor: 0.03
   unusualness_factor: 0.02
-  proximity_factor: 0.04
-  context_factor: 0.04
-  agreement_factor: 0.4
-  cluster_factor: 0.21
-  trend_factor: 0.24
+  proximity_factor: 0.03
+  context_factor: 0.03
+  agreement_factor: 0.34
+  cluster_factor: 0.18
+  trend_factor: 0.2
   analyst_factor: 0
+  block_trade_factor: 0.15
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 10
