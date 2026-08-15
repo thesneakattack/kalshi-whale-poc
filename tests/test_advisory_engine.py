@@ -312,6 +312,34 @@ def test_generate_recommendations_returns_within_variant_hints_regardless_of_res
     assert "strategy.entry_threshold" in paths
 
 
+def test_generate_recommendations_drops_declined_suggestion_by_id():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["config_fingerprint"] = "fp1"
+    variants = {"fp1": _variant("fp1", entry_threshold=0.5)}
+    cfg = _cfg(entry_threshold=0.5)
+    baseline = ae.generate_recommendations(rows, cfg, "fp1", variants, min_resolved_trades=100)
+    rec = next(r for r in baseline["recommendations"] if r["config_path"] == "strategy.entry_threshold")
+    result = ae.generate_recommendations(
+        rows, cfg, "fp1", variants, min_resolved_trades=100, declined_ids={rec["id"]},
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" not in paths
+
+
+def test_generate_recommendations_declining_one_id_does_not_affect_others():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["config_fingerprint"] = "fp1"
+    variants = {"fp1": _variant("fp1", entry_threshold=0.5)}
+    cfg = _cfg(entry_threshold=0.5)
+    result = ae.generate_recommendations(
+        rows, cfg, "fp1", variants, min_resolved_trades=100, declined_ids={"some-unrelated-id"},
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy.entry_threshold" in paths
+
+
 def test_generate_recommendations_now_blends_other_variants_trades_for_within_variant_hints():
     # This is the exact bug fix the merge exists for: a suggestion for one
     # field used to be scoped to trades placed under the *exact* current

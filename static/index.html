@@ -416,6 +416,63 @@
   }
   .config-section .section-body { padding: 4px 14px 16px; }
 
+  /* History tab redesign (2026-08-14/15, direct request): "a like-I'm-5
+     person who knows nothing about trading" needs to see, act, observe,
+     and - most importantly - choose to hold back, without that feeling
+     like skipping a step. One card style for every suggestion this app
+     produces (Advisory, per-series analyst, full-spectrum analyst),
+     replacing each source's own bespoke .signal-card markup. Deliberately
+     NOT .signal-card/.decision-card - those use --mono at 12px, a dense
+     "data readout" register that reads as technical, the opposite of what
+     a plain-language recommendation needs. */
+  .suggestion-card {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .suggestion-card .suggestion-headline { font-size: 14px; line-height: 1.5; margin-bottom: 6px; }
+  .suggestion-card .suggestion-confidence { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .suggestion-card details.suggestion-why { margin: 8px 0 12px; }
+  .suggestion-card details.suggestion-why summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); list-style: none;
+  }
+  .suggestion-card details.suggestion-why summary::-webkit-details-marker { display: none; }
+  .suggestion-card details.suggestion-why summary::before { content: '▸ '; }
+  .suggestion-card details.suggestion-why[open] summary::before { content: '▾ '; }
+  .suggestion-card .suggestion-why-body {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    margin-top: 6px; padding-left: 14px; border-left: 2px solid var(--panel-border);
+  }
+  /* Equal-weight accept/decline - direct instruction: not a bright
+     "Apply" next to a barely-visible dismiss. Same base button size/
+     border/padding for both; only a subtle left-accent color tells them
+     apart, same restrained language .signal-card's own colored left
+     border already uses elsewhere in this app. */
+  .suggestion-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .suggestion-yes-btn, .suggestion-no-btn {
+    flex: 1 1 200px; border-left-width: 4px; border-left-style: solid; text-align: left;
+  }
+  .suggestion-yes-btn { border-left-color: var(--yes); }
+  .suggestion-no-btn { border-left-color: var(--muted); }
+  .suggestion-decided {
+    font-size: 13px; color: var(--muted); padding: 4px 0;
+  }
+  .suggestion-decided.accepted { color: var(--yes); }
+
+  /* Plain-language narrative + tiered disclosure (same request) - the
+     beginner-facing summary above everything else, and the wrapper
+     everything power-user-dense moves into. Reuses .config-section's own
+     collapsible look (already built for this exact "like-I'm-5" framing
+     on the Config tab) rather than a second visual language for the same
+     idea. */
+  .history-narrative {
+    font-size: 15px; line-height: 1.6; padding: 14px 16px; margin-bottom: 20px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+  }
+  .history-narrative .nothing-needed { color: var(--yes); }
+
   /* Data-quality badges - flags config that isn't "fully baked" yet
      because of what it's calibrated against, direct request: "highlight
      config options that aren't fully baked yet due to data limitations
@@ -1159,6 +1216,16 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
      when this tab opens, same pattern as loadSignalHistory. -->
 <div class="view" id="view-history">
   <div class="wrap">
+    <!-- Plain-language narrative (2026-08-14/15 direct request: "a like-
+         I'm-5 person who knows nothing about trading" should be able to
+         see what's going on before anything else on this tab) - a 2-3
+         sentence summary of real performance, in plain words, plus
+         whether anything currently needs a decision. "Nothing needs your
+         attention right now" is a complete, good answer - said explicitly
+         by loadAdvisory() below once it knows the real suggestion count,
+         not left as a bare empty state. -->
+    <div class="history-narrative" id="history-narrative">Loading…</div>
+
     <div class="panel-title" style="margin-top:0;">Summary</div>
     <div class="stat-cards" id="history-summary-cards">
       <div class="cell"><div class="lbl">Closed Trades</div><div class="val">—</div></div>
@@ -1171,6 +1238,48 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
 
     <div class="panel-title">Cumulative Realized P&amp;L</div>
     <div id="history-pnl-chart"><div class="empty">Not enough closed trades yet</div></div>
+
+    <!-- Advisory Recommendations (docs/advisory-engine-plan.md) - unified
+         2026-08-10 with what used to be a separate, purely-descriptive
+         "Config Tuning Hints" panel (direct report: its hints named config
+         fields with nothing on the Config page to visually match them
+         against - see the .config-path chips below, the same ones every
+         Config-tab field now shows). Every suggestion here is now derived
+         from the FULL trade history (no exact-config-fingerprint gate) and
+         renders through the unified suggestion-card component (2026-08-14/
+         15 History tab redesign) - deliberately kept in the beginner-
+         facing view, not Advanced, since this is the primary "act" surface
+         the whole redesign is built around. Cross-variant "a fully
+         different past config did better" comparisons still need their own
+         per-variant floor (advisory.min_resolved_trades_per_variant) since
+         that comparison can't mean anything on a thin sample - see
+         loadAdvisory(). -->
+    <div class="panel-title">Advisory Recommendations <span id="advisory-status-badge"></span></div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Concrete suggested config values derived from the full trade history above (rule-based, not machine
+      learning — see docs/advisory-engine-plan.md for why), plus comparisons against a fully different past
+      config once each has enough resolved trades to trust. Disabled by default. Every suggestion below gives
+      you an equal-weight choice — applying it isn't the "default path" over leaving things as they are.
+    </p>
+    <div id="advisory-auto-apply-toggle" style="margin:0 0 14px;"></div>
+    <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
+
+    <!-- Advanced / Under the Hood (2026-08-14/15 direct request) - every
+         panel below is real, unchanged, power-user functionality, just no
+         longer front-loaded on someone who's never traded before. Same
+         collapsible <details> look already built for this exact framing
+         on the Config tab (.config-section, direct request there too:
+         "hard to make sense of for a like-I'm-5 user"). -->
+    <details class="config-section" id="history-advanced">
+      <summary>Advanced / Under the Hood <span class="section-desc">— more detail and tools for the curious, nothing here is required</span></summary>
+      <div class="section-body">
+
+    <div class="panel-title" style="margin-top:0;">Previously Declined</div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+      Suggestions you've said "no thanks" to — they won't come back on their own unless the underlying
+      evidence genuinely changes. Undo any of these to let it resurface.
+    </p>
+    <div id="declined-suggestions-list" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
     <div class="panel-title">By Close Type</div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -1186,29 +1295,6 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       both groups have at least 3 closed trades.
     </p>
     <div id="history-exit-mgmt" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
-
-    <!-- Advisory Recommendations (docs/advisory-engine-plan.md) - unified
-         2026-08-10 with what used to be a separate, purely-descriptive
-         "Config Tuning Hints" panel (direct report: its hints named config
-         fields with nothing on the Config page to visually match them
-         against - see the .config-path chips below, the same ones every
-         Config-tab field now shows). Every suggestion here is now derived
-         from the FULL trade history (no exact-config-fingerprint gate) and
-         has a concrete "Apply to config" click - nothing here ever writes
-         config on its own. Cross-variant "a fully different past config
-         did better" comparisons still need their own per-variant floor
-         (advisory.min_resolved_trades_per_variant) since that comparison
-         can't mean anything on a thin sample - see loadAdvisory(). -->
-    <div class="panel-title">Advisory Recommendations <span id="advisory-status-badge"></span></div>
-    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Concrete suggested config values derived from the full trade history above (rule-based, not machine
-      learning — see docs/advisory-engine-plan.md for why), plus comparisons against a fully different past
-      config once each has enough resolved trades to trust. Disabled by default. Click a suggestion's path
-      chip to jump straight to that field on the Config tab. Applies nothing without an explicit click unless
-      auto-apply is turned on below (off by default, typed confirmation required).
-    </p>
-    <div id="advisory-auto-apply-toggle" style="margin:0 0 14px;"></div>
-    <div id="advisory-recommendations" style="margin-bottom:24px;"><div class="empty">Loading…</div></div>
 
     <!-- Change History (Item 3D, 2026-08-10) - every config change ever
          logged, not just Advisory-applied ones: config_performance.
@@ -1383,6 +1469,9 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
          shape as Advisory Recommendations, tagged source='series-analyst'
          in the Change History panel once applied. -->
     <div id="series-analysis-result"></div>
+
+      </div>
+    </details>
 
     <div class="panel-title">Trade Log <span id="history-trades-count"></span></div>
     <div id="history-trades"><div class="empty">Loading…</div></div>
@@ -3662,12 +3751,14 @@ async function loadTradingHistory() {
     historyTrades = resp.trades || [];
     historyTotal = resp.total || 0;
     Object.assign(marketTitles, resp.market_titles || {});
+    renderHistoryNarrative(resp.summary);
     renderHistorySummary(resp.summary);
     renderHistoryPnlChart(resp.cumulative_pnl_curve || []);
     renderHistoryCloseTypeBreakdown((resp.summary || {}).by_close_type || {});
     renderExitManagementSplit(resp.exit_management_split || null);
     renderHistoryTrades();
     loadAdvisory();
+    loadDeclinedSuggestions();
     loadMarketAnalyst();
     loadSeriesEvaluator();
     loadChangeHistory();
@@ -3694,6 +3785,41 @@ const HISTORY_CLOSE_TYPE_LABELS = {
   momentum_reversal: 'Momentum Reversal', auto_exit: 'Auto-Exit', settled_win: 'Settled (Won)',
   settled_loss: 'Settled (Lost)', unknown: 'Unknown',
 };
+
+// Plain-language narrative (2026-08-14/15 direct request) - the very first
+// thing on the History tab, before any stat card or panel. The action line
+// ("nothing needs your attention" / "N suggestions below") is filled in by
+// loadAdvisory() below once it knows the real, declined-filtered count -
+// this function only ever renders the trade-performance half.
+function renderHistoryNarrative(summary) {
+  const el = $('history-narrative');
+  if (!el) return;
+  summary = summary || {};
+  const n = summary.total_closed ?? 0;
+  if (n === 0) {
+    el.innerHTML = `<div>You haven't finished any trades yet — once some close, a plain-English summary of how things are going will show up here.</div>`;
+    return;
+  }
+  const winRate = summary.win_rate_pct;
+  const pnl = summary.total_realized_pnl ?? 0;
+  const pnlPhrase = pnl > 0.005 ? `made about ${fmt(pnl)} overall`
+    : (pnl < -0.005 ? `lost about ${fmt(Math.abs(pnl))} overall` : `roughly broken even overall`);
+  const winRatePhrase = winRate != null ? `won about ${Math.round(winRate)} out of every 100 trades` : `not enough resolved trades yet to show a real win rate`;
+  // Direct callback to a real finding from this app's own trade-history
+  // review: a high win rate does not reliably mean big profits - winning
+  // trades can be small and capped while the occasional loss is much
+  // larger. Called out explicitly here rather than left for someone to
+  // notice the mismatch themselves.
+  const deployed = summary.total_capital_deployed || 0;
+  const thin = deployed > 0 && Math.abs(pnl) < deployed * 0.03;
+  const divergenceNote = (winRate != null && winRate >= 55 && thin)
+    ? ` A high win rate doesn't always mean big profits — winning trades here have generally been smaller than the occasional bigger loss, which is why the overall total is still modest relative to how much has been put to work.`
+    : '';
+  el.innerHTML = `
+    <div>Out of <b>${n}</b> finished trades, you ${winRatePhrase}, and ${pnlPhrase}.${divergenceNote}</div>
+    <div id="history-narrative-action-line" style="margin-top:8px;">Checking whether anything needs your attention…</div>
+  `;
+}
 
 function renderHistorySummary(summary) {
   summary = summary || {};
@@ -3741,6 +3867,151 @@ function renderHistoryCloseTypeBreakdown(byCloseType) {
 
 const HISTORY_CONFIDENCE_COLOR = { low: 'var(--muted)', moderate: 'var(--whale)', higher: 'var(--yes)' };
 
+// ---- History tab redesign (2026-08-14/15 direct request) --------------
+// "a like-I'm-5 person who knows nothing about trading" needs every
+// suggestion, regardless of which engine produced it, to read as one plain
+// sentence with an honest confidence read - not a raw dotted config path.
+// Deliberately NOT exhaustive (full-spectrum analysis can suggest literally
+// any config field, see main.py's _full_spectrum_suggestions_from_raw) -
+// covers the paths the rule-based engines actually produce today; anything
+// else falls through to a readable, honest fallback rather than showing
+// nothing or guessing.
+const PLAIN_CONFIG_PATH_PHRASES = {
+  'strategy.entry_threshold': 'how picky the whale-follow strategy is before it enters a trade — a whale print has to look at least this convincing',
+  'strategy.min_whale_winrate_pct': "the bar a market's own past whale track record has to clear before this strategy will trust a new signal there",
+  'strategy.stop_loss_pct': 'how much of a loss the whale-follow strategy will tolerate on a position before automatically closing it',
+  'strategy.take_profit_pct': "how much of a gain the whale-follow strategy locks in early, instead of waiting to see if the market fully resolves in its favor",
+  'strategy.auto_exit_threshold': 'how confident the automatic exit system needs to be before it closes a position early',
+  'strategy.cooldown_sec': 'how long the strategy waits before trading the same market again',
+  'strategy.longshot_entry_threshold_bonus': "how much extra caution applies to very cheap or very expensive (“longshot”) markets before entering",
+  'strategy.entry_threshold_by_category': 'a different pickiness level for one specific type of market (like politics or sports), instead of the same bar everywhere',
+  'strategy.close_window_sec': "how close to a market's closing time the strategy is willing to enter a new trade",
+  'strategy.special_market_min_seconds_to_close': 'how cautious the strategy is right before an unusual market (early-close or special settlement rules) closes',
+  'strategy.excluded_series': 'the list of market types the strategy is told to skip entirely',
+  'strategy.exit_sentiment_min_signals': "how many recent whale trades are needed before “whale sentiment reversed” is trusted enough to close a position",
+  'strategy.exit_sentiment_lean_pct': 'how one-sided recent whale activity has to be before treated as a real reversal',
+  'market_strategy.min_momentum_delta': 'how big a recent price move has to be before the market-native strategy treats it as real momentum',
+  'market_strategy.entry_confidence_threshold': 'how confident the market-native strategy needs to be before entering a trade',
+  'market_strategy.stop_loss_pct': 'how much of a loss the market-native strategy will tolerate before automatically closing a position',
+  'market_strategy.take_profit_pct': 'how much of a gain the market-native strategy locks in early',
+};
+const PLAIN_SECTION_PHRASES = {
+  strategy: 'the whale-follow strategy', market_strategy: 'the market-native strategy',
+  risk: 'risk controls', whale_watcher_kalshi: 'whale-print detection',
+  confidence_calibration: 'whale-signal calibration', advisory: 'the suggestion engine itself',
+  kalshi_account: 'your real-money account settings',
+};
+function plainLanguageConfigPath(path) {
+  if (PLAIN_CONFIG_PATH_PHRASES[path]) return PLAIN_CONFIG_PATH_PHRASES[path];
+  const [section, ...rest] = path.split('.');
+  const field = rest.join('.').replace(/_/g, ' ');
+  const sectionPhrase = PLAIN_SECTION_PHRASES[section] || section.replace(/_/g, ' ');
+  return `a setting called “${field}” (part of ${sectionPhrase})`;
+}
+function suggestionHeadlineHTML(rec) {
+  return `This would change ${plainLanguageConfigPath(rec.config_path)}.`;
+}
+const PLAIN_CONFIDENCE_PHRASES = {
+  low: 'Based on only a little data so far — treat this as a hint, not a fact.',
+  moderate: 'Based on a decent amount of data.',
+  higher: 'Based on a lot of real data — this is a solid signal.',
+};
+function plainConfidencePhrase(confidenceLabel) {
+  return PLAIN_CONFIDENCE_PHRASES[confidenceLabel]
+    || 'This came from an AI reading your data, not a strict statistical test — use your own judgment.';
+}
+
+// One card for every suggestion source (Advisory, per-series analyst,
+// full-spectrum analyst) - acceptOnclickJS is the literal onclick string
+// for the "Yes" button, reusing each source's own existing, already-
+// working apply function untouched (applyAdvisoryRecommendation/
+// applySeriesSuggestion/applyFullSpectrumSuggestion each already handle
+// their own route + button feedback correctly). Only the card markup and
+// the decline path are unified/new.
+function renderSuggestionCard(rec, acceptOnclickJS) {
+  const confBadge = rec.confidence_label
+    ? `<span style="color:${HISTORY_CONFIDENCE_COLOR[rec.confidence_label] || 'var(--muted)'};">${plainConfidencePhrase(rec.confidence_label)}</span>`
+    : plainConfidencePhrase(null);
+  // Direct report (2026-08-11): "the apply button should only appear next
+  // to config change options the system agrees with" - a 'low' confidence
+  // suggestion still shows (transparency: here's what the data hints at)
+  // but offers no one-click way to act on something the system itself is
+  // hedging on. "No thanks" stays available regardless - holding back is
+  // always a valid choice, even on a suggestion with no working Yes.
+  const yesHTML = rec.confidence_label === 'low'
+    ? `<button class="suggestion-yes-btn" disabled title="Not enough data yet for the system to endorse this">Not enough data to act on yet</button>`
+    : `<button class="suggestion-yes-btn" onclick="${acceptOnclickJS}">✅ Yes, make this change</button>`;
+  return `
+    <div class="suggestion-card" data-suggestion-id="${esc(rec.id)}">
+      <div class="suggestion-headline">${suggestionHeadlineHTML(rec)}</div>
+      <div class="suggestion-confidence">${confBadge}</div>
+      <div style="margin-bottom:10px;">Currently: <b>${esc(formatConfigValue(rec.current_value))}</b> &nbsp;→&nbsp; Suggested: <b style="color:var(--whale);">${esc(formatConfigValue(rec.suggested_value))}</b></div>
+      <details class="suggestion-why">
+        <summary>Why is this suggested? (technical details)</summary>
+        <div class="suggestion-why-body">
+          <div>${esc(rec.rationale || '')}</div>
+          <div style="margin-top:6px;">Setting: <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(rec.config_path)}" title="Jump to this setting on the Config tab">${esc(rec.config_path)}</span>${rec.n != null ? ` · n=${esc(String(rec.n))}` : ''}</div>
+        </div>
+      </details>
+      <div class="suggestion-actions">
+        ${yesHTML}
+        <button class="suggestion-no-btn" onclick="declineSuggestion('${esc(rec.id)}', '${esc(rec.config_path)}', this)">No thanks, leave it</button>
+      </div>
+      <div class="suggestion-decided" style="display:none;"></div>
+    </div>
+  `;
+}
+
+async function declineSuggestion(id, configPath, btn) {
+  const card = btn.closest('.suggestion-card');
+  btn.disabled = true;
+  const yesBtn = card.querySelector('.suggestion-yes-btn');
+  if (yesBtn) yesBtn.disabled = true;
+  try {
+    await fetchJSON('/api/suggestions/decline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id, config_path: configPath}),
+    });
+    card.querySelectorAll('.suggestion-actions, .suggestion-why, .suggestion-confidence').forEach(el => el.style.display = 'none');
+    const decided = card.querySelector('.suggestion-decided');
+    decided.style.display = '';
+    decided.textContent = 'Okay — nothing changed. You can revisit this anytime (Advanced → Previously declined).';
+  } catch (e) {
+    btn.disabled = false;
+    if (yesBtn) yesBtn.disabled = false;
+  }
+}
+
+async function loadDeclinedSuggestions() {
+  const el = $('declined-suggestions-list');
+  if (!el) return;
+  try {
+    const resp = await fetchJSON('/api/suggestions/declined');
+    const rows = resp.declined || [];
+    el.innerHTML = !rows.length ? '<div class="empty">Nothing declined yet.</div>' : rows.map(r => `
+      <div class="suggestion-decided" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span>${esc(plainLanguageConfigPath(r.config_path))}</span>
+        <button style="flex-shrink:0;" onclick="undeclineSuggestion('${esc(r.id)}', this)">Undo — show this again</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load.</div>';
+  }
+}
+
+async function undeclineSuggestion(id, btn) {
+  btn.disabled = true;
+  try {
+    await fetchJSON('/api/suggestions/undecline', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
+    });
+    loadDeclinedSuggestions();
+    setTimeout(loadAdvisory, 400);
+  } catch (e) {
+    btn.disabled = false;
+  }
+}
+
 function renderExitManagementSplit(split) {
   const el = $('history-exit-mgmt');
   if (!split) {
@@ -3785,8 +4056,12 @@ async function renderAutoApplyToggle(elId, enabled, enableUrl, disableUrl, confi
     el.innerHTML = `<span style="color:var(--yes); font-size:12px;">✅ Auto-apply is ON</span>
       <button style="margin-left:8px; font-size:11px; padding:2px 8px;" onclick="toggleAutoApply('${elId}', false, '${enableUrl}', '${disableUrl}', '', '')">Turn off</button>`;
   } else {
-    el.innerHTML = `<span style="color:var(--muted); font-size:12px;">Auto-apply is off</span>
-      <button style="margin-left:8px; font-size:11px; padding:2px 8px;" onclick="toggleAutoApply('${elId}', true, '${enableUrl}', '${disableUrl}', '${esc(confirmPhrase)}', this)">Turn on…</button>`;
+    // Plain-language default-off framing (2026-08-14/15 direct request) -
+    // "if you leave this off (the default), nothing changes automatically
+    // - you'll keep seeing suggestions and choosing for yourself."
+    el.innerHTML = `<div><span style="color:var(--muted); font-size:12px;">Auto-apply is off</span>
+      <button style="margin-left:8px; font-size:11px; padding:2px 8px;" onclick="toggleAutoApply('${elId}', true, '${enableUrl}', '${disableUrl}', '${esc(confirmPhrase)}', this)">Turn on…</button></div>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">This is the default. Nothing changes automatically — you'll keep seeing suggestions above and choosing for yourself, same as now.</div>`;
   }
 }
 
@@ -3811,6 +4086,15 @@ async function toggleAutoApply(elId, enable, enableUrl, disableUrl, confirmPhras
   loadCalibrationReport();
 }
 
+// Direct part of the narrative box (renderHistoryNarrative above) - "is
+// there anything for me to look at" is answered in one place, in plain
+// language, not left implicit in an empty-vs-populated panel below.
+function updateHistoryActionLine(text, isGood) {
+  const el = $('history-narrative-action-line');
+  if (!el) return;
+  el.innerHTML = isGood ? `<span class="nothing-needed">✓ ${esc(text)}</span>` : esc(text);
+}
+
 async function loadAdvisory() {
   const badge = $('advisory-status-badge');
   const el = $('advisory-recommendations');
@@ -3824,6 +4108,7 @@ async function loadAdvisory() {
     if (!status.enabled) {
       badge.innerHTML = '<span style="color:var(--muted); font-size:11px; text-transform:uppercase;">disabled</span>';
       el.innerHTML = '<div class="empty">Advisory recommendations are disabled — enable them in Config → Advisory Engine.</div>';
+      updateHistoryActionLine('Nothing needs your attention right now.', true);
       return;
     }
     const resp = await fetchJSON('/api/advisory/recommendations');
@@ -3834,43 +4119,22 @@ async function loadAdvisory() {
     if (!recs.length) {
       el.innerHTML = `<div class="empty">No suggestions yet — keep trading to build up history. Cross-config comparisons need ` +
         `${esc(String(resp.resolved_count ?? 0))}/${esc(String(resp.min_resolved_trades_per_variant ?? '?'))} resolved trades under the current config.</div>`;
+      updateHistoryActionLine('Nothing needs your attention right now.', true);
       return;
     }
-    el.innerHTML = recs.map(r => {
-      // Direct report (2026-08-11): "the apply button should only appear
-      // next to config change options the system agrees with." A 'low'
-      // confidence_label (n<5, see trade_analytics.confidence_label) is
-      // this app's own rule engine saying it doesn't trust this suggestion
-      // enough to act on - the card still shows (transparency: here's what
-      // the data hints at), just without a one-click way to act on
-      // something the system itself is hedging on. 'moderate'/'higher'
-      // still get the button - only auto-apply needs the stricter
-      // auto_apply_min_n floor (main.py), since that path has no human
-      // in the loop to catch a thin-sample mistake.
-      const applyHTML = r.confidence_label === 'low'
-        ? `<div style="margin-top:8px; font-size:11px; color:var(--muted);">Not enough data yet for the system to endorse an automatic apply — shown for visibility only.</div>`
-        : `<button class="advisory-apply-btn" data-rec-id="${esc(r.id)}" style="margin-top:8px;">Apply to config</button>`;
-      return `
-      <div class="signal-card">
-        <div class="top-row">
-          <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(r.config_path)}" title="Jump to this setting on the Config tab">${esc(r.config_path)}</span>
-          <span style="color:${HISTORY_CONFIDENCE_COLOR[r.confidence_label] || 'var(--muted)'}; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">${esc(r.confidence_label)} confidence · n=${r.n}</span>
-        </div>
-        <div style="margin:4px 0;"><b>${esc(formatConfigValue(r.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(r.suggested_value))}</b></div>
-        <div style="color:var(--muted); font-size:13px;">${esc(r.rationale)}</div>
-        ${applyHTML}
-      </div>
-    `;
-    }).join('');
-    el.querySelectorAll('.advisory-apply-btn').forEach(btn => {
-      btn.addEventListener('click', () => applyAdvisoryRecommendation(btn.dataset.recId, btn));
-    });
+    el.innerHTML = recs.map(r => renderSuggestionCard(r, `applyAdvisoryRecommendation('${esc(r.id)}', this)`)).join('');
     el.querySelectorAll('[data-jump-path]').forEach(chip => {
       chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
     });
+    updateHistoryActionLine(
+      recs.length === 1 ? "There's 1 suggestion below you could look at — nothing requires action." :
+        `There are ${recs.length} suggestions below you could look at — nothing requires action.`,
+      false,
+    );
   } catch (e) {
     badge.innerHTML = '';
     el.innerHTML = '<div class="empty">Failed to load advisory recommendations.</div>';
+    updateHistoryActionLine("Couldn't check for suggestions right now — try refreshing.", false);
   }
 }
 
@@ -3894,7 +4158,11 @@ function jumpToConfigSetting(path) {
 }
 
 async function applyAdvisoryRecommendation(id, btn) {
-  if (!confirm('Apply this suggested value to the live strategy config? This takes effect on the next trading-loop tick.')) return;
+  // No confirm() dialog (2026-08-14/15 History tab redesign) - clicking
+  // the unified suggestion card's own clearly-labeled "Yes, make this
+  // change" button IS the deliberate choice; a native popup on top of it
+  // would be both redundant friction and inconsistent with "No thanks"
+  // right next to it having none.
   btn.disabled = true;
   try {
     await fetchJSON('/api/advisory/recommendations/apply', {
@@ -4566,26 +4834,16 @@ async function analyzeSeries(series, btn) {
       return;
     }
     const suggestionsHTML = result.suggestions.length
-      ? result.suggestions.map(s => `
-        <div class="signal-card">
-          <div class="top-row">
-            <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
-          </div>
-          <div style="margin:4px 0;"><b>${esc(formatConfigValue(s.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(s.suggested_value))}</b></div>
-          <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
-          <button class="series-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
-        </div>
-      `).join('')
+      ? result.suggestions.map(s => renderSuggestionCard(
+          s, `applySeriesSuggestion('${esc(result.analysis_id)}', '${esc(s.id)}', this)`,
+        )).join('')
       : '<div class="empty">No changes suggested — this series looks fine as-is.</div>';
     el.innerHTML = `<div class="panel-title">Series Analysis: ${esc(seriesLabel(series))} <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">${esc(series)}</span></div>
-      <div class="signal-card" style="margin-bottom:12px;">${esc(result.summary)}</div>
+      <div class="suggestion-card" style="margin-bottom:12px;">${esc(result.summary)}</div>
       ${suggestionsHTML}
       <div style="margin-bottom:24px;"></div>`;
     el.querySelectorAll('[data-jump-path]').forEach(chip => {
       chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
-    });
-    el.querySelectorAll('.series-suggestion-apply-btn').forEach(applyBtn => {
-      applyBtn.addEventListener('click', () => applySeriesSuggestion(applyBtn.dataset.analysisId, applyBtn.dataset.suggestionId, applyBtn));
     });
   } catch (e) {
     el.innerHTML = `<div class="panel-title">Series Analysis: ${esc(seriesLabel(series))}</div><div class="empty">Failed to analyze this series.</div>`;
@@ -4596,7 +4854,7 @@ async function analyzeSeries(series, btn) {
 }
 
 async function applySeriesSuggestion(analysisId, suggestionId, btn) {
-  if (!confirm('Apply this suggested value to the live strategy config? This takes effect on the next trading-loop tick.')) return;
+  // No confirm() dialog - see applyAdvisoryRecommendation's own comment.
   btn.disabled = true;
   try {
     await fetchJSON('/api/market-analyst/series/apply', {
@@ -4637,23 +4895,13 @@ async function feedTheAnalyst(btn) {
       return;
     }
     const suggestionsHTML = result.suggestions.length
-      ? result.suggestions.map(s => `
-        <div class="signal-card">
-          <div class="top-row">
-            <span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(s.config_path)}" title="Jump to this setting on the Config tab">${esc(s.config_path)}</span>
-          </div>
-          <div style="margin:4px 0;"><b>${esc(formatConfigValue(s.current_value))}</b> → <b style="color:var(--whale);">${esc(formatConfigValue(s.suggested_value))}</b></div>
-          <div style="color:var(--muted); font-size:13px;">${esc(s.rationale)}</div>
-          <button class="full-spectrum-suggestion-apply-btn" data-analysis-id="${esc(result.analysis_id)}" data-suggestion-id="${esc(s.id)}" style="margin-top:8px;">Apply to config</button>
-        </div>
-      `).join('')
+      ? result.suggestions.map(s => renderSuggestionCard(
+          s, `applyFullSpectrumSuggestion('${esc(result.analysis_id)}', '${esc(s.id)}', this)`,
+        )).join('')
       : '<div class="empty">No changes suggested — the platform looks fine as-is.</div>';
-    el.innerHTML = `<div class="signal-card" style="margin-bottom:12px;">${esc(result.summary)}</div>${suggestionsHTML}<div style="margin-bottom:12px;"></div>`;
+    el.innerHTML = `<div class="suggestion-card" style="margin-bottom:12px;">${esc(result.summary)}</div>${suggestionsHTML}<div style="margin-bottom:12px;"></div>`;
     el.querySelectorAll('[data-jump-path]').forEach(chip => {
       chip.addEventListener('click', () => jumpToConfigSetting(chip.dataset.jumpPath));
-    });
-    el.querySelectorAll('.full-spectrum-suggestion-apply-btn').forEach(applyBtn => {
-      applyBtn.addEventListener('click', () => applyFullSpectrumSuggestion(applyBtn.dataset.analysisId, applyBtn.dataset.suggestionId, applyBtn));
     });
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to run the full-spectrum scan.</div>';
@@ -4664,7 +4912,10 @@ async function feedTheAnalyst(btn) {
 }
 
 async function applyFullSpectrumSuggestion(analysisId, suggestionId, btn) {
-  if (!confirm('Apply this suggested value to the live config? This takes effect on the next trading-loop tick.')) return;
+  // No confirm() dialog - see applyAdvisoryRecommendation's own comment.
+  // feedTheAnalyst()'s own confirm() above is a different, still-necessary
+  // gate (consenting to send data to an external LLM API call) - this one
+  // was purely the config-apply step, now unified with the other two.
   btn.disabled = true;
   try {
     await fetchJSON('/api/market-analyst/full-spectrum/apply', {
@@ -6806,6 +7057,7 @@ showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorag
 function refreshHistoryInsightsIfActive() {
   if (currentView !== 'history') return;
   loadAdvisory();
+  loadDeclinedSuggestions();
   loadChangeHistory();
   loadCalibrationReport();
   loadCalibrationHistory();

@@ -772,7 +772,7 @@ def generate_recommendations(
     rows: list[dict], cfg: dict, current_fp: str, variants: dict[str, dict], min_resolved_trades: int,
     market_rows: list[dict] | None = None, gate_summaries: list[dict] | None = None,
     last_applied_by_path: dict[str, float] | None = None, series_evaluator_rows: list[dict] | None = None,
-    category_rows: list[dict] | None = None,
+    category_rows: list[dict] | None = None, declined_ids: set[str] | None = None,
 ) -> dict:
     """The unified entrypoint - see the module docstring for what changed
     2026-08-10. Returns {"recommendations": [...], "resolved_count": int,
@@ -783,7 +783,15 @@ def generate_recommendations(
     compute_insights() always did. resolved_count/min_resolved_trades_per_
     variant are still reported so a caller can show progress toward
     unlocking _cross_variant_recommendations specifically, the one thing
-    here that still needs the current variant to clear a floor."""
+    here that still needs the current variant to clear a floor.
+
+    declined_ids (History tab redesign, 2026-08-14/15 direct request):
+    services/suggestion_decisions.declined_ids() - a suggestion a human
+    already clicked "no thanks" on doesn't come back with the exact same
+    evidence behind it. Filtered last, after staleness - a recommendation
+    dropped by staleness never had a decline recorded against its id
+    anyway, so order between the two checks doesn't matter, but staleness
+    running first keeps the more common case cheap."""
     summaries = variant_summaries(rows)
     current_summary = summaries.get(current_fp)
     resolved_count = current_summary["total_closed"] if current_summary else 0
@@ -803,6 +811,8 @@ def generate_recommendations(
             category_rows, cfg["strategy"], trade_analytics.compute_summary(rows).get("win_rate_pct"),
         )
     recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
+    if declined_ids:
+        recs = [r for r in recs if r["id"] not in declined_ids]
     return {
         "recommendations": recs,
         "resolved_count": resolved_count,

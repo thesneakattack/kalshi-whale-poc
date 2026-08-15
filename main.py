@@ -34,6 +34,7 @@ from services import ml_feed
 from services import mutual_exclusivity
 from services import series_evaluator
 from services import signal_log
+from services import suggestion_decisions
 from services import title_cache
 from services import trade_analytics
 from services import trade_category
@@ -1592,6 +1593,12 @@ async def _run_series_analysis(cfg: dict, series: str) -> dict:
         if result is None:
             return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
         suggestions = _series_suggestions_from_raw(cfg, series, result["suggestions"])
+        # Same "declining sticks until the evidence genuinely changes" as
+        # the rule-based Advisory path - filtered before persisting, not
+        # just before display, so a re-analysis with identical output
+        # doesn't re-mint the same already-declined id into a fresh row.
+        declined = suggestion_decisions.declined_ids()
+        suggestions = [s for s in suggestions if s["id"] not in declined]
         analysis_id = market_analyst_agent.record_series_analysis(
             series=series, summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
         )
@@ -1784,6 +1791,8 @@ async def _run_full_spectrum_analysis(cfg: dict) -> dict:
         if result is None:
             return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
         suggestions = _full_spectrum_suggestions_from_raw(cfg, result["suggestions"])
+        declined = suggestion_decisions.declined_ids()
+        suggestions = [s for s in suggestions if s["id"] not in declined]
         analysis_id = market_analyst_agent.record_full_spectrum_analysis(
             summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
         )
@@ -2767,6 +2776,7 @@ async def get_advisory_recommendations():
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
         category_rows=regime_analytics.by_category(all_rows),
+        declined_ids=suggestion_decisions.declined_ids(),
     )
     return result
 
@@ -2793,6 +2803,7 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
         category_rows=regime_analytics.by_category(all_rows),
+        declined_ids=suggestion_decisions.declined_ids(),
     )
     match = next((r for r in result["recommendations"] if r["id"] == body.id), None)
     if match is None:
@@ -2815,6 +2826,43 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
     )
     _bump_generation()
     return {"applied": match, "new_config": config_store.get()["strategy"]}
+
+
+class DeclineSuggestionBody(BaseModel):
+    id: str
+    config_path: str
+    rationale: str | None = None
+
+
+@app.post("/api/suggestions/decline")
+async def decline_suggestion(body: DeclineSuggestionBody):
+    # History tab redesign (2026-08-14/15 direct request) - "choose to hold
+    # back" needs to actually stick, not just hide a card until the next
+    # poll re-fetches the exact same suggestion. No staleness check needed
+    # here unlike the apply route above - declining an id that's already
+    # gone from the live recommendation set (or was never real) is still a
+    # perfectly valid "no thanks," it just has nothing left to suppress.
+    suggestion_decisions.decline(body.id, body.config_path, body.rationale)
+    _bump_generation()
+    return {"declined": True, "id": body.id}
+
+
+class UndeclineSuggestionBody(BaseModel):
+    id: str
+
+
+@app.post("/api/suggestions/undecline")
+async def undecline_suggestion(body: UndeclineSuggestionBody):
+    # "You can revisit this anytime" - the Advanced-section "previously
+    # declined" list's per-row undo action.
+    existed = suggestion_decisions.undecline(body.id)
+    _bump_generation()
+    return {"undeclined": existed, "id": body.id}
+
+
+@app.get("/api/suggestions/declined")
+async def get_declined_suggestions(limit: int = 50):
+    return {"declined": suggestion_decisions.list_declined(limit)}
 
 
 @app.get("/api/advisory/applied-changes")
