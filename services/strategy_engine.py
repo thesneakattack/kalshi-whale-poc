@@ -16,6 +16,11 @@ from services.risk_manager import RiskManager
 # market's own price, so this doesn't need to be tight, just not stale
 # enough to be estimating a different market state entirely.
 _ANALYST_FRESHNESS_SEC = 24 * 3600
+# Fallback only - the live value is strategy.close_window_sec in
+# config/settings.yaml (2026-08-14 direct report: this was a hardcoded
+# constant with no config knob, so the only way to change the execution
+# window was editing source). Kept here so cfg dicts that don't set the
+# field (tests, ml_feed's synthetic configs) still get a sane default.
 _MAX_CLOSE_WINDOW_SEC = 2 * 3600
 
 
@@ -148,19 +153,21 @@ class FollowTheWhaleStrategy:
             return self._skip(signal, "market is not currently live")
 
         # Whale watcher's input can include markets from a broad feed; only the
-        # actual whale-follow auto-trades are restricted to markets closing in
-        # the next 2 hours. This keeps the upstream signal source unrestricted
-        # while enforcing the requested execution window here. If the market
-        # is currently LIVE (in-play), ignore the scheduled close time protections
-        # — live status implies the scheduled close may not be authoritative.
+        # actual whale-follow auto-trades are restricted to markets closing
+        # within strategy.close_window_sec. This keeps the upstream signal
+        # source unrestricted while enforcing the requested execution window
+        # here. If the market is currently LIVE (in-play), ignore the
+        # scheduled close time protections — live status implies the
+        # scheduled close may not be authoritative.
+        close_window_sec = strat_cfg.get("close_window_sec", _MAX_CLOSE_WINDOW_SEC)
         seconds_to_close = market_history.seconds_to_close(signal.close_time, time.time())
         # allow signals with no close_time to proceed; only reject when a close_time
         # is present and it's outside the permitted window — but skip this rule
         # when the market is currently live (is_live truthy).
-        if not is_live and seconds_to_close is not None and not (0 < seconds_to_close <= _MAX_CLOSE_WINDOW_SEC):
+        if not is_live and seconds_to_close is not None and not (0 < seconds_to_close <= close_window_sec):
             candidate_log.record_rejection(
                 signal.ticker, "whale_follow", "close_window",
-                seconds_to_close, _MAX_CLOSE_WINDOW_SEC, side=signal.side,
+                seconds_to_close, close_window_sec, side=signal.side,
             )
             return self._skip(signal, "close time is not within the trade window")
 

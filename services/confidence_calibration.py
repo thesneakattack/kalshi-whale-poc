@@ -90,7 +90,14 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
     applicable_rows = [r for r in rows if factor_name in r["factors"]]
     sorted_rows = sorted(applicable_rows, key=lambda r: r["factors"][factor_name])
     n = len(sorted_rows)
-    distinct_values = {r["factors"][factor_name] for r in sorted_rows}
+    # Rounded before dedup (2026-08-14 fix): exact float equality here would
+    # let binary floating-point jitter around one real value (e.g. a
+    # constant factor computed via slightly different arithmetic paths
+    # across rows - 0.3 vs 0.30000000000000004) count as "real variance",
+    # defeating the whole point of this near-constant-factor guard and
+    # letting noise-level differences feed a spurious gap_pts/discriminates
+    # verdict into auto-apply.
+    distinct_values = {round(r["factors"][factor_name], 6) for r in sorted_rows}
     if n < _BUCKET_COUNT or len(distinct_values) < _BUCKET_COUNT:
         return {}
     third = n // _BUCKET_COUNT

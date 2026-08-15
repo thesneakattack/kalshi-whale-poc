@@ -135,11 +135,16 @@ def test_longshot_bonus_recommendation_ignores_rows_with_no_entry_price():
 # --- _exit_pct_recommendation -------------------------------------------------
 
 def test_take_profit_recommendation_suggests_higher_value():
+    # left_on_table is a whole-position dollar total (cost_basis=50.0 here,
+    # matching _row's default), not cents/contract - the suggestion must
+    # normalize by cost_basis like the stop_loss branch does, not divide by
+    # a flat 100 (real bug found and fixed 2026-08-14: that unit mismatch
+    # let one large position's dollar total dominate the suggested value).
     rows = [_row(close_type="take_profit", left_on_table=20.0) for _ in range(3)]
     rec = ae._exit_pct_recommendation(rows, "take_profit", "take_profit_pct", current_value=0.5)
     assert rec is not None
     assert rec["config_path"] == "strategy.take_profit_pct"
-    assert rec["suggested_value"] == 0.7  # 0.5 + (20/100)
+    assert rec["suggested_value"] == 0.9  # 0.5 + (20/50 cost_basis)
     assert rec["n"] == 3
 
 

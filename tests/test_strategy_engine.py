@@ -104,6 +104,21 @@ def test_trade_when_close_time_is_within_two_hours(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
 
 
+def test_close_window_is_configurable_not_hardcoded(tmp_path, monkeypatch):
+    # 2026-08-14 direct report: the window used to be a hardcoded module
+    # constant with no config knob. strategy.close_window_sec now drives it -
+    # a signal 3h out is rejected under the 2h default (test above) but
+    # accepted once the config widens the window past 3h.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3 * 3600))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time),
+        _cfg(entry_threshold=0.65, close_window_sec=4 * 3600),
+    )
+    assert decision["action"] == "trade"
+
+
 # ---- favorite-longshot-bias-aware entry threshold (docs/prediction-market-strategy-alignment-plan.md Part 2.3) ----
 
 def test_longshot_price_requires_a_higher_confidence_bar(tmp_path, monkeypatch):

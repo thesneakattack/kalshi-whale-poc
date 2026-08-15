@@ -71,6 +71,8 @@ strategy:
   entry_threshold: 0.75
   max_position_pct: 0.05
   cooldown_sec: 120
+  close_window_sec: 7200
+  special_market_min_seconds_to_close: 300
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: null
   min_whale_winrate_pct: 85

@@ -82,6 +82,23 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
+- [ ] `docs/todo-2026-08-14-heuristics-audit-and-exit-tuning.md` — direct
+      request after CI broke and a "70% win rate but only pennies of
+      profit" report. Fixed same-session: close_window_sec/special_market_
+      min_seconds_to_close were hardcoded with no config knob (now real
+      fields), CI's e2e test never actually ran (missing `requests` dep,
+      then a ddev-only network dependency with no CI guard), a take-profit
+      advisory suggestion mislabeled a whole-position dollar total as
+      cents/contract with no cap, two whale-follow gates' rejected-
+      candidate data was captured but never surfaced, and a float-equality
+      bug in confidence_calibration's near-constant-factor guard. Root-
+      caused the profit question against real data (asymmetric win/loss
+      payoff, not a bug) and found a real "betting against myself" whipsaw
+      pattern on 17 tickers. Most urgent open item: **market_native has
+      lost 98.9% of its paper bankroll** (23.6% win rate, -$9,806
+      realized), never halted since the kill switch only checks daily
+      loss, not cumulative drawdown. Full findings, data gaps, and a
+      suggested order are in the doc itself.
 - [ ] `docs/platform-deep-scan-findings-2026-08-10.md` — 7 concrete,
       cited strategy/risk gaps found by re-reading the prediction-market
       research against the actual current engine code (edge-aware

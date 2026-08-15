@@ -261,13 +261,24 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
         return None
     n = len(group)
     if close_type == "take_profit":
-        left = [r["left_on_table"] for r in group if r["left_on_table"]]
-        if not left:
+        # left_on_table is a whole-position dollar total (size * (1-price) or
+        # size * price - see trade_analytics.build_trade_history), not a
+        # cents/contract figure - averaging it raw let one large position
+        # dominate the suggestion and fed a mislabeled unit straight into a
+        # cost-basis-fraction config field with no bound (real bug, 2026-08-14
+        # review: could suggest an absurd take_profit_pct off one big trade).
+        # Normalize by cost_basis first, same convention as the stop_loss
+        # branch just below, so this stays a fraction-of-cost-basis average.
+        left_fractions = [
+            r["left_on_table"] / r["cost_basis"]
+            for r in group if r["left_on_table"] and r.get("cost_basis")
+        ]
+        if not left_fractions:
             return None
-        avg_left_pct = (sum(left) / len(left)) / 100  # left_on_table is in cents/contract, pct is a fraction
+        avg_left_pct = sum(left_fractions) / len(left_fractions)
         suggested = round(current_value + avg_left_pct, 3)
         rationale = (
-            f"take_profit closes under this config averaged {sum(left) / len(left):.1f}c/contract left on "
+            f"take_profit closes under this config left an average {avg_left_pct:.0%} of cost basis on "
             f"the table vs a full $1 win (n={n}) - raising take_profit_pct to {suggested:.2f} targets that gap."
         )
     else:  # stop_loss
@@ -513,6 +524,24 @@ def _cross_variant_recommendations(
 _GATE_CONFIG_PATH_AND_DIRECTION = {
     ("whale_follow", "entry_threshold"): ("strategy.entry_threshold", "min"),
     ("whale_follow", "min_whale_winrate_pct"): ("strategy.min_whale_winrate_pct", "min"),
+    # Real gap found 2026-08-14: these two whale_follow gates
+    # (strategy_engine.py) have logged rejections via candidate_log since
+    # they shipped but were never added here, so that counterfactual data
+    # was captured and then never surfaced as a suggestion. close_window
+    # rejects when seconds_to_close is *outside* the window (usually too
+    # far out) so loosening means raising the ceiling ("max"); special_
+    # market_gate rejects when seconds_to_close is *below* its grace
+    # period, same "min" shape as market_native's min_seconds_to_close
+    # below. whale_watcher_kalshi's own min_notional_usd gate
+    # (kalshi_trade_tape.py) also logs rejections under a third strategy
+    # key, "whale_watcher" - deliberately NOT added here yet, since
+    # _rejected_candidate_recommendations' accepted_summary/current_value
+    # lookups below only branch on "whale_follow" vs. everything-else, and
+    # whale_watcher_kalshi is a third config section market_cfg doesn't
+    # cover - needs its own comparison-baseline + cfg-section wiring, not
+    # just a map entry (see ROADMAP.md).
+    ("whale_follow", "close_window"): ("strategy.close_window_sec", "max"),
+    ("whale_follow", "special_market_gate"): ("strategy.special_market_min_seconds_to_close", "min"),
     ("market_native", "min_price"): ("market_strategy.min_price", "min"),
     ("market_native", "max_price"): ("market_strategy.max_price", "max"),
     ("market_native", "max_spread"): ("market_strategy.max_spread", "max"),

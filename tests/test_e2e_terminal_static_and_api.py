@@ -7,8 +7,11 @@ in-container end-to-end check when full browser automation isn't available.
 """
 import requests
 import shutil
+import socket
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -33,7 +36,14 @@ client = TestClient(main.app)
 
 def test_static_index_served_from_web_container():
     # From inside the fastapi container the nginx/web service is reachable
-    # as the host "web" on port 80 in ddev. Try fetching the main page.
+    # as the host "web" on port 80 in ddev. Only ddev's docker-compose
+    # network provides that hostname - plain CI runners (.github/workflows/
+    # tests.yml's bare ubuntu-latest, no ddev) never will, so skip there
+    # rather than fail on an environment this test was never meant to cover.
+    try:
+        socket.gethostbyname("web")
+    except socket.gaierror:
+        pytest.skip("'web' host not reachable outside ddev's docker network")
     url = 'http://web/'
     resp = requests.get(url, timeout=5)
     assert resp.status_code == 200
