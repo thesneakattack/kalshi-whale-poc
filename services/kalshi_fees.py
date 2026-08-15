@@ -31,16 +31,24 @@ real order path defaults to "immediate_or_cancel", a taker order). Revisit
 once that changes.
 
 Per-series fee multiplier (2026-08-14, direct request to reconcile against
-the real fee schedule PDF): the schedule's "Non-Standard Fees" table lists
-a maker/taker multiplier per series, default 1 (i.e. the plain formula
-above) for every series not listed - except ten series with multiplier 0,
-a real full fee waiver this app had never modeled (taker_fee took no
-ticker/series at all). Checked against real trade history before writing
-this fix: zero trades in either strategy's trade log have ever touched any
-of these ten series, so there was nothing to correct retroactively - this
-is a forward-looking fix only. See _ZERO_FEE_SERIES below; every other
-listed series in the real schedule has multiplier 1, identical to the
-default, so only the actual exceptions are worth encoding.
+the real fee schedule PDF; corrected 2026-08-15 against Kalshi's own live
+GET /series/{ticker} and GET /series endpoints - see docs.kalshi.com's
+"Get Series"/"Get Series List" pages, each series' own `fee_multiplier`
+field). The static PDF-sourced list this app shipped with (2026-08-14) only
+found ten multiplier-0 series and missed real deviations entirely - a
+direct live sample of every one of the 13,029 real series on Kalshi
+(2026-08-15) found 33 total: 14 at multiplier 0 (four more than the PDF
+list had - KXEXPAND, KXNEXTIRANLEADER, KXTRUMPOUT, KXGDPYEAR - either
+missed by that pass or added since) and, previously entirely unmodeled, 19
+at multiplier 0.5 - the ENTIRE MLB proposition-market family (spread,
+total, outs, HR, hits, F5/F3/F7 innings, RBI, stolen bases, strikeouts,
+total bases, team total, ...), one of this app's most actively-traded
+series families in real trade history. Every MLB trade before this fix was
+therefore charged double the real fee. See _FEE_MULTIPLIER_BY_SERIES below
+- every series not listed defaults to multiplier 1, unchanged. Like the
+PDF this replaces, this is still a point-in-time snapshot, not a live
+fetch - Kalshi's own schedule can change again; revisit the same way if a
+future real-fill fee_cost stops matching this formula.
 """
 import math
 
@@ -48,14 +56,24 @@ from services.signal_log import series_of
 
 _TAKER_RATE = 0.07
 
-# docs/kalshi/kalshi-fee-schedule.pdf, "Non-Standard Fees" table, effective
-# 2026-07-07 - the only series listed with a maker/taker multiplier of 0
-# (every other listed series has multiplier 1, the same as the unlisted
-# default, so isn't worth encoding separately).
-_ZERO_FEE_SERIES = frozenset({
-    "KXBTCY", "KXCITRINI", "KXDOED", "KXELECTIRAN", "KXGAMBLINGREPEAL",
-    "KXGREENLAND", "KXIRANDEMOCRACY", "KXLAYOFFSYINFO", "KXPAHLAVIHEAD", "KXETHY",
-})
+# Live-verified 2026-08-15 via Kalshi's real GET /series (single) and
+# GET /series (list) endpoints' fee_multiplier field, sampled across all
+# 13,029 real series - see this module's own docstring. Every series not
+# listed here uses the default multiplier of 1 (today's existing formula,
+# unchanged).
+_FEE_MULTIPLIER_BY_SERIES = {
+    # Full waiver (multiplier 0)
+    "KXBTCY": 0.0, "KXCITRINI": 0.0, "KXDOED": 0.0, "KXELECTIRAN": 0.0,
+    "KXETHY": 0.0, "KXEXPAND": 0.0, "KXGAMBLINGREPEAL": 0.0, "KXGDPYEAR": 0.0,
+    "KXGREENLAND": 0.0, "KXIRANDEMOCRACY": 0.0, "KXLAYOFFSYINFO": 0.0,
+    "KXNEXTIRANLEADER": 0.0, "KXPAHLAVIHEAD": 0.0, "KXTRUMPOUT": 0.0,
+    # Half rate (multiplier 0.5) - the entire MLB proposition-market family.
+    "KXMLBEXTRAS": 0.5, "KXMLBF3": 0.5, "KXMLBF5": 0.5, "KXMLBF5SPREAD": 0.5,
+    "KXMLBF5TOTAL": 0.5, "KXMLBF7": 0.5, "KXMLBGAME": 0.5, "KXMLBHIT": 0.5,
+    "KXMLBHR": 0.5, "KXMLBHRR": 0.5, "KXMLBKS": 0.5, "KXMLBOUTS": 0.5,
+    "KXMLBRBI": 0.5, "KXMLBRFI": 0.5, "KXMLBSB": 0.5, "KXMLBSPREAD": 0.5,
+    "KXMLBTB": 0.5, "KXMLBTEAMTOTAL": 0.5, "KXMLBTOTAL": 0.5,
+}
 
 
 def taker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
@@ -65,14 +83,15 @@ def taker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
 
     ticker: optional, same series_of() definition used everywhere else in
     this app (signal_log.series_of) - when given, applies the real
-    zero-fee waiver for the ten series in _ZERO_FEE_SERIES. Omitting it
-    (every pre-2026-08-14 call site, and every call site that genuinely
-    has no ticker in scope) keeps today's behavior exactly - the default
-    multiplier of 1 everywhere, same as this function's original,
-    real-fill-verified formula."""
+    per-series multiplier in _FEE_MULTIPLIER_BY_SERIES (1.0, i.e. no
+    change, for every series not listed there). Omitting it (any call site
+    that genuinely has no ticker in scope) keeps the default multiplier of
+    1 everywhere, same as this function's original, real-fill-verified
+    formula."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    if ticker is not None and series_of(ticker) in _ZERO_FEE_SERIES:
+    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    if multiplier == 0.0:
         return 0.0
-    raw = _TAKER_RATE * contracts * price * (1 - price)
+    raw = _TAKER_RATE * multiplier * contracts * price * (1 - price)
     return math.ceil(raw * 10000) / 10000

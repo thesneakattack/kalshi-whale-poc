@@ -58,3 +58,23 @@ def test_taker_fee_ticker_omitted_or_ordinary_series_is_unaffected():
     # identical to every pre-2026-08-14 call site's behavior.
     assert taker_fee(100, 0.5, ticker="KXNFLGAME-26AUG15MINNYG-MIN") == taker_fee(100, 0.5)
     assert taker_fee(100, 0.5, ticker=None) == taker_fee(100, 0.5)
+
+
+def test_taker_fee_half_rate_for_the_real_mlb_proposition_family():
+    # Live-verified 2026-08-15 directly against Kalshi's own GET /series
+    # endpoint (fee_multiplier field) - the entire MLB proposition-market
+    # family (spread/total/outs/HR/hits/...) charges HALF the standard
+    # rate, previously entirely unmodeled (every MLB trade was overcharged
+    # 2x before this fix). See services/kalshi_fees.py's own docstring.
+    assert taker_fee(100, 0.5, ticker="KXMLBGAME-26AUG13GBPIT-PIT") == pytest.approx(taker_fee(100, 0.5) / 2, abs=0.0001)
+    assert taker_fee(100, 0.5, ticker="KXMLBTOTAL-26AUG13GBPIT-8") == pytest.approx(taker_fee(100, 0.5) / 2, abs=0.0001)
+    assert taker_fee(100, 0.5, ticker="KXMLBSPREAD-26AUG13GBPIT-PIT2") == pytest.approx(taker_fee(100, 0.5) / 2, abs=0.0001)
+
+
+def test_taker_fee_zero_for_series_missed_by_the_original_pdf_pass():
+    # Live-verified 2026-08-15: these four are genuine multiplier-0 series
+    # that the 2026-08-14 PDF-sourced list didn't include.
+    assert taker_fee(100, 0.5, ticker="KXEXPAND-26") == 0.0
+    assert taker_fee(100, 0.5, ticker="KXNEXTIRANLEADER-26") == 0.0
+    assert taker_fee(100, 0.5, ticker="KXTRUMPOUT-26") == 0.0
+    assert taker_fee(100, 0.5, ticker="KXGDPYEAR-26") == 0.0
