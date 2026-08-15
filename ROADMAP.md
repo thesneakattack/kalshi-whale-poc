@@ -79,6 +79,24 @@ works" to "flip it for real" still has open operational questions.
       selection (and possibly state-of-residence) is needed, not just a
       confidence/volume filter — see
       `docs/prediction-market-strategy-alignment-plan.md` Part 6.
+      Cross-referenced 2026-08-15 (`docs/next-steps-2026-08-15.md` item 5)
+      against real `additional_prohibitions` (live-sampled via
+      `GET /series/{ticker}`): a **different, non-blocking risk axis**, not
+      a new gate here. It's category-level eligibility boilerplate —
+      identical text across every Sports-category series checked
+      (`KXMLBSPREAD`, `KXMLBGAME`, `KXPGATOUR`: current/former players,
+      coaches, staff, and owners of the governing league "and household
+      members and immediate family of all above"), not a per-series
+      bespoke list as first assumed, plus a universal MNPI/source-agency
+      clause present on every category checked including Crypto
+      (`KXBTC15M`) and Mentions (`KXTRUMPMENTION`). It restricts *who the
+      account holder personally is* (a league employee, a campaign
+      staffer, someone holding non-public information on the underlying),
+      not *which state they trade from* — orthogonal to the geofencing
+      dispute above, and not a blocker for today's single-operator design
+      (see the auth item above) unless this ever becomes multi-user, at
+      which point each user would need their own eligibility
+      self-attestation.
 
 ## P4 — Nice-to-haves
 
