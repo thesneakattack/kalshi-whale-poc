@@ -456,6 +456,50 @@ def test_check_exits_momentum_reversal_off_by_default(tmp_path, monkeypatch):
     assert decisions == []
 
 
+# --- per-series/category config overrides (services/config_overrides.py,
+# direct request 2026-08-15) -------------------------------------------------
+
+def test_evaluate_all_series_override_changes_the_effective_decision(tmp_path, monkeypatch):
+    # Global entry_confidence_threshold is 0.0 (accepts anything); a
+    # series-level override raising it past what this market can clear
+    # should block the trade the global default alone would have allowed.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    _seed_momentum(tmp_path, "TICK-A", now, 0.4, 0.6)
+    cfg = _permissive_cfg()
+    cfg["market_strategy_overrides"] = {"by_series": {"TICK": {"entry_confidence_threshold": 1.5}}}
+    decisions = strategy.evaluate_all([_market(now=now)], now, cfg)
+    assert decisions == []
+    assert broker.positions == {}
+
+
+def test_check_exits_series_override_stop_loss_closes_where_global_default_would_not(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    now = time.time()
+    market = _market(ticker="TICK-A", yes_bid=0.3, now=now)  # ~40% unrealized loss of cost basis
+    cfg = _permissive_cfg(stop_loss_pct=None)  # global default: never stop out
+    cfg["market_strategy_overrides"] = {"by_series": {"TICK": {"stop_loss_pct": 0.2}}}
+    decisions = strategy.check_exits({"TICK-A": market}, now, cfg)
+    assert len(decisions) == 1
+    assert "stop-loss" in decisions[0]["reason"]
+    assert "TICK-A" not in broker.positions
+
+
+def test_check_exits_category_override_is_used_when_series_has_none(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    now = time.time()
+    market = _market(ticker="TICK-A", yes_bid=0.3, now=now)
+    cfg = _permissive_cfg(stop_loss_pct=None)
+    cfg["market_strategy_overrides"] = {"by_category": {"Crypto": {"stop_loss_pct": 0.2}}}
+    decisions = strategy.check_exits(
+        {"TICK-A": market}, now, cfg, category_by_ticker={"TICK-A": "Crypto"},
+    )
+    assert len(decisions) == 1
+    assert "stop-loss" in decisions[0]["reason"]
+
+
 def test_check_exits_momentum_reversal_closes_when_enabled(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")

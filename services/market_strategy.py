@@ -47,7 +47,7 @@ plus an optional momentum-reversal exit - the market-native analog of
 whale signal_feed. No auto-exit composite algorithm yet (a possible future
 extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 """
-from services import candidate_log, kalshi_fees, market_analyst_agent, market_history
+from services import candidate_log, config_overrides, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.strategy_engine import close_if_settled, kelly_scaled_max_size, open_position_count_in_series
@@ -97,7 +97,7 @@ class MarketNativeStrategy:
 
     def evaluate_all(
         self, markets: list[dict], now: float, cfg: dict, market_results: dict | None = None,
-        me_pairs: dict[str, str] | None = None,
+        me_pairs: dict[str, str] | None = None, category_by_ticker: dict[str, str] | None = None,
     ) -> list[dict]:
         """Scans every currently-fetched real market once per trading-loop
         tick and opens a position on any that clears every filter. Unlike
@@ -113,7 +113,15 @@ class MarketNativeStrategy:
         this once per tick (shared with FollowTheWhaleStrategy, same
         already-fetched markets/event_titles, zero new API calls) and
         passes it straight through rather than this strategy recomputing
-        its own copy."""
+        its own copy.
+
+        category_by_ticker (2026-08-15, mechanical symmetry with
+        FollowTheWhaleStrategy - see services/config_overrides.py): wired
+        through so market_strategy_overrides.by_category/by_series COULD
+        apply, same resolver, same shape - but per the standing "market_
+        native is a control to test against whale-follow, not ready yet"
+        instruction, no override values are ever populated here. A no-op
+        until someone deliberately adds one."""
         strat_cfg = cfg["market_strategy"]
         if not strat_cfg.get("enabled"):
             return []
@@ -139,21 +147,29 @@ class MarketNativeStrategy:
 
         market_results = market_results or {}
         me_pairs = me_pairs or {}
+        category_by_ticker = category_by_ticker or {}
+        overrides = cfg.get("market_strategy_overrides")
         decisions = []
         for market in markets:
-            decision = self._evaluate_one(market, now, strat_cfg, market_results, me_pairs.get(market.get("ticker")))
+            ticker = market.get("ticker")
+            decision = self._evaluate_one(
+                market, now, strat_cfg, market_results, me_pairs.get(ticker),
+                overrides=overrides, category=category_by_ticker.get(ticker),
+            )
             if decision is not None:
                 decisions.append(decision)
         return decisions
 
     def _evaluate_one(
         self, market: dict, now: float, strat_cfg: dict, market_results: dict, me_complement: str | None = None,
+        overrides: dict | None = None, category: str | None = None,
     ) -> dict | None:
         ticker = market.get("ticker")
         if not ticker:
             return None
         if ticker in self.broker.positions:
             return None
+        strat_cfg = config_overrides.resolve(strat_cfg, overrides, category=category, series=signal_log.series_of(ticker))
         # Mutually-exclusive complement check (2026-08-14 direct request) -
         # same reasoning as FollowTheWhaleStrategy.evaluate()'s own check:
         # holding both halves of a genuine 2-way matchup is an offsetting
@@ -257,6 +273,7 @@ class MarketNativeStrategy:
 
     def check_exits(
         self, markets_by_ticker: dict, now: float, cfg: dict, market_results: dict | None = None,
+        category_by_ticker: dict[str, str] | None = None,
     ) -> list[dict]:
         """Same layered-priority shape as FollowTheWhaleStrategy.check_exits:
         settlement first (hard rule, via the shared close_if_settled), then
@@ -264,12 +281,14 @@ class MarketNativeStrategy:
         (market-native analog of whale sentiment reversal). Runs every tick
         regardless of market_strategy.enabled - if it's off, no positions
         exist to check, so this is a harmless no-op; if it was just turned
-        off with positions still open, they're still cleanly exitable."""
-        strat_cfg = cfg["market_strategy"]
-        take_profit_pct = strat_cfg.get("take_profit_pct")
-        stop_loss_pct = strat_cfg.get("stop_loss_pct")
-        exit_on_reversal = strat_cfg.get("exit_on_momentum_reversal", False)
-        reversal_lookback = strat_cfg.get("momentum_lookback_sec", 1800)
+        off with positions still open, they're still cleanly exitable.
+
+        Resolved per-position inside the loop (services/config_overrides.py),
+        same reasoning as FollowTheWhaleStrategy.check_exits: different open
+        positions can belong to different series/categories."""
+        base_cfg = cfg["market_strategy"]
+        overrides = cfg.get("market_strategy_overrides")
+        category_by_ticker = category_by_ticker or {}
 
         market_results = market_results or {}
         decisions = []
@@ -281,6 +300,14 @@ class MarketNativeStrategy:
                 continue
             if (result or "").strip().lower() in ("yes", "no"):
                 continue  # settled but close raced/no-op'd - nothing left to check
+
+            strat_cfg = config_overrides.resolve(
+                base_cfg, overrides, category=category_by_ticker.get(ticker), series=signal_log.series_of(ticker),
+            )
+            take_profit_pct = strat_cfg.get("take_profit_pct")
+            stop_loss_pct = strat_cfg.get("stop_loss_pct")
+            exit_on_reversal = strat_cfg.get("exit_on_momentum_reversal", False)
+            reversal_lookback = strat_cfg.get("momentum_lookback_sec", 1800)
 
             # `market.get(...) or pos.entry_price`, not a bare `is not None`
             # guard - the latter lets an empty-string yes_bid_dollars through

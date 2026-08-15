@@ -212,6 +212,20 @@ def _bump_generation():
     state["generation"] += 1
 
 
+def _category_by_ticker() -> dict:
+    # Per-series/category config overrides (services/config_overrides.py,
+    # 2026-08-15 direct request) - built from the already-in-memory
+    # state["market_titles"]/state["event_titles"] (pure dict comprehension,
+    # zero new API calls), covering every KNOWN ticker rather than just
+    # this tick's markets list, so an open position that's rotated off the
+    # watchlist still resolves a category for check_exits.
+    return {
+        ticker: (state["event_titles"].get(info.get("event_ticker")) or {}).get("category")
+        for ticker, info in state["market_titles"].items()
+        if info.get("event_ticker")
+    }
+
+
 async def _broadcast_signal_decision(signal_payload: dict | None, decision_payload: dict) -> None:
     await ws_manager.broadcast({
         "type": "signal_decision",
@@ -287,6 +301,7 @@ async def _process_stream_trade(trade: dict) -> None:
         await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
     for close_decision in strategy.check_exits(
         state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
+        category_by_ticker=_category_by_ticker(),
     ):
         await _handle_close_decision(close_decision)
     _bump_generation()
@@ -308,6 +323,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         cfg_now = config_store.get()
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
+            category_by_ticker=_category_by_ticker(),
         ):
             await _handle_close_decision(close_decision)
     _bump_generation()
@@ -2090,7 +2106,9 @@ async def trading_loop():
             # independently measurable (see the plan doc). Was computed and
             # discarded every tick until the Market-Native tab (2026-08-10,
             # direct request) needed a real feed to show.
-            for decision in market_strategy.evaluate_all(markets, tick_now, cfg, market_results, state.get("me_pairs")):
+            for decision in market_strategy.evaluate_all(
+                markets, tick_now, cfg, market_results, state.get("me_pairs"), category_by_ticker=_category_by_ticker(),
+            ):
                 state["market_decision_feed"].insert(0, decision)
                 if decision["action"] == "trade":
                     # Same category-at-entry-time capture as the whale-follow
@@ -2103,7 +2121,9 @@ async def trading_loop():
                         m_ticker, (state["event_titles"].get(m_event_ticker) or {}).get("category"), tick_now,
                     )
             markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
-            for decision in market_strategy.check_exits(markets_by_ticker, tick_now, cfg, market_results):
+            for decision in market_strategy.check_exits(
+                markets_by_ticker, tick_now, cfg, market_results, category_by_ticker=_category_by_ticker(),
+            ):
                 state["market_decision_feed"].insert(0, decision)
             state["market_decision_feed"] = state["market_decision_feed"][:50]
             state["market_results"] = market_results
@@ -2269,6 +2289,7 @@ async def trading_loop():
             # docstring for the live incident this fixes.
             for close_decision in strategy.check_exits(
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
+                category_by_ticker=_category_by_ticker(),
             ):
                 await _handle_close_decision(close_decision)
 

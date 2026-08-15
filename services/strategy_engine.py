@@ -410,7 +410,7 @@ class FollowTheWhaleStrategy:
 
     def check_exits(
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
-        opened_since: float | None = None,
+        opened_since: float | None = None, category_by_ticker: dict | None = None,
     ) -> list[dict]:
         """Actively manages already-open positions instead of leaving them
         untouched until settlement - direct request: this app had zero exit
@@ -481,15 +481,18 @@ class FollowTheWhaleStrategy:
 
         Returns decision dicts in the same shape evaluate() returns for a
         trade, so main.py can log them into decision_feed/stats the same
-        way."""
-        strat_cfg = cfg["strategy"]
-        take_profit_pct = strat_cfg.get("take_profit_pct")
-        stop_loss_pct = strat_cfg.get("stop_loss_pct")
-        exit_on_reversal = strat_cfg.get("exit_on_sentiment_reversal", False)
-        min_signals = strat_cfg.get("exit_sentiment_min_signals", 3)
-        reversal_lean_pct = strat_cfg.get("exit_sentiment_lean_pct", 65)
-        auto_exit_enabled = strat_cfg.get("auto_exit_enabled", False)
-        auto_exit_threshold = strat_cfg.get("auto_exit_threshold", 0.6)
+        way.
+
+        category_by_ticker (2026-08-15, per-series/category tuning direct
+        request - services/config_overrides.py): resolved PER POSITION
+        inside the loop below, not once up front like the old flat
+        strat_cfg - different open positions can belong to different
+        series/categories, and the resolved dict is also what's passed
+        into _exit_confidence so every auto_exit_* weight/reference is
+        override-aware too, not just the three hard-rule fields."""
+        base_cfg = cfg["strategy"]
+        overrides = cfg.get("strategy_overrides")
+        category_by_ticker = category_by_ticker or {}
 
         market_results = market_results or {}
         decisions = []
@@ -505,6 +508,17 @@ class FollowTheWhaleStrategy:
 
             if opened_since is not None and pos.opened_at >= opened_since:
                 continue  # opened this same tick - latest_prices predates its entry_price, see opened_since above
+
+            strat_cfg = config_overrides.resolve(
+                base_cfg, overrides, category=category_by_ticker.get(ticker), series=signal_log.series_of(ticker),
+            )
+            take_profit_pct = strat_cfg.get("take_profit_pct")
+            stop_loss_pct = strat_cfg.get("stop_loss_pct")
+            exit_on_reversal = strat_cfg.get("exit_on_sentiment_reversal", False)
+            min_signals = strat_cfg.get("exit_sentiment_min_signals", 3)
+            reversal_lean_pct = strat_cfg.get("exit_sentiment_lean_pct", 65)
+            auto_exit_enabled = strat_cfg.get("auto_exit_enabled", False)
+            auto_exit_threshold = strat_cfg.get("auto_exit_threshold", 0.6)
 
             current_price = latest_prices.get(ticker, pos.entry_price)
             # broker.cost_basis(), not pos.size * pos.entry_price directly -
