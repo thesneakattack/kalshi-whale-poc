@@ -1,6 +1,6 @@
 import pytest
 
-from services.config_overrides import merge_override, resolve
+from services.config_overrides import merge_override, remove_override, resolve
 
 
 def test_resolve_returns_global_defaults_when_no_overrides():
@@ -85,3 +85,59 @@ def test_merge_override_never_mutates_input():
     overrides = {"by_series": {"KXNFLGAME": {"cooldown_sec": 60}}}
     merge_override(overrides, "by_series", "KXNFLGAME", "stop_loss_pct", 0.1)
     assert overrides == {"by_series": {"KXNFLGAME": {"cooldown_sec": 60}}}
+
+
+def test_remove_override_field_preserves_other_fields_on_same_key():
+    overrides = {"by_series": {"KXPGATOUR": {"stop_loss_pct": 0.05, "cooldown_sec": 60}}}
+    result = remove_override(overrides, "by_series", "KXPGATOUR", "stop_loss_pct")
+    assert result["by_series"]["KXPGATOUR"] == {"cooldown_sec": 60}
+
+
+def test_remove_override_field_drops_key_once_empty():
+    overrides = {"by_series": {"KXPGATOUR": {"stop_loss_pct": 0.05}}}
+    result = remove_override(overrides, "by_series", "KXPGATOUR", "stop_loss_pct")
+    assert "KXPGATOUR" not in result["by_series"]
+
+
+def test_remove_override_no_field_drops_whole_key():
+    overrides = {"by_series": {"KXPGATOUR": {"stop_loss_pct": 0.05, "cooldown_sec": 60}}}
+    result = remove_override(overrides, "by_series", "KXPGATOUR", None)
+    assert "KXPGATOUR" not in result["by_series"]
+
+
+def test_remove_override_preserves_other_entries():
+    overrides = {
+        "by_category": {"Sports": {"entry_threshold": 0.7}},
+        "by_series": {"KXNFLGAME": {"cooldown_sec": 60}, "KXPGATOUR": {"stop_loss_pct": 0.05}},
+    }
+    result = remove_override(overrides, "by_series", "KXPGATOUR", None)
+    assert result["by_series"] == {"KXNFLGAME": {"cooldown_sec": 60}}
+    assert result["by_category"] == {"Sports": {"entry_threshold": 0.7}}  # untouched
+
+
+def test_remove_override_missing_key_is_a_noop():
+    overrides = {"by_series": {"KXNFLGAME": {"cooldown_sec": 60}}}
+    result = remove_override(overrides, "by_series", "KXPGATOUR", "stop_loss_pct")
+    assert result["by_series"] == overrides["by_series"]
+
+
+def test_remove_override_missing_field_is_a_noop():
+    overrides = {"by_series": {"KXPGATOUR": {"cooldown_sec": 60}}}
+    result = remove_override(overrides, "by_series", "KXPGATOUR", "stop_loss_pct")
+    assert result["by_series"]["KXPGATOUR"] == {"cooldown_sec": 60}
+
+
+def test_remove_override_from_empty_overrides_is_a_noop():
+    result = remove_override(None, "by_category", "Crypto", "entry_threshold")
+    assert result == {"by_category": {}, "by_series": {}}
+
+
+def test_remove_override_rejects_unknown_scope():
+    with pytest.raises(ValueError):
+        remove_override({}, "by_market", "X", "field")
+
+
+def test_remove_override_never_mutates_input():
+    overrides = {"by_series": {"KXNFLGAME": {"cooldown_sec": 60, "stop_loss_pct": 0.1}}}
+    remove_override(overrides, "by_series", "KXNFLGAME", "stop_loss_pct")
+    assert overrides == {"by_series": {"KXNFLGAME": {"cooldown_sec": 60, "stop_loss_pct": 0.1}}}

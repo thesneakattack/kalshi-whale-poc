@@ -8,10 +8,106 @@ across calls instead.
 """
 import asyncio
 import random
+import time
 
 import httpx
 
 _client: httpx.AsyncClient | None = None
+
+
+class _TokenBucketRateLimiter:
+    """A real throughput limiter, not a concurrency cap (2026-08-15, direct
+    live incident - see the long comment below for the full story of why a
+    concurrency Semaphore was tried first and confirmed NOT to work).
+    Refills continuously at rate_per_sec, drains 1 "slot" per acquire() -
+    when empty, callers wait exactly as long as it takes for the next slot
+    to become available, no more. asyncio.Lock, not a semaphore's internal
+    counter, because refill math (elapsed-time-based) needs to happen
+    atomically with the drain check, and this app's trading loop is single-
+    process/single-event-loop anyway (no cross-process contention to
+    worry about)."""
+
+    def __init__(self, rate_per_sec: float, burst: float | None = None):
+        # burst (2026-08-15): the bucket's max saved-up size, separate from
+        # its refill rate - defaults to rate_per_sec (1 second's worth,
+        # the naive choice) but every real caller below passes a much
+        # smaller explicit value. Confirmed live this distinction matters:
+        # starting a fresh bucket already full at rate_per_sec permits an
+        # instant burst of that many requests the moment a tick (or a
+        # process restart, which happens often under uvicorn --reload)
+        # begins, before the refill-throttling has any effect at all -
+        # exactly when every cache is also cold and wants to fire the most
+        # requests at once. A small burst cap means only the first couple
+        # requests are ever "free"; everything after genuinely waits on
+        # the sustained rate from the start.
+        self._rate = rate_per_sec
+        self._burst = burst if burst is not None else rate_per_sec
+        self._tokens = self._burst
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                self._tokens = min(self._burst, self._tokens + (now - self._last_refill) * self._rate)
+                self._last_refill = now
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    return
+                await asyncio.sleep((1 - self._tokens) / self._rate)
+
+
+# Global throughput bound (2026-08-15, direct live incident: "why are there
+# SO MANY unresolved signals" led to fixing services/signal_log.py's
+# unresolved_batch head-of-line block, which then made
+# main.py._check_signal_resolutions do real, sustained work for the first
+# time - running concurrently with discovery's own fetch in the same
+# asyncio.gather pushed real, live tick_duration/rate_limit_hits to
+# ~40s/200+, repeatedly).
+#
+# First fix attempted here was a global asyncio.Semaphore bounding how many
+# Kalshi calls could be in flight at once (mirroring the EARLIER, real,
+# and still-valid fix this session: services/kalshi_client.py's own
+# Semaphore(10) on get_candidate_markets's own internal fan-out) - dropping
+# it all the way to Semaphore(5) still didn't fully stop the spikes.
+# Confirmed why by actually reading Kalshi's rate-limit docs (docs.kalshi.
+# com/getting_started/rate_limits, fetched live 2026-08-15, direct
+# instruction to check docs/kalshi/ and the live docs site rather than keep
+# guessing): it's a token-bucket THROUGHPUT system ("Every item in the
+# batch is billed separately... The whole batch must fit in the bucket at
+# once"), not concurrency-based at all - a concurrency cap bounds how many
+# requests are in flight simultaneously but does nothing to slow the RATE
+# new ones fire at once a slot frees up, so even Semaphore(5) still let
+# requests fire far faster than the token bucket could refill.
+#
+# Two independent buckets, not one shared one (2026-08-15, direct
+# instruction: "apply this knowledge universally to the application's
+# current methods that use the API") - Kalshi's own docs describe read and
+# write as genuinely separate budgets ("The split is by operation type...
+# REST and FIX requests drain the same buckets" - i.e. same split, not
+# shared with each other): Basic tier is 200 read-tokens/sec vs 100
+# write-tokens/sec, most requests cost 10 tokens by default -> ~20 read
+# req/sec vs ~10 write req/sec sustainable IF this app were authenticated
+# at Basic tier. It isn't, for market data (only services/
+# kalshi_account_client.py's real-trading path authenticates), so the real
+# anonymous-access limit isn't in the documented tier table at all and had
+# to be found empirically. 8 req/sec (this module's first real attempt,
+# still confirmed live above the true anonymous ceiling: 60 rate-limit
+# hits in a single tick even with it active) was still too fast - dropped
+# further, with a small burst cap on top (see _TokenBucketRateLimiter's own
+# burst param) so a cold restart's first requests can't spend a whole
+# second's worth of budget in one instant. Deliberately erring slow rather
+# than iterating rate numbers against Kalshi's real, live production API
+# any further - this is a paper-trading POC with no latency requirement
+# that justifies pushing a third party's rate limit to find its exact
+# edge.
+_KALSHI_READ_RATE_PER_SEC = 3.0
+_KALSHI_WRITE_RATE_PER_SEC = 1.5
+_KALSHI_READ_BURST = 2.0
+_KALSHI_WRITE_BURST = 1.0
+_kalshi_read_limiter = _TokenBucketRateLimiter(_KALSHI_READ_RATE_PER_SEC, burst=_KALSHI_READ_BURST)
+_kalshi_write_limiter = _TokenBucketRateLimiter(_KALSHI_WRITE_RATE_PER_SEC, burst=_KALSHI_WRITE_BURST)
 
 # Rolling rate-limit-hit visibility (2026-08-15, hardening-and-accuracy-
 # roadmap-2026-08-11.md Part 3 Item 2 - "no tick-duration/rate-limit
@@ -46,7 +142,9 @@ async def close_client():
         _client = None
 
 
-async def call_with_backoff(coro_func, *args, max_retries: int = 4, base_delay: float = 0.5, **kwargs):
+async def call_with_backoff(
+    coro_func, *args, max_retries: int = 4, base_delay: float = 0.5, is_write: bool = False, **kwargs
+):
     """Kalshi's rate limiter returns 429 with no Retry-After header — their
     own docs (docs.kalshi.com/getting_started/rate_limits) say to apply
     exponential backoff on 429. Originally implemented as a raw-httpx request
@@ -58,11 +156,21 @@ async def call_with_backoff(coro_func, *args, max_retries: int = 4, base_delay: 
     shape (kalshi_python_async.exceptions.ApiException and subclasses all
     expose .status) rather than an HTTP response object. Only a 429-shaped
     exception triggers a retry; anything else propagates immediately,
-    including on the final attempt."""
+    including on the final attempt.
+
+    is_write (2026-08-15): routes to the write-operation token bucket
+    instead of the read one - see the two _kalshi_*_limiter definitions
+    above for why they're separate. Every caller of call_with_backoff is
+    read by default; services/kalshi_account_client.py's create_order/
+    cancel_order are the only two real callers that pass is_write=True -
+    grep for call_with_backoff before adding a new write-shaped call
+    elsewhere and make sure it does too."""
     global _rate_limit_hits_since_reset
+    limiter = _kalshi_write_limiter if is_write else _kalshi_read_limiter
     delay = base_delay
     for attempt in range(max_retries + 1):
         try:
+            await limiter.acquire()
             return await coro_func(*args, **kwargs)
         except Exception as e:
             if getattr(e, "status", None) != 429 or attempt == max_retries:

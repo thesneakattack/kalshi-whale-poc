@@ -440,6 +440,64 @@ def test_generate_recommendations_with_no_last_applied_by_path_is_unaffected():
     assert "strategy.entry_threshold" in paths
 
 
+# --- fresh_samples_since_change (2026-08-15 direct request: "the advisory
+# should also take into consideration how many samples have been logged
+# after the change") - upgrades _drop_stale_recommendations' binary gate
+# into a real count attached to every surviving recommendation. -----------
+
+def test_drop_stale_recommendations_attaches_fresh_sample_count():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["entry_timestamp"] = 1000.0
+    rows[0]["entry_timestamp"] = 3000.0
+    rows[1]["entry_timestamp"] = 3100.0  # two trades entered after the change
+    result = ae.generate_recommendations(
+        rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100,
+        last_applied_by_path={"strategy.entry_threshold": 2000.0},
+    )
+    rec = next(r for r in result["recommendations"] if r["config_path"] == "strategy.entry_threshold")
+    assert rec["fresh_samples_since_change"] == 2
+
+
+def test_drop_stale_recommendations_none_when_field_never_applied_before():
+    rows = _confidence_split_rows(n_low=4, low_win=0, n_high=4, high_win=4)
+    for r in rows:
+        r["entry_timestamp"] = 1000.0
+    result = ae.generate_recommendations(
+        rows, _cfg(entry_threshold=0.5), "fp1", {}, min_resolved_trades=100,
+        last_applied_by_path={"strategy.longshot_entry_threshold_bonus": 2000.0},
+    )
+    rec = next(r for r in result["recommendations"] if r["config_path"] == "strategy.entry_threshold")
+    assert rec["fresh_samples_since_change"] is None  # never changed - not the same as zero fresh samples
+
+
+# --- significance_z / significance_t (2026-08-15 direct request: "give me
+# a statistical significance score in addition to the semantics") --------
+
+def test_entry_threshold_recommendation_carries_a_real_z_score():
+    rows = _confidence_split_rows(n_low=20, low_win=2, n_high=20, high_win=18)  # 10% vs 90%, n=20 each
+    rec = ae._entry_threshold_recommendation(rows, current_value=0.5)
+    assert rec is not None
+    assert rec["significance_z"] is not None
+    assert rec["significance_z"] > 1.96  # a real, large gap at n=20 each clears the standard 95% threshold
+
+
+def test_auto_exit_threshold_recommendation_carries_a_real_t_score():
+    pnls = [3.0, 4.0, 5.0, 6.0, 7.0, 4.0, 5.0, 6.0, 5.0, 4.0]  # real variance, consistently positive
+    rows = [_row(close_type="auto_exit", realized_pnl=p) for p in pnls]
+    rec = ae._auto_exit_threshold_recommendation(rows, _cfg()["strategy"])
+    assert rec is not None
+    assert rec["significance_t"] is not None
+    assert rec["significance_t"] > 0  # consistently positive P&L -> positive t
+
+
+def test_auto_exit_threshold_recommendation_t_score_none_when_no_variance():
+    # every trade realized the exact same P&L - t is undefined, not fabricated
+    rows = [_row(close_type="auto_exit", realized_pnl=5.0) for _ in range(5)]
+    rec = ae._auto_exit_threshold_recommendation(rows, _cfg()["strategy"])
+    assert rec["significance_t"] is None
+
+
 # --- rejected-candidate counterfactual comparability (2026-08-15 fix) -------
 # Real live bug: this comparison used to gate on a flat 15pt tolerance with
 # no reference to sample size at all - see _comparability_margin_pts's own

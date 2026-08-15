@@ -11,6 +11,7 @@ callables (SDK client methods) instead of raw httpx requests, detecting a
 than an HTTP response object.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -31,6 +32,23 @@ def _reset_rate_limit_counter():
     http_client.get_and_reset_rate_limit_hits()
     yield
     http_client.get_and_reset_rate_limit_hits()
+
+
+@pytest.fixture(autouse=True)
+def _reset_kalshi_rate_limiters(monkeypatch):
+    # The read/write token buckets (2026-08-15) are ALSO module-level
+    # globals, draining real tokens on every call_with_backoff invocation
+    # regardless of outcome - without this, tests run in file order would
+    # share one slowly-draining bucket across the whole file and eventually
+    # exhaust it. That alone wouldn't just make a later test flaky, it
+    # would hang it: _no_sleep below mocks asyncio.sleep to a no-op, so an
+    # empty bucket's own internal wait-for-refill loop never sees real time
+    # pass and spins effectively forever (confirmed live: one test run hit
+    # this before this fixture existed). A fresh, full-token limiter per
+    # test sidesteps this entirely rather than requiring every test to
+    # reason about how many tokens it's allowed to spend.
+    monkeypatch.setattr(http_client, "_kalshi_read_limiter", http_client._TokenBucketRateLimiter(http_client._KALSHI_READ_RATE_PER_SEC))
+    monkeypatch.setattr(http_client, "_kalshi_write_limiter", http_client._TokenBucketRateLimiter(http_client._KALSHI_WRITE_RATE_PER_SEC))
 
 
 def _no_sleep(monkeypatch):
@@ -160,3 +178,79 @@ def test_non_429_failures_dont_count_as_rate_limit_hits(monkeypatch):
     with pytest.raises(_FakeApiException):
         asyncio.run(http_client.call_with_backoff(always_500))
     assert http_client.get_and_reset_rate_limit_hits() == 0
+
+
+# ---- token-bucket rate limiter (2026-08-15 direct incident: a concurrency
+# Semaphore was tried first and confirmed live NOT to stop real 429 storms -
+# Kalshi's rate limit is throughput-based (tokens/sec), not concurrency-
+# based, per docs.kalshi.com/getting_started/rate_limits) --------------------
+
+def test_token_bucket_allows_a_burst_up_to_its_full_size_with_no_wait():
+    limiter = http_client._TokenBucketRateLimiter(rate_per_sec=5.0)
+
+    async def drain_five():
+        for _ in range(5):
+            await limiter.acquire()  # starts full - none of these should need to wait
+
+    asyncio.run(asyncio.wait_for(drain_five(), timeout=1.0))
+
+
+def test_token_bucket_blocks_once_exhausted_until_real_time_passes():
+    limiter = http_client._TokenBucketRateLimiter(rate_per_sec=20.0)  # 1 token every 50ms
+
+    async def drain_then_one_more():
+        for _ in range(20):
+            await limiter.acquire()  # empties the bucket
+        start = time.monotonic()
+        await limiter.acquire()  # must wait ~1/20s for a fresh token
+        return time.monotonic() - start
+
+    waited = asyncio.run(asyncio.wait_for(drain_then_one_more(), timeout=1.0))
+    assert waited > 0.02  # genuinely waited, not an instant no-op
+
+
+def test_call_with_backoff_default_is_read_bucket(monkeypatch):
+    _no_sleep(monkeypatch)
+    read_calls = []
+
+    async def spy_acquire():
+        read_calls.append(1)
+
+    monkeypatch.setattr(http_client._kalshi_read_limiter, "acquire", spy_acquire)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds))
+    assert read_calls == [1]
+
+
+def test_call_with_backoff_is_write_routes_to_write_bucket(monkeypatch):
+    _no_sleep(monkeypatch)
+    write_calls = []
+
+    async def spy_acquire():
+        write_calls.append(1)
+
+    monkeypatch.setattr(http_client._kalshi_write_limiter, "acquire", spy_acquire)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds, is_write=True))
+    assert write_calls == [1]
+
+
+def test_read_and_write_buckets_are_independent():
+    read_limiter = http_client._TokenBucketRateLimiter(rate_per_sec=2.0)
+    write_limiter = http_client._TokenBucketRateLimiter(rate_per_sec=2.0)
+
+    async def drain_write_only():
+        await write_limiter.acquire()
+        await write_limiter.acquire()  # write bucket now empty
+        start = time.monotonic()
+        await read_limiter.acquire()  # read bucket untouched - should be instant
+        return time.monotonic() - start
+
+    elapsed = asyncio.run(asyncio.wait_for(drain_write_only(), timeout=1.0))
+    assert elapsed < 0.05  # draining write didn't block read

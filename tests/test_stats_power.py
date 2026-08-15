@@ -70,3 +70,81 @@ def test_min_n_for_margin_larger_margin_needs_fewer_samples():
 
 def test_min_n_for_margin_infinite_at_zero_margin():
     assert sp.min_n_for_margin(0.0) == float("inf")
+
+
+# --- two_proportion_z_score ------------------------------------------------
+
+def test_two_proportion_z_score_matches_known_textbook_value():
+    # n_a=100 p_a=60%, n_b=100 p_b=50%: pooled p=0.55, se=sqrt(0.55*0.45*0.02)~=0.070356,
+    # z = 0.1 / 0.070356 ~= 1.4213
+    z = sp.two_proportion_z_score(100, 60.0, 100, 50.0)
+    assert z == pytest.approx(1.4213, abs=0.001)
+
+
+def test_two_proportion_z_score_zero_when_rates_are_equal():
+    assert sp.two_proportion_z_score(100, 55.0, 200, 55.0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_two_proportion_z_score_sign_reflects_direction():
+    a_higher = sp.two_proportion_z_score(100, 70.0, 100, 50.0)
+    b_higher = sp.two_proportion_z_score(100, 50.0, 100, 70.0)
+    assert a_higher > 0
+    assert b_higher < 0
+    assert a_higher == pytest.approx(-b_higher, abs=1e-9)
+
+
+def test_two_proportion_z_score_grows_with_more_samples_at_same_gap():
+    small_n = sp.two_proportion_z_score(20, 70.0, 20, 50.0)
+    large_n = sp.two_proportion_z_score(2000, 70.0, 2000, 50.0)
+    assert large_n > small_n  # same 20pt gap, more confidence with more data
+
+
+def test_two_proportion_z_score_none_when_either_sample_empty():
+    assert sp.two_proportion_z_score(0, 50.0, 100, 50.0) is None
+    assert sp.two_proportion_z_score(100, 50.0, 0, 50.0) is None
+
+
+def test_two_proportion_z_score_none_when_pooled_proportion_is_zero():
+    # every trade on both sides lost - zero variance, no gap to explain
+    assert sp.two_proportion_z_score(50, 0.0, 50, 0.0) is None
+
+
+def test_two_proportion_z_score_none_when_pooled_proportion_is_one():
+    assert sp.two_proportion_z_score(50, 100.0, 50, 100.0) is None
+
+
+# --- one_sample_t_score -----------------------------------------------------
+
+def test_one_sample_t_score_matches_known_textbook_value():
+    # values [2, 4, 6, 8, 10]: mean=6, sample stdev~=3.1623, se=3.1623/sqrt(5)~=1.4142
+    # t = (6 - 0) / 1.4142 ~= 4.2426
+    t = sp.one_sample_t_score([2, 4, 6, 8, 10])
+    assert t == pytest.approx(4.2426, abs=0.001)
+
+
+def test_one_sample_t_score_against_nonzero_reference():
+    # same values, testing against reference=6 (the sample mean) -> t=0
+    t = sp.one_sample_t_score([2, 4, 6, 8, 10], reference=6.0)
+    assert t == pytest.approx(0.0, abs=1e-9)
+
+
+def test_one_sample_t_score_sign_reflects_direction():
+    positive = sp.one_sample_t_score([1.0, 2.0, 3.0])
+    negative = sp.one_sample_t_score([-1.0, -2.0, -3.0])
+    assert positive > 0
+    assert negative < 0
+
+
+def test_one_sample_t_score_grows_with_more_samples_at_same_mean_and_spread():
+    small_n = sp.one_sample_t_score([1.0, 2.0, 3.0])
+    large_n = sp.one_sample_t_score([1.0, 2.0, 3.0] * 100)
+    assert large_n > small_n
+
+
+def test_one_sample_t_score_none_with_fewer_than_two_values():
+    assert sp.one_sample_t_score([]) is None
+    assert sp.one_sample_t_score([5.0]) is None
+
+
+def test_one_sample_t_score_none_when_all_values_identical():
+    assert sp.one_sample_t_score([3.0, 3.0, 3.0]) is None

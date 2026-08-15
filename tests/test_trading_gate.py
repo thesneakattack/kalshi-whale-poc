@@ -320,6 +320,77 @@ def test_scan_catalog_batch_only_marks_genuinely_succeeded_series_scanned():
     assert "SER-BAD" not in rows  # failed - must NOT be marked scanned, so it's retried next tick
 
 
+# --- _get_top_series: per-category discovery (2026-08-15 direct fix) -------
+# Real live report: "i see absolutely no signal or trade activity related to
+# any markets other than sports or crypto... mentions... politics" - a flat
+# global top-N by lifetime volume let Sports/Crypto's much larger lifetime
+# volume crowd out every other category entirely.
+
+def _prime_series_cache(entries):
+    # entries: list of (ticker, category, volume_fp), already the shape
+    # test_scan_catalog_batch_only_marks_genuinely_succeeded_series_scanned
+    # above uses to prime the cache without a real network fetch.
+    series = [{"ticker": t, "category": c, "volume_fp": v} for t, c, v in entries]
+    series.sort(key=lambda s: s["volume_fp"], reverse=True)
+    main.state["series_cache"] = {"fetched_at": time.time(), "series": series}
+
+
+def test_get_top_series_returns_top_n_from_each_configured_category():
+    _prime_series_cache([
+        ("SPORT-1", "Sports", 100), ("SPORT-2", "Sports", 90), ("SPORT-3", "Sports", 80),
+        ("MENTION-1", "Mentions", 10), ("MENTION-2", "Mentions", 5),
+    ])
+    result = asyncio.run(main._get_top_series(
+        _FakePinnedMarketClient({}), categories=["Sports", "Mentions"], top_n_per_category=2,
+    ))
+    assert result == ["SPORT-1", "SPORT-2", "MENTION-1", "MENTION-2"]
+
+
+def test_get_top_series_does_not_let_a_huge_category_starve_a_small_one():
+    # The exact real-world shape: Sports has far more real entries than
+    # Mentions, but each still gets its own top_n_per_category slots -
+    # Sports having 50 real series must not reduce Mentions' allotment.
+    sports = [(f"SPORT-{i}", "Sports", 1000 - i) for i in range(50)]
+    _prime_series_cache(sports + [("MENTION-1", "Mentions", 1)])
+    result = asyncio.run(main._get_top_series(
+        _FakePinnedMarketClient({}), categories=["Sports", "Mentions"], top_n_per_category=12,
+    ))
+    assert result.count("MENTION-1") == 1
+    assert sum(1 for t in result if t.startswith("SPORT-")) == 12
+
+
+def test_get_top_series_category_with_fewer_series_than_n_returns_all_of_them():
+    _prime_series_cache([("MENTION-1", "Mentions", 10), ("MENTION-2", "Mentions", 5)])
+    result = asyncio.run(main._get_top_series(
+        _FakePinnedMarketClient({}), categories=["Mentions"], top_n_per_category=12,
+    ))
+    assert result == ["MENTION-1", "MENTION-2"]  # no padding, no error
+
+
+def test_get_top_series_category_absent_from_data_contributes_nothing():
+    _prime_series_cache([("SPORT-1", "Sports", 100)])
+    result = asyncio.run(main._get_top_series(
+        _FakePinnedMarketClient({}), categories=["Sports", "Climate and Weather"], top_n_per_category=5,
+    ))
+    assert result == ["SPORT-1"]  # no crash on a configured category with zero real series
+
+
+def test_get_top_series_no_categories_falls_back_to_flat_top_n():
+    _prime_series_cache([(f"SER-{i}", "Sports", 100 - i) for i in range(10)])
+    result = asyncio.run(main._get_top_series(_FakePinnedMarketClient({}), categories=None, top_n_per_category=2))
+    assert result == [f"SER-{i}" for i in range(10)]  # 2*6=12 default fallback slots, only 10 exist
+
+
+def test_get_top_series_output_order_follows_categories_list_order():
+    _prime_series_cache([("MENTION-1", "Mentions", 999), ("SPORT-1", "Sports", 1)])
+    # Mentions has the higher volume but Sports is listed first in categories -
+    # output should group by category in the given order, not by raw volume.
+    result = asyncio.run(main._get_top_series(
+        _FakePinnedMarketClient({}), categories=["Sports", "Mentions"], top_n_per_category=5,
+    ))
+    assert result == ["SPORT-1", "MENTION-1"]
+
+
 def test_reset_route_wires_market_catalog_and_market_history_flags():
     # Danger Zone gap (data-robustness audit, 2026-08-10): market_catalog
     # already had a clear_all() written for exactly this, just never called
@@ -388,6 +459,17 @@ class _FakePinnedMarketClient:
 
     async def get_market(self, ticker):
         return self.markets_by_ticker[ticker]
+
+    async def get_series_list(self, category=None):
+        # A pinned watchlist no longer replaces discovery outright (2026-08-15
+        # merge fix) - discovery always runs too, so this fake needs to answer
+        # for it. Empty on purpose: these tests are specifically about pinned/
+        # extra_tickers behavior, not discovery, so discovery should
+        # contribute zero additional markets.
+        return []
+
+    async def get_candidate_markets(self, min_volume, series_tickers):
+        return []
 
 
 class _FakeTradeTapeClient:
@@ -500,7 +582,10 @@ def test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run():
     # extra_tickers (simulating a position whose series otherwise dropped
     # off) - without the fix, the second SERA ticker would land after SERB,
     # splitting one series into two non-adjacent runs.
-    cfg = {"kalshi": {"markets_watchlist": ["SERA-M1", "SERB-M1"]}}
+    # watchlist_size/max_children_per_parent needed now that discovery always
+    # runs alongside a pinned watchlist (2026-08-15 merge fix), even though
+    # the fake client's discovery methods return nothing for this test.
+    cfg = {"kalshi": {"markets_watchlist": ["SERA-M1", "SERB-M1"], "watchlist_size": 50, "max_children_per_parent": None}}
     fake = _FakePinnedMarketClient({
         "SERA-M1": {"ticker": "SERA-M1", "event_ticker": "SERA-EVT1"},
         "SERB-M1": {"ticker": "SERB-M1", "event_ticker": "SERB-EVT1"},

@@ -167,7 +167,9 @@ class KalshiAccountClient:
         # A 429 here means the order was rejected before ever being
         # processed (not "processed but the response was lost"), so retrying
         # is safe - it can't produce a duplicate submission.
-        resp = await call_with_backoff(self._client.create_order_v2, _request_timeout=self.timeout, **kwargs)
+        resp = await call_with_backoff(
+            self._client.create_order_v2, _request_timeout=self.timeout, is_write=True, **kwargs
+        )
         return resp.model_dump(mode="json")
 
     async def cancel_order(self, order_id: str) -> dict:
@@ -175,5 +177,5 @@ class KalshiAccountClient:
         # Unlike create_order_v2, cancel_order_v2 has an explicit (not
         # **kwargs) signature and rejects _request_timeout the same way the
         # read endpoints above do - verified 2026-08-08, not assumed.
-        resp = await call_with_backoff(self._client.cancel_order_v2, order_id)
+        resp = await call_with_backoff(self._client.cancel_order_v2, order_id, is_write=True)
         return resp.model_dump(mode="json")

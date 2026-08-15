@@ -111,6 +111,17 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_market_orderbook, ticker)
         return resp.model_dump(mode="json")
 
+    _CANDIDATE_FETCH_CONCURRENCY = 10  # 2026-08-15 direct incident: an unbounded
+    # asyncio.gather here (one real request per series, all fired at once) hit
+    # Kalshi's real rate limiter hard enough to push tick duration past 15-20s
+    # and rack up hundreds of 429s per tick once top_series_per_category grew
+    # past a small handful - call_with_backoff retries each 429 individually
+    # but does nothing to bound how many requests go out simultaneously in the
+    # first place. A semaphore-bounded batch lets the *candidate pool* grow
+    # (more category coverage) without growing the actual concurrent burst
+    # Kalshi sees - a reasoned starting value, not a documented Kalshi limit
+    # (their own rate-limit docs specify backoff behavior, not a number).
+
     async def get_candidate_markets(self, min_volume: float, series_tickers: list[str]) -> list[dict]:
         """Given a list of already-known-active series (see get_series_list
         and main.py's cached _get_top_series - deliberately not fetched in
@@ -140,8 +151,14 @@ class KalshiClient:
         assumed."""
         if not series_tickers:
             return []
+        semaphore = asyncio.Semaphore(self._CANDIDATE_FETCH_CONCURRENCY)
+
+        async def _bounded_fetch(ticker: str):
+            async with semaphore:
+                return await self.get_markets(limit=100, status="open", series_ticker=ticker)
+
         results = await asyncio.gather(
-            *(self.get_markets(limit=100, status="open", series_ticker=t) for t in series_tickers),
+            *(_bounded_fetch(t) for t in series_tickers),
             return_exceptions=True,
         )
         markets = []

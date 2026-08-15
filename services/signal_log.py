@@ -82,6 +82,26 @@ def _connect() -> sqlite3.Connection:
     _add_column_if_missing(conn, "signals", "raw_notional_usd", "REAL")
     _add_column_if_missing(conn, "signals", "raw_spread", "REAL")
     _add_column_if_missing(conn, "signals", "raw_volume_24h", "REAL")
+    # Head-of-line-blocking fix (2026-08-15, direct live report: "why are
+    # there SO MANY unresolved signals???" - confirmed live: 31,833 of
+    # 32,101 signals unresolved, 31,469 of those over 24h old). Root cause:
+    # unresolved_batch's query was a bare "ORDER BY seen_at ASC LIMIT N"
+    # with no memory of ever having tried a row before. A signal logged
+    # against a genuinely long-horizon market (confirmed live examples:
+    # KXMAYORLA-26-KBAS closes 2027-06-02, KXFEDDECISION-26SEP-H0 closes
+    # 2026-09-16 - both legitimately still active, not broken) sorts to the
+    # front of "oldest unresolved" and STAYS there tick after tick forever,
+    # since nothing ever marks it resolved - meaning it (and any other
+    # long-horizon signal) permanently occupies a slot in every single
+    # batch, forever, starving every signal logged after it of ever being
+    # checked even once. This is why the backlog is one-sided (269 resolved
+    # vs tens of thousands never even attempted) rather than a healthy mix
+    # of resolved/genuinely-pending. last_checked_at lets unresolved_batch
+    # skip anything checked recently (see its own recheck_cooldown_sec) so
+    # a handful of long-horizon rows can no longer crowd out everything
+    # behind them - they still get periodically re-checked (in case they
+    # DO resolve), just not on literally every tick forever.
+    _add_column_if_missing(conn, "signals", "last_checked_at", "REAL")
     return conn
 
 
@@ -162,16 +182,37 @@ def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_siz
     return min(matches / 3, 1.0)
 
 
-def unresolved_batch(limit: int = 3, older_than_sec: float = 600) -> list[dict]:
+def unresolved_batch(limit: int = 3, older_than_sec: float = 600, recheck_cooldown_sec: float = 3600) -> list[dict]:
     """Oldest unresolved signals whose market has had at least `older_than_sec`
     to plausibly settle — avoids re-checking a market seconds after the print,
-    and keeps each poll tick's extra API calls small."""
-    cutoff = time.time() - older_than_sec
+    and keeps each poll tick's extra API calls small.
+
+    recheck_cooldown_sec (2026-08-15, see this module's own last_checked_at
+    column comment for the real incident this closes): also skips anything
+    checked within the last recheck_cooldown_sec, and stamps last_checked_at
+    on every row this call returns before returning them - a long-horizon
+    signal that keeps coming back unresolved now only re-claims a batch
+    slot once per cooldown window instead of every single tick forever,
+    letting the query's own ORDER BY seen_at ASC actually progress into the
+    rest of the backlog. Stamping happens here (not left to the caller) so
+    a row is "claimed" the moment it's selected, regardless of what the
+    caller does with it afterward - mark_resolved() is still the only thing
+    that ever sets resolved=1."""
+    now = time.time()
+    cutoff = now - older_than_sec
+    recheck_cutoff = now - recheck_cooldown_sec
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, ticker, side FROM signals WHERE resolved = 0 AND seen_at < ? ORDER BY seen_at ASC LIMIT ?",
-            (cutoff, limit),
+            "SELECT id, ticker, side FROM signals "
+            "WHERE resolved = 0 AND seen_at < ? AND (last_checked_at IS NULL OR last_checked_at < ?) "
+            "ORDER BY seen_at ASC LIMIT ?",
+            (cutoff, recheck_cutoff, limit),
         ).fetchall()
+        if rows:
+            conn.executemany(
+                "UPDATE signals SET last_checked_at = ? WHERE id = ?",
+                [(now, r[0]) for r in rows],
+            )
     return [{"id": r[0], "ticker": r[1], "side": r[2]} for r in rows]
 
 

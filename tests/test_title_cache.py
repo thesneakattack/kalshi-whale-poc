@@ -111,6 +111,41 @@ def test_event_titles_competition_is_none_when_legitimately_absent(tmp_path, mon
     assert result["competition_scope"] is None
 
 
+def test_event_titles_round_trip_carries_strike_date_and_nested_fields(tmp_path, monkeypatch):
+    # 2026-08-15: the fields main.py._fetch_event_titles has always
+    # extracted (part of its own required_event_fields re-fetch check) but
+    # this table never had columns for - services/event_schedule.py now
+    # depends on strike_date specifically (confirmed live against KXFED,
+    # not covered by the milestone API at all).
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_event_titles({
+        "KXFED-26SEP": {
+            "title": "Fed Rate Decision", "sub_title": "On Sep 16, 2026", "category": "Economics",
+            "mutually_exclusive": True, "series_ticker": "KXFED", "available_on_brokers": True,
+            "collateral_return_type": "binary", "strike_date": "2026-09-16T18:00:00Z", "strike_period": "",
+            "fee_type_override": None, "fee_multiplier_override": 1.0, "last_updated_ts": "2026-08-01T00:00:00Z",
+            "product_metadata": {"competition": "FOMC"}, "settlement_sources": [{"name": "Fed", "url": "https://federalreserve.gov"}],
+        },
+    })
+    result = cache.load_event_titles()["KXFED-26SEP"]
+    assert result["series_ticker"] == "KXFED"
+    assert result["available_on_brokers"] is True
+    assert result["strike_date"] == "2026-09-16T18:00:00Z"
+    assert result["fee_multiplier_override"] == 1.0
+    assert result["product_metadata"] == {"competition": "FOMC"}
+    assert result["settlement_sources"] == [{"name": "Fed", "url": "https://federalreserve.gov"}]
+
+
+def test_event_titles_new_fields_default_sensibly_when_unset(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_event_titles({"EVT-A": {"title": "Some Event", "sub_title": None, "category": None}})
+    result = cache.load_event_titles()["EVT-A"]
+    assert result["strike_date"] is None
+    assert result["available_on_brokers"] is None
+    assert result["product_metadata"] == {}
+    assert result["settlement_sources"] == []
+
+
 def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, monkeypatch):
     # data/title_cache.db is a live file (CLAUDE.md) - simulates an
     # existing table from before this column existed, confirming the

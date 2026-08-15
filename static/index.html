@@ -1539,6 +1539,20 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           <span class="info-icon" title="Caps how many different markets in the same series (e.g. a tournament, an election contract family) can have an open position at once - without this, several individually-small correlated bets can add up to a much bigger real-world bet than the position-size cap alone implies. Blank/0 = unlimited, matching this app's other 'no cap' fields.">ⓘ</span></label><input id="cfg-max-open-per-series" type="number" step="1" min="0" placeholder="unlimited"></div>
         <div class="field"><label>Confidence-scaled position sizing (0–1) <span class="config-path">strategy.kelly_fraction_of_cap</span> <span class="data-badge new">🆕 new</span>
           <span class="info-icon" title="0 (default) = every trade uses the full position-size cap above, regardless of confidence - today's behavior, unchanged. Above 0 = signals closer to the entry threshold get a smaller position, scaling up to the full cap only at confidence 1.0; 1.0 applies that scaling at full strength. A fractional-Kelly-style dial, not literal Kelly (this app's confidence score isn't a calibrated win probability yet).">ⓘ</span></label><input id="cfg-kelly-fraction" type="number" step="0.1" min="0" max="1"></div>
+        <div class="field"><label><input type="checkbox" id="cfg-use-limit-orders"> Rest a maker (limit) order at the signal's own price instead of taking the market <span class="config-path">strategy.use_limit_orders</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="Off (default) = every trade takes the current market price immediately, like every other trade in this app. On = a qualifying signal instead places a limit order at its own signal price - much lower fees (maker vs taker), but the order can go unfilled if the market never trades back to that price before the timeout below.">ⓘ</span></label></div>
+        <div class="field"><label>...unfilled limit order expires after (seconds) <span class="config-path">strategy.limit_order_timeout_sec</span> <span class="data-badge new">🆕 new</span>
+          <span class="info-icon" title="How long a resting limit order (see above) waits for the market to trade back to its price before giving up - the signal is simply skipped, never falls back to a market order. Higher = more patient, more fills, but a stale signal by the time it fills. Lower = expires faster, fewer fills but each one still reflects a fresh signal.">ⓘ</span></label><input id="cfg-limit-order-timeout" type="number" step="10" min="1"></div>
+        <div class="field"><label>Min price to consider trading (0–1) <span class="config-path">strategy.min_unit_cost</span>
+          <span class="info-icon" title="Only trade signals priced between this and the maximum below (inclusive) - narrows the field to a specific probability band, same reasoning as the market-native strategy's own min/max price. Below this is treated as too close to a sure loss to bother with.">ⓘ</span></label><input id="cfg-min-unit-cost" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Max price to consider trading (0–1) <span class="config-path">strategy.max_unit_cost</span>
+          <span class="info-icon" title="Above this is treated as too close to a sure thing to bother with - little room left for the price to move your way even if the whale is right.">ⓘ</span></label><input id="cfg-max-unit-cost" type="number" step="0.05" min="0" max="1"></div>
+        <div class="field"><label>Entry cutoff before scheduled close (seconds) <span class="config-path">strategy.close_window_sec</span>
+          <span class="info-icon" title="A signal is only actable if the market's close_time is within this many seconds from now (skipped entirely otherwise) - unless the market is currently flagged live, which bypasses this check (a live event's scheduled close time may not be authoritative). Higher = accepts signals further from close. Lower = only very-soon-to-close markets qualify.">ⓘ</span></label><input id="cfg-close-window" type="number" step="60" min="0"></div>
+        <div class="field"><label>...but be more cautious this close to an early-closing/special-settlement market (seconds) <span class="config-path">strategy.special_market_min_seconds_to_close</span>
+          <span class="info-icon" title="A tighter, second cutoff that only applies to markets flagged can_close_early, part of a mutually-exclusive event, or with a non-standard collateral-return type - these can stop trading with less warning than the close_time alone suggests. Skipped when the market is currently live, same as the cutoff above.">ⓘ</span></label><input id="cfg-special-market-min-sec" type="number" step="30" min="0"></div>
+        <div class="field"><label>...except in the longshot zone, be extra cautious within (seconds) <span class="config-path">strategy.longshot_close_window_sec</span>
+          <span class="info-icon" title="A longshot-priced signal (see the zone above) this close to close gets the longshot bonus removed entirely, on top of not being live - a cheap/expensive contract with very little time left is exactly where the favorite-longshot mispricing is worst.">ⓘ</span></label><input id="cfg-longshot-close-window" type="number" step="60" min="0"></div>
         <div class="field"><label>Avoid market types where whale signals have been wrong more often (win rate below %) <span class="config-path">strategy.min_whale_winrate_pct</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
           <span class="info-icon" title="Higher = stricter - excludes more market types (series) whose whale signals have a mixed track record so far. Lower = more permissive, only the worst-performing series get excluded. 0 disables this filter entirely.">ⓘ</span></label><input id="cfg-min-winrate" type="number" step="5" min="0" max="100"></div>
         <div class="field"><label>...but only once that market's series has this many resolved signals <span class="config-path">strategy.min_resolved_for_whale_filter</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
@@ -1594,6 +1608,12 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           <span class="info-icon" title="Lower = a smaller unrealized loss already fully maxes out the P&L factor, making the algorithm more eager to exit a losing position. Higher = tolerates a bigger loss before the P&L factor tops out.">ⓘ</span></label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
         <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="config-path">strategy.auto_exit_stale_after_sec</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
           <span class="info-icon" title="Lower = treats whale silence as \"stale\" sooner, raising the staleness factor faster. Higher = more patient, waits longer before calling a quiet ticker stale.">ⓘ</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
+        <div class="field"><label>Series track-record factor weight <span class="config-path">strategy.auto_exit_series_track_record_weight</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
+          <span class="info-icon" title="Higher relative to the other weights = this series' own historical win rate drives the exit decision more (a position in a series with a poor track record gets pushed toward exiting sooner). 0 (default) = ignore track record entirely in this score.">ⓘ</span></label><input id="cfg-auto-exit-track-record-weight" type="number" step="0.1" min="0"></div>
+        <div class="field"><label>Normal volatility baseline <span class="config-path">strategy.auto_exit_normal_volatility</span>
+          <span class="info-icon" title="The exit-confidence threshold scales up when this ticker is currently more volatile than this baseline, and down when calmer - same volatility-normalization idiom as Hedge-Mode/Position Netting below. Blank/0 disables volatility scaling.">ⓘ</span></label><input id="cfg-auto-exit-normal-vol" type="number" step="0.01" min="0" placeholder="off"></div>
+        <div class="field"><label>Volatility lookback (seconds) <span class="config-path">strategy.auto_exit_volatility_lookback_sec</span>
+          <span class="info-icon" title="How far back to look when measuring this ticker's current volatility for the scaling above.">ⓘ</span></label><input id="cfg-auto-exit-vol-lookback" type="number" step="60" min="0"></div>
       </div>
     </details>
 
@@ -1704,6 +1724,38 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side <span class="config-path">market_strategy.exit_on_momentum_reversal</span></label></div>
         <div class="field"><label>Max daily loss (% of its own bankroll) <span class="config-path">market_strategy.max_daily_loss_pct</span>
           <span class="info-icon" title="This strategy's own kill switch - once today's realized+unrealized loss on its own bankroll crosses this fraction, it halts for the day. Independent of the whale-follow strategy's kill switch below.">ⓘ</span></label><input id="cfg-market-strategy-max-loss" type="number" step="0.01" min="0" max="1"></div>
+      </div>
+    </details>
+
+    <details class="config-section" id="cfg-section-overrides">
+      <summary>Per-Series / Per-Category Overrides <span class="section-desc">— tune the whale-follow strategy differently for one market type</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Every field in the Strategy section above applies globally, to every series and category.
+          Add an override here to set a different value for one specific series (e.g.
+          <code>KXBTC15M</code>) or one whole category (e.g. <code>Sports</code>) instead — series
+          overrides win over category overrides, which win over the global default above; an
+          unset field on either falls through untouched.
+          <span class="config-path">strategy_overrides.by_series</span> /
+          <span class="config-path">strategy_overrides.by_category</span>
+        </p>
+        <div id="overrides-list"><div class="empty">Loading…</div></div>
+        <div style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+          <div class="field" style="margin:0;"><label style="display:block;">Scope</label>
+            <select id="override-add-scope" onchange="onOverrideScopeChange()">
+              <option value="by_series">Series</option>
+              <option value="by_category">Category</option>
+            </select>
+          </div>
+          <div class="field" style="margin:0;"><label style="display:block;" id="override-add-key-label">Series ticker prefix</label>
+            <input id="override-add-key" type="text" placeholder="KXBTC15M" style="width:150px; text-transform:uppercase;"></div>
+          <div class="field" style="margin:0;"><label style="display:block;">Field</label>
+            <select id="override-add-field" onchange="onOverrideFieldChange()"></select></div>
+          <div class="field" style="margin:0;"><label style="display:block;">Value</label>
+            <input id="override-add-value" type="text" style="width:100px;"></div>
+          <button id="override-add-btn" onclick="addStrategyOverride()">+ Add override</button>
+        </div>
+        <div id="override-add-error" style="color:var(--danger); font-size:12px; margin-top:6px;"></div>
       </div>
     </details>
 
@@ -4028,6 +4080,38 @@ function plainConfidencePhrase(confidenceLabel) {
 // applySeriesSuggestion/applyFullSpectrumSuggestion each already handle
 // their own route + button feedback correctly). Only the card markup and
 // the decline path are unified/new.
+// Staleness + significance (2026-08-15 direct request: "the advisory
+// should also take into consideration how many samples have been logged
+// after the change... give me a statistical significance score in
+// addition to the semantics"). fresh_samples_since_change/significance_z/
+// significance_t are computed server-side (services/advisory_engine.py's
+// _drop_stale_recommendations + every per-field recommendation function -
+// see services/stats_power.py's two_proportion_z_score/one_sample_t_score)
+// - this is purely how they're surfaced, not where they're derived.
+function freshSamplesHTML(rec) {
+  const n = rec.fresh_samples_since_change;
+  if (n == null) return '';  // never changed before - no "since your last change" to caveat
+  const thin = n < 5;
+  return `<div style="font-size:12px; margin-bottom:6px; color:${thin ? 'var(--danger)' : 'var(--muted)'};">
+    ${thin ? '⚠ ' : ''}${n} sample${n === 1 ? '' : 's'} logged since you last changed this setting${thin ? ' — treat this suggestion cautiously' : ''}.
+  </div>`;
+}
+function significanceScoreHTML(rec) {
+  const z = rec.significance_z, t = rec.significance_t;
+  const score = z != null ? z : t;
+  if (score == null) return '';
+  const label = z != null ? 'z' : 't';
+  const testName = z != null ? 'a two-proportion z-test (comparing two win rates)' : 'a one-sample t-test (comparing an average dollar result against zero)';
+  const abs = Math.abs(score);
+  let verdict, color;
+  if (abs >= 2.576) { verdict = 'strongly significant (99% confidence)'; color = 'var(--yes)'; }
+  else if (abs >= 1.96) { verdict = 'significant (95% confidence)'; color = 'var(--yes)'; }
+  else if (abs >= 1.645) { verdict = 'borderline (90% confidence)'; color = 'var(--whale)'; }
+  else { verdict = 'not statistically significant yet'; color = 'var(--muted)'; }
+  return `<div style="font-size:12px; margin-bottom:10px;" title="${esc(testName)} - the standard statistical test for whether this gap is real or just sampling noise.">
+    ${label} = ${score.toFixed(2)} — <span style="color:${color};">${verdict}</span>
+  </div>`;
+}
 function renderSuggestionCard(rec, acceptOnclickJS) {
   const confBadge = rec.confidence_label
     ? `<span style="color:${HISTORY_CONFIDENCE_COLOR[rec.confidence_label] || 'var(--muted)'};">${plainConfidencePhrase(rec.confidence_label)}</span>`
@@ -4045,7 +4129,10 @@ function renderSuggestionCard(rec, acceptOnclickJS) {
     <div class="suggestion-card" data-suggestion-id="${esc(rec.id)}">
       <div class="suggestion-headline">${suggestionHeadlineHTML(rec)}</div>
       <div class="suggestion-confidence">${confBadge}</div>
-      <div style="margin-bottom:10px;">Currently: <b>${esc(formatConfigValue(rec.current_value))}</b> &nbsp;→&nbsp; Suggested: <b style="color:var(--whale);">${esc(formatConfigValue(rec.suggested_value))}</b></div>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:2px;"><span class="config-path" style="cursor:pointer; text-decoration:underline dotted;" data-jump-path="${esc(rec.config_path)}" title="Jump to this setting on the Config tab">${esc(rec.config_path)}</span></div>
+      <div style="margin-bottom:6px;">Currently: <b>${esc(formatConfigValue(rec.current_value))}</b> &nbsp;→&nbsp; Suggested: <b style="color:var(--whale);">${esc(formatConfigValue(rec.suggested_value))}</b></div>
+      ${freshSamplesHTML(rec)}
+      ${significanceScoreHTML(rec)}
       <details class="suggestion-why">
         <summary>Why is this suggested? (technical details)</summary>
         <div class="suggestion-why-body">
@@ -6723,6 +6810,13 @@ async function loadConfig() {
   $('cfg-cooldown').value = cfg.strategy.cooldown_sec;
   $('cfg-max-open-per-series').value = cfg.strategy.max_open_positions_per_series ?? '';
   $('cfg-kelly-fraction').value = cfg.strategy.kelly_fraction_of_cap ?? 0;
+  $('cfg-use-limit-orders').checked = !!cfg.strategy.use_limit_orders;
+  $('cfg-limit-order-timeout').value = cfg.strategy.limit_order_timeout_sec ?? 60;
+  $('cfg-min-unit-cost').value = cfg.strategy.min_unit_cost ?? 0;
+  $('cfg-max-unit-cost').value = cfg.strategy.max_unit_cost ?? 1;
+  $('cfg-close-window').value = cfg.strategy.close_window_sec ?? '';
+  $('cfg-special-market-min-sec').value = cfg.strategy.special_market_min_seconds_to_close ?? 300;
+  $('cfg-longshot-close-window').value = cfg.strategy.longshot_close_window_sec ?? 900;
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
   $('cfg-min-resolved').value = cfg.strategy.min_resolved_for_whale_filter;
   $('cfg-live-only').checked = !!cfg.strategy.live_markets_only;
@@ -6741,6 +6835,9 @@ async function loadConfig() {
   $('cfg-auto-exit-gain-ref').value = cfg.strategy.auto_exit_gain_reference_pct ?? 0.5;
   $('cfg-auto-exit-loss-ref').value = cfg.strategy.auto_exit_loss_reference_pct ?? 0.3;
   $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
+  $('cfg-auto-exit-track-record-weight').value = cfg.strategy.auto_exit_series_track_record_weight ?? 0;
+  $('cfg-auto-exit-normal-vol').value = cfg.strategy.auto_exit_normal_volatility ?? '';
+  $('cfg-auto-exit-vol-lookback').value = cfg.strategy.auto_exit_volatility_lookback_sec ?? 1800;
   const netCfg = cfg.position_netting || {};
   $('cfg-netting-enabled').checked = !!netCfg.enabled;
   $('cfg-netting-min-dwell').value = netCfg.min_dwell_sec ?? 300;
@@ -6803,6 +6900,7 @@ async function loadConfig() {
   $('cfg-max-children-per-parent').value = cfg.kalshi.max_children_per_parent ?? '';
   if (!$('market-search-category').value) $('market-search-category').value = (cfg.kalshi.categories || [])[0] || '';
   renderPinnedWatchlist(cfg.kalshi.markets_watchlist || []);
+  renderStrategyOverrides(cfg.strategy_overrides || {});
 }
 
 $('toggle-btn').addEventListener('click', async () => { await fetchJSON('/api/toggle', {method:'POST'}); refresh(); });
@@ -6842,6 +6940,13 @@ $('save-config-btn').addEventListener('click', async () => {
       cooldown_sec: parseInt($('cfg-cooldown').value),
       max_open_positions_per_series: $('cfg-max-open-per-series').value === '' ? null : parseInt($('cfg-max-open-per-series').value),
       kelly_fraction_of_cap: parseFloat($('cfg-kelly-fraction').value),
+      use_limit_orders: $('cfg-use-limit-orders').checked,
+      limit_order_timeout_sec: parseInt($('cfg-limit-order-timeout').value),
+      min_unit_cost: parseFloat($('cfg-min-unit-cost').value),
+      max_unit_cost: parseFloat($('cfg-max-unit-cost').value),
+      close_window_sec: $('cfg-close-window').value === '' ? null : parseFloat($('cfg-close-window').value),
+      special_market_min_seconds_to_close: parseFloat($('cfg-special-market-min-sec').value),
+      longshot_close_window_sec: parseInt($('cfg-longshot-close-window').value),
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
       min_resolved_for_whale_filter: parseInt($('cfg-min-resolved').value),
       live_markets_only: $('cfg-live-only').checked,
@@ -6860,6 +6965,9 @@ $('save-config-btn').addEventListener('click', async () => {
       auto_exit_gain_reference_pct: parseFloat($('cfg-auto-exit-gain-ref').value),
       auto_exit_loss_reference_pct: parseFloat($('cfg-auto-exit-loss-ref').value),
       auto_exit_stale_after_sec: parseInt($('cfg-auto-exit-stale-sec').value),
+      auto_exit_series_track_record_weight: parseFloat($('cfg-auto-exit-track-record-weight').value),
+      auto_exit_normal_volatility: $('cfg-auto-exit-normal-vol').value === '' ? null : parseFloat($('cfg-auto-exit-normal-vol').value),
+      auto_exit_volatility_lookback_sec: parseInt($('cfg-auto-exit-vol-lookback').value),
     },
     position_netting: {
       enabled: $('cfg-netting-enabled').checked,
@@ -7116,6 +7224,161 @@ function renderPinnedWatchlist(tickers) {
     </div>`;
   }).join('');
 }
+
+// Per-series/category strategy_overrides editor (2026-08-15 direct
+// request: "these strategies need to be able to be tweaked for individual
+// series"). Only strategy.* fields - market_strategy_overrides is
+// deliberately never populated (services/market_strategy.py's own
+// evaluate_all docstring: market-native stays a whale-independent control
+// group), so there's nothing for a market_strategy editor to do yet.
+// Curated field list rather than a free-text field name: config_overrides.
+// resolve() would silently accept any field name and just never have
+// anything read it back out - a typo here would create a dead, invisible
+// no-op override with no error anywhere. Every add/remove re-fetches
+// /api/config fresh immediately before merging (not the last-rendered copy
+// in memory) - same "don't trust a stale in-tab snapshot" lesson this
+// session's earlier concurrent-edit confusion already taught elsewhere.
+const OVERRIDE_FIELDS = {
+  entry_threshold: {label: 'Entry confidence threshold (0–1)', type: 'number'},
+  max_position_pct: {label: 'Max position size (% of bankroll)', type: 'number'},
+  cooldown_sec: {label: 'Cooldown per market (seconds)', type: 'number'},
+  kelly_fraction_of_cap: {label: 'Confidence-scaled position sizing (0–1)', type: 'number'},
+  min_whale_winrate_pct: {label: 'Min whale win rate to trust (%)', type: 'number'},
+  min_unit_cost: {label: 'Min price to consider trading (0–1)', type: 'number'},
+  max_unit_cost: {label: 'Max price to consider trading (0–1)', type: 'number'},
+  take_profit_pct: {label: 'Take-profit (fraction of cost basis, 0–1)', type: 'number'},
+  stop_loss_pct: {label: 'Stop-loss (fraction of cost basis, 0–1)', type: 'number'},
+  max_open_positions_per_series: {label: 'Max simultaneously-open positions', type: 'number'},
+  close_window_sec: {label: 'Entry cutoff before close (seconds)', type: 'number'},
+  live_markets_only: {label: 'Only trade markets currently flagged LIVE', type: 'bool'},
+};
+let currentStrategyOverrides = {by_category: {}, by_series: {}};
+
+function populateOverrideFieldOptions() {
+  $('override-add-field').innerHTML = Object.entries(OVERRIDE_FIELDS)
+    .map(([field, meta]) => `<option value="${esc(field)}">${esc(meta.label)}</option>`).join('');
+  onOverrideFieldChange();
+}
+
+function onOverrideFieldChange() {
+  const meta = OVERRIDE_FIELDS[$('override-add-field').value];
+  const valueInput = $('override-add-value');
+  if (meta && meta.type === 'bool' && valueInput.tagName !== 'SELECT') {
+    valueInput.outerHTML = `<select id="override-add-value" style="width:100px;"><option value="true">true</option><option value="false">false</option></select>`;
+  } else if ((!meta || meta.type !== 'bool') && valueInput.tagName !== 'INPUT') {
+    valueInput.outerHTML = `<input id="override-add-value" type="text" style="width:100px;">`;
+  }
+}
+
+function onOverrideScopeChange() {
+  const isSeries = $('override-add-scope').value === 'by_series';
+  $('override-add-key-label').textContent = isSeries ? 'Series ticker prefix' : 'Category';
+  $('override-add-key').placeholder = isSeries ? 'KXBTC15M' : 'Sports';
+}
+
+function mergeOverrideClientSide(overrides, scope, key, field, value) {
+  const result = {by_category: {}, by_series: {}};
+  for (const tier of ['by_category', 'by_series']) {
+    for (const [k, v] of Object.entries((overrides && overrides[tier]) || {})) result[tier][k] = {...v};
+  }
+  result[scope][key] = {...(result[scope][key] || {}), [field]: value};
+  return result;
+}
+
+function removeOverrideClientSide(overrides, scope, key, field) {
+  const result = {by_category: {}, by_series: {}};
+  for (const tier of ['by_category', 'by_series']) {
+    for (const [k, v] of Object.entries((overrides && overrides[tier]) || {})) result[tier][k] = {...v};
+  }
+  if (!result[scope][key]) return result;
+  if (field == null) {
+    delete result[scope][key];
+    return result;
+  }
+  delete result[scope][key][field];
+  if (Object.keys(result[scope][key]).length === 0) delete result[scope][key];
+  return result;
+}
+
+function renderStrategyOverrides(overrides) {
+  currentStrategyOverrides = {by_category: (overrides || {}).by_category || {}, by_series: (overrides || {}).by_series || {}};
+  const rows = [
+    ...Object.entries(currentStrategyOverrides.by_category).map(([key, fields]) => ({scope: 'by_category', key, fields, label: `Category: ${key}`})),
+    ...Object.entries(currentStrategyOverrides.by_series).map(([key, fields]) => ({scope: 'by_series', key, fields, label: `Series: ${key}`})),
+  ];
+  const el = $('overrides-list');
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">No overrides yet — every series/category uses the global Strategy settings above.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(row => `
+    <div class="market-row" style="flex-direction:column; align-items:stretch; gap:6px; height:auto; padding:8px 10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>${esc(row.label)}</strong>
+        <button class="danger" style="padding:3px 8px; font-size:11px;" onclick="removeStrategyOverrideKey('${row.scope}', '${esc(row.key)}')">Remove all</button>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px;">
+        ${Object.entries(row.fields).map(([field, value]) => `
+          <span style="display:inline-flex; align-items:center; gap:4px; background:rgba(127,127,127,0.12); border:1px solid var(--panel-border); border-radius:4px; padding:2px 4px 2px 8px; font-size:12px;">
+            ${esc((OVERRIDE_FIELDS[field] || {}).label || field)}: <b>${esc(String(value))}</b>
+            <button onclick="removeStrategyOverrideField('${row.scope}', '${esc(row.key)}', '${esc(field)}')" title="Remove this field" style="padding:1px 6px; font-size:11px; background:none; border:none; cursor:pointer; color:var(--muted);">×</button>
+          </span>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function saveStrategyOverrides(newOverrides) {
+  await fetchJSON('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({patch: {strategy_overrides: newOverrides}}),
+  });
+  renderStrategyOverrides(newOverrides);
+  loadChangeHistory();
+}
+
+async function addStrategyOverride() {
+  const scope = $('override-add-scope').value;
+  const key = $('override-add-key').value.trim().toUpperCase();
+  const field = $('override-add-field').value;
+  const rawValue = $('override-add-value').value;
+  const errEl = $('override-add-error');
+  errEl.textContent = '';
+  if (!key) { errEl.textContent = scope === 'by_series' ? 'Enter a series ticker prefix.' : 'Enter a category.'; return; }
+  const meta = OVERRIDE_FIELDS[field];
+  let value;
+  if (meta && meta.type === 'bool') {
+    value = rawValue === 'true';
+  } else {
+    value = parseFloat(rawValue);
+    if (Number.isNaN(value)) { errEl.textContent = 'Enter a numeric value.'; return; }
+  }
+  const btn = $('override-add-btn');
+  btn.disabled = true;
+  try {
+    const cfg = await fetchJSON('/api/config');
+    await saveStrategyOverrides(mergeOverrideClientSide(cfg.strategy_overrides, scope, key, field, value));
+    $('override-add-key').value = '';
+  } catch (e) {
+    errEl.textContent = 'Save failed — try again.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeStrategyOverrideField(scope, key, field) {
+  const cfg = await fetchJSON('/api/config');
+  await saveStrategyOverrides(removeOverrideClientSide(cfg.strategy_overrides, scope, key, field));
+}
+
+async function removeStrategyOverrideKey(scope, key) {
+  const cfg = await fetchJSON('/api/config');
+  await saveStrategyOverrides(removeOverrideClientSide(cfg.strategy_overrides, scope, key, null));
+}
+
+populateOverrideFieldOptions();
+onOverrideScopeChange();
 
 $('market-search-btn').addEventListener('click', searchMarkets);
 $('watchlist-add-btn').addEventListener('click', addSelectedToWatchlist);

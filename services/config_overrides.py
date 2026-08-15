@@ -57,3 +57,26 @@ def merge_override(overrides: dict | None, scope: str, key: str, field: str, val
     result[scope].setdefault(key, {})
     result[scope][key] = {**result[scope][key], field: value}
     return result
+
+
+def remove_override(overrides: dict | None, scope: str, key: str, field: str | None = None) -> dict:
+    """Inverse of merge_override, same non-mutating/preserve-siblings
+    contract. field=None drops the whole key (e.g. deleting a series'
+    override entirely, not just one field of it); a given field drops just
+    that field, and the key itself is dropped too if that empties it - so a
+    resolved-to-empty entry never lingers as a visible-but-inert {} in the
+    config. Removing a field/key that isn't there is a no-op, not an error
+    - the Config-tab UI this backs can't easily guarantee it never double-
+    fires a remove click."""
+    if scope not in _TIERS:
+        raise ValueError(f'scope must be one of {_TIERS}, got {scope!r}')
+    result = {tier: {k: dict(v) for k, v in (overrides or {}).get(tier, {}).items()} for tier in _TIERS}
+    if key not in result[scope]:
+        return result
+    if field is None:
+        del result[scope][key]
+        return result
+    result[scope][key].pop(field, None)
+    if not result[scope][key]:
+        del result[scope][key]
+    return result

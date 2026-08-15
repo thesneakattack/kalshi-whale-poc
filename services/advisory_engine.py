@@ -196,9 +196,8 @@ def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> d
     win_rates = {k: sum(1 for r in v if r["won"]) / len(v) * 100 for k, v in populated.items()}
     worst_key = min(win_rates, key=win_rates.get)
     best_key = max(win_rates, key=win_rates.get)
-    margin = _comparability_margin_pts(
-        len(populated[best_key]), win_rates[best_key], len(populated[worst_key]), win_rates[worst_key],
-    )
+    n_best, n_worst = len(populated[best_key]), len(populated[worst_key])
+    margin = _comparability_margin_pts(n_best, win_rates[best_key], n_worst, win_rates[worst_key])
     if win_rates[best_key] - win_rates[worst_key] < margin:
         return None
     n = sum(len(v) for v in populated.values())
@@ -218,6 +217,7 @@ def _entry_threshold_recommendation(rows: list[dict], current_value: float) -> d
         ),
         "n": n,
         "confidence_label": trade_analytics.confidence_label(n),
+        "significance_z": stats_power.two_proportion_z_score(n_best, win_rates[best_key], n_worst, win_rates[worst_key]),
     }
 
 
@@ -243,10 +243,11 @@ def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | 
         return None
     longshot_wr = sum(1 for r in longshot_rows if r["won"]) / len(longshot_rows) * 100
     non_longshot_wr = sum(1 for r in non_longshot_rows if r["won"]) / len(non_longshot_rows) * 100
-    margin = _comparability_margin_pts(len(non_longshot_rows), non_longshot_wr, len(longshot_rows), longshot_wr)
+    n_longshot, n_non_longshot = len(longshot_rows), len(non_longshot_rows)
+    margin = _comparability_margin_pts(n_non_longshot, non_longshot_wr, n_longshot, longshot_wr)
     if non_longshot_wr - longshot_wr < margin:
         return None  # longshot entries aren't meaningfully underperforming under this config's current bonus
-    n = len(longshot_rows) + len(non_longshot_rows)
+    n = n_longshot + n_non_longshot
     suggested = round(min(0.5, current_bonus + 0.1), 3)
     if suggested <= current_bonus:
         return None
@@ -257,14 +258,15 @@ def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | 
         "suggested_value": suggested,
         "rationale": (
             f"Under this config, longshot-zone entries (price <= {longshot_zone:.0%} or >= "
-            f"{1 - longshot_zone:.0%}) won {longshot_wr:.0f}% of the time (n={len(longshot_rows)}) vs "
-            f"{non_longshot_wr:.0f}% for non-longshot entries (n={len(non_longshot_rows)}) - even with "
+            f"{1 - longshot_zone:.0%}) won {longshot_wr:.0f}% of the time (n={n_longshot}) vs "
+            f"{non_longshot_wr:.0f}% for non-longshot entries (n={n_non_longshot}) - even with "
             f"the current +{current_bonus:.2f} confidence bonus already applied, favorite-longshot bias "
             f"(confirmed worse for takers on real Kalshi data) still shows through. Raising the bonus to "
             f"{suggested:.2f} targets that gap."
         ),
         "n": n,
         "confidence_label": trade_analytics.confidence_label(n),
+        "significance_z": stats_power.two_proportion_z_score(n_non_longshot, non_longshot_wr, n_longshot, longshot_wr),
     }
 
 
@@ -300,6 +302,7 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
             f"take_profit closes under this config left an average {avg_left_pct:.0%} of cost basis on "
             f"the table vs a full $1 win (n={n}) - raising take_profit_pct to {suggested:.2f} targets that gap."
         )
+        significance_t = stats_power.one_sample_t_score(left_fractions)
     else:  # stop_loss
         overshoots = [
             (-r["realized_pnl"] / r["cost_basis"] - current_value)
@@ -315,6 +318,7 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
             f"{avg_overshoot:.0%} past the configured {current_value:.0%} limit (n={n}, likely from price "
             f"gaps between poll ticks) - tightening stop_loss_pct to {suggested:.2f} targets that gap."
         )
+        significance_t = stats_power.one_sample_t_score(overshoots)
     full_path = f"strategy.{config_path}"
     return {
         "id": rec_id(full_path, suggested, n),
@@ -324,6 +328,7 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
         "rationale": rationale,
         "n": n,
         "confidence_label": trade_analytics.confidence_label(n),
+        "significance_t": significance_t,
     }
 
 
@@ -335,7 +340,8 @@ def _auto_exit_threshold_recommendation(rows: list[dict], strat_cfg: dict) -> di
     if len(group) < 3:
         return None
     n = len(group)
-    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    pnls = [r["realized_pnl"] for r in group if r["realized_pnl"] is not None]
+    avg_pnl = sum(pnls) / n
     current_value = strat_cfg.get("auto_exit_threshold", 0.6)
     if avg_pnl > 0:
         suggested = round(min(0.95, current_value + 0.05), 3)
@@ -353,6 +359,7 @@ def _auto_exit_threshold_recommendation(rows: list[dict], strat_cfg: dict) -> di
         "rationale": f"auto_exit closed {n} position(s), averaging {avg_pnl:+.2f} realized - {tail}",
         "n": n,
         "confidence_label": trade_analytics.confidence_label(n),
+        "significance_t": stats_power.one_sample_t_score(pnls),
     }
 
 
@@ -366,7 +373,9 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     if len(group) < 3:
         return []
     n = len(group)
-    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    pnls = [r["realized_pnl"] for r in group if r["realized_pnl"] is not None]
+    avg_pnl = sum(pnls) / n
+    significance_t = stats_power.one_sample_t_score(pnls)
     current_lean = strat_cfg.get("exit_sentiment_lean_pct", 65)
     current_min_signals = strat_cfg.get("exit_sentiment_min_signals", 3)
     if avg_pnl <= 0:
@@ -391,6 +400,7 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
             "rationale": rationale,
             "n": n,
             "confidence_label": trade_analytics.confidence_label(n),
+            "significance_t": significance_t,
         })
     if signals_suggested != current_min_signals:
         out.append({
@@ -401,6 +411,7 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
             "rationale": rationale,
             "n": n,
             "confidence_label": trade_analytics.confidence_label(n),
+            "significance_t": significance_t,
         })
     return out
 
@@ -418,7 +429,8 @@ def _momentum_exit_recommendation(rows: list[dict], market_cfg: dict) -> dict | 
     if len(group) < 3:
         return None
     n = len(group)
-    avg_pnl = sum(r["realized_pnl"] for r in group if r["realized_pnl"] is not None) / n
+    pnls = [r["realized_pnl"] for r in group if r["realized_pnl"] is not None]
+    avg_pnl = sum(pnls) / n
     current_value = market_cfg.get("min_momentum_delta", 0.03)
     if avg_pnl <= 0:
         suggested = round(current_value + 0.01, 3)
@@ -436,6 +448,7 @@ def _momentum_exit_recommendation(rows: list[dict], market_cfg: dict) -> dict | 
         "rationale": f"momentum_reversal closed {n} position(s) under Market-Native Strategy, averaging {avg_pnl:+.2f} realized - {tail}",
         "n": n,
         "confidence_label": trade_analytics.confidence_label(n),
+        "significance_t": stats_power.one_sample_t_score(pnls),
     }
 
 
@@ -505,6 +518,9 @@ def _cross_variant_recommendations(
         if other_variant is None:
             continue
         n = min(current_summary["total_closed"], summary["total_closed"])
+        significance_z = stats_power.two_proportion_z_score(
+            summary["total_closed"], other_wr, current_summary["total_closed"], current_wr,
+        )
         diffs = {
             k: v for k, v in other_variant["config"].items()
             if current_variant["config"].get(k) != v
@@ -525,6 +541,7 @@ def _cross_variant_recommendations(
                 "n": n,
                 "confidence_label": trade_analytics.confidence_label(n),
                 "compared_fingerprint": fp,
+                "significance_z": significance_z,
             })
     return out
 
@@ -617,6 +634,7 @@ def _rejected_candidate_recommendations(
         if suggested == current_value:
             continue
         n = min(rejected_n, accepted_n)
+        significance_z = stats_power.two_proportion_z_score(rejected_n, rejected_wr, accepted_n, accepted_wr)
         out.append({
             "id": rec_id(config_path, suggested, n),
             "config_path": config_path,
@@ -632,6 +650,7 @@ def _rejected_candidate_recommendations(
             "n": n,
             "confidence_label": trade_analytics.confidence_label(n),
             "source": "rejected-candidate-counterfactual",
+            "significance_z": significance_z,
         })
     return out
 
@@ -696,7 +715,7 @@ _CATEGORY_MIN_N = 5
 
 def _category_conditional_recommendations(
     category_rows: list[dict], strat_cfg: dict, overall_win_rate: float | None,
-    strategy_overrides: dict | None = None,
+    strategy_overrides: dict | None = None, overall_n: int = 0,
 ) -> list[dict]:
     """"Web of expertise" audit (2026-08-11) gap #2: no suggestion here has
     ever been category-conditional, even though services/regime_analytics.py's
@@ -745,6 +764,7 @@ def _category_conditional_recommendations(
         suggested = round(min(0.95, current + step) if gap < 0 else max(0.05, current - step), 3)
         if suggested == current:
             continue
+        significance_z = stats_power.two_proportion_z_score(n, wr, overall_n, overall_win_rate) if overall_n else None
         new_by_category = config_overrides.merge_override(
             {"by_category": by_category}, "by_category", category, "entry_threshold", suggested,
         )["by_category"]
@@ -764,6 +784,7 @@ def _category_conditional_recommendations(
             "n": n,
             "confidence_label": trade_analytics.confidence_label(n),
             "source": "category-conditional",
+            "significance_z": significance_z,
         })
     return out
 
@@ -788,20 +809,39 @@ def _drop_stale_recommendations(
     vs. applied_at is the same before/after convention change_effect()
     above already uses, not a new comparison invented for this. A
     config_path never applied before (not in last_applied_by_path) is
-    never stale by definition."""
+    never stale by definition.
+
+    fresh_samples_since_change (2026-08-15 direct request: "the advisory
+    should also take into consideration how many samples have been logged
+    after the change before giving me any updated advice... it should be
+    aware that ive made a change, it should be reflected wherever its
+    displayed") - upgrades the has_fresh_evidence boolean above from a
+    pure drop/keep gate into a real count attached to every surviving
+    recommendation, so a card backed by 2 post-change trades reads
+    differently from one backed by 200 even though both technically
+    passed the same "at least one" gate. None (not 0) specifically means
+    "this field has never been changed" - a genuinely different situation
+    from "changed, but nothing fresh yet" (which is 0, and already
+    filtered out below), so the frontend can tell them apart rather than
+    both showing as a bare "0"."""
     if not last_applied_by_path:
+        for rec in recs:
+            rec["fresh_samples_since_change"] = None
         return recs
     out = []
     for rec in recs:
         last_applied = last_applied_by_path.get(rec["config_path"])
         if last_applied is None:
+            rec["fresh_samples_since_change"] = None
             out.append(rec)
             continue
         relevant = market_rows if rec["config_path"].startswith("market_strategy.") else rows
-        has_fresh_evidence = any(
-            r.get("entry_timestamp") is not None and r["entry_timestamp"] > last_applied for r in relevant
+        fresh_count = sum(
+            1 for r in relevant
+            if r.get("entry_timestamp") is not None and r["entry_timestamp"] > last_applied
         )
-        if has_fresh_evidence:
+        if fresh_count > 0:
+            rec["fresh_samples_since_change"] = fresh_count
             out.append(rec)
     return out
 
@@ -845,9 +885,10 @@ def generate_recommendations(
     if series_evaluator_rows:
         recs += _series_evaluator_recommendations(series_evaluator_rows, cfg["strategy"])
     if category_rows:
+        overall_summary = trade_analytics.compute_summary(rows)
         recs += _category_conditional_recommendations(
-            category_rows, cfg["strategy"], trade_analytics.compute_summary(rows).get("win_rate_pct"),
-            cfg.get("strategy_overrides"),
+            category_rows, cfg["strategy"], overall_summary.get("win_rate_pct"),
+            cfg.get("strategy_overrides"), overall_n=overall_summary.get("total_closed", 0),
         )
     recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
     if declined_ids:

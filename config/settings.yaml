@@ -1,51 +1,7 @@
 mode: paper
 kalshi:
   base_url: https://api.elections.kalshi.com/trade-api/v2
-  markets_watchlist:
-  - KXPRESNOMD-28-RC
-  - KXPRESNOMD-28-AOC
-  - KXPRESNOMD-28-JCRO
-  - KXPRESNOMD-28-KH
-  - KXPRESNOMD-28-CMUR
-  - KXPRESNOMD-28-JTAL
-  - KXPRESNOMD-28-GN
-  - KXPRESNOMD-28-ZMAM
-  - KXPRESNOMD-28-RW
-  - KXPRESNOMD-28-MO
-  - KXPRESNOMD-28-JOSS
-  - KXPRESNOMD-28-MK
-  - KXPRESNOMD-28-JSTE
-  - KXPRESNOMD-28-RKHA
-  - KXPRESNOMD-28-GR
-  - KXPRESNOMD-28-HCLI
-  - KXPRESNOMD-28-HBID
-  - KXPRESNOMD-28-PB
-  - KXPRESNOMD-28-AB
-  - KXPRESNOMD-28-WM
-  - KXPRESNOMD-28-JBP
-  - KXPRESNOMD-28-AELS
-  - KXPRESNOMD-28-EWAR
-  - KXPRESNOMD-28-REMA
-  - KXPRESNOMD-28-JS
-  - KXPRESNOMD-28-CBOO
-  - KXPRESNOMD-28-ESLO
-  - KXPRESNOMD-28-LJAM
-  - KXPRESNOMD-28-JAM
-  - KXPRESNOMD-28-SAS
-  - KXPRESNOMD-28-GW
-  - KXPRESNOMD-28-RGAL
-  - KXPRESNOMD-28-MC
-  - KXPRESNOMD-28-DJOH
-  - KXPRESNOMD-28-BS
-  - KXPRESNOMD-28-AYAN
-  - KXPRESNOMD-28-BOBA
-  - KXPRESNOMD-28-JF
-  - KXPRESNOMD-28-JP
-  - KXPRESNOMD-28-MLAN
-  - KXPRESNOMD-28-BORO
-  - KXPRESNOMD-28-PHI
-  - KXPRESNOMD-28-AKLO
-  - KXPRESNOMD-28-TW
+  markets_watchlist: []
   watchlist_size: 50
   max_children_per_parent: null
   min_volume_24h: 10000
@@ -57,28 +13,25 @@ kalshi:
   - Entertainment
   - Climate and Weather
   live_markets_only: false
-  poll_interval_sec: 5
+  poll_interval_sec: 6
   request_timeout_sec: 10
+  top_series_per_category: 20
 whale_signal:
   signal_frequency_sec: 12
   whale_size_range:
   - 5000
   - 50000
   bias: random
-  live_markets_only: true
+  live_markets_only: false
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.75
+  entry_threshold: 0.55
   max_position_pct: 0.05
   cooldown_sec: 120
   close_window_sec: 7920.0
   special_market_min_seconds_to_close: 270.0
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
-  # 2026-08-15: data-backed price band from 606 real settled trades - the
-  # only unit_cost range (side-aware price actually paid per contract) that
-  # was net profitable. See services/strategy_engine.py's own comment at
-  # this gate for the full per-band breakdown.
   min_unit_cost: 0.5
   max_unit_cost: 0.8
   min_whale_winrate_pct: 50
@@ -107,67 +60,6 @@ strategy:
   longshot_entry_threshold_bonus: 0.05
   use_limit_orders: false
   limit_order_timeout_sec: 60
-# Per-category/per-series overrides on top of strategy.* above - most-
-# specific wins (series over category over the flat default). See
-# services/config_overrides.py. Migrated 2026-08-15 from the old
-# single-field strategy.entry_threshold_by_category, which this
-# subsumes - any strategy.* field can be overridden here now, not just
-# entry_threshold.
-#
-# 2026-08-15 data pass (606 real closed whale-follow trades, post fee-
-# multiplier fix): computed real per-series/per-unit_cost-bucket win rate,
-# net P&L, and - direct request - actual significance, not just eyeballed
-# dollar totals: a one-sample t-stat for mean pnl-per-trade vs 0, and a
-# one-sample proportion z-score for win rate vs the book's own 68.5%
-# overall rate. ~27 series/bucket combinations were tested, so treat
-# anything under ~2 sigma with real skepticism (multiple-comparisons risk
-# - at a naive threshold, 1-2 "significant-looking" results are expected
-# from chance alone across that many tests). Only entries that cleared a
-# real bar on BOTH an aggregate (whole-series) AND a bucket-level test are
-# below; several plausible-looking findings that did NOT survive this
-# check (KXWTAMATCH's net-negative-across-every-bucket pattern: aggregate
-# pnl t-stat only -0.98, well within noise; KXITFWMATCH's 0.5-0.8 zone:
-# -0.46; KXMLBGAME's real 0.5-0.8-band win-rate gap, z=-3.4, well
-# supported at the bucket level but its AGGREGATE t-stat is only -0.35
-# because its other bands run positive - a genuine, real, but bimodal
-# effect this flat-band override mechanism can't safely express without
-# also cutting off zones the data doesn't condemn - are deliberately left
-# unshipped rather than forced into a misleading single override) were
-# deliberately NOT turned into overrides here - noted so a future pass
-# doesn't have to redo the same investigation from scratch. Re-verified
-# 2026-08-15 (same session, later pass) against the fresh 607-trade book -
-# all three below reconfirm at essentially unchanged strength; no new
-# series/category cleared the bar. See docs/profit-maximization-
-# assessment-2026-08-15.md for the full re-analysis.
-strategy_overrides:
-  by_category: {}
-  by_series:
-    # 15-minute BTC markets behave nothing like the rest of Crypto (see
-    # KXBTCD below) - frequency=fifteen_min (Kalshi's own GET /series
-    # metadata), so cooldown_sec: 120 alone already burns 13% of this
-    # market's entire lifetime. Real underperformance too: aggregate
-    # n=19, mean pnl/trade -$37.60, t=-1.81; its own 0.5-0.8 unit_cost
-    # bucket (n=11) win rate is 2.2 sigma below the book's overall rate.
-    # Moderate, not overwhelming, significance - shortening cooldown is
-    # justified independent of the pnl question; the threshold bump is
-    # the more speculative half of this entry.
-    KXBTC15M:
-      cooldown_sec: 30
-      entry_threshold: 0.82
-    # Real, well-supported outperformance: aggregate n=57, mean pnl/trade
-    # +$15.97, t=+2.23; its 0.5-0.8 bucket (n=23) is +3.6 sigma on pnl and
-    # +2.6 sigma on win rate vs the book average - one of the two
-    # strongest signals in the whole dataset, positive AND negative
-    # findings included. Sized up modestly (not doubled) given this is
-    # still real capital-at-risk logic even in paper mode.
-    KXMLBSPREAD:
-      max_position_pct: 0.07
-    # Real, well-supported outperformance: aggregate n=42, win rate 90.5%
-    # is 4.9 sigma above the book's own 68.5% overall rate, mean pnl/trade
-    # +$11.95 (t=+1.78). Same modest sizing bump as KXMLBSPREAD above, same
-    # reasoning.
-    KXBTCD:
-      max_position_pct: 0.07
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85
@@ -235,12 +127,6 @@ market_analyst:
   enabled: true
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
-  # Shipped off by default (real automated position-closing action, same
-  # opt-in treatment as strategy.auto_exit_enabled/kelly_fraction_of_cap) -
-  # manually flipped on via the dashboard's Config tab on 2026-08-15 after
-  # docs/next-steps-2026-08-15.md's item 1 review. See
-  # services/position_netting.py and GET /api/position-netting/groups
-  # (safe to check anytime regardless of this flag).
 position_netting:
   enabled: true
   min_dwell_sec: 300
@@ -258,3 +144,23 @@ series_evaluator:
   backoff_max_sec: 86400
 logging:
   level: INFO
+event_lifecycle:
+  tournament_min_siblings: 4
+  tournament_pretail_days: 5.0
+  pre_tail_volume_weight: 0.4
+  post_tail_volume_weight: 0.2
+event_schedule:
+  enabled: true
+  pre_event_hours: 6.0
+  web_search_enabled: true
+  max_resolutions_per_tick: 5
+strategy_overrides:
+  by_category: {}
+  by_series:
+    KXBTC15M:
+      cooldown_sec: 30
+      entry_threshold: 0.55
+    KXMLBSPREAD:
+      max_position_pct: 0.07
+    KXBTCD:
+      max_position_pct: 0.07

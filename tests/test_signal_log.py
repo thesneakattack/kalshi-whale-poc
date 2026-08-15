@@ -37,6 +37,46 @@ def test_unresolved_batch_respects_older_than_sec(tmp_path, monkeypatch):
     assert tickers == {"TICK-B"}
 
 
+def test_unresolved_batch_excludes_a_row_checked_within_the_cooldown(tmp_path, monkeypatch):
+    # Head-of-line-blocking fix (2026-08-15, direct live report: "why are
+    # there SO MANY unresolved signals???") - a long-horizon signal (e.g. a
+    # market closing next year) never resolves, so without this it would
+    # sort to the front of every single batch forever and starve every
+    # signal logged after it. First call claims+stamps it; a second call
+    # within the cooldown window must skip it and surface something else.
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("STUCK-LONG-HORIZON", "yes", 1000, 0.8, "simulated", seen_at=now - 90000)  # oldest
+    log.log_signal("NORMAL", "yes", 1000, 0.8, "simulated", seen_at=now - 700)
+
+    first = log.unresolved_batch(limit=1, older_than_sec=600, recheck_cooldown_sec=3600)
+    assert [r["ticker"] for r in first] == ["STUCK-LONG-HORIZON"]  # oldest first, as before
+
+    second = log.unresolved_batch(limit=1, older_than_sec=600, recheck_cooldown_sec=3600)
+    assert [r["ticker"] for r in second] == ["NORMAL"]  # stuck row's cooldown hasn't expired
+
+
+def test_unresolved_batch_reoffers_a_row_once_its_cooldown_expires(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=now - 700)
+    log.unresolved_batch(limit=10, older_than_sec=600, recheck_cooldown_sec=0.01)
+    time.sleep(0.02)
+    second = log.unresolved_batch(limit=10, older_than_sec=600, recheck_cooldown_sec=0.01)
+    assert [r["ticker"] for r in second] == ["TICK-A"]
+
+
+def test_unresolved_batch_does_not_reclaim_an_already_resolved_row(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=now - 700)
+    batch = log.unresolved_batch(limit=10, older_than_sec=600, recheck_cooldown_sec=0.01)
+    log.mark_resolved(batch[0]["id"], correct=True)
+    time.sleep(0.02)
+    second = log.unresolved_batch(limit=10, older_than_sec=600, recheck_cooldown_sec=0.01)
+    assert second == []
+
+
 def test_mark_resolved_updates_win_rate(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     now = time.time()
