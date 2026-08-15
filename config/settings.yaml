@@ -71,17 +71,17 @@ strategy:
   entry_threshold: 0.75
   max_position_pct: 0.05
   cooldown_sec: 120
-  close_window_sec: 7200
-  special_market_min_seconds_to_close: 300
+  close_window_sec: 7920.0
+  special_market_min_seconds_to_close: 270.0
   max_open_positions_per_series: 0
-  kelly_fraction_of_cap: null
+  kelly_fraction_of_cap: 0
   # 2026-08-15: data-backed price band from 606 real settled trades - the
   # only unit_cost range (side-aware price actually paid per contract) that
   # was net profitable. See services/strategy_engine.py's own comment at
   # this gate for the full per-band breakdown.
   min_unit_cost: 0.5
   max_unit_cost: 0.8
-  min_whale_winrate_pct: 85
+  min_whale_winrate_pct: 76.5
   min_resolved_for_whale_filter: 20
   live_markets_only: false
   excluded_series: []
@@ -90,9 +90,9 @@ strategy:
   exit_on_sentiment_reversal: false
   longshot_close_window_sec: 900
   exit_sentiment_min_signals: 15
-  exit_sentiment_lean_pct: 85
+  exit_sentiment_lean_pct: 90
   auto_exit_enabled: false
-  auto_exit_threshold: 0.9
+  auto_exit_threshold: 0.85
   auto_exit_pnl_weight: 0.2
   auto_exit_sentiment_weight: 1.5
   auto_exit_staleness_weight: 0.5
@@ -180,9 +180,9 @@ market_strategy:
   max_spread: 0.05
   min_volume_24h: 500
   momentum_lookback_sec: 1800
-  min_momentum_delta: 0.093
+  min_momentum_delta: 0.0837
   min_seconds_to_close: 3600
-  entry_confidence_threshold: 0.5
+  entry_confidence_threshold: 0.45
   take_profit_pct: null
   stop_loss_pct: 0.2
   exit_on_momentum_reversal: true
@@ -229,14 +229,16 @@ market_analyst:
   enabled: true
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
+  # Shipped off by default (real automated position-closing action, same
+  # opt-in treatment as strategy.auto_exit_enabled/kelly_fraction_of_cap) -
+  # manually flipped on via the dashboard's Config tab on 2026-08-15 after
+  # docs/next-steps-2026-08-15.md's item 1 review. See
+  # services/position_netting.py and GET /api/position-netting/groups
+  # (safe to check anytime regardless of this flag).
 position_netting:
-  # Off by default - real automated position-closing action gets the same
-  # opt-in treatment as strategy.auto_exit_enabled/kelly_fraction_of_cap.
-  # See services/position_netting.py and GET /api/position-netting/groups
-  # (safe to check anytime regardless of this flag) before ever enabling.
-  enabled: false
+  enabled: true
   min_dwell_sec: 300
-  min_edge_improvement_usd: 1.0
+  min_edge_improvement_usd: 1
   normal_volatility: 0.02
   volatility_lookback_sec: 1800
 series_evaluator:
