@@ -5,7 +5,7 @@ manager, or data sources.
 """
 import time
 
-from services import candidate_log, kalshi_fees, market_analyst_agent, market_history, signal_log
+from services import candidate_log, config_overrides, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
@@ -124,11 +124,13 @@ class FollowTheWhaleStrategy:
         calling in, same lookup services/trade_category.py's own
         record_category() already uses - optional (None from any caller
         that doesn't pass it, same backward-compatible default every other
-        optional param here already follows). When given and
-        strategy.entry_threshold_by_category has an override for it, that
-        replaces the flat strategy.entry_threshold as the base before the
-        longshot bonus is added on top - same override-dict shape as
-        whale_watcher_kalshi.min_notional_usd_by_series, not a new pattern.
+        optional param here already follows). Together with this signal's
+        own series (signal_log.series_of), resolved into an effective
+        strat_cfg via services/config_overrides.py right below - every
+        strategy.* field this method reads is therefore already
+        category/series-aware, not just entry_threshold (this subsumes the
+        older, single-field entry_threshold_by_category mechanism - see
+        config/settings.yaml's strategy_overrides).
 
         me_complement (2026-08-14 direct request): the other ticker in a
         confirmed 2-outcome mutually-exclusive pair (services/
@@ -142,7 +144,8 @@ class FollowTheWhaleStrategy:
         shape as the whipsaw pattern found in this session's trade-history
         review, just across two different tickers instead of one ticker
         re-entered over time."""
-        strat_cfg = cfg["strategy"]
+        series = signal_log.series_of(signal.ticker)
+        strat_cfg = config_overrides.resolve(cfg["strategy"], cfg.get("strategy_overrides"), category=category, series=series)
 
         # Audit finding (2026-08-09): this used to be self.broker.equity({})
         # - an empty prices dict makes every open position's mark_to_market
@@ -225,7 +228,6 @@ class FollowTheWhaleStrategy:
         # trigger. Same series definition as the automatic filter
         # (signal_log.series_of), not a second one that could drift.
         excluded_series = strat_cfg.get("excluded_series") or []
-        series = signal_log.series_of(signal.ticker)
         if series in excluded_series:
             return self._skip(signal, f'series "{series}" is manually excluded')
 
@@ -253,13 +255,10 @@ class FollowTheWhaleStrategy:
         )
         if is_longshot and (is_live or is_near_close):
             longshot_bonus = 0.0
-        # Category-conditional base threshold ("web of expertise" audit,
-        # 2026-08-11) - falls back to the flat global value whenever category
-        # is unknown (e.g. a ticker main.py hasn't resolved a category for
-        # yet) or has no override entry, so this is a no-op for anyone who
-        # hasn't populated entry_threshold_by_category.
-        base_threshold = strat_cfg.get("entry_threshold_by_category", {}).get(category, strat_cfg["entry_threshold"])
-        effective_threshold = base_threshold + (longshot_bonus if is_longshot else 0.0)
+        # strat_cfg["entry_threshold"] is already category/series-resolved
+        # (see this method's own docstring + config_overrides.resolve()
+        # call above) - no separate lookup needed here anymore.
+        effective_threshold = strat_cfg["entry_threshold"] + (longshot_bonus if is_longshot else 0.0)
         if signal.confidence < effective_threshold:
             reason = f"confidence {signal.confidence} below threshold ({effective_threshold:.2f}"
             reason += " - longshot zone)" if is_longshot else ")"

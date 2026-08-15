@@ -1025,6 +1025,17 @@
     <div class="panel-title" style="margin-top:24px;"><span id="positions-title-text">Open Positions</span> <span id="position-count"></span> <span id="positions-toggle" style="float:right;"></span></div>
     <div id="positions-list" class="scroll-panel"><div class="empty">No open positions</div></div>
 
+    <!-- Position netting (2026-08-15 direct correction: the ME-complement
+         entry gate only blocks a NEW entry into a confirmed complement, it
+         does nothing for positions already open, partial hedges, or N-way
+         concentration like the real 51-position PGA case found this
+         session). Read-only, always safe to show regardless of
+         position_netting.enabled - see services/position_netting.py. -->
+    <div class="panel-title" style="margin-top:24px;">Hedge-Mode / Concentration Check
+      <span class="info-icon" title="Groups your currently-open positions by real-world event whenever Kalshi confirms two or more of them share one mutually-exclusive event (e.g. both sides of one game, or several golfers in one tournament) - then computes the exact payout under every possible outcome, not a guess. Locked profit/loss = the result is already mathematically fixed regardless of what happens; variable = still genuinely uncertain, with a recommendation only shown once the estimated improvement clearly clears normal price noise. Automated action stays off unless strategy.position_netting.enabled is turned on in Config.">ⓘ</span>
+    </div>
+    <div id="netting-groups-list" class="scroll-panel"><div class="empty">No related open positions detected</div></div>
+
     <div class="panel-title" style="margin-top:24px;"><span id="tradelog-title-text">Trade Log</span> <span id="tradelog-toggle"></span></div>
     <div id="trades-list" class="scroll-panel"><div class="empty">No trades placed yet</div></div>
 
@@ -1583,6 +1594,31 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           <span class="info-icon" title="Lower = a smaller unrealized loss already fully maxes out the P&L factor, making the algorithm more eager to exit a losing position. Higher = tolerates a bigger loss before the P&L factor tops out.">ⓘ</span></label><input id="cfg-auto-exit-loss-ref" type="number" step="0.05" min="0.01"></div>
         <div class="field"><label>Whale silence (seconds) that maxes out the staleness factor <span class="config-path">strategy.auto_exit_stale_after_sec</span> <span class="data-badge sim whale-dependent-badge">🧪 sim data</span>
           <span class="info-icon" title="Lower = treats whale silence as \"stale\" sooner, raising the staleness factor faster. Higher = more patient, waits longer before calling a quiet ticker stale.">ⓘ</span></label><input id="cfg-auto-exit-stale-sec" type="number" step="60" min="0"></div>
+      </div>
+    </details>
+
+    <details class="config-section" id="cfg-section-position-netting">
+      <summary>Hedge-Mode / Position Netting <span class="data-badge new">🆕 new</span> <span class="section-desc">— related open positions, treated as one book</span></summary>
+      <div class="section-body config-group">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
+          Direct correction (2026-08-15): the mutually-exclusive complement gate only blocks a
+          NEW entry once one side of a confirmed pair is already open - it does nothing for
+          positions already open, partial hedges, or concentration across many related markets
+          (e.g. many golfers in one tournament). This computes the exact payout of every
+          currently-open group of related positions under every possible outcome and only acts
+          automatically if turned on below - see the Hedge-Mode / Concentration Check panel on
+          the Portfolio tab to see what it currently sees, regardless of this setting.
+        </p>
+        <div class="field"><label><input type="checkbox" id="cfg-netting-enabled"> Automatically trim/close related positions <span class="config-path">position_netting.enabled</span>
+          <span class="info-icon" title="Off (default) = read-only - see the recommendation on the Portfolio tab but nothing is ever closed automatically. On = a recommendation that clears the materiality bar below is executed automatically, same as the other automated-exit layers above.">ⓘ</span></label></div>
+        <div class="field"><label>Minimum time before a new position is evaluated (seconds) <span class="config-path">position_netting.min_dwell_sec</span>
+          <span class="info-icon" title="A just-opened position's live price may not have caught up to its own entry yet - same reasoning as the exit logic above. Higher = waits longer before considering a position part of a group. Lower = evaluates sooner.">ⓘ</span></label><input id="cfg-netting-min-dwell" type="number" step="30" min="0"></div>
+        <div class="field"><label>Minimum estimated improvement to act on ($) <span class="config-path">position_netting.min_edge_improvement_usd</span>
+          <span class="info-icon" title="The noise filter: trimming or closing only happens if the estimated expected-value improvement over just holding clears this dollar amount. Higher = only acts on larger, clearer improvements. Lower = acts on smaller ones, more prone to noise.">ⓘ</span></label><input id="cfg-netting-min-edge" type="number" step="0.5" min="0"></div>
+        <div class="field"><label>Normal volatility baseline <span class="config-path">position_netting.normal_volatility</span>
+          <span class="info-icon" title="The improvement bar above scales up when a group's own tickers are currently more volatile than this baseline, and down when calmer - same volatility-normalization already used for the automated exit algorithm above. Blank/0 disables volatility scaling (the bar above is used unscaled).">ⓘ</span></label><input id="cfg-netting-normal-vol" type="number" step="0.01" min="0" placeholder="off"></div>
+        <div class="field"><label>Volatility lookback (seconds) <span class="config-path">position_netting.volatility_lookback_sec</span>
+          <span class="info-icon" title="How far back to look when measuring a group's current volatility for the scaling above.">ⓘ</span></label><input id="cfg-netting-vol-lookback" type="number" step="60" min="0"></div>
       </div>
     </details>
 
@@ -3001,6 +3037,65 @@ function renderPositions(positions, prices, recentTrades, signals) {
   }
 }
 
+// Position netting (services/position_netting.py) - shows exactly which
+// currently-open positions Kalshi confirms share one mutually-exclusive
+// real-world event, the payout under every possible outcome (not a
+// heuristic), and what - if anything - the system would do about it.
+// Read-only fetch, safe regardless of position_netting.enabled (the
+// "observe before you choose to act" principle this app's History tab
+// already established).
+const STATUS_LABEL = {
+  locked_profit: { text: 'Locked profit', color: 'var(--yes)' },
+  locked_loss: { text: 'Locked loss', color: 'var(--no)' },
+  variable: { text: 'Still uncertain', color: 'var(--muted)' },
+};
+
+async function loadPositionNettingGroups() {
+  try {
+    const data = await fetchJSON('/api/position-netting/groups');
+    renderPositionNettingGroups(data.groups || []);
+  } catch (e) {
+    console.error('position-netting fetch failed', e);
+  }
+}
+
+function renderPositionNettingGroups(groups) {
+  const el = $('netting-groups-list');
+  if (!groups.length) {
+    el.innerHTML = '<div class="empty">No related open positions detected — nothing currently shares a confirmed mutually-exclusive event</div>';
+    return;
+  }
+  el.innerHTML = groups.map(g => {
+    const status = STATUS_LABEL[g.status] || STATUS_LABEL.variable;
+    const eventTitle = (eventTitles[g.event_ticker] && eventTitles[g.event_ticker].title) || g.event_ticker;
+    const memberRows = g.members.map(m => {
+      const label = marketLabel(m.ticker);
+      const isTarget = (g.recommendation.tickers || []).includes(m.ticker);
+      return `<tr${isTarget ? ' style="font-weight:600;"' : ''}>
+        <td title="${esc(label.full)}">${esc(label.short)}</td>
+        <td><span class="side-tag ${m.side}">${esc(m.side)}</span></td>
+        <td>${m.size}</td>
+        <td>${(m.entry_price * 100).toFixed(0)}¢ → ${(m.current_price * 100).toFixed(0)}¢</td>
+      </tr>`;
+    }).join('');
+    const rec = g.recommendation;
+    const recText = rec.action === 'hold'
+      ? `No action — ${esc(rec.reason)}`
+      : `${rec.action === 'close_all' ? 'Would close all legs' : 'Would trim'}: ${esc(rec.reason)}`;
+    return `<div class="suggestion-card" style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline;">
+        <b title="${esc(g.event_ticker)}">${esc(eventTitle)}</b>
+        <span style="color:${status.color}; font-weight:600;">${status.text}</span>
+      </div>
+      <table style="width:100%; margin-top:6px; font-size:12px;">
+        <thead><tr><td>Market</td><td>Side</td><td>Size</td><td>Entry → Now</td></tr></thead>
+        <tbody>${memberRows}</tbody>
+      </table>
+      <div style="margin-top:6px; font-size:12px; color:var(--muted);">${recText}</div>
+    </div>`;
+  }).join('');
+}
+
 // Every fill that's actually happened to the paper bankroll, in order — the
 // receipt trail behind the Bankroll/Equity numbers up top.
 let lastTradeLog = [];
@@ -3884,7 +3979,7 @@ const PLAIN_CONFIG_PATH_PHRASES = {
   'strategy.auto_exit_threshold': 'how confident the automatic exit system needs to be before it closes a position early',
   'strategy.cooldown_sec': 'how long the strategy waits before trading the same market again',
   'strategy.longshot_entry_threshold_bonus': "how much extra caution applies to very cheap or very expensive (“longshot”) markets before entering",
-  'strategy.entry_threshold_by_category': 'a different pickiness level for one specific type of market (like politics or sports), instead of the same bar everywhere',
+  'strategy_overrides.by_category': 'a different pickiness level for one specific type of market (like politics or sports), instead of the same bar everywhere',
   'strategy.close_window_sec': "how close to a market's closing time the strategy is willing to enter a new trade",
   'strategy.special_market_min_seconds_to_close': 'how cautious the strategy is right before an unusual market (early-close or special settlement rules) closes',
   'strategy.excluded_series': 'the list of market types the strategy is told to skip entirely',
@@ -6477,6 +6572,7 @@ async function refresh() {
       renderHalted(state.risk);
     } else if (active === 'portfolio') {
       renderPortfolio(state, broker);
+      loadPositionNettingGroups();
     } else if (active === 'markets') {
       marketPanelState.markets = {
         markets: state.markets || [], prices: state.latest_prices || {}, signals: [], includeWhale: false,
@@ -6631,6 +6727,12 @@ async function loadConfig() {
   $('cfg-auto-exit-gain-ref').value = cfg.strategy.auto_exit_gain_reference_pct ?? 0.5;
   $('cfg-auto-exit-loss-ref').value = cfg.strategy.auto_exit_loss_reference_pct ?? 0.3;
   $('cfg-auto-exit-stale-sec').value = cfg.strategy.auto_exit_stale_after_sec ?? 1800;
+  const netCfg = cfg.position_netting || {};
+  $('cfg-netting-enabled').checked = !!netCfg.enabled;
+  $('cfg-netting-min-dwell').value = netCfg.min_dwell_sec ?? 300;
+  $('cfg-netting-min-edge').value = netCfg.min_edge_improvement_usd ?? 1.0;
+  $('cfg-netting-normal-vol').value = netCfg.normal_volatility ?? '';
+  $('cfg-netting-vol-lookback').value = netCfg.volatility_lookback_sec ?? 1800;
   $('cfg-advisory-enabled').checked = !!(cfg.advisory && cfg.advisory.enabled);
   $('cfg-advisory-min-resolved').value = (cfg.advisory && cfg.advisory.min_resolved_trades_per_variant) ?? 30;
   $('cfg-advisory-auto-apply-min-n').value = (cfg.advisory && cfg.advisory.auto_apply_min_n) ?? 25;
@@ -6744,6 +6846,13 @@ $('save-config-btn').addEventListener('click', async () => {
       auto_exit_gain_reference_pct: parseFloat($('cfg-auto-exit-gain-ref').value),
       auto_exit_loss_reference_pct: parseFloat($('cfg-auto-exit-loss-ref').value),
       auto_exit_stale_after_sec: parseInt($('cfg-auto-exit-stale-sec').value),
+    },
+    position_netting: {
+      enabled: $('cfg-netting-enabled').checked,
+      min_dwell_sec: parseInt($('cfg-netting-min-dwell').value),
+      min_edge_improvement_usd: parseFloat($('cfg-netting-min-edge').value),
+      normal_volatility: $('cfg-netting-normal-vol').value === '' ? null : parseFloat($('cfg-netting-normal-vol').value),
+      volatility_lookback_sec: parseInt($('cfg-netting-vol-lookback').value),
     },
     advisory: {
       enabled: $('cfg-advisory-enabled').checked,

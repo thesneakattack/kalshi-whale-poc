@@ -32,6 +32,7 @@ from services import market_catalog
 from services import market_history
 from services import ml_feed
 from services import mutual_exclusivity
+from services import position_netting
 from services import series_evaluator
 from services import signal_log
 from services import suggestion_decisions
@@ -2271,6 +2272,19 @@ async def trading_loop():
             ):
                 await _handle_close_decision(close_decision)
 
+            # Position netting (2026-08-15 direct correction: the ME-gate
+            # above only blocks a NEW entry into a confirmed complement -
+            # it does nothing for positions already open, partial hedges,
+            # or N-way concentration). Runs after check_exits, on whatever
+            # survived per-position rules - see services/position_netting.py
+            # for the payout-profile math. Entirely opt-in
+            # (position_netting.enabled, default False) and a no-op until
+            # deliberately turned on.
+            for close_decision in position_netting.review(
+                broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg,
+            ):
+                await _handle_close_decision(close_decision)
+
         except Exception as e:
             state["error"] = str(e)
         finally:
@@ -2986,6 +3000,19 @@ async def get_candidate_log_summary():
     # collects passively from every gate check regardless of any config
     # toggle, same as signal_log itself.
     return {"gates": candidate_log.gate_summary()}
+
+
+@app.get("/api/position-netting/groups")
+async def get_position_netting_groups():
+    # services/position_netting.py - read-only, safe to call anytime
+    # regardless of position_netting.enabled (same "observe before you
+    # choose to act" principle as the rest of this app's history/advisory
+    # surfaces). Lets the user see exactly how any currently-open
+    # mutually-exclusive-event group (a real hedge/concentration pattern
+    # or not) is classified before ever turning automated action on.
+    return {"groups": position_netting.describe_groups(
+        broker, state["market_titles"], state["event_titles"], state["latest_prices"], config_store.get(),
+    )}
 
 
 @app.get("/api/cross-strategy/comparison")

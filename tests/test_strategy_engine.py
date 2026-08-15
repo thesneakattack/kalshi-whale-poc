@@ -192,11 +192,17 @@ def test_longshot_threshold_and_bonus_are_configurable(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
 
 
-# ---- category-conditional entry threshold ("web of expertise" audit, 2026-08-11) ----
+# ---- category-conditional entry threshold ("web of expertise" audit, 2026-08-11;
+# migrated 2026-08-15 to the generic services/config_overrides.py resolver) ----
+
+def _with_category_override(cfg, category, field, value):
+    cfg["strategy_overrides"] = {"by_category": {category: {field: value}}}
+    return cfg
+
 
 def test_category_override_replaces_the_flat_threshold(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
-    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    cfg = _with_category_override(_cfg(entry_threshold=0.5), "Sports", "entry_threshold", 0.9)
     decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg, category="Sports")
     # 0.6 clears the flat 0.5 default but not the Sports-specific 0.9 override
     assert decision["action"] == "skip"
@@ -205,7 +211,7 @@ def test_category_override_replaces_the_flat_threshold(tmp_path, monkeypatch):
 
 def test_category_override_does_not_affect_other_categories(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
-    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    cfg = _with_category_override(_cfg(entry_threshold=0.5), "Sports", "entry_threshold", 0.9)
     decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg, category="Politics")
     assert decision["action"] == "trade"  # Politics has no override - flat 0.5 applies
 
@@ -214,21 +220,45 @@ def test_category_override_ignored_when_category_not_passed(tmp_path, monkeypatc
     # No caller before this feature passed category at all - must behave
     # exactly as before for anyone who still doesn't.
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
-    cfg = _cfg(entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.9})
+    cfg = _with_category_override(_cfg(entry_threshold=0.5), "Sports", "entry_threshold", 0.9)
     decision = strategy.evaluate(_signal(confidence=0.6, price=0.5), cfg)
     assert decision["action"] == "trade"  # category=None -> flat threshold, no override lookup
 
 
 def test_category_override_combines_with_the_longshot_bonus(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
-    cfg = _cfg(
-        entry_threshold=0.5, entry_threshold_by_category={"Sports": 0.6},
-        longshot_price_threshold=0.15, longshot_entry_threshold_bonus=0.15,
+    cfg = _with_category_override(
+        _cfg(entry_threshold=0.5, longshot_price_threshold=0.15, longshot_entry_threshold_bonus=0.15),
+        "Sports", "entry_threshold", 0.6,
     )
     # Sports base is 0.6, longshot zone adds +0.15 = 0.75 effective bar.
     decision = strategy.evaluate(_signal(confidence=0.70, price=0.10), cfg, category="Sports")
     assert decision["action"] == "skip"
     assert "longshot zone" in decision["reason"]
+
+
+# ---- series-level overrides (services/config_overrides.py, direct request 2026-08-15:
+# "these strategies need to be able to be tweaked for individual series") ----
+
+def test_series_override_replaces_the_flat_threshold(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(entry_threshold=0.5)
+    cfg["strategy_overrides"] = {"by_series": {"TICK": {"entry_threshold": 0.9}}}
+    decision = strategy.evaluate(_signal(ticker="TICK-A", confidence=0.6, price=0.5), cfg)
+    assert decision["action"] == "skip"
+    assert "confidence" in decision["reason"]
+
+
+def test_series_override_wins_over_category_override(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(entry_threshold=0.5)
+    cfg["strategy_overrides"] = {
+        "by_category": {"Sports": {"entry_threshold": 0.9}},
+        "by_series": {"TICK": {"entry_threshold": 0.4}},
+    }
+    # Category alone would skip (0.6 < 0.9); the series override (0.4) wins and trades.
+    decision = strategy.evaluate(_signal(ticker="TICK-A", confidence=0.6, price=0.5), cfg, category="Sports")
+    assert decision["action"] == "trade"
 
 
 def test_trade_when_conditions_met(tmp_path, monkeypatch):

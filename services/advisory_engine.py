@@ -52,7 +52,7 @@ requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
-from services import trade_analytics
+from services import config_overrides, trade_analytics
 
 # Cross-variant comparisons only recommend adopting a value for a field
 # where the two variants actually differ - nothing to say about a field
@@ -674,6 +674,7 @@ _CATEGORY_MIN_N = 5
 
 def _category_conditional_recommendations(
     category_rows: list[dict], strat_cfg: dict, overall_win_rate: float | None,
+    strategy_overrides: dict | None = None,
 ) -> list[dict]:
     """"Web of expertise" audit (2026-08-11) gap #2: no suggestion here has
     ever been category-conditional, even though services/regime_analytics.py's
@@ -685,14 +686,23 @@ def _category_conditional_recommendations(
     the OVERALL win rate (not confidence-bucket boundaries like
     _entry_threshold_recommendation - a category-level suggestion is a
     coarser question, "should this whole category get a different bar,"
-    not "where exactly is the crossover point"). Writes to strategy.
-    entry_threshold_by_category (mirrors whale_watcher_kalshi.
-    min_notional_usd_by_series's own override-dict shape, read live by
-    services/strategy_engine.py's evaluate() - not just advisory-only),
-    one category at a time so each can be reviewed/applied independently."""
+    not "where exactly is the crossover point"). Writes to
+    strategy_overrides.by_category.<category>.entry_threshold via
+    services/config_overrides.py's generic resolver (2026-08-15 migration -
+    this used to be the bespoke, single-field strategy.
+    entry_threshold_by_category; the resolver now covers any strategy.*
+    field, entry_threshold included, so this is just its first real
+    producer, not a special case), one category at a time so each can be
+    reviewed/applied independently. config_path is always exactly
+    "<section>.<field>" (main.py's apply route requires this) - so this
+    targets "strategy_overrides.by_category" as a whole, with
+    suggested_value being the COMPLETE by_category dict (every other
+    category's entry preserved via config_overrides.merge_override, not
+    just this one) so config_store.update()'s one-level-deep merge can't
+    clobber sibling categories."""
     if overall_win_rate is None:
         return []
-    overrides = dict(strat_cfg.get("entry_threshold_by_category") or {})
+    by_category = dict((strategy_overrides or {}).get("by_category") or {})
     base_threshold = strat_cfg.get("entry_threshold", 0.5)
     out = []
     for row in category_rows:
@@ -704,12 +714,14 @@ def _category_conditional_recommendations(
         gap = wr - overall_win_rate
         if abs(gap) < _COMPARABLE_MIN_WIN_RATE_GAP:
             continue
-        current = overrides.get(category, base_threshold)
+        current = by_category.get(category, {}).get("entry_threshold", base_threshold)
         step = 0.05
         suggested = round(min(0.95, current + step) if gap < 0 else max(0.05, current - step), 3)
         if suggested == current:
             continue
-        new_overrides = {**overrides, category: suggested}
+        new_by_category = config_overrides.merge_override(
+            {"by_category": by_category}, "by_category", category, "entry_threshold", suggested,
+        )["by_category"]
         tail = (
             f"performs {abs(gap):.0f}pts worse than the overall {overall_win_rate:.0f}% win rate - a higher "
             f"category-specific threshold asks for more conviction here specifically."
@@ -718,10 +730,10 @@ def _category_conditional_recommendations(
             f"category-specific threshold could capture more of these."
         )
         out.append({
-            "id": rec_id("strategy.entry_threshold_by_category", new_overrides, n),
-            "config_path": "strategy.entry_threshold_by_category",
-            "current_value": overrides,
-            "suggested_value": new_overrides,
+            "id": rec_id("strategy_overrides.by_category", new_by_category, n),
+            "config_path": "strategy_overrides.by_category",
+            "current_value": by_category,
+            "suggested_value": new_by_category,
             "rationale": f"{category} (n={n} resolved, {wr:.0f}% win rate) {tail}",
             "n": n,
             "confidence_label": trade_analytics.confidence_label(n),
@@ -809,6 +821,7 @@ def generate_recommendations(
     if category_rows:
         recs += _category_conditional_recommendations(
             category_rows, cfg["strategy"], trade_analytics.compute_summary(rows).get("win_rate_pct"),
+            cfg.get("strategy_overrides"),
         )
     recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
     if declined_ids:

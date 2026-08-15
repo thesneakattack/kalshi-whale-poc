@@ -105,7 +105,15 @@ strategy:
   auto_exit_series_track_record_weight: 0
   longshot_price_threshold: 0.05
   longshot_entry_threshold_bonus: 0.05
-  entry_threshold_by_category: {}
+# Per-category/per-series overrides on top of strategy.* above - most-
+# specific wins (series over category over the flat default). See
+# services/config_overrides.py. Migrated 2026-08-15 from the old
+# single-field strategy.entry_threshold_by_category, which this
+# subsumes - any strategy.* field can be overridden here now, not just
+# entry_threshold.
+strategy_overrides:
+  by_category: {}
+  by_series: {}
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85
@@ -173,6 +181,16 @@ market_analyst:
   enabled: true
   model: claude-sonnet-5
   reanalyze_cooldown_sec: 1800
+position_netting:
+  # Off by default - real automated position-closing action gets the same
+  # opt-in treatment as strategy.auto_exit_enabled/kelly_fraction_of_cap.
+  # See services/position_netting.py and GET /api/position-netting/groups
+  # (safe to check anytime regardless of this flag) before ever enabling.
+  enabled: false
+  min_dwell_sec: 300
+  min_edge_improvement_usd: 1.0
+  normal_volatility: 0.02
+  volatility_lookback_sec: 1800
 series_evaluator:
   enabled: false
   min_observation_sec: 3600

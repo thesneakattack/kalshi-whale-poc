@@ -506,15 +506,15 @@ def test_category_recommendation_fires_when_category_underperforms():
     rows = [_category_row("Sports", 10, 20.0)]  # 20% vs an overall 60%
     recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
     assert len(recs) == 1
-    assert recs[0]["config_path"] == "strategy.entry_threshold_by_category"
-    assert recs[0]["suggested_value"] == {"Sports": 0.55}  # raised - more selective
+    assert recs[0]["config_path"] == "strategy_overrides.by_category"
+    assert recs[0]["suggested_value"] == {"Sports": {"entry_threshold": 0.55}}  # raised - more selective
     assert "worse" in recs[0]["rationale"]
 
 
 def test_category_recommendation_fires_when_category_outperforms():
     rows = [_category_row("Politics", 10, 90.0)]  # 90% vs an overall 60%
     recs = ae._category_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
-    assert recs[0]["suggested_value"] == {"Politics": 0.45}  # lowered - capture more
+    assert recs[0]["suggested_value"] == {"Politics": {"entry_threshold": 0.45}}  # lowered - capture more
     assert "better" in recs[0]["rationale"]
 
 
@@ -538,10 +538,12 @@ def test_category_recommendation_none_when_overall_win_rate_unknown():
 
 def test_category_recommendation_preserves_existing_overrides():
     rows = [_category_row("Sports", 10, 20.0)]
-    strat_cfg = {"entry_threshold": 0.5, "entry_threshold_by_category": {"Politics": 0.4}}
-    recs = ae._category_conditional_recommendations(rows, strat_cfg, overall_win_rate=60.0)
-    assert recs[0]["suggested_value"] == {"Politics": 0.4, "Sports": 0.55}
-    assert recs[0]["current_value"] == {"Politics": 0.4}
+    strategy_overrides = {"by_category": {"Politics": {"entry_threshold": 0.4}}}
+    recs = ae._category_conditional_recommendations(
+        rows, {"entry_threshold": 0.5}, overall_win_rate=60.0, strategy_overrides=strategy_overrides,
+    )
+    assert recs[0]["suggested_value"] == {"Politics": {"entry_threshold": 0.4}, "Sports": {"entry_threshold": 0.55}}
+    assert recs[0]["current_value"] == {"Politics": {"entry_threshold": 0.4}}
 
 
 def test_generate_recommendations_includes_category_conditional_suggestions():
@@ -551,7 +553,7 @@ def test_generate_recommendations_includes_category_conditional_suggestions():
         rows, _cfg(), "fp1", {}, min_resolved_trades=5, category_rows=category_rows,
     )
     paths = [r["config_path"] for r in result["recommendations"]]
-    assert "strategy.entry_threshold_by_category" in paths
+    assert "strategy_overrides.by_category" in paths
 
 
 # --- change_effect (Item 3D, 2026-08-10) --------------------------------------
