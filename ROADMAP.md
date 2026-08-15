@@ -82,7 +82,7 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
-- [ ] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
+- [x] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
       to consume every research/planning doc in the repo (10 docs) and
       produce a comprehensive forward-looking plan, cross-checked against
       real code, not just the docs' own claims. **Headline finding, direct
@@ -139,6 +139,40 @@ works" to "flip it for real" still has open operational questions.
       findings, deferred next-steps (a time-til-close exit factor, folding
       ME-pair order flow into sentiment analysis), and a suggested order
       are in the doc itself.
+- [x] Position netting / hedge-mode active management
+      (`services/position_netting.py`, 2026-08-15 direct correction) — the
+      ME-complement entry gate above only blocks a *new* entry into a
+      confirmed complement; it did nothing for positions already open,
+      partial hedges, or N-way concentration. Real data found both live: a
+      UFC pair doubled up on one outcome via two different tickers, and a
+      51-position PGA tournament concentration (43.4% of the whale-follow
+      bankroll). Computes the exact payout profile of any confirmed
+      mutually-exclusive-event group under every possible outcome
+      (classified locked-profit/locked-loss/still-variable, not a "both
+      near 50c" heuristic), and — only past a volatility-scaled
+      materiality bar — recommends trimming or closing. Grounded in
+      `docs/prediction-markets-research-reference.md`'s own findings:
+      Kalshi's CLOB doesn't enforce sum-to-100% on mutually-exclusive
+      siblings (only arbitraged), and the real fee curve is worst exactly
+      at 50c. Off by default; `GET /api/position-netting/groups` and a
+      Portfolio-tab panel make it visible before ever being turned on.
+      Same session: generic per-category/per-series config-override
+      resolver (`services/config_overrides.py`), replacing and subsuming
+      the old single-field `strategy.entry_threshold_by_category`, wired
+      into both strategies' entry and exit paths. Populated with three
+      real per-series overrides, each checked against actual statistical
+      significance (a one-sample t-test on mean pnl vs. zero, a proportion
+      z-score on win rate vs. the book average) rather than eyeballed
+      dollar totals — several plausible-looking findings didn't survive
+      that check and were deliberately left unshipped (documented in
+      `config/settings.yaml`). Also found live, while sampling Kalshi's
+      real `GET /series` endpoint for richer category metadata (direct
+      request): the entire MLB proposition-market family has a real 0.5x
+      fee multiplier that was never modeled — every MLB trade had been
+      charged double the real fee. Fixed in `services/kalshi_fees.py`, and
+      already-recorded historical trade data (fees, realized P&L) was
+      corrected in place for both the whale-follow and market-native
+      paper accounts. 810 tests passing.
 - [ ] `docs/platform-deep-scan-findings-2026-08-10.md` — 7 concrete,
       cited strategy/risk gaps found by re-reading the prediction-market
       research against the actual current engine code (edge-aware

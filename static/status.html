@@ -3786,6 +3786,91 @@
           <code>tests/test_market_strategy_calibration.py</code> (new)</div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 99 · the book, not the bet</div>
+        <h4>Position netting for hedge-mode, and per-series config tuning</h4>
+        <p>Real trade-history review (the same pass behind the unit_cost price-band fix) found a second, distinct
+          pattern: 64 historical events where <code>FollowTheWhaleStrategy</code> had independently opened positions
+          on BOTH sides of the same real-world 2-outcome matchup (e.g. YES on one NFL team and YES on the other) -
+          the user's own named "hedge mode." Two live examples: a UFC pair doubled up on one fighter winning via two
+          different tickers, and a 51-position PGA tournament concentration (43.4% of the whale-follow bankroll).
+          Direct correction after an initial fix attempt: the mutually-exclusive complement gate (phase 96-adjacent
+          work) only blocks a <em>new</em> entry into a confirmed pair - it does nothing for positions already open,
+          partial hedges, or N-way concentration, and needed to be "fully researched and robust," not assumed
+          solved.</p>
+        <p>New <code>services/position_netting.py</code>, grounded directly in
+          <code>docs/prediction-markets-research-reference.md</code>'s own research: Kalshi's CLOB doesn't
+          mechanically enforce sum-to-100% across a mutually-exclusive event's sibling markets (only arbitraged - a
+          cited 2026 arXiv preprint documents real violations), and the real fill-verified fee curve is parabolic,
+          worst exactly at 50c. Computes the exact payout profile of any confirmed mutually-exclusive-event group
+          (2-way or true N-way, generalizing the earlier pairwise-only detector) under every possible outcome -
+          "locked profit" (provably optimal to hold, since settlement itself is fee-free), "locked loss" (the loss
+          is already fixed regardless of timing), or "still variable" (the real case - evaluated against a small,
+          fee-aware, volatility-scaled candidate set: hold, trim the worst leg, or close everything, only acting
+          past a materiality bar). Deliberately does not include an "add to the best leg" action yet - the highest-
+          risk direction, left for a validated follow-up. Off by default; a new read-only
+          <code>GET /api/position-netting/groups</code> and a Portfolio-tab panel make every currently-open group's
+          real classification visible before the automated action is ever turned on. Live-verified against the real
+          UFC and PGA groups above before shipping.</p>
+        <p>Same session, the other half of the request ("these strategies need to be able to be tweaked for
+          individual series... figure out the best values yourself"): new <code>services/config_overrides.py</code>,
+          a generic per-category/per-series resolver for any <code>strategy.*</code>/<code>market_strategy.*</code>
+          field (category layer applied first, series wins), replacing and subsuming phase 98's single-field
+          <code>strategy.entry_threshold_by_category</code> entirely - no data lost, that field was empty. Wired
+          into both strategies' entry AND exit paths, resolved per-position inside <code>check_exits</code> since
+          different open positions can belong to different series. <code>MarketNativeStrategy</code> got the same
+          mechanical wiring for symmetry, with zero override values ever populated, per the standing instruction
+          that it's a control group, not a strategy to tune.</p>
+        <p>Real values were populated from 606 closed trades, but a first pass (raw per-series/per-unit_cost-bucket
+          dollar totals) was explicitly challenged mid-session: "while N=X is useful, I need sigma scores as well."
+          Re-run with a real one-sample t-test (mean pnl vs. zero) and a proportion z-score (win rate vs. the book's
+          68.5% overall rate) - several plausible-looking findings did not survive the check (a series that looked
+          net-negative in every price bucket had an aggregate t-stat of only -0.98, within noise) and were
+          deliberately left unshipped, documented in <code>config/settings.yaml</code> rather than silently
+          dropped. Three overrides cleared a real bar on both an aggregate and a bucket-level test: a much shorter
+          cooldown plus a higher entry threshold for the 15-minute BTC series (whose own fifteen-minute lifecycle
+          independently argues for the cooldown change), and a modest position-size increase for two series with
+          the strongest positive significance in the whole dataset.</p>
+        <p>810 tests passing. Live-verified via <code>selenium-chrome</code> against the real running Portfolio
+          tab, and via direct API calls against the real open UFC/PGA positions.</p>
+        <div class="files"><code>services/position_netting.py</code> (new) ·
+          <code>services/config_overrides.py</code> (new) · <code>main.py</code> ·
+          <code>services/strategy_engine.py</code> · <code>services/market_strategy.py</code> ·
+          <code>services/advisory_engine.py</code> · <code>static/index.html</code> ·
+          <code>config/settings.yaml</code> · <code>tests/test_position_netting.py</code> (new) ·
+          <code>tests/test_config_overrides.py</code> (new) · <code>tests/test_strategy_engine.py</code> ·
+          <code>tests/test_market_strategy.py</code> · <code>tests/test_advisory_engine.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 100 · half price, twice the bug</div>
+        <h4>The entire MLB proposition family was overcharged 2x in fees</h4>
+        <p>Direct request mid-session, after mentioning Kalshi's real per-series API documentation: "consume samples
+          of the category endpoints to get a better picture of each market." Live-sampled Kalshi's real
+          <code>GET /series</code> endpoint (not just the bulk list this app already used) across all 13,029 real
+          series. Found the phase-97-era fee model - a 10-series zero-fee list sourced from a static PDF - had two
+          real gaps: 4 more genuinely zero-fee series the PDF pass missed (<code>KXEXPAND</code>,
+          <code>KXNEXTIRANLEADER</code>, <code>KXTRUMPOUT</code>, <code>KXGDPYEAR</code>), and, previously entirely
+          unmodeled, a real 0.5x fee multiplier on the ENTIRE MLB proposition-market family (spread, total, outs,
+          HR, hits, F5/F3/F7 innings, RBI, stolen bases, strikeouts, ...) - one of this app's most actively-traded
+          series families. Every MLB trade before this fix had been charged double the real fee.</p>
+        <p><code>services/kalshi_fees.py</code> fixed with the live-verified multiplier table. Direct follow-up
+          instruction: "correct the data in storage as you are able using all your knowledge." Wrote a read-only
+          audit pass first (matched entry/close trade pairs per ticker, recomputed each leg's correct fee via the
+          now-fixed <code>taker_fee()</code>), reviewed the numbers, then applied the correction directly to both
+          <code>data/paper_broker.db</code> (whale-follow, $163.23 refunded across 171 affected trade pairs) and
+          <code>data/market_broker.db</code> (market-native, $352.20 across 996 pairs) - both the stored
+          <code>fee</code> columns and each affected close trade's embedded "(realized X.XX)" P&amp;L text were
+          corrected, then bankroll adjusted by the total refund. A full <code>ddev restart</code> followed, since
+          the running process's in-memory broker state doesn't see a direct file-level correction until reload -
+          verified live afterward against a specific corrected trade.</p>
+        <p>810 tests passing (unchanged - this was a data correction, not new logic beyond the fee-table fix
+          itself, which shipped its own new tests).</p>
+        <div class="files"><code>services/kalshi_fees.py</code> · <code>tests/test_kalshi_fees.py</code> ·
+          <code>data/paper_broker.db</code> (corrected in place) ·
+          <code>data/market_broker.db</code> (corrected in place)</div>
+      </div>
+
     </div>
   </section>
 
