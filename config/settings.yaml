@@ -111,9 +111,57 @@ strategy:
 # single-field strategy.entry_threshold_by_category, which this
 # subsumes - any strategy.* field can be overridden here now, not just
 # entry_threshold.
+#
+# 2026-08-15 data pass (606 real closed whale-follow trades, post fee-
+# multiplier fix): computed real per-series/per-unit_cost-bucket win rate,
+# net P&L, and - direct request - actual significance, not just eyeballed
+# dollar totals: a one-sample t-stat for mean pnl-per-trade vs 0, and a
+# one-sample proportion z-score for win rate vs the book's own 68.5%
+# overall rate. ~27 series/bucket combinations were tested, so treat
+# anything under ~2 sigma with real skepticism (multiple-comparisons risk
+# - at a naive threshold, 1-2 "significant-looking" results are expected
+# from chance alone across that many tests). Only entries that cleared a
+# real bar on BOTH an aggregate (whole-series) AND a bucket-level test are
+# below; several plausible-looking findings that did NOT survive this
+# check (KXWTAMATCH's net-negative-across-every-bucket pattern: aggregate
+# pnl t-stat only -0.98, well within noise; KXITFWMATCH's 0.5-0.8 zone:
+# -0.46; KXMLBGAME's real 0.5-0.8-band win-rate gap, z=-3.4, well
+# supported at the bucket level but its AGGREGATE t-stat is only -0.35
+# because its other bands run positive - a genuine, real, but bimodal
+# effect this flat-band override mechanism can't safely express without
+# also cutting off zones the data doesn't condemn - are deliberately left
+# unshipped rather than forced into a misleading single override) were
+# deliberately NOT turned into overrides here - noted so a future pass
+# doesn't have to redo the same investigation from scratch.
 strategy_overrides:
   by_category: {}
-  by_series: {}
+  by_series:
+    # 15-minute BTC markets behave nothing like the rest of Crypto (see
+    # KXBTCD below) - frequency=fifteen_min (Kalshi's own GET /series
+    # metadata), so cooldown_sec: 120 alone already burns 13% of this
+    # market's entire lifetime. Real underperformance too: aggregate
+    # n=19, mean pnl/trade -$37.60, t=-1.81; its own 0.5-0.8 unit_cost
+    # bucket (n=11) win rate is 2.2 sigma below the book's overall rate.
+    # Moderate, not overwhelming, significance - shortening cooldown is
+    # justified independent of the pnl question; the threshold bump is
+    # the more speculative half of this entry.
+    KXBTC15M:
+      cooldown_sec: 30
+      entry_threshold: 0.82
+    # Real, well-supported outperformance: aggregate n=57, mean pnl/trade
+    # +$15.97, t=+2.23; its 0.5-0.8 bucket (n=23) is +3.6 sigma on pnl and
+    # +2.6 sigma on win rate vs the book average - one of the two
+    # strongest signals in the whole dataset, positive AND negative
+    # findings included. Sized up modestly (not doubled) given this is
+    # still real capital-at-risk logic even in paper mode.
+    KXMLBSPREAD:
+      max_position_pct: 0.07
+    # Real, well-supported outperformance: aggregate n=42, win rate 90.5%
+    # is 4.9 sigma above the book's own 68.5% overall rate, mean pnl/trade
+    # +$11.95 (t=+1.78). Same modest sizing bump as KXMLBSPREAD above, same
+    # reasoning.
+    KXBTCD:
+      max_position_pct: 0.07
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85
