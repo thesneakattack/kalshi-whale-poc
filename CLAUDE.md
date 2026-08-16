@@ -195,3 +195,90 @@ is exactly where both of these bug classes happened.
   repo), editable live from the dashboard's Controls panel.
 - `.env` (gitignored) — secrets and URLs. Every variable is optional; see
   `.env.example` and `README.md` for what each one unlocks.
+- `docs/kalshi/` — locally-mirrored, LLM-formatted copy of Kalshi's own API
+  docs. `llms.txt` is the maintained index (source URLs), `README.md` is
+  per-page provenance/fetch dates. Authoritative over training-data
+  assumptions about Kalshi's API — see "Kalshi API documentation" below.
+- `.claude/` — Claude Code project config: hooks (`hooks/` — test-on-edit,
+  syntax check, `data/*.db` write guard, session orientation, pre-compact
+  and checkpoint reminders) and project skills (`skills/` — `run`,
+  `sync-status-docs`, `checkpoint`).
+- `.github/workflows/tests.yml` — CI: full pytest suite on push to `main`,
+  every PR, and on demand (`workflow_dispatch`).
+
+## Kalshi API documentation — treat `docs/kalshi/` as ground truth
+
+`docs/kalshi/` mirrors Kalshi's own API docs locally, fetched from the same
+`.md`-suffixed pages `docs.kalshi.com/llms.txt` indexes. Read the relevant
+page(s) there before writing or editing any Kalshi API call site,
+request/response parsing, or rate-limit logic — don't rely on training-data
+assumptions about Kalshi's API, which has already been caught drifting from
+what the code assumed. The 2026-08-15 full-audit session (see
+`docs/next-steps-2026-08-15-pt3.md`) found a stale legacy base URL, a wrong
+live-data endpoint for sports, and three unbatched-call opportunities — all
+by reading these docs and verifying live against the real API, not by
+guessing from prose or memory.
+
+- `docs/kalshi/llms.txt` — the maintained index: source URLs + one-line
+  descriptions. A deliberately curated subset of Kalshi's full remote
+  index, scoped to pages this app's real call sites actually touch, not a
+  full mirror — refresh it (and pull the new page into `docs/kalshi/`)
+  whenever a new endpoint gets used.
+- `docs/kalshi/README.md` — per-page provenance (source URL + fetch date).
+  Check the date before trusting a page for anything rate-limit- or
+  schema-sensitive; re-fetch if it looks stale.
+- Individual pages (`get-market.md`, `rate_limits.md`,
+  `websocket-connection.md`, ...) — the actual reference detail. Read the
+  specific page for the endpoint in question rather than guessing field
+  names or limits.
+
+## Long-session workflow — commits, pushes, CI offload, compacting
+
+Direct standing instruction (2026-08-16): during a long working session,
+checkpoint proactively rather than batching everything to the end. Use
+`TodoWrite` for any multi-step task, and once a unit of work is genuinely
+verified (tests passing, not mid-edit), commit it and push to `origin`
+rather than letting it sit uncommitted. Pushing is what actually triggers
+`.github/workflows/tests.yml` — it offloads a full, clean-environment test
+run to GitHub, on top of (not instead of) the existing per-edit local run
+(`.claude/hooks/run_tests.py`, which already fires `pytest` inside `ddev`
+after every `main.py`/`services/*.py` edit — keep that as-is, it catches
+regressions faster than any CI round-trip can). Use `workflow_dispatch`
+(`gh workflow run tests.yml`) to trigger CI on demand without waiting for a
+push, and `gh run watch` / `gh run view --log-failed` to pull results back
+into the session.
+
+The `/checkpoint` skill runs this sequence end to end (verify tests green →
+review diff scope → commit → push → report CI status → flag whether a
+`ROADMAP.md` item just shipped, in which case run `/sync-status-docs`
+too). A `SessionStart` hook with a `compact` matcher
+(`.claude/hooks/post_compact_reorient.sh`) backs this so it doesn't depend
+purely on remembering across a long or compacted session — Claude Code's
+documented mechanism for re-injecting context that summarization can blur:
+it fires immediately after any compaction (manual `/compact` or automatic)
+and surfaces uncommitted-change state straight into context (stdout from a
+`SessionStart` hook is added to context on exit 0 — unlike `PreCompact` or
+`Stop`, whose stdout is only debug-logged, never seen by the model, which
+is why this uses `SessionStart`/`compact` instead of either of those). It
+only prints a reminder; it never commits anything on its own.
+
+Never commit a failing or half-finished state — this instruction covers
+*when* to commit during a session, not a license to commit broken code.
+Stage specific paths, never a blind `git add -A`/`git add .` (see the
+global git-safety rules) — this matters more than usual here given
+`data/*.db`, `.env`, and session scratch files all live in this tree.
+
+Also proactively suggest — don't silently assume — a good moment for the
+*user* to run `/compact` (session has done substantial work and context is
+getting heavy) or `/clear` (the next thing is materially unrelated to what
+was just finished). This is a suggestion to surface, not a decision to make
+unilaterally.
+
+Context-window limits are already auto-compacted by Claude Code itself, no
+prompting needed. Session/usage-cap limits are handled the same way, by
+design: don't pause mid-task to ask permission to keep going because usage
+looks high — keep working. The checkpoint cadence above is what makes an
+unannounced cutoff cheap (nothing valuable sitting uncommitted when it
+happens), which is the actual mitigation here — there's no hook event for
+"usage cap approaching" to wire up, so this is a behavioral commitment, not
+a mechanical one.

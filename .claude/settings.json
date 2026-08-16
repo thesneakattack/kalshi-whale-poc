@@ -10,6 +10,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_compact_reorient.sh\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PreToolUse": [

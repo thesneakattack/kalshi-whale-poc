@@ -40,3 +40,8 @@ if [ -d data ]; then
 fi
 
 echo "Docs: ROADMAP.md = forward-looking to-do (check items off in place). static/status.html (/status) = historical build record. Update both when a roadmap item ships - see the /sync-status-docs skill."
+
+if [ -d docs/kalshi ]; then
+  kalshi_docs=$(find docs/kalshi -maxdepth 1 -name '*.md' ! -name 'README.md' 2>/dev/null | wc -l | tr -d ' ')
+  echo "docs/kalshi/: $kalshi_docs locally-mirrored Kalshi API doc page(s) (index: llms.txt, provenance: README.md) - authoritative over training-data assumptions about Kalshi's API, read before touching any call site."
+fi
