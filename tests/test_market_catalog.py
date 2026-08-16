@@ -347,6 +347,29 @@ def test_open_candidates_respects_min_volume(tmp_path, monkeypatch):
     assert [r["ticker"] for r in result] == ["HIGH"]
 
 
+def test_open_candidates_min_volume_by_series_override(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    # KXBTC15M's entire tradeable lifetime is 15min - volume_24h is
+    # genuinely 0 for every still-open instance (see open_candidates'
+    # own docstring for the confirmed-live incident this fixes), so the
+    # override needs to admit a zero-volume row the blanket min_volume
+    # would otherwise reject.
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("BTC-1", "EVT-BTC", occurrence_offset_sec=300, volume=0)], updated_at=now)
+    cat.upsert_markets("KXMLBGAME", "Sports", [_market("MLB-1", "EVT-MLB", occurrence_offset_sec=300, volume=0)], updated_at=now)
+    result = cat.open_candidates(min_volume=1000, min_volume_by_series={"KXBTC15M": 0})
+    assert [r["ticker"] for r in result] == ["BTC-1"]
+
+
+def test_open_candidates_min_volume_by_series_still_applies_default_elsewhere(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("BTC-1", "EVT-BTC", occurrence_offset_sec=300, volume=0)], updated_at=now)
+    cat.upsert_markets("KXETH15M", "Crypto", [_market("ETH-1", "EVT-ETH", occurrence_offset_sec=300, volume=50)], updated_at=now)
+    result = cat.open_candidates(min_volume=1000, min_volume_by_series={"KXBTC15M": 0})
+    assert [r["ticker"] for r in result] == ["BTC-1"]
+
+
 def test_open_candidates_excludes_closed_status(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     now = time.time()

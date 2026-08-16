@@ -1196,7 +1196,10 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
     min_volume = cfg["kalshi"].get("min_volume_24h", 0)
     categories = cfg["kalshi"].get("categories")
     top_n_per_category = cfg["kalshi"].get("top_series_per_category", 12)
-    catalog_rows = market_catalog.open_candidates(categories=categories, min_volume=min_volume)
+    catalog_rows = market_catalog.open_candidates(
+        categories=categories, min_volume=min_volume,
+        min_volume_by_series=cfg["kalshi"].get("min_volume_24h_by_series"),
+    )
     selected_series_by_category: dict[str, list[str]] = {}
     for row in catalog_rows:
         cat, series = row.get("category"), row.get("series_ticker")

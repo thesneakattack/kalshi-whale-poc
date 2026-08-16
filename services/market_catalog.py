@@ -290,7 +290,10 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     return results
 
 
-def open_candidates(categories: list[str] | None = None, min_volume: float = 0, now: float | None = None) -> list[dict]:
+def open_candidates(
+    categories: list[str] | None = None, min_volume: float = 0, now: float | None = None,
+    min_volume_by_series: dict[str, float] | None = None,
+) -> list[dict]:
     """Every open/active catalog market in the given categories (all
     categories if None) above min_volume, sorted by volume descending - no
     occurrence-time window at all, unlike candidates_in_window (built for
@@ -334,8 +337,31 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0, 
     a first-pass cut, just not sufficient alone. "active" per docs/kalshi/
     market_lifecycle.md's real REST response vocabulary - "open" (as in the
     old status = 'open' check this replaced) is only ever a query filter
-    value, never a value a real market object's own status field sends."""
+    value, never a value a real market object's own status field sends.
+
+    min_volume_by_series (2026-08-16, direct live incident: KXBTC15M never
+    appeared in the auto-discovered watchlist despite being explicitly
+    configured with per-series overrides elsewhere - confirmed root cause
+    against market_catalog.db directly, not guessed): volume_24h is a
+    24-hour rolling figure, but a KXBTC15M market's entire tradeable
+    lifetime is 15 minutes - its own catalog rows show volume_24h_fp=0.0
+    for every still-open instance and only becomes nonzero (600k+, well
+    above any reasonable min_volume) after close_ts, by which point
+    close_ts > now above has already excluded it. The 24h window structurally
+    can never be satisfied while the market is still open, for any series
+    whose full lifecycle is shorter than 24h - a blanket min_volume floor
+    just isn't the right test for those. Optional per-series override dict
+    (e.g. {"KXBTC15M": 0}), keyed by series_ticker, checked via SQL CASE
+    against the blanket min_volume default for every series not listed -
+    zero behavior change for anyone not passing this."""
     now = now if now is not None else time.time()
+    if min_volume_by_series:
+        case_sql = "CASE series_ticker " + " ".join("WHEN ? THEN ?" for _ in min_volume_by_series) + " ELSE ? END"
+        vol_params: list = [v for pair in min_volume_by_series.items() for v in pair] + [min_volume]
+        vol_clause = f"volume_24h_fp >= ({case_sql})"
+    else:
+        vol_clause = "volume_24h_fp >= ?"
+        vol_params = [min_volume]
     with _connect(DB_PATH) as conn:
         if categories:
             placeholders = ",".join("?" for _ in categories)
@@ -344,25 +370,25 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0, 
                 SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
                        title, yes_sub_title, no_sub_title
                 FROM markets
-                WHERE volume_24h_fp >= ? AND category IN ({placeholders})
+                WHERE {vol_clause} AND category IN ({placeholders})
                   AND (status IS NULL OR status = 'active')
                   AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,
-                (min_volume, *categories, now),
+                (*vol_params, *categories, now),
             ).fetchall()
         else:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
                        title, yes_sub_title, no_sub_title
                 FROM markets
-                WHERE volume_24h_fp >= ?
+                WHERE {vol_clause}
                   AND (status IS NULL OR status = 'active')
                   AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,
-                (min_volume, now),
+                (*vol_params, now),
             ).fetchall()
     cols = (
         "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",

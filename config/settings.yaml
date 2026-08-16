@@ -5,6 +5,8 @@ kalshi:
   watchlist_size: 50
   max_children_per_parent: null
   min_volume_24h: 100000
+  min_volume_24h_by_series:
+    KXBTC15M: 0
   categories:
   - Sports
   - Crypto
