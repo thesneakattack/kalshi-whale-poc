@@ -26,6 +26,26 @@ class KalshiTradeWebSocketClient:
         self._desired_tickers: set[str] = set()
         self._subscribed_tickers: set[str] = set()
         self._subscription_sids: dict[str, int] = {}
+        # Tracks specifically whether THIS connection has ever sent the
+        # initial trade/ticker subscribe - kept separate from
+        # _subscription_sids, which also accumulates the unrelated
+        # account-wide fill/market_positions sids (see run()'s own subscribe
+        # for those). Real, live-confirmed bug (2026-08-16, direct report:
+        # "the whale watching stream has halted completely, no signals at
+        # all"): using `not self._subscription_sids` to mean "no real
+        # per-ticker subscribe sent yet" broke the moment fill/
+        # market_positions started populating that same dict - once those
+        # two sids landed, the check went false even though trade/ticker had
+        # never actually been subscribed (their own force-subscribe attempt
+        # fired before the trading loop's first set_market_tickers() call,
+        # when desired tickers were still empty, so it no-opped). Every
+        # later real ticker-set update then got misrouted through the
+        # incremental to_add/to_remove path, sending update_subscription
+        # against the fill/market_positions sids instead of ever subscribing
+        # trade/ticker - deterministic on every fresh connect, since the raw
+        # WS handshake always wins the race against the REST-based
+        # market-discovery pipeline that feeds set_market_tickers().
+        self._market_channels_subscribed = False
         self._message_id = 1
         self._update_event = asyncio.Event()
         self._stop = False
@@ -86,6 +106,7 @@ class KalshiTradeWebSocketClient:
                         self._ws = websocket
                         self._subscription_sids = {}
                         self._subscribed_tickers = set()
+                        self._market_channels_subscribed = False
                         self._message_id = 1
                     if on_status is not None:
                         await on_status({"connected": True, "error": None, "ws_url": self.ws_url})
@@ -130,6 +151,7 @@ class KalshiTradeWebSocketClient:
                     self._ws = None
                     self._subscription_sids = {}
                     self._subscribed_tickers = set()
+                    self._market_channels_subscribed = False
                 if self._stop:
                     break
                 await asyncio.sleep(backoff)
@@ -188,7 +210,7 @@ class KalshiTradeWebSocketClient:
         if ws is None:
             return
         desired = set(self._desired_tickers)
-        if force_subscribe or not self._subscription_sids:
+        if force_subscribe or not self._market_channels_subscribed:
             if not desired:
                 return
             await self._send({
@@ -202,18 +224,23 @@ class KalshiTradeWebSocketClient:
                 "params": {"channels": ["ticker"], "market_tickers": sorted(desired), "send_initial_snapshot": True},
             })
             self._subscribed_tickers = desired
+            self._market_channels_subscribed = True
             return
         to_add = sorted(desired - self._subscribed_tickers)
         to_remove = sorted(self._subscribed_tickers - desired)
+        # Only the trade/ticker sids - self._subscription_sids also holds the
+        # unrelated account-wide fill/market_positions sids (see run()), which
+        # don't take a market_tickers add/remove payload at all.
+        market_channel_sids = [self._subscription_sids[c] for c in ("trade", "ticker") if c in self._subscription_sids]
         if to_add:
-            for sid in self._subscription_sids.values():
+            for sid in market_channel_sids:
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "update_subscription",
                     "params": {"sid": sid, "market_tickers": to_add, "action": "add_markets"},
                 })
         if to_remove:
-            for sid in self._subscription_sids.values():
+            for sid in market_channel_sids:
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "update_subscription",

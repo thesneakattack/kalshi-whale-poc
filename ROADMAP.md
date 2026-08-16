@@ -149,6 +149,18 @@ questions.
       resulting trade → outcome) that doesn't exist today. Trading History
       rows already show this inline (close type + P&L); the signal feed and
       decision feed do not.
+- [ ] `main._maybe_refresh_discovery_cache`'s background task
+      (`_refresh_discovery_cache`) reuses the SAME per-tick `KalshiClient`
+      the calling tick's own `finally: await client.close()` closes at the
+      end of that tick - a real client-lifecycle race, confirmed live
+      2026-08-16 (`static/status.html` phase covering the trade-stream
+      subscription-routing bug found the same session): repeated
+      `[discovery] background refresh failed` log lines cycling through
+      `RuntimeError('Session is closed')` / `ClientConnectionError('Connector
+      is closed.')` / `AssertionError()`. Didn't reproduce reliably in a
+      short post-restart observation window, so real-world frequency/impact
+      is unconfirmed - likely fix is giving the background task its own
+      `KalshiClient` instance instead of reusing the tick's.
 - [ ] A real, permanent fix for the close_time-mutability gap
       (`docs/roadmap-archive-2026-08-16.md` has the full incident): Kalshi's
       `market_lifecycle_v2` WebSocket channel (`close_date_updated`,

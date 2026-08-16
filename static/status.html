@@ -4197,6 +4197,41 @@
           <code>.claude/skills/sync-status-docs/SKILL.md</code> · <code>CLAUDE.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 109 · connected doesn't mean subscribed</div>
+        <h4>The trade stream reported connected the whole time — it just never subscribed to any market</h4>
+        <p>Direct live report, picking up right where phase 108 left off: "the whale watching stream has
+          halted completely. no signals at all." <code>GET /api/state</code>'s <code>trade_stream_status</code>
+          showed <code>connected: true</code> throughout, which is exactly what made phase 108's own fix look
+          sufficient — it wasn't. A standalone diagnostic script, reusing the same
+          <code>KalshiTradeWebSocketClient</code> class and real credentials outside the running app, proved
+          Kalshi's API was delivering plenty of real trades for the app's own live watchlist tickers (58 in
+          30s) while the live app's own <code>trade_tape</code> stayed at zero for the same window — the break
+          was inside the app's subscription bookkeeping, not the network or Kalshi's side. Root cause, caught
+          via temporary print tracing: <code>_sync_subscriptions</code> used
+          <code>not self._subscription_sids</code> — a dict shared across every subscribed channel — to mean
+          "no real per-ticker trade/ticker subscribe sent yet." On every fresh connect, that initial
+          force-subscribe fires before the trading loop's first <code>set_market_tickers()</code> call (desired
+          tickers still empty), so it correctly no-ops — but the account-wide <code>fill</code>/
+          <code>market_positions</code> channels subscribe immediately after and populate that same dict with
+          their own sids. The trading loop's first real ticker-set update then read the dict as non-empty and
+          took the incremental add/remove path instead, sending <code>update_subscription</code> against the
+          fill/market_positions sids — <code>trade</code>/<code>ticker</code> never got a real subscription,
+          deterministically on every process start, since the raw WS handshake always beats the REST-based
+          discovery pipeline that feeds the ticker list. Fixed with a dedicated
+          <code>_market_channels_subscribed</code> flag, decoupled from <code>_subscription_sids</code>'s
+          unrelated bookkeeping; also fixed a second bug in the same function found along the way — the
+          incremental path looped over <em>every</em> sid instead of just the trade/ticker ones. Verified live:
+          <code>trade_tape</code> went from stuck-at-zero to its 100-item cap within seconds of the fix
+          landing, and <code>data/candidate_log.db</code> showed real-time <code>min_notional_usd</code>
+          rejections logging again — the whole detection pipeline running end to end, just correctly filtering
+          sub-threshold trades. A separate, real client-lifecycle race noticed along the way
+          (<code>main._refresh_discovery_cache</code>'s background task reusing a per-tick
+          <code>KalshiClient</code> the same tick closes) was flagged, not fixed — see <code>ROADMAP.md</code>'s
+          P4 list. 2 new tests, 955 passing.</p>
+        <div class="files"><code>services/kalshi_trade_ws.py</code> · <code>tests/test_kalshi_trade_ws.py</code></div>
+      </div>
+
     </div>
   </section>
 

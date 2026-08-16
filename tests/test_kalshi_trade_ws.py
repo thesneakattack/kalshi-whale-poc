@@ -10,6 +10,14 @@ def _client():
     return KalshiTradeWebSocketClient("https://external-api.kalshi.com/trade-api/v2")
 
 
+class _FakeWebSocket:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    async def send(self, raw: str) -> None:
+        self.sent.append(json.loads(raw))
+
+
 # --- fill/market_positions dispatch (2026-08-15 direct request: "the open
 # positions should feed from the websocket stream") ------------------------
 
@@ -99,3 +107,56 @@ def test_existing_trade_and_ticker_dispatch_still_work_with_new_optional_params(
 
     assert len(trades) == 1
     assert len(tickers) == 1
+
+
+# --- _sync_subscriptions vs. the account-wide fill/market_positions sids
+# (2026-08-16, live-confirmed incident: "the whale watching stream has
+# halted completely, no signals at all" - see kalshi_trade_ws.py's own
+# _market_channels_subscribed docstring for the full root-cause writeup) ----
+
+def test_real_ticker_subscribe_not_swallowed_by_unrelated_fill_sids():
+    # Reproduces the exact failure sequence: the connection's initial
+    # force-subscribe fires before the trading loop's first
+    # set_market_tickers() call (desired tickers still empty, so it
+    # correctly no-ops), then fill/market_positions get their sids - which
+    # used to be misread as "trade/ticker already subscribed" by the old
+    # `not self._subscription_sids` check.
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"fill": 1, "market_positions": 2}
+    client._market_channels_subscribed = False
+    client._desired_tickers = {"TICK-A", "TICK-B"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=False))
+
+    sent = client._ws.sent
+    subscribe_cmds = [m for m in sent if m["cmd"] == "subscribe"]
+    update_cmds = [m for m in sent if m["cmd"] == "update_subscription"]
+    assert not update_cmds, "must not send update_subscription against unrelated fill/market_positions sids"
+    channels_subscribed = {c for m in subscribe_cmds for c in m["params"]["channels"]}
+    assert channels_subscribed == {"trade", "ticker"}
+    for m in subscribe_cmds:
+        assert m["params"]["market_tickers"] == ["TICK-A", "TICK-B"]
+    assert client._market_channels_subscribed is True
+
+
+def test_incremental_update_only_targets_trade_ticker_sids():
+    # Once real trade/ticker sids exist alongside the unrelated fill/
+    # market_positions ones, growing the watchlist must only ever send
+    # update_subscription against the trade/ticker sids.
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"fill": 1, "market_positions": 2, "trade": 3, "ticker": 4}
+    client._market_channels_subscribed = True
+    client._subscribed_tickers = {"TICK-A"}
+    client._desired_tickers = {"TICK-A", "TICK-B"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=False))
+
+    sent = client._ws.sent
+    assert all(m["cmd"] == "update_subscription" for m in sent)
+    sids_used = {m["params"]["sid"] for m in sent}
+    assert sids_used == {3, 4}
+    for m in sent:
+        assert m["params"]["market_tickers"] == ["TICK-B"]
+        assert m["params"]["action"] == "add_markets"
