@@ -1,0 +1,56 @@
+# Production wiring into the shared Traefik stack (see ../../traefik and
+# ../nginx-app for the pattern this follows). Separate from .ddev/ entirely —
+# that's the local dev stack (ddev-router on *.ddev.site) and is untouched.
+#
+# Same frontend/API split as ddev, for the same reason (see
+# .ddev/docker-compose.fastapi.yaml's comment on the two-competing-routers
+# bug): "web" is the only container with Traefik labels / public routers;
+# "fastapi" only joins the network, reachable internally as
+# autotrade-fastapi:8000.
+services:
+  web:
+    image: nginx:alpine
+    container_name: autotrade
+    restart: always
+    depends_on:
+      - fastapi
+    volumes:
+      - ./static:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prod-autotrade.rule=Host(`autotrade.webfoundry.dev`)"
+      - "traefik.http.routers.prod-autotrade.entrypoints=websecure"
+      - "traefik.http.routers.prod-autotrade.tls=true"
+
+      - "traefik.http.routers.dev-autotrade.rule=Host(`autotrade.local.webfoundry.dev`)"
+      - "traefik.http.routers.dev-autotrade.entrypoints=websecure"
+      - "traefik.http.routers.dev-autotrade.tls=true"
+
+      - "traefik.http.routers.offline-autotrade.rule=Host(`autotrade.webfoundry.localhost`)"
+      - "traefik.http.routers.offline-autotrade.entrypoints=websecure"
+      - "traefik.http.routers.offline-autotrade.tls=true"
+    networks:
+      - traefik_proxy
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: autotrade-fastapi
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Bind-mounted, not baked into the image (see .dockerignore) — both
+      # are live, writable state: data/*.db is accumulated history the app
+      # must never lose on a rebuild, and config/settings.yaml gets edited
+      # live from the dashboard's Controls panel.
+      - ./data:/app/data
+      - ./config:/app/config
+    networks:
+      - traefik_proxy
+
+networks:
+  traefik_proxy:
+    external: true

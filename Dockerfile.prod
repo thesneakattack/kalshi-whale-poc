@@ -1,0 +1,20 @@
+# Production image for the fastapi service — separate from the root
+# Dockerfile on purpose: that one is ddev's build target (bakes in
+# requirements-dev.txt for the local pytest hook/CI, see its own comment)
+# and stays untouched so ddev's dev workflow doesn't change. This image
+# installs runtime deps only and bakes the code in rather than bind-mounting
+# it, since there's no --reload/dev loop in production.
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+# --proxy-headers/--forwarded-allow-ips: sits behind two hops (Traefik ->
+# nginx -> here) in production too, same as ddev's fastapi service, and for
+# the same reason (request.url_for() needs the real scheme/host for the
+# OAuth redirect_uri). "*" is safe here because this container has no public
+# router of its own (see docker-compose.yml) — only the "web" nginx container
+# on the shared network can reach it.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips=*"]

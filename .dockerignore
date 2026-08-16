@@ -1,0 +1,16 @@
+.git
+.ddev
+.github
+.claude
+.pytest_cache
+__pycache__
+*.pyc
+venv
+tests
+docs
+ui_samples
+data
+.env
+*.pem
+*.key
+kalshi_devkey_private.txt
