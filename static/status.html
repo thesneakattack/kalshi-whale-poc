@@ -4232,6 +4232,34 @@
         <div class="files"><code>services/kalshi_trade_ws.py</code> · <code>tests/test_kalshi_trade_ws.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 110 · the other half of "own your client"</div>
+        <h4>Discovery's background refresh reused a client the calling tick had already closed</h4>
+        <p>Direct instruction right after phase 109 landed: "you found another race bug. fix it then keep going
+          down the todos and roadmap." <code>_maybe_refresh_discovery_cache</code> scheduled
+          <code>_refresh_discovery_cache</code> as a fire-and-forget background task but handed it the calling
+          tick's own <code>KalshiClient</code> — and that same tick's own
+          <code>finally: await client.close()</code> closes it at the end of that tick regardless of whether the
+          background task has finished with it, producing the repeated
+          <code>[discovery] background refresh failed</code> log lines cycling through
+          <code>RuntimeError('Session is closed')</code> / <code>ClientConnectionError('Connector is closed.')</code>
+          / <code>AssertionError()</code> noticed while diagnosing phase 109. The fix already existed elsewhere in
+          the same file: <code>_check_signal_resolutions_background</code> owns and closes its own client for this
+          exact shape of problem — its own docstring even described <code>_refresh_discovery_cache</code> as
+          already following that pattern, which is what surfaced the gap on review. Split
+          <code>_refresh_discovery_cache</code> into a pure worker (still takes <code>client</code> as a param, so
+          the existing tests calling it directly with a fake client needed no changes) and a new
+          <code>_refresh_discovery_cache_background</code> wrapper that creates and closes its own client,
+          mirroring the established split exactly. First verification pass gave a false alarm — a
+          <code>Monitor</code> watching <code>ddev logs -f</code> without <code>--tail 0</code> replayed the
+          container's full historical log buffer, including pre-fix failures, before following live; a
+          timestamp check confirmed the last real failure (16:56:00 UTC) predated the fix's reload
+          (17:02:48–17:04:24 UTC) by several minutes and refresh cycles, and a clean re-run with
+          <code>--tail 0</code> showed a genuine 60-second failure-free window. 2 new regression tests (success
+          and failure paths, asserting the background wrapper's client is always closed). 957 tests passing.</p>
+        <div class="files"><code>main.py</code> · <code>tests/test_trading_gate.py</code></div>
+      </div>
+
     </div>
   </section>
 
