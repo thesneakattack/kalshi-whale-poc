@@ -1106,23 +1106,35 @@ async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list
     ]
 
 
-def _maybe_refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
-    """Kicks off _refresh_discovery_cache as an independent background
-    task if the cache is stale and no refresh is already running - never
-    awaited by the calling tick (see _fetch_markets' own comment, and
-    _DISCOVERY_REFRESH_SEC's, for the incident this fixes). Synchronous on
-    purpose: this only ever schedules work, it never does any I/O of its
-    own, so there's nothing to await here even though the work it
-    schedules is async. Stores the created Task on discovery_cache itself
-    so it isn't garbage-collected mid-flight - a live asyncio footgun, a
-    Task object with no reference anywhere can be collected before it
-    completes even though it's still "running" on the event loop."""
+def _maybe_refresh_discovery_cache(cfg: dict) -> None:
+    """Kicks off _refresh_discovery_cache_background as an independent
+    background task if the cache is stale and no refresh is already
+    running - never awaited by the calling tick (see _fetch_markets' own
+    comment, and _DISCOVERY_REFRESH_SEC's, for the incident this fixes).
+    Synchronous on purpose: this only ever schedules work, it never does
+    any I/O of its own, so there's nothing to await here even though the
+    work it schedules is async. Stores the created Task on discovery_cache
+    itself so it isn't garbage-collected mid-flight - a live asyncio
+    footgun, a Task object with no reference anywhere can be collected
+    before it completes even though it's still "running" on the event
+    loop.
+
+    Takes no client - _refresh_discovery_cache_background creates its own
+    (2026-08-16 fix, real live incident: this used to hand the calling
+    tick's own KalshiClient straight into the background task, but that
+    same tick's own `finally: await client.close()` closes it at the end of
+    that tick, well before an independent background task reliably
+    finishes - a real client-lifecycle race, confirmed live via repeated
+    "[discovery] background refresh failed" log lines cycling through
+    RuntimeError('Session is closed')/ClientConnectionError('Connector is
+    closed.')/AssertionError()). See _refresh_discovery_cache_background's
+    own docstring for the fix."""
     disc_cache = state["discovery_cache"]
     now_ts = time.time()
     stale = now_ts - disc_cache["fetched_at"] > _DISCOVERY_REFRESH_SEC
     if stale and not disc_cache["refreshing"]:
         disc_cache["refreshing"] = True
-        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache(cfg, client))
+        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache_background(cfg))
 
 
 # Real, live-confirmed finding (2026-08-16, "close_time mutability"
@@ -1170,65 +1182,93 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
     total - arguably the more relevant signal for "worth watching right
     now," not a weaker substitute for it), then keeps only markets
     belonging to a selected series before phase-ranking/final selection -
-    unchanged from before this fix."""
+    unchanged from before this fix.
+
+    Pure worker, takes client as a param (2026-08-16 client-lifecycle fix -
+    see _refresh_discovery_cache_background's own docstring for why this
+    doesn't own/close the client itself) - same split
+    _check_signal_resolutions/_check_signal_resolutions_background already
+    established for this exact same shape of problem. Lets exceptions
+    propagate rather than swallowing them - the background wrapper is what
+    catches/logs/retries; tests call this directly with a fake client and
+    should see real failures, not a silently-eaten one."""
     disc_cache = state["discovery_cache"]
-    try:
-        min_volume = cfg["kalshi"].get("min_volume_24h", 0)
-        categories = cfg["kalshi"].get("categories")
-        top_n_per_category = cfg["kalshi"].get("top_series_per_category", 12)
-        catalog_rows = market_catalog.open_candidates(categories=categories, min_volume=min_volume)
-        selected_series_by_category: dict[str, list[str]] = {}
-        for row in catalog_rows:
-            cat, series = row.get("category"), row.get("series_ticker")
-            if not cat or not series:
+    min_volume = cfg["kalshi"].get("min_volume_24h", 0)
+    categories = cfg["kalshi"].get("categories")
+    top_n_per_category = cfg["kalshi"].get("top_series_per_category", 12)
+    catalog_rows = market_catalog.open_candidates(categories=categories, min_volume=min_volume)
+    selected_series_by_category: dict[str, list[str]] = {}
+    for row in catalog_rows:
+        cat, series = row.get("category"), row.get("series_ticker")
+        if not cat or not series:
+            continue
+        bucket = selected_series_by_category.setdefault(cat, [])
+        if series not in bucket and len(bucket) < top_n_per_category:
+            bucket.append(series)
+    selected_series = {s for bucket in selected_series_by_category.values() for s in bucket}
+    if cfg.get("series_evaluator", {}).get("enabled"):
+        ineligible = series_evaluator.ineligible_series(time.time())
+        selected_series -= set(ineligible)
+    candidates = [r for r in catalog_rows if r.get("series_ticker") in selected_series]
+    el_cfg = cfg.get("event_lifecycle") or {}
+    candidates = event_lifecycle.phase_ranked(
+        candidates, state["event_titles"], now=time.time(),
+        tournament_min_siblings=el_cfg.get("tournament_min_siblings", 4),
+        tournament_pretail_days=el_cfg.get("tournament_pretail_days", 5.0),
+        pre_tail_volume_weight=el_cfg.get("pre_tail_volume_weight", 0.4),
+        post_tail_volume_weight=el_cfg.get("post_tail_volume_weight", 0.2),
+    )
+    markets = KalshiClient.round_robin_select(
+        candidates, cfg["kalshi"]["watchlist_size"],
+        max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
+    )
+    # Real-time confirmation pass (2026-08-16, close_time-mutability fix
+    # - see _DISCOVERY_TERMINAL_STATUSES above). Bounded to exactly the
+    # final, already-narrowed selection (watchlist_size, not the whole
+    # candidate pool), so this stays one cheap batched call per refresh
+    # cycle (_DISCOVERY_REFRESH_SEC = 300s), not a return to the
+    # per-refresh REST-fetch pattern the 2026-08-15 incident removed.
+    # Drops anything Kalshi now reports as past "active" outright - a
+    # stale catalog row must never reach the real watchlist just
+    # because it hasn't been rescanned yet. A ticker Kalshi didn't
+    # return (a genuine fetch miss) keeps its catalog row rather than
+    # being dropped - same "degrade honestly, never guess" idiom
+    # _fetch_markets' own live_markets_only hydration already uses.
+    selected_tickers = [m["ticker"] for m in markets if m.get("ticker")]
+    if selected_tickers:
+        confirmed = await client.get_markets_by_tickers(selected_tickers)
+        live_markets = []
+        for m in markets:
+            real = confirmed.get(m.get("ticker"))
+            if real is None:
+                live_markets.append(m)
                 continue
-            bucket = selected_series_by_category.setdefault(cat, [])
-            if series not in bucket and len(bucket) < top_n_per_category:
-                bucket.append(series)
-        selected_series = {s for bucket in selected_series_by_category.values() for s in bucket}
-        if cfg.get("series_evaluator", {}).get("enabled"):
-            ineligible = series_evaluator.ineligible_series(time.time())
-            selected_series -= set(ineligible)
-        candidates = [r for r in catalog_rows if r.get("series_ticker") in selected_series]
-        el_cfg = cfg.get("event_lifecycle") or {}
-        candidates = event_lifecycle.phase_ranked(
-            candidates, state["event_titles"], now=time.time(),
-            tournament_min_siblings=el_cfg.get("tournament_min_siblings", 4),
-            tournament_pretail_days=el_cfg.get("tournament_pretail_days", 5.0),
-            pre_tail_volume_weight=el_cfg.get("pre_tail_volume_weight", 0.4),
-            post_tail_volume_weight=el_cfg.get("post_tail_volume_weight", 0.2),
-        )
-        markets = KalshiClient.round_robin_select(
-            candidates, cfg["kalshi"]["watchlist_size"],
-            max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
-        )
-        # Real-time confirmation pass (2026-08-16, close_time-mutability fix
-        # - see _DISCOVERY_TERMINAL_STATUSES above). Bounded to exactly the
-        # final, already-narrowed selection (watchlist_size, not the whole
-        # candidate pool), so this stays one cheap batched call per refresh
-        # cycle (_DISCOVERY_REFRESH_SEC = 300s), not a return to the
-        # per-refresh REST-fetch pattern the 2026-08-15 incident removed.
-        # Drops anything Kalshi now reports as past "active" outright - a
-        # stale catalog row must never reach the real watchlist just
-        # because it hasn't been rescanned yet. A ticker Kalshi didn't
-        # return (a genuine fetch miss) keeps its catalog row rather than
-        # being dropped - same "degrade honestly, never guess" idiom
-        # _fetch_markets' own live_markets_only hydration already uses.
-        selected_tickers = [m["ticker"] for m in markets if m.get("ticker")]
-        if selected_tickers:
-            confirmed = await client.get_markets_by_tickers(selected_tickers)
-            live_markets = []
-            for m in markets:
-                real = confirmed.get(m.get("ticker"))
-                if real is None:
-                    live_markets.append(m)
-                    continue
-                if (real.get("status") or "").strip().lower() in _DISCOVERY_TERMINAL_STATUSES:
-                    continue  # confirmed no longer tradeable - drop before it ever reaches the watchlist
-                live_markets.append(real)  # real current price/status, not the catalog's possibly-stale copy
-            markets = live_markets
-        disc_cache["markets"] = list(markets)
-        disc_cache["fetched_at"] = time.time()
+            if (real.get("status") or "").strip().lower() in _DISCOVERY_TERMINAL_STATUSES:
+                continue  # confirmed no longer tradeable - drop before it ever reaches the watchlist
+            live_markets.append(real)  # real current price/status, not the catalog's possibly-stale copy
+        markets = live_markets
+    disc_cache["markets"] = list(markets)
+    disc_cache["fetched_at"] = time.time()
+
+
+async def _refresh_discovery_cache_background(cfg: dict) -> None:
+    """Background-task wrapper around _refresh_discovery_cache - owns its own
+    KalshiClient (2026-08-16 client-lifecycle fix, real live incident:
+    _maybe_refresh_discovery_cache used to hand this the calling tick's own
+    client, but that same tick's own `finally: await client.close()` closes
+    it at the end of that tick regardless of whether this independent
+    background task has finished with it - confirmed live via repeated
+    "[discovery] background refresh failed" log lines cycling through
+    RuntimeError('Session is closed')/ClientConnectionError('Connector is
+    closed.')/AssertionError()). Same split as
+    _check_signal_resolutions_background/_check_signal_resolutions - that
+    function's own docstring already described this exact pattern as if
+    _refresh_discovery_cache followed it too, which is what surfaced this
+    gap on review."""
+    disc_cache = state["discovery_cache"]
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        await _refresh_discovery_cache(cfg, client)
     except Exception as exc:
         # No logging framework exists anywhere in this app yet (same gap
         # _scan_catalog_batch's own per-series failure print already
@@ -1239,6 +1279,7 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
         print(f"[discovery] background refresh failed, will retry next cycle: {exc!r}")
     finally:
         disc_cache["refreshing"] = False
+        await client.close()
 
 
 async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[str] | None = None) -> list[dict]:
@@ -1369,7 +1410,7 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # price freshness still comes from the WS ticker-stream overlay
         # right before this function returns, completely decoupled from
         # how often the underlying series/market *selection* gets re-run.
-        _maybe_refresh_discovery_cache(cfg, client)
+        _maybe_refresh_discovery_cache(cfg)
         markets = list(state["discovery_cache"]["markets"])
 
     # Merge in the pinned watchlist fetched at the top of this function -

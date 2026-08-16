@@ -1383,6 +1383,73 @@ def test_refresh_discovery_cache_no_candidates_skips_the_confirmation_call():
     assert fake.get_markets_by_tickers_calls == []  # cheap no-op, not a wasted call
 
 
+# --- _refresh_discovery_cache_background: owns its own client (2026-08-16
+# client-lifecycle fix, real live incident: "the whale watching stream has
+# halted completely" investigation also turned up repeated "[discovery]
+# background refresh failed" log lines - root cause was this background
+# task reusing the calling tick's own KalshiClient, which that tick's own
+# `finally: await client.close()` closes at the end of the same tick
+# regardless of whether this independent task has finished with it). -------
+
+class _FakeBackgroundClient:
+    instances: list["_FakeBackgroundClient"] = []
+
+    def __init__(self, base_url, timeout):
+        self.base_url = base_url
+        self.timeout = timeout
+        self.closed = False
+        self.get_markets_by_tickers_calls: list[list[str]] = []
+        _FakeBackgroundClient.instances.append(self)
+
+    async def get_markets_by_tickers(self, tickers):
+        self.get_markets_by_tickers_calls.append(list(tickers))
+        return {}
+
+    async def close(self):
+        self.closed = True
+
+
+def test_refresh_discovery_cache_background_creates_and_closes_its_own_client(monkeypatch):
+    mc_module.clear_all()
+    main.state["event_titles"].clear()
+    main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": True, "task": None}
+    _FakeBackgroundClient.instances = []
+    real_client_cls = main.KalshiClient
+    _FakeBackgroundClient.round_robin_select = staticmethod(real_client_cls.round_robin_select)
+    monkeypatch.setattr(main, "KalshiClient", _FakeBackgroundClient)
+
+    asyncio.run(main._refresh_discovery_cache_background(
+        _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
+    ))
+
+    # Its own client - never the caller's - and closed afterward regardless
+    # of how long the caller's own client has already been gone.
+    assert len(_FakeBackgroundClient.instances) == 1
+    assert _FakeBackgroundClient.instances[0].closed is True
+    assert main.state["discovery_cache"]["refreshing"] is False
+
+
+def test_refresh_discovery_cache_background_still_closes_client_on_failure(monkeypatch):
+    mc_module.clear_all()
+    main.state["event_titles"].clear()
+    main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": True, "task": None}
+    _FakeBackgroundClient.instances = []
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("Session is closed")
+
+    monkeypatch.setattr(main, "KalshiClient", _FakeBackgroundClient)
+    monkeypatch.setattr(main.market_catalog, "open_candidates", _boom)
+
+    asyncio.run(main._refresh_discovery_cache_background(
+        _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
+    ))
+
+    assert len(_FakeBackgroundClient.instances) == 1
+    assert _FakeBackgroundClient.instances[0].closed is True
+    assert main.state["discovery_cache"]["refreshing"] is False
+
+
 # --- _process_stream_ticker: opened_since guard (2026-08-16 self-review
 # finding) - the one of check_exits' three call sites (main tick loop,
 # _process_stream_trade, here) missing the 2026-08-11 same-tick stale-price
