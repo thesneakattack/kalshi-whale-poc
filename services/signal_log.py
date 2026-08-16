@@ -385,6 +385,45 @@ def clear_all():
         conn.execute("DELETE FROM signals")
 
 
+def count_range(before: float | None = None, after: float | None = None) -> int:
+    """How many signal rows fall in (after, before] - the Danger Zone
+    preview step's answer to "how much am I about to lose" before
+    clear_range() actually removes anything. Both bounds optional/either
+    order works: after alone means "everything from here on", before
+    alone means "everything up to here", both means a closed window -
+    same convention as every other optional-bound pair in this app
+    (None means unlimited on that side)."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM signals {where}", params).fetchone()[0]
+
+
+def clear_range(before: float | None = None, after: float | None = None) -> int:
+    """Deletes only signals in (after, before] instead of the whole table -
+    2026-08-16 direct request: a noisy tuning/dev stretch should be
+    purgeable without losing the valid history on either side of it. No
+    bounds at all (both None) is equivalent to clear_all() but still
+    returns a real deleted-row count, which clear_all() doesn't - callers
+    that need a count for the reset audit log (services/reset_log.py)
+    should call this even for a full wipe."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        cur = conn.execute(f"DELETE FROM signals {where}", params)
+        return cur.rowcount
+
+
+def _range_where(before: float | None, after: float | None) -> tuple[str, list]:
+    clauses, params = [], []
+    if after is not None:
+        clauses.append("seen_at > ?")
+        params.append(after)
+    if before is not None:
+        clauses.append("seen_at <= ?")
+        params.append(before)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 def recent(limit: int = 50, offset: int = 0, resolved_only: bool = False) -> list[dict]:
     """Individual signals, newest first - the browsable signal history
     (ROADMAP.md Phase 0.5). WhaleScanr's framing, copied directly: "every

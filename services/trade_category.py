@@ -132,3 +132,31 @@ def subcategories_for_tickers(tickers: list[str]) -> dict[str, str]:
 def clear_all() -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM trade_category")
+
+
+def count_range(before: float | None = None, after: float | None = None) -> int:
+    """Danger Zone preview support (2026-08-16) - mirrors signal_log.
+    count_range's (after, before] convention."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM trade_category {where}", params).fetchone()[0]
+
+
+def clear_range(before: float | None = None, after: float | None = None) -> int:
+    """Deletes only rows whose recorded_at falls in (after, before]."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        cur = conn.execute(f"DELETE FROM trade_category {where}", params)
+        return cur.rowcount
+
+
+def _range_where(before: float | None, after: float | None) -> tuple[str, list]:
+    clauses, params = [], []
+    if after is not None:
+        clauses.append("recorded_at > ?")
+        params.append(after)
+    if before is not None:
+        clauses.append("recorded_at <= ?")
+        params.append(before)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params

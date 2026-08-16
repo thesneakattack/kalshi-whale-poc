@@ -35,6 +35,7 @@ from services import market_history
 from services import ml_feed
 from services import mutual_exclusivity
 from services import position_netting
+from services import reset_log
 from services import series_cache
 from services import series_evaluator
 from services import signal_log
@@ -4827,56 +4828,175 @@ class ResetBody(BaseModel):
     # same convention as everything except paper itself.
     market_native: bool = False
     trade_category: bool = False
+    # Range scoping (2026-08-16 direct request, after a real incident this
+    # session spent well over an hour reconstructing from git history and
+    # config timestamps: a noisy tuning/dev stretch should be purgeable
+    # without losing the valid history on either side of it, instead of
+    # every Danger Zone action being all-or-nothing). Only affects the four
+    # domains with a real clear_range/count_range (signal_log, candidate_log,
+    # trade_category, and paper - scoped to the trades table only, never
+    # positions/bankroll/pending_orders, see PaperBroker.clear_trade_range's
+    # own docstring for why). Every other domain ignores these and does its
+    # existing full clear when selected - unchanged behavior for them.
+    # Unix timestamps (seconds); None on a side means unbounded that
+    # direction, same "None = no limit" convention used everywhere else in
+    # this app. Both None (the default) means "everything", identical to
+    # today's behavior.
+    range_start: float | None = None
+    range_end: float | None = None
+
+
+def _reset_domain_counts(body: ResetBody) -> dict[str, int | None]:
+    """Best-effort 'how many rows would this remove' per selected domain,
+    for both /api/reset/preview and the audit-log rows_before column.
+    None for domains with no cheap count available (market_catalog/
+    market_history/series_evaluator/calibration_history/shadow) rather than
+    paying for a full-table scan just for the log - a domain-recorded
+    but count-less audit row is still a categorical improvement over
+    today's zero record of resets ever happening at all."""
+    counts: dict[str, int | None] = {}
+    if body.paper:
+        counts["paper"] = (
+            broker.count_trade_range(body.range_end, body.range_start)
+            if (body.range_start or body.range_end) else len(broker.trade_log)
+        )
+    if body.shadow:
+        counts["shadow"] = None
+    if body.signal_log:
+        counts["signal_log"] = signal_log.count_range(body.range_end, body.range_start)
+    if body.market_analyst:
+        counts["market_analyst"] = market_analyst_agent.total_count()
+    if body.market_catalog:
+        counts["market_catalog"] = None
+    if body.market_history:
+        counts["market_history"] = None
+    if body.series_evaluator:
+        counts["series_evaluator"] = None
+    if body.candidate_log:
+        counts["candidate_log"] = candidate_log.count_range(body.range_end, body.range_start)
+    if body.calibration_history:
+        counts["calibration_history"] = None
+    if body.market_native:
+        counts["market_native"] = (
+            market_broker.count_trade_range(body.range_end, body.range_start)
+            if (body.range_start or body.range_end) else len(market_broker.trade_log)
+        )
+    if body.trade_category:
+        counts["trade_category"] = trade_category.count_range(body.range_end, body.range_start)
+    return counts
+
+
+@app.get("/api/reset/preview")
+async def reset_preview(
+    paper: bool = False, shadow: bool = False, signal_log: bool = False, market_analyst: bool = False,
+    market_catalog: bool = False, market_history: bool = False, series_evaluator: bool = False,
+    candidate_log: bool = False, calibration_history: bool = False, market_native: bool = False,
+    trade_category: bool = False, range_start: float | None = None, range_end: float | None = None,
+):
+    # Dry-run counterpart to POST /api/reset - same domain/range selection,
+    # deletes nothing. Powers the Danger Zone's "here's what you're about
+    # to lose" step (2026-08-16 direct request) before the real request
+    # fires. Query params, not a body, since this is a GET (no side effects).
+    body = ResetBody(
+        paper=paper, shadow=shadow, signal_log=signal_log, market_analyst=market_analyst,
+        market_catalog=market_catalog, market_history=market_history, series_evaluator=series_evaluator,
+        candidate_log=candidate_log, calibration_history=calibration_history, market_native=market_native,
+        trade_category=trade_category, range_start=range_start, range_end=range_end,
+    )
+    return {"counts": _reset_domain_counts(body), "scope": "all" if not (range_start or range_end) else "range"}
+
+
+@app.get("/api/reset/history")
+async def get_reset_history(limit: int = 50):
+    # The audit trail /api/reset now writes - 2026-08-16 direct request,
+    # after a real incident this session spent well over an hour
+    # reconstructing (from git history and config_performance.db
+    # timestamps, since nothing recorded a reset had even happened) when
+    # and why signal_log.db/paper_broker.db had lost days of history.
+    return {"events": reset_log.recent(limit=min(max(limit, 1), 200))}
 
 
 @app.post("/api/reset")
 async def reset_broker(body: ResetBody = ResetBody()):
     cfg = config_store.get()
     cleared = []
+    ranged = bool(body.range_start or body.range_end)
+    scope = "between" if (body.range_start and body.range_end) else (
+        "after" if body.range_start else ("before" if body.range_end else "all")
+    )
+    counts_before = _reset_domain_counts(body)
+
+    def _log(domain: str, deleted: int | None):
+        reset_log.record(
+            domain=domain, scope=scope, rows_before=counts_before.get(domain), rows_deleted=deleted,
+            range_start=body.range_start, range_end=body.range_end,
+        )
+
     if body.paper:
-        # In-place reset (not reassigning `broker`) so this also wipes the
-        # persisted account in data/paper_broker.db — see PaperBroker.reset().
-        broker.reset(cfg["risk"]["starting_bankroll"])
-        risk.reset_day(cfg["risk"]["starting_bankroll"])
-        state["signal_feed"] = []
-        state["decision_feed"] = []
-        state["stats"] = {"signals_seen": 0, "trades_placed": 0, "skipped": 0}
-        state["equity_history"] = []
+        if ranged:
+            # Scoped: only the trades table (closed history) - never
+            # positions/bankroll/pending_orders, which are current live
+            # state, not history to prune. See PaperBroker.clear_trade_range.
+            deleted = broker.clear_trade_range(body.range_end, body.range_start)
+        else:
+            # Unscoped: full account reset, unchanged from before this change.
+            broker.reset(cfg["risk"]["starting_bankroll"])
+            risk.reset_day(cfg["risk"]["starting_bankroll"])
+            state["signal_feed"] = []
+            state["decision_feed"] = []
+            state["stats"] = {"signals_seen": 0, "trades_placed": 0, "skipped": 0}
+            state["equity_history"] = []
+            deleted = counts_before.get("paper")
+        _log("paper", deleted)
         cleared.append("paper")
     if body.shadow:
         shadow.clear(cfg["risk"]["starting_bankroll"])
+        _log("shadow", None)
         cleared.append("shadow")
     if body.signal_log:
-        signal_log.clear_all()
+        deleted = signal_log.clear_range(body.range_end, body.range_start)
+        _log("signal_log", deleted)
         cleared.append("signal_log")
     if body.market_analyst:
         market_analyst_agent.clear_all()
+        _log("market_analyst", counts_before.get("market_analyst"))
         cleared.append("market_analyst")
     if body.market_catalog:
         market_catalog.clear_all()
+        _log("market_catalog", None)
         cleared.append("market_catalog")
     if body.market_history:
         market_history.clear_all()
+        _log("market_history", None)
         cleared.append("market_history")
     if body.series_evaluator:
         series_evaluator.clear_all()
+        _log("series_evaluator", None)
         cleared.append("series_evaluator")
     if body.candidate_log:
-        candidate_log.clear_all()
+        deleted = candidate_log.clear_range(body.range_end, body.range_start)
+        _log("candidate_log", deleted)
         cleared.append("candidate_log")
     if body.calibration_history:
         calibration_history.clear_all()
+        _log("calibration_history", None)
         cleared.append("calibration_history")
     if body.market_native:
-        market_broker.reset(cfg["market_strategy"]["starting_bankroll"])
-        market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
-        state["market_decision_feed"] = []
+        if ranged:
+            deleted = market_broker.clear_trade_range(body.range_end, body.range_start)
+        else:
+            market_broker.reset(cfg["market_strategy"]["starting_bankroll"])
+            market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
+            state["market_decision_feed"] = []
+            deleted = counts_before.get("market_native")
+        _log("market_native", deleted)
         cleared.append("market_native")
     if body.trade_category:
-        trade_category.clear_all()
+        deleted = trade_category.clear_range(body.range_end, body.range_start)
+        _log("trade_category", deleted)
         cleared.append("trade_category")
     _bump_generation()
-    return {"ok": True, "cleared": cleared}
+    return {"ok": True, "cleared": cleared, "scope": scope}
 
 
 # ---- connected accounts -----------------------------------------------

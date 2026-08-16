@@ -484,6 +484,43 @@ class PaperBroker:
                 (starting_bankroll, starting_bankroll),
             )
 
+    def count_trade_range(self, before: float | None = None, after: float | None = None) -> int:
+        """Danger Zone preview support (2026-08-16 direct request: purge a
+        noisy tuning stretch without losing valid history on either side of
+        it). Scoped to the trades table only - never positions/bankroll/
+        pending_orders, which are CURRENT live state, not history; a range
+        purge must never orphan an open position's own accounting."""
+        where, params = self._trade_range_where(before, after)
+        with self._connect() as conn:
+            return conn.execute(f"SELECT COUNT(*) FROM trades {where}", params).fetchone()[0]
+
+    def clear_trade_range(self, before: float | None = None, after: float | None = None) -> int:
+        """Deletes trade-log rows (closed history) in (after, before] from
+        both the DB and the in-memory trade_log - never touches positions/
+        bankroll/pending_orders/last_trade_time, so an in-range purge can't
+        silently break a currently-open position's own state."""
+        where, params = self._trade_range_where(before, after)
+        with self._connect() as conn:
+            cur = conn.execute(f"DELETE FROM trades {where}", params)
+            deleted = cur.rowcount
+        self.trade_log = [
+            t for t in self.trade_log
+            if not ((after is None or t.timestamp > after) and (before is None or t.timestamp <= before))
+        ]
+        return deleted
+
+    @staticmethod
+    def _trade_range_where(before: float | None, after: float | None) -> tuple[str, list]:
+        clauses, params = [], []
+        if after is not None:
+            clauses.append("timestamp > ?")
+            params.append(after)
+        if before is not None:
+            clauses.append("timestamp <= ?")
+            params.append(before)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
     def mark_to_market(self, ticker: str, current_price: float) -> float:
         """Returns unrealized P&L for a given position, if any."""
         pos = self.positions.get(ticker)

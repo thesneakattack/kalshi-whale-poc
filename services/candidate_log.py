@@ -169,3 +169,38 @@ def clear_all() -> None:
     the table itself."""
     with _connect() as conn:
         conn.execute("DELETE FROM rejected_candidates")
+
+
+def count_range(before: float | None = None, after: float | None = None) -> int:
+    """Danger Zone preview support (2026-08-16) - mirrors signal_log.
+    count_range's (after, before] convention exactly. Note rejected_
+    candidates is an upsert-per-(ticker,strategy,gate_name) table (only
+    the most recent rejection survives per key, see record_rejection's own
+    docstring) - a range here scopes by that latest rejected_at, not a
+    full rejection history, same caveat that applies to clear_range."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM rejected_candidates {where}", params).fetchone()[0]
+
+
+def clear_range(before: float | None = None, after: float | None = None) -> int:
+    """Deletes only rows whose rejected_at falls in (after, before],
+    instead of the whole table - same "purge a noisy stretch without
+    losing what's on either side of it" reasoning as signal_log.
+    clear_range."""
+    where, params = _range_where(before, after)
+    with _connect() as conn:
+        cur = conn.execute(f"DELETE FROM rejected_candidates {where}", params)
+        return cur.rowcount
+
+
+def _range_where(before: float | None, after: float | None) -> tuple[str, list]:
+    clauses, params = [], []
+    if after is not None:
+        clauses.append("rejected_at > ?")
+        params.append(after)
+    if before is not None:
+        clauses.append("rejected_at <= ?")
+        params.append(before)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
