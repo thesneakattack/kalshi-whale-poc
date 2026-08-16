@@ -97,6 +97,20 @@ works" to "flip it for real" still has open operational questions.
       (see the auth item above) unless this ever becomes multi-user, at
       which point each user would need their own eligibility
       self-attestation.
+- [ ] `pip-audit` (new CI job, `.github/workflows/tests.yml`, 2026-08-16)
+      found 20 known vulnerabilities across 5 pinned dependencies on its
+      first run. Most relevant to real trading: `cryptography` (43.0.3 —
+      signs every Kalshi API request via the RSA private key) is up to 6
+      versions behind fix availability (44.0.1-49.0.0 depending on the
+      specific CVE); `starlette` (0.38.6, FastAPI's transitive ASGI
+      dependency) needs FastAPI itself bumped to pull a patched version.
+      `python-dotenv`/`pytest`/`requests` are lower-risk (dev-only or
+      minimal blast radius). Deliberately not fixed blind in the same
+      session that found them — `cryptography`/`starlette` need their own
+      careful, tested upgrade changeset given how central they are to
+      real request signing and the web framework itself, not a version
+      bump made in passing. The `dependency-audit` CI job stays red until
+      this is resolved — that's accurate signal, not broken CI.
 
 ## P4 — Nice-to-haves
 
