@@ -42,6 +42,45 @@ is **fully shipped**. That's necessary, not sufficient: going from "the
 gate works" to "flip it for real" still has these open operational
 questions.
 
+- [ ] **#1 priority, direct instruction (2026-08-16, live KXBTC15M stress
+      test — "otherwise I can't trust any insights whatsoever"):** a
+      position can open with almost no runway left before its market's
+      close and then just ride to settlement completely unmanaged.
+      Confirmed live: an entry on `KXBTC15M-26AUG161645-45` at 830.2s into
+      a 900s market life (69.8s of runway) closed 6.6s *after* the
+      market's own `close_ts`, having crossed none of
+      `take_profit_pct`/`stop_loss_pct`/`auto_exit_threshold` in between.
+      Checked and ruled out first, not assumed: this is **not** a signal-
+      processing delay. `_process_stream_trade`/`_process_stream_ticker`
+      (`main.py`) already call `strategy.check_exits()` on every
+      individual websocket trade/price message in real time, not batched
+      to `kalshi.poll_interval_sec` — `last_tick_duration_sec` measured
+      0.27s under the same load that produced this case, and the position
+      was evaluated on the order of hundreds of times during its ~76s
+      life. It just never crossed a configured threshold. The real gap is
+      two missing gates, not speed:
+    - [ ] No entry-side minimum-runway check — `strategy_engine.evaluate()`
+          has an upper bound on time-to-close (`close_window_sec`) but
+          nothing that refuses a new entry once too little time remains to
+          realistically manage a position before close.
+          `special_market_min_seconds_to_close`'s grace period looks like
+          it would cover this but doesn't — it only applies when
+          `can_close_early`/`collateral_return_type`/`mutually_exclusive`
+          are set, which plain crypto price-crossing markets like
+          KXBTC15M never have.
+    - [ ] No time-to-close-aware exit rule — `check_exits()`'s three
+          opt-in layers (take-profit/stop-loss/auto-exit) are all purely
+          price-driven; nothing forces a decision once a position's
+          remaining runway drops below some floor, regardless of where its
+          P&L currently sits.
+
+      Separately, real (not a bug) cost of the current KXBTC15M
+      stress-test config itself: three consecutive stop-loss-chased
+      re-entries on that same market instance as price whipsawed through
+      its volatile final ~200 seconds, net -$590.76 on that one market
+      alone — expected given every entry filter was deliberately stripped
+      to guarantee coverage, worth remembering before reading too much
+      into this config's P&L.
 - [ ] `services/shadow_mode.py` exists and logs what the strategy *would*
       trade against real signal data, but hasn't yet been run for a real
       evaluation stretch and reviewed — that review, not the code existing,
