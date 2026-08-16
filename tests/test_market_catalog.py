@@ -8,7 +8,11 @@ def _mc(tmp_path, monkeypatch):
     return mc
 
 
-def _market(ticker, event_ticker, occurrence_offset_sec, volume=1000, close_offset_sec=None, status="open"):
+def _market(ticker, event_ticker, occurrence_offset_sec, volume=1000, close_offset_sec=None, status="active"):
+    # "active" is the real REST response value (docs/kalshi/market_lifecycle.
+    # md) - "open" is only ever a query filter value, never what a real
+    # market object's own status field sends. See market_catalog.py's own
+    # 2026-08-16 fix removing the dead status = 'open' SQL check.
     now = time.time()
     m = {
         "ticker": ticker, "event_ticker": event_ticker, "volume_24h_fp": str(volume),
@@ -99,7 +103,7 @@ def test_upsert_skips_markets_too_far_in_the_past(tmp_path, monkeypatch):
 
 def test_upsert_skips_markets_with_no_occurrence_datetime(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
-    m = {"ticker": "TICK-NO-SCHEDULE", "event_ticker": "EVT-A", "volume_24h_fp": "1000", "status": "open"}
+    m = {"ticker": "TICK-NO-SCHEDULE", "event_ticker": "EVT-A", "volume_24h_fp": "1000", "status": "active"}
     cat.upsert_markets("SER-A", "Economics", [m])
     assert cat.scan_progress()["total_markets"] == 0
 
@@ -346,7 +350,7 @@ def test_open_candidates_respects_min_volume(tmp_path, monkeypatch):
 def test_open_candidates_excludes_closed_status(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     now = time.time()
-    cat.upsert_markets("SER-A", "Sports", [_market("OPEN-1", "EVT-A", occurrence_offset_sec=3600, status="open")], updated_at=now)
+    cat.upsert_markets("SER-A", "Sports", [_market("OPEN-1", "EVT-A", occurrence_offset_sec=3600, status="active")], updated_at=now)
     cat.upsert_markets("SER-B", "Sports", [_market("CLOSED-1", "EVT-B", occurrence_offset_sec=3600, status="closed")], updated_at=now)
     result = cat.open_candidates(min_volume=0)
     assert [r["ticker"] for r in result] == ["OPEN-1"]

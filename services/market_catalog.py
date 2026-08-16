@@ -230,8 +230,13 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     lookback_sec, now + lookahead_sec] - the same window shape main.py's
     _fetch_live_status already checks against, just drawn from the full
     scanned catalog instead of one tick's narrow top-N-series fetch. Status
-    filtered to "open" (or unset, for markets scanned before that field
+    filtered to "active" (or unset, for markets scanned before that field
     existed) - a closed/settled market has nothing live left to check.
+    docs/kalshi/market_lifecycle.md confirms the real REST response value is
+    "active", never the literal string "open" ("open" only ever appears as a
+    GET /markets?status= query FILTER value, mapped server-side to "active" -
+    see that doc's own filter-value table); the old status = 'open' check
+    here was dead code, matching nothing any real market object ever sent.
 
     close_ts > now is also required now (2026-08-16 direct report: "im not
     seeing any positions being opened or signals being read" for
@@ -264,7 +269,7 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
             FROM markets
             WHERE occurrence_ts IS NOT NULL AND occurrence_ts BETWEEN ? AND ?
               AND volume_24h_fp >= ?
-              AND (status IS NULL OR status = 'open' OR status = 'active')
+              AND (status IS NULL OR status = 'active')
               AND (close_ts IS NULL OR close_ts > ?)
             ORDER BY volume_24h_fp DESC
             """,
@@ -315,7 +320,21 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0, 
     instances, hours stale, all still status="active", all still being
     selected as real watchlist candidates before this filter existed).
     now is optional (defaults to time.time()), same convention as
-    candidates_in_window, so tests can pin it deterministically."""
+    candidates_in_window, so tests can pin it deterministically.
+
+    This alone still can't catch a row whose close_ts/status are stale
+    because Kalshi revised them (a close_date_updated event this app
+    doesn't listen for - docs/kalshi/market_lifecycle.md) rather than
+    because it just hasn't been rescanned yet (2026-08-16 close_time-
+    mutability finding, ROADMAP.md's now-closed "Active investigation"
+    entry) - the real-time confirmation pass on the final, already-narrowed
+    selection (main._refresh_discovery_cache, via the batched
+    KalshiClient.get_markets_by_tickers) is what actually closes that gap;
+    this function's own close_ts/status filtering is still worth keeping as
+    a first-pass cut, just not sufficient alone. "active" per docs/kalshi/
+    market_lifecycle.md's real REST response vocabulary - "open" (as in the
+    old status = 'open' check this replaced) is only ever a query filter
+    value, never a value a real market object's own status field sends."""
     now = now if now is not None else time.time()
     with _connect(DB_PATH) as conn:
         if categories:
@@ -326,7 +345,7 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0, 
                        title, yes_sub_title, no_sub_title
                 FROM markets
                 WHERE volume_24h_fp >= ? AND category IN ({placeholders})
-                  AND (status IS NULL OR status = 'open' OR status = 'active')
+                  AND (status IS NULL OR status = 'active')
                   AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,
@@ -339,7 +358,7 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0, 
                        title, yes_sub_title, no_sub_title
                 FROM markets
                 WHERE volume_24h_fp >= ?
-                  AND (status IS NULL OR status = 'open' OR status = 'active')
+                  AND (status IS NULL OR status = 'active')
                   AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,

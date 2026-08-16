@@ -398,7 +398,7 @@ def test_reset_route_wires_market_catalog_and_market_history_flags():
     # two largest data/*.db files on disk had no self-serve reset path.
     mc_module.upsert_markets("SER-A", "Sports", [{
         "ticker": "SER-A-M1", "event_ticker": "SER-A-EVT", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(datetime.now(timezone.utc) - timedelta(minutes=5)), "status": "open",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) - timedelta(minutes=5)), "status": "active",
     }])
     mh_module.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.5}])
 
@@ -459,6 +459,10 @@ class _FakePinnedMarketClient:
 
     async def get_market(self, ticker):
         return self.markets_by_ticker[ticker]
+
+    async def get_markets_by_tickers(self, tickers):
+        # Batched (2026-08-16) - _cached_market_fetch's real interface now.
+        return {t: self.markets_by_ticker[t] for t in tickers if t in self.markets_by_ticker}
 
     async def get_series_list(self, category=None):
         # A pinned watchlist no longer replaces discovery outright (2026-08-15
@@ -606,11 +610,11 @@ def test_fetch_markets_live_only_excludes_ineligible_series_when_enabled():
     now_ts = datetime.now(timezone.utc)
     mc_module.upsert_markets("SERGOOD", "Sports", [{
         "ticker": "SERGOOD-M1", "event_ticker": "SERGOOD-EVT1", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
     }])
     mc_module.upsert_markets("SERBAD", "Sports", [{
         "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
     }])
     se_module.record_trade_observed("SERBAD", now=1000.0)
     with se_module._connect() as conn:
@@ -641,7 +645,7 @@ def test_fetch_markets_live_only_includes_series_when_evaluator_disabled():
     now_ts = datetime.now(timezone.utc)
     mc_module.upsert_markets("SERBAD", "Sports", [{
         "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "open",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
     }])
     se_module.record_trade_observed("SERBAD", now=1000.0)
     with se_module._connect() as conn:
@@ -1206,22 +1210,24 @@ def test_fetch_live_status_does_not_surface_game_state_for_empty_details():
 
 class _FakeHydrationClient(_FakeLiveClient):
     """Extends the live-status fake with the two calls the hydration pass
-    itself makes - get_markets (the batch, per-series path) and get_market
-    (the per-ticker fallback for whatever the batch didn't return)."""
+    itself makes - get_markets (the batch, per-series path) and
+    get_markets_by_tickers (the batched fallback for whatever the
+    per-series batch didn't return, 2026-08-16 - replaces the old
+    per-ticker get_market gather)."""
 
     def __init__(self, hydrated_markets, **kwargs):
         super().__init__(**kwargs)
         self.hydrated_markets = hydrated_markets  # ticker -> full market dict
         self.get_markets_calls = []
-        self.get_market_calls = []
+        self.get_markets_by_tickers_calls = []
 
     async def get_markets(self, limit, status, series_ticker=None):
         self.get_markets_calls.append(series_ticker)
         return [m for t, m in self.hydrated_markets.items() if t.startswith(series_ticker)]
 
-    async def get_market(self, ticker):
-        self.get_market_calls.append(ticker)
-        return self.hydrated_markets[ticker]
+    async def get_markets_by_tickers(self, tickers):
+        self.get_markets_by_tickers_calls.extend(tickers)
+        return {t: self.hydrated_markets[t] for t in tickers if t in self.hydrated_markets}
 
 
 def _cfg_live_only(**overrides):
@@ -1240,7 +1246,7 @@ def test_fetch_markets_live_only_hydrates_catalog_rows_with_real_prices():
     # market_catalog.upsert_markets/candidates_in_window actually store.
     mc_module.upsert_markets("SERA", "Sports", [{
         "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "open",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "active",
     }])
     fake = _FakeHydrationClient(
         hydrated_markets={
@@ -1264,28 +1270,151 @@ def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misse
     mc_module.clear_all()
     mc_module.upsert_markets("SERA", "Sports", [{
         "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
-        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "open",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "active",
     }])
     fake = _FakeHydrationClient(
         hydrated_markets={
             # Deliberately NOT returned by get_markets (simulates status="open"
             # excluding an already-finalized market) - only reachable via the
-            # per-ticker get_market fallback.
+            # batched get_markets_by_tickers fallback.
         },
         widget_status="live",
     )
-    fake.get_market_calls = []
 
-    async def fake_get_market(ticker):
-        fake.get_market_calls.append(ticker)
-        return {"ticker": ticker, "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.00", "status": "finalized"}
-    fake.get_market = fake_get_market
+    async def fake_get_markets_by_tickers(tickers):
+        fake.get_markets_by_tickers_calls.extend(tickers)
+        return {t: {"ticker": t, "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.00", "status": "finalized"} for t in tickers}
+    fake.get_markets_by_tickers = fake_get_markets_by_tickers
 
     markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
     assert len(markets) == 1
     assert markets[0]["yes_bid_dollars"] == "0.00"
     assert markets[0]["status"] == "finalized"
-    assert fake.get_market_calls == ["SERA-EVT1-YES"]
+    assert fake.get_markets_by_tickers_calls == ["SERA-EVT1-YES"]
+
+
+# --- _refresh_discovery_cache: real-time terminal-status confirmation
+# (2026-08-16, close_time-mutability fix - ROADMAP.md's "Active
+# investigation" entry). Kalshi's own market_lifecycle.md confirms
+# close_time can be revised earlier via a close_date_updated event this app
+# doesn't listen for, so a catalog row scanned before that revision keeps
+# showing a stale close_time/status indefinitely - confirmed live against a
+# real finalized MLB market whose catalog row still read status=active,
+# close_time 2.5 days out, 24 minutes after Kalshi's own API had already
+# moved it to finalized. The non-live-only discovery path (this project's
+# actual default, live_markets_only: false) had zero real-time check at
+# all before this - a stale/closed catalog row could reach the real
+# watchlist and sit there with no live price, since nothing overlays a
+# fresher price for a market with no new trades. -----------------------
+
+class _FakeConfirmClient:
+    def __init__(self, confirmed_by_ticker):
+        self.confirmed_by_ticker = confirmed_by_ticker
+        self.get_markets_by_tickers_calls = []
+
+    async def get_markets_by_tickers(self, tickers):
+        self.get_markets_by_tickers_calls.append(list(tickers))
+        return {t: self.confirmed_by_ticker[t] for t in tickers if t in self.confirmed_by_ticker}
+
+
+def _discovery_cfg(**overrides):
+    cfg = {"kalshi": {"min_volume_24h": 0, "watchlist_size": 10, "max_children_per_parent": None}}
+    cfg["kalshi"].update(overrides)
+    return cfg
+
+
+def test_refresh_discovery_cache_drops_a_market_confirmed_no_longer_active():
+    mc_module.clear_all()
+    main.state["event_titles"].clear()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-M1", "event_ticker": "SERA-EVT1", "series_ticker": "SERA", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    # Stale catalog row still says "active" - the real-time confirm call is
+    # what actually catches that Kalshi has since moved this market on.
+    fake = _FakeConfirmClient({"SERA-M1": {"ticker": "SERA-M1", "status": "finalized"}})
+    asyncio.run(main._refresh_discovery_cache(_discovery_cfg(), fake))
+    assert main.state["discovery_cache"]["markets"] == []
+    assert fake.get_markets_by_tickers_calls == [["SERA-M1"]]
+
+
+def test_refresh_discovery_cache_keeps_a_confirmed_still_active_market_with_real_data():
+    mc_module.clear_all()
+    main.state["event_titles"].clear()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-M1", "event_ticker": "SERA-EVT1", "series_ticker": "SERA", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    real = {"ticker": "SERA-M1", "status": "active", "yes_bid_dollars": "0.73"}
+    fake = _FakeConfirmClient({"SERA-M1": real})
+    asyncio.run(main._refresh_discovery_cache(_discovery_cfg(), fake))
+    markets = main.state["discovery_cache"]["markets"]
+    assert len(markets) == 1
+    # The real confirmed object replaces the catalog row - real current
+    # price, not the catalog's own price-less copy.
+    assert markets[0]["yes_bid_dollars"] == "0.73"
+
+
+def test_refresh_discovery_cache_keeps_a_market_the_confirm_call_could_not_return():
+    # A genuine fetch miss (404, transient error) must not drop a ticker
+    # outright - same "degrade honestly, never guess" idiom _fetch_markets'
+    # own live_markets_only hydration fallback already uses.
+    mc_module.clear_all()
+    main.state["event_titles"].clear()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-M1", "event_ticker": "SERA-EVT1", "series_ticker": "SERA", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    fake = _FakeConfirmClient({})  # SERA-M1 not returned
+    asyncio.run(main._refresh_discovery_cache(_discovery_cfg(), fake))
+    markets = main.state["discovery_cache"]["markets"]
+    assert [m["ticker"] for m in markets] == ["SERA-M1"]
+
+
+def test_refresh_discovery_cache_no_candidates_skips_the_confirmation_call():
+    mc_module.clear_all()  # empty catalog - nothing selected, nothing to confirm
+    main.state["event_titles"].clear()
+    fake = _FakeConfirmClient({})
+    asyncio.run(main._refresh_discovery_cache(_discovery_cfg(), fake))
+    assert main.state["discovery_cache"]["markets"] == []
+    assert fake.get_markets_by_tickers_calls == []  # cheap no-op, not a wasted call
+
+
+# --- _process_stream_ticker: opened_since guard (2026-08-16 self-review
+# finding) - the one of check_exits' three call sites (main tick loop,
+# _process_stream_trade, here) missing the 2026-08-11 same-tick stale-price
+# guard. The ticker and trade WS channels are independent streams with no
+# ordering guarantee between them, so a ticker update reflecting a moment
+# before a whale's fill can still be processed right after
+# _process_stream_trade opens a position on that fresher fill price - same
+# stale-price-vs-fresh-entry shape as the original incident, just via the
+# ticker path. strategy.check_exits itself is monkeypatched here (rather
+# than setting up a real open position) since the only thing under test is
+# whether _process_stream_ticker passes opened_since at all, not
+# check_exits' own exit logic (already covered elsewhere).
+
+def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
+    main.state["running"] = True
+    main.state["signal_feed"] = [{"ticker": "TICK-A"}]
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+
+    captured = {}
+
+    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None):
+        captured["opened_since"] = opened_since
+        return []
+    monkeypatch.setattr(main.strategy, "check_exits", fake_check_exits)
+
+    before = time.time()
+    asyncio.run(main._process_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
+    after = time.time()
+
+    assert captured["opened_since"] is not None
+    assert before <= captured["opened_since"] <= after
 
 
 # --- _fetch_event_titles: mutually_exclusive extraction --------------------
@@ -1523,7 +1652,7 @@ def test_market_catalog_status_endpoint_reports_progress():
     mc_module.clear_all()
     mc_module.upsert_markets("SER-A", "Sports", [
         {"ticker": "TICK-A", "event_ticker": "EVT-A", "volume_24h_fp": "1000",
-         "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "open"},
+         "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "active"},
     ])
     mc_module.mark_scanned(["SER-A"])
     resp = client.get("/api/market-catalog/status")

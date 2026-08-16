@@ -42,33 +42,78 @@ confirms `trading_active: true` throughout).
   every 15 min) gets rescanned far sooner than pure least-recently-scanned
   ordering alone provides (confirmed live: KXBTC15M picked up the actual
   current live window within ~6 minutes of the fix, vs. 2-8h before it).
-- [ ] **Deeper, NOT yet fixed: Kalshi's own `close_time` field is mutable,
-  not a fixed value from market creation** - confirmed live against a real
-  finalized MLB market (`KXMLBGAME-26AUG151915MILLAD-LAD`): scanned into
-  the catalog at 01:25 UTC with `close_time=2026-08-18T23:15Z` (a ~2.5-day-
-  out scheduled/fallback value - the game hadn't concluded yet at scan
-  time), but a fresh fetch of the SAME ticker minutes ago shows
+- [x] **Deeper fix: Kalshi's own `close_time` field is mutable, not a fixed
+  value from market creation** - confirmed live against a real finalized
+  MLB market (`KXMLBGAME-26AUG151915MILLAD-LAD`): scanned into the catalog
+  at 01:25 UTC with `close_time=2026-08-18T23:15Z` (a ~2.5-day-out
+  scheduled/fallback value - the game hadn't concluded yet at scan time),
+  but a fresh fetch of the SAME ticker minutes later showed
   `status="finalized", close_time=2026-08-16T01:49:41Z, result="no"` -
   Kalshi revised close_time to the real settlement moment once the game
-  actually ended, ~24 minutes after the scan. This means the `close_ts >
-  now` fix above (and `series_with_expired_data`'s staleness detection,
-  which relies on the same column) can't catch a market that settled
-  *earlier* than its own scanned close_time suggested - which is the
-  common case for any real-world event, not just fast-rotating crypto.
-  Whether this alone explains the full signal drought isn't confirmed yet
-  (a direct websocket diagnostic - subscribing to 15 real watchlist
-  tickers for 25s - got zero trades, but that's also consistent with those
-  specific tickers being quiet) - it's a real, live-confirmed correctness
-  gap in the catalog's freshness model regardless. Next step: either a
-  live confirmation layer between catalog-driven candidate selection and
-  actual trading (closer to what `_fetch_live_status`'s milestone polling
-  already does for team sports, but as a real filter that drops a market
-  from the watchlist, not just an informational is_live flag - and
-  extended to cover categories with no milestone at all), or re-scanning
-  a market's own row again shortly after its scanned close_time passes to
-  catch a same-day revision, before trusting it as stale. Not attempted
-  yet - flagged for a focused pass rather than compounding risk on top of
-  the same-day fix above.
+  actually ended. The exact mechanism is now confirmed, not just observed:
+  `docs/kalshi/market_lifecycle.md` (real API docs, read as the focused-
+  pass follow-up) documents a `close_date_updated` WebSocket event fired
+  "when a market is closed ahead of its scheduled close time, including
+  before determination" - this app doesn't listen for it, so a catalog row
+  scanned before that event fires keeps its stale close_time/status
+  indefinitely until its next scan. `close_ts > now` filtering alone
+  (the same-day fix above) can never catch this, since it trusts the same
+  column that's wrong.
+  Fixed via the first of this doc's own two suggested next steps: a real-
+  time confirmation pass in `main._refresh_discovery_cache`, right after
+  `round_robin_select` narrows the catalog's candidate pool down to the
+  actual watchlist selection (small, bounded - one batched
+  `KalshiClient.get_markets_by_tickers` call per refresh cycle, not a
+  return to per-refresh REST fetching). Any selected ticker Kalshi now
+  reports as `closed`/`determined`/`disputed`/`amended`/`finalized` (the
+  real post-`active` lifecycle states, same doc) is dropped before it ever
+  reaches the watchlist; a ticker Kalshi doesn't return keeps its catalog
+  row rather than being dropped on a transient fetch miss. Also closed a
+  smaller, related dead-code finding from the same doc: `market_catalog`'s
+  own status filter checked for the literal string `"open"` alongside
+  `"active"` - `market_lifecycle.md` confirms `"open"` is only ever a
+  `GET /markets?status=` query filter value, never what a real market
+  object's own `status` field sends, so that half of the check matched
+  nothing. 9 new tests (`_refresh_discovery_cache`'s drop/keep/fetch-miss/
+  no-op-when-empty behavior). Verified live: stable for 90+ seconds
+  post-deploy with zero `[discovery]` failures, real catalog data (28,069
+  markets, 5,382 series scanned) flowing through with every watchlist
+  ticker's status confirmed `"active"`.
+  Whether the catalog-freshness gap alone explained the full signal
+  drought is still not 100% confirmed (the original websocket spot-check -
+  15 tickers, 25s, zero trades - was inconclusive either way), but a
+  separate, encouraging finding from the same pass: `trade_stream`
+  (`services/kalshi_trade_ws.py`) is already fully wired into the trading
+  loop (`main.py`'s `_process_stream_trade` runs whale-signal detection
+  directly off each streamed trade, not on a poll cycle) and active
+  whenever real Kalshi WS credentials are configured (`.env` has them) -
+  the low-latency, near-instantaneous signal path already exists
+  independent of this catalog fix. Not yet independently live-confirmed
+  this session (worth a `GET /api/state`'s `trade_stream_status` check).
+  Same self-review pass found and fixed one more real gap in this
+  neighborhood, unrelated to close_time: `_process_stream_ticker` was the
+  one of `check_exits`' three call sites (main tick loop,
+  `_process_stream_trade`, here) missing the 2026-08-11 same-tick stale-
+  price guard (`opened_since`) - the ticker and trade WS channels are
+  independent streams with no ordering guarantee, so a ticker update
+  reflecting a moment before a whale's fill could still be processed right
+  after a position opened on that fresher price. Fixed with the same
+  `opened_since=now` idiom the other two call sites already use. 1 new
+  test.
+  **Next-level follow-up, not attempted this session**: `market_lifecycle.
+  md` also documents the real, permanent fix - subscribing to the
+  `market_lifecycle_v2` WebSocket channel (`close_date_updated`,
+  `determined`, `settled`, `deactivated`/`activated` events) would let the
+  catalog learn about a status/close_time revision the instant Kalshi
+  emits it, eliminating the staleness window this fix only bounds. This
+  would also directly serve the separately-raised "whale signals should
+  stream in almost instantaneously... for super low latency actions on
+  opening/closing/managing positions" goal, extending the same event-
+  driven model `trade_stream` already proves out for trade detection to
+  market lifecycle/catalog freshness too. Real architectural scope (a new
+  persistent WS subscription, wiring its events into `market_catalog`'s
+  SQLite rows or an in-memory overlay, reconnect/backfill handling) -
+  flagged for a dedicated future pass, not squeezed into this one.
 
 ## Path to production
 
@@ -203,6 +248,38 @@ works" to "flip it for real" still has open operational questions.
       unilaterally. Still open: a WS-based real-position-feed decision,
       `services/event_schedule.py`'s tick-loop wiring, market-search
       decision-market granularity. 917 tests passing.
+      **The three flagged batching opportunities (and more found applying
+      them) were put into practice, 2026-08-16 direct instruction: "put the
+      knowledge into practice and fix the backend."** New batched
+      `KalshiClient` methods (`get_events`, `get_live_datas`,
+      `get_milestones_bulk`, `get_markets_by_tickers`) replaced individual-
+      call gathers at every real call site: event-title/live-status
+      fetching, milestone-winner propagation, and — the biggest real find —
+      **signal-resolution's backlog**: 26,903 of 32,480 logged signals sat
+      unresolved, checked at only 10-per-30s (~22h for one pass); batching
+      cuts that to ~200/check, ~1h. Also applied: category routing
+      (`_fetch_event_live_data` now skips Sports outright, the confirmed
+      100%-404 category, instead of calling it unconditionally every
+      category) and real game-state surfacing (`state["live_game_state"]` -
+      score/clock/quarter/down-distance data that was already being
+      fetched via the milestone-based calls but discarded). Read-rate
+      limiter raised 3.0→8.0 req/sec with reasoned headroom below the
+      confirmed 20 req/sec account ceiling (this app's read traffic is
+      mostly unauthenticated market data, so the full authenticated-account
+      ceiling was deliberately not assumed to transfer 1:1). 947 tests
+      passing.
+      **Continued the same day, second focused pass** (see this doc's
+      "Active investigation" section above for the close_time-mutability
+      fix from the same pass) — three more per-ticker gather sites batched
+      via the same `get_markets_by_tickers`, direct efficiency note: "a lot
+      of efficiency could be gained by using batch calls to the API vs
+      individual calls for specific markets": `_cached_market_fetch`
+      (pinned watchlist + open-position `extra_tickers` refresh),
+      `_fetch_markets`' live-only-branch `still_missing` fallback, and
+      `propagate_milestone_winners`' related-market lookup — previously one
+      gather *per event with a declared winner*, now one call covering
+      every related ticker across every such event in the tick. 953 tests
+      passing.
 - [x] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
       to consume every research/planning doc in the repo (10 docs) and
       produce a comprehensive forward-looking plan, cross-checked against
@@ -920,7 +997,7 @@ works" to "flip it for real" still has open operational questions.
       matching `market_history.clear_all()` and wired all three into
       `POST /api/reset` plus new checkboxes. 3 new tests.
 
-- [ ] **Whale trades opening and instantly stop-lossing before ever showing
+- [x] **Whale trades opening and instantly stop-lossing before ever showing
       as an open position (2026-08-11, direct report: "MASSIVE bug...
       likely theres a problem with the whole stream itself")** — the
       stream/detection side was fine; real root cause was
@@ -935,10 +1012,18 @@ works" to "flip it for real" still has open operational questions.
       settle at 0.999. Fix: `check_exits()` gained an `opened_since` param
       (main.py passes `tick_now`) that skips any position opened this same
       tick, leaving it for the next tick's fresh price. 2 new tests, 724
-      passing. **Fix is written and unit-tested but not yet committed or
-      confirmed live against a real trade** — see
-      `docs/session-2026-08-11-whale-exit-stale-price-bug.md` for the full
-      incident writeup and the exact pickup checklist.
+      passing. See `docs/session-2026-08-11-whale-exit-stale-price-bug.md`
+      for the full incident writeup.
+      **Corrected 2026-08-16 (routine self-review found this doc's own
+      status had gone stale)**: the fix was in fact committed the same day
+      (`0ff90fb`), not left uncommitted as this entry previously said — a
+      documentation gap, not a code gap. Live-verified directly against
+      real trade history for the first time this session (queried
+      `data/paper_broker.db` for every real round-trip trade opened after
+      that commit): 11 real round-trips since, including 7 real
+      stop-losses, shortest hold time 392.9s — nowhere near the original
+      0.146s same-tick bug signature. Closes the doc's own last open
+      checklist item.
 
 ## Shipped (condensed — see `static/status.html` and
 `docs/roadmap-archive-2026-08-09.md` for full detail)

@@ -413,6 +413,17 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     ticker = ticker_msg.get("market_ticker")
     if not ticker:
         return
+    # opened_since=now (2026-08-16 self-review finding): this was the one
+    # of check_exits' three call sites (main tick loop, _process_stream_trade,
+    # here) missing the 2026-08-11 same-tick stale-price guard - see
+    # services/strategy_engine.py's opened_since docstring for the original
+    # incident. The ticker and trade WS channels are independent streams
+    # with no ordering guarantee between them, so a ticker update reflecting
+    # a moment before a whale's fill can still be processed right after
+    # _process_stream_trade opens a position on that fresher fill price -
+    # same stale-price-vs-fresh-entry shape as the original bug, just via
+    # the ticker path instead of the tick-poll one.
+    now = time.time()
     try:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
@@ -425,7 +436,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         cfg_now = config_store.get()
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
-            category_by_ticker=_category_by_ticker(),
+            opened_since=now, category_by_ticker=_category_by_ticker(),
         ):
             await _handle_close_decision(close_decision)
     _bump_generation()
@@ -569,6 +580,13 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
             if milestone_by_event:
                 live_datas = await client.get_live_datas([ms["id"] for ms in milestone_by_event.values()])
 
+            # Pass 1: figure out which events actually have a declared
+            # winner + related tickers to map (pure, no I/O), collecting
+            # every related ticker across every such event into one flat,
+            # deduped list.
+            events_with_winner = []  # (et, ms, winner, related)
+            all_related: list[str] = []
+            seen_related = set()
             for et, ms in milestone_by_event.items():
                 ld = live_datas.get(ms["id"])
                 if not ld:
@@ -578,7 +596,23 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
                 related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
                 if not winner or not related:
                     continue
-                related_markets = await asyncio.gather(*(client.get_market(t) for t in related), return_exceptions=True)
+                events_with_winner.append((et, ms, winner, related))
+                for t in related:
+                    if t not in seen_related:
+                        seen_related.add(t)
+                        all_related.append(t)
+
+            # Batched (2026-08-16, direct efficiency note: "a lot of
+            # efficiency could be gained by using batch calls to the API vs
+            # individual calls for specific markets") - was one gather of
+            # individual get_market() calls PER event with a winner, inside
+            # this same loop. One get_markets_by_tickers call now covers
+            # every related ticker across every such event this tick,
+            # regardless of how many events have a winner to map.
+            related_market_by_ticker = await client.get_markets_by_tickers(all_related) if all_related else {}
+
+            for et, ms, winner, related in events_with_winner:
+                related_markets = [related_market_by_ticker[t] for t in related if t in related_market_by_ticker]
                 mapped_winner_ticker = None
                 for rm in related_markets:
                     if not isinstance(rm, dict):
@@ -1055,11 +1089,15 @@ async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list
         if t not in cache or (now_ts - cache[t]["_cached_at"]) > _PINNED_MARKET_REFRESH_SEC
     ]
     if stale_or_missing:
-        results = await asyncio.gather(
-            *(client.get_market(t) for t in stale_or_missing), return_exceptions=True
-        )
-        for t, r in zip(stale_or_missing, results):
-            if isinstance(r, dict):
+        # Batched (2026-08-16, direct efficiency note: "a lot of efficiency
+        # could be gained by using batch calls to the API vs individual
+        # calls for specific markets") - was N individual get_market() calls
+        # gathered concurrently; one get_markets_by_tickers call now covers
+        # every stale/missing ticker regardless of how many need it.
+        fetched = await client.get_markets_by_tickers(stale_or_missing)
+        for t in stale_or_missing:
+            r = fetched.get(t)
+            if r is not None:
                 r["_cached_at"] = now_ts
                 cache[t] = r
     return [
@@ -1068,7 +1106,7 @@ async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list
     ]
 
 
-def _maybe_refresh_discovery_cache(cfg: dict) -> None:
+def _maybe_refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
     """Kicks off _refresh_discovery_cache as an independent background
     task if the cache is stale and no refresh is already running - never
     awaited by the calling tick (see _fetch_markets' own comment, and
@@ -1084,23 +1122,42 @@ def _maybe_refresh_discovery_cache(cfg: dict) -> None:
     stale = now_ts - disc_cache["fetched_at"] > _DISCOVERY_REFRESH_SEC
     if stale and not disc_cache["refreshing"]:
         disc_cache["refreshing"] = True
-        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache(cfg))
+        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache(cfg, client))
 
 
-async def _refresh_discovery_cache(cfg: dict) -> None:
+# Real, live-confirmed finding (2026-08-16, "close_time mutability"
+# investigation - see ROADMAP.md's now-closed "Active investigation" entry):
+# Kalshi's own market_lifecycle docs (docs/kalshi/market_lifecycle.md)
+# confirm close_time can be revised earlier via a close_date_updated event
+# "when a market is closed ahead of its scheduled close time, including
+# before determination" - and a catalog row scanned before that revision
+# fires keeps showing the OLD close_time/status indefinitely until its next
+# scan (confirmed live: a real finalized MLB market's catalog row still
+# showed status=active, close_time 2.5 days out, 24 minutes after Kalshi's
+# own API had already moved it to status=finalized with the true, earlier
+# close_time). candidates_in_window/open_candidates' close_ts>now filter
+# can't catch this - it's trusting the same stale column that's wrong. Any
+# status past "active" in the real lifecycle (closed/determined/disputed/
+# amended/finalized - see market_lifecycle.md's own table) means the
+# catalog's belief about this market is no longer trustworthy regardless of
+# what close_ts says.
+_DISCOVERY_TERMINAL_STATUSES = {"closed", "determined", "disputed", "amended", "finalized"}
+
+
+async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
     """Discovery's selection pipeline, now sourced entirely from
     market_catalog's already-persisted, independently-scanned data
     (services/market_catalog.py's open_candidates) instead of a fresh
     get_candidate_markets REST fetch per series - 2026-08-15 direct "no
     stone unturned" API audit, the definitive fix for the same incident
     _DISCOVERY_REFRESH_SEC's own comment describes: "no more excessive api
-    calls to get non trading data that is unlikely to change." Zero
-    network calls of its own - open_candidates is a pure SQLite read, so
-    this function needs no KalshiClient at all anymore (the catalog stays
-    warm via the fully separate _scan_catalog_batch/_maybe_scan_catalog_
-    batch background task, paced independently by the same shared rate
-    limiter). Still run as a background task (async def, still triggered
-    by _maybe_refresh_discovery_cache below) rather than inlined
+    calls to get non trading data that is unlikely to change." Only one
+    small network call of its own now (see the real-time confirmation step
+    below, 2026-08-16) - the catalog itself still stays warm via the fully
+    separate _scan_catalog_batch/_maybe_scan_catalog_batch background task,
+    paced independently by the same shared rate limiter. Still run as a
+    background task (async def, still triggered by
+    _maybe_refresh_discovery_cache below) rather than inlined
     synchronously - defensive: a SQLite query + phase_ranked/
     round_robin_select over a large, still-growing catalog should stay
     fast, but "still fast" isn't a promise worth betting the tick loop's
@@ -1145,6 +1202,31 @@ async def _refresh_discovery_cache(cfg: dict) -> None:
             candidates, cfg["kalshi"]["watchlist_size"],
             max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
         )
+        # Real-time confirmation pass (2026-08-16, close_time-mutability fix
+        # - see _DISCOVERY_TERMINAL_STATUSES above). Bounded to exactly the
+        # final, already-narrowed selection (watchlist_size, not the whole
+        # candidate pool), so this stays one cheap batched call per refresh
+        # cycle (_DISCOVERY_REFRESH_SEC = 300s), not a return to the
+        # per-refresh REST-fetch pattern the 2026-08-15 incident removed.
+        # Drops anything Kalshi now reports as past "active" outright - a
+        # stale catalog row must never reach the real watchlist just
+        # because it hasn't been rescanned yet. A ticker Kalshi didn't
+        # return (a genuine fetch miss) keeps its catalog row rather than
+        # being dropped - same "degrade honestly, never guess" idiom
+        # _fetch_markets' own live_markets_only hydration already uses.
+        selected_tickers = [m["ticker"] for m in markets if m.get("ticker")]
+        if selected_tickers:
+            confirmed = await client.get_markets_by_tickers(selected_tickers)
+            live_markets = []
+            for m in markets:
+                real = confirmed.get(m.get("ticker"))
+                if real is None:
+                    live_markets.append(m)
+                    continue
+                if (real.get("status") or "").strip().lower() in _DISCOVERY_TERMINAL_STATUSES:
+                    continue  # confirmed no longer tradeable - drop before it ever reaches the watchlist
+                live_markets.append(real)  # real current price/status, not the catalog's possibly-stale copy
+            markets = live_markets
         disc_cache["markets"] = list(markets)
         disc_cache["fetched_at"] = time.time()
     except Exception as exc:
@@ -1260,18 +1342,15 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # come back from the status="open" batch fetch above (confirmed
         # live: a handful of already-finalized markets were still
         # falling back to the 0.5 placeholder for exactly this reason) -
-        # one direct per-ticker fetch (no status filter, whatever its
-        # real current state is) for just what's still missing, same
-        # "always the real current price, never a placeholder" goal,
-        # cheap since this is normally a small residual set.
+        # one batched fetch (no status filter, whatever its real current
+        # state is - 2026-08-16 batching pass) for just what's still
+        # missing, same "always the real current price, never a
+        # placeholder" goal, cheap since this is normally a small
+        # residual set.
         still_missing = [t for t in selected_tickers if t not in hydrated_by_ticker]
         if still_missing:
-            fallback_results = await asyncio.gather(
-                *(client.get_market(t) for t in still_missing), return_exceptions=True,
-            )
-            for hm in fallback_results:
-                if isinstance(hm, dict) and hm.get("ticker"):
-                    hydrated_by_ticker[hm["ticker"]] = hm
+            fallback_results = await client.get_markets_by_tickers(still_missing)
+            hydrated_by_ticker.update(fallback_results)
         # Still falls back to the original catalog row (schedule/title
         # info, just no live price) rather than dropping a ticker
         # outright if even the per-ticker fetch failed (a real API
@@ -1290,7 +1369,7 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # price freshness still comes from the WS ticker-stream overlay
         # right before this function returns, completely decoupled from
         # how often the underlying series/market *selection* gets re-run.
-        _maybe_refresh_discovery_cache(cfg)
+        _maybe_refresh_discovery_cache(cfg, client)
         markets = list(state["discovery_cache"]["markets"])
 
     # Merge in the pinned watchlist fetched at the top of this function -

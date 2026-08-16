@@ -13,6 +13,7 @@ class FakeClient:
         self.milestone_calls = []
         self.live_data_calls = []
         self.market_calls = []
+        self.market_call_batches = []  # one entry per get_markets_by_tickers call
 
     async def get_milestones_for_event(self, event_ticker):
         self.milestone_calls.append(event_ticker)
@@ -23,9 +24,12 @@ class FakeClient:
         self.live_data_calls.extend(milestone_ids)
         return {mid: self._live[mid] for mid in milestone_ids if mid in self._live}
 
-    async def get_market(self, ticker):
-        self.market_calls.append(ticker)
-        return self._markets.get(ticker)
+    async def get_markets_by_tickers(self, tickers):
+        # Batched (2026-08-16) - replaces the old per-event gather of
+        # individual get_market() calls.
+        self.market_calls.extend(tickers)
+        self.market_call_batches.append(list(tickers))
+        return {t: self._markets[t] for t in tickers if t in self._markets}
 
 
 def test_propagate_milestone_winner(monkeypatch):
@@ -67,6 +71,48 @@ def test_propagate_milestone_winner(monkeypatch):
     # And outcomes recorded for both
     assert ("EVT1-OUTCOME2", "yes") in recorded
     assert ("EVT1-OUTCOME1", "no") in recorded
+
+
+def test_propagate_milestone_winners_batches_related_market_lookups_across_events(monkeypatch):
+    # Direct efficiency note (2026-08-16): "a lot of efficiency could be
+    # gained by using batch calls to the API vs individual calls for
+    # specific markets" - two independent events, each with their own
+    # winner + related tickers, must resolve via ONE get_markets_by_tickers
+    # call covering both events' tickers, not one gather per event.
+    markets = [
+        {"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""},
+        {"ticker": "EVT1-OUTCOME2", "event_ticker": "EVT1", "result": ""},
+        {"ticker": "EVT2-OUTCOME1", "event_ticker": "EVT2", "result": ""},
+        {"ticker": "EVT2-OUTCOME2", "event_ticker": "EVT2", "result": ""},
+    ]
+    milestones_map = {
+        "EVT1": [{"id": "ms1", "type": "winner_decl", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}],
+        "EVT2": [{"id": "ms2", "type": "winner_decl", "related_event_tickers": ["EVT2-OUTCOME1", "EVT2-OUTCOME2"]}],
+    }
+    live_map = {
+        "ms1": {"details": {"winner": "Outcome Two", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}},
+        "ms2": {"details": {"winner": "Second One", "related_event_tickers": ["EVT2-OUTCOME1", "EVT2-OUTCOME2"]}},
+    }
+    market_map = {
+        "EVT1-OUTCOME1": {"ticker": "EVT1-OUTCOME1", "yes_sub_title": "Outcome One"},
+        "EVT1-OUTCOME2": {"ticker": "EVT1-OUTCOME2", "yes_sub_title": "Outcome Two"},
+        "EVT2-OUTCOME1": {"ticker": "EVT2-OUTCOME1", "yes_sub_title": "First One"},
+        "EVT2-OUTCOME2": {"ticker": "EVT2-OUTCOME2", "yes_sub_title": "Second One"},
+    }
+    fake = FakeClient(milestones_map, live_map, market_map)
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    assert market_results.get("EVT1-OUTCOME2") == "yes"
+    assert market_results.get("EVT2-OUTCOME2") == "yes"
+    # One batched call covering every related ticker across both events -
+    # not one gather-of-individual-calls per event.
+    assert len(fake.market_call_batches) == 1
+    assert set(fake.market_call_batches[0]) == {
+        "EVT1-OUTCOME1", "EVT1-OUTCOME2", "EVT2-OUTCOME1", "EVT2-OUTCOME2",
+    }
 
 
 # --- repoll-cache behavior (2026-08-15 tick_duration fix) - this used to
