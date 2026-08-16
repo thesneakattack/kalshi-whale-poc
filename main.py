@@ -129,6 +129,16 @@ state = {
     "market_results": {},
     "live_status": {},  # event_ticker -> "live" | "finished" | "none" | None, see _fetch_live_status
     "event_live_data": {},  # event_ticker -> live_data payload from /live_data/events/{event_ticker}
+    # event_ticker -> {"details": {away_points, home_points, clock, quarter,
+    # status, winner, last_play, situation, ...}, "updated_at": ts} - the
+    # real in-game state from the same milestone get_live_data(s) call
+    # _fetch_live_status already makes every poll to derive widget_status,
+    # previously discarded past that one field (2026-08-16 API-doc audit
+    # finding B2, docs/next-steps-2026-08-15-pt3.md). Accumulates like
+    # live_status_cache below, not replaced wholesale - a market that
+    # rotates off the watchlist mid-game just stops getting fresh updates
+    # rather than losing its last-known state.
+    "live_game_state": {},
     "category_metadata": {"fetched_at": 0.0, "tags_by_categories": {}, "filters_by_sports": {}, "sport_ordering": []},
     # Survives across ticks (unlike live_status above, still replaced wholesale
     # every tick for the current-tick view) - event_ticker -> {"status",
@@ -537,23 +547,33 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
             milestone_tasks = await asyncio.gather(
                 *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
             )
+            # First pass: default every polled event to "no winner found
+            # this tick" (recorded before any further fetch so a transient
+            # failure below still throttles the retry to the next repoll
+            # window), then collect the events that actually have a real
+            # milestone id/type to check live-data for.
+            milestone_by_event = {}
             for et, ms_result in zip(to_poll, milestone_tasks):
-                # Recorded before any further fetch so a transient failure
-                # below still throttles the retry to the next repoll window
-                # rather than hammering again next tick.
                 cache[et] = {"checked_at": now, "winner_found": False, "related": None, "mapped_winner_ticker": None}
-                if not isinstance(ms_result, list) or not ms_result:
+                if isinstance(ms_result, list) and ms_result:
+                    ms = ms_result[0]
+                    if ms.get("id") and ms.get("type"):
+                        milestone_by_event[et] = ms
+
+            # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
+            # get-live-data.md) - was N individual get_live_data() calls,
+            # one per event with a milestone, each inside this same loop.
+            # One get_live_datas call now covers every event polled this
+            # tick regardless of how many need it.
+            live_datas = {}
+            if milestone_by_event:
+                live_datas = await client.get_live_datas([ms["id"] for ms in milestone_by_event.values()])
+
+            for et, ms in milestone_by_event.items():
+                ld = live_datas.get(ms["id"])
+                if not ld:
                     continue
-                ms = ms_result[0]
-                ms_id = ms.get("id")
-                ms_type = ms.get("type")
-                if not ms_id or not ms_type:
-                    continue
-                try:
-                    ld = await client.get_live_data(ms_type, ms_id)
-                except Exception:
-                    continue
-                details = (ld.get("live_data") or {}).get("details") or {}
+                details = ld.get("details") or {}
                 winner = details.get("winner")
                 related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
                 if not winner or not related:
@@ -987,6 +1007,11 @@ def _scoped_event_titles(market_titles: dict) -> dict:
 def _scoped_event_live_data(market_titles: dict) -> dict:
     event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
     return {et: state["event_live_data"][et] for et in event_tickers if et in state["event_live_data"]}
+
+
+def _scoped_live_game_state(market_titles: dict) -> dict:
+    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
+    return {et: state["live_game_state"][et] for et in event_tickers if et in state["live_game_state"]}
 
 
 async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) -> dict:
@@ -1564,25 +1589,39 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     milestone_results = await asyncio.gather(
         *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
     )
-    live_data_tasks, task_events = [], []
+    # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
+    # get-live-data.md) - was N individual get_live_data() calls via
+    # asyncio.gather, one per event with a milestone. Live-verified: 3
+    # individual = 0.99s wall, 1 batched get_live_datas call = 0.02s wall.
+    milestone_by_event = {}
     has_milestone = set()
     for et, ms_result in zip(to_poll, milestone_results):
         if isinstance(ms_result, list) and ms_result:
             ms = ms_result[0]
             if ms.get("id") and ms.get("type"):
                 has_milestone.add(et)
-                live_data_tasks.append(client.get_live_data(ms["type"], ms["id"]))
-                task_events.append(et)
+                milestone_by_event[et] = ms["id"]
 
     confirmed = {}
-    if live_data_tasks:
-        live_results = await asyncio.gather(*live_data_tasks, return_exceptions=True)
-        for et, ld_result in zip(task_events, live_results):
-            if isinstance(ld_result, dict):
-                details = (ld_result.get("live_data") or {}).get("details") or {}
-                status = details.get("widget_status")
-                if status:
-                    confirmed[et] = status
+    if milestone_by_event:
+        live_datas = await client.get_live_datas(list(milestone_by_event.values()))
+        for et, ms_id in milestone_by_event.items():
+            ld = live_datas.get(ms_id)
+            if not ld:
+                continue
+            details = ld.get("details") or {}
+            status = details.get("widget_status")
+            if status:
+                confirmed[et] = status
+            # Real score/quarter/clock/down-distance/last_play (2026-08-16
+            # audit finding B2, docs/kalshi/get-live-data.md) - the exact
+            # same get_live_datas call above already fetches this full
+            # payload; previously only widget_status was ever read out of
+            # it. Pure value-add at zero extra API cost: surfaced here so
+            # the dashboard can show real in-game state alongside a
+            # watchlisted market, not just a live/finished label.
+            if details:
+                state["live_game_state"][et] = {"details": details, "updated_at": now}
 
     # Schedule fallback, direct request: "otherwise use the schedule and
     # its previous live status to operate" - but a direct correction right
@@ -1812,11 +1851,22 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
     to_fetch = list(dict.fromkeys(to_fetch))  # de-dupe, preserve order
     if not to_fetch:
         return {}
-    results = await asyncio.gather(*(client.get_event(et) for et in to_fetch), return_exceptions=True)
+    # Batched (2026-08-16 API-doc audit finding B3.1, docs/kalshi/
+    # get-events.md) - was N individual get_event() calls via
+    # asyncio.gather, one per not-yet-cached event ticker every tick. Live-
+    # verified: 3 individual = 0.36s wall, 1 batched call = 0.02s wall, same
+    # events returned, no misses. A ticker Kalshi doesn't return (renamed,
+    # removed) just doesn't appear in `by_ticker` below and is silently
+    # skipped this tick, same as a failed get_event() used to be.
+    try:
+        events = await client.get_events(to_fetch)
+    except Exception:
+        events = []
+    by_ticker = {e["event_ticker"]: e for e in events if e.get("event_ticker")}
     fetched = {}
-    for et, result in zip(to_fetch, results):
-        if isinstance(result, dict):
-            event = result.get("event") or {}
+    for et in to_fetch:
+        event = by_ticker.get(et)
+        if event is not None:
             fetched[et] = {
                 "title": event.get("title") or et,
                 "sub_title": event.get("sub_title"),
@@ -1868,13 +1918,28 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
 _EVENT_LIVE_DATA_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration
 # fix) - same fix, same root cause as _MILESTONE_REPOLL_SEC above: this
 # called get_event_live_data() for every unique event on the watchlist,
-# every tick, forever, unconditionally. Confirmed live: ALL 13 events on the
-# current watchlist 404 from this endpoint every single time (Kalshi's
-# live_data feed doesn't cover crypto/politics/single-market events at all,
-# and evidently not this preseason sports window either) - pure waste, not
-# caution. Real live game-state data can change fast during an actual live
-# event, so this stays much shorter than _LIVE_STATUS_REPOLL_SEC's 5
-# minutes, but per-tick (~every 15s) was never the right cadence either.
+# every tick, forever, unconditionally. Real live game-state data can
+# change fast during an actual live event, so this stays much shorter than
+# _LIVE_STATUS_REPOLL_SEC's 5 minutes, but per-tick (~every 15s) was never
+# the right cadence either.
+
+_EVENT_LIVE_DATA_EXCLUDED_CATEGORIES = {"Sports"}  # 2026-08-16 API-doc audit
+# finding B2 (docs/kalshi/get-event-live-data.md, docs/next-steps-2026-08-15-
+# pt3.md): this endpoint is event-ticker-keyed and documented/confirmed to
+# serve "crypto price charts, commodity price timeseries, weather
+# observations" - live-verified against 3 real crypto tickers (KXBTC15M-*),
+# which returned real BTC candlestick data. Sports is the one category
+# confirmed NOT served here: every real sports ticker on the watchlist
+# 404s from this endpoint 100% of the time - not a bug, structurally the
+# wrong data source (the real source for sports live state is the
+# milestone-keyed get_live_data(s), which _fetch_live_status and
+# propagate_milestone_winners already call - see state["live_game_state"]).
+# Corrects an earlier, less careful same-day comment on this constant that
+# guessed crypto didn't work here either - it does; only Sports is excluded,
+# and only because it's actually confirmed wasteful, not guessed at. Any
+# other category without live confirmation either way is deliberately left
+# in rather than excluded on a guess, same "don't fabricate" idiom
+# _fetch_live_status's own schedule-fallback already follows.
 
 
 async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> dict:
@@ -1885,9 +1950,17 @@ async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> d
         return {}
     cache = state["event_live_data_cache"]
     now = time.time()
+    # A brand-new event's category isn't known yet on the very first tick it
+    # appears (_fetch_event_titles runs concurrently with this function, not
+    # before it - state["event_titles"] only reflects prior ticks' fetches
+    # during this call). Category-unknown events are polled anyway rather
+    # than guess-excluded; the exclusion self-corrects from the next tick
+    # once event_titles has caught up, same self-healing shape
+    # _fetch_event_titles's own mutually_exclusive backfill already uses.
     to_poll = [
         et for et in event_tickers
-        if et not in cache or (now - cache[et]["checked_at"]) >= _EVENT_LIVE_DATA_REPOLL_SEC
+        if (et not in cache or (now - cache[et]["checked_at"]) >= _EVENT_LIVE_DATA_REPOLL_SEC)
+        and (state["event_titles"].get(et) or {}).get("category") not in _EVENT_LIVE_DATA_EXCLUDED_CATEGORIES
     ]
     if to_poll:
         results = await asyncio.gather(
@@ -1953,23 +2026,39 @@ async def _check_signal_resolutions_background(cfg: dict) -> None:
         await client.close()
 
 
+_SIGNAL_RESOLUTION_BATCH_SIZE = 200  # 2026-08-16 API-doc audit finding: real,
+# live backlog confirmed via data/signal_log.db - 26,903 of 32,480 logged
+# signals unresolved, 26,824 currently due for a check, against a
+# limit=10-per-30s-check pace (the batch size this constant replaces) that
+# would take ~22h just for one pass even if every single one resolved on
+# first check. Root cause wasn't the interval, it was checking markets
+# one-at-a-time: get_markets(tickers=...) (docs/kalshi/get-markets.md,
+# confirmed via the installed SDK's own get_markets signature - a real,
+# documented batch filter this app never used) turns what used to be N
+# individual get_market() calls, each its own local rate-limiter acquire(),
+# into ceil(N/50) batched calls (see KalshiClient.get_markets_by_tickers's
+# own _MARKETS_BY_TICKERS_BATCH_SIZE=50, sized to Kalshi's real 600-token
+# burst ceiling). 200/check at the existing 30s cadence drains this backlog
+# in about an hour instead of a full day, at only 4 local acquire() calls
+# per check instead of 200.
+
+
 async def _check_signal_resolutions(client: KalshiClient):
-    """Pick a small batch of old-enough unresolved logged signals and see if
-    their markets have settled yet. Fetched concurrently (bumped from 3 to
-    10 per check to keep pace with a larger watchlist generating more
-    signals) rather than one-at-a-time, so a bigger batch doesn't stack up
-    sequential round-trip latency within a single check. Interval-gating
-    and background-task scheduling both live in _maybe_check_signal_
-    resolutions above now - this function just does the work when asked."""
-    items = signal_log.unresolved_batch(limit=10, older_than_sec=600)
+    """Pick a batch of old-enough unresolved logged signals and see if their
+    markets have settled yet. Interval-gating and background-task
+    scheduling both live in _maybe_check_signal_resolutions above now -
+    this function just does the work when asked. See
+    _SIGNAL_RESOLUTION_BATCH_SIZE above for why the batch is this large and
+    why one get_markets_by_tickers call replaces what used to be N
+    individual get_market() calls."""
+    items = signal_log.unresolved_batch(limit=_SIGNAL_RESOLUTION_BATCH_SIZE, older_than_sec=600)
     if not items:
         return
-    results = await asyncio.gather(
-        *(client.get_market(item["ticker"]) for item in items), return_exceptions=True
-    )
-    for item, market in zip(items, results):
-        if not isinstance(market, dict):
-            continue  # market may be gone/renamed — leave unresolved, retry next time
+    markets = await client.get_markets_by_tickers([item["ticker"] for item in items])
+    for item in items:
+        market = markets.get(item["ticker"])
+        if not market:
+            continue  # market may be gone/renamed, or not yet settled — leave unresolved, retry next time
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
@@ -4172,6 +4261,7 @@ def _build_state_body() -> dict:
     # `mutually_exclusive` / `collateral_return_type` without an extra lookup)
     event_info = _scoped_event_titles(scoped_market_titles)
     event_live_data = _scoped_event_live_data(scoped_market_titles)
+    live_game_state = _scoped_live_game_state(scoped_market_titles)
     augmented_market_titles = {}
     for t, mt in scoped_market_titles.items():
         et = mt.get("event_ticker")
@@ -4183,6 +4273,7 @@ def _build_state_body() -> dict:
         "market_titles": augmented_market_titles,
         "event_titles": event_info,
         "event_live_data": event_live_data,
+        "live_game_state": live_game_state,
         "category_metadata": {
             "tags_by_categories": state["category_metadata"].get("tags_by_categories") or {},
             "filters_by_sports": state["category_metadata"].get("filters_by_sports") or {},

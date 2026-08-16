@@ -11,6 +11,18 @@ def _market(ticker, event_ticker, volume):
     return {"ticker": ticker, "event_ticker": event_ticker, "volume_24h_fp": str(volume)}
 
 
+class _FakeModel:
+    """Stands in for the SDK's real Pydantic response models - only
+    model_dump(mode="json") is ever called on these, so that's all that
+    needs faking."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def model_dump(self, mode="json"):
+        return self._data
+
+
 # round_robin_select's "parent" is the *series* (e.g. "KXPGAH2H" - see
 # services.signal_log.series_of, the same ticker-prefix definition used
 # everywhere else in this app). n means distinct series, not individual
@@ -182,3 +194,169 @@ def test_get_top_volume_markets_threads_max_children_per_parent(monkeypatch):
         n=1, min_volume=0, series_tickers=["SER-A"], max_children_per_parent=2,
     ))
     assert [m["ticker"] for m in result] == ["A-0", "A-1"]
+
+
+# --- Batched SDK wrappers (2026-08-16 API-doc audit findings B3.1/B3.2 +
+# the signal-resolution backlog fix) - get_events/get_live_datas/
+# get_markets_by_tickers each replace what used to be N individual calls at
+# real call sites in main.py with one (or a handful of chunked) requests.
+# get_milestones_bulk is the category-scoped bulk listing (finding B3.3),
+# distinct from the existing per-event get_milestones_for_event. -----------
+
+def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_events(tickers, limit):
+        calls.append((tickers, limit))
+        return type("R", (), {"events": [
+            _FakeModel({"event_ticker": "EVT-A", "title": "A"}),
+            _FakeModel({"event_ticker": "EVT-B", "title": "B"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A", "EVT-B"]))
+    assert result == [{"event_ticker": "EVT-A", "title": "A"}, {"event_ticker": "EVT-B", "title": "B"}]
+    assert calls == [("EVT-A,EVT-B", 2)]  # one batched call, not two
+
+
+def test_get_events_empty_list_makes_no_call(monkeypatch):
+    client = _client()
+
+    async def fake_get_events(tickers, limit):
+        raise AssertionError("should not be called for an empty list")
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events([]))
+    assert result == []
+
+
+def test_get_events_chunks_above_the_batch_size(monkeypatch):
+    client = _client()
+    client._EVENTS_BATCH_SIZE = 2  # shrink for a fast, deterministic test
+    calls = []
+
+    async def fake_get_events(tickers, limit):
+        calls.append(tickers)
+        return type("R", (), {"events": [_FakeModel({"event_ticker": t}) for t in tickers.split(",")]})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["A", "B", "C"]))
+    assert calls == ["A,B", "C"]  # 3 tickers / batch size 2 -> 2 chunked calls
+    assert [e["event_ticker"] for e in result] == ["A", "B", "C"]
+
+
+def test_get_live_datas_returns_flat_shape_keyed_by_milestone_id(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_live_datas(milestone_ids):
+        calls.append(list(milestone_ids))
+        return type("R", (), {"live_datas": [
+            _FakeModel({"milestone_id": "ms1", "type": "football_game", "details": {"quarter": 4}}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_live_datas", fake_get_live_datas)
+    result = asyncio.run(client.get_live_datas(["ms1"]))
+    assert result == {"ms1": {"milestone_id": "ms1", "type": "football_game", "details": {"quarter": 4}}}
+    assert calls == [["ms1"]]
+
+
+def test_get_live_datas_empty_list_makes_no_call(monkeypatch):
+    client = _client()
+
+    async def fake_get_live_datas(milestone_ids):
+        raise AssertionError("should not be called for an empty list")
+
+    monkeypatch.setattr(client._client, "get_live_datas", fake_get_live_datas)
+    result = asyncio.run(client.get_live_datas([]))
+    assert result == {}
+
+
+def test_get_live_datas_chunks_above_the_batch_size(monkeypatch):
+    client = _client()
+    client._LIVE_DATAS_BATCH_SIZE = 2
+    calls = []
+
+    async def fake_get_live_datas(milestone_ids):
+        calls.append(list(milestone_ids))
+        return type("R", (), {"live_datas": [_FakeModel({"milestone_id": mid}) for mid in milestone_ids]})()
+
+    monkeypatch.setattr(client._client, "get_live_datas", fake_get_live_datas)
+    result = asyncio.run(client.get_live_datas(["ms1", "ms2", "ms3"]))
+    assert calls == [["ms1", "ms2"], ["ms3"]]
+    assert set(result.keys()) == {"ms1", "ms2", "ms3"}
+
+
+def test_get_milestones_bulk_passes_category_and_watermark(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_milestones(limit, category=None, min_updated_ts=None, related_event_ticker=None):
+        calls.append((limit, category, min_updated_ts, related_event_ticker))
+        return type("R", (), {"milestones": [_FakeModel({"id": "ms1", "category": "Sports"})]})()
+
+    monkeypatch.setattr(client._client, "get_milestones", fake_get_milestones)
+    result = asyncio.run(client.get_milestones_bulk("Sports", min_updated_ts=12345, limit=200))
+    assert result == [{"id": "ms1", "category": "Sports"}]
+    assert calls == [(200, "Sports", 12345, None)]  # not related_event_ticker-scoped
+
+
+def test_get_markets_by_tickers_returns_dict_keyed_by_ticker(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_markets(tickers, limit):
+        calls.append((tickers, limit))
+        return type("R", (), {"markets": [
+            _FakeModel({"ticker": "TICK-A", "result": "yes"}),
+            _FakeModel({"ticker": "TICK-B", "result": ""}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_markets", fake_get_markets)
+    result = asyncio.run(client.get_markets_by_tickers(["TICK-A", "TICK-B"]))
+    assert result == {"TICK-A": {"ticker": "TICK-A", "result": "yes"}, "TICK-B": {"ticker": "TICK-B", "result": ""}}
+    assert calls == [("TICK-A,TICK-B", 2)]
+
+
+def test_get_markets_by_tickers_does_not_filter_by_status(monkeypatch):
+    # get_markets() (the wrapper used everywhere else) defaults to
+    # status="open" - get_markets_by_tickers must NOT do that, since
+    # main._check_signal_resolutions specifically needs already-settled
+    # markets to still come back.
+    client = _client()
+    seen_kwargs = {}
+
+    async def fake_get_markets(**kwargs):
+        seen_kwargs.update(kwargs)
+        return type("R", (), {"markets": []})()
+
+    monkeypatch.setattr(client._client, "get_markets", fake_get_markets)
+    asyncio.run(client.get_markets_by_tickers(["TICK-A"]))
+    assert "status" not in seen_kwargs
+
+
+def test_get_markets_by_tickers_empty_list_makes_no_call(monkeypatch):
+    client = _client()
+
+    async def fake_get_markets(tickers, limit):
+        raise AssertionError("should not be called for an empty list")
+
+    monkeypatch.setattr(client._client, "get_markets", fake_get_markets)
+    result = asyncio.run(client.get_markets_by_tickers([]))
+    assert result == {}
+
+
+def test_get_markets_by_tickers_chunks_above_the_batch_size(monkeypatch):
+    client = _client()
+    client._MARKETS_BY_TICKERS_BATCH_SIZE = 2
+    calls = []
+
+    async def fake_get_markets(tickers, limit):
+        calls.append(tickers)
+        return type("R", (), {"markets": [_FakeModel({"ticker": t}) for t in tickers.split(",")]})()
+
+    monkeypatch.setattr(client._client, "get_markets", fake_get_markets)
+    result = asyncio.run(client.get_markets_by_tickers(["A", "B", "C"]))
+    assert calls == ["A,B", "C"]
+    assert set(result.keys()) == {"A", "B", "C"}

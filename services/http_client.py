@@ -102,9 +102,44 @@ class _TokenBucketRateLimiter:
 # any further - this is a paper-trading POC with no latency requirement
 # that justifies pushing a third party's rate limit to find its exact
 # edge.
-_KALSHI_READ_RATE_PER_SEC = 3.0
+# Raised 2026-08-16 (API-doc audit finding B4, docs/kalshi/rate_limits.md) -
+# re-fetched Kalshi's rate-limit docs fresh and called get_account_api_limits()
+# / get_account_endpoint_costs() live against this app's own connected
+# account: real confirmed Basic-tier budget is 200 read-tokens/sec (600-token,
+# ~3s burst pool) at the documented flat default cost of 10 tokens/request for
+# every endpoint this app calls - a real 20 read-req/sec sustainable rate, of
+# which the old 3.0/sec (burst 2.0) used only ~15%.
+#
+# NOT raised all the way to that confirmed number, though, because it's an
+# *authenticated-account* figure and this shared limiter's traffic is
+# overwhelmingly *unauthenticated* market data (see the long comment above -
+# only kalshi_account_client.py's calls authenticate; everything in
+# kalshi_client.py, the bulk of real read volume, doesn't). Kalshi rate-limits
+# unauthenticated traffic some other way (most likely per-IP) that was never
+# empirically confirmed the way the account figure was - there's no live
+# evidence the anonymous ceiling is the same 20/sec, only that it's plausibly
+# in that neighborhood. 8.0/sec (burst 8.0) is a real, meaningful increase
+# (2.7x the old rate) while keeping 2.5x headroom below the confirmed number
+# even under the conservative assumption that anonymous traffic shares
+# exactly the same ceiling as the authenticated account. Also, separately,
+# the 2026-08-16 batching pass (get_events/get_live_datas/
+# get_markets_by_tickers replacing what used to be N individual calls at
+# several real call sites) already cut the *number* of requests this app
+# makes per tick well below what motivated the original 3.0/sec figure, so
+# this isn't asking the same request volume to move faster - it's a smaller
+# request volume with more headroom per request.
+#
+# Write limiter deliberately left untouched: create_order/cancel_order are
+# always authenticated (is_write=True only used in kalshi_account_client.py),
+# so the confirmed 100 write-tokens/sec (~10 write-req/sec) figure applies
+# without the anonymous-traffic ambiguity above - but there's no evidence
+# write throughput is an actual bottleneck (this app places at most a
+# handful of orders per tick, never a batch), and this is the single most
+# real-money-adjacent number in the app. No concrete need to raise it, so it
+# stays at its original, deliberately conservative value.
+_KALSHI_READ_RATE_PER_SEC = 8.0
 _KALSHI_WRITE_RATE_PER_SEC = 1.5
-_KALSHI_READ_BURST = 2.0
+_KALSHI_READ_BURST = 8.0
 _KALSHI_WRITE_BURST = 1.0
 _kalshi_read_limiter = _TokenBucketRateLimiter(_KALSHI_READ_RATE_PER_SEC, burst=_KALSHI_READ_BURST)
 _kalshi_write_limiter = _TokenBucketRateLimiter(_KALSHI_WRITE_RATE_PER_SEC, burst=_KALSHI_WRITE_BURST)

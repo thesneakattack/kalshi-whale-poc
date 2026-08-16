@@ -34,6 +34,11 @@ def _market(ticker="TICK-A", event_ticker="EVT-A"):
 
 def test_fetch_event_live_data_polls_a_new_event_with_no_cache():
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     fake = _FakeLiveDataClient()
     result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
     assert result == {"EVT-A": {
@@ -45,6 +50,11 @@ def test_fetch_event_live_data_polls_a_new_event_with_no_cache():
 
 def test_fetch_event_live_data_reuses_a_recent_cached_value_without_polling():
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     main.state["event_live_data_cache"]["EVT-A"] = {
         "data": {"type": "score", "details": {}, "is_historical": None, "default_range": None, "range_options": []},
         "checked_at": time.time(),
@@ -57,6 +67,11 @@ def test_fetch_event_live_data_reuses_a_recent_cached_value_without_polling():
 
 def test_fetch_event_live_data_repolls_once_the_cache_entry_is_stale():
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     stale_check = time.time() - main._EVENT_LIVE_DATA_REPOLL_SEC - 1
     main.state["event_live_data_cache"]["EVT-A"] = {
         "data": {"type": "score", "details": {}, "is_historical": None, "default_range": None, "range_options": []},
@@ -74,6 +89,11 @@ def test_fetch_event_live_data_caches_a_404_and_does_not_repoll_immediately():
     # very next tick doesn't immediately retry - only the repoll cadence
     # should govern retries, same as a successful-but-empty response.
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     fake = _FakeLiveDataClient(raises=True)
     result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
     assert result == {}
@@ -87,6 +107,11 @@ def test_fetch_event_live_data_caches_a_404_and_does_not_repoll_immediately():
 
 def test_fetch_event_live_data_empty_live_data_is_treated_like_no_data():
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     fake = _FakeLiveDataClient(response={"live_data": {}})
     result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
     assert result == {}
@@ -95,7 +120,53 @@ def test_fetch_event_live_data_empty_live_data_is_treated_like_no_data():
 
 def test_fetch_event_live_data_no_event_tickers_returns_empty_without_a_client_call():
     main.state["event_live_data_cache"].clear()
+    # 2026-08-16 category-routing fix reads state["event_titles"] - clear it
+    # so a leftover "Sports" category from an earlier test file's shared
+    # global state (e.g. test_trading_gate.py's own "EVT-A" fixtures)
+    # can't silently change these tests' polling behavior.
+    main.state["event_titles"].clear()
     fake = _FakeLiveDataClient()
     result = asyncio.run(main._fetch_event_live_data(fake, [{"ticker": "NO-EVENT"}]))
     assert result == {}
-    assert fake.calls == []
+
+
+# --- category routing (2026-08-16 API-doc audit finding B2) - this endpoint
+# is documented/live-confirmed to serve crypto price charts/commodity
+# timeseries/weather observations, and confirmed live to 404 100% of the
+# time for real sports tickers - not a bug, structurally the wrong data
+# source for sports (the real source is the milestone-keyed
+# get_live_data(s) - see state["live_game_state"]). Calling it for a known-
+# Sports event is pure confirmed waste, unlike an unknown-category event
+# (see the "no client call at all" test below vs. the "still polls" one). --
+
+def test_fetch_event_live_data_skips_a_known_sports_event_entirely():
+    main.state["event_live_data_cache"].clear()
+    main.state["event_titles"].clear()
+    main.state["event_titles"]["EVT-A"] = {"category": "Sports"}
+    fake = _FakeLiveDataClient()
+    result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
+    assert result == {}
+    assert fake.calls == []  # never even attempted - confirmed-wasteful category
+
+
+def test_fetch_event_live_data_still_polls_a_known_crypto_event():
+    main.state["event_live_data_cache"].clear()
+    main.state["event_titles"].clear()
+    main.state["event_titles"]["EVT-A"] = {"category": "Crypto"}
+    fake = _FakeLiveDataClient()
+    result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
+    assert fake.calls == ["EVT-A"]
+    assert result["EVT-A"]["type"] == "score"
+
+
+def test_fetch_event_live_data_still_polls_an_unknown_category_event():
+    # A brand-new event whose category hasn't been learned yet (event_titles
+    # not populated for it) must not be guess-excluded - only a CONFIRMED
+    # Sports category skips the call, per this module's own "don't
+    # fabricate" idiom.
+    main.state["event_live_data_cache"].clear()
+    main.state["event_titles"].clear()
+    fake = _FakeLiveDataClient()
+    result = asyncio.run(main._fetch_event_live_data(fake, [_market()]))
+    assert fake.calls == ["EVT-A"]
+    assert result["EVT-A"]["type"] == "score"

@@ -964,24 +964,27 @@ def _market_at(offset_sec: float, event_ticker="EVT-A", close_offset_sec: float 
 class _FakeLiveClient:
     """Records every call it receives - tests assert against call counts to
     prove a poll was (or, more often, was NOT) actually made, not just that
-    the returned status looks right."""
+    the returned status looks right. get_live_datas (batched, 2026-08-16)
+    replaces the old per-milestone get_live_data - returns milestone_id ->
+    {"details": {...}} flat, matching KalshiClient.get_live_datas' own real
+    shape (not get_live_data()'s single-call {"live_data": {...}} wrapper)."""
 
     def __init__(self, widget_status="live", has_milestone=True, live_data_fails=False):
         self.widget_status = widget_status
         self.has_milestone = has_milestone
         self.live_data_fails = live_data_fails
         self.milestone_calls = []
-        self.live_data_calls = []
+        self.live_datas_calls = []  # list of milestone_id batches requested
 
     async def get_milestones_for_event(self, event_ticker):
         self.milestone_calls.append(event_ticker)
         return [{"id": "ms1", "type": "game"}] if self.has_milestone else []
 
-    async def get_live_data(self, ms_type, ms_id):
-        self.live_data_calls.append((ms_type, ms_id))
+    async def get_live_datas(self, milestone_ids):
+        self.live_datas_calls.append(list(milestone_ids))
         if self.live_data_fails:
-            return {"live_data": {"details": {}}}  # no widget_status - a real, seen shape
-        return {"live_data": {"details": {"widget_status": self.widget_status}}}
+            return {mid: {"details": {}} for mid in milestone_ids}  # no widget_status - a real, seen shape
+        return {mid: {"details": {"widget_status": self.widget_status}} for mid in milestone_ids}
 
 
 def test_fetch_live_status_polls_a_new_event_with_no_cache():
@@ -1150,6 +1153,45 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
 
 
+# --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
+# same get_live_datas call above already fetches the full real payload
+# (score/quarter/clock/down-distance/last_play), previously only ever read
+# for widget_status. Pure value-add at zero extra API cost. -----------------
+
+class _FakeGameStateClient:
+    def __init__(self, details):
+        self._details = details
+
+    async def get_milestones_for_event(self, event_ticker):
+        return [{"id": "ms1", "type": "football_game"}]
+
+    async def get_live_datas(self, milestone_ids):
+        return {mid: {"details": self._details} for mid in milestone_ids}
+
+
+def test_fetch_live_status_surfaces_real_game_state_details():
+    main.state["live_status_cache"].clear()
+    main.state["live_game_state"].clear()
+    details = {
+        "away_points": 24, "home_points": 20, "clock": "00:00", "quarter": 4,
+        "widget_status": "live", "last_play": {"description": "End Game"},
+    }
+    fake = _FakeGameStateClient(details)
+    markets = [_market_at(offset_sec=-300)]
+    asyncio.run(main._fetch_live_status(fake, markets))
+    assert main.state["live_game_state"]["EVT-A"]["details"] == details
+    assert "updated_at" in main.state["live_game_state"]["EVT-A"]
+
+
+def test_fetch_live_status_does_not_surface_game_state_for_empty_details():
+    main.state["live_status_cache"].clear()
+    main.state["live_game_state"].clear()
+    fake = _FakeGameStateClient({})
+    markets = [_market_at(offset_sec=-300)]
+    asyncio.run(main._fetch_live_status(fake, markets))
+    assert "EVT-A" not in main.state["live_game_state"]
+
+
 # --- _fetch_markets (live_markets_only): catalog rows must be hydrated with
 # real prices, not left at whatever fallback state["latest_prices"] uses ----
 # Real, confirmed-live bug: market_catalog rows only ever carry schedule/
@@ -1257,10 +1299,25 @@ def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misse
 
 class _FakeEventClient:
     def __init__(self, events):
-        self.events = events  # event_ticker -> full get_event()-shaped dict
+        self.events = events  # event_ticker -> full get_event()-shaped dict (nested under "event")
+        self.get_events_calls = []
 
-    async def get_event(self, event_ticker):
-        return self.events[event_ticker]
+    async def get_events(self, event_tickers):
+        # Batched (2026-08-16) - flat Event objects, not get_event()'s
+        # single-item {"event": {...}} wrapper; unwrap the fixture's nested
+        # shape here so existing fixtures below don't need reshaping. The
+        # real API always includes event_ticker on every returned event
+        # (main._fetch_event_titles keys its result off it) - injected here
+        # since the hand-written fixtures below predate that requirement
+        # and don't bother setting it themselves.
+        self.get_events_calls.append(list(event_tickers))
+        results = []
+        for et in event_tickers:
+            if et in self.events:
+                event = dict(self.events[et]["event"])
+                event.setdefault("event_ticker", et)
+                results.append(event)
+        return results
 
 
 def test_fetch_event_titles_extracts_mutually_exclusive_true():

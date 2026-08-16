@@ -8,7 +8,7 @@ import main
 class FakeClient:
     def __init__(self, milestones_map, live_map, market_map):
         self._milestones = milestones_map
-        self._live = live_map
+        self._live = live_map  # milestone_id -> {"details": {...}} (flat, matching get_live_datas' real shape)
         self._markets = market_map
         self.milestone_calls = []
         self.live_data_calls = []
@@ -18,9 +18,10 @@ class FakeClient:
         self.milestone_calls.append(event_ticker)
         return self._milestones.get(event_ticker, [])
 
-    async def get_live_data(self, ms_type, ms_id):
-        self.live_data_calls.append(ms_id)
-        return self._live.get(ms_id, {})
+    async def get_live_datas(self, milestone_ids):
+        # Batched (2026-08-16) - replaces the old per-milestone get_live_data.
+        self.live_data_calls.extend(milestone_ids)
+        return {mid: self._live[mid] for mid in milestone_ids if mid in self._live}
 
     async def get_market(self, ticker):
         self.market_calls.append(ticker)
@@ -40,7 +41,7 @@ def test_propagate_milestone_winner(monkeypatch):
     }
     # live_data for ms1 contains details.winner matching OUTCOME2's yes_sub_title
     live_map = {
-        "ms1": {"live_data": {"details": {"winner": "Outcome Two", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}}}
+        "ms1": {"details": {"winner": "Outcome Two", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}}
     }
     # Market objects where OUTCOME2's yes_sub_title contains 'Outcome Two'
     market_map = {
@@ -83,7 +84,7 @@ def _winner_fixture():
         "EVT1": [{"id": "ms1", "type": "winner_decl", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}]
     }
     live_map = {
-        "ms1": {"live_data": {"details": {"winner": "Outcome Two", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}}}
+        "ms1": {"details": {"winner": "Outcome Two", "related_event_tickers": ["EVT1-OUTCOME1", "EVT1-OUTCOME2"]}}
     }
     market_map = {
         "EVT1-OUTCOME1": {"ticker": "EVT1-OUTCOME1", "yes_sub_title": "Outcome One", "title": "Event 1 - Outcome One"},

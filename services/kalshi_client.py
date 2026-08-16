@@ -107,6 +107,41 @@ class KalshiClient:
         resp = await call_with_backoff(self._client.get_market, ticker)
         return resp.market.model_dump(mode="json")
 
+    _MARKETS_BY_TICKERS_BATCH_SIZE = 50  # Kalshi's own real read-burst
+    # capacity for this account is 600 tokens (docs/kalshi/rate_limits.md) -
+    # a single get_markets request costs 10 tokens/market, no volume
+    # discount for batching ("Batch requests are billed per item"), so one
+    # oversized request could still exhaust the whole burst pool by itself
+    # even though it only drains this app's own local rate limiter once.
+    # 50/chunk (500 tokens) leaves real margin under that 600-token ceiling.
+
+    async def get_markets_by_tickers(self, tickers: list[str]) -> dict[str, dict]:
+        """Batched market lookup - one call per up-to-50 tickers instead of
+        N individual get_market() calls (docs/kalshi/get-markets.md's
+        documented `tickers` filter, confirmed via the installed SDK's own
+        get_markets signature - not previously wired into this wrapper at
+        all). status is deliberately left unset (Kalshi: "leave empty to
+        return markets with any status") so already-settled/finalized
+        markets are still returned - the exact case
+        main._check_signal_resolutions needs (checking whether a market
+        has resolved yet), which get_markets' own default status="open"
+        would silently exclude. Returns ticker -> market dict; a ticker
+        Kalshi doesn't return (renamed/deleted) just isn't in the result,
+        same as a failed get_market() being skipped by its own caller."""
+        if not tickers:
+            return {}
+        out: dict[str, dict] = {}
+        for i in range(0, len(tickers), self._MARKETS_BY_TICKERS_BATCH_SIZE):
+            chunk = tickers[i:i + self._MARKETS_BY_TICKERS_BATCH_SIZE]
+            resp = await call_with_backoff(
+                self._client.get_markets, tickers=",".join(chunk), limit=len(chunk),
+            )
+            for m in resp.markets:
+                d = m.model_dump(mode="json")
+                if d.get("ticker"):
+                    out[d["ticker"]] = d
+        return out
+
     async def get_orderbook(self, ticker: str) -> dict:
         resp = await call_with_backoff(self._client.get_market_orderbook, ticker)
         return resp.model_dump(mode="json")
@@ -241,16 +276,71 @@ class KalshiClient:
         often more useful than, any one sibling market's own title (a
         multi-outcome event's individual markets often carry a long
         combo-leg title, not a clean event name). Used to label grouped
-        markets in the dashboard (ROADMAP.md Phase 0.5)."""
+        markets in the dashboard (ROADMAP.md Phase 0.5). Superseded as the
+        main tick loop's own call site by the batched get_events below
+        (2026-08-16 API-doc audit finding B3.1) - kept as a single-item
+        method since other call sites (e.g. propagate_milestone_winners's
+        related-market mapping) still need a one-off lookup."""
         resp = await call_with_backoff(self._client.get_event, event_ticker)
         return resp.model_dump(mode="json")
 
+    _EVENTS_BATCH_SIZE = 200  # Kalshi's own max limit/page-size for get_events
+    # (docs/kalshi/get-events.md) - chunked defensively even though no real
+    # call site has ever needed more than a typical watchlist's worth
+    # (8-20 events) of not-yet-cached events in one tick.
+
+    async def get_events(self, event_tickers: list[str]) -> list[dict]:
+        """Batched form of get_event - one call for a whole list of event
+        tickers instead of N individual get_event() calls. Live-verified
+        2026-08-15 (docs/kalshi/get-events.md, docs/next-steps-2026-08-15-
+        pt3.md finding B3.1): 3 individual calls = 0.36s wall, 1 batched
+        call = 0.02s wall, all 3 events returned correctly, no misses.
+        Returns the flat Event objects Kalshi's get_events response carries
+        directly under "events" - NOT get_event()'s single-item {"event":
+        {...}} wrapper shape, so callers read result[i]["event_ticker"]
+        rather than result[i]["event"]["event_ticker"]. A ticker Kalshi
+        doesn't return (e.g. renamed/removed) simply isn't in the result,
+        same as a failed get_event() call being skipped by its own caller."""
+        if not event_tickers:
+            return []
+        events = []
+        for i in range(0, len(event_tickers), self._EVENTS_BATCH_SIZE):
+            chunk = event_tickers[i:i + self._EVENTS_BATCH_SIZE]
+            resp = await call_with_backoff(self._client.get_events, tickers=",".join(chunk), limit=len(chunk))
+            events.extend(e.model_dump(mode="json") for e in resp.events)
+        return events
+
     async def get_milestones_for_event(self, event_ticker: str, limit: int = 5) -> list[dict]:
         """The real-world scheduled thing (a specific game/match) tied to an
-        event - id/type/start_date, needed to then ask get_live_data for the
-        actual live/finished status. Confirmed via the SDK's own docstring
-        that related_event_ticker is a real, supported filter, not guessed."""
+        event - id/type/start_date, needed to then ask get_live_data(s) for
+        the actual live/finished status. Confirmed via the SDK's own
+        docstring that related_event_ticker is a real, supported filter,
+        not guessed. Kept as the per-event lookup (Kalshi's
+        related_event_ticker filter only accepts one value, unlike
+        get_events/get_live_datas' list filters - docs/kalshi/
+        get-milestones.md, finding B3.3) - get_milestones_bulk below is a
+        genuinely different, category-scoped strategy, not a drop-in batch
+        replacement for this method."""
         resp = await call_with_backoff(self._client.get_milestones, limit=limit, related_event_ticker=event_ticker)
+        return [m.model_dump(mode="json") for m in resp.milestones]
+
+    async def get_milestones_bulk(
+        self, category: str, min_updated_ts: int | None = None, limit: int = 500
+    ) -> list[dict]:
+        """Bulk, category-scoped milestone listing - NOT keyed to any one
+        event, unlike get_milestones_for_event above. Live-verified
+        2026-08-15 (docs/kalshi/get-milestones.md, finding B3.3): one call
+        with category="Sports" and a 6h min_updated_ts watermark returned
+        200 milestones covering 1,483 distinct related_event_tickers in a
+        single request. Feeds _sync_milestones_bulk's local event_ticker ->
+        milestone map in main.py, which _fetch_live_status and
+        propagate_milestone_winners now consult before ever falling back to
+        their own per-event get_milestones_for_event call - see that
+        function's docstring for the full architecture and why this is an
+        additive fast path, not a hard replacement."""
+        resp = await call_with_backoff(
+            self._client.get_milestones, limit=limit, category=category, min_updated_ts=min_updated_ts,
+        )
         return [m.model_dump(mode="json") for m in resp.milestones]
 
     async def get_live_data(self, milestone_type: str, milestone_id: str) -> dict:
@@ -260,9 +350,37 @@ class KalshiClient:
         "none" before it starts, "live" while in progress, "finished" once
         over (details.status mirrors this as "scheduled"/"inprogress"/
         "closed"). Not documented anywhere as an enum - caught by actually
-        watching a real match go live, not assumed from the field name."""
+        watching a real match go live, not assumed from the field name.
+        Superseded as the main tick loop's own call site by the batched
+        get_live_datas below (2026-08-16 audit finding B3.2) - kept for any
+        one-off single-milestone lookup."""
         resp = await call_with_backoff(self._client.get_live_data, type=milestone_type, milestone_id=milestone_id)
         return resp.model_dump(mode="json")
+
+    _LIVE_DATAS_BATCH_SIZE = 100  # Kalshi's documented max milestone_ids per
+    # get_live_datas call (docs/kalshi/get-live-data.md).
+
+    async def get_live_datas(self, milestone_ids: list[str]) -> dict[str, dict]:
+        """Batched form of get_live_data - one call per up-to-100 milestone
+        ids instead of N individual get_live_data() calls. Live-verified
+        2026-08-15 (docs/kalshi/get-live-data.md, finding B3.2): 3
+        individual calls = 0.99s wall, 1 batched call = 0.02s wall. Returns
+        milestone_id -> {"type", "details", "milestone_id"} - the batch
+        response's own flat per-item shape, NOT get_live_data()'s
+        single-call {"live_data": {...}} wrapper, so callers read
+        result[milestone_id]["details"] directly rather than
+        result[milestone_id]["live_data"]["details"]."""
+        if not milestone_ids:
+            return {}
+        live_datas: dict[str, dict] = {}
+        for i in range(0, len(milestone_ids), self._LIVE_DATAS_BATCH_SIZE):
+            chunk = milestone_ids[i:i + self._LIVE_DATAS_BATCH_SIZE]
+            resp = await call_with_backoff(self._client.get_live_datas, milestone_ids=chunk)
+            for ld in resp.live_datas:
+                d = ld.model_dump(mode="json")
+                if d.get("milestone_id"):
+                    live_datas[d["milestone_id"]] = d
+        return live_datas
 
     async def get_candlesticks(
         self, series_ticker: str, ticker: str, start_ts: int, end_ts: int, period_interval: int
