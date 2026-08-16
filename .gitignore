@@ -1,6 +1,7 @@
 .env
 __pycache__/
 *.pyc
+.claude/hooks/.checkpoint_nudge_state
 venv/
 data/*.db
 data/*.db-shm

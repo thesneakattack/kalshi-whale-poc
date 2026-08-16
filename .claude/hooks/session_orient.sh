@@ -43,5 +43,17 @@ echo "Docs: ROADMAP.md = forward-looking to-do (check items off in place). stati
 
 if [ -d docs/kalshi ]; then
   kalshi_docs=$(find docs/kalshi -maxdepth 1 -name '*.md' ! -name 'README.md' 2>/dev/null | wc -l | tr -d ' ')
-  echo "docs/kalshi/: $kalshi_docs locally-mirrored Kalshi API doc page(s) (index: llms.txt, provenance: README.md) - authoritative over training-data assumptions about Kalshi's API, read before touching any call site."
+  staleness=""
+  if [ -f docs/kalshi/llms.txt ]; then
+    # git commit time, not file mtime - mtime resets to "now" on a fresh
+    # clone/checkout and would always under-report actual age.
+    last_commit_ts=$(git log -1 --format=%ct -- docs/kalshi/llms.txt 2>/dev/null)
+    if [ -n "$last_commit_ts" ]; then
+      age_days=$(( ($(date +%s) - last_commit_ts) / 86400 ))
+      if [ "$age_days" -ge 90 ]; then
+        staleness=" - last refreshed ${age_days}d ago (per git history), worth a spot-check against docs.kalshi.com/llms.txt for drift"
+      fi
+    fi
+  fi
+  echo "docs/kalshi/: $kalshi_docs locally-mirrored Kalshi API doc page(s) (index: llms.txt, provenance: README.md) - authoritative over training-data assumptions about Kalshi's API, read before touching any call site.$staleness"
 fi

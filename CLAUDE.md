@@ -227,7 +227,12 @@ guessing from prose or memory.
   endpoint-name collisions against the standard API were resolved). If a
   future page 404s or a new endpoint appears upstream, re-fetch
   `llms.txt` and pull the new/changed page into `docs/kalshi/` — don't let
-  it silently drift back into a partial snapshot.
+  it silently drift back into a partial snapshot. This surface doesn't
+  change often, so there's no automated re-sync — instead,
+  `session_orient.sh` prints an age note (based on `llms.txt`'s last git
+  commit, not file mtime — mtime resets on every fresh clone) once it's
+  been 90+ days since the last refresh, as a periodic nudge to spot-check
+  for drift rather than trust the mirror indefinitely.
 - `docs/kalshi/README.md` — per-page provenance (source URL + fetch date).
   Check the date before trusting a page for anything rate-limit- or
   schema-sensitive; re-fetch if it looks stale.
@@ -241,30 +246,47 @@ guessing from prose or memory.
 Direct standing instruction (2026-08-16): during a long working session,
 checkpoint proactively rather than batching everything to the end. Use
 `TodoWrite` for any multi-step task, and once a unit of work is genuinely
-verified (tests passing, not mid-edit), commit it and push to `origin`
-rather than letting it sit uncommitted. Pushing is what actually triggers
-`.github/workflows/tests.yml` — it offloads a full, clean-environment test
-run to GitHub, on top of (not instead of) the existing per-edit local run
-(`.claude/hooks/run_tests.py`, which already fires `pytest` inside `ddev`
-after every `main.py`/`services/*.py` edit — keep that as-is, it catches
-regressions faster than any CI round-trip can). Use `workflow_dispatch`
-(`gh workflow run tests.yml`) to trigger CI on demand without waiting for a
-push, and `gh run watch` / `gh run view --log-failed` to pull results back
-into the session.
+verified, commit it and push to `origin` rather than letting it sit
+uncommitted.
+
+**Default to offloading full-suite verification to GitHub rather than
+re-running it locally before every commit** (direct instruction,
+2026-08-16 — "very worthwhile to offload routine operations to github like
+full suite testing"). The per-edit local hook
+(`.claude/hooks/run_tests.py`, which fires `pytest` inside `ddev` after
+every `main.py`/`services/*.py` edit — keep that as-is, it's the fast
+in-the-loop feedback layer) already exercised every real code change as it
+happened; a second full local run right before committing is usually just
+repeating work `.github/workflows/tests.yml` is about to do anyway, in a
+clean environment, on push. Commit → push → `gh run watch --exit-status` →
+interpret the result is the default path now. Still run locally first
+when there's a concrete reason to want faster/richer feedback than a ~40s
+CI round-trip — actively debugging a specific failure, a large/risky
+change, or CI/`gh` itself being unavailable — that's a per-occasion
+judgment call, not a rule against it. Use `workflow_dispatch` (`gh
+workflow run tests.yml`) to trigger CI on demand without waiting for a
+push, and `gh run view --log-failed` to pull failing output back into the
+session when CI is red.
 
 The `/checkpoint` skill runs this sequence end to end (verify tests green →
 review diff scope → commit → push → report CI status → flag whether a
 `ROADMAP.md` item just shipped, in which case run `/sync-status-docs`
-too). A `SessionStart` hook with a `compact` matcher
-(`.claude/hooks/post_compact_reorient.sh`) backs this so it doesn't depend
-purely on remembering across a long or compacted session — Claude Code's
-documented mechanism for re-injecting context that summarization can blur:
-it fires immediately after any compaction (manual `/compact` or automatic)
-and surfaces uncommitted-change state straight into context (stdout from a
-`SessionStart` hook is added to context on exit 0 — unlike `PreCompact` or
-`Stop`, whose stdout is only debug-logged, never seen by the model, which
-is why this uses `SessionStart`/`compact` instead of either of those). It
-only prints a reminder; it never commits anything on its own.
+too). Two hooks back this so it doesn't depend purely on remembering
+across a long session — both verified against the primary Claude Code
+hooks docs first, since `PreCompact`/`Stop` hooks' stdout is only
+debug-logged, never seen by the model, which rules them out for this:
+- `SessionStart` with a `compact` matcher
+  (`.claude/hooks/post_compact_reorient.sh`) fires immediately after any
+  compaction (manual `/compact` or automatic) and re-injects
+  uncommitted-change state right after summarization could have blurred
+  it.
+- `UserPromptSubmit` (`.claude/hooks/midsession_checkpoint_nudge.sh`)
+  covers the gap between session start and the first compaction — which
+  could be arbitrarily long — by checking uncommitted diff size at most
+  once every 10 minutes (time-throttled, not a check on every prompt) and
+  nudging toward `/checkpoint` once it's grown past 5 files / 150 lines.
+
+Both only print a reminder; neither commits anything on its own.
 
 Never commit a failing or half-finished state — this instruction covers
 *when* to commit during a session, not a license to commit broken code.
@@ -277,6 +299,13 @@ Also proactively suggest — don't silently assume — a good moment for the
 getting heavy) or `/clear` (the next thing is materially unrelated to what
 was just finished). This is a suggestion to surface, not a decision to make
 unilaterally.
+
+When delegating to a subagent, match the model to the task (direct
+instruction, 2026-08-16): `model: haiku` for mechanical, read-only,
+low-judgment work (bulk fetches, log scans, file inventories) — reserve
+the default/inherited model for anything needing real reasoning or code
+changes. Don't restart an already-in-flight agent just to fix its model
+tier; apply this to how agents get launched going forward.
 
 Context-window limits are already auto-compacted by Claude Code itself, no
 prompting needed. Session/usage-cap limits are handled the same way, by
