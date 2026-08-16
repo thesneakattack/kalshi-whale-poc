@@ -220,10 +220,14 @@ by reading these docs and verifying live against the real API, not by
 guessing from prose or memory.
 
 - `docs/kalshi/llms.txt` — the maintained index: source URLs + one-line
-  descriptions. A deliberately curated subset of Kalshi's full remote
-  index, scoped to pages this app's real call sites actually touch, not a
-  full mirror — refresh it (and pull the new page into `docs/kalshi/`)
-  whenever a new endpoint gets used.
+  descriptions. A complete mirror of Kalshi's real remote index as of
+  2026-08-16 (215 pages, everything from the standard trading API through
+  margin/perps, FIX, RFQ, order-groups, and historical data — see
+  `README.md`'s "full-index gap-fill" entry for how the margin/FIX
+  endpoint-name collisions against the standard API were resolved). If a
+  future page 404s or a new endpoint appears upstream, re-fetch
+  `llms.txt` and pull the new/changed page into `docs/kalshi/` — don't let
+  it silently drift back into a partial snapshot.
 - `docs/kalshi/README.md` — per-page provenance (source URL + fetch date).
   Check the date before trusting a page for anything rate-limit- or
   schema-sensitive; re-fetch if it looks stale.
