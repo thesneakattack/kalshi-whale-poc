@@ -1383,6 +1383,72 @@ def test_refresh_discovery_cache_no_candidates_skips_the_confirmation_call():
     assert fake.get_markets_by_tickers_calls == []  # cheap no-op, not a wasted call
 
 
+def test_refresh_discovery_cache_excludes_ineligible_series_when_evaluator_enabled():
+    # Mirrors test_fetch_markets_live_only_excludes_ineligible_series_when_enabled
+    # for the discovery path that's actually live by default
+    # (kalshi.live_markets_only: false) - the live_markets_only branch above
+    # had this exact pair of cases covered, this path didn't.
+    mc_module.clear_all()
+    se_module.clear_all()
+    main.state["event_titles"].clear()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERGOOD", "Sports", [{
+        "ticker": "SERGOOD-M1", "event_ticker": "SERGOOD-EVT1", "series_ticker": "SERGOOD", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    mc_module.upsert_markets("SERBAD", "Sports", [{
+        "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "series_ticker": "SERBAD", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    se_module.record_trade_observed("SERBAD", now=1000.0)
+    with se_module._connect() as conn:
+        conn.execute(
+            "UPDATE series_status SET status = 'rejected', next_eligible_at = ? WHERE series = 'SERBAD'",
+            (time.time() + 99999,),
+        )
+    cfg = _discovery_cfg()
+    cfg["series_evaluator"] = {"enabled": True}
+    fake = _FakeConfirmClient({"SERGOOD-M1": {"ticker": "SERGOOD-M1", "status": "active"}})
+    asyncio.run(main._refresh_discovery_cache(cfg, fake))
+    tickers = {m["ticker"] for m in main.state["discovery_cache"]["markets"]}
+    assert "SERGOOD-M1" in tickers
+    assert "SERBAD-M1" not in tickers
+
+
+def test_refresh_discovery_cache_includes_rejected_series_when_evaluator_disabled():
+    # Direct request (2026-08-16): a series series_evaluator previously
+    # rejected must be fully back in consideration, not just "no worse off,"
+    # the moment series_evaluator.enabled is false - confirmed live against
+    # a real incident where a 15+ hour whale-stream outage (fixed in 6973974)
+    # left every observed series sitting at trades_observed=0 through its own
+    # max_observation_sec window, so evaluate_pending auto-rejected all 38 of
+    # them in one batch for a reason that had nothing to do with series
+    # quality. ineligible_series() is the only thing that reads 'rejected'
+    # status to gate discovery, and main._refresh_discovery_cache only
+    # consults it at all when series_evaluator.enabled is true - this locks
+    # that gate in for the path that's actually live by default.
+    mc_module.clear_all()
+    se_module.clear_all()
+    main.state["event_titles"].clear()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERBAD", "Sports", [{
+        "ticker": "SERBAD-M1", "event_ticker": "SERBAD-EVT1", "series_ticker": "SERBAD", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(now_ts + timedelta(minutes=-5)), "status": "active",
+    }])
+    se_module.record_trade_observed("SERBAD", now=1000.0)
+    with se_module._connect() as conn:
+        conn.execute(
+            "UPDATE series_status SET status = 'rejected', next_eligible_at = ? WHERE series = 'SERBAD'",
+            (time.time() + 99999,),
+        )
+    cfg = _discovery_cfg()
+    cfg["series_evaluator"] = {"enabled": False}
+    fake = _FakeConfirmClient({"SERBAD-M1": {"ticker": "SERBAD-M1", "status": "active"}})
+    asyncio.run(main._refresh_discovery_cache(cfg, fake))
+    tickers = {m["ticker"] for m in main.state["discovery_cache"]["markets"]}
+    assert "SERBAD-M1" in tickers
+
+
 # --- _refresh_discovery_cache_background: owns its own client (2026-08-16
 # client-lifecycle fix, real live incident: "the whale watching stream has
 # halted completely" investigation also turned up repeated "[discovery]
