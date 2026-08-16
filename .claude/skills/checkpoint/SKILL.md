@@ -46,14 +46,27 @@ ties together.
    environment.
 
 5. **Confirm CI and interpret the result — this is the real gate when
-   step 1 skipped the local run.** `gh run watch --exit-status` (or, to
-   trigger a run without waiting on the push-triggered one, `gh workflow
-   run tests.yml` first). On failure: `gh run view --log-failed` to pull
-   the actual failing output back into the session, fix it the same way
-   any bug gets fixed, verify (locally this time, to close the loop fast
-   rather than round-tripping CI again for the same fix), then commit +
-   push the fix — never leave `main` red. If `gh auth status` isn't
-   authenticated, say so rather than silently skipping this step.
+   step 1 skipped the local run.** `tests.yml` runs two independent jobs on
+   every push now, and their conclusions must be read separately, not off
+   the run's aggregate exit code:
+   `gh run watch` (skip `--exit-status` here — the run-level status will
+   read as failed for a known, expected reason below even when nothing is
+   actually broken), then `gh run view --json jobs -q '.jobs[] |
+   "\(.name): \(.conclusion)"'`.
+   - `pytest` must be `success`. On failure: `gh run view --log-failed` to
+     pull the actual failing output back into the session, fix it the same
+     way any bug gets fixed, verify (locally this time, to close the loop
+     fast rather than round-tripping CI again for the same fix), then
+     commit + push the fix — never leave `main`'s `pytest` job red.
+   - `dependency-audit` is **expected to show `failure`** — 20 real CVEs
+     were found and deliberately left unfixed, tracked in `ROADMAP.md`'s
+     "Path to production" section (direct instruction: track, don't
+     blind-fix). That's accurate, already-triaged signal, not a fresh
+     regression to chase on every checkpoint. Only investigate it if `gh
+     run view --log-failed` shows a *different* package/CVE set than
+     what's already tracked there.
+   If `gh auth status` isn't authenticated, say so rather than silently
+   skipping this step.
 
 6. **Roadmap sync check.** If this checkpoint closes out a `ROADMAP.md`
    item, run `/sync-status-docs` now, before moving on — cheap, and keeps

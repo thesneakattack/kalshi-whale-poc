@@ -1,16 +1,22 @@
 ---
 name: sync-status-docs
-description: This skill should be used when the user says a roadmap item is "done", "shipped", or "finished", asks to "update the roadmap", "sync status docs", "check off a roadmap item", or after completing work that resolves an item in this project's ROADMAP.md. Keeps ROADMAP.md and static/status.html in sync, the way every prior shipped item in this repo (which has no git history) has been recorded.
+description: This skill should be used when the user says a roadmap item is "done", "shipped", or "finished", asks to "update the roadmap", "sync status docs", "check off a roadmap item", or after completing work that resolves an item in this project's ROADMAP.md. Keeps ROADMAP.md and static/status.html in sync — this project's pre-git-history work has no commit-by-commit record, and even post-git shipped items are recorded here as the living human-readable layer, the way every prior shipped item in this repo has been.
 ---
 
 # Sync status docs (ROADMAP.md + static/status.html)
 
-This project is not a git repository, so there is no commit history to
-reconstruct "what shipped and why" from later. `ROADMAP.md` (forward-looking
-checklist) and `static/status.html` (backward-looking build timeline, served
-at `/status`) are the substitute — see `CLAUDE.md` for the full rationale.
-Both must be updated together when a roadmap item ships, or `status.html`
-quietly goes stale (as it already had once before this skill existed).
+This became a git repository partway through the project's life (see the
+first commit's message for the cutover point) — everything built before
+that has no commit-by-commit history, which is why `ROADMAP.md`
+(forward-looking checklist) and `static/status.html` (backward-looking
+build timeline, served at `/status`) exist and remain the primary source
+for the *why* behind that pre-git work — see `CLAUDE.md` for the full
+rationale. For anything committed going forward, `git log`/`git blame`/`git
+diff` are the real history; these two docs stay the living, human-readable
+layer on top regardless, and must still be updated together whenever a
+roadmap item ships — that's a direct standing instruction, not a
+workaround for missing history — or `status.html` quietly goes stale (as
+it already had once before this skill existed).
 
 ## Steps
 

@@ -202,7 +202,7 @@ is exactly where both of these bug classes happened.
 - `.claude/` — Claude Code project config: hooks (`hooks/` — test-on-edit,
   syntax check, `data/*.db` write guard, session orientation, pre-compact
   and checkpoint reminders) and project skills (`skills/` — `run`,
-  `sync-status-docs`, `checkpoint`).
+  `sync-status-docs`, `checkpoint`, `config-field-edit`).
 - `.github/workflows/tests.yml` — CI: full pytest suite on push to `main`,
   every PR, and on demand (`workflow_dispatch`).
 
