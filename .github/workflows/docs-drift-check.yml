@@ -1,0 +1,44 @@
+name: docs-drift-check
+
+# Kalshi's API docs don't change often, but docs/kalshi/ is treated as
+# ground truth (see CLAUDE.md's "Kalshi API documentation" section) - this
+# periodically re-verifies that ground truth instead of trusting it
+# indefinitely. Separate from tests.yml on purpose: a broken doc URL isn't
+# a code regression and shouldn't be read as one.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-kalshi-doc-urls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every URL in docs/kalshi/llms.txt still resolves
+        run: |
+          set -uo pipefail
+          urls=$(grep -oE 'https://docs\.kalshi\.com/[^)]+\.(md|yaml)' docs/kalshi/llms.txt | sort -u)
+          total=0
+          failed=0
+          fail_list=""
+          for url in $urls; do
+            total=$((total + 1))
+            code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 15 "$url")
+            if [ "$code" != "200" ]; then
+              failed=$((failed + 1))
+              fail_list="$fail_list
+            [$code] $url"
+              echo "::warning::Non-200 ($code) for $url"
+            fi
+            sleep 0.2
+          done
+          echo "Checked $total URLs from docs/kalshi/llms.txt - $failed returned non-200."
+          if [ "$failed" -gt 0 ]; then
+            echo "Failing URLs:$fail_list"
+            echo ""
+            echo "docs/kalshi/ may be out of date - see CLAUDE.md's 'Kalshi API documentation' section for the refresh process."
+            exit 1
+          fi

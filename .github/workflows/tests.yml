@@ -31,3 +31,21 @@ jobs:
       - run: pip install -r requirements-dev.txt
 
       - run: python -m pytest -v
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install pip-audit
+
+      # Reads pinned versions straight from the requirements files and
+      # checks them against the PyPI vulnerability DB - doesn't need the
+      # packages actually installed first. Separate job from pytest above
+      # on purpose: a dependency CVE isn't a code regression and its
+      # red/green shouldn't be conflated with "did the tests pass."
+      - run: pip-audit -r requirements.txt -r requirements-dev.txt
