@@ -426,6 +426,7 @@ class FollowTheWhaleStrategy:
             order = self.broker.place_limit_order(
                 ticker=signal.ticker, side=signal.side, size=contracts, limit_price=signal.price,
                 reason=reason, expires_at=time.time() + timeout_sec, config_fingerprint=config_fingerprint,
+                signal_seen_at=signal.timestamp,
             )
             if order is None:
                 return self._skip(signal, "a limit order is already resting on this ticker")
@@ -445,6 +446,7 @@ class FollowTheWhaleStrategy:
             price=signal.price,
             reason=reason,
             config_fingerprint=config_fingerprint,
+            signal_seen_at=signal.timestamp,
         )
         return {
             "action": "trade",

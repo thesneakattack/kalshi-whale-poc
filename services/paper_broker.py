@@ -52,6 +52,7 @@ class PendingOrder:
     expires_at: float
     reason: str
     config_fingerprint: str | None = None
+    signal_seen_at: float | None = None
 
 
 @dataclass
@@ -68,6 +69,15 @@ class Trade:
     # total (see services/kalshi_fees.py). 0.0 for trades logged before
     # this field existed.
     fee: float = 0.0
+    # The originating WhaleSignal's own .timestamp (signal_log's seen_at) -
+    # 2026-08-16 direct request after an investigation that took cross-
+    # referencing signal_log.db/candidate_log.db/config_performance.db by
+    # hand to answer "how long from signal to open." None for a close-side
+    # Trade (settlement/take-profit/stop-loss/auto-exit close a Position,
+    # not a fresh signal) and for entries opened before this field existed.
+    # trade_analytics.build_trade_history derives time_to_open_sec from
+    # this directly rather than re-joining signal_log after the fact.
+    signal_seen_at: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -137,6 +147,10 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # handled explicitly wherever these are reconstructed from the DB below.
     _add_column_if_missing(conn, "positions", "entry_fee", "REAL")
     _add_column_if_missing(conn, "trades", "fee", "REAL")
+    # Trade.signal_seen_at (2026-08-16 direct report - see that field's own
+    # docstring) - same idempotent-migration pattern, added after this
+    # table already had live rows.
+    _add_column_if_missing(conn, "trades", "signal_seen_at", "REAL")
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -156,6 +170,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    _add_column_if_missing(conn, "pending_orders", "signal_seen_at", "REAL")
     return conn
 
 
@@ -194,17 +209,18 @@ class PaperBroker:
                     "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee FROM positions"
                 ):
                     self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0)
-                for tid, ticker, side, size, price, reason, timestamp, fp, fee in conn.execute(
-                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee FROM trades ORDER BY timestamp ASC"
+                for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at in conn.execute(
+                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, signal_seen_at "
+                    "FROM trades ORDER BY timestamp ASC"
                 ):
-                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0))
+                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0, signal_seen_at))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
-                for ticker, side, size, limit_price, placed_at, expires_at, reason, fp in conn.execute(
-                    "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint "
+                for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at in conn.execute(
+                    "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, signal_seen_at "
                     "FROM pending_orders"
                 ):
                     self.pending_orders[ticker] = PendingOrder(
-                        ticker, side, size, limit_price, placed_at, expires_at, reason, fp,
+                        ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at,
                     )
 
     def _connect(self) -> sqlite3.Connection:
@@ -217,6 +233,7 @@ class PaperBroker:
     def open_position(
         self, ticker: str, side: str, size: int, price: float, reason: str,
         config_fingerprint: str | None = None, fee_fn=kalshi_fees.taker_fee,
+        signal_seen_at: float | None = None,
     ) -> Trade:
         # price is always the YES price (see module docstring/mark_to_market) -
         # a NO contract's real per-unit cost is (1 - price), not price itself.
@@ -262,6 +279,7 @@ class PaperBroker:
             timestamp=time.time(),
             config_fingerprint=config_fingerprint,
             fee=fee,
+            signal_seen_at=signal_seen_at,
         )
         self.trade_log.append(trade)
         self.last_trade_time[ticker] = trade.timestamp
@@ -274,16 +292,16 @@ class PaperBroker:
                 (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint, fee),
             )
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, signal_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
-                 config_fingerprint, fee),
+                 config_fingerprint, fee, signal_seen_at),
             )
         return trade
 
     def place_limit_order(
         self, ticker: str, side: str, size: int, limit_price: float, reason: str,
-        expires_at: float, config_fingerprint: str | None = None,
+        expires_at: float, config_fingerprint: str | None = None, signal_seen_at: float | None = None,
     ) -> PendingOrder | None:
         """Rests a limit order instead of filling instantly at the quoted
         price - the paper-mode maker-order simulation (2026-08-15, docs/
@@ -311,16 +329,16 @@ class PaperBroker:
         order = PendingOrder(
             ticker=ticker, side=side, size=size, limit_price=limit_price,
             placed_at=time.time(), expires_at=expires_at, reason=reason,
-            config_fingerprint=config_fingerprint,
+            config_fingerprint=config_fingerprint, signal_seen_at=signal_seen_at,
         )
         self.pending_orders[ticker] = order
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO pending_orders "
-                "(ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, signal_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (order.ticker, order.side, order.size, order.limit_price, order.placed_at,
-                 order.expires_at, order.reason, order.config_fingerprint),
+                 order.expires_at, order.reason, order.config_fingerprint, order.signal_seen_at),
             )
         return order
 
@@ -383,6 +401,7 @@ class PaperBroker:
             trade = self.open_position(
                 ticker=order.ticker, side=order.side, size=order.size, price=fill_price,
                 reason=order.reason, config_fingerprint=order.config_fingerprint, fee_fn=kalshi_fees.maker_fee,
+                signal_seen_at=order.signal_seen_at,
             )
             fills.append({"action": "trade", "trade": trade.to_dict(), "reason": order.reason, "source": "limit_order"})
         return fills

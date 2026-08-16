@@ -133,6 +133,17 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
             "entry_timestamp": entry["timestamp"] if entry else None,
             "exit_timestamp": t["timestamp"],
             "hold_sec": (t["timestamp"] - entry["timestamp"]) if entry else None,
+            # How long between the whale print being seen (Trade.signal_seen_at,
+            # the originating WhaleSignal's own .timestamp) and the resulting
+            # position actually opening - 2026-08-16 direct report, previously
+            # only answerable by hand-joining signal_log/paper_broker/
+            # config_performance across separate DB files. None for entries
+            # opened before this field existed, or for a close row (there is
+            # no "time to close" signal - see exit_reason instead).
+            "time_to_open_sec": (
+                (entry["timestamp"] - entry["signal_seen_at"])
+                if entry and entry.get("signal_seen_at") is not None else None
+            ),
             "close_type": close_type,
             "realized_pnl": realized_pnl,
             "won": bool(realized_pnl is not None and realized_pnl > 0),

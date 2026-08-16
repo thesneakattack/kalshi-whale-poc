@@ -2967,6 +2967,33 @@ function whaleConfidenceBadgeHTML(ticker, side, signals) {
   return `<span class="whale-conf ${aligned ? 'aligned' : 'against'}" title="Whales are leaning ${leanDir.toUpperCase()} at ${pct.toFixed(0)}% (${lean.count} recent print${lean.count === 1 ? '' : 's'}) - ${aligned ? 'same side as this position' : 'opposite this position'}">🐋 ${pct.toFixed(0)}%</span>`;
 }
 
+// Whale activity SINCE this position was opened, not just the single print
+// that triggered entry (that's reasonDetailsHTML below) - 2026-08-16 direct
+// report: "my position doesnt show hardly ANY whale signal relationship or
+// positions opened since to drive the decision making." Backed by
+// main.py's _enrich_positions_with_signal_activity (signal_log.for_ticker/
+// count_for_ticker, the FULL persisted signal history since p.opened_at) -
+// deliberately not computeWhaleLean(ticker, signals) like the market-card
+// badge above, since state.signal_feed is one 50-slot window shared across
+// every ticker in the app; a busy ticker crowds out a quiet one within
+// seconds, which would make this badge lie about exactly the thing it's
+// here to show honestly. This is also the real data
+// strategy_engine.check_exits' _whale_lean/_exit_confidence are actually
+// reading from, every tick - so "aligned"/"against" here is a preview of
+// the same sentiment pressure the auto-exit composite score sees, not a
+// separate/simplified metric.
+function positionWhaleActivityHTML(p) {
+  const count = p.signals_since_entry_count || 0;
+  const lean = p.whale_lean_since_entry;
+  if (!count || !lean) {
+    return `<span class="whale-conf" style="opacity:0.55" title="No whale prints on this market since this position opened">🐋 0 since entry</span>`;
+  }
+  const leanDir = lean.yes_pct >= 50 ? 'yes' : 'no';
+  const pct = leanDir === 'yes' ? lean.yes_pct : 100 - lean.yes_pct;
+  const aligned = leanDir === p.side;
+  return `<span class="whale-conf ${aligned ? 'aligned' : 'against'}" title="${count} whale print${count === 1 ? '' : 's'} on this market since this position opened - currently leaning ${leanDir.toUpperCase()} at ${pct.toFixed(0)}% - ${aligned ? 'same side as this position (adds exit pressure toward holding)' : 'opposite this position (adds exit pressure via the sentiment factor in auto-exit)'}">🐋 ${count} since · ${pct.toFixed(0)}% ${leanDir.toUpperCase()}</span>`;
+}
+
 // Why this position was opened - the whale print (size/price/confidence)
 // that triggered the strategy's decision, straight from the trade's own
 // `reason` field (services/paper_broker.py's Trade.reason, e.g. "whale
@@ -3061,7 +3088,7 @@ function renderPositions(positions, prices, recentTrades, signals) {
 
       return `<tr title="${esc(label.full)} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(p.ticker)}', '${esc(et || '')}')">
         <td><span class="side-tag ${p.side}">${esc(positionLabel)}</span>
-          ${whaleConfidenceBadgeHTML(p.ticker, p.side, signals)}
+          ${positionWhaleActivityHTML(p)}
           ${reasonDetailsHTML(p.ticker, recentTrades)}
           ${comboLegsHTML(p.ticker)}
         </td>
@@ -3823,6 +3850,7 @@ function renderSignalHistory() {
       <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${r.side}">${esc(r.side)}</span></td>
       <td>${r.size.toLocaleString()}</td>
+      <td>${r.price != null ? (r.price * 100).toFixed(0) + '¢' : '—'}</td>
       <td>${(r.confidence * 100).toFixed(0)}%</td>
       <td>${esc(when)}</td>
       <td>${outcome}</td>
@@ -3846,6 +3874,7 @@ function renderSignalHistory() {
       ${sortHeaderHTML(signalHistoryFilter, 'ticker', 'Market', "toggleSort(signalHistoryFilter, 'ticker', renderSignalHistory)")}
       <th>Side</th>
       ${sortHeaderHTML(signalHistoryFilter, 'size', 'Size', "toggleSort(signalHistoryFilter, 'size', renderSignalHistory)")}
+      ${sortHeaderHTML(signalHistoryFilter, 'price', 'Price', "toggleSort(signalHistoryFilter, 'price', renderSignalHistory)")}
       ${sortHeaderHTML(signalHistoryFilter, 'confidence', 'Confidence', "toggleSort(signalHistoryFilter, 'confidence', renderSignalHistory)")}
       ${sortHeaderHTML(signalHistoryFilter, 'seen_at', 'Seen', "toggleSort(signalHistoryFilter, 'seen_at', renderSignalHistory)")}
       <th>Outcome</th>

@@ -60,6 +60,12 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_resolved ON signals (resolved)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_series ON signals (series)")
+    # for_ticker() below - 2026-08-16 direct report ("my position doesnt show
+    # hardly ANY whale signal relationship... since to drive the decision
+    # making"): without this, a per-ticker/since-timestamp query is a full
+    # table scan, increasingly expensive as this table grows (38k+ rows and
+    # climbing fast under the current stress-test config).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker_seen ON signals (ticker, seen_at)")
     # services/confidence_calibration.py's whole input - the individual
     # confidence factors, not just the blended score, so a future pass can
     # ask "which factors actually predicted a correct call" instead of only
@@ -102,6 +108,17 @@ def _connect() -> sqlite3.Connection:
     # behind them - they still get periodically re-checked (in case they
     # DO resolve), just not on literally every tick forever.
     _add_column_if_missing(conn, "signals", "last_checked_at", "REAL")
+    # 2026-08-16 direct report: "the signal history doesnt show the price a
+    # position was bought at, in the log nor in the whale watch signal
+    # stream." WhaleSignal.price (always the yes-side implied probability at
+    # print time, same convention as everywhere else in this app) was only
+    # ever forwarded to PaperBroker.open_position/Trade - never persisted
+    # here, so a signal that never became a trade (the overwhelming
+    # majority) had no price on record anywhere, and even a signal that DID
+    # trade required joining back to the trades table to find out at what
+    # price. Nullable: rows logged before this field existed have no price
+    # to backfill.
+    _add_column_if_missing(conn, "signals", "price", "REAL")
     return conn
 
 
@@ -120,18 +137,20 @@ def series_of(ticker: str) -> str:
 def log_signal(
     ticker: str, side: str, size: int, confidence: float, source: str,
     seen_at: float | None = None, factors: dict | None = None, raw_context: dict | None = None,
+    price: float | None = None,
 ):
     raw_context = raw_context or {}
     with _connect() as conn:
         conn.execute(
             "INSERT INTO signals "
             "(ticker, series, side, size, confidence, source, seen_at, factors_json, "
-            "raw_notional_usd, raw_spread, raw_volume_24h) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "raw_notional_usd, raw_spread, raw_volume_24h, price) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time(),
                 json.dumps(factors) if factors is not None else None,
                 raw_context.get("notional_usd"), raw_context.get("spread"), raw_context.get("volume_24h"),
+                price,
             ),
         )
 
@@ -313,6 +332,50 @@ def signal_count_for_series_since(series: str, since_ts: float) -> int:
         ).fetchone()[0]
 
 
+def count_for_ticker(ticker: str, since_ts: float | None = None) -> int:
+    """The true count behind for_ticker()'s row cap - signals_since_entry_
+    count needs the real number (a stress-test-load ticker can clear
+    for_ticker's own row limit easily), not however many rows happened to
+    be fetched for the lean computation. Same index, a COUNT(*) query is
+    cheap regardless of how large the underlying result set is."""
+    where = "WHERE ticker = ?"
+    params: list = [ticker]
+    if since_ts is not None:
+        where += " AND seen_at >= ?"
+        params.append(since_ts)
+    with _connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM signals {where}", params).fetchone()[0]
+
+
+def for_ticker(ticker: str, since_ts: float | None = None, limit: int = 500) -> list[dict]:
+    """Every signal on one exact ticker, newest first, optionally since a
+    given timestamp (a position's own opened_at) - 2026-08-16 direct
+    report: an open position's card showed only the single whale print
+    that triggered its entry, nothing about whale activity on that same
+    ticker since then, making the ongoing sentiment-driven exit reasoning
+    (_whale_lean/_exit_confidence in strategy_engine.py) invisible even
+    though it's real and running. state["signal_feed"] can't answer this -
+    it's a single 50-slot window shared across every ticker in the app, so
+    a busy ticker crowds out a quiet one within seconds. This queries the
+    full persisted history instead, scoped to exactly the ticker/window
+    that matters. limit is a safety cap, not a real expectation - a
+    position held for the router's stress-test load already produces far
+    fewer than 500 signals per ticker in normal (non-$1-notional) use."""
+    cols = ["id", "ticker", "series", "side", "size", "confidence", "source", "seen_at", "price"]
+    where = "WHERE ticker = ?"
+    params: list = [ticker]
+    if since_ts is not None:
+        where += " AND seen_at >= ?"
+        params.append(since_ts)
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM signals {where} ORDER BY seen_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
 def clear_all():
     """Wipes the entire whale track record - every logged signal and its
     resolution outcome. Only ever triggered deliberately (Config tab's Danger
@@ -329,7 +392,7 @@ def recent(limit: int = 50, offset: int = 0, resolved_only: bool = False) -> lis
     win-rate percentage `stats()` already provides. `correct` is None for
     anything not yet resolved (still in flight), not conflated with a
     resolved-and-wrong 0."""
-    cols = ["id", "ticker", "series", "side", "size", "confidence", "source", "seen_at", "resolved", "correct", "resolved_at"]
+    cols = ["id", "ticker", "series", "side", "size", "confidence", "source", "seen_at", "price", "resolved", "correct", "resolved_at"]
     where = "WHERE resolved = 1 " if resolved_only else ""
     with _connect() as conn:
         rows = conn.execute(

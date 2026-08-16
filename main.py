@@ -302,7 +302,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     signal_log.log_signal(
         signal.ticker, signal.side, signal.size, signal.confidence,
         state["whale_source"], signal.timestamp, factors=signal.factors,
-        raw_context=signal.raw_context,
+        raw_context=signal.raw_context, price=signal.price,
     )
 
     market_info = state["market_titles"].get(signal.ticker) or {}
@@ -711,6 +711,53 @@ def _enrich_recent_trades(paper_broker_instance: PaperBroker) -> list[dict]:
             t["entry_price"] = derived["entry_price"]
             t["hold_sec"] = derived["hold_sec"]
     return recent
+
+
+def _enrich_positions_with_signal_activity(positions: list[dict]) -> list[dict]:
+    """Adds signals_since_entry_count/whale_lean_since_entry to each open
+    position - 2026-08-16 direct report: a position's card showed only the
+    single whale print that opened it, nothing about whale activity since,
+    making the ongoing sentiment-driven exit reasoning (strategy_engine.
+    check_exits' _whale_lean/_exit_confidence, which really is running
+    every tick - see that module) invisible even though it's real.
+    state["signal_feed"] can't answer this itself: it's one 50-slot window
+    shared across every ticker in the app, so a busy ticker crowds out a
+    quiet one within seconds - signal_log.for_ticker queries the full
+    persisted history instead, scoped to exactly this ticker since this
+    position's own opened_at. One extra indexed query per open position
+    per state build - cheap at the position counts this app actually
+    carries (single digits to low tens), not per signal."""
+    for p in positions:
+        # count is the real total (can exceed for_ticker's own row cap
+        # under stress-test load); matches (bounded) is only for the lean
+        # weighting below, which doesn't need every row to be representative.
+        p["signals_since_entry_count"] = signal_log.count_for_ticker(p["ticker"], since_ts=p["opened_at"])
+        matches = signal_log.for_ticker(p["ticker"], since_ts=p["opened_at"])
+        if matches:
+            yes_weight = sum(s["size"] * s["confidence"] for s in matches if s["side"] == "yes")
+            no_weight = sum(s["size"] * s["confidence"] for s in matches if s["side"] == "no")
+            total = yes_weight + no_weight
+            p["whale_lean_since_entry"] = {
+                "count": len(matches),
+                "yes_pct": (yes_weight / total * 100) if total else 50.0,
+            }
+        else:
+            p["whale_lean_since_entry"] = None
+    return positions
+
+
+def _enriched_broker_state(paper_broker_instance: PaperBroker, latest_prices: dict[str, float]) -> dict:
+    """broker.state() plus the two enrichments _build_state_body's raw
+    positions/recent_trades otherwise lack (see each enrichment function's
+    own docstring for the real reports behind them) - one call to state()
+    rather than the caller spreading it twice, which would recompute
+    equity()/cost_basis() for every position a second time for nothing."""
+    base = paper_broker_instance.state(latest_prices)
+    return {
+        **base,
+        "positions": _enrich_positions_with_signal_activity(base["positions"]),
+        "recent_trades": _enrich_recent_trades(paper_broker_instance),
+    }
 
 
 _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
@@ -4453,7 +4500,7 @@ def _build_state_body() -> dict:
         "error": state["error"],
         "whale_source": state["whale_source"],
         "risk": {"halted": risk.halted, "halt_reason": risk.halt_reason},
-        "broker": {**broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(broker)},
+        "broker": _enriched_broker_state(broker, state["latest_prices"]),
         "account": state["account"],
         "exchange_status": state["exchange_status"],
         "trade_stream_status": state["trade_stream_status"],
