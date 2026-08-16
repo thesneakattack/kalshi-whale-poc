@@ -3960,6 +3960,91 @@
           <code>docs/profit-maximization-assessment-2026-08-15.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 102 · significance scores and a name for the thing you're changing</div>
+        <h4>Advisory recommendations gain staleness awareness and real statistics</h4>
+        <p>Direct report: "the advisory recommendations arent even telling me the names of the values
+          theyre proposing to change" — true: the setting's actual <code>config_path</code> was buried
+          inside a collapsed "technical details" section, with only a plain-English paraphrase visible
+          by default. Now shown directly under the headline on every card. Separately, direct request:
+          "i want to make sure the advisory and whale-signal are never running on stale data... the
+          advisory should also take into consideration how many samples have been logged after the
+          change... also give me a statistical significance score in addition to the semantics."
+          <code>_drop_stale_recommendations</code> already existed as a binary keep/drop gate (a
+          recommendation whose config field changed more recently than any evidence behind it got
+          dropped entirely) — upgraded to attach a real <code>fresh_samples_since_change</code> count to
+          every surviving recommendation instead, shown as a ⚠ warning when thin (e.g. "2 samples logged
+          since you last changed this setting"). <code>services/stats_power.py</code> gained
+          <code>two_proportion_z_score</code> (win-rate comparisons) and <code>one_sample_t_score</code>
+          (avg-P&amp;L-vs-zero comparisons) — the two real statistical tests behind every comparison this
+          engine's 9 recommendation functions already made informally, wired into all of them and shown
+          on every card ("z = 1.57 — not statistically significant yet" style verdicts, 90/95/99%
+          confidence bands). Also shipped in the same pass: <code>strategy_overrides</code>
+          (per-series/category tuning) is now directly editable from the Config tab — add/edit/remove,
+          backed by a new <code>config_overrides.remove_override()</code> pairing the existing
+          <code>merge_override()</code>'s preserve-siblings contract — instead of only reachable via
+          <code>POST /api/config</code> or hand-editing the YAML; and 10 previously-missing
+          <code>strategy.*</code> Config-tab fields were added (min/max unit cost, close-window timings,
+          the maker-order fields, 3 auto-exit weights) after a systematic diff of every field in
+          <code>config/settings.yaml</code>'s <code>strategy:</code> block against what the Config tab
+          actually exposed. 893 tests passing.</p>
+        <div class="files"><code>services/advisory_engine.py</code> · <code>services/stats_power.py</code> ·
+          <code>services/config_overrides.py</code> · <code>static/index.html</code> ·
+          <code>tests/test_advisory_engine.py</code> · <code>tests/test_stats_power.py</code> ·
+          <code>tests/test_config_overrides.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 103 · the rate limit was never a concurrency problem</div>
+        <h4>Real incident: signal-resolution stall, a wrong rate-limit model, and a full API-usage audit</h4>
+        <p>Direct live report: "why are there SO MANY unresolved signals???" Root cause:
+          <code>signal_log.unresolved_batch()</code> was pure head-of-line blocking — <code>ORDER BY
+          seen_at ASC LIMIT N</code> with no memory of ever having tried a row. A handful of genuinely
+          long-horizon signals (a market closing in 2027, a Fed decision weeks out) sorted to the front
+          of every batch forever, since nothing ever resolved them — confirmed live: 31,833 of 32,101
+          logged signals unresolved, 31,469 of those over 24h old. Fixed with a <code>last_checked_at</code>
+          cooldown column so the query actually progresses through the backlog. That fix made
+          <code>_check_signal_resolutions</code> do real, sustained work for the first time — running
+          concurrently with discovery in the same tick pushed <code>tick_duration</code>/
+          <code>rate_limit_hits</code> to ~40s/200+, repeatedly. A concurrency <code>Semaphore</code> (the
+          same fix pattern used earlier for <code>get_candidate_markets</code>) did not help — confirmed
+          live, still spiking with <code>Semaphore(5)</code>. Reading Kalshi's actual rate-limit docs
+          (<code>docs.kalshi.com/getting_started/rate_limits</code>, at direct instruction rather than
+          continuing to guess) found the real cause: it's a token-bucket <strong>throughput</strong>
+          system (tokens/sec), not concurrency-based at all — a concurrency cap bounds simultaneous
+          requests but does nothing to slow the <em>rate</em> new ones fire. Replaced with a real
+          token-bucket limiter, split into independent read/write buckets matching Kalshi's own
+          architecture (real order placement/cancel now correctly routes to the more conservative write
+          bucket). Fixing the rate limit <em>correctly</em> then exposed a third, bigger problem: discovery's
+          per-refresh <code>get_candidate_markets</code> fetch (12-120 series depending on config) now took
+          proportionally longer under a correctly-conservative limit, blocking the whole tick loop every
+          time a refresh was due — direct report: "you made the market watch list and whale watching
+          grind to a halt and markets aren't even appearing anymore," confirmed live (watchlist collapsed
+          to 7 markets). Direct instruction: "review the api documentation, implement best and recommended
+          practices, and do a full audit of the api usage for the application. no stone unturned." Fixed at
+          the architecture level: discovery, catalog-scanning, and signal-resolution are now independent
+          background tasks (their own cadence, an overlap guard, never awaited by the tick loop);
+          <code>services/market_catalog.py</code> gained <code>open_candidates()</code> (a pure SQLite
+          read) and discovery now reads from it instead of a fresh REST fetch — zero network calls once
+          the catalog is warm; <code>_scan_catalog_batch</code> is no longer gated behind the unused
+          <code>live_markets_only</code> flag (it turned out to already have 4,160+ series scanned from an
+          earlier period, just sitting unused); <code>_fetch_account_snapshot</code> (balance/positions/
+          fills) was found making 3 uncached REST calls every single tick, now interval-cached. Verified
+          live: markets recovered from the crisis low of 7 to a stable ~32, zero rate-limit errors
+          throughout. Real open item, not yet root-caused: <code>tick_duration</code> stabilized around
+          ~27s, not the pre-incident ~3s baseline (leading hypothesis — uncached open-position tickers —
+          checked directly and ruled out). A WS-based real-position-feed (direct request: "the open
+          positions should feed from the websocket stream") was deliberately deferred rather than shipped
+          unverified — <code>fill</code> events cannot occur while <code>trading_enabled</code> is off, so
+          there is no live message to confirm parsing against; see <code>docs/next-steps-2026-08-15-pt2.md</code>
+          for the three ways forward. 899 tests passing.</p>
+        <div class="files"><code>services/signal_log.py</code> · <code>services/http_client.py</code> ·
+          <code>services/kalshi_account_client.py</code> · <code>services/market_catalog.py</code> ·
+          <code>main.py</code> · <code>tests/test_signal_log.py</code> · <code>tests/test_http_client.py</code> ·
+          <code>tests/test_market_catalog.py</code> ·
+          <code>docs/next-steps-2026-08-15-pt2.md</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -4038,7 +4123,10 @@
           <tr><td class="mod">services/ml_feed.py</td><td class="note"><code>build_context_snapshot()</code>, a pure function shaping the bundle an LLM agent reads alongside the advisory engine — wired for real as of phase 55, consumed by <code>main.py</code>'s <code>_run_market_analyst_for_ticker()</code> (below) after sitting unwired since it was first scaffolded</td><td class="loc">69</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/market_analyst_agent.py</td><td class="note">the "doctorate-level prediction market trader" agent, direct request — an LLM (Anthropic SDK, tool-forced structured output via <code>tool_choice</code>) reads a market's real title/rules/price plus this app's own accumulated whale/advisory track record (<code>ml_feed.build_context_snapshot()</code>) <i>and its own past accuracy</i> (<code>stats()</code>, folded into the prompt as of phase 56 so it can self-calibrate) and forms an independent probability estimate + reasoning, recorded to <code>data/market_analyst.db</code> and later graded against real settlement (<code>resolve_from_market_results()</code>, hit rate + Brier score). On-demand only as of phase 56 (button-triggered, not a background scan) — see <code>main.py</code>'s row. Advisory-only — never places a trade or writes config. Dual-gated: inert unless both <code>market_analyst.enabled</code> (config) and a real <code>ANTHROPIC_API_KEY</code> (.env) are set; <code>anthropic</code> is an optional import, never raises. <code>analyst_lean()</code> (a cheap DB read, no API call) feeds both trading engines' confidence scoring — see <code>whale_simulator.py</code>/<code>kalshi_trade_tape.py</code>/<code>market_strategy.py</code> rows. <code>build_prompt()</code> also reads liquidity/open-interest/last-price as of phase 57, previously fetched but silently dropped before reaching the prompt. <code>analyze_market()</code>'s except block now captures and prints the real exception instead of discarding it silently (phase 67). 28 new tests. Phase 72: new per-series analysis mode - a separate <code>series_analyses</code> table, <code>record_series_analysis</code> tool schema, <code>analyze_series()</code> - judges a whole series' whale-signal/closed-trade quality and can suggest <code>strategy.excluded_series</code> changes, landing in the same unified suggestion shape <code>advisory_engine.py</code> uses. Phase 73: third table <code>full_spectrum_analyses</code> + widened multi-suggestion tool schema for "Feed the Analyst" - can suggest a change to any existing config field, validated server-side before being appliable</td><td class="loc">799</td><td><span class="pill gated">built, off by default</span></td></tr>
           <tr><td class="mod">services/market_history.py</td><td class="note">real per-market snapshot log (price/spread/volume/time-to-close) + settlement outcomes, logged every tick independent of whale signals — <code>momentum()</code>, <code>compute_hypothetical_trades()</code> (explicitly hypothetical backtest analysis), <code>data/market_history.db</code>. New <code>clear_all()</code> (phase 67) wires it into the Danger Zone reset, matching <code>market_catalog.clear_all()</code>'s identical shape</td><td class="loc">221</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/market_catalog.py</td><td class="note">incrementally-scanned, near-term-only (1 week past – 3 weeks future) catalog of real markets across far more series than the top-40-by-volume discovery samples — least-recently-scanned-first rotation batched 40 series/tick, powers <code>kalshi.live_markets_only</code> discovery and <code>/api/markets/search</code>'s <code>live_only</code> path, <code>data/market_catalog.db</code>. Gated behind <code>kalshi.live_markets_only</code>, zero cost otherwise. Title/sub-title fields now sourced from the shared <code>title_cache.market_title_fields()</code> builder (phase 65) instead of a third independent copy of that fallback logic</td><td class="loc">248</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/market_catalog.py</td><td class="note">incrementally-scanned, near-term-only (1 day past – 3 weeks future) catalog of real markets across far more series than the top-40-by-volume discovery samples — least-recently-scanned-first rotation batched 40 series/tick, <code>data/market_catalog.db</code>. Powers <code>kalshi.live_markets_only</code> discovery and <code>/api/markets/search</code>'s <code>live_only</code> path as before; phase 103 (2026-08-15) removed the <code>live_markets_only</code> gate entirely (scoped to <code>kalshi.categories</code> instead) and added <code>open_candidates()</code>, a pure-SQLite/zero-REST-cost read that the <em>default</em> (non-live-only) discovery path now sources from too, instead of a fresh <code>get_candidate_markets</code> fetch per refresh. Title/sub-title fields sourced from the shared <code>title_cache.market_title_fields()</code> builder (phase 65)</td><td class="loc">317</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/event_lifecycle.py</td><td class="note">pre-tail/mid-series/post-tail activity-phase classification (tournament-style vs single-game detection via <code>mutually_exclusive</code> + sibling count) — closes a real bug where a multi-day tournament's whale signals got skipped as "close time is not within the trade window" mid-tournament (confirmed live: <code>KXPGATOUR-FESJC26</code>, real dates Aug 13-16, was being rejected on day 3). Wired into discovery ranking (<code>phase_ranked</code>) and <code>is_live</code> computation; <code>series_evaluator</code>/watchlist-eviction integration still open</td><td class="loc">178</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/event_schedule.py</td><td class="note">resolves a real event's actual start time via a 4-source waterfall (<code>Event.strike_date</code> → Kalshi's milestone API → rules-text regex → keyless DuckDuckGo web search), each confirmed against live Kalshi data. Built and unit-tested at the function level; not yet called from anywhere in <code>main.py</code>'s tick loop — see <code>docs/next-steps-2026-08-15-pt2.md</code></td><td class="loc">335</td><td><span class="pill planned">built, not wired</span></td></tr>
+          <tr><td class="mod">services/series_cache.py</td><td class="note">persists the ~9,400-series catalog (<code>state["series_cache"]</code>) across restarts, <code>data/series_cache.db</code> — a <code>uvicorn --reload</code> restart no longer forces an immediate full re-fetch of data that's still fresh per its own 1h TTL, same fix shape as <code>title_cache.py</code>'s own restart-survival</td><td class="loc">72</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/market_strategy.py</td><td class="note"><code>MarketNativeStrategy</code> — a second, fully independent automated paper strategy, momentum continuation gated by price-band/spread/volume/time-to-close filters, zero whale-signal input by design — but as of phase 56, <code>_entry_confidence()</code> also folds in <code>market_analyst_agent.analyst_lean()</code> when a fresh estimate exists for that exact ticker (conditionally added to the averaged factor set, not a fixed weight, so an ordinary momentum-only entry is completely unaffected when nobody has analyzed that market). <code>check_exits</code>' <code>pnl_pct</code> is fee-inclusive and <code>evaluate_all()</code>'s kill-switch check uses real equity, not bankroll-only (phase 58, same fixes as strategy_engine.py) — also fixed a real live regression the equity fix introduced (an unguarded <code>float()</code> on an empty-string price aborting the tick before title-fetching ran) and the identical pre-existing latent bug in <code>check_exits</code>' own price lookup. Own capital pool (<code>main.py</code>'s <code>market_broker</code>/<code>market_risk</code>). Disabled by default (<code>market_strategy.enabled</code>), backend-only, no dashboard panel yet. Phases 75-76: concentration-risk + edge-aware sizing checks now shared with <code>strategy_engine.py</code>. Phase 78: every discovery/entry gate (<code>min_price</code>/<code>max_price</code>/<code>max_spread</code>/<code>min_volume_24h</code>/<code>min_seconds_to_close</code>/<code>min_momentum_delta</code>/<code>entry_confidence_threshold</code>) now logs its rejections to <code>candidate_log.record_rejection()</code></td><td class="loc">307</td><td><span class="pill gated">built, disabled by default</span></td></tr>
           <tr><td class="mod">services/title_cache.py</td><td class="note">write-through persistence for market/event titles (<code>data/title_cache.db</code>) — survives <code>uvicorn --reload</code> restarts and watchlist rotation, fixing raw tickers leaking into signal history/clusters/positions; event rows also carry <code>mutually_exclusive</code> (tells a 2-outcome inversion pair apart from independent sibling props or a genuine multi-outcome market) and <code>competition</code>/<code>competition_scope</code> (real display context, e.g. "Wyndham Championship"). New <code>market_title_fields()</code> (phase 65) is the single shared title/yes_sub_title/no_sub_title builder, replacing three independently-drifting copies (<code>main.py</code> x2, <code>market_catalog.py</code>)</td><td class="loc">169</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>

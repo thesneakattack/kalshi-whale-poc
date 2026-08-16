@@ -230,6 +230,68 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     return results
 
 
+def open_candidates(categories: list[str] | None = None, min_volume: float = 0) -> list[dict]:
+    """Every open/active catalog market in the given categories (all
+    categories if None) above min_volume, sorted by volume descending - no
+    occurrence-time window at all, unlike candidates_in_window (built for
+    the narrower "what's live right now" question). Direct incident
+    (2026-08-15): "you made the market watch list and whale watching grind
+    to a halt" - the default (non-live-only) discovery path used to spend
+    a real get_candidate_markets REST call (one per series, tens to over a
+    hundred per refresh) every time its cache went stale, discovering
+    the SAME thing this already-persistent, already-incrementally-scanned
+    catalog exists to answer for free. upsert_markets() already rejects
+    anything outside the catalog's own near-term horizon
+    (_MAX_PAST_HORIZON_SEC/_MAX_FUTURE_HORIZON_SEC) at write time, so
+    every row in here is already schedule-reasonable without this query
+    needing its own window on top.
+
+    Same real-market-shaped dict return convention as candidates_in_window
+    (occurrence_datetime/close_time as ISO strings) so callers can treat a
+    row exactly like a freshly-fetched Kalshi market object."""
+    with _connect(DB_PATH) as conn:
+        if categories:
+            placeholders = ",".join("?" for _ in categories)
+            rows = conn.execute(
+                f"""
+                SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
+                       title, yes_sub_title, no_sub_title
+                FROM markets
+                WHERE volume_24h_fp >= ? AND category IN ({placeholders})
+                  AND (status IS NULL OR status = 'open' OR status = 'active')
+                ORDER BY volume_24h_fp DESC
+                """,
+                (min_volume, *categories),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
+                       title, yes_sub_title, no_sub_title
+                FROM markets
+                WHERE volume_24h_fp >= ?
+                  AND (status IS NULL OR status = 'open' OR status = 'active')
+                ORDER BY volume_24h_fp DESC
+                """,
+                (min_volume,),
+            ).fetchall()
+    cols = (
+        "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",
+        "title", "yes_sub_title", "no_sub_title",
+    )
+    results = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        occurrence_ts = d.pop("occurrence_ts")
+        if occurrence_ts is not None:
+            d["occurrence_datetime"] = _to_iso(occurrence_ts)
+        close_ts = d.pop("close_ts")
+        if close_ts is not None:
+            d["close_time"] = _to_iso(close_ts)
+        results.append(d)
+    return results
+
+
 def _to_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 

@@ -183,3 +183,65 @@ def test_clear_all_wipes_both_tables(tmp_path, monkeypatch):
     progress = cat.scan_progress()
     assert progress["scanned_series"] == 0
     assert progress["total_markets"] == 0
+
+
+# --- open_candidates (2026-08-15 direct incident: "you made the market
+# watch list and whale watching grind to a halt" - discovery now reads the
+# already-persistent catalog instead of a fresh REST fetch per refresh) ---
+
+def test_open_candidates_sorted_by_volume_descending(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("SER-A", "Sports", [_market("LOW", "EVT-A", occurrence_offset_sec=3600, volume=100)], updated_at=now)
+    cat.upsert_markets("SER-B", "Sports", [_market("HIGH", "EVT-B", occurrence_offset_sec=3600, volume=9000)], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert [r["ticker"] for r in result] == ["HIGH", "LOW"]
+
+
+def test_open_candidates_filters_by_category(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("SER-A", "Sports", [_market("SPORT-1", "EVT-A", occurrence_offset_sec=3600)], updated_at=now)
+    cat.upsert_markets("SER-B", "Crypto", [_market("CRYPTO-1", "EVT-B", occurrence_offset_sec=3600)], updated_at=now)
+    result = cat.open_candidates(categories=["Sports"], min_volume=0)
+    assert [r["ticker"] for r in result] == ["SPORT-1"]
+
+
+def test_open_candidates_no_categories_returns_all(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("SER-A", "Sports", [_market("SPORT-1", "EVT-A", occurrence_offset_sec=3600)], updated_at=now)
+    cat.upsert_markets("SER-B", "Crypto", [_market("CRYPTO-1", "EVT-B", occurrence_offset_sec=3600)], updated_at=now)
+    result = cat.open_candidates(categories=None, min_volume=0)
+    assert {r["ticker"] for r in result} == {"SPORT-1", "CRYPTO-1"}
+
+
+def test_open_candidates_respects_min_volume(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("SER-A", "Sports", [_market("LOW", "EVT-A", occurrence_offset_sec=3600, volume=50)], updated_at=now)
+    cat.upsert_markets("SER-B", "Sports", [_market("HIGH", "EVT-B", occurrence_offset_sec=3600, volume=5000)], updated_at=now)
+    result = cat.open_candidates(min_volume=1000)
+    assert [r["ticker"] for r in result] == ["HIGH"]
+
+
+def test_open_candidates_excludes_closed_status(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("SER-A", "Sports", [_market("OPEN-1", "EVT-A", occurrence_offset_sec=3600, status="open")], updated_at=now)
+    cat.upsert_markets("SER-B", "Sports", [_market("CLOSED-1", "EVT-B", occurrence_offset_sec=3600, status="closed")], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert [r["ticker"] for r in result] == ["OPEN-1"]
+
+
+def test_open_candidates_carries_real_display_titles_and_schedule(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _market("TICK-A", "EVT-A", occurrence_offset_sec=3600, close_offset_sec=7200)
+    m["title"] = "Real Title"
+    cat.upsert_markets("SER-A", "Sports", [m], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert result[0]["title"] == "Real Title"
+    assert result[0]["event_ticker"] == "EVT-A"
+    assert "occurrence_datetime" in result[0]
+    assert "close_time" in result[0]

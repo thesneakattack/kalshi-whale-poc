@@ -100,6 +100,28 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
+- [ ] `docs/next-steps-2026-08-15-pt2.md` — real live incident, same day as
+      the entry below: signal-resolution head-of-line blocking (99.2% of
+      logged signals stuck unresolved) led to discovering the rate-limit
+      model was wrong (concurrency-based assumption; Kalshi's real limit is
+      token-bucket throughput-based, per `docs.kalshi.com/getting_started/
+      rate_limits`), which correctly-fixed then exposed discovery's
+      per-refresh REST fetch as a tick-blocking bottleneck ("markets
+      aren't even appearing," confirmed live: watchlist collapsed to 7).
+      Fixed via a full API-usage audit: discovery/catalog-scan/signal-
+      resolution all now independent background tasks; discovery reads
+      `market_catalog.open_candidates()` (pure SQLite, zero REST calls)
+      instead of a fresh fetch; catalog scanning no longer gated behind
+      the unused `live_markets_only` flag; account snapshot (balance/
+      positions/fills) was 3 uncached REST calls every tick, now interval-
+      cached. Verified live: 7 → 32 markets recovered, zero rate-limit
+      errors. Open items in the doc: tick_duration still ~27s not ~3s
+      (root cause not yet found — leading hypothesis checked and ruled
+      out), a WS-based real-position-feed decision (blocked on being
+      unable to verify message parsing against real data while real
+      trading stays off), `services/event_schedule.py`'s tick-loop wiring
+      (built same day, not yet called from anywhere), and market-search
+      decision-market granularity. 899 tests passing.
 - [x] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
       to consume every research/planning doc in the repo (10 docs) and
       produce a comprehensive forward-looking plan, cross-checked against
@@ -1091,3 +1113,37 @@ works" to "flip it for real" still has open operational questions.
   not baseball-specific) is the more likely source of the "few prints"
   impression — no code change made for either, since nothing was actually
   broken.
+- **2026-08-15 session, advisory significance + staleness**: recommendation
+  cards were showing a plain-English paraphrase and hiding the actual
+  `config_path` inside a collapsed "technical details" section — direct
+  report ("the advisory recommendations arent even telling me the names of
+  the values") — now shown directly under the headline on every card.
+  `services/advisory_engine.py`'s `_drop_stale_recommendations` upgraded
+  from a binary keep/drop staleness gate into a real `fresh_samples_
+  since_change` count attached to every surviving recommendation (shown as
+  a ⚠ warning when thin). `services/stats_power.py` gained
+  `two_proportion_z_score`/`one_sample_t_score`, wired into all 9
+  recommendation-generating functions and shown on every card
+  (`z = 1.57 — not statistically significant yet` style verdicts) — direct
+  request for "a statistical significance score in addition to the
+  semantics." Also: `strategy_overrides` (per-series/category tuning) is
+  now directly editable from the Config tab instead of only via
+  `POST /api/config`/hand-editing the YAML, and 10 previously-missing
+  `strategy.*` Config-tab fields were added (min/max unit cost,
+  close-window timings, the maker-order fields, 3 auto-exit weights).
+  893 tests passing.
+- **2026-08-15 session, rate-limit incident + API usage audit**: see
+  `docs/next-steps-2026-08-15-pt2.md` for the full incident writeup
+  (linked from the P4 item above) — signal-resolution head-of-line
+  blocking, the concurrency-vs-throughput rate-limit model correction,
+  and discovery's REST fetch blocking the tick loop ("markets aren't even
+  appearing," confirmed live) all root-caused and fixed. Discovery,
+  catalog-scanning, and signal-resolution decoupled into independent
+  background tasks; discovery unified onto `market_catalog`'s
+  already-persistent data (zero REST cost once warm); account snapshot
+  (balance/positions/fills) moved from 3 uncached REST calls every tick to
+  a 20s interval cache. Verified live: markets recovered from a crisis low
+  of 7 to a stable ~32, zero rate-limit errors throughout. 899 tests
+  passing. Real open item, not yet root-caused: tick_duration stabilized
+  around ~27s, not the pre-incident ~3s baseline — see the doc for what's
+  been ruled out and what to check next.

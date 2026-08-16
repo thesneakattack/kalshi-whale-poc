@@ -142,7 +142,7 @@ state = {
     # case after a restart is one resolution-check running a few seconds
     # earlier than its interval would otherwise allow, not a correctness
     # issue worth a whole persistence layer over.
-    "signal_resolution_check": {"last_checked_at": 0.0},
+    "signal_resolution_check": {"last_checked_at": 0.0, "checking": False, "task": None},
     # Seeded from data/series_cache.db (services/series_cache.py, 2026-08-15)
     # rather than the empty shape - same "a restart shouldn't force an
     # immediate re-fetch of data that's still fresh per its own TTL" fix as
@@ -158,7 +158,15 @@ state = {
     # own-policy the moment a restart finished loading it back - there's no
     # "still fresh" window worth protecting the way series_cache's 1h one
     # is.
-    "discovery_cache": {"fetched_at": 0.0, "markets": []},  # see _DISCOVERY_REFRESH_SEC
+    # "refreshing" (2026-08-15) - guards _maybe_refresh_discovery_cache
+    # against launching a second overlapping background refresh while one
+    # is still in flight; "task" holds the asyncio.Task itself so it isn't
+    # garbage-collected mid-flight (a real asyncio footgun - a task with no
+    # live reference anywhere can be collected before it completes).
+    "discovery_cache": {"fetched_at": 0.0, "markets": [], "refreshing": False, "task": None},  # see _DISCOVERY_REFRESH_SEC
+    # Same background-task decoupling as discovery_cache above, for
+    # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
+    "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
     # Seeded from data/event_schedule.db (services/event_schedule.py,
     # 2026-08-15) - event_ticker -> {"start_ts", "end_ts", "source",
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's
@@ -549,18 +557,26 @@ _PINNED_MARKET_REFRESH_SEC = 300  # structural fields (title, close_time, status
 # manually-pinned ticker change rarely - price freshness comes from the WS ticker stream instead
 # (see _fetch_markets' live-price overlay), not from re-fetching the whole market object every tick.
 
-_DISCOVERY_REFRESH_SEC = 90  # 2026-08-15 direct instruction: "websocket stream everything you can
-# where you can, and leave the api calls for things that are absolutely necessary." *Which* markets
-# are worth watching genuinely needs periodic REST - Kalshi's WS API has no "stream me category X"
-# channel, only per-ticker subscriptions - but it doesn't need to re-run get_candidate_markets'
-# concurrent per-series fetch on every single 5-20s tick to stay useful. Real live incident this
-# fixes: re-running full discovery every tick (12-72 concurrent series fetches, depending on
-# top_series_per_category) was hitting Kalshi's real rate limits hard enough to push tick duration
-# past 15-20s. Between refreshes, the same selected market list is reused with live prices overlaid
-# from state["latest_prices"]/state["latest_asks"] (already kept fresh every tick by the WS
-# ticker-channel stream - see _process_stream_ticker and this function's own set_market_tickers
-# call) instead of re-fetched via REST, so price freshness is fully decoupled from how often the
-# underlying selection itself gets re-run.
+_DISCOVERY_REFRESH_SEC = 300  # 2026-08-15, second incident on the same code path: "you made the
+# market watch list and whale watching grind to a halt and markets aren't even appearing anymore."
+# The first fix (this constant alone, at 90s, still AWAITED inline every time it was due) was
+# necessary but not sufficient - once services/http_client.py's rate limiter was corrected from a
+# concurrency cap to the real token-bucket throughput limit Kalshi actually enforces (see that
+# module's own comment), the SAME 12-120-series get_candidate_markets fetch this constant gates
+# takes proportionally longer under a correctly-conservative rate (tens of seconds to minutes, not
+# the old, rate-limit-violating handful of seconds) - and every tick where a refresh was due
+# BLOCKED on it, stalling signal handling/trade execution/whale-tape processing behind a fetch for
+# data (which series/markets exist right now) that changes on the order of minutes, not seconds.
+# Fixed at the root below (_maybe_refresh_discovery_cache runs this as a genuinely independent
+# background task, never awaited by the tick loop - a tick always reads whatever's already cached,
+# even if stale) rather than by only tuning this number again; 300s (was 90s) on top of that is a
+# real reduction in total REST volume for non-trading data unlikely to change tick-to-tick, not a
+# response to a timing problem the background-task fix above already solves independently. Between
+# refreshes (now always, not just "between" in the blocking sense), the same selected market list
+# is reused with live prices overlaid from state["latest_prices"]/state["latest_asks"] (kept fresh
+# every tick by the WS ticker-channel stream - see _process_stream_ticker and this function's own
+# set_market_tickers call), so price freshness is fully decoupled from how often the underlying
+# selection itself gets re-run.
 
 
 async def _get_series_cache(client: KalshiClient) -> list[dict]:
@@ -634,17 +650,27 @@ _CATALOG_SCAN_BATCH_SIZE = 40
 async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
     """Incrementally builds market_catalog's near-term market catalog, a
     bounded batch (least-recently-scanned series first, see market_catalog.
-    next_series_to_scan) per tick - see market_catalog.py's own module
+    next_series_to_scan) per call - see market_catalog.py's own module
     docstring for the full "why": volume-ranking the top 40 series
     systematically misses markets that are live right now but sit in a
     lower-volume series, confirmed directly against real Kalshi data (found
     ~0 of the real live markets the user could see on Kalshi's own site).
-    Only runs when kalshi.live_markets_only is on - zero extra API cost for
-    anyone who hasn't opted into that feature, same "free for everyone
-    else" precedent as every other opt-in feature in this app."""
-    if not cfg["kalshi"].get("live_markets_only"):
-        return
+
+    No longer gated behind kalshi.live_markets_only (2026-08-15, direct
+    "no stone unturned" API audit) - this catalog is now the primary
+    source for the DEFAULT (non-live-only) discovery path too (see
+    market_catalog.open_candidates/_refresh_discovery_cache), not just the
+    live-only one, so it needs to stay warm regardless of that flag.
+    Scoped to cfg["kalshi"]["categories"] rather than every one of
+    Kalshi's ~9,400 series - this app only ever trades within its
+    configured categories, so scanning outside them would be pure waste,
+    exactly what this pass exists to eliminate. No categories configured
+    falls back to scanning everything (matches _get_top_series' own
+    no-categories fallback)."""
     all_series = await _get_series_cache(client)
+    categories = cfg["kalshi"].get("categories")
+    if categories:
+        all_series = [s for s in all_series if s.get("category") in categories]
     batch = market_catalog.next_series_to_scan(all_series, _CATALOG_SCAN_BATCH_SIZE)
     if not batch:
         return
@@ -677,6 +703,43 @@ async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
             print(f"[market_catalog] scan failed for {s['ticker']!r}, will retry next tick: {result!r}")
     if succeeded:
         market_catalog.mark_scanned(succeeded, scanned_at=now)
+
+
+_CATALOG_SCAN_MIN_INTERVAL_SEC = 15  # how often a new background batch may be KICKED OFF - the
+# shared token-bucket rate limiter (services/http_client.py), not this interval, is what actually
+# keeps the real aggregate call rate safe; this just avoids spawning pointless overlapping tasks.
+
+
+def _maybe_scan_catalog_batch(cfg: dict) -> None:
+    """Triggers _scan_catalog_batch as an independent background task on
+    its own steady interval, decoupled from the main tick entirely - same
+    pattern (and same 2026-08-15 "no stone unturned" API audit) as
+    discovery's own _maybe_refresh_discovery_cache. Synchronous/non-
+    blocking on purpose, exactly like that sibling function."""
+    catalog_state = state["catalog_scan"]
+    now_ts = time.time()
+    due = now_ts - catalog_state["last_started_at"] > _CATALOG_SCAN_MIN_INTERVAL_SEC
+    if due and not catalog_state["scanning"]:
+        catalog_state["scanning"] = True
+        catalog_state["last_started_at"] = now_ts
+        catalog_state["task"] = asyncio.create_task(_scan_catalog_batch_background(cfg))
+
+
+async def _scan_catalog_batch_background(cfg: dict) -> None:
+    """Owns its own KalshiClient (not the calling tick's, which closes at
+    the end of that same tick - see _refresh_discovery_cache's identical
+    reasoning) and delegates the real work to _scan_catalog_batch
+    unchanged, so its existing behavior/tests keep working when called
+    directly with an explicit client."""
+    catalog_state = state["catalog_scan"]
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        await _scan_catalog_batch(client, cfg)
+    except Exception as exc:
+        print(f"[market_catalog] background scan batch failed entirely, will retry next cycle: {exc!r}")
+    finally:
+        catalog_state["scanning"] = False
+        await client.close()
 
 
 def _series_meta_map(series_tickers: set[str]) -> dict:
@@ -850,6 +913,97 @@ async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list
     ]
 
 
+def _maybe_refresh_discovery_cache(cfg: dict) -> None:
+    """Kicks off _refresh_discovery_cache as an independent background
+    task if the cache is stale and no refresh is already running - never
+    awaited by the calling tick (see _fetch_markets' own comment, and
+    _DISCOVERY_REFRESH_SEC's, for the incident this fixes). Synchronous on
+    purpose: this only ever schedules work, it never does any I/O of its
+    own, so there's nothing to await here even though the work it
+    schedules is async. Stores the created Task on discovery_cache itself
+    so it isn't garbage-collected mid-flight - a live asyncio footgun, a
+    Task object with no reference anywhere can be collected before it
+    completes even though it's still "running" on the event loop."""
+    disc_cache = state["discovery_cache"]
+    now_ts = time.time()
+    stale = now_ts - disc_cache["fetched_at"] > _DISCOVERY_REFRESH_SEC
+    if stale and not disc_cache["refreshing"]:
+        disc_cache["refreshing"] = True
+        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache(cfg))
+
+
+async def _refresh_discovery_cache(cfg: dict) -> None:
+    """Discovery's selection pipeline, now sourced entirely from
+    market_catalog's already-persisted, independently-scanned data
+    (services/market_catalog.py's open_candidates) instead of a fresh
+    get_candidate_markets REST fetch per series - 2026-08-15 direct "no
+    stone unturned" API audit, the definitive fix for the same incident
+    _DISCOVERY_REFRESH_SEC's own comment describes: "no more excessive api
+    calls to get non trading data that is unlikely to change." Zero
+    network calls of its own - open_candidates is a pure SQLite read, so
+    this function needs no KalshiClient at all anymore (the catalog stays
+    warm via the fully separate _scan_catalog_batch/_maybe_scan_catalog_
+    batch background task, paced independently by the same shared rate
+    limiter). Still run as a background task (async def, still triggered
+    by _maybe_refresh_discovery_cache below) rather than inlined
+    synchronously - defensive: a SQLite query + phase_ranked/
+    round_robin_select over a large, still-growing catalog should stay
+    fast, but "still fast" isn't a promise worth betting the tick loop's
+    responsiveness on now that it doesn't have to.
+
+    Selects the top top_series_per_category DISTINCT SERIES per category
+    by walking open_candidates' already volume-sorted rows (mirrors the
+    old _get_top_series' per-category cap exactly, just computed from
+    current per-market catalog volume instead of a series' lifetime
+    total - arguably the more relevant signal for "worth watching right
+    now," not a weaker substitute for it), then keeps only markets
+    belonging to a selected series before phase-ranking/final selection -
+    unchanged from before this fix."""
+    disc_cache = state["discovery_cache"]
+    try:
+        min_volume = cfg["kalshi"].get("min_volume_24h", 0)
+        categories = cfg["kalshi"].get("categories")
+        top_n_per_category = cfg["kalshi"].get("top_series_per_category", 12)
+        catalog_rows = market_catalog.open_candidates(categories=categories, min_volume=min_volume)
+        selected_series_by_category: dict[str, list[str]] = {}
+        for row in catalog_rows:
+            cat, series = row.get("category"), row.get("series_ticker")
+            if not cat or not series:
+                continue
+            bucket = selected_series_by_category.setdefault(cat, [])
+            if series not in bucket and len(bucket) < top_n_per_category:
+                bucket.append(series)
+        selected_series = {s for bucket in selected_series_by_category.values() for s in bucket}
+        if cfg.get("series_evaluator", {}).get("enabled"):
+            ineligible = series_evaluator.ineligible_series(time.time())
+            selected_series -= set(ineligible)
+        candidates = [r for r in catalog_rows if r.get("series_ticker") in selected_series]
+        el_cfg = cfg.get("event_lifecycle") or {}
+        candidates = event_lifecycle.phase_ranked(
+            candidates, state["event_titles"], now=time.time(),
+            tournament_min_siblings=el_cfg.get("tournament_min_siblings", 4),
+            tournament_pretail_days=el_cfg.get("tournament_pretail_days", 5.0),
+            pre_tail_volume_weight=el_cfg.get("pre_tail_volume_weight", 0.4),
+            post_tail_volume_weight=el_cfg.get("post_tail_volume_weight", 0.2),
+        )
+        markets = KalshiClient.round_robin_select(
+            candidates, cfg["kalshi"]["watchlist_size"],
+            max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
+        )
+        disc_cache["markets"] = list(markets)
+        disc_cache["fetched_at"] = time.time()
+    except Exception as exc:
+        # No logging framework exists anywhere in this app yet (same gap
+        # _scan_catalog_batch's own per-series failure print already
+        # documented) - stdout is captured by `ddev logs -s fastapi`, so a
+        # failed background refresh is at least visible there instead of
+        # vanishing with zero trace. The stale cache stays in place and
+        # _maybe_refresh_discovery_cache will try again next time it's due.
+        print(f"[discovery] background refresh failed, will retry next cycle: {exc!r}")
+    finally:
+        disc_cache["refreshing"] = False
+
+
 async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[str] | None = None) -> list[dict]:
     # Real live report (2026-08-15): kalshi.markets_watchlist used to be a
     # strict either/or with discovery below - a non-empty pinned list
@@ -970,67 +1124,19 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # as the rest of this app.
         markets = [hydrated_by_ticker.get(m["ticker"], m) for m in markets]
     else:
-        # Discovery caching (2026-08-15, _DISCOVERY_REFRESH_SEC's own
-        # docstring has the full incident) - the actual REST discovery
-        # pipeline below only re-runs every _DISCOVERY_REFRESH_SEC, not
-        # every tick; in between, the previous selection is reused as-is
-        # (price freshness comes from the WS ticker stream via the
-        # overlay right before this function returns, not from re-running
-        # this block).
-        disc_cache = state["discovery_cache"]
-        now_ts = time.time()
-        if now_ts - disc_cache["fetched_at"] <= _DISCOVERY_REFRESH_SEC and disc_cache["markets"]:
-            markets = list(disc_cache["markets"])
-        else:
-            top_series = await _get_top_series(
-                client, categories=cfg["kalshi"].get("categories"),
-                top_n_per_category=cfg["kalshi"].get("top_series_per_category", 12),
-            )
-            # series_evaluator's BEFORE-check, same as the live-only branch
-            # above - filtered here (the series pool itself) rather than
-            # after selection, for the same reason as before: no seam to
-            # filter between fetch and selection otherwise. top_series
-            # entries are real Kalshi series_ticker values; this app's own
-            # existing precedent (main.py's _series_meta_map) already
-            # treats those as interchangeable with series_of()'s
-            # ticker-prefix heuristic "in practice," so reusing that same
-            # assumption here isn't a new risk.
-            if cfg.get("series_evaluator", {}).get("enabled"):
-                ineligible = series_evaluator.ineligible_series(time.time())
-                top_series = [s for s in top_series if s not in ineligible]
-            # Event-lifecycle-aware ranking (2026-08-15, docs/hardening-and-
-            # accuracy-roadmap-2026-08-11.md Part 1, integration point 1) -
-            # this was the doc's own confirmed root cause: "the *default*
-            # (non-live-only) discovery path never looks at
-            # occurrence_datetime at all." Split from the old bundled
-            # get_top_volume_markets call (same two-step shape the
-            # live-markets-only branch above already uses) purely to get a
-            # seam to phase-rerank between fetch and final selection -
-            # candidates is already volume-sorted, phase_ranked() re-sorts
-            # it so mid_series candidates outrank pre_tail/post_tail ones of
-            # similar volume before round_robin_select makes its cut,
-            # rather than after (too late to recover a candidate that
-            # volume-only selection already dropped). state["event_titles"]
-            # may be a tick behind for brand-new events - phase_ranked
-            # degrades to the safe single-game-shaped window for those
-            # (mutually_exclusive unknown -> not tournament-style), same
-            # "don't guess" idiom as everywhere else this app uses cached
-            # event metadata.
-            el_cfg = cfg.get("event_lifecycle") or {}
-            candidates = await client.get_candidate_markets(min_volume, top_series)
-            candidates = event_lifecycle.phase_ranked(
-                candidates, state["event_titles"], now=time.time(),
-                tournament_min_siblings=el_cfg.get("tournament_min_siblings", 4),
-                tournament_pretail_days=el_cfg.get("tournament_pretail_days", 5.0),
-                pre_tail_volume_weight=el_cfg.get("pre_tail_volume_weight", 0.4),
-                post_tail_volume_weight=el_cfg.get("post_tail_volume_weight", 0.2),
-            )
-            markets = KalshiClient.round_robin_select(
-                candidates, cfg["kalshi"]["watchlist_size"],
-                max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
-            )
-            disc_cache["markets"] = list(markets)
-            disc_cache["fetched_at"] = now_ts
+        # Discovery caching (2026-08-15, direct incident: "you made the
+        # market watch list and whale watching grind to a halt and markets
+        # aren't even appearing anymore") - a tick NEVER awaits the REST
+        # discovery pipeline itself anymore, only reads whatever's already
+        # in state["discovery_cache"] (possibly empty on a cold start,
+        # possibly stale by up to _DISCOVERY_REFRESH_SEC - never blocking).
+        # The actual fetch runs as an independent background task (see
+        # _maybe_refresh_discovery_cache/_refresh_discovery_cache below) -
+        # price freshness still comes from the WS ticker-stream overlay
+        # right before this function returns, completely decoupled from
+        # how often the underlying series/market *selection* gets re-run.
+        _maybe_refresh_discovery_cache(cfg)
+        markets = list(state["discovery_cache"]["markets"])
 
     # Merge in the pinned watchlist fetched at the top of this function -
     # always included, never counted against watchlist_size (same "always
@@ -1445,6 +1551,23 @@ def _slim_fill(f: dict) -> dict:
     return {k: f.get(k) for k in _FILL_FIELDS}
 
 
+_ACCOUNT_SNAPSHOT_REFRESH_SEC = 20  # 2026-08-15 "no stone unturned" API audit - this used to fetch
+# balance/positions/fills via 3 uncached REST calls on literally every tick, unconditionally, the
+# one real REST-call site this whole pass hadn't touched yet. A real Kalshi WS channel exists for
+# this (market_positions/fill, confirmed in docs/kalshi/websocket-connection.md's channel list) but
+# fill events specifically cannot be observed or verified against real data right now - real trading
+# is off (kalshi_account.trading_enabled: false, same P0 safety gate as always), so no order can ever
+# fill, so there is no live message to confirm this app's parsing of that channel's real shape
+# against. Shipping unverified parsing for real-account financial data is exactly the class of risk
+# CLAUDE.md's safety posture warns against - a wrong field name would silently misreport real
+# positions, not just crash loudly. A real interval cache is the safe, immediately-effective
+# version of the same fix instead: same three REST calls, same data, just not re-fetched more often
+# than something could plausibly have changed. See docs/next-steps-2026-08-15-pt2.md for the
+# WS-channel design, deferred pending either a real fill to verify parsing against or explicit
+# sign-off to ship best-effort parsing with a REST reconciliation safety net.
+_account_snapshot_cache: dict = {"fetched_at": 0.0, "snapshot": None}
+
+
 async def _fetch_account_snapshot(cfg: dict) -> dict:
     account.trading_enabled = cfg["kalshi_account"]["trading_enabled"]
     if not account.enabled:
@@ -1452,6 +1575,10 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
             "connected": False, "balance": None, "positions": None, "fills": None,
             "error": account.status["error"], "trading_enabled": account.trading_enabled,
         }
+    now_ts = time.time()
+    cached = _account_snapshot_cache["snapshot"]
+    if cached is not None and (now_ts - _account_snapshot_cache["fetched_at"]) < _ACCOUNT_SNAPSHOT_REFRESH_SEC:
+        return {**cached, "trading_enabled": account.trading_enabled}
     try:
         # balance, positions, and fills are independent reads — fetch all three
         # at once instead of one after another.
@@ -1463,10 +1590,13 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
             "event_positions": [_slim_event_position(p) for p in (positions.get("event_positions") or [])],
         }
         fills = {"fills": [_slim_fill(f) for f in (fills.get("fills") or [])]}
-        return {
+        snapshot = {
             "connected": True, "balance": balance, "positions": positions, "fills": fills,
             "error": None, "trading_enabled": account.trading_enabled,
         }
+        _account_snapshot_cache["snapshot"] = snapshot
+        _account_snapshot_cache["fetched_at"] = now_ts
+        return snapshot
     except Exception as e:
         return {
             "connected": True, "balance": None, "positions": None, "fills": None,
@@ -1610,7 +1740,48 @@ async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> d
     return fetched
 
 
-_SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _check_signal_resolutions' own docstring
+_SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
+
+
+def _maybe_check_signal_resolutions(cfg: dict) -> None:
+    """Triggers _check_signal_resolutions as an independent background
+    task on its own interval, decoupled from the main tick entirely - same
+    pattern as discovery/catalog-scan's own _maybe_* triggers (2026-08-15
+    "no stone unturned" API audit, direct instruction: "maximum efficiency
+    and maximum speed for position management and whale watching").
+    Previously this ran inline inside the main tick's gather with only its
+    OWN interval gate deciding whether to do real work - a no-op on most
+    ticks, but on the roughly-1-in-5 tick where it WAS due, that tick
+    still blocked on however long 10 concurrent get_market() calls took
+    under the real rate limit (services/signal_log.py's own last_checked_at
+    fix made this function do real, sustained work for the first time -
+    the original trigger for this whole incident response). Fully
+    backgrounded now for the same reason discovery was: a bulk, non-urgent
+    backlog-clearing task should never be able to slow down the fast,
+    time-sensitive path even occasionally."""
+    check_state = state["signal_resolution_check"]
+    now_ts = time.time()
+    due = now_ts - check_state["last_checked_at"] > _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC
+    if due and not check_state["checking"]:
+        check_state["checking"] = True
+        check_state["last_checked_at"] = now_ts
+        check_state["task"] = asyncio.create_task(_check_signal_resolutions_background(cfg))
+
+
+async def _check_signal_resolutions_background(cfg: dict) -> None:
+    """Owns its own KalshiClient - see _refresh_discovery_cache's
+    identical reasoning (the calling tick's own client closes at the end
+    of that same tick, well before an independent background task would
+    finish)."""
+    check_state = state["signal_resolution_check"]
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        await _check_signal_resolutions(client)
+    except Exception as exc:
+        print(f"[signal_resolution] background check failed, will retry next cycle: {exc!r}")
+    finally:
+        check_state["checking"] = False
+        await client.close()
 
 
 async def _check_signal_resolutions(client: KalshiClient):
@@ -1618,29 +1789,9 @@ async def _check_signal_resolutions(client: KalshiClient):
     their markets have settled yet. Fetched concurrently (bumped from 3 to
     10 per check to keep pace with a larger watchlist generating more
     signals) rather than one-at-a-time, so a bigger batch doesn't stack up
-    sequential round-trip latency within a single check.
-
-    Deliberately decoupled from the main poll_interval_sec cadence
-    (2026-08-15 direct instruction: "the whale signal resolution check is
-    an expensive task with lots of rows to go through, that task will slow
-    down so that the regular interval check can take over and be less
-    costly") - this used to run inside the same asyncio.gather as discovery
-    every single tick, competing for the same rate-limit budget every
-    poll_interval_sec (6s) regardless of how large the unresolved backlog
-    was (see services/signal_log.py's last_checked_at fix, which made this
-    function do real, sustained work for the first time - real incident,
-    tick_duration/rate_limit_hits spiked hard once it did). Gated here by
-    its own, much slower interval instead - most ticks skip this entirely
-    (a single dict-timestamp check, effectively free), so the fast,
-    time-sensitive trading-loop work isn't held hostage by a bulk
-    backlog-clearing task that has no real urgency of its own (a market
-    that settled 10 minutes ago is just as correctly gradeable 30 seconds
-    from now as it is this exact tick)."""
-    now = time.time()
-    last_checked = state["signal_resolution_check"]["last_checked_at"]
-    if (now - last_checked) < _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC:
-        return
-    state["signal_resolution_check"]["last_checked_at"] = now
+    sequential round-trip latency within a single check. Interval-gating
+    and background-task scheduling both live in _maybe_check_signal_
+    resolutions above now - this function just does the work when asked."""
     items = signal_log.unresolved_batch(limit=10, older_than_sec=600)
     if not items:
         return
@@ -2162,10 +2313,11 @@ async def trading_loop():
             open_position_tickers = list(
                 set(broker.positions.keys()) | set(market_broker.positions.keys()) | real_position_tickers
             )
-            markets, account_snapshot, exchange_status, _, _ = await asyncio.gather(
+            _maybe_scan_catalog_batch(cfg)
+            _maybe_check_signal_resolutions(cfg)
+            markets, account_snapshot, exchange_status = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
-                _fetch_exchange_status(client), _check_signal_resolutions(client),
-                _scan_catalog_batch(client, cfg),
+                _fetch_exchange_status(client),
             )
             await _fetch_category_metadata(client)
             state["account"] = account_snapshot
