@@ -22,6 +22,7 @@ import asyncio
 from urllib.parse import urljoin
 
 import kalshi_python_async as kpa
+from pydantic import ValidationError as PydanticValidationError
 
 from services.http_client import call_with_backoff, get_client
 from services.signal_log import series_of
@@ -375,7 +376,23 @@ class KalshiClient:
         live_datas: dict[str, dict] = {}
         for i in range(0, len(milestone_ids), self._LIVE_DATAS_BATCH_SIZE):
             chunk = milestone_ids[i:i + self._LIVE_DATAS_BATCH_SIZE]
-            resp = await call_with_backoff(self._client.get_live_datas, milestone_ids=chunk)
+            try:
+                resp = await call_with_backoff(self._client.get_live_datas, milestone_ids=chunk)
+            except PydanticValidationError:
+                # Real, live-confirmed API/SDK mismatch (2026-08-16, surfaced
+                # by raising top_series_per_category - more distinct live
+                # events per tick means more chunks with nothing live in
+                # them): Kalshi returns `"live_datas": null` for a chunk
+                # with no live data available, rather than `[]`, but the
+                # SDK's GetLiveDatasResponse model declares live_datas as a
+                # required list, so parsing the raw response throws inside
+                # the SDK before this method ever sees it. Not documented
+                # in docs/kalshi/get-live-data.md's response shape. null
+                # and [] mean the same thing here - no live data for this
+                # chunk - so this degrades to skipping just this chunk
+                # rather than losing every other chunk's real data (and the
+                # whole tick's state["error"]) over one malformed one.
+                continue
             for ld in resp.live_datas:
                 d = ld.model_dump(mode="json")
                 if d.get("milestone_id"):

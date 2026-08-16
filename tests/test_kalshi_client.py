@@ -288,6 +288,37 @@ def test_get_live_datas_chunks_above_the_batch_size(monkeypatch):
     assert set(result.keys()) == {"ms1", "ms2", "ms3"}
 
 
+def test_get_live_datas_skips_a_chunk_the_sdk_cant_parse(monkeypatch):
+    # Real, live-confirmed API/SDK mismatch (2026-08-16, surfaced by
+    # raising top_series_per_category): Kalshi returns "live_datas": null
+    # for a chunk with nothing live in it, rather than [], but the SDK's
+    # own GetLiveDatasResponse model requires a list field - parsing the
+    # raw response throws a real pydantic.ValidationError inside the SDK
+    # before this method ever sees a response object. null and [] mean
+    # the same thing here, so a chunk that fails this way must be skipped,
+    # not lose every other chunk's real data (and the whole tick's
+    # state["error"]) over one malformed one.
+    from pydantic import BaseModel
+
+    class _StrictListResponse(BaseModel):
+        live_datas: list
+
+    client = _client()
+    client._LIVE_DATAS_BATCH_SIZE = 2
+    calls = []
+
+    async def fake_get_live_datas(milestone_ids):
+        calls.append(list(milestone_ids))
+        if milestone_ids == ["ms1", "ms2"]:
+            _StrictListResponse(live_datas=None)  # raises pydantic.ValidationError, matching the real SDK
+        return type("R", (), {"live_datas": [_FakeModel({"milestone_id": mid}) for mid in milestone_ids]})()
+
+    monkeypatch.setattr(client._client, "get_live_datas", fake_get_live_datas)
+    result = asyncio.run(client.get_live_datas(["ms1", "ms2", "ms3"]))
+    assert calls == [["ms1", "ms2"], ["ms3"]]
+    assert set(result.keys()) == {"ms3"}
+
+
 def test_get_milestones_bulk_passes_category_and_watermark(monkeypatch):
     client = _client()
     calls = []
