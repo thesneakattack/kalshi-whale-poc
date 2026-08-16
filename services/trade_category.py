@@ -43,22 +43,58 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # subcategory (2026-08-16 direct request: "before falling back to
+    # category winrate from series winrate, theres a middle step... by
+    # subcategory (e.g., baseball, football)"). Sourced from Kalshi's own
+    # per-event `competition` field (e.g. "Pro Baseball"), reverse-mapped
+    # to its SPORT ("Baseball") via category_metadata's sport_by_competition
+    # (main.py's _sport_for_event/_fetch_category_metadata) - checked
+    # docs/kalshi/get-filters-for-sports.md per standing instruction before
+    # guessing further: filters_by_sports nests competition WITHIN sport
+    # (filters_by_sports["Baseball"]["competitions"] contains "Pro
+    # Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several competitions,
+    # one sport), so "Baseball" is the real match for the user's own
+    # "baseball, football" examples, not the finer per-league string alone.
+    # NOT category_tags (that field is the same full facet-filter
+    # vocabulary on every event in a category, e.g. every Sports event
+    # lists all 20 sports; it carries no per-event information at all).
+    # Same "needs its own capture at entry time" reasoning as category
+    # itself (this module's own docstring) - market_catalog/event_titles
+    # are watchlist-scoped and rotate, so a historical trade can't be
+    # joined back to it after the fact without persisting it here too.
+    # Nullable/idempotent-migration: not every event carries a competition
+    # value (non-sports categories generally don't), and rows recorded
+    # before this field existed have none to backfill.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(trade_category)")}
+    if "subcategory" not in cols:
+        conn.execute("ALTER TABLE trade_category ADD COLUMN subcategory TEXT")
     return conn
 
 
-def record_category(ticker: str, category: str | None, now: float | None = None) -> None:
+def record_category(ticker: str, category: str | None, now: float | None = None, subcategory: str | None = None) -> None:
     """No-op when category is unknown (None/empty) - never overwrites a
     real, previously-recorded category with an unknown one, and never
-    records a row with nothing useful in it."""
+    records a row with nothing useful in it. subcategory is optional (most
+    categories don't have one) and independently nullable - a category
+    update should never blow away an already-known subcategory by passing
+    None, so it's only overwritten when a real value is actually given."""
     if not ticker or not category:
         return
     now = now if now is not None else time.time()
     with _connect() as conn:
-        conn.execute(
-            "INSERT INTO trade_category (ticker, category, recorded_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(ticker) DO UPDATE SET category = excluded.category, recorded_at = excluded.recorded_at",
-            (ticker, category, now),
-        )
+        if subcategory:
+            conn.execute(
+                "INSERT INTO trade_category (ticker, category, recorded_at, subcategory) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(ticker) DO UPDATE SET category = excluded.category, recorded_at = excluded.recorded_at, "
+                "subcategory = excluded.subcategory",
+                (ticker, category, now, subcategory),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO trade_category (ticker, category, recorded_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(ticker) DO UPDATE SET category = excluded.category, recorded_at = excluded.recorded_at",
+                (ticker, category, now),
+            )
 
 
 def categories_for_tickers(tickers: list[str]) -> dict[str, str]:
@@ -71,6 +107,24 @@ def categories_for_tickers(tickers: list[str]) -> dict[str, str]:
         placeholders = ",".join("?" for _ in unique)
         rows = conn.execute(
             f"SELECT ticker, category FROM trade_category WHERE ticker IN ({placeholders})", unique,
+        ).fetchall()
+    return dict(rows)
+
+
+def subcategories_for_tickers(tickers: list[str]) -> dict[str, str]:
+    """Mirrors categories_for_tickers - regime_analytics.by_subcategory()'s
+    bulk lookup. Only tickers with a real recorded subcategory are present
+    in the result (same "excluded, not fabricated" convention as category
+    itself)."""
+    unique = list({t for t in tickers if t})
+    if not unique:
+        return {}
+    with _connect() as conn:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT ticker, subcategory FROM trade_category WHERE ticker IN ({placeholders}) "
+            "AND subcategory IS NOT NULL",
+            unique,
         ).fetchall()
     return dict(rows)
 

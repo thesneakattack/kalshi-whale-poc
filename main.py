@@ -287,6 +287,39 @@ def _category_by_ticker() -> dict:
     }
 
 
+def _sport_for_event(event_info: dict) -> str | None:
+    # SPORT ("Baseball"), not the finer per-competition string
+    # ("Pro Baseball") - reverse-mapped through category_metadata's
+    # sport_by_competition (see _fetch_category_metadata's own comment:
+    # get-filters-for-sports.md documents competitions as nested WITHIN a
+    # sport, e.g. filters_by_sports["Baseball"]["competitions"] contains
+    # "Pro Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several
+    # competitions, one sport). Falls back to the raw competition string
+    # only if the reverse map hasn't been built yet (category_metadata's
+    # first fetch hasn't completed) or doesn't recognize it - a real
+    # subcategory late is better than none, even if slightly coarser than
+    # intended for one refresh cycle.
+    competition = event_info.get("competition")
+    if not competition:
+        return None
+    sport_by_competition = state["category_metadata"].get("sport_by_competition") or {}
+    return sport_by_competition.get(competition, competition)
+
+
+def _subcategory_by_ticker() -> dict:
+    # Mirrors _category_by_ticker exactly, one field over - 2026-08-16
+    # direct request for a series -> subcategory -> category fallback
+    # chain in whale-confidence win-rate segmentation (see
+    # services/trade_category.py's own subcategory docstring for why this
+    # isn't category_tags - that field is the same full facet-filter
+    # vocabulary on every event in a category, not per-event data).
+    return {
+        ticker: _sport_for_event(state["event_titles"].get(info.get("event_ticker")) or {})
+        for ticker, info in state["market_titles"].items()
+        if info.get("event_ticker")
+    }
+
+
 async def _broadcast_signal_decision(signal_payload: dict | None, decision_payload: dict) -> None:
     await ws_manager.broadcast({
         "type": "signal_decision",
@@ -323,7 +356,9 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     # Kalshi's own data - purely additive.
     if not is_live and event_ticker:
         is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
-    category = (state["event_titles"].get(event_ticker) or {}).get("category")
+    event_info = state["event_titles"].get(event_ticker) or {}
+    category = event_info.get("category")
+    subcategory = _sport_for_event(event_info)
     me_complement = (state.get("me_pairs") or {}).get(signal.ticker)
 
     decision = strategy.evaluate(
@@ -345,7 +380,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
         state["stats"]["skipped"] += 1
     asyncio.create_task(_broadcast_signal_decision(signal.to_dict(), decision))
     if decision["action"] == "trade":
-        trade_category.record_category(signal.ticker, category, tick_now)
+        trade_category.record_category(signal.ticker, category, tick_now, subcategory=subcategory)
 
     if cfg.get("mode") in ("shadow", "live"):
         shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(state.get("account") or {}, cfg)
@@ -376,7 +411,8 @@ async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
     asyncio.create_task(_broadcast_signal_decision(None, fill_decision))
     ticker = fill_decision["trade"]["ticker"]
     category = _category_by_ticker().get(ticker)
-    trade_category.record_category(ticker, category, tick_now)
+    subcategory = _subcategory_by_ticker().get(ticker)
+    trade_category.record_category(ticker, category, tick_now, subcategory=subcategory)
 
 
 async def _process_stream_trade(trade: dict) -> None:
@@ -1105,11 +1141,30 @@ async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) ->
             client.get_tags_for_series_categories(),
             client.get_filters_for_sports(),
         )
+        filters_by_sports = (sports_resp or {}).get("filters_by_sports") or {}
         cache.update({
             "fetched_at": now,
             "tags_by_categories": (tags_resp or {}).get("tags_by_categories") or {},
-            "filters_by_sports": (sports_resp or {}).get("filters_by_sports") or {},
+            "filters_by_sports": filters_by_sports,
             "sport_ordering": (sports_resp or {}).get("sport_ordering") or [],
+            # competition -> sport reverse lookup (2026-08-16 direct
+            # standing instruction: check docs/kalshi/ for already-
+            # available fields before deriving/guessing - get-filters-for-
+            # sports.md documents filters_by_sports as {sport: {scopes,
+            # competitions: {competition: {scopes}}}}, confirmed live:
+            # filters_by_sports["Baseball"]["competitions"] includes "Pro
+            # Baseball", "Japan NPB", "Korea KBO", "Mexico LMB" - all one
+            # sport, several competitions. The whale-confidence subcategory
+            # tier (services/trade_category.py) wants SPORT ("Baseball",
+            # matching the user's own "baseball, football" examples), not
+            # the finer per-competition string a bare event.competition
+            # read would give ("Pro Baseball") - built once per hourly
+            # refresh here, not per-trade in _subcategory_by_ticker.
+            "sport_by_competition": {
+                competition: sport
+                for sport, details in filters_by_sports.items()
+                for competition in (details.get("competitions") or {})
+            },
         })
     except Exception:
         pass
@@ -2989,8 +3044,10 @@ async def trading_loop():
                     # trade history the same way.
                     m_ticker = decision["ticker"]
                     m_event_ticker = (state["market_titles"].get(m_ticker) or {}).get("event_ticker")
+                    m_event_info = state["event_titles"].get(m_event_ticker) or {}
                     trade_category.record_category(
-                        m_ticker, (state["event_titles"].get(m_event_ticker) or {}).get("category"), tick_now,
+                        m_ticker, m_event_info.get("category"), tick_now,
+                        subcategory=_sport_for_event(m_event_info),
                     )
             markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
             for decision in market_strategy.check_exits(

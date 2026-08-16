@@ -117,3 +117,77 @@ def test_by_category_sorted_by_count_descending():
 
 def test_by_category_empty_rows_returns_empty_list():
     assert ra.by_category([]) == []
+
+
+# --- by_series (2026-08-16, "it makes more sense to do it by series") -----
+
+def test_by_series_groups_by_ticker_prefix_not_exact_ticker():
+    # A market ticker never recurs (KXBTC15M-26AUG161645-45 only exists
+    # once) - the series prefix (KXBTC15M) is the real recurring unit, so
+    # two different exact tickers sharing a series prefix must fold into
+    # one bucket.
+    rows = [
+        _row(1000.0, ticker="KXBTC15M-26AUG161645-45"),
+        _row(1000.0, won=False, ticker="KXBTC15M-26AUG161700-00"),
+        _row(1000.0, ticker="KXMLBGAME-26AUG161410PHIMIN-PHI"),
+    ]
+    result = ra.by_series(rows)
+    by_series = {r["series"]: r for r in result}
+    assert by_series["KXBTC15M"]["total_closed"] == 2
+    assert by_series["KXBTC15M"]["win_rate_pct"] == 50.0
+    assert by_series["KXMLBGAME"]["total_closed"] == 1
+
+
+def test_by_series_needs_no_recorded_category_at_all():
+    # Unlike by_category/by_subcategory, series is a pure function of the
+    # ticker already on the row - no trade_category.py lookup involved, so
+    # this works even for a ticker that never got a category recorded.
+    rows = [_row(1000.0, ticker="KXBTC15M-26AUG161645-45")]
+    assert ra.by_series(rows)[0]["series"] == "KXBTC15M"
+
+
+def test_by_series_sorted_by_count_descending():
+    rows = [
+        _row(1000.0, ticker="AAA-1"), _row(1000.0, ticker="BBB-1"),
+        _row(1000.0, ticker="BBB-2"), _row(1000.0, ticker="BBB-3"),
+    ]
+    result = ra.by_series(rows)
+    assert result[0]["series"] == "BBB"
+    assert result[0]["total_closed"] == 3
+
+
+def test_by_series_empty_rows_returns_empty_list():
+    assert ra.by_series([]) == []
+
+
+# --- by_subcategory (2026-08-16, series -> subcategory -> category) -------
+
+def test_by_subcategory_groups_correctly():
+    tc.record_category("TICK-A", "Sports", subcategory="Baseball")
+    tc.record_category("TICK-B", "Sports", subcategory="Football")
+    rows = [_row(1000.0, ticker="TICK-A"), _row(1000.0, won=False, ticker="TICK-A"), _row(1000.0, ticker="TICK-B")]
+    result = ra.by_subcategory(rows)
+    by_sub = {r["subcategory"]: r for r in result}
+    assert by_sub["Baseball"]["total_closed"] == 2
+    assert by_sub["Football"]["total_closed"] == 1
+
+
+def test_by_subcategory_excludes_tickers_with_no_recorded_subcategory():
+    # Politics has a category but no subcategory - excluded, not fabricated.
+    tc.record_category("TICK-A", "Politics")
+    rows = [_row(1000.0, ticker="TICK-A")]
+    assert ra.by_subcategory(rows) == []
+
+
+def test_by_subcategory_sorted_by_count_descending():
+    tc.record_category("TICK-A", "Sports", subcategory="Baseball")
+    tc.record_category("TICK-B", "Sports", subcategory="Football")
+    rows = [_row(1000.0, ticker="TICK-A"), _row(1000.0, ticker="TICK-B"),
+            _row(1000.0, ticker="TICK-B"), _row(1000.0, ticker="TICK-B")]
+    result = ra.by_subcategory(rows)
+    assert result[0]["subcategory"] == "Football"
+    assert result[0]["total_closed"] == 3
+
+
+def test_by_subcategory_empty_rows_returns_empty_list():
+    assert ra.by_subcategory([]) == []

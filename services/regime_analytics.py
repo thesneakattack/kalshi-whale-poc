@@ -21,7 +21,7 @@ category.
 import time
 from collections import defaultdict
 
-from services import trade_analytics, trade_category
+from services import signal_log, trade_analytics, trade_category
 
 
 def by_hour_of_day(rows: list[dict]) -> list[dict]:
@@ -52,6 +52,69 @@ def by_day_of_week(rows: list[dict]) -> list[dict]:
         {"day_of_week": dow, **trade_analytics.compute_summary(buckets[dow])}
         for dow in sorted(buckets)
     ]
+
+
+def by_series(rows: list[dict]) -> list[dict]:
+    """rows: trade_analytics.build_trade_history()-shaped. The finest of
+    the three segmentation tiers (2026-08-16 direct request: "it makes
+    more sense to do it by series... seeing as how the markets are
+    generally unique individual events" - a market ticker like
+    KXBTC15M-26AUG161645-45 is one 15-minute instance that never recurs;
+    signal_log.series_of()'s ticker prefix (KXBTC15M) is the real
+    recurring unit whale-follow performance should be judged against, the
+    same grouping strategy_overrides.by_series/min_whale_winrate_pct/
+    excluded_series already use on the config-application side - this is
+    that same concept's read/analysis-side counterpart, previously
+    missing entirely (by_category below was the only tier that existed).
+    Needs no new persistence, unlike by_category/by_subcategory - series
+    is a pure function of the ticker already on every row, not a lookup
+    that can go stale/unrecorded."""
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        series = signal_log.series_of(r["ticker"])
+        if not series:
+            continue
+        buckets[series].append(r)
+    out = [
+        {"series": series, **trade_analytics.compute_summary(group)}
+        for series, group in buckets.items()
+    ]
+    out.sort(key=lambda b: -b["total_closed"])
+    return out
+
+
+def by_subcategory(rows: list[dict]) -> list[dict]:
+    """rows: trade_analytics.build_trade_history()-shaped. The middle tier
+    between by_series and by_category (2026-08-16 direct follow-up: "maybe
+    before falling back to category winrate from series winrate, theres a
+    middle step... by subcategory (e.g., baseball, football)"). Joins onto
+    services/trade_category.py's ticker->subcategory lookup, sourced from
+    the SPORT ("Baseball", "Football", ...) a Kalshi event's `competition`
+    field reverse-maps to via filters_by_sports (docs/kalshi/get-filters-
+    for-sports.md - checked per standing instruction rather than guessed;
+    a competition like "Pro Baseball" nests within a sport, several
+    competitions per sport, so sport is the real match for "baseball,
+    football" as this feature's own examples put it). NOT category_tags
+    (that field is the same full facet-filter vocabulary listed on every
+    event in a category, carrying no per-event information at all). Same
+    "excluded, not fabricated" convention as
+    by_category: a trade whose ticker has no recorded subcategory (most
+    non-Sports categories, or anything traded before this field existed)
+    is simply absent from the result rather than bucketed under a
+    fabricated placeholder."""
+    subcategories = trade_category.subcategories_for_tickers([r["ticker"] for r in rows])
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        subcategory = subcategories.get(r["ticker"])
+        if subcategory is None:
+            continue
+        buckets[subcategory].append(r)
+    out = [
+        {"subcategory": subcategory, **trade_analytics.compute_summary(group)}
+        for subcategory, group in buckets.items()
+    ]
+    out.sort(key=lambda b: -b["total_closed"])
+    return out
 
 
 def by_category(rows: list[dict]) -> list[dict]:

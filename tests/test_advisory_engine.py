@@ -2,6 +2,12 @@ import pytest
 
 from services import advisory_engine as ae
 from services import trade_analytics
+from services import trade_category as tc
+
+
+@pytest.fixture(autouse=True)
+def _redirect_trade_category_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(tc, "DB_PATH", tmp_path / "trade_category.db")
 
 
 def _row(**overrides):
@@ -684,6 +690,103 @@ def test_generate_recommendations_includes_category_conditional_suggestions():
     )
     paths = [r["config_path"] for r in result["recommendations"]]
     assert "strategy_overrides.by_category" in paths
+
+
+# --- series-conditional recommendations (2026-08-16, series -> subcategory
+# -> category fallback chain: "it makes more sense to do it by series... and
+# fallback to category" / "theres a middle step... by subcategory") --------
+
+def _segment_rows(ticker_prefix, n, win_n):
+    return [_row(ticker=f"{ticker_prefix}-{i}", won=(i < win_n)) for i in range(n)]
+
+
+def test_series_recommendation_uses_series_own_data_when_sufficient():
+    # KXBAD has 10 of its own resolved trades, 20% win rate vs a 60% book -
+    # plenty to trust on its own, no fallback needed.
+    rows = _segment_rows("KXBAD", 10, win_n=2)
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert len(recs) == 1
+    assert recs[0]["config_path"] == "strategy_overrides.by_series"
+    assert recs[0]["suggested_value"] == {"KXBAD": {"entry_threshold": 0.55}}
+    assert "its own data" in recs[0]["rationale"]
+
+
+def test_series_recommendation_falls_back_to_subcategory_when_series_data_is_thin():
+    # KXBAD itself only has 2 resolved trades (below the min-sample floor)
+    # but shares a subcategory (Baseball) with KXOTHER, which together have
+    # plenty - the suggestion should still fire for KXBAD, using Baseball's
+    # win rate as the evidence.
+    tc.record_category("KXBAD-0", "Sports", subcategory="Baseball")
+    tc.record_category("KXBAD-1", "Sports", subcategory="Baseball")
+    tc.record_category("KXOTHER-0", "Sports", subcategory="Baseball")
+    for i in range(2, 10):
+        tc.record_category(f"KXOTHER-{i}", "Sports", subcategory="Baseball")
+    rows = _segment_rows("KXBAD", 2, win_n=0) + _segment_rows("KXOTHER", 10, win_n=2)
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    by_series = {r["suggested_value"] and list(r["suggested_value"].keys())[0]: r for r in recs}
+    assert "KXBAD" in by_series
+    assert '"Baseball" subcategory' in by_series["KXBAD"]["rationale"]
+
+
+def test_series_recommendation_falls_back_to_category_when_subcategory_also_thin():
+    # Neither KXBAD's own data nor its subcategory (Baseball, only 2 total
+    # across both tickers) is enough - but the whole Sports category has
+    # plenty, so that's the final fallback.
+    tc.record_category("KXBAD-0", "Sports", subcategory="Baseball")
+    tc.record_category("KXBAD-1", "Sports", subcategory="Baseball")
+    for i in range(10):
+        tc.record_category(f"KXOTHERSPORT-{i}", "Sports", subcategory="Tennis")
+    rows = _segment_rows("KXBAD", 2, win_n=0) + _segment_rows("KXOTHERSPORT", 10, win_n=2)
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    by_series = {list(r["suggested_value"].keys())[0]: r for r in recs}
+    assert "KXBAD" in by_series
+    assert '"Sports" category' in by_series["KXBAD"]["rationale"]
+
+
+def test_series_recommendation_none_when_no_tier_has_enough_data():
+    tc.record_category("KXBAD-0", "Sports", subcategory="Baseball")
+    rows = _segment_rows("KXBAD", 2, win_n=0)
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert recs == []
+
+
+def test_series_recommendation_none_when_gap_small():
+    rows = _segment_rows("KXBAD", 10, win_n=5)  # 50% vs 60%, only 10pts off
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=60.0)
+    assert recs == []
+
+
+def test_series_recommendation_none_when_overall_win_rate_unknown():
+    rows = _segment_rows("KXBAD", 10, win_n=2)
+    recs = ae._series_conditional_recommendations(rows, {"entry_threshold": 0.5}, overall_win_rate=None)
+    assert recs == []
+
+
+def test_series_recommendation_preserves_existing_series_overrides():
+    rows = _segment_rows("KXBAD", 10, win_n=2)
+    strategy_overrides = {"by_series": {"KXOTHER": {"entry_threshold": 0.4}}}
+    recs = ae._series_conditional_recommendations(
+        rows, {"entry_threshold": 0.5}, overall_win_rate=60.0, strategy_overrides=strategy_overrides,
+    )
+    assert recs[0]["suggested_value"] == {
+        "KXOTHER": {"entry_threshold": 0.4}, "KXBAD": {"entry_threshold": 0.55},
+    }
+    assert recs[0]["current_value"] == {"KXOTHER": {"entry_threshold": 0.4}}
+
+
+def test_generate_recommendations_includes_series_conditional_suggestions():
+    # generate_recommendations computes the overall win rate from `rows`
+    # itself (not from category_rows, which is caller-supplied/independent
+    # here same as the category-conditional test above) - so KXBAD needs a
+    # winning counterpart in the same rows to actually create a gap: 2/10
+    # KXBAD wins + 10/10 KXGOOD wins = 12/20 = 60% overall vs KXBAD's own 20%.
+    rows = _segment_rows("KXBAD", 10, win_n=2) + _segment_rows("KXGOOD", 10, win_n=10)
+    category_rows = [_category_row("Sports", 10, 20.0)]  # gates the `if category_rows:` block
+    result = ae.generate_recommendations(
+        rows, _cfg(), "fp1", {}, min_resolved_trades=5, category_rows=category_rows,
+    )
+    paths = [r["config_path"] for r in result["recommendations"]]
+    assert "strategy_overrides.by_series" in paths
 
 
 # --- change_effect (Item 3D, 2026-08-10) --------------------------------------

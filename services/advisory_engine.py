@@ -52,7 +52,7 @@ requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
-from services import config_overrides, stats_power, trade_analytics
+from services import config_overrides, regime_analytics, signal_log, stats_power, trade_analytics, trade_category
 
 # Real bug found live (2026-08-15, docs/profit-maximization-assessment-
 # 2026-08-15.md): every "is this win-rate gap big enough to act on"
@@ -789,6 +789,114 @@ def _category_conditional_recommendations(
     return out
 
 
+def _series_conditional_recommendations(
+    rows: list[dict], strat_cfg: dict, overall_win_rate: float | None,
+    strategy_overrides: dict | None = None, overall_n: int = 0,
+) -> list[dict]:
+    """2026-08-16 direct request: "it makes more sense to do it by series
+    (ex. KXBTC15M, or KXMLB), and fallback to category, seeing as how the
+    markets are generally unique individual events" - then refined: "maybe
+    before falling back to category winrate from series winrate, theres a
+    middle step... by subcategory (e.g., baseball, football)". Same shape
+    as _category_conditional_recommendations above (compare a segment's
+    win rate against the whole book's, suggest nudging entry_threshold if
+    the gap clears both the min-N floor and the margin-of-error check),
+    but per SERIES (signal_log.series_of - a market ticker like
+    KXBTC15M-26AUG161645-45 never recurs, the series is the real
+    repeating unit), falling through progressively coarser tiers of
+    evidence - series' own win rate, then its subcategory's
+    (services/trade_category.py's Kalshi `competition` capture, e.g. "Pro
+    Baseball"), then its category's (existing regime_analytics.by_category)
+    - the first one with enough resolved trades to trust. Mirrors
+    config_overrides.resolve()'s own "most specific wins, falls through to
+    next coarser layer" philosophy, just applied to which win-rate FIGURE
+    justifies a suggestion rather than which config VALUE applies - the
+    suggestion itself always targets strategy_overrides.by_series.<series>,
+    since that's the tier that actually governs this series' real trades
+    regardless of which tier's data justified the number.
+
+    A series with genuinely too little data at every tier (fewer than
+    _CATEGORY_MIN_N resolved trades in its own history, its subcategory's,
+    AND its category's) gets no suggestion at all - same "don't guess"
+    principle as every other gated recommendation here, just checked three
+    times instead of once."""
+    if overall_win_rate is None:
+        return []
+    series_by_name = {r["series"]: r for r in regime_analytics.by_series(rows)}
+    subcategory_by_name = {r["subcategory"]: r for r in regime_analytics.by_subcategory(rows)}
+    category_by_name = {r["category"]: r for r in regime_analytics.by_category(rows)}
+
+    # series -> subcategory/category, derived once from the same per-ticker
+    # lookups the by_subcategory/by_category tiers above already queried -
+    # first non-empty value wins per series (every ticker in one series
+    # shares the same category/subcategory in practice, so which specific
+    # ticker supplies it doesn't matter).
+    tickers = [r["ticker"] for r in rows]
+    categories = trade_category.categories_for_tickers(tickers)
+    subcategories = trade_category.subcategories_for_tickers(tickers)
+    series_to_category: dict[str, str] = {}
+    series_to_subcategory: dict[str, str] = {}
+    for r in rows:
+        series = signal_log.series_of(r["ticker"])
+        if series not in series_to_category and categories.get(r["ticker"]):
+            series_to_category[series] = categories[r["ticker"]]
+        if series not in series_to_subcategory and subcategories.get(r["ticker"]):
+            series_to_subcategory[series] = subcategories[r["ticker"]]
+
+    by_series_override = dict((strategy_overrides or {}).get("by_series") or {})
+    base_threshold = strat_cfg.get("entry_threshold", 0.5)
+    out = []
+    for series, series_row in series_by_name.items():
+        n = series_row.get("total_closed", 0)
+        wr = series_row.get("win_rate_pct")
+        evidence = "its own"
+
+        if wr is None or n < _CATEGORY_MIN_N:
+            sub = series_to_subcategory.get(series)
+            sub_row = subcategory_by_name.get(sub) if sub else None
+            if sub_row and sub_row.get("win_rate_pct") is not None and sub_row.get("total_closed", 0) >= _CATEGORY_MIN_N:
+                n, wr, evidence = sub_row["total_closed"], sub_row["win_rate_pct"], f'"{sub}" subcategory'
+            else:
+                cat = series_to_category.get(series)
+                cat_row = category_by_name.get(cat) if cat else None
+                if cat_row and cat_row.get("win_rate_pct") is not None and cat_row.get("total_closed", 0) >= _CATEGORY_MIN_N:
+                    n, wr, evidence = cat_row["total_closed"], cat_row["win_rate_pct"], f'"{cat}" category'
+                else:
+                    continue  # not enough data at any of the three tiers - no guess
+
+        gap = wr - overall_win_rate
+        if abs(gap) < stats_power.margin_of_error_pts(n, observed_pct=wr):
+            continue
+        current = by_series_override.get(series, {}).get("entry_threshold", base_threshold)
+        step = 0.05
+        suggested = round(min(0.95, current + step) if gap < 0 else max(0.05, current - step), 3)
+        if suggested == current:
+            continue
+        significance_z = stats_power.two_proportion_z_score(n, wr, overall_n, overall_win_rate) if overall_n else None
+        new_by_series = config_overrides.merge_override(
+            {"by_series": by_series_override}, "by_series", series, "entry_threshold", suggested,
+        )["by_series"]
+        tail = (
+            f"performs {abs(gap):.0f}pts worse than the overall {overall_win_rate:.0f}% win rate - a higher "
+            f"series-specific threshold asks for more conviction here specifically."
+            if gap < 0 else
+            f"performs {gap:.0f}pts better than the overall {overall_win_rate:.0f}% win rate - a lower "
+            f"series-specific threshold could capture more of these."
+        )
+        out.append({
+            "id": rec_id("strategy_overrides.by_series", new_by_series, n),
+            "config_path": "strategy_overrides.by_series",
+            "current_value": by_series_override,
+            "suggested_value": new_by_series,
+            "rationale": f"{series} (using {evidence} data: n={n} resolved, {wr:.0f}% win rate) {tail}",
+            "n": n,
+            "confidence_label": trade_analytics.confidence_label(n),
+            "source": "series-conditional",
+            "significance_z": significance_z,
+        })
+    return out
+
+
 def _drop_stale_recommendations(
     recs: list[dict], rows: list[dict], market_rows: list[dict], last_applied_by_path: dict[str, float],
 ) -> list[dict]:
@@ -888,6 +996,18 @@ def generate_recommendations(
         overall_summary = trade_analytics.compute_summary(rows)
         recs += _category_conditional_recommendations(
             category_rows, cfg["strategy"], overall_summary.get("win_rate_pct"),
+            cfg.get("strategy_overrides"), overall_n=overall_summary.get("total_closed", 0),
+        )
+        # series -> subcategory -> category fallback chain (2026-08-16
+        # direct request, see _series_conditional_recommendations' own
+        # docstring) - gated behind the same `if category_rows:` as the
+        # category-level suggestion above since it needs category_rows'
+        # caller-supplied evidence that regime segmentation has real data
+        # to work with at all; series/subcategory tiers are computed
+        # internally from `rows` itself, no separate caller-supplied arg
+        # needed for those two.
+        recs += _series_conditional_recommendations(
+            rows, cfg["strategy"], overall_summary.get("win_rate_pct"),
             cfg.get("strategy_overrides"), overall_n=overall_summary.get("total_closed", 0),
         )
     recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
