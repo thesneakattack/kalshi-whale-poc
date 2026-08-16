@@ -23,6 +23,53 @@ add new ones as they turn up. Three docs now split the "what's next" from
   `git log`/`git show` on this file) for the full narrative behind anything
   checked off before that date.
 
+## Active investigation — signal drought (2026-08-16)
+
+Direct live report: "im seeing absolutely no signals and i know for a fact
+its not due to filtering" - confirmed: `data/signal_log.db`'s last real
+signal is from 2026-08-16T00:54 UTC, ~90 seconds after commit `10eca4d`
+(the catalog-based discovery rewrite) took effect live, and nothing since -
+a real, multi-hour drought, not a quiet-market illusion (exchange_status
+confirms `trading_active: true` throughout).
+
+- [x] **Stale/already-closed catalog rows reaching the real watchlist** -
+  `market_catalog.candidates_in_window`/`open_candidates` never filtered by
+  `close_ts > now`, so a market whose catalog row predates its own close
+  (confirmed live: 3 real `KXBTC15M` instances sitting 2-8h stale, still
+  `status="active"`) kept showing up as a valid candidate indefinitely.
+  Fixed both queries; added `series_with_expired_data` +
+  `next_series_to_scan` priority so a fast-rotating series (new market
+  every 15 min) gets rescanned far sooner than pure least-recently-scanned
+  ordering alone provides (confirmed live: KXBTC15M picked up the actual
+  current live window within ~6 minutes of the fix, vs. 2-8h before it).
+- [ ] **Deeper, NOT yet fixed: Kalshi's own `close_time` field is mutable,
+  not a fixed value from market creation** - confirmed live against a real
+  finalized MLB market (`KXMLBGAME-26AUG151915MILLAD-LAD`): scanned into
+  the catalog at 01:25 UTC with `close_time=2026-08-18T23:15Z` (a ~2.5-day-
+  out scheduled/fallback value - the game hadn't concluded yet at scan
+  time), but a fresh fetch of the SAME ticker minutes ago shows
+  `status="finalized", close_time=2026-08-16T01:49:41Z, result="no"` -
+  Kalshi revised close_time to the real settlement moment once the game
+  actually ended, ~24 minutes after the scan. This means the `close_ts >
+  now` fix above (and `series_with_expired_data`'s staleness detection,
+  which relies on the same column) can't catch a market that settled
+  *earlier* than its own scanned close_time suggested - which is the
+  common case for any real-world event, not just fast-rotating crypto.
+  Whether this alone explains the full signal drought isn't confirmed yet
+  (a direct websocket diagnostic - subscribing to 15 real watchlist
+  tickers for 25s - got zero trades, but that's also consistent with those
+  specific tickers being quiet) - it's a real, live-confirmed correctness
+  gap in the catalog's freshness model regardless. Next step: either a
+  live confirmation layer between catalog-driven candidate selection and
+  actual trading (closer to what `_fetch_live_status`'s milestone polling
+  already does for team sports, but as a real filter that drops a market
+  from the watchlist, not just an informational is_live flag - and
+  extended to cover categories with no milestone at all), or re-scanning
+  a market's own row again shortly after its scanned close_time passes to
+  catch a same-day revision, before trusting it as stale. Not attempted
+  yet - flagged for a focused pass rather than compounding risk on top of
+  the same-day fix above.
+
 ## Path to production
 
 P0 (below) is **fully shipped** — the code-level gates around real money are

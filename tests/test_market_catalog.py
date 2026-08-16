@@ -137,6 +137,124 @@ def test_candidates_in_window_excludes_closed_status(tmp_path, monkeypatch):
     assert result == []
 
 
+# --- close_ts > now filter (2026-08-16 direct report: "im not seeing any
+# positions being opened or signals being read" for KXBTC15M) - real,
+# confirmed-live root cause: occurrence_datetime for this market shape is
+# ~5min AFTER close_time (a settlement-checkpoint timestamp, not a "start of
+# live window" one), so an already-closed instance can still fall inside the
+# occurrence_ts window and its stale `status` column never self-corrects
+# without a rescan - confirmed live, 3 real KXBTC15M rows sitting 2-8h
+# stale, all already closed, all still reading status="active". -----------
+
+def test_candidates_in_window_excludes_a_market_past_its_own_close_time(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    # occurrence_datetime deliberately AFTER close_time (the real KXBTC15M
+    # shape) and status still "active" (stale, never corrected) - would
+    # pass every other filter this query has.
+    markets = [_market(
+        "KXBTC15M-STALE", "KXBTC15M-EVT", occurrence_offset_sec=-295, close_offset_sec=-300, status="active",
+    )]
+    cat.upsert_markets("KXBTC15M", "Crypto", markets, updated_at=now)
+    result = cat.candidates_in_window(now, lookahead_sec=3600, lookback_sec=21600)
+    assert result == []
+
+
+def test_candidates_in_window_includes_a_market_not_yet_closed(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    markets = [_market(
+        "KXBTC15M-LIVE", "KXBTC15M-EVT", occurrence_offset_sec=300, close_offset_sec=180, status="active",
+    )]
+    cat.upsert_markets("KXBTC15M", "Crypto", markets, updated_at=now)
+    result = cat.candidates_in_window(now, lookahead_sec=3600, lookback_sec=21600)
+    assert [r["ticker"] for r in result] == ["KXBTC15M-LIVE"]
+
+
+def test_open_candidates_excludes_a_market_past_its_own_close_time(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    markets = [_market(
+        "KXBTC15M-STALE", "KXBTC15M-EVT", occurrence_offset_sec=-295, close_offset_sec=-300, status="active",
+    )]
+    cat.upsert_markets("KXBTC15M", "Crypto", markets, updated_at=now)
+    result = cat.open_candidates(min_volume=0, now=now)
+    assert result == []
+
+
+def test_open_candidates_includes_a_market_not_yet_closed(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    markets = [_market(
+        "KXBTC15M-LIVE", "KXBTC15M-EVT", occurrence_offset_sec=300, close_offset_sec=180, status="active",
+    )]
+    cat.upsert_markets("KXBTC15M", "Crypto", markets, updated_at=now)
+    result = cat.open_candidates(min_volume=0, now=now)
+    assert [r["ticker"] for r in result] == ["KXBTC15M-LIVE"]
+
+
+# --- series_with_expired_data / next_series_to_scan priority (same
+# 2026-08-16 incident) - a fast-rotating series (new market every 15
+# minutes) needs to be rescanned far sooner than pure least-recently-
+# scanned ordering alone can provide once the full series list is large
+# enough that a whole rotation takes hours. -------------------------------
+
+def test_series_with_expired_data_flags_a_series_whose_only_market_has_closed(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [
+        _market("KXBTC15M-OLD", "EVT-A", occurrence_offset_sec=-295, close_offset_sec=-300),
+    ], updated_at=now)
+    assert cat.series_with_expired_data(now) == {"KXBTC15M"}
+
+
+def test_series_with_expired_data_excludes_a_series_still_trading(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [
+        _market("KXBTC15M-LIVE", "EVT-A", occurrence_offset_sec=300, close_offset_sec=180),
+    ], updated_at=now)
+    assert cat.series_with_expired_data(now) == set()
+
+
+def test_series_with_expired_data_uses_the_most_recent_market_per_series(tmp_path, monkeypatch):
+    # A series with one closed AND one still-open market (e.g. mid-rotation)
+    # must not be flagged expired - it has real, currently-tradeable data.
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [
+        _market("KXBTC15M-OLD", "EVT-A", occurrence_offset_sec=-895, close_offset_sec=-900),
+        _market("KXBTC15M-LIVE", "EVT-B", occurrence_offset_sec=300, close_offset_sec=180),
+    ], updated_at=now)
+    assert cat.series_with_expired_data(now) == set()
+
+
+def test_next_series_to_scan_prioritizes_expired_data_over_recency(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    # KXBTC15M was scanned recently (would normally rank LAST by pure LRU)
+    # but its only known market has already closed - must still come first.
+    cat.upsert_markets("KXBTC15M", "Crypto", [
+        _market("KXBTC15M-OLD", "EVT-A", occurrence_offset_sec=-295, close_offset_sec=-300),
+    ], updated_at=now)
+    cat.mark_scanned(["KXBTC15M"], scanned_at=now)  # scanned just now
+    cat.mark_scanned(["SER-STALE-BUT-NOT-EXPIRED"], scanned_at=now - 1000)  # scanned longer ago
+    all_series = [{"ticker": "KXBTC15M"}, {"ticker": "SER-STALE-BUT-NOT-EXPIRED"}]
+    batch = cat.next_series_to_scan(all_series, batch_size=1, now=now)
+    assert batch[0]["ticker"] == "KXBTC15M"
+
+
+def test_next_series_to_scan_never_scanned_still_ranks_behind_expired(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [
+        _market("KXBTC15M-OLD", "EVT-A", occurrence_offset_sec=-295, close_offset_sec=-300),
+    ], updated_at=now)
+    all_series = [{"ticker": "KXBTC15M"}, {"ticker": "SER-NEVER-SCANNED"}]
+    batch = cat.next_series_to_scan(all_series, batch_size=2, now=now)
+    assert batch[0]["ticker"] == "KXBTC15M"
+
+
 def test_next_series_to_scan_prioritizes_never_scanned(tmp_path, monkeypatch):
     _mc(tmp_path, monkeypatch)
     all_series = [{"ticker": "SER-A"}, {"ticker": "SER-B"}, {"ticker": "SER-C"}]

@@ -118,17 +118,54 @@ def _parse_ts(value: str | None) -> float | None:
         return None
 
 
-def next_series_to_scan(all_series: list[dict], batch_size: int) -> list[dict]:
-    """The batch_size series least recently scanned (or never scanned at
-    all) out of the given full series list - never a fixed offset/cursor,
-    so it self-heals if the underlying series list grows/shrinks/reorders
-    between calls, and a series that's been sitting stale the longest
-    always surfaces first."""
+def series_with_expired_data(now: float | None = None) -> set[str]:
+    """Series whose most-recently-known market has already closed - the
+    catalog's own knowledge of this series is dead, not just aging.
+    Real, confirmed-live finding (2026-08-16, same incident as
+    candidates_in_window/open_candidates' own close_ts fix): pure least-
+    recently-scanned ordering in next_series_to_scan has no way to know a
+    series like KXBTC15M (a brand new market every 15 minutes) needs
+    revisiting far sooner than a series whose markets each run for weeks
+    or months - both look identical to a purely time-based LRU. A full
+    scan cycle across every configured-category series was confirmed
+    taking 2-8h in practice; no batch-size/interval tuning of that cycle
+    can keep a 15-minute rotation fresh, since the fix has to be about
+    WHICH series gets scanned next, not how fast the whole rotation
+    goes."""
+    now = now if now is not None else time.time()
+    with _connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT series_ticker, MAX(close_ts) FROM markets "
+            "WHERE series_ticker IS NOT NULL GROUP BY series_ticker"
+        ).fetchall()
+    return {series for series, max_close in rows if max_close is not None and max_close < now}
+
+
+def next_series_to_scan(all_series: list[dict], batch_size: int, now: float | None = None) -> list[dict]:
+    """The batch_size series most in need of a rescan out of the given full
+    series list - never a fixed offset/cursor, so it self-heals if the
+    underlying series list grows/shrinks/reorders between calls.
+
+    Two-tier priority (2026-08-16, see series_with_expired_data's own
+    docstring for the real incident this closes): a series whose most
+    recently known market has already closed comes first, REGARDLESS of
+    how recently it was last scanned - a fast-rotating series (e.g.
+    KXBTC15M) would otherwise sit at its normal least-recently-scanned
+    position in the queue and never get revisited fast enough to catch its
+    next live window. Within each tier, least-recently-scanned (or never
+    scanned at all) still comes first, unchanged from before this fix -
+    a series that's been sitting stale the longest within its tier always
+    surfaces first."""
     if not all_series:
         return []
+    now = now if now is not None else time.time()
     with _connect(DB_PATH) as conn:
         scanned_at = dict(conn.execute("SELECT series_ticker, last_scanned_at FROM series_scan_state").fetchall())
-    ranked = sorted(all_series, key=lambda s: scanned_at.get(s["ticker"], 0.0))
+    expired = series_with_expired_data(now)
+    ranked = sorted(
+        all_series,
+        key=lambda s: (s["ticker"] not in expired, scanned_at.get(s["ticker"], 0.0)),
+    )
     return ranked[:batch_size]
 
 
@@ -196,6 +233,23 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     filtered to "open" (or unset, for markets scanned before that field
     existed) - a closed/settled market has nothing live left to check.
 
+    close_ts > now is also required now (2026-08-16 direct report: "im not
+    seeing any positions being opened or signals being read" for
+    KXBTC15M - real, confirmed-live root cause). occurrence_ts does NOT
+    mean "start of live window" for every market shape - for KXBTC15M,
+    occurrence_datetime is actually ~5 minutes AFTER close_time (a
+    settlement-checkpoint timestamp, not a kickoff one), so a market that
+    closed hours ago can still have occurrence_ts fall inside this window,
+    and its catalog `status` column stays whatever it was at last scan
+    (never corrected to "closed" without a rescan) - confirmed live: 3
+    KXBTC15M rows sitting 2-8h stale, all already closed, still reading
+    status="active" and satisfying this query before this filter existed.
+    close_time is the one signal every market shape agrees means "trading
+    has stopped" (same shortcut _fetch_live_status/event_lifecycle.
+    classify_phase already use) - filtering on it directly, rather than
+    trying to fix what occurrence_ts means per market shape, closes this
+    for every current and future fast-rotating series, not just this one.
+
     Returned as real-market-shaped dicts (occurrence_datetime/close_time as
     ISO strings, not the raw unix timestamps stored internally) so callers
     (main.py's _fetch_live_status, KalshiClient.round_robin_select) can
@@ -211,9 +265,10 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
             WHERE occurrence_ts IS NOT NULL AND occurrence_ts BETWEEN ? AND ?
               AND volume_24h_fp >= ?
               AND (status IS NULL OR status = 'open' OR status = 'active')
+              AND (close_ts IS NULL OR close_ts > ?)
             ORDER BY volume_24h_fp DESC
             """,
-            (lo, hi, min_volume),
+            (lo, hi, min_volume, now),
         ).fetchall()
     cols = (
         "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",
@@ -230,7 +285,7 @@ def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, 
     return results
 
 
-def open_candidates(categories: list[str] | None = None, min_volume: float = 0) -> list[dict]:
+def open_candidates(categories: list[str] | None = None, min_volume: float = 0, now: float | None = None) -> list[dict]:
     """Every open/active catalog market in the given categories (all
     categories if None) above min_volume, sorted by volume descending - no
     occurrence-time window at all, unlike candidates_in_window (built for
@@ -248,7 +303,20 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0) 
 
     Same real-market-shaped dict return convention as candidates_in_window
     (occurrence_datetime/close_time as ISO strings) so callers can treat a
-    row exactly like a freshly-fetched Kalshi market object."""
+    row exactly like a freshly-fetched Kalshi market object.
+
+    close_ts > now required now (2026-08-16) - same real, confirmed-live
+    fix as candidates_in_window's own close_ts filter, see its docstring
+    for the full incident. This function is the one actually driving the
+    default (non-live-only) discovery path _refresh_discovery_cache uses,
+    so a stale/already-closed row here directly means a dead market
+    reaching the real watchlist, not just a theoretical gap - this was
+    confirmed live against KXBTC15M specifically (3 already-closed
+    instances, hours stale, all still status="active", all still being
+    selected as real watchlist candidates before this filter existed).
+    now is optional (defaults to time.time()), same convention as
+    candidates_in_window, so tests can pin it deterministically."""
+    now = now if now is not None else time.time()
     with _connect(DB_PATH) as conn:
         if categories:
             placeholders = ",".join("?" for _ in categories)
@@ -259,9 +327,10 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0) 
                 FROM markets
                 WHERE volume_24h_fp >= ? AND category IN ({placeholders})
                   AND (status IS NULL OR status = 'open' OR status = 'active')
+                  AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,
-                (min_volume, *categories),
+                (min_volume, *categories, now),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -271,9 +340,10 @@ def open_candidates(categories: list[str] | None = None, min_volume: float = 0) 
                 FROM markets
                 WHERE volume_24h_fp >= ?
                   AND (status IS NULL OR status = 'open' OR status = 'active')
+                  AND (close_ts IS NULL OR close_ts > ?)
                 ORDER BY volume_24h_fp DESC
                 """,
-                (min_volume,),
+                (min_volume, now),
             ).fetchall()
     cols = (
         "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",
