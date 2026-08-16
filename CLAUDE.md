@@ -298,14 +298,45 @@ Also proactively suggest — don't silently assume — a good moment for the
 *user* to run `/compact` (session has done substantial work and context is
 getting heavy) or `/clear` (the next thing is materially unrelated to what
 was just finished). This is a suggestion to surface, not a decision to make
-unilaterally.
+unilaterally. Concrete trigger, not just a vibe check (direct data,
+2026-08-16 usage review — see below): right after `/sync-status-docs` or
+any other full read of `ROADMAP.md`/`static/status.html` (both large,
+frequently-touched files), and generally once a session has been open
+8+ hours or is running noticeably slower to respond — both measured as the
+real drivers of this project's heaviest usage sessions, not hypothetical.
+
+**Session-efficiency review (2026-08-16, direct instruction: "use this to
+inform improvements to session efficiency without losing effectiveness").**
+`/usage`'s own attribution data showed 99% of usage from subagent-heavy
+sessions, 94% from sessions open 8+ hours, 93% spent above 150k context,
+and `/sync-status-docs` alone at 21% of a week's total. Root-caused the
+last one directly, not guessed: that skill's own steps implied a full read
+of both target files every invocation, and `static/status.html` alone is
+4400+ lines with a single Component-Reference table cell running several
+thousand tokens by itself — confirmed via `grep -c`/`wc -l`, not assumed.
+Fixed at the skill itself (`.claude/skills/sync-status-docs/SKILL.md`) —
+every step now scopes to `grep -n` + a targeted `Read(offset, limit)`
+around just the relevant bullet/phase-block/table-row, never a whole-file
+read; same output quality (still grounded in a real template block and the
+real target text), a fraction of the context. Apply the same "grep first,
+read a window, never the whole file" default to any other large file in
+this repo (this one included, at 300+ lines) before reaching for a full
+read — same lever, same payoff, whenever it applies.
 
 When delegating to a subagent, match the model to the task (direct
 instruction, 2026-08-16): `model: haiku` for mechanical, read-only,
 low-judgment work (bulk fetches, log scans, file inventories) — reserve
 the default/inherited model for anything needing real reasoning or code
 changes. Don't restart an already-in-flight agent just to fix its model
-tier; apply this to how agents get launched going forward.
+tier; apply this to how agents get launched going forward. For a heavy,
+genuinely self-contained agent task (a large multi-file investigation, a
+full-suite verification run) that doesn't need to share this session's
+accumulated context, prefer spawning it with `isolation: "worktree"` —
+it starts cold (no inherited context bloat) and reports back a compact
+result instead of its full working transcript landing in this session,
+which is the other half of why subagent-heavy sessions run expensive:
+not just model tier, but how much of the subagent's own context this
+session ends up holding onto afterward.
 
 Context-window limits are already auto-compacted by Claude Code itself, no
 prompting needed. Session/usage-cap limits are handled the same way, by
