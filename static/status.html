@@ -4295,6 +4295,32 @@
         <div class="files"><code>static/index.html</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 112 · a market that can never grow up</div>
+        <h4>KXBTC15M was structurally locked out of the watchlist by a 24-hour clock on a 15-minute market</h4>
+        <p>Direct report while checking the app's own standing stability test case after an unrelated
+          infra session (moving ddev's router off host 80/443 to free it for a separate Traefik stack —
+          see <code>ddev-kalshi-whale-poc-integration.md</code> in the portfolio repo, outside this one):
+          KXBTC15M — the series specifically kept in the watchlist to verify the full whale/trade/close
+          lifecycle every 15 minutes — wasn't in <code>state["markets"]</code> at all. Root-caused against
+          <code>market_catalog.db</code> directly rather than guessed: <code>kalshi.min_volume_24h</code>
+          (100k) filters on a 24-hour rolling volume figure, but every still-open KXBTC15M instance sat at
+          <code>volume_24h_fp = 0.0</code> — real rows showed volume only turning up (600k–1.3M) after
+          <code>close_ts</code>, by which point <code>open_candidates</code>'s own <code>close_ts &gt;
+          now</code> filter had already excluded it as closed. A 24-hour window can never be satisfied by a
+          market whose entire tradeable life is 15 minutes — not a regression, a standing structural
+          mismatch between the filter and this series' shape.
+          Fixed generally, not with a KXBTC15M-only special case: <code>market_catalog.open_candidates</code>
+          now takes an optional <code>min_volume_by_series</code> dict, applied via a SQL <code>CASE</code>
+          per <code>series_ticker</code> against the blanket <code>min_volume</code> for everyone else —
+          zero behavior change for any existing caller that doesn't pass it. Wired through a new
+          <code>kalshi.min_volume_24h_by_series: {KXBTC15M: 0}</code> config entry, so covering another
+          fast-rotating series later is a one-line config change, not a code change. Verified live:
+          <code>KXBTC15M-26AUG161415-15</code> appeared in <code>state["markets"]</code> and started
+          picking up real WS ticker-price updates within one discovery-cache refresh. 959 tests passing.</p>
+        <div class="files"><code>services/market_catalog.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> · <code>tests/test_market_catalog.py</code></div>
+      </div>
+
     </div>
   </section>
 
