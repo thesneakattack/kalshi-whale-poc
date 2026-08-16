@@ -7,124 +7,41 @@ is ever at risk* unless they deliberately configure it to be. Everything
 below is measured against that bar, not against "does it technically work."
 
 This is a living to-do list, not a snapshot — check items off in place and
-add new ones as they turn up. Three docs now split the "what's next" from
-"what happened":
+add new ones as they turn up. **Keep this file short.** Only genuinely open
+items live here; the moment something ships, it comes off this list
+entirely (a one-line pointer at most) — the narrative belongs in
+`static/status.html`, not here. Three other docs carry the "what happened
+and why":
 
-- **This file** — forward-looking, kept short. Only genuinely open items
-  live here going forward; shipped work gets a one-line pointer, not a
-  narrative.
 - **`static/status.html`** (`/status`) — the actively-maintained
   backward-looking record, phase by phase, with the full "why," verification
   steps, and bugs found along the way. The primary source for "what
   happened and why" for anything shipped from now on.
-- **`docs/roadmap-archive-2026-08-09.md`** — a frozen, one-time snapshot of
-  this file's full detail as it stood on 2026-08-09, before it was condensed
-  down to the format above. Not maintained going forward; consult it (or
-  `git log`/`git show` on this file) for the full narrative behind anything
-  checked off before that date.
+- **`docs/roadmap-archive-2026-08-09.md`** — a frozen snapshot of this
+  file's full detail as it stood on 2026-08-09 (837 lines, pre-condensing).
+- **`docs/roadmap-archive-2026-08-16.md`** — a second frozen snapshot,
+  covering 2026-08-09 → 2026-08-16: the "Shipped (condensed)" section
+  stopped staying condensed and re-grew a full narrative, so this file got
+  cut back down a second time. Consult it (or `git log`/`git blame`/`git
+  show` on this file, the real history for anything committed) for the
+  full session-by-session story behind anything not covered in
+  `status.html`.
 
-## Active investigation — signal drought (2026-08-16)
-
-Direct live report: "im seeing absolutely no signals and i know for a fact
-its not due to filtering" - confirmed: `data/signal_log.db`'s last real
-signal is from 2026-08-16T00:54 UTC, ~90 seconds after commit `10eca4d`
-(the catalog-based discovery rewrite) took effect live, and nothing since -
-a real, multi-hour drought, not a quiet-market illusion (exchange_status
-confirms `trading_active: true` throughout).
-
-- [x] **Stale/already-closed catalog rows reaching the real watchlist** -
-  `market_catalog.candidates_in_window`/`open_candidates` never filtered by
-  `close_ts > now`, so a market whose catalog row predates its own close
-  (confirmed live: 3 real `KXBTC15M` instances sitting 2-8h stale, still
-  `status="active"`) kept showing up as a valid candidate indefinitely.
-  Fixed both queries; added `series_with_expired_data` +
-  `next_series_to_scan` priority so a fast-rotating series (new market
-  every 15 min) gets rescanned far sooner than pure least-recently-scanned
-  ordering alone provides (confirmed live: KXBTC15M picked up the actual
-  current live window within ~6 minutes of the fix, vs. 2-8h before it).
-- [x] **Deeper fix: Kalshi's own `close_time` field is mutable, not a fixed
-  value from market creation** - confirmed live against a real finalized
-  MLB market (`KXMLBGAME-26AUG151915MILLAD-LAD`): scanned into the catalog
-  at 01:25 UTC with `close_time=2026-08-18T23:15Z` (a ~2.5-day-out
-  scheduled/fallback value - the game hadn't concluded yet at scan time),
-  but a fresh fetch of the SAME ticker minutes later showed
-  `status="finalized", close_time=2026-08-16T01:49:41Z, result="no"` -
-  Kalshi revised close_time to the real settlement moment once the game
-  actually ended. The exact mechanism is now confirmed, not just observed:
-  `docs/kalshi/market_lifecycle.md` (real API docs, read as the focused-
-  pass follow-up) documents a `close_date_updated` WebSocket event fired
-  "when a market is closed ahead of its scheduled close time, including
-  before determination" - this app doesn't listen for it, so a catalog row
-  scanned before that event fires keeps its stale close_time/status
-  indefinitely until its next scan. `close_ts > now` filtering alone
-  (the same-day fix above) can never catch this, since it trusts the same
-  column that's wrong.
-  Fixed via the first of this doc's own two suggested next steps: a real-
-  time confirmation pass in `main._refresh_discovery_cache`, right after
-  `round_robin_select` narrows the catalog's candidate pool down to the
-  actual watchlist selection (small, bounded - one batched
-  `KalshiClient.get_markets_by_tickers` call per refresh cycle, not a
-  return to per-refresh REST fetching). Any selected ticker Kalshi now
-  reports as `closed`/`determined`/`disputed`/`amended`/`finalized` (the
-  real post-`active` lifecycle states, same doc) is dropped before it ever
-  reaches the watchlist; a ticker Kalshi doesn't return keeps its catalog
-  row rather than being dropped on a transient fetch miss. Also closed a
-  smaller, related dead-code finding from the same doc: `market_catalog`'s
-  own status filter checked for the literal string `"open"` alongside
-  `"active"` - `market_lifecycle.md` confirms `"open"` is only ever a
-  `GET /markets?status=` query filter value, never what a real market
-  object's own `status` field sends, so that half of the check matched
-  nothing. 9 new tests (`_refresh_discovery_cache`'s drop/keep/fetch-miss/
-  no-op-when-empty behavior). Verified live: stable for 90+ seconds
-  post-deploy with zero `[discovery]` failures, real catalog data (28,069
-  markets, 5,382 series scanned) flowing through with every watchlist
-  ticker's status confirmed `"active"`.
-  Whether the catalog-freshness gap alone explained the full signal
-  drought is still not 100% confirmed (the original websocket spot-check -
-  15 tickers, 25s, zero trades - was inconclusive either way), but a
-  separate, encouraging finding from the same pass: `trade_stream`
-  (`services/kalshi_trade_ws.py`) is already fully wired into the trading
-  loop (`main.py`'s `_process_stream_trade` runs whale-signal detection
-  directly off each streamed trade, not on a poll cycle) and active
-  whenever real Kalshi WS credentials are configured (`.env` has them) -
-  the low-latency, near-instantaneous signal path already exists
-  independent of this catalog fix. Not yet independently live-confirmed
-  this session (worth a `GET /api/state`'s `trade_stream_status` check).
-  Same self-review pass found and fixed one more real gap in this
-  neighborhood, unrelated to close_time: `_process_stream_ticker` was the
-  one of `check_exits`' three call sites (main tick loop,
-  `_process_stream_trade`, here) missing the 2026-08-11 same-tick stale-
-  price guard (`opened_since`) - the ticker and trade WS channels are
-  independent streams with no ordering guarantee, so a ticker update
-  reflecting a moment before a whale's fill could still be processed right
-  after a position opened on that fresher price. Fixed with the same
-  `opened_since=now` idiom the other two call sites already use. 1 new
-  test.
-  **Next-level follow-up, not attempted this session**: `market_lifecycle.
-  md` also documents the real, permanent fix - subscribing to the
-  `market_lifecycle_v2` WebSocket channel (`close_date_updated`,
-  `determined`, `settled`, `deactivated`/`activated` events) would let the
-  catalog learn about a status/close_time revision the instant Kalshi
-  emits it, eliminating the staleness window this fix only bounds. This
-  would also directly serve the separately-raised "whale signals should
-  stream in almost instantaneously... for super low latency actions on
-  opening/closing/managing positions" goal, extending the same event-
-  driven model `trade_stream` already proves out for trade detection to
-  market lifecycle/catalog freshness too. Real architectural scope (a new
-  persistent WS subscription, wiring its events into `market_catalog`'s
-  SQLite rows or an in-memory overlay, reconnect/backfill handling) -
-  flagged for a dedicated future pass, not squeezed into this one.
+**When something ships, update `status.html`, not this file's own prose.**
+Use the `/sync-status-docs` skill — it checks the item off here (a bare
+`[x]`, not a rewrite into a paragraph) and adds the matching timeline
+phase to `status.html` in one pass. Resist the urge to leave a factual
+trail in this file itself; that's exactly how it got long twice already.
 
 ## Path to production
 
-P0 (below) is **fully shipped** — the code-level gates around real money are
-real and complete. That's necessary, not sufficient: going from "the gate
-works" to "flip it for real" still has open operational questions.
+P0 — the code-level gates around real money (order schema verified against
+the official SDK, typed in-app confirmation phrase, restricted CORS, real
+account field names, kill switch + bankroll persisting across restarts) —
+is **fully shipped**. That's necessary, not sufficient: going from "the
+gate works" to "flip it for real" still has these open operational
+questions.
 
-- [x] Real trading gate is genuinely load-bearing (verified order schema on
-      the official SDK, typed in-app confirmation phrase, restricted CORS,
-      verified real account field names, kill switch + bankroll persist
-      across restarts) — see P0 below.
 - [ ] `services/shadow_mode.py` exists and logs what the strategy *would*
       trade against real signal data, but hasn't yet been run for a real
       evaluation stretch and reviewed — that review, not the code existing,
@@ -138,788 +55,83 @@ works" to "flip it for real" still has open operational questions.
       paper POC, not once a lost file means lost real financial state.
 - [ ] No monitoring/alerting beyond watching the dashboard or `ddev logs` —
       a kill-switch trip, crash, or connectivity loss currently notifies no
-      one. Worth promoting ahead of the P4 notifications item generally,
+      one. Worth promoting ahead of the P4 notifications item below,
       specifically for these three cases.
 - [ ] Auth is optional, single-operator Google OAuth (`services/auth.py`) —
       fine for "just me," but confirm that's still the model before real
       money sits behind it. No user table, no session-invalidation UI, no 2FA.
 - [ ] `advisory.auto_apply_enabled`/`confidence_calibration.auto_apply_enabled`
-      shipped 2026-08-10 (direct request), off/on by default respectively,
-      typed-confirmation gated, with their own sample-size floors on top of
-      manual-apply's bar (`advisory.auto_apply_min_n`,
-      `confidence_calibration.auto_apply_min_resolved_signals`, both
-      2026-08-11 hardening) and a full audit trail either way
-      (`config_performance.applied_changes`, `source`-tagged). Real-money
-      readiness is still an open question independent of the code, though:
-      this has only ever run against paper-mode trade history — confirm it
-      should stay on (or get a stricter/zero floor) before real capital is
-      ever behind the config it's tuning.
+      (both config-gated, typed-confirmation-phrase protected, with their
+      own sample-size floors and a full audit trail) have only ever run
+      against paper-mode trade history — confirm they should stay on (or
+      get a stricter/zero floor) before real capital is ever behind the
+      config they're tuning.
 - [ ] Have a human, not a default, set real position-size/kill-switch
       numbers in `config/settings.yaml` before the first live dollar —
       today's defaults were picked for exercising paper-mode logic, not
       sized for real capital.
-- [ ] Deep research (2026-08-09, `docs/prediction-markets-research-
-      reference.md` Part 3) found **sports-category event contracts are in
-      genuinely live, multi-state legal dispute** — Nevada geofencing
-      sports/election/entertainment contracts by 2026-08-12, Massachusetts
-      blocking sports contracts since January, several other states'
-      suits unresolved and moving weekly. Election/economics contracts are
+- [ ] **Sports-category contracts are in genuinely live, multi-state legal
+      dispute** (`docs/prediction-markets-research-reference.md` Part 3) —
+      Nevada/Massachusetts geofencing, several other states' suits
+      unresolved and moving weekly. Election/economics contracts are
       practically settled as tradeable; sports specifically is not. This
       app has zero category-level legal-risk awareness today
       (`kalshi.categories` is a plain volume/topic filter, not a risk one).
       Before real trading is ever enabled: a real answer on category
-      selection (and possibly state-of-residence) is needed, not just a
-      confidence/volume filter — see
-      `docs/prediction-market-strategy-alignment-plan.md` Part 6.
-      Cross-referenced 2026-08-15 (`docs/next-steps-2026-08-15.md` item 5)
-      against real `additional_prohibitions` (live-sampled via
-      `GET /series/{ticker}`): a **different, non-blocking risk axis**, not
-      a new gate here. It's category-level eligibility boilerplate —
-      identical text across every Sports-category series checked
-      (`KXMLBSPREAD`, `KXMLBGAME`, `KXPGATOUR`: current/former players,
-      coaches, staff, and owners of the governing league "and household
-      members and immediate family of all above"), not a per-series
-      bespoke list as first assumed, plus a universal MNPI/source-agency
-      clause present on every category checked including Crypto
-      (`KXBTC15M`) and Mentions (`KXTRUMPMENTION`). It restricts *who the
-      account holder personally is* (a league employee, a campaign
-      staffer, someone holding non-public information on the underlying),
-      not *which state they trade from* — orthogonal to the geofencing
-      dispute above, and not a blocker for today's single-operator design
-      (see the auth item above) unless this ever becomes multi-user, at
-      which point each user would need their own eligibility
-      self-attestation.
-- [ ] `pip-audit` (new CI job, `.github/workflows/tests.yml`, 2026-08-16)
-      found 20 known vulnerabilities across 5 pinned dependencies on its
-      first run. Most relevant to real trading: `cryptography` (43.0.3 —
-      signs every Kalshi API request via the RSA private key) is up to 6
-      versions behind fix availability (44.0.1-49.0.0 depending on the
-      specific CVE); `starlette` (0.38.6, FastAPI's transitive ASGI
-      dependency) needs FastAPI itself bumped to pull a patched version.
-      `python-dotenv`/`pytest`/`requests` are lower-risk (dev-only or
-      minimal blast radius). Deliberately not fixed blind in the same
-      session that found them — `cryptography`/`starlette` need their own
-      careful, tested upgrade changeset given how central they are to
-      real request signing and the web framework itself, not a version
-      bump made in passing. The `dependency-audit` CI job stays red until
-      this is resolved — that's accurate signal, not broken CI.
+      selection (and possibly state-of-residence) is needed — see
+      `docs/prediction-market-strategy-alignment-plan.md` Part 6. A
+      separate, non-blocking risk axis was cross-checked and ruled out as
+      *not* a new gate here: Kalshi's own `additional_prohibitions` per
+      series is generic eligibility boilerplate (who the account holder
+      personally is - a league employee, a campaign staffer, an MNPI
+      holder), not a state-of-residence restriction, and not a blocker for
+      today's single-operator design unless this ever becomes multi-user.
+- [ ] `pip-audit` (CI job, `.github/workflows/tests.yml`) found 20 known
+      vulnerabilities across 5 pinned dependencies. Most relevant to real
+      trading: `cryptography` (signs every Kalshi API request via the RSA
+      private key) is several versions behind fix availability; `starlette`
+      needs FastAPI itself bumped to pull a patched version. Deliberately
+      not fixed blind — these need their own careful, tested upgrade
+      changeset given how central they are, not a version bump made in
+      passing. The `dependency-audit` CI job stays red until this is
+      resolved — that's accurate signal, not broken CI.
 
 ## P4 — Nice-to-haves
 
-- [x] `docs/next-steps-2026-08-15-pt2.md` — real live incident, same day as
-      the entry below: signal-resolution head-of-line blocking (99.2% of
-      logged signals stuck unresolved) led to discovering the rate-limit
-      model was wrong (concurrency-based assumption; Kalshi's real limit is
-      token-bucket throughput-based, per `docs.kalshi.com/getting_started/
-      rate_limits`), which correctly-fixed then exposed discovery's
-      per-refresh REST fetch as a tick-blocking bottleneck ("markets
-      aren't even appearing," confirmed live: watchlist collapsed to 7).
-      Fixed via a full API-usage audit: discovery/catalog-scan/signal-
-      resolution all now independent background tasks; discovery reads
-      `market_catalog.open_candidates()` (pure SQLite, zero REST calls)
-      instead of a fresh fetch; catalog scanning no longer gated behind
-      the unused `live_markets_only` flag; account snapshot (balance/
-      positions/fills) was 3 uncached REST calls every tick, now interval-
-      cached. Verified live: 7 → 32 markets recovered, zero rate-limit
-      errors.
-      **Resolved same day, `docs/next-steps-2026-08-15-pt3.md`**: the
-      doc's own open item (tick_duration still ~27s not ~3s) was root-
-      caused via direct tick instrumentation — four independent uncached/
-      uncapped REST loops (`propagate_milestone_winners`,
-      `_fetch_event_live_data`, `_fetch_live_status`'s unbounded per-tick
-      batch, catalog-scan's 40-per-batch background task starving the
-      shared rate limiter). All four fixed with repoll caches / batch
-      caps. Verified live: tick_duration dropped from a stable ~24-33s
-      plateau to mostly 1-5s. Also fixed, same session: `kalshi.base_url`
-      switched from the legacy `api.elections.kalshi.com` alias to the
-      documented recommended default `external-api.kalshi.com` (direct
-      instruction) — confirmed no category-specific hosts exist at all,
-      resolving that open question. A follow-on full API/docs audit
-      (direct instruction, "use llm.txt to review the documentation...
-      see where a reapproach might be better") found — but did not apply
-      — three real batching opportunities (`get_events(tickers=...)`,
-      `get_live_datas(milestone_ids=...)` batch, category-scoped
-      `get_milestones`), confirmation that `get_event_live_data` is the
-      wrong endpoint for sports (real score/clock/quarter data already
-      being fetched via the milestone-based `get_live_data` calls but
-      discarded), and live-verified evidence the rate limiter is ~7x more
-      conservative than this account's real confirmed tier allows — all
-      flagged for a prioritization decision rather than applied
-      unilaterally. Still open: a WS-based real-position-feed decision,
-      `services/event_schedule.py`'s tick-loop wiring, market-search
-      decision-market granularity. 917 tests passing.
-      **The three flagged batching opportunities (and more found applying
-      them) were put into practice, 2026-08-16 direct instruction: "put the
-      knowledge into practice and fix the backend."** New batched
-      `KalshiClient` methods (`get_events`, `get_live_datas`,
-      `get_milestones_bulk`, `get_markets_by_tickers`) replaced individual-
-      call gathers at every real call site: event-title/live-status
-      fetching, milestone-winner propagation, and — the biggest real find —
-      **signal-resolution's backlog**: 26,903 of 32,480 logged signals sat
-      unresolved, checked at only 10-per-30s (~22h for one pass); batching
-      cuts that to ~200/check, ~1h. Also applied: category routing
-      (`_fetch_event_live_data` now skips Sports outright, the confirmed
-      100%-404 category, instead of calling it unconditionally every
-      category) and real game-state surfacing (`state["live_game_state"]` -
-      score/clock/quarter/down-distance data that was already being
-      fetched via the milestone-based calls but discarded). Read-rate
-      limiter raised 3.0→8.0 req/sec with reasoned headroom below the
-      confirmed 20 req/sec account ceiling (this app's read traffic is
-      mostly unauthenticated market data, so the full authenticated-account
-      ceiling was deliberately not assumed to transfer 1:1). 947 tests
-      passing.
-      **Continued the same day, second focused pass** (see this doc's
-      "Active investigation" section above for the close_time-mutability
-      fix from the same pass) — three more per-ticker gather sites batched
-      via the same `get_markets_by_tickers`, direct efficiency note: "a lot
-      of efficiency could be gained by using batch calls to the API vs
-      individual calls for specific markets": `_cached_market_fetch`
-      (pinned watchlist + open-position `extra_tickers` refresh),
-      `_fetch_markets`' live-only-branch `still_missing` fallback, and
-      `propagate_milestone_winners`' related-market lookup — previously one
-      gather *per event with a declared winner*, now one call covering
-      every related ticker across every such event in the tick. 953 tests
-      passing.
-- [x] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
-      to consume every research/planning doc in the repo (10 docs) and
-      produce a comprehensive forward-looking plan, cross-checked against
-      real code, not just the docs' own claims. **Headline finding, direct
-      escalated priority mid-session**: root-caused "near 70% win rate but
-      only pennies earned, portfolio looking like a straight line" against
-      606 real settled trades - bucketed by unit_cost (real side-aware price
-      paid), the strategy was net-losing outside a narrow 0.5-0.8 band
-      (-$1,588 below it, -$314 above it despite 78-94% win rates there,
-      +$1,152 only inside it). Fixed directly: `strategy.min_unit_cost`/
-      `max_unit_cost` (0.5/0.8), a real price-band entry gate on
-      `strategy_engine.py`, same precedent `market_strategy.py` already used
-      successfully. Also closed while consuming `docs/kalshi/`'s real API
-      reference docs in full for the first time: Kalshi's own `is_block_trade`
-      flag was parsed and never consumed - now a real 9th whale-confidence
-      factor. Plus: `ShadowTrader` config_fingerprint, margin-of-error
-      framing on calibration auto-apply, tick-duration/rate-limit visibility
-      (which immediately found a real live issue - 45-66 rate-limit hits
-      every tick, escalating the long-open "no concurrency throttling"
-      item), and a real bug in this session's own earlier work
-      (`me_pairs` missing from `GET /api/state` since it shipped). Full
-      prioritized list of everything else still open across all 10 docs -
-      small/medium/large, with an explicit non-goals section - is in the
-      doc itself. 778 tests passing.
-- [ ] `docs/todo-2026-08-14-heuristics-audit-and-exit-tuning.md` — direct
-      request after CI broke and a "70% win rate but only pennies of
-      profit" report. Fixed same-session: close_window_sec/special_market_
-      min_seconds_to_close were hardcoded with no config knob (now real
-      fields), CI's e2e test never actually ran (missing `requests` dep,
-      then a ddev-only network dependency with no CI guard), a take-profit
-      advisory suggestion mislabeled a whole-position dollar total as
-      cents/contract with no cap, two whale-follow gates' rejected-
-      candidate data was captured but never surfaced, and a float-equality
-      bug in confidence_calibration's near-constant-factor guard. Root-
-      caused the profit question against real data (asymmetric win/loss
-      payoff, not a bug) and found a real "betting against myself" whipsaw
-      pattern on 17 tickers (market_native's own 98.9%-bankroll-loss
-      finding is a data point, not an action item - direct clarification:
-      it's a deliberate control group being tested against whale-follow,
-      not ready to be judged yet). Same session, continued: fixed a
-      critical bug where auto_exit_enabled was completely dead code
-      whenever exit_on_sentiment_reversal was also on (real production
-      config, not hypothetical) - the two were separate `elif` branches
-      and the reversal one only tested "enabled," not "actually
-      triggered," using up the chain's one shot either way. Added real
-      volatility-aware pnl thresholds and an opt-in series-track-record
-      exit factor. Reconciled services/kalshi_fees.py against the real
-      fee schedule PDF - formula/rounding were already correct, but a real
-      10-series fee waiver was completely unmodeled (zero historical
-      trades affected, so no retroactive correction needed). Built real
-      mutually-exclusive pair detection (services/mutual_exclusivity.py)
-      off Kalshi's own event flag, already being cached but never used for
-      anything but display - both strategies now refuse to open a
-      position whose confirmed 2-outcome complement is already held. Full
-      findings, deferred next-steps (a time-til-close exit factor, folding
-      ME-pair order flow into sentiment analysis), and a suggested order
-      are in the doc itself.
-- [x] Position netting / hedge-mode active management
-      (`services/position_netting.py`, 2026-08-15 direct correction) — the
-      ME-complement entry gate above only blocks a *new* entry into a
-      confirmed complement; it did nothing for positions already open,
-      partial hedges, or N-way concentration. Real data found both live: a
-      UFC pair doubled up on one outcome via two different tickers, and a
-      51-position PGA tournament concentration (43.4% of the whale-follow
-      bankroll). Computes the exact payout profile of any confirmed
-      mutually-exclusive-event group under every possible outcome
-      (classified locked-profit/locked-loss/still-variable, not a "both
-      near 50c" heuristic), and — only past a volatility-scaled
-      materiality bar — recommends trimming or closing. Grounded in
-      `docs/prediction-markets-research-reference.md`'s own findings:
-      Kalshi's CLOB doesn't enforce sum-to-100% on mutually-exclusive
-      siblings (only arbitraged), and the real fee curve is worst exactly
-      at 50c. Off by default; `GET /api/position-netting/groups` and a
-      Portfolio-tab panel make it visible before ever being turned on.
-      Same session: generic per-category/per-series config-override
-      resolver (`services/config_overrides.py`), replacing and subsuming
-      the old single-field `strategy.entry_threshold_by_category`, wired
-      into both strategies' entry and exit paths. Populated with three
-      real per-series overrides, each checked against actual statistical
-      significance (a one-sample t-test on mean pnl vs. zero, a proportion
-      z-score on win rate vs. the book average) rather than eyeballed
-      dollar totals — several plausible-looking findings didn't survive
-      that check and were deliberately left unshipped (documented in
-      `config/settings.yaml`). Also found live, while sampling Kalshi's
-      real `GET /series` endpoint for richer category metadata (direct
-      request): the entire MLB proposition-market family has a real 0.5x
-      fee multiplier that was never modeled — every MLB trade had been
-      charged double the real fee. Fixed in `services/kalshi_fees.py`, and
-      already-recorded historical trade data (fees, realized P&L) was
-      corrected in place for both the whale-follow and market-native
-      paper accounts. 810 tests passing.
-- [ ] `docs/platform-deep-scan-findings-2026-08-10.md` — 7 concrete,
-      cited strategy/risk gaps found by re-reading the prediction-market
-      research against the actual current engine code (edge-aware
-      position sizing, cross-position concentration risk, exit-side
-      analyst signal, calibration-band feedback, wash-trading detection,
-      market_strategy calibration parity, time-of-day regime awareness).
-      Recommended sequencing is in the doc itself — start with the
-      exit-side analyst signal (cheapest) and concentration risk
-      (highest safety payoff) before touching position sizing.
-- [ ] `docs/hardening-and-accuracy-roadmap-2026-08-11.md` — direct request
-      after the phase 97 trade-tape incident, covering four areas: (1)
-      event-lifecycle awareness (pre-tail/mid-series/post-tail activity
-      phases) for watchlist ranking, `series_evaluator`'s verdict window,
-      and whale-confidence scoring — a real screenshot (a months-out
-      tournament-champion futures market with vol-5 outcomes) confirmed
-      the current 24h-cumulative-volume ranking has no idea an event
-      hasn't started yet; (2) a "web of expertise" cross-engine audit,
-      direct instruction — every pairing checked against the actual code
-      (not assumed), confirming 6 real gaps: `candidate_log`'s rejected-
-      candidate data never reaches `advisory_engine`, no category-
-      conditional tuning exists despite the data already being collected,
-      `regime_analytics` is read-only/never fed into live entry gating,
-      `series_evaluator` verdicts never reach `advisory_engine` despite
-      the disagreement already being surfaced read-only, `market_strategy`
-      has zero calibration tooling, and the full-spectrum LLM scan is
-      missing two datasets it could cheaply include; (3) resilience
-      follow-ups the incident exposed but didn't fix (the same unthrottled
-      per-ticker concurrency pattern exists in three other fetch loops, no
-      visible slow-tick/rate-limit indicator, other high-frequency write
-      paths not yet audited for the same blocking-I/O risk); (4) smaller
-      accuracy items (write-only `market_history` columns, no margin-of-
-      error framing on calibration auto-apply, no engine ever suggests a
-      per-series notional override despite having the data to). Sequencing
-      recommendation is in the doc itself.
-      **Finding 3 (exit-side analyst signal) is done** — a fourth
-      `analyst_divergence` factor in `_exit_confidence()`'s composite
-      auto-exit score, new `strategy.auto_exit_analyst_weight` config
-      field. 4 new tests, 542 passing.
-      **Finding 2 (concentration risk) is done** — shared
-      `open_position_count_in_series()` helper, wired into both
-      strategies' entry gates; new `strategy.max_open_positions_per_series`/
-      `market_strategy.max_open_positions_per_series` config fields
-      (null = unlimited). 7 new tests, 549 passing.
-      **Finding 1 (edge-aware position sizing) is done** — all 3
-      recommended-sequencing items now shipped. New
-      `kelly_scaled_max_size()` helper + `kelly_fraction_of_cap` config
-      fields (0.0 default, opt-in). 13 new tests, 562 passing. While
-      consulting real data for this pass, also fixed a real crash bug in
-      `confidence_calibration.py` (would KeyError against real signal
-      history — ~9200 resolved signals predate 3 newer factor keys) and
-      applied the 3 data-backed Advisory suggestions this app's own real
-      trade history already supported. Findings 4-7 still open —
-      4 (calibration-band feedback into sizing) is now unblocked, since
-      calibration itself is enabled and working. One real finding
-      surfaced, not yet acted on: `unusualness_factor`/`agreement_factor`
-      both show *negative* discrimination against real outcomes
-      (`GET /api/confidence-calibration/report`) — the opposite of their
-      current positive hardcoded weights in `whale_simulator.py`. Worth a
-      human look before finding 4 (or anything else) leans on those
-      weights being right.
-      **Acted on, same session** — the weights themselves are no longer
-      hardcoded: new `whale_confidence_weights` config section, threaded
-      through `composite_confidence_breakdown()` (real provider only, not
-      the simulator) via a new `weights` param with partial-override
-      fallback semantics. Retuned from the real finding above -
-      `unusualness_factor`/`agreement_factor` cut to the 0.05 floor,
-      `depth_factor`/`proximity_factor`/`context_factor` raised
-      proportionally to their own real discrimination gap;
-      `cluster_factor`/`trend_factor`/`analyst_factor` left untouched
-      (zero real data exists for any of them yet). New read-only
-      "Whale-Signal Calibration" History-tab panel — the report had zero
-      UI consumer before this. Applied live via `ddev restart` (0 open
-      positions at the time), not just written to disk. 11 new tests, 569
-      passing. This closes finding 4 in spirit — calibration findings now
-      have a real destination to act on — though editing the weights
-      themselves is still config-file/API only, no dashboard form yet.
-      Findings 5-7 still fully open.
-      **Full `config/settings.yaml` data review, same session (2026-08-10,
-      commit `20a334a`)** — went through every tunable field against real
-      historical data (`signal_log`, `market_broker`/`paper_broker`
-      history, `series_stats()`, the calibration report above). Applied 3
-      changes with real backing: `strategy.min_resolved_for_whale_filter`
-      1→10 and `advisory.min_resolved_trades_per_variant` 5→10 (both were
-      un-hedged against n=1 samples), `market_strategy.stop_loss_pct`
-      null→0.2 (disclosed as not yet data-calibrated — no stop_loss closes
-      exist for that strategy yet). Deliberately left most other fields
-      alone — `advisory_engine`'s own entry-threshold/longshot-bonus
-      recommendations return `None` against real data, and most discovery
-      filters (`entry_threshold`, `min_notional_usd`, spread/volume/
-      momentum gates) turned out to be structurally untunable with what's
-      currently tracked, not just "no strong signal yet." That
-      distinction, and what would need to be built to close it, is written
-      up in `docs/config-tuning-data-gaps-2026-08-10.md` — 10 concrete
-      gaps (rejected-candidate/counterfactual logging, a backtest replay
-      harness, per-field before/after windowing in `change_effect()`,
-      per-series win-rate × qualifying-rate cross-checks, raw-signal-field
-      logging, calibration-history tracking, cross-strategy comparison,
-      regime segmentation, a documented sample-size convention), with a
-      suggested build order.
-      **Gap 1 (rejected-candidate/counterfactual logging) is done** — new
-      `services/candidate_log.py`, `record_rejection()` called from every
-      gate that previously only produced a boolean (`strategy_engine.py`'s
-      `entry_threshold`/`min_whale_winrate_pct`, `market_strategy.py`'s
-      `min_price`/`max_price`/`max_spread`/`min_volume_24h`/
-      `min_seconds_to_close`/`min_momentum_delta`/
-      `entry_confidence_threshold`, `kalshi_trade_tape.py`'s
-      `min_notional_usd`). Resolved passively off the same `market_results`
-      dict already built each tick (zero new API calls, same shape as
-      `market_analyst_agent.resolve_from_market_results`). New
-      `GET /api/candidate-log/summary`, a `candidate_log` Danger Zone reset
-      flag, and a read-only "Rejected Candidates" History-tab panel. 14 new
-      tests, 583 passing. Verified live — real rejections already
-      accumulating (77 `min_notional_usd`, 11 `entry_threshold`, etc.).
-      **Gap 3 (per-field before/after windowing) is done** — new
-      `advisory_engine.change_effect_windowed()`, a looser measurement
-      alongside the existing `change_effect()`: splits trades by
-      `entry_timestamp` before/after a change's `applied_at` instead of
-      requiring an exact `config_performance` fingerprint match on both
-      sides, so it isn't starved by the fragmentation confirmed live (16
-      `strategy.*` fingerprints, most with 0 resolved trades). Also the
-      only effect measurement `market_strategy.*`/`risk.*`/etc. changes can
-      ever get, since `change_effect()`'s own fingerprinting only covers
-      `strategy.*`. Wired into `GET /api/advisory/applied-changes` as a new
-      `effect_windowed` field; the Change History panel falls back to it,
-      clearly labeled, when the strict `effect` is null. 5 new tests, 588
-      passing. Verified live — several real `exit_sentiment_*` rows that
-      showed `effect: null` now show a real windowed delta (50.0% n=134
-      before → 100.0% n=1 after).
-      **Gap 2 (stateless backtest replay) is done** — new
-      `services/backtest.py`: `entry_threshold_sweep()` and
-      `min_whale_winrate_pct_sweep()`, pure functions replaying a candidate
-      gate value against every already-logged resolved signal. Real,
-      disclosed scope boundary found while building this: `signal_log`
-      never stored price/spread/volume/notional, only
-      confidence/side/series/correct, so this can only faithfully cover
-      `strategy.entry_threshold`/`min_whale_winrate_pct` — not
-      `market_strategy.py`'s price/spread/volume/momentum gates or the
-      longshot fields, contrary to this doc's own original claim that
-      "signal_log already has the input data." New
-      `GET /api/backtest/entry-threshold`/`.../min-whale-winrate` +
-      read-only "Backtest Sweeps" History-tab panel. 16 new tests, 598
-      passing. Verified live against real history (11.5k-17k resolved
-      signals) — genuinely interesting finding: win rate across the
-      entry-threshold sweep is roughly U-shaped (52.7% at 0.0, dipping to
-      49.7% near 0.30, climbing to 58-65% above 0.45), another data point
-      alongside Gap 6's still-open calibration question.
-      **Gap 8 (raw signal fields) is done** — new `WhaleSignal.raw_context`
-      field, populated by `kalshi_trade_tape.py`'s `fetch_signals()` at the
-      exact moment each signal is created (notional/spread/volume were
-      previously computed locally then discarded — only the already-
-      derived factor scores got persisted). Kept separate from `factors`,
-      not folded in, since `confidence_calibration.py`'s bucketing assumes
-      every `factors` value is a 0-1 score. Three new nullable
-      `signal_log` columns (`raw_notional_usd`/`raw_spread`/
-      `raw_volume_24h`); `resolved_signals_with_factors()` now returns
-      them alongside `confidence`/`correct`/`factors`. Pure data-capture,
-      no new UI — zero historical rows exist under this schema until new
-      signals accumulate. 7 new tests, 601 passing. Verified live via
-      direct sqlite3 query — real signals already capturing raw context
-      within seconds of deploy.
-      **Gap 4 (series_evaluator × win-rate cross-check) is done** —
-      diagnostic-only, no new persistence. `GET /api/series-evaluator/
-      status` now joins `series_evaluator.overview()`'s qualifying-rate
-      verdict against `signal_log.all_series_stats()`'s real win rate
-      (Gap 2's bulk query) inline, attaching `whale_win_rate`/
-      `below_winrate_floor` per series — the latter mirrors
-      `strategy_engine.py`'s real `min_whale_winrate_pct` gate comparison
-      exactly. Surfaced a real disagreement immediately on live data:
-      `KXATPCHALLENGERMATCH` is series-evaluator-approved for the
-      watchlist but `below_winrate_floor: true` (34.4% win rate, n=2326) —
-      the *other* gate is already silently filtering its real trades even
-      though this one approved it. Series Evaluator panel now shows win
-      rate inline, flagged when below the floor. No new tests (thin
-      inline join over two already-tested functions); verified live via
-      curl + selenium-chrome. 601 tests passing, unchanged.
-      **Gap 6 (calibration-history tracking) is done** — new
-      `services/calibration_history.py`, own SQLite file. A cheap
-      `due()` MAX()-query check runs every tick; only when a snapshot is
-      actually due (default every `confidence_calibration.
-      snapshot_interval_sec` = 6h, new config field) does the expensive
-      full-table-scan report computation run, then `record_snapshot()`
-      persists overall win rate, per-factor gaps, and the live weights.
-      New `GET /api/confidence-calibration/history` + a `calibration_
-      history` Danger Zone reset flag. History table added to the
-      Whale-Signal Calibration panel, hidden until ≥2 snapshots exist (one
-      point can't show a trend). 8 new tests, 609 passing. Verified live —
-      the very first snapshot recorded automatically within one tick of
-      deploy (11,859 resolved signals, 52.6% overall win rate).
-      **Gap 7 (cross-strategy comparison) is done** — new
-      `services/cross_strategy.py`: `aggregate_comparison()` (both
-      strategies' `compute_summary()` side by side, reused as-is) and
-      `ticker_overlap()` (every ticker where whale-follow and
-      market-native independently opened a position — two fully separate
-      capital pools/gates/entry logic — with `agreed`/win/loss per side).
-      New `GET /api/cross-strategy/comparison` + a new History-tab panel.
-      Real live numbers: whale-follow 50.4% win rate/135 closed vs.
-      market-native 13.6%/22 closed — no ticker overlap yet (honest empty
-      state, not fabricated). Found and fixed a real double-escaping bug
-      live during verification (`esc()` called on an already-HTML-escaped
-      label string). 7 new tests, 616 passing. Verified via curl and
-      selenium-chrome.
-      **Gap 9 (time-of-day regime segmentation) is done, partially** —
-      disclosed scope: hour-of-day/day-of-week only, both derivable
-      directly from `entry_timestamp`. Category segmentation (the other
-      half this gap and deep-scan Finding 7 both name) is NOT attempted —
-      `market_catalog.category` is watchlist-scoped and rotates, so it
-      would need a new category-snapshot-at-entry-time persistence layer,
-      not just an aggregation pass. New `services/regime_analytics.py`:
-      `by_hour_of_day()`/`by_day_of_week()`, both reusing
-      `trade_analytics.compute_summary()` per bucket. New
-      `GET /api/regime/by-hour`/`.../by-day-of-week` + a new "Regime
-      Segmentation" History-tab panel (whale-follow only — market-native's
-      22 closed positions are too thin to segment further). 8 new tests,
-      624 passing. Verified live — real variation across hours (e.g. 18:00
-      UTC: 70.0% win rate n=20, vs. 20:00 UTC: 23.1% n=13).
-      **Gap 10 (documented sample-size/power convention) is done** — new
-      `services/stats_power.py`: `margin_of_error_pts()`/
-      `min_n_for_margin()`, the real normal-approximation (Wald) margin-
-      of-error math behind "is n big enough to trust this," replacing this
-      session's own "eyeballing `sqrt(p(1-p)/n)` by hand." Doesn't rewrite
-      any existing ad hoc threshold (`confidence_label`'s 5/15,
-      `min_resolved_trades_per_variant`'s 10, etc. — each was chosen for
-      its own local reason) — documents them instead:
-      `trade_analytics.confidence_label()`'s docstring now states the real
-      margin at n=5 (~±44pts) and n=15 (~±25pts) at a 50% base rate, both
-      genuinely wide. Wired into one concrete consumer: Gap 4's
-      series-evaluator win-rate cross-check now shows each series' real
-      margin of error next to its win rate (e.g. "34.4% ±1.9pts"). 11 new
-      tests, 635 passing. Verified live via curl (real margins, no
-      `Infinity`-in-JSON risk — confirmed structurally unreachable given
-      the call site's own gating) and selenium-chrome.
-      **This closes all 9 buildable gaps from docs/config-tuning-data-
-      gaps-2026-08-10.md** (Gap 5's stop-loss calibration was never on the
-      build list — it needs time with the field live, not tooling; Gap 2's
-      stateful replay half was explicitly deferred within Gap 2 itself).
-      **Part 2 ("web of expertise" cross-engine audit) is done — all 6
-      confirmed gaps shipped, plus a real bug found along the way
-      (2026-08-11).** Item 6 (full-spectrum LLM context): `_build_full_
-      spectrum_context()` now includes `rejected_candidate_gates`
-      (`candidate_log.gate_summary()`, reused from an already-computed
-      local var — no duplicate DB call) and `regime_by_category`/
-      `regime_by_hour` (`regime_analytics.by_category`/`by_hour_of_day`).
-      Item 1 (rejected-candidate counterfactuals → `advisory_engine`): new
-      `_rejected_candidate_recommendations()` — a `(strategy, gate_name)`
-      →`(config_path, direction)` map covers 9 real gates; suggests
-      loosening a threshold when ≥5 rejected candidates would have won.
-      Item 4 (`series_evaluator` verdicts → `advisory_engine`): new
-      `_series_evaluator_recommendations()` suggests adding a series to
-      `strategy.excluded_series` when its win rate sits below the floor
-      with real sample size — confirmed live against a real
-      `KXMLBGAME` exclusion suggestion. Item 2 (category-conditional
-      tuning): new `strategy.entry_threshold_by_category` override dict
-      (mirrors the existing `min_notional_usd_by_series` precedent),
-      `FollowTheWhaleStrategy.evaluate()` now takes an optional `category`
-      param read from `state["event_titles"]`, and
-      `_category_conditional_recommendations()` suggests per-category
-      overrides off ≥5-sample category win-rate gaps. Item 3 (regime-aware
-      *live entry gating*, as opposed to Item 2's threshold-only wiring) is
-      deliberately scoped out of this pass and left open — `regime_
-      analytics` stays advisory-only for now, disclosed rather than
-      silently dropped, given the genuine plumbing complexity and the
-      direct instruction to not risk the live trading path twice in one
-      pass. Item 5 (`market_strategy` calibration parity): new `services/
-      market_strategy_calibration.py` — confidence-band calibration only
-      (not per-factor discrimination, disclosed in the module's own
-      docstring: market_strategy has no per-candidate factor persistence
-      like `signal_log.factors_json`, only a placed trade's blended score
-      via `trade_analytics.build_trade_history()`'s `entry_confidence`
-      field), new `market_strategy_calibration.{enabled, min_resolved_
-      trades}` config, `GET /api/market-strategy-calibration/status`/
-      `.../report`. Verified live against real data (n=80): a genuinely
-      useful finding on its first run — every confidence band's observed
-      win rate sits far below its predicted midpoint (e.g. 90-100%
-      predicted 95%, observed 26.7%), meaning market_strategy's composite
-      confidence score is currently a poor predictor of its own outcomes —
-      flagged here, not acted on, since this tool's job is exposing that
-      gap, not auto-correcting it. **Real bug found and fixed in the same
-      pass, direct report** ("apply button gives the same suggestion
-      again immediately"): every advisory suggestion function recomputed
-      from full trade history on every call with no awareness a
-      config_path had just been changed, so clicking Apply repeatedly with
-      no new trades in between kept re-suggesting the same nudge off
-      stale evidence. Fixed with `_drop_stale_recommendations()`, reusing
-      the existing `entry_timestamp`/`applied_at` before/after convention
-      from `change_effect()` rather than inventing a new one — a
-      suggestion is now dropped if `config_performance.
-      all_last_applied_by_path()` shows its `config_path` was changed more
-      recently than the newest trade behind the suggestion. 86 new tests,
-      722 passing. Verified live end-to-end via curl (real recommendations
-      including rejected-candidate and series-evaluator suggestions
-      appearing in `GET /api/advisory/recommendations`) and
-      `selenium-chrome` against the Whale Watch terminal specifically, per
-      direct instruction — 20 real market cards, whale signal breakdowns,
-      and trade tape all rendering correctly, confirming the trade-tape/
-      SQLite hardening from phase 97 wasn't disturbed by this pass.
-- [x] **Daily-loss kill switch never actually rolled over daily — three
-      real, connected bugs found and fixed in one investigation (2026-08-
-      10)**, triggered by a direct report ("market-native strategy seems
-      to have stalled"). Root cause: `reset_day()` was only ever called
-      manually (`POST /api/reset`, or a dashboard halt/resume click) —
-      nothing rolled the baseline over at a real day boundary, so once a
-      kill switch tripped it stayed tripped indefinitely.
-      `market_strategy.py`'s own risk manager had tripped
-      (`-43.1%`) and sat halted for 55+ hours with zero recovery path — it
-      wasn't stalled, it was correctly, silently obeying a kill switch
-      nothing had ever cleared. `services/risk_manager.py`'s
-      `check_daily_loss()` now runs an automatic rollover first (new
-      `day_start_date` column, once per real UTC calendar-date change, not
-      once per tick) — every existing call site gets this for free.
-      `services/shadow_mode.py` had the exact same bug, independently
-      confirmed live (`-99.7%`, dormant only because `mode` was `paper` at
-      the time) and fixed the same way, per direct follow-up ("i think the
-      same or similar problem is happening in shadow mode"). New
-      `POST /api/market-risk/halt`/`.../resume` and
-      `POST /api/shadow-risk/resume` (neither had any route before this),
-      plus a `market_native` `POST /api/reset` flag. All three trackers
-      manually un-halted live as part of this fix; market-native confirmed
-      evaluating real candidates again within a minute. Separately found
-      and fixed while investigating: the Portfolio Trade Log (both Simple
-      and Advanced views) never showed a closed position's real outcome —
-      every row rendered identically whether still open or already
-      settled, showing "cost to enter"/"payout if right" even for an
-      already-won-or-lost trade (direct report: "not seeing the results of
-      the positions in the trade log"). New `main.py`
-      `_enrich_recent_trades()` re-derives `close_type`/`realized_pnl`/
-      `won` via the existing `trade_analytics.build_trade_history()` over
-      the full trade log (not just the displayed tail-25, so pairing stays
-      correct) and merges it onto both brokers' `recent_trades`; the
-      Advanced table's P&L column also stopped using a mark-to-market
-      formula that was meaningless for a closed trade. 14 new tests (649
-      passing). Also cleaned up 9 stray `TICK-A` test-fixture rows a
-      pre-isolation-fixture pytest run had written into the real
-      `data/candidate_log.db` earlier this same session.
-- [x] **History tab panels never auto-refreshed while the tab stayed
-      open (2026-08-10)** — direct report: "the advisory recommendations
-      seem out-of-date, and should update." Root cause:
-      `loadTradingHistory()` was deliberately only ever called once, on
-      tab-open, to protect the paginated Trading History table's own
-      paging/sort state from a 5s poll reset — but that meant *every*
-      panel on the tab (Advisory, Change History, Calibration, Cross-
-      Strategy, Regime Segmentation, Rejected Candidates, Backtest
-      Sweeps, Series Evaluator, Market Analyst) inherited the same
-      staleness even though none of them have any pagination of their
-      own to lose. New `refreshHistoryInsightsIfActive()`, called from
-      the existing `refresh()` 5s poll, re-fetches just those panels —
-      the paginated trade-log table is untouched, still tab-open-only.
-      Verified live: intercepted `fetch()` and confirmed
-      `/api/advisory/recommendations` refetches every poll cycle while
-      the tab is open, and confirmed Trading History's own
-      `historyFilter.offset` (paging position) survives an 11s wait
-      completely unchanged.
-- [x] **Dedicated Market-Native tab (2026-08-10, direct request)** — its
-      own view, entirely separate from the whale-follow Portfolio tab:
-      status/bankroll/equity/unrealized-P&L stat cards, a halt banner
-      with a one-click resume when its kill switch is tripped, open
-      positions, a trade log (real won/lost results via the same
-      `_enrich_recent_trades()` the Portfolio fix above added), and its
-      own decision feed. That last one closed a real gap found while
-      building this: `market_strategy.evaluate_all()`/`check_exits()`'s
-      return values were computed every tick and silently discarded —
-      new `state["market_decision_feed"]` (deliberately kept separate
-      from whale-follow's own `decision_feed`, matching the existing
-      "each strategy's performance independently measurable" principle).
-      `GET /api/market-strategy/state` extended with `decision_feed`/
-      `market_titles`/`latest_prices`. Single-density, no Simple/Advanced
-      toggle — a disclosed smaller scope than Portfolio's own depth,
-      matching this strategy's much lower trade volume. Verified live:
-      confirmed the halt banner renders with the real live reason
-      (market-native's kill switch had actually tripped *again* since
-      being un-halted a few minutes earlier, at `-21.3%` this time — a
-      fresh, genuine trip consistent with its known ~13.6% win rate, not
-      a recurrence of the rollover bug), positions/trade-log render
-      correctly against real data, and double-checked what looked like a
-      P&L discrepancy (Unrealized P&L showing $0.00 next to a $423
-      equity-bankroll gap) — confirmed correct, not a bug:
-      `equity() = bankroll + cost_basis + unrealized_pnl` by design, and
-      the $423 gap was exactly the two open positions' cost basis, with
-      `unrealized_pnl` legitimately at 0 since no live price is currently
-      cached for those tickers (falls back to entry price, same
-      documented convention as everywhere else in this app).
-- [x] **Auto-apply for whale-signal calibration weights (2026-08-10,
-      direct request), plus a real bug found and fixed along the way** —
-      `advisory.auto_apply_enabled` was already protected from generic
-      config edits with an error message pointing at `POST /api/advisory/
-      auto-apply/enable`/`.../disable`, but those routes never existed
-      and nothing anywhere read `auto_apply_min_confidence`/
-      `auto_apply_cooldown_sec` either — the feature was reachable from
-      no path at all. Fixed alongside building the equivalent for
-      `confidence_calibration`. Both now use the same typed-confirmation-
-      phrase gate as real trading (asymmetric — disabling needs no
-      phrase). New `services/confidence_calibration.blended_weights_
-      for_auto_apply()` automates the exact blend a human did by hand
-      earlier this session (redistribute only factors with real
-      discrimination data, leave data-less factors completely untouched,
-      renormalize the whole set to sum to 1.0) — this reverses that
-      module's own earlier-documented "read-only, a human must apply
-      this by hand" decision, deliberately, at direct request, with the
-      same opt-in/confirmation-gated/cooldown safety rails as everything
-      else. New `config_performance.last_applied_at(source)` for the
-      cooldown check (reuses `applied_changes`' own timestamps, no new
-      tracker). Both auto-apply blocks wired into the trading loop
-      (advisory: applies the single highest-priority recommendation
-      clearing `auto_apply_min_confidence` per cooldown window, not a
-      burst of every qualifying one). 14 new tests, 656 passing.
-      Verified live end-to-end, not just unit-tested: enabled calibration
-      auto-apply via the real route (wrong phrase rejected, right phrase
-      accepted), then forced an immediate cycle by briefly dropping
-      `snapshot_interval_sec` to 1s — confirmed a real
-      `calibration-auto-apply`-sourced entry landed in the audit trail,
-      `whale_confidence_weights` updated to real, correctly-renormalized
-      values (sum ≈ 1.0), and the tick loop kept running with no error.
-      Restored `snapshot_interval_sec` to 21600 afterward. Left
-      **calibration** auto-apply enabled live (directly requested,
-      already past its data-sample gate) but left **advisory** auto-apply
-      at its default off — fixing the broken mechanism wasn't the same as
-      being asked to turn it on, and it's a materially broader blast
-      radius (any qualifying `strategy.*`/`market_strategy.*` field, not
-      one well-scoped config section).
-- [x] **Click-to-apply on the Backtest Sweeps panel (2026-08-10, direct
-      request: "click to apply buttons throughout... where suggestions
-      are made so i dont have to switch to the config tab")** — every
-      non-current row in both sweeps (`strategy.entry_threshold`,
-      `strategy.min_whale_winrate_pct`) now has an Apply button, gated
-      behind a `confirm()` dialog that honestly discloses this is a raw
-      sweep value, not a hedged Advisory recommendation (the stateless
-      replay it's based on doesn't account for cooldowns/concentration
-      limits/other fields changing at the same time — Gap 2's own
-      disclosed limitation). Other new panels this session (Rejected
-      Candidates, Regime Segmentation, Series Evaluator cross-check,
-      Cross-Strategy Comparison) were deliberately left without an apply
-      button — none of them resolve to one clean config value the way a
-      sweep row or an Advisory recommendation does. Verified live via
-      selenium-chrome.
-- [x] **Category segmentation - the deferred half of Gap 9 (2026-08-10,
-      direct follow-up request: "add those things, and have them auto-
-      enable... once there *is* enough data")** — regime segmentation
-      could only ever cover hour-of-day/day-of-week when it first
-      shipped; category needed a real new persistence layer first, since
-      `market_catalog.category` is watchlist-scoped and rotates, so a
-      historical trade couldn't be reliably joined back to its category
-      after the fact (exactly the limitation the doc originally
-      disclosed, not worked around with a guess). New
-      `services/trade_category.py` — records `ticker -> category` once
-      per position OPEN, looked up from `state["market_titles"]`/
-      `state["event_titles"]` (already cached every tick, zero new API
-      calls) at the exact moment either strategy places a trade. New
-      `regime_analytics.by_category()` joins onto it, same shape as the
-      other two bucket functions. New `GET /api/regime/by-category` + a
-      `trade_category` Danger Zone reset flag; the existing Regime
-      Segmentation panel gains a third table. Naturally "auto-enables"
-      the same way every other real-data-gated panel in this app does —
-      empty until enough trades placed *after this shipped* have a
-      recorded category, not backfilled with a guess for older ones.
-      28 new tests, 668 passing. Verified live: confirmed the app
-      imported and the trading loop kept running with zero tick errors
-      after deploy — but no NEW whale-follow position had opened in the
-      few minutes since deploy by the time this was checked (entry rate
-      depends on a real signal actually clearing the threshold, not every
-      tick), so an actual captured category row is disclosed as pending
-      the next real trade, not fabricated as already confirmed.
-- [x] **Graph views for the History tab (2026-08-10, direct request: "i
-      want to add useful graph views to the history tab")** — three new
-      charts, reusing the existing `renderEquityChart()` SVG line-chart
-      renderer (already generic enough — no new charting mechanism, no
-      external library) rather than building bar charts from scratch:
-      calibration-history win-rate trend (is calibration improving as
-      data accumulates, or stuck?), the entry-threshold backtest sweep
-      curve (makes the real U-shaped finding from earlier this session
-      visible at a glance instead of scanning a 20-row table for it), and
-      the hour-of-day win-rate curve. `renderEquityChart()` gained an
-      optional `opts` param (`{emptyMessage, valueFormatter}`) so these
-      percent-based charts don't get dollar-formatted like every
-      pre-existing equity chart — fully backward compatible, every
-      existing call site untouched. Verified live via selenium-chrome:
-      all three render a real `<svg>` with zero console errors.
-- [x] `docs/profit-maximization-assessment-2026-08-15.md` — direct request
-      to re-read the handoff doc, assess the app for logic holes/gaps/
-      quirks/bugs, and produce a profit-maximization plan given the real
-      68.4% win rate. Two confirmed bugs, not yet fixed: (1)
-      `strategy.kelly_fraction_of_cap: null` crashes `kelly_scaled_max_size`
-      (`None <= 0` TypeError) — was the committed default until this
-      session and live for 14.3 real hours; a crash here also skips that
-      tick's `check_exits`/`position_netting.review` since all three share
-      one `try` block in `main.py`. (2) the real-account (not paper) header's
-      "Change (session)" figure diffs current `portfolio_value`
-      (cash+positions) against a cash-only historical baseline — real-money
-      display path. Also found: `advisory_engine._rejected_candidate_
-      recommendations`'s comparability check is a flat 15-point tolerance
-      with no significance test, and verified via a real z-test that
-      today's applied `min_whale_winrate_pct: 76.5` suggestion is actually
-      ~2σ backwards (its rejected pool did worse than accepted, not
-      "comparable or better" as generated). Data findings: fees consumed
-      ~60% of gross profit this book ($934.69 of $1,557.82 gross, no maker-
-      order path exists yet); `kelly_fraction_of_cap` is 0 for both
-      strategies so the already-shipped confidence-aware sizing engine is
-      fully inert; `take_profit` is the single best-performing close type
-      (+$85.97 avg, n=28) yet is currently disabled. Full detail,
-      prioritized to-do list, and the "are the 4 exit strategies redundant"
-      / "should whale-sizing be volume-relative" analysis in the doc itself.
-      **Direct follow-up, same session: "fix the bugs, act on the data-
-      driven recommendations, implement new analyzers if needed" — done.**
-      Both confirmed bugs fixed and tested; the advisory-engine
-      significance-test gap turned out to be systemic (the same flat
-      15-point tolerance was used in 6 places across `advisory_engine.py`,
-      not 1) and all 6 now go through a real `_comparability_margin_pts()`
-      helper built on `services/stats_power.py`'s existing math. Config
-      applied: `min_whale_winrate_pct` reverted 76.5→85, then dropped
-      further to 50 after a live-reported symptom ("why is the system
-      avoiding crypto markets with super high whale winrates") traced to
-      a real design flaw — the flat global floor at 85% was blocking
-      `KXBTCD` (80.5% win rate), a **proven** top performer already sized
-      up via `strategy_overrides`, since any global floor above the
-      book's own 68.4% average rejects roughly half of all series by
-      construction; `take_profit_pct` enabled at 0.2 (corrected down from
-      an initially-considered ~0.5-0.95 once analysis found all 28
-      historical `take_profit` trades were priced *outside* the current
-      0.5-0.8 `unit_cost` band, so that history doesn't transfer);
-      `kelly_fraction_of_cap` raised to 0.3 for `strategy.*` only. New:
-      a full maker/limit-order path for the paper book — `kalshi_fees.
-      maker_fee()`, `PaperBroker.PendingOrder`/`place_limit_order()`/
-      `check_pending_fills()` (own SQLite table, side-aware fill check
-      against real bid/ask, expires unfilled rather than chasing a stale
-      price), `strategy.use_limit_orders`/`limit_order_timeout_sec` opt-in
-      wiring in `strategy_engine.py` and `main.py`. Off by default, same
-      "ships fully built, opt-in" precedent as every other mechanism here;
-      the real-account order path was deliberately not extended (real
-      trading stays gated regardless). Diagnostic research resolved two
-      open questions from the original pass: `market_native`'s apparent
-      27σ `min_momentum_delta` inversion was a confound (mixing eventual-
-      settlement-match win rate with realized-P&L win rate, where
-      `stop_loss` mechanically scores 0%) — real effect is 10.1pts/z=5.12,
-      still real, much smaller; and `depth_factor`'s non-discrimination
-      has a confirmed root cause for `KXBTC15M` specifically (Kalshi's
-      `volume_24h_fp` behaves like a shared/rolling figure for that
-      15-minute series, not real per-contract volume). Separately, direct
-      request to re-run the full sigma-vetted series/category analysis
-      against the fresh 607-trade book: no new `strategy_overrides` entry
-      currently warranted — all three existing ones (`KXBTC15M`,
-      `KXMLBSPREAD`, `KXBTCD`) reconfirm unchanged, `KXMLBGAME`'s bimodal
-      pattern reconfirms real but still correctly unshippable (no
-      unit_cost-bucket-scoped override tier exists), `by_category`
-      confirmed should stay empty. 17 new tests, 827 passing (was 810).
-      Full detail in the doc's own "Resolution (same session, continued)"
-      section.
-- [ ] Revisit the 5s polling model (`setInterval(refresh, 5000)`) once any
-      Advanced view needs sub-poll freshness — partially addressed by an
-      ETag/304 pass already shipped (an unchanged poll is now nearly free),
-      so this is really a push-vs-poll latency question (WebSockets,
-      considered and deferred) rather than payload waste.
+- [ ] Two deferred next-steps from `docs/todo-2026-08-14-heuristics-audit-
+      and-exit-tuning.md`, never picked back up: a time-til-close exit
+      factor (auto-exit scoring currently has no awareness of how close a
+      position is to its market's own close_time), and folding
+      mutually-exclusive-pair order flow into sentiment analysis (
+      `services/mutual_exclusivity.py` detects confirmed ME pairs and gates
+      new entries against an already-held complement, but doesn't yet feed
+      that signal into the sentiment/exit side).
+- [ ] Wash-trading detection (`docs/platform-deep-scan-findings-2026-08-10.md`
+      Finding 5) — the one of that doc's 7 cited strategy/risk gaps never
+      built. The other 6 (edge-aware position sizing, cross-position
+      concentration risk, exit-side analyst signal, calibration-band
+      feedback via Advisory, market_strategy calibration parity, time-of-
+      day/category regime segmentation) shipped across later sessions —
+      see the archive docs for the session-by-session trace if the detail
+      is ever needed.
+- [ ] Regime-aware **live entry gating** — `services/regime_analytics.py`
+      (hour-of-day/day-of-week/category win-rate segmentation) stays
+      advisory-only; deliberately not wired into live entry gating yet
+      (direct instruction: real plumbing complexity, didn't want to risk
+      the live trading path twice in one session). Advisory-surfaced
+      suggestions off this data already ship; this is specifically about
+      an engine *gating on* the regime automatically.
+- [ ] Revisit the 5s dashboard polling model (`setInterval(refresh, 5000)`)
+      once any Advanced view needs sub-poll freshness — an ETag/304 pass
+      already makes an unchanged poll nearly free, so this is a push-vs-poll
+      latency question, not payload waste. Distinct from backend signal
+      latency, which is a separate, already-better story: `trade_stream`
+      (`services/kalshi_trade_ws.py`) is live-wired into whale-signal
+      detection today (`main._process_stream_trade` runs off each streamed
+      trade directly, no poll wait) whenever real Kalshi WS credentials are
+      configured — confirm that's actually connecting live
+      (`GET /api/state`'s `trade_stream_status`) before assuming this item
+      needs backend work at all.
 - [ ] Notifications (email/push) for real trades, kill-switch triggers, or a
       tracked whale's win rate crossing the avoidance threshold — see the
       "Path to production" section above, which calls this out as worth
@@ -930,386 +142,37 @@ works" to "flip it for real" still has open operational questions.
 - [ ] Sort/filter the signal feed by divergence size (bet vs. market price),
       not just recency or raw whale size — this app's central "Betting is N
       pts more bullish/bearish than the market implies" framing is already
-      validated as the right idea (matches WhaleScanr/Upside's core
-      approach); this would lean into it further, not replace it.
-- [x] Finish migrating the rest of the render sites (Advanced fills/orders
-      tables, the screener table) onto the child-label/price-aware display
-      pattern shipped 2026-08-10 for positions/market cards/the
-      market-detail modal — those three call the older `marketLabel()`
-      alone and still don't show `yes_sub_title`/per-leg combo data.
-      **Done (2026-08-11), plus two real bugs found along the way** —
-      direct reports: "Cleveland vs Detroit Winner? YES but not the
-      winner...semantically it doesnt even make sense", rows "extremely
-      wide" from cramming series + child market + side onto one line, and
-      the market-detail modal's own Recent Trades panel showing the same
-      ambiguous "Taker bought no" with no indication of what "no" meant.
-      Root causes: (1) a real Kalshi API data quirk, not a caching bug —
-      confirmed directly against `KalshiClient.get_market()` that for many
-      simple 2-way matchup markets Kalshi's own `yes_sub_title`/
-      `no_sub_title` come back identical (both say the same team name);
-      `marketContext()`/`marketCardHTML()` (`static/index.html`) now detect
-      that degenerate case and show an honest "not {yes_sub_title}" for the
-      NO side instead of the misleading duplicate. (2) `main.py`'s
-      `_relevant_tickers()` only ever scoped the whale-follow broker's
-      positions/trade log for title-resolution data, never `market_broker`'s
-      — so `GET /api/market-strategy/state`'s own lookups were scoped wrong
-      for its own strategy's tickers; a fresh page load showed raw ticker
-      IDs on the Market-Native tab, worse than before context lines were
-      even added, because earlier testing had been masked by the browser's
-      stale cached titles. Fixed by adding `market_broker.positions`/
-      `trade_log[-25:]`/`market_decision_feed` tickers into the scoped set.
-      For the width complaint: instead of a full resolver migration, added
-      a smaller-font "Betting: {what this side means}" second line
-      (`contextLineHTML()`/inline equivalents) below the market name at
-      every remaining site that shows a ticker+side — Signal History,
-      Possible Accumulation, the live Signal Feed, Trade Tape, the Portfolio
-      Trade Log and Decision Feed table, real-account Positions/Fills/Orders
-      (Simple and Advanced), Trading History, Market-Native positions/
-      trades/decisions, Shadow Mode's trade log, the Market Analyst's
-      track-record/single-analysis panels, and the market-detail modal's
-      Recent Trades. `.decision-row` had never actually been styled (only
-      `.position-row`/`.trade-row` were) — added to the shared row rule.
-      Deliberately left the Advanced screener table alone — its dense
-      multi-column layout is a different, already-settled design boundary
-      (see Item 4/`status.html` phase 62), not an oversight. 668 tests
-      passing (unchanged — display-only plus the one backend scope fix, no
-      new persisted state). Verified live via `selenium-chrome`: the
-      Jodar-vs-Fils modal now shows "Taker bought NO / Betting: not Rafael
-      Jodar"; Signal History/Possible Accumulation show correct sub-lines
-      across real live rows including several genuinely degenerate-case
-      tickers; zero new console errors.
+      validated as the right idea; this would lean into it further.
 - [ ] Clicking a logged position/signal/decision should also show whether
       that specific position ultimately closed/won/lost, not just the
-      market's current state (direct request, 2026-08-10) — needs new
-      backend correlation (signal → resulting trade → outcome) that
-      doesn't exist today, not just the click-to-detail wiring already
-      shipped. Trading History rows already show this inline (close type +
-      P&L); the signal feed and decision feed do not.
-- [x] Market analyst agent's `analyze_market()` was swallowing its real
-      exception (`except Exception:`, not `as e`) and returned a message
-      pointing at "server logs" that didn't exist — fixed to capture the
-      real error and print it (`ddev logs -s fastapi`), so that message is
-      now true. 1 new test.
-- [x] Danger Zone was missing a `market_analyst` reset checkbox (backend
-      already supported the flag) and had no wired reset path at all for
-      `market_catalog`/`market_history` — the two largest files on disk.
-      `market_catalog.clear_all()` already existed unused; added the
-      matching `market_history.clear_all()` and wired all three into
-      `POST /api/reset` plus new checkboxes. 3 new tests.
+      market's current state — needs new backend correlation (signal →
+      resulting trade → outcome) that doesn't exist today. Trading History
+      rows already show this inline (close type + P&L); the signal feed and
+      decision feed do not.
+- [ ] A real, permanent fix for the close_time-mutability gap
+      (`docs/roadmap-archive-2026-08-16.md` has the full incident): Kalshi's
+      `market_lifecycle_v2` WebSocket channel (`close_date_updated`,
+      `determined`, `settled`, `activated`/`deactivated` events,
+      `docs/kalshi/market_lifecycle.md`) would let `market_catalog` learn
+      about a status/close_time revision the instant Kalshi emits it,
+      instead of only catching it on the next scan or the real-time
+      confirmation pass that currently bounds (not eliminates) the
+      staleness window. Real architectural scope — a new persistent WS
+      subscription, wiring its events into the catalog's SQLite rows or an
+      in-memory overlay, reconnect/backfill handling — flagged for a
+      dedicated pass. Would also extend the low-latency, event-driven model
+      `trade_stream` already proves out for trade detection to market
+      lifecycle/catalog freshness too.
 
-- [x] **Whale trades opening and instantly stop-lossing before ever showing
-      as an open position (2026-08-11, direct report: "MASSIVE bug...
-      likely theres a problem with the whole stream itself")** — the
-      stream/detection side was fine; real root cause was
-      `FollowTheWhaleStrategy.check_exits()` (`services/strategy_engine.py`)
-      marking a position to market, in the same tick it just opened,
-      against `state["latest_prices"]` — snapshotted at the *top* of that
-      tick, before the trade-tape read that generated the new position.
-      Confirmed against real data: a whale bought yes @ 0.82 on a 15-minute
-      BTC market while `latest_prices` still held a stale 0.67 from the
-      prior poll, computing a fabricated -21% loss and stop-lossing the
-      position 0.146 seconds after opening — a market that then went on to
-      settle at 0.999. Fix: `check_exits()` gained an `opened_since` param
-      (main.py passes `tick_now`) that skips any position opened this same
-      tick, leaving it for the next tick's fresh price. 2 new tests, 724
-      passing. See `docs/session-2026-08-11-whale-exit-stale-price-bug.md`
-      for the full incident writeup.
-      **Corrected 2026-08-16 (routine self-review found this doc's own
-      status had gone stale)**: the fix was in fact committed the same day
-      (`0ff90fb`), not left uncommitted as this entry previously said — a
-      documentation gap, not a code gap. Live-verified directly against
-      real trade history for the first time this session (queried
-      `data/paper_broker.db` for every real round-trip trade opened after
-      that commit): 11 real round-trips since, including 7 real
-      stop-losses, shortest hold time 392.9s — nowhere near the original
-      0.146s same-tick bug signature. Closes the doc's own last open
-      checklist item.
+## Shipped
 
-## Shipped (condensed — see `static/status.html` and
-`docs/roadmap-archive-2026-08-09.md` for full detail)
-
-- **P0 — Safety & correctness**: all 6 gates shipped — verified real
-  Kalshi field names + fixed a real 401 bug, verified/rewrote the
-  `create_order`/`cancel_order` schema against Kalshi's current docs, added
-  the typed in-app confirmation step before real trading can ever enable,
-  paper broker + risk manager state both persist across restarts, CORS
-  tightened to real origins, shadow mode built.
-- **Phase 0.5 — Dashboard & UX overhaul (Kalshi Pro-inspired)**: shared
-  Simple/Advanced toggle, real Event/outcome grouping, series-based market
-  discovery + round-robin watchlist selection (replacing a fundamentally
-  broken flat top-n browse), per-market drill-down modal (orderbook,
-  candlesticks, recent trades), scoped full-exchange trade tape, Trade
-  Log/Decision Feed Advanced tables, signal feed filters + enrichment,
-  browsable Signal History panel, payout display, grouped positions table,
-  Config-tab market search/browse, dense sortable screener table, persistent
-  price-change indicators, real LIVE badge, connectivity/staleness badge,
-  watchlist/pinned-markets UI, self-serve reset with granular flags,
-  market-detail modal from Open Positions, `/api/state` ETag efficiency pass
-  (43.8KB → 304s on unchanged polls), scrollable panels with smooth
-  no-scroll-reset updates, thin scrollbars, Markets-tab search/browse.
-- **Active position management & Trading History**: `close_position` +
-  `check_exits` (settlement → take-profit → stop-loss → sentiment-reversal →
-  auto-exit priority chain), new Trading History tab + `trade_analytics.py`,
-  plus two significant bugs found and fixed along the way — a settlement
-  double-inversion that silently paid $0 on an actual **no**-side win, and a
-  pre-existing no-side cost-basis bug (`size * price` instead of
-  `size * (1 - price)`) that had under-charged every no-side entry ever
-  opened.
-- **P1 — Actually dummy-proof**: Help modal + 11-term glossary, plain-English
-  strategy-decision explanations, sticky real-money banner keyed off the
-  field that actually gates real orders, Config tab rebuilt as ten
-  collapsible plain-English accordions with a data-quality badge legend.
-- **P2 — Whale-tracking maturity**: real `kalshi_trade_tape` size-based
-  whale provider (now the default), wider live-only market coverage +
-  incrementally-scanned market catalog, 8-factor composite confidence
-  scoring (depth/context/agreement/cluster/trend/analyst + calibration
-  tooling), series/category metadata + manual exclusion list, config-versioned
-  performance tracking superseded by a full rule-based advisory/
-  recommendation engine, `ml_feed` scaffolding for a future ML agent,
-  relative/volume-weighted whale sizing, flow-clustering "Possible
-  Accumulation" panel, a second whale-independent `MarketNativeStrategy` +
-  real market-data history, series-level watchlist grouping (fixing a
-  47-slot watchlist that was 42 golf pairings) reflected in the dashboard,
-  redundant-inversion-pair collapsing, a data/presentation deep review, deep
-  no-simplification prediction-market research applied across fees
-  (`kalshi_fees.py`), confidence, favorite-longshot-bias-aware entry
-  thresholds, and a "doctorate-level" LLM market analyst agent (on-demand,
-  dual-gated, self-calibrating) — followed by a second pass applying that
-  same research rigor to exits (fixed fee-blindness), the kill switch (fixed
-  it only checking realized bankroll), and a foundational `equity()`
-  under-reporting bug found along the way. Also: several rounds of
-  "raw ticker IDs instead of titles" bug fixes (paper trade log, then the
-  real connected account, then a regression from that fix pinning stale
-  finalized markets into the live watchlist), and whale-notional-threshold
-  retuning (including the per-series override capability that's the most
-  recently shipped item, phase 63 in `status.html`).
-- **P3 — Reliability & engineering hygiene**: automated test suite (400+
-  tests) + CI, migration to Kalshi's official SDK, exponential backoff on
-  rate limits, exchange open/closed status badge, a structural fix for
-  intermittent 403/404s (API-only backend, single public entrypoint),
-  mobile/responsive pass, partial accessibility pass.
-- **2026-08-10 session**: Whale Watch/Markets card-mosaic page-height fix
-  (a missing height bound plus threshold-based series collapsing, direct
-  report — one 69-market PGA event was rendering fully expanded); market/
-  position labeling fixed for three distinct root causes (child-market
-  sub-titles silently discarded at the point they were computed, real
-  positions had zero price and no event grouping, combo/MVE markets used a
-  fragile comma-heuristic label instead of real per-leg data — the last of
-  which was also a live, currently-shipping mislabeling bug, found and
-  fixed) plus click-to-detail wired onto the six places that were still
-  missing it (real positions, Trading History, paper Trade Log, whale
-  signal feed, decision feed); a data-robustness audit fixed a live test
-  that had been reading real production data, a catalog-scan bug that
-  marked failed series as healthy, a backend tick-failure state that
-  existed in the API the whole time with zero UI consumers, a market
-  analyst agent exception that was discarded entirely with a caller
-  message pointing at server logs that didn't exist, and Danger Zone
-  reset gaps for `market_analyst`/`market_catalog`/`market_history` (the
-  two largest data files on disk previously had no self-serve reset path
-  at all); Config tab overhaul — all 55 fields across the 10 core
-  accordions gained a dotted config-path chip (closing the "hint names a
-  variable I can't find" gap by reusing the exact chip already shown on
-  the History tab's hint panels) and a plain-English impact tooltip, plus
-  3 real defects fixed along the way (`"...and"` as a whole label,
-  Market-Native Strategy's exit fields far terser than their Exits-tab
-  equivalents, the Risk field never using the "kill switch" term the Help
-  glossary already does); a series evaluator
-  (`services/series_evaluator.py`) judging whether a series is even
-  "whale-worthy" before letting it back onto the automatic watchlist — a
-  before/after hybrid (a cheap pre-admission backoff check, plus a real
-  post-admission verdict on qualifying rate once there's trade-tape data to
-  judge), with sticky approval, an escalating doubling backoff on repeated
-  rejection, a new Config-tab section, and a History-tab log showing every
-  series ever evaluated with a manual re-evaluate action. 33 new tests.
-  Full suite: 464 (was 433). Then, first step of unifying the app's
-  self-tuning subsystem: merged the old purely-descriptive "Config Tuning
-  Hints" panel into Advisory Recommendations — per-field suggestions now
-  read the full trade history instead of being gated to the exact current
-  config fingerprint (the literal reason changing one field used to reset
-  every other field's sample to zero), fixing two real bugs found along the
-  way (a dropped `exit_sentiment_min_signals` suggestion, and a
-  `min_momentum_delta` suggestion that turned out to be unreachable dead
-  code, not just mislabeled, since it was checked against the wrong
-  broker's trade log). Suggestion cards now reuse the Config tab's own
-  path chips as a clickable jump-to-setting link. 466 tests. Then closed
-  a real gap found in that same grounding pass: `config_performance.
-  log_applied_change()` only ever fired from the Advisory apply route — a
-  plain manual Config-tab save (including the real-trading enable/disable
-  toggle) was never logged at all. Now every config-change source logs to
-  the same audit trail (tagged by `source`), and a `strategy.*` change
-  that created a new config variant gets a real measured before/after
-  win-rate + realized-P&L delta once both variants have trades — reusing
-  the same variant-comparison machinery cross-variant recommendations
-  already use, not a new computation. New "Change History" panel on the
-  History tab. 482 tests. Then extended the market analyst agent to
-  analyze a whole series, not just one market — a new
-  `record_series_analysis` tool schema, a separate `series_analyses`
-  table (that table's schema can't share the single-market one's NOT
-  NULL columns), scoped deliberately to suggesting `strategy.
-  excluded_series` changes only (a per-series notional-threshold
-  suggestion would need nested-dict apply logic this app doesn't have
-  yet — disclosed, not silently dropped). Suggestions land in the same
-  unified pool as Advisory's, tagged `source='series-analyst'`. New
-  "🔎 Analyze" button on the Series Evaluator panel. 509 tests. Finally
-  shipped "Feed the Analyst" — a full-spectrum scan across all config/
-  history/whale data that can suggest a change to *any* config field
-  (not a fixed one), so every raw suggestion is validated against the
-  live config before it's appliable (must be a real existing field, must
-  not be one of the two fields already protected from manual edits, must
-  actually differ, must be type-compatible). Confirm()-gated given the
-  cost — this is a materially bigger prompt than the other two modes.
-  This completes Item 3 (the unified self-tuning subsystem) entirely —
-  3A/3B/3C/3D have all shipped. 538 tests. See `static/status.html`
-  phases 64-73.
-- **2026-08-11 session — auto-apply hardening**, four direct reports acted
-  on together: (1) "the apply button should only appear next to config
-  change options the system agrees with" — Advisory Recommendations now
-  hides the manual "Apply to config" button for `confidence_label ==
-  'low'` suggestions (still shown, just without a one-click action - the
-  system itself is hedging on n<5, so it shouldn't offer a one-click way
-  to act on its own low-confidence read). (2) "auto apply should wait for
-  a significant dataset... and predict how those changes may improve (or
-  worsen) before applying" — both auto-apply paths get a dedicated,
-  stricter-than-manual sample-size floor on top of what already existed
-  (`advisory.auto_apply_min_n`, default 25, on top of the existing
-  confidence-tier check; `confidence_calibration.
-  auto_apply_min_resolved_signals`, default 150, vs. the report's own
-  50-signal display floor) - both new, Config-tab-editable, and neither
-  affects manual Apply clicks. Calibration auto-apply's logged rationale
-  now cites the specific calibration gap (factor + pts) the reweighting
-  was derived to address, rather than a fabricated forward win-rate
-  number this app has no way to honestly back before the new weights have
-  scored anything. (3) "make sure the suggested values arent stale" — a
-  real gap found: the series-analyst/full-spectrum-analyst apply routes
-  (`POST /api/market-analyst/series/apply`,
-  `.../full-spectrum/apply`) applied a suggestion's `suggested_value`
-  using its analysis-time `current_value` with no check that the live
-  config still matched - unlike the rule-based Advisory apply route
-  (which recomputes fresh every time and already 404s on drift), a config
-  change between analysis and apply (a manual edit, another analysis,
-  auto-apply) would silently overwrite based on a stale premise and log a
-  fabricated "before" value. New `_config_value_at_path()` helper backs a
-  check that now 409s with a clear message if the live value has moved.
-  4 new tests. (4)
-  "the config change log shows [Object object]" — real bug: multi-value
-  auto-applied changes (calibration replaces the whole
-  `whale_confidence_weights` dict in one shot) hit a bare `String(value)`
-  call, which just invokes an object's default `toString()`. New shared
-  `formatConfigValue()` (JSON.stringify for objects, plain string
-  otherwise) used everywhere a config value renders — Change History,
-  Advisory Recommendations, series/full-spectrum suggestion cards.
-  (History-list length was already capped at 20 via the existing
-  `?limit=20` fetch - confirmed, not changed.) New Config-tab "Whale-Signal
-  Calibration" section (previously had zero Config-tab presence at all,
-  despite being a live, auto-applying feature) plus one new field on the
-  existing Advisory Engine section. 672 tests (was 668). Verified live via
-  curl (a real pre-existing calibration-auto-apply row's dict value
-  confirmed rendering as JSON, not `[object Object]`) and
-  `selenium-chrome` (both new Config-tab fields, zero console errors).
-  Then a real live incident, start to finish, triggered by fixing a real
-  gap the wrong way at first: investigating "very few whale prints for
-  baseball despite a low threshold" found `main.py`'s `_fetch_trade_tape()`
-  capping the platform-wide trade tape at 100 items and fetching only the
-  last 10 trades per ticker with no `min_ts`/cursor - both silently
-  dropped real trades before whale detection ever saw them. Direct
-  instruction to make it genuinely unbounded ("i want trade tape to be
-  unlimited, never capped") shipped a **second, more severe incident**:
-  `series_evaluator.record_trade_observed()`/`candidate_log.
-  record_rejection()` each open a fresh SQLite connection per individual
-  raw trade, and removing the cap multiplied per-tick trade volume
-  10-30x - thousands of blocking synchronous DB round trips froze the
-  single-threaded event loop for several minutes (confirmed via nginx
-  "upstream timed out" + an internal request timing out against
-  `localhost:8000` from inside the same container). User proposed
-  migrating off SQLite to a real DB server; recommended against it
-  (`AskUserQuestion`, agreed) since the actual bug was blocking I/O on an
-  async event loop, not a SQLite capacity problem. Fixed properly instead:
-  `KalshiClient.get_trades()` gained real `min_ts`/`cursor` params (SDK-
-  confirmed, already supported by Kalshi, never wired up); `_fetch_trade_
-  tape()` now pages every ticker to completion via a new `_fetch_trades_
-  for_ticker()`, deliberately skipping pagination when there's no
-  watermark yet (a second bug caught mid-fix - unpaginated cold-start
-  would walk every watched ticker's entire history at once); a new
-  `state["trade_tape_last_fetch_ts"]` watermark makes every later tick
-  incremental; the UI panel stays capped at 100 for display, decoupled
-  from detection's now-uncapped input. `kalshi_trade_tape.fetch_signals()`
-  restructured so its entire per-trade loop (every blocking DB call it
-  makes) runs via `asyncio.to_thread()`, never on the event loop.
-  `series_evaluator.record_trades_observed_bulk()` collapses what used to
-  be one connection per trade into one per tick. WAL mode
-  (`PRAGMA journal_mode=WAL`) added to all 14 `services/*.py` modules
-  sharing the `_connect()` idiom - readers no longer block behind a
-  writer. A real editing mistake happened and was caught before it ever
-  reached the live server: a scripted WAL-mode rollout had an unescaped
-  `\3` in a non-raw Python string, silently interpreted as the octal
-  escape `\x03` instead of a regex backreference, deleting a line from
-  all 14 files - caught via `ast.parse` failing on every one, fixed with
-  a corrected script, reverified before restarting. 15 new tests, 687
-  passing (was 672). Verified live after a full restart: the first
-  cold-start tick (513 markets) took ~74s but the app stayed fully
-  responsive the entire time (the actual fix, not just "it didn't crash
-  this time") - confirmed via `selenium-chrome` that the market-detail
-  modal still opens quickly with accurate data. See `static/status.html`
-  phase 97 for the full incident writeup.
-  Then a real, root-caused fix for "the watchlist groupings is broken" —
-  the user's own diagnosis ("likely a result of the active removal of
-  watchlist items") was exactly right: `main.py`'s `_fetch_markets()`
-  appends an open position that rotated off `round_robin_select`'s own
-  selection (`extra_tickers`) to the *end* of the markets list regardless
-  of series, but `renderMarketCards()` assumes same-series markets are
-  always consecutive — true of `round_robin_select`'s own output, not of
-  the post-append result. One series could render as two separate,
-  non-adjacent sections. Fixed on both sides: the backend re-groups by
-  series after the append (first-occurrence order preserved, not an
-  alphabetical sort, so `round_robin_select`'s volume-priority ordering
-  survives — also now covers the manually-pinned watchlist branch, whose
-  order was never guaranteed grouped at all); the frontend's own
-  `seriesRuns` builder switched from an adjacent-only scan to a
-  `Map`-keyed merge, belt-and-suspenders on top of the backend fix. 1 new
-  test. 673 tests (was 672). Verified live: queried the real DOM after
-  the fix and confirmed zero duplicate series sections across the
-  actual, currently-live watchlist. Two other reports investigated in the
-  same pass — "price fluctuations arent showing" and "very few whale
-  prints for baseball despite a low $500 threshold" — turned out **not**
-  to be code bugs: `signal_log` showed 302 real MLB whale signals in a
-  single recent 6-hour window (all above threshold), and the price-update/
-  live-badge mechanisms both checked out correctly end-to-end once the
-  trading loop was running undisturbed. The live Signal Feed panel's
-  existing 50-item cap (shared across every concurrently-active sport,
-  not baseball-specific) is the more likely source of the "few prints"
-  impression — no code change made for either, since nothing was actually
-  broken.
-- **2026-08-15 session, advisory significance + staleness**: recommendation
-  cards were showing a plain-English paraphrase and hiding the actual
-  `config_path` inside a collapsed "technical details" section — direct
-  report ("the advisory recommendations arent even telling me the names of
-  the values") — now shown directly under the headline on every card.
-  `services/advisory_engine.py`'s `_drop_stale_recommendations` upgraded
-  from a binary keep/drop staleness gate into a real `fresh_samples_
-  since_change` count attached to every surviving recommendation (shown as
-  a ⚠ warning when thin). `services/stats_power.py` gained
-  `two_proportion_z_score`/`one_sample_t_score`, wired into all 9
-  recommendation-generating functions and shown on every card
-  (`z = 1.57 — not statistically significant yet` style verdicts) — direct
-  request for "a statistical significance score in addition to the
-  semantics." Also: `strategy_overrides` (per-series/category tuning) is
-  now directly editable from the Config tab instead of only via
-  `POST /api/config`/hand-editing the YAML, and 10 previously-missing
-  `strategy.*` Config-tab fields were added (min/max unit cost,
-  close-window timings, the maker-order fields, 3 auto-exit weights).
-  893 tests passing.
-- **2026-08-15 session, rate-limit incident + API usage audit**: see
-  `docs/next-steps-2026-08-15-pt2.md` for the full incident writeup
-  (linked from the P4 item above) — signal-resolution head-of-line
-  blocking, the concurrency-vs-throughput rate-limit model correction,
-  and discovery's REST fetch blocking the tick loop ("markets aren't even
-  appearing," confirmed live) all root-caused and fixed. Discovery,
-  catalog-scanning, and signal-resolution decoupled into independent
-  background tasks; discovery unified onto `market_catalog`'s
-  already-persistent data (zero REST cost once warm); account snapshot
-  (balance/positions/fills) moved from 3 uncached REST calls every tick to
-  a 20s interval cache. Verified live: markets recovered from a crisis low
-  of 7 to a stable ~32, zero rate-limit errors throughout. 899 tests
-  passing. Real open item, not yet root-caused: tick_duration stabilized
-  around ~27s, not the pre-incident ~3s baseline — see the doc for what's
-  been ruled out and what to check next.
+Everything else has shipped — P0 (safety gates), the full dashboard/UX
+overhaul, active position management, whale-tracking maturity (real trade-
+tape provider, composite confidence scoring, advisory/recommendation
+engine, market analyst agent, position netting, calibration, per-series
+overrides), reliability/engineering hygiene (test suite + CI, official SDK
+migration, rate-limit correctness), and dozens of live-reported bugs found
+and fixed session by session. `static/status.html` (`/status`) is the
+complete, phase-by-phase record — 109 phases and counting. For the detailed
+prose version of this file as it stood before each condensing pass, see
+`docs/roadmap-archive-2026-08-09.md` and `docs/roadmap-archive-2026-08-16.md`.
