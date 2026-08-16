@@ -4643,34 +4643,69 @@ const DAY_OF_WEEK_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 async function loadRegimeSegmentation() {
   const el = $('regime-segmentation');
   try {
-    const [byHour, byDow, byCategory] = await Promise.all([
+    const [byHour, byDow, bySeries, bySubcategory, byCategory] = await Promise.all([
       fetchJSON('/api/regime/by-hour?strategy=whale_follow'),
       fetchJSON('/api/regime/by-day-of-week?strategy=whale_follow'),
+      fetchJSON('/api/regime/by-series?strategy=whale_follow'),
+      fetchJSON('/api/regime/by-subcategory?strategy=whale_follow'),
       fetchJSON('/api/regime/by-category?strategy=whale_follow'),
     ]);
     const wrColor = v => v === null || v === undefined ? 'var(--muted)' : (v >= 50 ? 'var(--yes)' : 'var(--no)');
+    // Win rate alone can't distinguish a real edge from the "high win
+    // rate, thin edge" trap CLAUDE.md already documents once (a segment
+    // can win 80%+ of the time and still lose money if wins are small and
+    // losses are large) - 2026-08-16 direct request: "not just winrate
+    // either, but whatever else would be statistically useful". avg P&L/
+    // trade catches that trap directly; the margin-of-error suffix on win
+    // rate (same stats_power math services/advisory_engine.py already
+    // gates real suggestions on, not a separate/simplified number) is
+    // "how much to trust this number given the sample size" made visible
+    // instead of implicit.
+    const pnlColor = v => v === null || v === undefined ? 'var(--muted)' : (v >= 0 ? 'var(--yes)' : 'var(--no)');
     const bucketRows = (buckets, labelFn) => buckets.map(b => `<tr>
       <td>${esc(labelFn(b))}</td>
       <td>${b.total_closed}</td>
-      <td style="color:${wrColor(b.win_rate_pct)};">${b.win_rate_pct !== null ? b.win_rate_pct.toFixed(1) + '%' : '—'}</td>
+      <td style="color:${wrColor(b.win_rate_pct)};" title="${b.win_rate_margin_pts != null ? `95% confidence interval: +/-${b.win_rate_margin_pts}pts (${b.confidence_label} confidence, n=${b.total_closed})` : ''}">${b.win_rate_pct !== null ? b.win_rate_pct.toFixed(1) + '%' : '—'}${b.win_rate_margin_pts != null ? ` <span style="color:var(--muted); font-size:10px;">±${b.win_rate_margin_pts}</span>` : ''}</td>
+      <td style="color:${pnlColor(b.avg_realized_pnl)};">${b.avg_realized_pnl != null ? fmt(b.avg_realized_pnl) : '—'}</td>
+      <td style="color:${pnlColor(b.total_realized_pnl)};">${b.total_realized_pnl != null ? fmt(b.total_realized_pnl) : '—'}</td>
     </tr>`).join('');
+    const statHeaders = '<th>Closed</th><th>Win Rate</th><th title="Average realized P&amp;L per closed trade - catches a segment that wins often but small and loses rarely but big">Avg P&amp;L</th><th>Total P&amp;L</th>';
     const hourRows = bucketRows(byHour.buckets || [], b => `${String(b.hour_utc).padStart(2, '0')}:00 UTC`);
     const dowRows = bucketRows(byDow.buckets || [], b => DAY_OF_WEEK_LABELS[b.day_of_week]);
+    // Finest to coarsest (2026-08-16 direct request: series -> subcategory
+    // -> category, the same fallback order services/advisory_engine.py's
+    // _series_conditional_recommendations now uses for real suggestions -
+    // this panel is that same evidence, made visible) - series first since
+    // it's the tier that's always populated (pure function of the ticker,
+    // no trade_category.py dependency), subcategory/category naturally
+    // thin out for non-Sports trades.
+    const seriesRows = bucketRows(bySeries.buckets || [], b => b.series);
+    const subcategoryRows = bucketRows(bySubcategory.buckets || [], b => b.subcategory);
     const categoryRows = bucketRows(byCategory.buckets || [], b => b.category);
     el.innerHTML = `
       ${hourRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By hour of day</div>
       <table class="positions-table" style="margin-bottom:14px;">
-        <thead><tr><th>Hour</th><th>Closed</th><th>Win Rate</th></tr></thead>
+        <thead><tr><th>Hour</th>${statHeaders}</tr></thead>
         <tbody>${hourRows}</tbody>
       </table>` : '<div class="empty">Not enough closed positions yet to segment by hour.</div>'}
       ${dowRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By day of week</div>
       <table class="positions-table" style="margin-bottom:14px;">
-        <thead><tr><th>Day</th><th>Closed</th><th>Win Rate</th></tr></thead>
+        <thead><tr><th>Day</th>${statHeaders}</tr></thead>
         <tbody>${dowRows}</tbody>
+      </table>` : ''}
+      ${seriesRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By series</div>
+      <table class="positions-table" style="margin-bottom:14px;">
+        <thead><tr><th>Series</th>${statHeaders}</tr></thead>
+        <tbody>${seriesRows}</tbody>
+      </table>` : '<div class="empty">Not enough closed positions yet to segment by series.</div>'}
+      ${subcategoryRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By subcategory (sport)</div>
+      <table class="positions-table" style="margin-bottom:14px;">
+        <thead><tr><th>Subcategory</th>${statHeaders}</tr></thead>
+        <tbody>${subcategoryRows}</tbody>
       </table>` : ''}
       ${categoryRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">By category</div>
       <table class="positions-table">
-        <thead><tr><th>Category</th><th>Closed</th><th>Win Rate</th></tr></thead>
+        <thead><tr><th>Category</th>${statHeaders}</tr></thead>
         <tbody>${categoryRows}</tbody>
       </table>` : '<div class="empty" style="margin-top:8px;">No category data yet — only trades placed since this shipped have a recorded category (services/trade_category.py).</div>'}
     `;

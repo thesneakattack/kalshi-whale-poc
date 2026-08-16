@@ -28,6 +28,8 @@ one.
 """
 import re
 
+from services import stats_power
+
 _CLOSE_TYPE_PATTERNS = [
     ("settled_win", re.compile(r"^closed: market settled \w+ - position won")),
     ("settled_loss", re.compile(r"^closed: market settled \w+ - position lost")),
@@ -190,12 +192,36 @@ def compute_summary(rows: list[dict]) -> dict:
             "avg_pnl": round(sum(group_pnls) / len(group_pnls), 2) if group_pnls else None,
         }
 
+    win_rate_pct = round(wins / n * 100, 1) if n else None
+    total_realized_pnl = round(sum(pnls), 2) if pnls else 0.0
+
     return {
         "total_closed": n,
         "wins": wins,
         "losses": n - wins,
-        "win_rate_pct": round(wins / n * 100, 1) if n else None,
-        "total_realized_pnl": round(sum(pnls), 2) if pnls else 0.0,
+        "win_rate_pct": win_rate_pct,
+        "total_realized_pnl": total_realized_pnl,
+        # Direct request (2026-08-16, regime-segmentation follow-up: "not
+        # just winrate either, but whatever else would be statistically
+        # useful") - win rate alone can't distinguish a real edge from the
+        # "high win rate, thin edge" trap CLAUDE.md already documents once
+        # (unit_cost 0.8-1.0: 78-94% win rates that still net negative,
+        # because a win pays a few cents while a loss costs nearly a
+        # dollar). avg_realized_pnl surfaces the actual per-trade dollar
+        # outcome alongside win rate so that trap is visible at the
+        # segment level too, not just in one hard-coded historical finding.
+        "avg_realized_pnl": round(total_realized_pnl / n, 2) if n else None,
+        # Sample-size honesty, made numeric rather than left to
+        # confidence_label's coarse low/moderate/higher bucketing alone -
+        # stats_power.margin_of_error_pts is the same real math
+        # services/advisory_engine.py already gates recommendations on,
+        # now exposed for direct display ("the real win rate is probably
+        # within +/- this many points of what we observed").
+        "win_rate_margin_pts": (
+            round(stats_power.margin_of_error_pts(n, observed_pct=win_rate_pct), 1)
+            if n and win_rate_pct is not None else None
+        ),
+        "confidence_label": confidence_label(n),
         "avg_hold_sec": round(sum(hold_secs) / len(hold_secs), 0) if hold_secs else None,
         "total_left_on_table": round(left_on_table_total, 2),
         "total_capital_deployed": round(cost_basis_total, 2),

@@ -4079,6 +4079,29 @@ async def get_regime_by_category(strategy: str = "whale_follow"):
     return {"strategy": strategy, "buckets": regime_analytics.by_category(rows)}
 
 
+@app.get("/api/regime/by-series")
+async def get_regime_by_series(strategy: str = "whale_follow"):
+    # services/regime_analytics.py's by_series() - 2026-08-16 direct
+    # request, the finest of the three segmentation tiers. Always safe to
+    # call, no enable flag, no trade_category.py dependency (series is a
+    # pure function of the ticker).
+    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
+    return {"strategy": strategy, "buckets": regime_analytics.by_series(rows)}
+
+
+@app.get("/api/regime/by-subcategory")
+async def get_regime_by_subcategory(strategy: str = "whale_follow"):
+    # services/regime_analytics.py's by_subcategory() - 2026-08-16 direct
+    # follow-up, the middle tier between by_series and by_category. Same
+    # "auto-enables once there's real data" pattern as by_category - empty
+    # until trades placed after this shipped have a recorded subcategory
+    # (sports events only; see services/trade_category.py).
+    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
+    return {"strategy": strategy, "buckets": regime_analytics.by_subcategory(rows)}
+
+
 @app.get("/api/backtest/entry-threshold")
 async def get_backtest_entry_threshold():
     # services/backtest.py - Gap 2 of docs/config-tuning-data-gaps-2026-08-
