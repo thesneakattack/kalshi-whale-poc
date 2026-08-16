@@ -379,6 +379,47 @@ def test_open_candidates_excludes_closed_status(tmp_path, monkeypatch):
     assert [r["ticker"] for r in result] == ["OPEN-1"]
 
 
+def test_open_markets_for_series_ignores_volume(tmp_path, monkeypatch):
+    # The whole point of a series-level pin (2026-08-16 direct request) is
+    # to bypass min_volume entirely - KXBTC15M's volume_24h is structurally
+    # 0 while still open, same incident open_candidates' min_volume_by_series
+    # override exists for, but a pin needs zero floor, not just a lower one.
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("KXBTC15M-A", "EVT-A", occurrence_offset_sec=300, volume=0)], updated_at=now)
+    result = cat.open_markets_for_series("KXBTC15M", now=now)
+    assert [r["ticker"] for r in result] == ["KXBTC15M-A"]
+
+
+def test_open_markets_for_series_no_match_returns_empty(tmp_path, monkeypatch):
+    # A literal exact market ticker (not a series ticker) must resolve to
+    # nothing here - main._fetch_markets relies on that to fall back to its
+    # existing exact-ticker pin path for ordinary (non-series) pins.
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("KXBTC15M-A", "EVT-A", occurrence_offset_sec=300)], updated_at=now)
+    result = cat.open_markets_for_series("KXBTC15M-A", now=now)
+    assert result == []
+
+
+def test_open_markets_for_series_excludes_closed_status(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("OPEN-1", "EVT-A", occurrence_offset_sec=300, status="active")], updated_at=now)
+    cat.upsert_markets("KXBTC15M", "Crypto", [_market("CLOSED-1", "EVT-B", occurrence_offset_sec=300, status="closed")], updated_at=now)
+    result = cat.open_markets_for_series("KXBTC15M", now=now)
+    assert [r["ticker"] for r in result] == ["OPEN-1"]
+
+
+def test_open_markets_for_series_excludes_a_market_past_its_own_close_time(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    markets = [_market("KXBTC15M-STALE", "KXBTC15M-EVT", occurrence_offset_sec=-295, close_offset_sec=-300, status="active")]
+    cat.upsert_markets("KXBTC15M", "Crypto", markets, updated_at=now)
+    result = cat.open_markets_for_series("KXBTC15M", now=now)
+    assert result == []
+
+
 def test_open_candidates_carries_real_display_titles_and_schedule(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     now = time.time()

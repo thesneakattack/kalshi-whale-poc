@@ -1,7 +1,8 @@
 mode: paper
 kalshi:
   base_url: https://external-api.kalshi.com/trade-api/v2
-  markets_watchlist: []
+  markets_watchlist:
+  - KXBTC15M
   watchlist_size: 50
   max_children_per_parent: null
   min_volume_24h: 100000
@@ -10,10 +11,10 @@ kalshi:
   categories:
   - Sports
   - Crypto
-  live_markets_only: false
+  live_markets_only: true
   poll_interval_sec: 6
   request_timeout_sec: 10
-  top_series_per_category: 4
+  top_series_per_category: 8
 whale_signal:
   signal_frequency_sec: 12
   whale_size_range:

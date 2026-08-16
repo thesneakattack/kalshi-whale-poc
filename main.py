@@ -1297,8 +1297,30 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     # tickers don't count against watchlist_size's cap, same "always
     # included, exempt from the cap" treatment extra_tickers already gets
     # a few lines down.
+    #
+    # Series-level pins (2026-08-16 direct request: "the market watch list
+    # should act as that override, that's what the pinned list is for" -
+    # KXBTC15M can never pass live_markets_only's milestone-based live-
+    # status check by design, no matter what volume overrides exist). Each
+    # watchlist entry is tried against market_catalog.open_markets_for_series
+    # first - a literal exact ticker never matches any row's series_ticker
+    # column, so it naturally falls through to the existing exact-ticker
+    # path below. A series pin resolves to whatever instance(s) are
+    # currently open, every refresh - so a rolling 15-minute series stays
+    # pinned across rollovers instead of going stale the way a literal
+    # ticker pin would.
     watchlist = cfg["kalshi"]["markets_watchlist"]
-    pinned_markets = await _cached_market_fetch(client, watchlist) if watchlist else []
+    series_pinned_markets: list[dict] = []
+    literal_pins: list[str] = []
+    for entry in watchlist:
+        series_markets = market_catalog.open_markets_for_series(entry)
+        if series_markets:
+            series_pinned_markets.extend(series_markets)
+        else:
+            literal_pins.append(entry)
+    pinned_markets = series_pinned_markets + (
+        await _cached_market_fetch(client, literal_pins) if literal_pins else []
+    )
 
     min_volume = cfg["kalshi"].get("min_volume_24h", 0)
     if cfg["kalshi"].get("live_markets_only"):

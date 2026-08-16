@@ -664,6 +664,32 @@ def test_fetch_markets_live_only_includes_series_when_evaluator_disabled():
     assert "SERBAD-M1" in {m["ticker"] for m in markets}
 
 
+def test_fetch_markets_series_pin_overrides_live_markets_only():
+    # Direct request (2026-08-16): "the market watch list should act as
+    # that override, that's what the pinned list is for" - KXBTC15M can
+    # never pass live_markets_only's milestone-based live-status check by
+    # design (no real-world broadcast data for a pure price-crossing
+    # market). A series-level entry in markets_watchlist must bring its
+    # currently-open market in regardless, the same way a literal ticker
+    # pin already bypasses every other automatic-discovery-only filter.
+    # occurrence_datetime is set outside candidates_in_window's own 6h
+    # lookback window (but within upsert_markets' own 1-day write-time
+    # horizon), so the ordinary live-only discovery path would never
+    # surface this row on its own - only the pin should.
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    now_ts = datetime.now(timezone.utc)
+    mc_module.upsert_markets("SERBTC", "Crypto", [{
+        "ticker": "SERBTC-M1", "event_ticker": "SERBTC-EVT1", "volume_24h_fp": "0",
+        "occurrence_datetime": _iso(now_ts + timedelta(hours=-12)),
+        "close_time": _iso(now_ts + timedelta(minutes=10)), "status": "active",
+    }])
+    cfg = _cfg_live_only(markets_watchlist=["SERBTC"])
+    fake = _FakeHydrationClient(hydrated_markets={}, widget_status="live")
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    assert "SERBTC-M1" in {m["ticker"] for m in markets}
+
+
 # --- Advisory engine (docs/advisory-engine-plan.md) --------------------------
 # Same reasoning as the real-trading gate above: advisory.auto_apply_enabled
 # is the one advisory-config field that can make config changes happen with

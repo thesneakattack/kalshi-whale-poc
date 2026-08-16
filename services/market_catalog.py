@@ -407,6 +407,53 @@ def open_candidates(
     return results
 
 
+def open_markets_for_series(series_ticker: str, now: float | None = None) -> list[dict]:
+    """Every open/active catalog row for exactly this series, no volume
+    floor at all - the resolution mechanism behind a series-level pin in
+    kalshi.markets_watchlist (2026-08-16 direct request: "the market watch
+    list should act as that override, that's what the pinned list is for" -
+    KXBTC15M can never pass live_markets_only's milestone-based live-status
+    check by design, since Kalshi has no real-world broadcast/game-clock
+    data for a pure price-crossing market, and its volume_24h is
+    structurally 0 while still open regardless of category filters - a pin
+    is the intended way to force a series in despite both). A literal
+    market ticker (e.g. KXBTC15M-26AUG161445-45, an exact instance) never
+    matches any row's series_ticker column, so this naturally returns empty
+    for one - main._fetch_markets uses that to fall back to the existing
+    exact-ticker pin path (_cached_market_fetch), no separate "is this a
+    series" check needed. Same close_ts > now / status filtering and
+    real-market-shaped dict return convention as open_candidates."""
+    now = now if now is not None else time.time()
+    with _connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status,
+                   title, yes_sub_title, no_sub_title
+            FROM markets
+            WHERE series_ticker = ?
+              AND (status IS NULL OR status = 'active')
+              AND (close_ts IS NULL OR close_ts > ?)
+            ORDER BY volume_24h_fp DESC
+            """,
+            (series_ticker, now),
+        ).fetchall()
+    cols = (
+        "ticker", "event_ticker", "series_ticker", "category", "volume_24h_fp", "occurrence_ts", "close_ts", "status",
+        "title", "yes_sub_title", "no_sub_title",
+    )
+    results = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        occurrence_ts = d.pop("occurrence_ts")
+        if occurrence_ts is not None:
+            d["occurrence_datetime"] = _to_iso(occurrence_ts)
+        close_ts = d.pop("close_ts")
+        if close_ts is not None:
+            d["close_time"] = _to_iso(close_ts)
+        results.append(d)
+    return results
+
+
 def _to_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
