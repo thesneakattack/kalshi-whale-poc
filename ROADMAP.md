@@ -139,10 +139,6 @@ questions.
 - [ ] Finalize the app name — "Nessie" vs. "Operation Deepscan" is still an
       open decision; once picked, flow it through page titles, headers, and
       the README.
-- [ ] Sort/filter the signal feed by divergence size (bet vs. market price),
-      not just recency or raw whale size — this app's central "Betting is N
-      pts more bullish/bearish than the market implies" framing is already
-      validated as the right idea; this would lean into it further.
 - [ ] Clicking a logged position/signal/decision should also show whether
       that specific position ultimately closed/won/lost, not just the
       market's current state — needs new backend correlation (signal →

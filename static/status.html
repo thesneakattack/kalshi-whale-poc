@@ -4260,6 +4260,41 @@
         <div class="files"><code>main.py</code> · <code>tests/test_trading_gate.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 111 · a real click beats a fake call</div>
+        <h4>Signal feed sorts by divergence now — and its filter controls quietly weren't working at all</h4>
+        <p>Continuing straight down the roadmap after phase 110: shipped the P4 item asking for the signal
+          feed to sort/filter by divergence size (bet vs. market price), not just recency or raw whale size.
+          Added a "Sort: divergence" option next to the existing recency/impact sorts, computing each signal's
+          own divergence in probability points via a new <code>divergencePts()</code> — the whale print's
+          implied YES price against the market's current live price — reusing the exact math and "Betting is
+          N pts more bullish/bearish than the market implies" framing <code>marketCardHTML</code>'s own
+          <code>divergenceLine</code> already validated, just at individual-signal granularity. Each row now
+          shows its own divergence badge (≥5pt threshold, matching the market card's) so the new sort is
+          actually legible.
+          Browser-verified via the <code>selenium-chrome</code> ddev service (CLAUDE.md's frontend-testing
+          requirement) and found two real bugs in the process. First, a self-inflicted one:
+          <code>divergencePts</code> initially read a bare <code>state.latest_prices</code>, assuming
+          <code>state</code> was global the way other call sites in this file seemed to imply — a live
+          <code>typeof state</code> check proved it's actually local to <code>refresh()</code>. Fixed by
+          threading <code>latestPrices</code> through as an explicit parameter, backed by a new
+          <code>terminalLatestPrices</code> global (mirroring <code>terminalSignalFeed</code>/
+          <code>terminalDecisionFeed</code>) for the inline handlers that need it. Second, a pre-existing bug
+          this session didn't cause: all 5 of the feed's filter/sort <code>onchange</code> handlers called
+          <code>renderSignalDecisionFeed(signalFeed, decisionFeed)</code> with bare identifiers that were never
+          actually declared anywhere. Invisible to a direct function call in a test script — it only surfaced
+          via a real simulated click (Selenium's <code>Select().select_by_value()</code>, which fires inline
+          handlers in the browser's real global scope, not the closure that generated the HTML), producing
+          <code>Uncaught ReferenceError: signalFeed is not defined</code>. Because the filter-state assignment
+          runs before the broken re-render call in the same handler, the dropdown's value still updated
+          internally, so the feed just silently caught up on the next 5-second poll instead of re-rendering
+          instantly — invisible in normal use, with the console error nobody was watching for. Fixed by
+          pointing all 5 handlers at the real <code>terminalSignalFeed</code>/<code>terminalDecisionFeed</code>
+          globals this file's own websocket push-update path already used correctly. 957 tests passing (no
+          Python touched this pass — pure frontend, verified via the browser instead of pytest).</p>
+        <div class="files"><code>static/index.html</code></div>
+      </div>
+
     </div>
   </section>
 
