@@ -208,16 +208,38 @@ is exactly where both of these bug classes happened.
 
 ## Kalshi API documentation — treat `docs/kalshi/` as ground truth
 
-`docs/kalshi/` mirrors Kalshi's own API docs locally, fetched from the same
-`.md`-suffixed pages `docs.kalshi.com/llms.txt` indexes. Read the relevant
-page(s) there before writing or editing any Kalshi API call site,
-request/response parsing, or rate-limit logic — don't rely on training-data
-assumptions about Kalshi's API, which has already been caught drifting from
-what the code assumed. The 2026-08-15 full-audit session (see
-`docs/next-steps-2026-08-15-pt3.md`) found a stale legacy base URL, a wrong
-live-data endpoint for sports, and three unbatched-call opportunities — all
-by reading these docs and verifying live against the real API, not by
-guessing from prose or memory.
+**HARD RULE, not a guideline — check this proactively at the start of any
+backend/API work in this repo, not only reactively when something breaks
+or is missing.** `docs/kalshi/` mirrors Kalshi's own API docs locally,
+fetched from the same `.md`-suffixed pages `docs.kalshi.com/llms.txt`
+indexes. Before writing or editing ANY code that touches Kalshi
+data — a call site, request/response parsing, rate-limit logic, AND
+(broader than that) any code that classifies, derives, infers, or
+groups data sourced from a Kalshi market/event/trade object —
+`grep -rn` across `docs/kalshi/` for the relevant endpoint/object/field
+name first. Don't rely on training-data assumptions about Kalshi's API,
+which has already been caught drifting from what the code assumed, and
+don't assume one live API response you happened to inspect is the whole
+picture.
+
+**This directive was already written down here once and still got missed**
+(2026-08-16 direct correction, after a session built a "subcategory"
+grouping by guessing that `category_tags` on a live event object was
+per-event sport data — wrong, it's the same full facet-filter vocabulary
+listed on every event in a category, carrying zero per-event signal; the
+real answer, a documented `competition` field plus a `filters_by_sports`
+sport→competition hierarchy, was sitting in `docs/kalshi/` the whole time).
+The gap wasn't that this rule didn't exist — it was scoped too narrowly
+("editing a call site") to register for *new feature* work that derives or
+classifies Kalshi data without literally touching an existing call site.
+Read it broadly: if the data in question originated from Kalshi, check
+`docs/kalshi/` before writing code that infers anything about it, full
+stop — this is a session-start checklist item for backend/API work, not
+something to reach for only once you're already stuck. The 2026-08-15
+full-audit session (see `docs/next-steps-2026-08-15-pt3.md`) found a stale
+legacy base URL, a wrong live-data endpoint for sports, and three
+unbatched-call opportunities — all by reading these docs and verifying
+live against the real API, not by guessing from prose or memory.
 
 - `docs/kalshi/llms.txt` — the maintained index: source URLs + one-line
   descriptions. A complete mirror of Kalshi's real remote index as of
