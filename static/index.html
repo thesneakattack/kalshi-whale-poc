@@ -1956,6 +1956,7 @@ let eventLiveData = {};
 let categoryMetadata = { tags_by_categories: {}, filters_by_sports: {}, sport_ordering: [] };
 let terminalSignalFeed = [];
 let terminalDecisionFeed = [];
+let terminalLatestPrices = {};  // last known state.latest_prices - renderSignalDecisionFeed's divergencePts needs a live price to compare a signal's own price against, and (like terminalSignalFeed/terminalDecisionFeed) this needs to be a real global since inline onchange handlers run in global scope, not the closure that generated them
 let marketPanelState = {
   markets: { markets: [], prices: {}, signals: [], includeWhale: false, seriesTrackRecord: {} },
   'whale-cards': { markets: [], prices: {}, signals: [], includeWhale: true, seriesTrackRecord: {} },
@@ -2699,7 +2700,8 @@ function plainEnglishSkipReason(reason) {
   return reason;
 }
 
-function renderSignalDecisionFeed(signalFeed, decisionFeed) {
+function renderSignalDecisionFeed(signalFeed, decisionFeed, latestPrices) {
+  latestPrices = latestPrices || terminalLatestPrices;
   lastDecisions = decisionFeed || [];
   $('signal-decision-toggle').innerHTML = advToggleHTML('decisions');
   const listEl = $('signal-decision-feed-list');
@@ -2711,26 +2713,27 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
   }
 
   $('signal-decision-feed-filter').innerHTML = `<div class="table-filter-row">
-    <select onchange="signalDecisionFilter.timeRange = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+    <select onchange="signalDecisionFilter.timeRange = this.value; renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);">
       ${Object.keys(SIGNAL_TIME_RANGES).map(k => `<option value="${k}" ${signalDecisionFilter.timeRange === k ? 'selected' : ''}>${k === 'all' ? 'All time' : 'Last ' + k}</option>`).join('')}
     </select>
-    <select onchange="signalDecisionFilter.side = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+    <select onchange="signalDecisionFilter.side = this.value; renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);">
       <option value="" ${signalDecisionFilter.side === '' ? 'selected' : ''}>Yes + No</option>
       <option value="yes" ${signalDecisionFilter.side === 'yes' ? 'selected' : ''}>Yes only</option>
       <option value="no" ${signalDecisionFilter.side === 'no' ? 'selected' : ''}>No only</option>
     </select>
-    <select onchange="signalDecisionFilter.status = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+    <select onchange="signalDecisionFilter.status = this.value; renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);">
       <option value="" ${signalDecisionFilter.status === '' ? 'selected' : ''}>All statuses</option>
       <option value="opening" ${signalDecisionFilter.status === 'opening' ? 'selected' : ''}>Opening</option>
       <option value="skipped" ${signalDecisionFilter.status === 'skipped' ? 'selected' : ''}>Skipped</option>
       <option value="won" ${signalDecisionFilter.status === 'won' ? 'selected' : ''}>Won</option>
       <option value="lost" ${signalDecisionFilter.status === 'lost' ? 'selected' : ''}>Lost</option>
     </select>
-    <select onchange="signalDecisionFilter.sortKey = this.value; renderSignalDecisionFeed(signalFeed, decisionFeed);">
+    <select onchange="signalDecisionFilter.sortKey = this.value; renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);">
       <option value="timestamp" ${signalDecisionFilter.sortKey === 'timestamp' ? 'selected' : ''}>Sort: recency</option>
       <option value="impact" ${signalDecisionFilter.sortKey === 'impact' ? 'selected' : ''}>Sort: impact</option>
+      <option value="divergence" ${signalDecisionFilter.sortKey === 'divergence' ? 'selected' : ''}>Sort: divergence</option>
     </select>
-    <label><input type="checkbox" ${signalDecisionFilter.groupByPosition ? 'checked' : ''} onchange="signalDecisionFilter.groupByPosition = this.checked; renderSignalDecisionFeed(signalFeed, decisionFeed);"> Group by market</label>
+    <label><input type="checkbox" ${signalDecisionFilter.groupByPosition ? 'checked' : ''} onchange="signalDecisionFilter.groupByPosition = this.checked; renderSignalDecisionFeed(terminalSignalFeed, terminalDecisionFeed);"> Group by market</label>
   </div>`;
 
   const rows = (decisionFeed || []).map((d, idx) => {
@@ -2784,8 +2787,13 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
   }
 
   filtered = filtered.slice().sort((a, b) => {
-    const av = signalDecisionFilter.sortKey === 'impact' ? ((a.signal && a.signal.size && a.signal.confidence) ? a.signal.size * a.signal.confidence : 0) : a.timestamp;
-    const bv = signalDecisionFilter.sortKey === 'impact' ? ((b.signal && b.signal.size && b.signal.confidence) ? b.signal.size * b.signal.confidence : 0) : b.timestamp;
+    const sortVal = (d) => {
+      if (signalDecisionFilter.sortKey === 'impact') return (d.signal && d.signal.size && d.signal.confidence) ? d.signal.size * d.signal.confidence : 0;
+      if (signalDecisionFilter.sortKey === 'divergence') return divergencePts(d, latestPrices) ?? 0;
+      return d.timestamp;
+    };
+    const av = sortVal(a);
+    const bv = sortVal(b);
     return (signalDecisionFilter.sortDir === 'asc' ? av - bv : bv - av);
   });
 
@@ -2805,6 +2813,10 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
     const closingBadge = secondsToClose !== null && secondsToClose > 0 && secondsToClose <= 900 ? '<span class="closing-badge">CLOSING SOON</span>' : '';
     const tier = impactTier(d);
     const impactTag = `<span class="impact-tag ${tier}" title="Impact tier relative to what's currently on the feed (size x confidence)">${tier}</span>`;
+    const dPts = divergencePts(d, latestPrices);
+    const divergenceTag = (dPts !== null && dPts >= 5)
+      ? `<span class="impact-tag ${dPts >= 15 ? 'high' : dPts >= 8 ? 'medium' : 'low'}" title="How far this whale print's implied YES probability (${dPts} pts) sits from the market's current price">${dPts}pt diverge</span>`
+      : '';
     const size = (d.signal && d.signal.size) || (d.trade && d.trade.size) || 0;
     const price = (d.signal && d.signal.price) || (d.trade && d.trade.price) || 0;
     const conf = (d.signal && d.signal.confidence) || 0;
@@ -2833,7 +2845,7 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed) {
         ${contextLineHTML(d.ticker, d.side)}
         ${marketTaxonomyHTML(d.ticker)}
         ${eventLiveDataLineHTML(eventT, true)}
-        <div style="color: var(--muted)">${detail}${conf ? ` · confidence ${(conf*100).toFixed(0)}%` : ''} <span class="action-tag ${d.status}">${d.status}</span> ${impactTag}</div>
+        <div style="color: var(--muted)">${detail}${conf ? ` · confidence ${(conf*100).toFixed(0)}%` : ''} <span class="action-tag ${d.status}">${d.status}</span> ${impactTag} ${divergenceTag}</div>
         ${conf ? `<div class="conf-bar"><div class="conf-fill" style="width:${conf*100}%"></div></div>` : ''}
         <div style="color: var(--muted); font-size:12px; margin-top:6px;">${reasonText}</div>
       </div>
@@ -5254,6 +5266,25 @@ function renderEquityChart(history, baseline, valueKey, baselineLabel, elId, opt
 // in one place conceptually even though it has to live in two languages).
 // A low-confidence print counts as weaker evidence of real sentiment than
 // a high-confidence one, same distinction the entry side already makes.
+// Per-signal divergence, in probability points: how far this one whale
+// print's implied YES probability (signal.price - "always the yes-side
+// price by convention, side carries direction separately", see
+// services/whalewatchers/kalshi_trade_tape.py) sits from where the market
+// trades right now. Same math/threshold as marketCardHTML's own
+// divergenceLine (ROADMAP.md: "Betting is N pts more bullish/bearish than
+// the market implies" is already the validated framing) - this is that
+// same idea at individual-signal granularity instead of aggregated-lean
+// granularity, so the signal/decision feed can sort by it directly. Null
+// (not 0) when there's no signal or no live price to compare against - a
+// close/skip-only decision row, or a ticker with no current price yet -
+// so callers can tell "no data" apart from "genuinely zero divergence."
+function divergencePts(d, latestPrices) {
+  const price = d.signal && d.signal.price;
+  const livePrice = latestPrices && latestPrices[d.ticker];
+  if (price == null || livePrice == null) return null;
+  return Math.abs(Math.round(price * 100) - Math.round(livePrice * 100));
+}
+
 function computeWhaleLean(ticker, signals) {
   const matches = signals.filter(s => s.ticker === ticker);
   if (!matches.length) return null;
@@ -6638,6 +6669,7 @@ async function refresh() {
 
     terminalSignalFeed = state.signal_feed || [];
     terminalDecisionFeed = state.decision_feed || [];
+    terminalLatestPrices = state.latest_prices || {};
     const broker = state.broker;
     renderHeaderStrip(broker, state.account, state.real_balance_history || []);
 
