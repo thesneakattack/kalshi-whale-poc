@@ -262,6 +262,20 @@ live against the real API, not by guessing from prose or memory.
   `websocket-connection.md`, ...) — the actual reference detail. Read the
   specific page for the endpoint in question rather than guessing field
   names or limits.
+- **`docs/kalshi/CHEATSHEET.md`** — living, append-only index of specific
+  data questions already resolved by reading the 215-page mirror, kept so
+  they don't get re-derived (or re-guessed) from scratch every session
+  (2026-08-16 direct request, after the rule above still got missed once:
+  "the api docs are expansive so maybe create a kind of shortcut sheet
+  thst you update for things you know to look into across sessions").
+  `session_orient.sh` prints every entry's title unconditionally at the
+  start of every session and after every compaction (its `SessionStart`
+  matcher is `*`, confirmed to fire on both) — check those titles before
+  grepping the full mirror cold. **Add a new entry any time reading a
+  `docs/kalshi/` page resolves a real data question**, especially one that
+  took a wrong guess to get to — same discipline this file's own "Bug
+  pattern to watch for" section already applies to code bugs, just for
+  API-documentation lookups instead.
 
 ## Long-session workflow — commits, pushes, CI offload, compacting
 

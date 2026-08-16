@@ -57,3 +57,16 @@ if [ -d docs/kalshi ]; then
   fi
   echo "docs/kalshi/: $kalshi_docs locally-mirrored Kalshi API doc page(s) (index: llms.txt, provenance: README.md) - authoritative over training-data assumptions about Kalshi's API, read before touching any call site.$staleness"
 fi
+
+if [ -f docs/kalshi/CHEATSHEET.md ]; then
+  # Printed unconditionally, every session, not gated on staleness or
+  # relevance-matching (2026-08-16 direct correction: a rule that only
+  # lives in prose - CLAUDE.md or memory - gets skimmed past; this forces
+  # the actual known-answers index into context at session start instead).
+  # Titles only (grep, not cat) - cheap even as this file grows; open
+  # docs/kalshi/CHEATSHEET.md itself for the full entry once a title looks
+  # relevant.
+  entries=$(grep -c '^## ' docs/kalshi/CHEATSHEET.md 2>/dev/null || echo 0)
+  echo "docs/kalshi/CHEATSHEET.md: $entries known-answer entries already resolved from docs/kalshi/ - check titles below before re-deriving/re-guessing any Kalshi data question, and add a new entry whenever a docs/kalshi/ page resolves one that isn't here yet:"
+  grep '^## ' docs/kalshi/CHEATSHEET.md 2>/dev/null | sed 's/^/  - /'
+fi
