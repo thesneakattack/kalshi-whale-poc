@@ -29,6 +29,8 @@ class KalshiTradeWebSocketClient:
         self._message_id = 1
         self._update_event = asyncio.Event()
         self._stop = False
+        self._logged_fill_shape = False
+        self._logged_position_shape = False
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
@@ -63,7 +65,7 @@ class KalshiTradeWebSocketClient:
         self._desired_tickers = normalized
         self._update_event.set()
 
-    async def run(self, on_trade, on_ticker, on_status=None) -> None:
+    async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None) -> None:
         backoff = 1.0
         while not self._stop:
             if not self.enabled:
@@ -88,6 +90,24 @@ class KalshiTradeWebSocketClient:
                     if on_status is not None:
                         await on_status({"connected": True, "error": None, "ws_url": self.ws_url})
                     await self._sync_subscriptions(force_subscribe=True)
+                    if on_fill is not None or on_position is not None:
+                        # Account-wide channels (2026-08-15 direct request: "the
+                        # open positions should feed from the websocket
+                        # stream") - deliberately NOT part of _sync_subscriptions
+                        # above, which is entirely about the per-ticker desired
+                        # set (trade/ticker channels only make sense scoped to
+                        # specific markets; fill/market_positions are inherently
+                        # scoped to this authenticated account as a whole, same
+                        # credentials already used for trade/ticker - confirmed
+                        # via docs/kalshi/websocket-connection.md's channel
+                        # list, no market_ticker param involved). Subscribed
+                        # once per connection here, never touched by
+                        # _sync_subscriptions' add/remove-markets logic.
+                        await self._send({
+                            "id": self._next_message_id(),
+                            "cmd": "subscribe",
+                            "params": {"channels": ["fill", "market_positions"]},
+                        })
                     backoff = 1.0
                     while not self._stop:
                         update_task = asyncio.create_task(self._update_event.wait())
@@ -102,7 +122,7 @@ class KalshiTradeWebSocketClient:
                             await self._sync_subscriptions()
                         if recv_task in done:
                             raw_message = recv_task.result()
-                            await self._handle_message(raw_message, on_trade, on_ticker, on_status)
+                            await self._handle_message(raw_message, on_trade, on_ticker, on_status, on_fill, on_position)
             except Exception as exc:
                 if on_status is not None:
                     await on_status({"connected": False, "error": str(exc), "ws_url": self.ws_url})
@@ -115,7 +135,7 @@ class KalshiTradeWebSocketClient:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status) -> None:
+    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None) -> None:
         data = json.loads(raw_message)
         msg_type = data.get("type")
         if msg_type == "subscribed":
@@ -137,6 +157,30 @@ class KalshiTradeWebSocketClient:
             return
         if msg_type == "ticker":
             await on_ticker(data.get("msg") or {})
+            return
+        if msg_type == "fill":
+            # 2026-08-15 direct request: "the open positions should feed
+            # from the websocket stream." Real message shape has never
+            # been observed live (fill events only fire on a real order
+            # fill, and kalshi_account.trading_enabled is off, the standing
+            # P0 safety gate - see CLAUDE.md - so none can occur yet) - the
+            # raw payload is logged once, the first time one ever arrives,
+            # specifically so it can be verified/corrected against real
+            # data rather than trusted blind. main.py's handler is
+            # defensive (dict.get() throughout, never assumes a field
+            # exists) for the same reason.
+            if not self._logged_fill_shape:
+                self._logged_fill_shape = True
+                print(f"[kalshi_ws] first real 'fill' message shape (verify parsing against this): {data!r}")
+            if on_fill is not None:
+                await on_fill(data.get("msg") or {})
+            return
+        if msg_type == "market_positions":
+            if not self._logged_position_shape:
+                self._logged_position_shape = True
+                print(f"[kalshi_ws] first real 'market_positions' message shape (verify parsing against this): {data!r}")
+            if on_position is not None:
+                await on_position(data.get("msg") or {})
 
     async def _sync_subscriptions(self, force_subscribe: bool = False) -> None:
         async with self._lock:

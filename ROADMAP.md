@@ -100,7 +100,7 @@ works" to "flip it for real" still has open operational questions.
 
 ## P4 — Nice-to-haves
 
-- [ ] `docs/next-steps-2026-08-15-pt2.md` — real live incident, same day as
+- [x] `docs/next-steps-2026-08-15-pt2.md` — real live incident, same day as
       the entry below: signal-resolution head-of-line blocking (99.2% of
       logged signals stuck unresolved) led to discovering the rate-limit
       model was wrong (concurrency-based assumption; Kalshi's real limit is
@@ -115,13 +115,33 @@ works" to "flip it for real" still has open operational questions.
       the unused `live_markets_only` flag; account snapshot (balance/
       positions/fills) was 3 uncached REST calls every tick, now interval-
       cached. Verified live: 7 → 32 markets recovered, zero rate-limit
-      errors. Open items in the doc: tick_duration still ~27s not ~3s
-      (root cause not yet found — leading hypothesis checked and ruled
-      out), a WS-based real-position-feed decision (blocked on being
-      unable to verify message parsing against real data while real
-      trading stays off), `services/event_schedule.py`'s tick-loop wiring
-      (built same day, not yet called from anywhere), and market-search
-      decision-market granularity. 899 tests passing.
+      errors.
+      **Resolved same day, `docs/next-steps-2026-08-15-pt3.md`**: the
+      doc's own open item (tick_duration still ~27s not ~3s) was root-
+      caused via direct tick instrumentation — four independent uncached/
+      uncapped REST loops (`propagate_milestone_winners`,
+      `_fetch_event_live_data`, `_fetch_live_status`'s unbounded per-tick
+      batch, catalog-scan's 40-per-batch background task starving the
+      shared rate limiter). All four fixed with repoll caches / batch
+      caps. Verified live: tick_duration dropped from a stable ~24-33s
+      plateau to mostly 1-5s. Also fixed, same session: `kalshi.base_url`
+      switched from the legacy `api.elections.kalshi.com` alias to the
+      documented recommended default `external-api.kalshi.com` (direct
+      instruction) — confirmed no category-specific hosts exist at all,
+      resolving that open question. A follow-on full API/docs audit
+      (direct instruction, "use llm.txt to review the documentation...
+      see where a reapproach might be better") found — but did not apply
+      — three real batching opportunities (`get_events(tickers=...)`,
+      `get_live_datas(milestone_ids=...)` batch, category-scoped
+      `get_milestones`), confirmation that `get_event_live_data` is the
+      wrong endpoint for sports (real score/clock/quarter data already
+      being fetched via the milestone-based `get_live_data` calls but
+      discarded), and live-verified evidence the rate limiter is ~7x more
+      conservative than this account's real confirmed tier allows — all
+      flagged for a prioritization decision rather than applied
+      unilaterally. Still open: a WS-based real-position-feed decision,
+      `services/event_schedule.py`'s tick-loop wiring, market-search
+      decision-market granularity. 917 tests passing.
 - [x] `docs/comprehensive-development-plan-2026-08-15.md` — direct request
       to consume every research/planning doc in the repo (10 docs) and
       produce a comprehensive forward-looking plan, cross-checked against

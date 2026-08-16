@@ -136,6 +136,17 @@ state = {
     # instead of re-deriving every event's status from 2 fresh API calls
     # every single tick. See _fetch_live_status.
     "live_status_cache": {},
+    # Same repoll-cache shape as live_status_cache above, for the two other
+    # per-event REST loops that used to run unconditionally on every single
+    # tick (2026-08-15 tick_duration investigation - confirmed live: every
+    # one of these calls 404s or comes back empty for the entire current
+    # watchlist, every tick, forever, since neither had ANY caching at all -
+    # see _fetch_event_live_data and propagate_milestone_winners).
+    # event_ticker -> {"data": live_data|None, "checked_at": ts}.
+    "event_live_data_cache": {},
+    # event_ticker -> {"checked_at": ts, "winner_found": bool, "related":
+    # [...]|None, "mapped_winner_ticker": str|None}.
+    "milestone_cache": {},
     # Decouples _check_signal_resolutions from the main poll_interval_sec
     # trading-tick cadence (2026-08-15 direct instruction) - see that
     # function's own docstring for why. Memory-only, not persisted: worst
@@ -410,6 +421,61 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     _bump_generation()
 
 
+async def _process_stream_fill(fill_msg: dict) -> None:
+    """2026-08-15 direct request: "the open positions should feed from the
+    websocket stream and analysis trigger api calls for position
+    management." Best-effort parsing, deliberately defensive throughout
+    (dict.get() via the existing _slim_fill/_FILL_FIELDS, never assumes a
+    field exists) - see services/kalshi_trade_ws.py's own comment on why
+    this can't be verified against a real message yet (fill events need a
+    real order fill; kalshi_account.trading_enabled is off, the standing
+    P0 safety gate). If the real shape turns out to use different field
+    names, _slim_fill just returns Nones and the fill_id check below skips
+    it - a safe no-op, not a crash or corrupted state, while the raw shape
+    (logged once by kalshi_trade_ws.py) stays available to fix the field
+    mapping once verified.
+
+    Prepends to the existing state["account"]["fills"] list (same shape/
+    cap the REST path already produces, so nothing downstream needs to
+    know which source a given fill came from) - deduped by fill_id since
+    _fetch_account_snapshot's own periodic REST poll (still running, now
+    on a 20s cache - see that function's own comment) will naturally
+    reconcile/overwrite this with verified data regardless, so a
+    WS-sourced fill only ever needs to survive until the next reconcile."""
+    if not state["account"].get("connected"):
+        return
+    fill = _slim_fill(fill_msg)
+    if not fill.get("fill_id"):
+        return  # doesn't look like a real fill message - never guess into real account state
+    fills = (state["account"].get("fills") or {}).get("fills") or []
+    if any(f.get("fill_id") == fill["fill_id"] for f in fills):
+        return  # already have it - the REST reconciliation poll likely beat this message here
+    state["account"]["fills"] = {"fills": ([fill] + fills)[:50]}
+    _bump_generation()
+
+
+async def _process_stream_position(position_msg: dict) -> None:
+    """Same best-effort/defensive shape as _process_stream_fill above -
+    same "safe no-op if the real shape doesn't match, never corrupt real
+    account state on a guess" reasoning."""
+    if not state["account"].get("connected"):
+        return
+    position = _slim_position(position_msg)
+    ticker = position.get("ticker")
+    if not ticker:
+        return
+    positions = state["account"].get("positions") or {"market_positions": [], "event_positions": []}
+    market_positions = list(positions.get("market_positions") or [])
+    for i, p in enumerate(market_positions):
+        if p.get("ticker") == ticker:
+            market_positions[i] = position
+            break
+    else:
+        market_positions.append(position)
+    state["account"]["positions"] = {**positions, "market_positions": market_positions}
+    _bump_generation()
+
+
 async def _handle_trade_stream_status(status: dict) -> None:
     state["trade_stream_status"] = {
         "enabled": _streaming_trade_tape_enabled(),
@@ -427,6 +493,20 @@ async def _handle_trade_stream_status(status: dict) -> None:
     _bump_generation()
 
 
+_MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
+# this used to call get_milestones_for_event() for every unique event on the
+# watchlist, every tick, forever, unconditionally - confirmed live as one of
+# two per-event REST loops (see _fetch_event_live_data just below) with zero
+# caching, together accounting for the bulk of a ~27s tick_duration plateau
+# that survived the earlier same-day rate-limit incident's own "no stone
+# unturned" audit (that audit fixed discovery/catalog-scan/signal-resolution/
+# account-snapshot, but these two live in a later, separate part of the tick
+# it didn't touch). Most events (crypto, politics, ...) never have a
+# milestone at all, so this was 13+ wasted calls a tick for nothing. Once a
+# winner is found for an event, it's cached permanently - a real-world
+# outcome doesn't change, so there's never a reason to poll it again.
+
+
 async def propagate_milestone_winners(client: KalshiClient, markets: list[dict]) -> dict:
     """Best-effort: fetch first milestone per event, inspect its live-data
     for a declared `details.winner`, map that winner to a related market
@@ -435,65 +515,94 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
     so check_exits can close positions this tick. Returns the market_results
     mapping (ticker -> result) built from the provided markets plus any
     propagated winners. This is kept separate so it can be unit-tested.
+
+    Repoll-cached in state["milestone_cache"] - see _MILESTONE_REPOLL_SEC
+    above. A cache hit (event not due for repoll, or already resolved) costs
+    zero API calls but still reapplies any already-known winner into this
+    tick's market_results below, so callers see identical per-tick
+    completeness to the pre-caching behavior - only the network cost was cut.
     """
     market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
     try:
-        event_tickers = {m.get("event_ticker") for m in markets if m.get("event_ticker")}
-        milestone_tasks = await asyncio.gather(*(client.get_milestones_for_event(et) for et in event_tickers), return_exceptions=True)
-        for et, ms_result in zip(list(event_tickers), milestone_tasks):
-            if not isinstance(ms_result, list) or not ms_result:
-                continue
-            ms = ms_result[0]
-            ms_id = ms.get("id")
-            ms_type = ms.get("type")
-            if not ms_id or not ms_type:
-                continue
-            try:
-                ld = await client.get_live_data(ms_type, ms_id)
-            except Exception:
-                continue
-            details = (ld.get("live_data") or {}).get("details") or {}
-            winner = details.get("winner")
-            related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
-            if not winner or not related:
-                continue
-            related_markets = await asyncio.gather(*(client.get_market(t) for t in related), return_exceptions=True)
-            mapped_winner_ticker = None
-            for rm in related_markets:
-                if not isinstance(rm, dict):
+        event_tickers = list(dict.fromkeys(m.get("event_ticker") for m in markets if m.get("event_ticker")))
+        cache = state["milestone_cache"]
+        now = time.time()
+        to_poll = [
+            et for et in event_tickers
+            if et not in cache or (
+                not cache[et]["winner_found"] and (now - cache[et]["checked_at"]) >= _MILESTONE_REPOLL_SEC
+            )
+        ]
+        if to_poll:
+            milestone_tasks = await asyncio.gather(
+                *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
+            )
+            for et, ms_result in zip(to_poll, milestone_tasks):
+                # Recorded before any further fetch so a transient failure
+                # below still throttles the retry to the next repoll window
+                # rather than hammering again next tick.
+                cache[et] = {"checked_at": now, "winner_found": False, "related": None, "mapped_winner_ticker": None}
+                if not isinstance(ms_result, list) or not ms_result:
                     continue
-                cs = rm.get("custom_strike") or {}
+                ms = ms_result[0]
+                ms_id = ms.get("id")
+                ms_type = ms.get("type")
+                if not ms_id or not ms_type:
+                    continue
                 try:
-                    if isinstance(cs, dict) and any(str(winner).lower() in str(v).lower() for v in cs.values()):
-                        mapped_winner_ticker = rm.get("ticker")
-                        break
+                    ld = await client.get_live_data(ms_type, ms_id)
                 except Exception:
-                    pass
-                yst = (rm.get("yes_sub_title") or "")
-                nst = (rm.get("no_sub_title") or "")
-                if isinstance(winner, str) and winner:
-                    wlow = winner.lower()
-                    if yst and wlow in yst.lower():
-                        mapped_winner_ticker = rm.get("ticker")
-                        break
-                    if nst and wlow in nst.lower():
-                        mapped_winner_ticker = rm.get("ticker")
-                        break
-                    title = (rm.get("title") or "")
-                    if title and wlow in title.lower():
-                        mapped_winner_ticker = rm.get("ticker")
-                        break
-            if mapped_winner_ticker:
-                for rt in related:
-                    if rt == mapped_winner_ticker:
-                        market_results[rt] = "yes"
-                    else:
-                        market_results[rt] = "no"
-                now_ts = time.time()
-                for rt, res in ((t, market_results.get(t)) for t in related):
-                    if res in ("yes", "no"):
+                    continue
+                details = (ld.get("live_data") or {}).get("details") or {}
+                winner = details.get("winner")
+                related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
+                if not winner or not related:
+                    continue
+                related_markets = await asyncio.gather(*(client.get_market(t) for t in related), return_exceptions=True)
+                mapped_winner_ticker = None
+                for rm in related_markets:
+                    if not isinstance(rm, dict):
+                        continue
+                    cs = rm.get("custom_strike") or {}
+                    try:
+                        if isinstance(cs, dict) and any(str(winner).lower() in str(v).lower() for v in cs.values()):
+                            mapped_winner_ticker = rm.get("ticker")
+                            break
+                    except Exception:
+                        pass
+                    yst = (rm.get("yes_sub_title") or "")
+                    nst = (rm.get("no_sub_title") or "")
+                    if isinstance(winner, str) and winner:
+                        wlow = winner.lower()
+                        if yst and wlow in yst.lower():
+                            mapped_winner_ticker = rm.get("ticker")
+                            break
+                        if nst and wlow in nst.lower():
+                            mapped_winner_ticker = rm.get("ticker")
+                            break
+                        title = (rm.get("title") or "")
+                        if title and wlow in title.lower():
+                            mapped_winner_ticker = rm.get("ticker")
+                            break
+                if mapped_winner_ticker:
+                    cache[et] = {
+                        "checked_at": now, "winner_found": True,
+                        "related": related, "mapped_winner_ticker": mapped_winner_ticker,
+                    }
+                    now_ts = time.time()
+                    for rt in related:
+                        res = "yes" if rt == mapped_winner_ticker else "no"
+                        market_results[rt] = res
                         market_history.record_outcome(rt, res, resolved_at=now_ts)
-                _bump_generation()
+                    _bump_generation()
+        # Reapply already-known winners from cache (no new API calls) so a
+        # tick that skipped re-polling a resolved event still sees a
+        # complete market_results, matching pre-caching per-tick behavior.
+        for et in event_tickers:
+            entry = cache.get(et)
+            if entry and entry["winner_found"] and et not in to_poll:
+                for rt in entry["related"]:
+                    market_results[rt] = "yes" if rt == entry["mapped_winner_ticker"] else "no"
     except Exception:
         pass
     return market_results
@@ -640,11 +749,32 @@ async def _get_top_series(client: KalshiClient, categories: list[str] | None = N
     return result
 
 
-# Series scanned per tick to build services/market_catalog.py's near-term
-# catalog - similar order of magnitude to what discovery's own top-series
-# fetch already does per tick (_get_top_series' default top_n), a bounded,
-# deliberate increase in per-tick API calls, not unbounded.
-_CATALOG_SCAN_BATCH_SIZE = 40
+# Series scanned per background batch to build services/market_catalog.py's
+# near-term catalog. Cut from 40 to 10 (2026-08-15 tick_duration
+# investigation) - confirmed live as the real remaining root cause after
+# fixing three other uncached/uncapped call sites (propagate_
+# milestone_winners, _fetch_event_live_data, _fetch_live_status's own
+# per-tick cap) didn't meaningfully move tick_duration: this batch runs as
+# an independent background task (_maybe_scan_catalog_batch), so it never
+# blocks the tick's own await chain, but it draws from the exact same
+# shared Kalshi rate limiter (services/http_client.py) the tick's own
+# latency-sensitive reads need - backgrounding via asyncio.create_task
+# decouples CONTROL FLOW, not RESOURCE CONTENTION. At 40 series/batch, with
+# _CATALOG_SCAN_MIN_INTERVAL_SEC's overlap guard meaning a new batch starts
+# again the moment the previous one finishes draining, this ran back-to-
+# back continuously, at times consuming close to the entire 3.0 tokens/sec
+# read budget by itself - starving _fetch_account_snapshot (measured
+# stalling to 19-33s on affected ticks despite its own working 20s cache)
+# and everything else sharing the bucket. Direct priority ordering already
+# established this session ("maximum efficiency and maximum speed for
+# position management and whale watching") argues for catalog-scan - a
+# bulk, non-urgent backlog-clearing task, same category as signal-
+# resolution's own already-throttled limit=10 batch - yielding budget to
+# the tick-critical path, not competing with it head-on. Slower to fully
+# re-cycle through every configured-category series as a result, but the
+# catalog was already substantially warm before this change (thousands of
+# series/markets from an earlier scanning period).
+_CATALOG_SCAN_BATCH_SIZE = 10
 
 
 async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
@@ -1328,6 +1458,24 @@ _LIVE_STATUS_LOOKAHEAD_SEC = 3600  # start tracking an event up to 1h before its
 # whether anything could plausibly have changed.
 _LIVE_STATUS_REPOLL_SEC = 5 * 60
 _LIVE_STATUS_TERMINAL = {"finished", "closed"}  # once genuinely confirmed, never poll this event again
+_LIVE_STATUS_MAX_POLL_PER_TICK = 10  # Bounded per-tick batch (2026-08-15
+# tick_duration investigation), same shape as _check_signal_resolutions' own
+# limit=10 batching - to_poll had no cap at all, so whenever a large
+# fraction of the in-window candidate pool (up to ~2,500 rows / 100+
+# distinct events - see market_catalog.candidates_in_window, called from
+# _fetch_markets' live_markets_only branch) became simultaneously due for
+# their 5-minute repoll, this fired dozens-to-hundreds of concurrent REST
+# calls in a single tick, saturating the shared, deliberately-conservative
+# Kalshi rate limiter (services/http_client.py). Confirmed live: this
+# stalled every OTHER read call sharing that same limiter too
+# (_fetch_account_snapshot alone measured at 32-33s on the same ticks,
+# despite its own independent 20s interval cache doing exactly what it was
+# supposed to) - asyncio.gather's concurrency doesn't bypass a shared token
+# bucket. Oldest-checked-first (never-checked treated as most urgent, see
+# the sort key below) so a large backlog drains gradually across ticks
+# instead of spiking once; events excluded from a given tick's batch keep
+# whatever cached status they already had (documented fallback behavior
+# this function already relies on for "not yet due" - unchanged here).
 
 
 async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
@@ -1409,6 +1557,9 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
 
     if not to_poll:
         return result
+
+    to_poll.sort(key=lambda et: (cache.get(et) or {}).get("checked_at", 0.0))
+    to_poll = to_poll[:_LIVE_STATUS_MAX_POLL_PER_TICK]
 
     milestone_results = await asyncio.gather(
         *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
@@ -1714,30 +1865,48 @@ async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict
     return fetched
 
 
+_EVENT_LIVE_DATA_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration
+# fix) - same fix, same root cause as _MILESTONE_REPOLL_SEC above: this
+# called get_event_live_data() for every unique event on the watchlist,
+# every tick, forever, unconditionally. Confirmed live: ALL 13 events on the
+# current watchlist 404 from this endpoint every single time (Kalshi's
+# live_data feed doesn't cover crypto/politics/single-market events at all,
+# and evidently not this preseason sports window either) - pure waste, not
+# caution. Real live game-state data can change fast during an actual live
+# event, so this stays much shorter than _LIVE_STATUS_REPOLL_SEC's 5
+# minutes, but per-tick (~every 15s) was never the right cadence either.
+
+
 async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> dict:
     event_tickers = list(dict.fromkeys(
         m["event_ticker"] for m in markets if m.get("event_ticker")
     ))
     if not event_tickers:
         return {}
-    results = await asyncio.gather(
-        *(client.get_event_live_data(et) for et in event_tickers), return_exceptions=True
-    )
-    fetched = {}
-    for et, result in zip(event_tickers, results):
-        if not isinstance(result, dict):
-            continue
-        live_data = result.get("live_data") or {}
-        if not live_data:
-            continue
-        fetched[et] = {
-            "type": live_data.get("type"),
-            "details": live_data.get("details") or {},
-            "is_historical": live_data.get("is_historical"),
-            "default_range": live_data.get("default_range"),
-            "range_options": live_data.get("range_options") or [],
-        }
-    return fetched
+    cache = state["event_live_data_cache"]
+    now = time.time()
+    to_poll = [
+        et for et in event_tickers
+        if et not in cache or (now - cache[et]["checked_at"]) >= _EVENT_LIVE_DATA_REPOLL_SEC
+    ]
+    if to_poll:
+        results = await asyncio.gather(
+            *(client.get_event_live_data(et) for et in to_poll), return_exceptions=True
+        )
+        for et, result in zip(to_poll, results):
+            live_data = None
+            if isinstance(result, dict):
+                ld = result.get("live_data") or {}
+                if ld:
+                    live_data = {
+                        "type": ld.get("type"),
+                        "details": ld.get("details") or {},
+                        "is_historical": ld.get("is_historical"),
+                        "default_range": ld.get("default_range"),
+                        "range_options": ld.get("range_options") or [],
+                    }
+            cache[et] = {"data": live_data, "checked_at": now}
+    return {et: cache[et]["data"] for et in event_tickers if cache.get(et, {}).get("data") is not None}
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -2819,7 +2988,10 @@ async def lifespan(app: FastAPI):
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = asyncio.create_task(
-            trade_stream.run(_process_stream_trade, _process_stream_ticker, _handle_trade_stream_status)
+            trade_stream.run(
+                _process_stream_trade, _process_stream_ticker, _handle_trade_stream_status,
+                on_fill=_process_stream_fill, on_position=_process_stream_position,
+            )
         )
     yield
     if trade_stream_task is not None:

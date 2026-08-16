@@ -1044,6 +1044,44 @@ def test_fetch_live_status_repolls_once_the_cache_entry_is_stale():
     assert fake.milestone_calls == ["EVT-A"]  # due for a light re-poll
 
 
+def test_fetch_live_status_caps_poll_batch_size_per_tick():
+    # Real live incident (2026-08-15 tick_duration investigation): to_poll
+    # had no cap at all, so a large fraction of a big in-window candidate
+    # pool becoming simultaneously due fired dozens-to-hundreds of
+    # concurrent calls in a single tick, saturating the shared Kalshi rate
+    # limiter and starving every OTHER read call sharing it - confirmed
+    # live: _fetch_account_snapshot stalled to 32-33s on the same ticks
+    # despite its own independent 20s interval cache working correctly.
+    main.state["live_status_cache"].clear()
+    fake = _FakeLiveClient(widget_status="live")
+    n = main._LIVE_STATUS_MAX_POLL_PER_TICK + 5
+    markets = [_market_at(offset_sec=-300, event_ticker=f"EVT-{i}") for i in range(n)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert len(set(fake.milestone_calls)) == main._LIVE_STATUS_MAX_POLL_PER_TICK
+    assert len(result) == main._LIVE_STATUS_MAX_POLL_PER_TICK
+
+
+def test_fetch_live_status_batch_prioritizes_oldest_checked_first():
+    main.state["live_status_cache"].clear()
+    fake = _FakeLiveClient(widget_status="live")
+    n = main._LIVE_STATUS_MAX_POLL_PER_TICK + 3
+    now = time.time()
+    markets = []
+    for i in range(n):
+        et = f"EVT-{i}"
+        markets.append(_market_at(offset_sec=-300, event_ticker=et))
+        # Staggered ages, all past the repoll threshold (all due) - EVT-0 is
+        # the most-overdue, EVT-(n-1) the least-overdue of the bunch.
+        main.state["live_status_cache"][et] = {
+            "status": "live", "checked_at": now - main._LIVE_STATUS_REPOLL_SEC - (n - i),
+        }
+    asyncio.run(main._fetch_live_status(fake, markets))
+    polled = set(fake.milestone_calls)
+    assert len(polled) == main._LIVE_STATUS_MAX_POLL_PER_TICK
+    expected_polled = {f"EVT-{i}" for i in range(main._LIVE_STATUS_MAX_POLL_PER_TICK)}
+    assert polled == expected_polled
+
+
 def test_fetch_live_status_treats_past_close_time_as_finished_without_polling():
     main.state["live_status_cache"].clear()
     fake = _FakeLiveClient()
