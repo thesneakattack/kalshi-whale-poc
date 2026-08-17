@@ -112,6 +112,78 @@ an already-proven pattern used elsewhere in this exact file. **Do a real
 Selenium pass on the History and Positions tabs before trusting this
 fully.**
 
+## ARCHITECTURE: most of the 6-second REST cadence has a websocket replacement
+
+Direct point, correctly made: "I don't see why REST API polling should even
+be 6 seconds if almost all of this data can be collected via websocket
+stream. only position opening and closing." Verified against
+`docs/kalshi/` rather than assumed, and the answer is more specific than
+"mostly right":
+
+**Already websocket, already working:** `trade` (exchange-wide) and
+`ticker` (watchlist-scoped) - live trade flow and price updates. Confirmed
+flowing all session (`raw_trades`/`index_ticks` writing every few seconds).
+
+**Real, verified, currently-unused gap:** `market_lifecycle_v2` is a
+documented channel (`docs/kalshi/market-and-event-lifecycle.md`) this app
+**never subscribes to** - `grep -rn "market_lifecycle_v2" main.py
+services/` returns zero hits. It pushes `created` / `activated` /
+`deactivated` / `close_date_updated` / `determined` / `settled` /
+`price_level_structure_updated` as they happen. Right now, open/close/
+settlement detection (`main.py`'s outcome-checking pass) waits for the next
+6-second REST poll to notice `result` populated on a market it's still
+fetching wholesale - the exact mechanism behind the stale-`close_time` bug
+class ROADMAP.md and CLAUDE.md already document, with a direct push-based
+fix sitting entirely unused.
+
+**Second concrete gap, ties back into tonight's volatility fix:**
+`market_history.record_snapshots` (line ~2963 in `main.py`) is fed
+**only** from the REST tick - never from the ticker WS stream already
+flowing into `_process_stream_ticker` for `state["latest_prices"]`. That
+store is the input to `market_history.volatility()`, measured earlier
+tonight at exactly `0.0` for 78% of markets because samples were too
+sparse (6s resolution). Wiring the same ticker updates into
+`record_snapshots` would raise that resolution for free, using data
+already in memory - no new subscription, no new API cost.
+
+**Confirmed, not assumed, no equivalent exists:** there is no websocket
+channel for live sports score/game state - `docs/kalshi/get-live-data.md`
+and `get-milestone.md` are REST-only, and the full channel list
+(`orderbook_delta`, `ticker`, `trade`, `fill`, `market_positions`,
+`market_lifecycle_v2`, `multivariate_market_lifecycle`, `communications`,
+`order_group_updates`, `user_orders`, `cfbenchmarks_value`, `pyth_value`)
+has nothing else close. That piece genuinely has to stay REST-polled - but
+there is no reason it needs the SAME 6-second cadence as the rest of the
+loop; a score doesn't need sub-10-second freshness the way a trade signal
+does.
+
+**Order placement is correctly REST** - `create_order`/`cancel_order`,
+no WS order-entry channel exists - and `fill`/`market_positions` already
+push confirmations back once real trading is enabled. This part of the
+architecture is already right and doesn't need to change.
+
+### Recommended shape, not yet built
+
+Four things currently share one `poll_interval_sec: 6` cadence that have
+genuinely different freshness requirements:
+1. Price/trade data - already WS, zero latency, done.
+2. Open/close/settlement detection - could move to push via
+   `market_lifecycle_v2` (new subscription, real work, real payoff).
+3. `market_history` snapshot resolution - could move to push via the
+   already-flowing ticker stream (smaller change, same payoff class as #2).
+4. Live sports game state - genuinely REST-only, but decouple its polling
+   interval from the other three; it doesn't need to run at 6s.
+
+**Not started tonight, deliberately** - this touches `trading_loop`,
+`kalshi_trade_ws.py` (a new channel subscription), and `market_history`'s
+write path across several files, and this session already produced two
+real incidents (a wrong config override that opened and lost money on a
+real position, and a broken feed rehydration reverted twice) from moving
+on partial verification under time pressure. The research above is real
+and doc-verified; the implementation is not - do it with a clear head,
+one piece at a time, suite green between each, starting with #3 (smallest,
+lowest-risk, and directly reinforces tonight's volatility fix).
+
 ## URGENT, not yet actioned: tick duration blew out, rate limiter tripping
 
 Direct request: "find the bottleneck in the whale stream (data
