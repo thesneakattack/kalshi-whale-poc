@@ -40,6 +40,8 @@ from services import reset_log
 from services import series_cache
 from services import series_evaluator
 from services import series_watcher
+from services import index_feed
+from services import trade_archive
 from services import signal_log
 from services import suggestion_decisions
 from services import title_cache
@@ -119,6 +121,22 @@ account = KalshiAccountClient(
 trade_stream = KalshiTradeWebSocketClient(
     account_base_url,
     exchange_wide_trades=bool(cfg["kalshi"].get("trade_stream_exchange_wide", False)),
+    # The indices the crypto series settle against - see
+    # services/index_feed.py. Empty list disables the subscription.
+)
+# Index feeds get their OWN connection (2026-08-17), not a channel on the
+# trade socket. Measured: subscribed alone, cfbenchmarks_value delivers
+# exactly 1 message/second as documented; multiplexed behind an
+# exchange-wide trade subscription it delivered ~20 and then appeared
+# frozen for minutes, because a single reader loop drains the socket only
+# as fast as its slowest handler. run()'s reader/worker split fixes the
+# general case, but the index feed is the one stream whose value is
+# entirely in its timeliness - it IS the settlement quantity - so it gets
+# physical isolation rather than a fair share of a contended queue.
+index_stream = KalshiTradeWebSocketClient(
+    account_base_url,
+    index_ids=list(cfg.get("index_feed", {}).get("index_ids") or []),
+    underlying_tickers=list(cfg.get("index_feed", {}).get("underlying_tickers") or []),
 )
 
 state = {
@@ -564,6 +582,39 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         ):
             await _handle_close_decision(close_decision)
     _bump_generation()
+
+
+async def _noop_stream_trade(_trade: dict) -> None:
+    """index_stream subscribes to no trade/ticker channels at all (its
+    index_ids are the only thing it asks for), so these can never fire -
+    they exist because run()'s signature takes them positionally."""
+    return
+
+
+async def _noop_stream_ticker(_ticker_msg: dict) -> None:
+    return
+
+
+async def _handle_index_stream_status(status: dict) -> None:
+    state["index_stream_status"] = {**status, "updated_at": time.time()}
+
+
+async def _process_stream_index(msg_type: str, msg: dict) -> None:
+    """CF Benchmarks / Pyth index ticks (services/index_feed.py).
+
+    For the crypto series this is the settlement quantity itself, not a
+    proxy for it - KXBTC15M settles on "the simple average of the sixty
+    seconds of CF Benchmarks' BRTI before <close>", and
+    cfbenchmarks_value's last_60s_windowed_average_15min IS that average,
+    accumulating one observation per second. ~1 message/sec/index, buffered
+    the same way trade capture is, so this never writes on the event loop.
+    Deliberately does NOT trigger check_exits or any trading action yet -
+    capture and projection first, acting on it is a separate, deliberate
+    step."""
+    if msg_type == "cfbenchmarks_value":
+        index_feed.record_cfbenchmarks(msg)
+    elif msg_type == "pyth_value":
+        index_feed.record_pyth(msg)
 
 
 async def _process_stream_fill(fill_msg: dict) -> None:
@@ -3230,6 +3281,12 @@ async def trading_loop():
             # layer never writes per message, which is what makes it safe
             # to run against an exchange-wide subscription.
             series_watcher.flush()
+            # Same per-tick batched write for index ticks. Without this the
+            # buffer only drained when it hit its own _FLUSH_BATCH, which at
+            # ~1 tick/sec/index meant minutes of data sitting unwritten -
+            # observed live as index_ticks holding 0 rows while the in-memory
+            # snapshot showed ticks arriving.
+            index_feed.flush()
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
@@ -3435,10 +3492,23 @@ async def lifespan(app: FastAPI):
                 on_fill=_process_stream_fill, on_position=_process_stream_position,
             )
         )
+    index_stream_task = None
+    if index_stream.enabled and (index_stream.index_ids or index_stream.underlying_tickers):
+        # Its own connection and its own task - see index_stream's own
+        # comment for why this isn't just another channel on trade_stream.
+        index_stream_task = asyncio.create_task(
+            index_stream.run(
+                _noop_stream_trade, _noop_stream_ticker, _handle_index_stream_status,
+                on_index=_process_stream_index,
+            )
+        )
     yield
     if trade_stream_task is not None:
         await trade_stream.close()
         trade_stream_task.cancel()
+    if index_stream_task is not None:
+        await index_stream.close()
+        index_stream_task.cancel()
     task.cancel()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data
@@ -4791,6 +4861,61 @@ async def get_series_watcher(series: str, hours: float = 24.0):
     }
 
 
+@app.get("/api/archive/epochs")
+async def get_archive_epochs(limit: int = 50):
+    """Every archived paper-trading epoch (services/trade_archive.py) -
+    the permanent record a reset can't destroy."""
+    return {"epochs": trade_archive.epochs(limit)}
+
+
+@app.get("/api/archive/compare")
+async def get_archive_compare(limit: int = 10):
+    """Epochs side by side against the standing 70%/70% target. edge_pts
+    (win rate minus the breakeven accuracy its own entry prices implied) is
+    the ranking column - a high win rate with negative edge is the
+    high-price trap, not progress."""
+    return trade_archive.compare(limit)
+
+
+@app.post("/api/archive/snapshot")
+async def post_archive_snapshot(label: str, reason: str | None = None):
+    """Take an archive checkpoint WITHOUT resetting anything - for marking
+    the boundary of a config experiment while it's still running."""
+    return trade_archive.archive_epoch(label=label, reason=reason, cfg=config_store.get())
+
+
+@app.get("/api/index")
+async def get_index_feed():
+    """Live CF Benchmarks / Pyth index values (services/index_feed.py)."""
+    return index_feed.snapshot()
+
+
+@app.get("/api/index/settlement/{ticker}")
+async def get_index_settlement(ticker: str):
+    """Live settlement projection for one market, from the partial 60-second
+    average currently streaming.
+
+    For the crypto series this is exact arithmetic, not a forecast: the
+    market settles on the mean of sixty one-second index observations, and
+    `observations_known` of them are already in hand."""
+    cfg = config_store.get()
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        market = await client.get_market(ticker)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"could not fetch {ticker}: {exc}")
+    spec = index_feed.settlement_spec(market)
+    if not spec.get("supported"):
+        return spec
+    return {
+        **spec,
+        "projection": index_feed.settlement_projection(
+            spec["index_id"], spec["strike"], side="yes",
+        ),
+        "index_volatility_1s": index_feed.recent_volatility(spec["index_id"]),
+    }
+
+
 @app.get("/api/config")
 async def get_config():
     return config_store.get()
@@ -4950,6 +5075,13 @@ class ResetBody(BaseModel):
     # original, sole behavior); shadow/signal_log default off since they're
     # long-run track records that normally survive a paper reset on purpose.
     paper: bool = True
+    # Naming for the archive snapshot taken before a paper reset (see
+    # services/trade_archive.py). Optional - both default to a generated
+    # label/reason - but worth setting when the reset marks a deliberate
+    # config experiment, since the label is how epochs are told apart in
+    # trade_archive.compare().
+    archive_label: str | None = None
+    archive_reason: str | None = None
     shadow: bool = False
     signal_log: bool = False
     market_analyst: bool = False
@@ -5077,6 +5209,23 @@ async def reset_broker(body: ResetBody = ResetBody()):
         )
 
     if body.paper:
+        # Archive BEFORE anything is destroyed (2026-08-17 direct request:
+        # "a safe reset of the paper trading mechanic while maintaining a
+        # log of important data"). The motivating incident is concrete: a
+        # prior reset left paper_broker.db reaching back only to 08/16
+        # 19:28, so every trade-level question about anything earlier -
+        # realised win rate, mean entry unit cost, exit breakdown - was
+        # unanswerable. reset_log recorded that a reset happened; nothing
+        # recorded what it removed.
+        #
+        # Runs for ranged resets too: a scoped delete still destroys closed
+        # history, which is exactly the evidence this preserves.
+        archive_result = trade_archive.archive_epoch(
+            label=body.archive_label or f"pre-reset {time.strftime('%Y-%m-%d %H:%M')}",
+            reason=body.archive_reason or f"automatic archive before {scope} paper reset",
+            cfg=cfg,
+        )
+        cleared.append({"domain": "archive", "epoch": archive_result})
         if ranged:
             # Scoped: only the trades table (closed history) - never
             # positions/bankroll/pending_orders, which are current live

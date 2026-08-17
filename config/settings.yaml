@@ -140,6 +140,19 @@ position_netting:
   min_edge_improvement_usd: 1
   normal_volatility: 0.02
   volatility_lookback_sec: 1800
+index_feed:
+  # CF Benchmarks index IDs to stream (docs/kalshi/cfbenchmarks-value.md).
+  # These are the quantities the crypto series literally settle against:
+  # KXBTC15M/KXBTCD -> BRTI, KXETH15M/KXETHD -> ETHUSD_RTI. The channel's
+  # last_60s_windowed_average_15min is the settlement average itself,
+  # accumulating one observation per second during the final minute.
+  # Use ["all"] to receive every available index.
+  index_ids:
+    - BRTI
+    - ETHUSD_RTI
+  # Pyth underlyings (docs/kalshi/pyth-value.md) - a bare price feed, no
+  # windowed averages. Empty until there's a market that settles on one.
+  underlying_tickers: []
 series_watcher:
   enabled: true
   series:

@@ -12,9 +12,18 @@ from cryptography.hazmat.primitives.asymmetric import padding
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 _DEMO_WS_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 
+# Bound on the reader->worker handoff queue (see run()). Sized to absorb a
+# real burst without becoming an unbounded memory sink: at exchange-wide
+# trade volume this is a few seconds of backlog. Overflow increments
+# dropped_messages rather than blocking the reader, because blocking the
+# reader is exactly the failure this split exists to prevent.
+_INGEST_QUEUE_MAX = 20000
+
 
 class KalshiTradeWebSocketClient:
-    def __init__(self, base_url: str, exchange_wide_trades: bool = False):
+    def __init__(self, base_url: str, exchange_wide_trades: bool = False,
+                 index_ids: list[str] | None = None,
+                 underlying_tickers: list[str] | None = None):
         # exchange_wide_trades (2026-08-17, direct goal: "realtime data
         # across everything" / "zero latency and maximum insight"):
         # subscribe the `trade` channel with NO market_tickers, which
@@ -34,6 +43,21 @@ class KalshiTradeWebSocketClient:
         # field change and would be a genuine firehose, for data this app
         # only needs on markets it might actually trade.
         self.exchange_wide_trades = exchange_wide_trades
+        # CF Benchmarks index IDs to stream (docs/kalshi/cfbenchmarks-value.md).
+        # This channel is what several crypto series literally settle
+        # against - KXBTC15M's own rules_primary, read live 2026-08-17:
+        # "the simple average of the sixty seconds of CF Benchmarks' BRTI
+        # before <close>" - so its last_60s_windowed_average_15min is not a
+        # prediction of the outcome, it IS the outcome, accumulating one
+        # observation per second. Empty list disables the subscription.
+        #
+        # NOTE the channel takes index_ids, NOT market_tickers - the page is
+        # explicit that "market_ticker/market_tickers/market_id/market_ids
+        # are not supported for this channel".
+        self.index_ids = list(index_ids or [])
+        # Pyth underlyings (docs/kalshi/pyth-value.md) - same shape, different
+        # param name (underlying_tickers) and no windowed averages.
+        self.underlying_tickers = list(underlying_tickers or [])
         self.base_url = (base_url or "").strip().lower()
         self.key_id = os.getenv("KALSHI_API_KEY_ID", "").strip()
         self.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "").strip()
@@ -71,11 +95,16 @@ class KalshiTradeWebSocketClient:
         # flag would either duplicate the trade subscription or block it.
         self._trade_subscribed = False
         self._ticker_subscribed = False
+        self._index_subscribed = False
         self._message_id = 1
         self._update_event = asyncio.Event()
         self._stop = False
         self._logged_fill_shape = False
         self._logged_position_shape = False
+        # Ingest counters - exposed through status so a stalled consumer
+        # shows up as a number rather than as a market that looks quiet.
+        self.messages_received = 0
+        self.dropped_messages = 0
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
@@ -110,7 +139,29 @@ class KalshiTradeWebSocketClient:
         self._desired_tickers = normalized
         self._update_event.set()
 
-    async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None) -> None:
+    async def request_index_list(self) -> None:
+        """Ask the server which CF Benchmarks index IDs actually exist
+        (docs/kalshi/cfbenchmarks-value.md's `indexlist` action, which
+        "returns the available index IDs ... without modifying the
+        subscription"). The reply arrives as a cfbenchmarks_value_indexlist
+        message.
+
+        Worth having as a real call rather than a hardcoded list: a live
+        sweep of settlement rules on 2026-08-17 found the SAME index named
+        three different ways across series - "BRTI", "ETHUSDRTI" (no
+        underscore) and "ERTI" - none of which is guaranteed to be the
+        channel's own identifier. Asking is the only way to know."""
+        sid = self._subscription_sids.get("cfbenchmarks_value")
+        if sid is None:
+            return
+        await self._send({
+            "id": self._next_message_id(),
+            "cmd": "update_subscription",
+            "params": {"sid": sid, "action": "indexlist"},
+        })
+
+    async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None,
+                  on_index=None) -> None:
         backoff = 1.0
         while not self._stop:
             if not self.enabled:
@@ -156,20 +207,72 @@ class KalshiTradeWebSocketClient:
                             "params": {"channels": ["fill", "market_positions"]},
                         })
                     backoff = 1.0
-                    while not self._stop:
-                        update_task = asyncio.create_task(self._update_event.wait())
-                        recv_task = asyncio.create_task(websocket.recv())
-                        done, pending = await asyncio.wait(
-                            {update_task, recv_task}, return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        for task in pending:
-                            task.cancel()
-                        if update_task in done and self._update_event.is_set():
-                            self._update_event.clear()
-                            await self._sync_subscriptions()
-                        if recv_task in done:
-                            raw_message = recv_task.result()
-                            await self._handle_message(raw_message, on_trade, on_ticker, on_status, on_fill, on_position)
+                    # Ingest and processing are separate tasks (2026-08-17).
+                    #
+                    # They used to be one loop: receive a message, then await
+                    # its full handler before receiving the next. That was
+                    # survivable while the trade channel was scoped to a
+                    # ~150-market watchlist, and stopped being survivable the
+                    # moment it went exchange-wide. Every trade message costs
+                    # a thread hop (whale_provider.fetch_signals ->
+                    # asyncio.to_thread) plus DB reads, so at exchange volume
+                    # the socket was only drained as fast as the slowest
+                    # handler - and the ~1/second index ticks, which decide
+                    # settlement, ended up queued behind thousands of trades.
+                    #
+                    # Confirmed rather than theorised: a standalone
+                    # connection subscribed only to cfbenchmarks_value
+                    # received exactly 50 messages in 50 seconds (the
+                    # documented 1/sec), while the same channel on the shared
+                    # connection delivered ~20 and then appeared frozen for
+                    # minutes.
+                    #
+                    # Now the reader does nothing but recv and enqueue, which
+                    # is microseconds, and a worker drains the queue. The
+                    # queue is BOUNDED and overflow is counted rather than
+                    # silently absorbed - a stalled consumer must be visible
+                    # (see self.dropped_messages), not disguised as a quiet
+                    # market.
+                    queue: asyncio.Queue = asyncio.Queue(maxsize=_INGEST_QUEUE_MAX)
+
+                    async def _consume():
+                        while True:
+                            raw = await queue.get()
+                            try:
+                                await self._handle_message(
+                                    raw, on_trade, on_ticker, on_status, on_fill,
+                                    on_position, on_index,
+                                )
+                            except Exception:
+                                # One malformed or mishandled message must not
+                                # tear down the socket - the reader is still
+                                # draining behind this.
+                                pass
+                            finally:
+                                queue.task_done()
+
+                    consumer = asyncio.create_task(_consume())
+                    try:
+                        while not self._stop:
+                            update_task = asyncio.create_task(self._update_event.wait())
+                            recv_task = asyncio.create_task(websocket.recv())
+                            done, pending = await asyncio.wait(
+                                {update_task, recv_task}, return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            for task in pending:
+                                task.cancel()
+                            if update_task in done and self._update_event.is_set():
+                                self._update_event.clear()
+                                await self._sync_subscriptions()
+                            if recv_task in done:
+                                raw_message = recv_task.result()
+                                self.messages_received += 1
+                                try:
+                                    queue.put_nowait(raw_message)
+                                except asyncio.QueueFull:
+                                    self.dropped_messages += 1
+                    finally:
+                        consumer.cancel()
             except Exception as exc:
                 if on_status is not None:
                     await on_status({"connected": False, "error": str(exc), "ws_url": self.ws_url})
@@ -184,7 +287,7 @@ class KalshiTradeWebSocketClient:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None) -> None:
+    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None, on_index=None) -> None:
         data = json.loads(raw_message)
         msg_type = data.get("type")
         if msg_type == "subscribed":
@@ -200,6 +303,22 @@ class KalshiTradeWebSocketClient:
             if on_status is not None:
                 err = data.get("msg") or {}
                 await on_status({"connected": True, "error": f"Kalshi WS error {err.get('code')}: {err.get('msg')}", "ws_url": self.ws_url})
+            return
+        # Index feeds (docs/kalshi/cfbenchmarks-value.md, pyth-value.md).
+        # Dispatched with the message type attached because the two payloads
+        # are genuinely different shapes - cfbenchmarks carries the windowed
+        # settlement averages, pyth is a bare price - and the handler has to
+        # tell them apart rather than duck-type its way through.
+        if msg_type in ("cfbenchmarks_value", "pyth_value"):
+            if on_index is not None:
+                await on_index(msg_type, data.get("msg") or {})
+            return
+        if msg_type in ("cfbenchmarks_value_indexlist", "pyth_value_underlying_list"):
+            # Discovery reply - see request_index_list(). Printed rather than
+            # routed anywhere, because its whole purpose is telling a human
+            # which identifiers are real (a live sweep found the same index
+            # named BRTI / ETHUSDRTI / ERTI across different series' rules).
+            print(f"[kalshi_ws] {msg_type}: {data.get('msg')!r}")
             return
         if msg_type == "trade":
             await on_trade(self.normalize_trade(data.get("msg") or {}))
@@ -265,6 +384,27 @@ class KalshiTradeWebSocketClient:
                 if not self.exchange_wide_trades:
                     self._subscribed_tickers = desired
 
+        # Index feeds are wholly independent of the watchlist - they take
+        # index_ids/underlying_tickers, and the docs are explicit that
+        # market_ticker(s)/market_id(s) "are not supported for this
+        # channel". So, like exchange-wide trades, they go up on connect
+        # and never participate in the add_markets/delete_markets path.
+        if not self._index_subscribed and (self.index_ids or self.underlying_tickers):
+            if self.index_ids:
+                await self._send({
+                    "id": self._next_message_id(),
+                    "cmd": "subscribe",
+                    "params": {"channels": ["cfbenchmarks_value"], "index_ids": list(self.index_ids)},
+                })
+            if self.underlying_tickers:
+                await self._send({
+                    "id": self._next_message_id(),
+                    "cmd": "subscribe",
+                    "params": {"channels": ["pyth_value"],
+                               "underlying_tickers": list(self.underlying_tickers)},
+                })
+            self._index_subscribed = True
+
         if not self._ticker_subscribed:
             if desired:
                 await self._send({
@@ -288,6 +428,10 @@ class KalshiTradeWebSocketClient:
         # switching one between scoped and unscoped. Sending add_markets
         # against it would either error or, worse, silently narrow the
         # firehose back down to a watchlist.
+        # cfbenchmarks_value/pyth_value are excluded for a stronger reason
+        # than exchange-wide trade is: they don't accept market_tickers at
+        # all, so an add_markets against their sid is malformed by
+        # construction, not merely unwanted.
         market_channels = ("ticker",) if self.exchange_wide_trades else ("trade", "ticker")
         market_channel_sids = [self._subscription_sids[c] for c in market_channels if c in self._subscription_sids]
         if to_add:
