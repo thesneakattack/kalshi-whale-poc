@@ -37,7 +37,24 @@ _TREND_FULL_SCALE = 0.05
 # would re-emit as a fresh whale signal on every poll until it fell off the
 # last-10 list. Bounded so a long-running process doesn't grow this
 # unbounded; old entries age out in insertion order once the cap is hit.
-_MAX_SEEN_TRADE_IDS = 5000
+_MAX_SEEN_TRADE_IDS = 250000
+# Raised 5,000 -> 250,000 on 2026-08-17. This ring is what guarantees a
+# print is evaluated exactly once, and it has to outlive every path that
+# can re-present the same trade: the REST tape poll deliberately re-fetches
+# an overlapping window every tick ("a little re-fetched overlap is
+# harmless, the provider dedupes by trade_id" - see _fetch_trade_tape), and
+# the websocket path captures the same prints independently.
+#
+# At 5,000 it no longer did. Measured: 1,640 prints/min across the WATCHED
+# series alone, so the ring cycled every ~183 seconds - and the provider
+# sees exchange-wide flow, many times that, so eviction was happening in
+# well under a minute. Any trade re-presented after eviction would be
+# scored and emitted a SECOND time as a fresh whale signal, corrupting both
+# the feed and signal_log's own accuracy statistics.
+#
+# 250,000 ids is a few hours of exchange-wide flow and a few tens of MB of
+# strings - cheap next to the alternative, which is silent double-counting
+# that looks exactly like real signal volume.
 # How long an on-demand market lookup stays usable before it's re-fetched
 # (_resolve_unknown_markets). Short enough that volume_24h/close_time can't
 # go badly stale on a fast-moving market, long enough that a market printing

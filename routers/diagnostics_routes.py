@@ -25,7 +25,8 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from services import diagnostics, index_feed, series_watcher, settlement_edge, trade_archive
-from services.app_state import state
+from services.app_state import state, trade_stream, whale_provider
+from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
 from services.config_store import config_store
 from services.kalshi_client import KalshiClient
 
@@ -138,6 +139,20 @@ async def get_pipeline_health():
         "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
         "markets_watched": len(state.get("markets") or []),
         "trade_stream": state.get("trade_stream_status"),
+        # Real ingest counters from the LIVE objects - the only place these
+        # are readable. Measuring them from a separate process returns a
+        # fresh object with zeroed counters, which is misleading rather than
+        # merely useless (learned 2026-08-17). dropped_messages must stay 0:
+        # a non-zero value means the reader outran the worker and prints
+        # were lost, which is the one failure "no gaps" cannot tolerate.
+        "ingest": {
+            "messages_received": getattr(trade_stream, "messages_received", None),
+            "dropped_messages": getattr(trade_stream, "dropped_messages", None),
+            "exchange_wide": getattr(trade_stream, "exchange_wide_trades", None),
+            "dedup_ids_held": len(getattr(whale_provider, "_seen_trade_ids", ())),
+            "dedup_cap": _MAX_SEEN_TRADE_IDS,
+            "provider_stats": getattr(whale_provider, "stats", None),
+        },
         "index_stream": state.get("index_stream_status"),
         "stores": {
             "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),

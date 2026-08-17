@@ -113,6 +113,64 @@ A week of accumulation should make both headline open questions answerable
 on real data: the settlement-edge verdict, and whether a contract-count
 whale threshold beats the dollar one.
 
+## FIRST UI TASK: an empty feed must not look identical to a dead one
+
+Direct report, twice in one session: "no whale signals are coming in! its
+broken" and "I see nothing in the UI, no positions opened, no decisions
+made, nothing." **The pipeline was healthy both times.** Measured while the
+feed sat visibly empty: 1,096 signals in signal_log over 24h, the provider
+reading 100/100 trade sides correctly, and 87 `min_notional` rejections in
+ten minutes.
+
+Three things compounded to make working look broken:
+
+1. `state["signal_feed"]`, `state["decision_feed"]` and `state["stats"]` are
+   **in-memory only** and start empty on every process start.
+2. `uvicorn --reload` restarts on every `.py` edit, so they were wiped
+   constantly during development.
+3. The genuine whale-print rate is **~17/hour exchange-wide** — one every
+   ~3.5 minutes — so a quiet ten minutes after a restart is normal.
+
+**Do NOT fix this by rehydrating the feed from signal_log.** That was tried
+on 2026-08-17 and reverted within minutes (`47b7fec`): it hand-rolled the
+signal dict instead of matching `WhaleSignal.to_dict()` (dropping `id`,
+`factors`, `raw_context`, `close_time`) and replayed historical signals
+whose tickers had rotated out of the watchlist, so `market_titles` resolved
+none of them and the feed showed **"unknown market" on everything**. If it
+is attempted again, build the dict from a real `WhaleSignal` and only
+replay tickers still in `state["markets"]`.
+
+**The right fix is to show the rate, not the history.** An empty feed should
+read as *"quiet — 17 signals/hr, last one 4 min ago, 87 prints rejected on
+min_notional in the last 10 min"* rather than as silence. Every one of those
+numbers is already available (`signal_log`, `candidate_log`,
+`GET /api/health/pipeline`); nothing new needs collecting.
+
+### Why KXBTC15M specifically looks dead — it isn't
+
+Direct expectation: "at a MINIMUM I expect to see KXBTC15M whale signals
+coming in." It produces **~10/hour, 470 in 24h**. Measured over one hour:
+
+| KXBTC15M, 1 hour | |
+|---|---|
+| prints captured | **49,947** |
+| median notional | **$5** |
+| p90 notional | $72 |
+| max notional | $9,699 |
+| clearing $2,500 (current) | 20 — 0.04% |
+| clearing $1,000 | 71 — 0.14% |
+| clearing $500 | 282 — 0.56% |
+
+This series is retail micro-flow: fifty thousand prints an hour at a median
+of five dollars. `min_notional_usd: 2500` therefore keeps the top 0.04%.
+That is a deliberate threshold, not a fault — but if visible signal flow on
+this series matters more than selectivity, **$1,000 gives ~71/hr and $500
+gives ~282/hr**, and both are one config edit.
+
+Pair any such change with the dollar-vs-contract-count finding below: a
+dollar threshold at *any* level is biased toward near-certain prices, so
+lowering it admits more flow without removing that bias.
+
 ## Start here next session: `GET /api/health/faults`
 
 `services/fault_log.py` now records every swallowed exception and edge
