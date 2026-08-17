@@ -165,3 +165,47 @@ Same for trades: the provider reduces a print to a side and a notional, so
 `raw_trades` keeps the full payload and all three direction fields
 (`taker_outcome_side`, `taker_book_side`, the deprecated `taker_side`)
 separately rather than only the resolved answer.
+
+## How do you subscribe to the WHOLE exchange, not just a watchlist?
+
+Confirmed 2026-08-17 against the mirror, for the "realtime data across
+everything" goal — this is the fix for the ~98% coverage loss (the trade WS
+is currently subscribed with an explicit `market_tickers` list, so a print
+on any unwatched market is never received at all — not filtered, not
+logged, not counted as rejected).
+
+- **`public-trades.md`** (the `trade` channel) states **"market
+  specification optional"** in its own requirements list. Subscribing with
+  `{"channels": ["trade"]}` and NO `market_tickers` streams every trade on
+  the exchange. `market-ticker.md` says the same for the `ticker` channel
+  (but exchange-wide ticker is a genuine firehose and this app only needs
+  prices for markets it might actually trade — keep that one scoped).
+- **Sharding, for when one connection can't keep up**
+  (`websocket-connection.md`'s optional params, and `changelog-index.md`
+  for the semantics): `shard_factor` (1–100, must be > 0) and `shard_key`
+  (`0 <= key < shard_factor`). *"Messages are sharded by `market_ticker`
+  using consistent hashing. Clients can run multiple connections with
+  different `shard_key` values to distribute load while ensuring complete
+  coverage."* The changelog documents these for the `communications`
+  channel specifically; `websocket-connection.md` lists them among the
+  general subscribe params. Verify live before assuming `trade` honours
+  them.
+- **`update_subscription` actions** are `add_markets` / `delete_markets` /
+  `get_snapshot` — there is no documented "switch to exchange-wide" action,
+  so going exchange-wide means a fresh `subscribe` without
+  `market_tickers`, not an update to the existing sid.
+
+**Blocker to fix first, not an API question:**
+`services/whalewatchers/kalshi_trade_tape.py::_process_trades_sync` does
+`continue` when a print's ticker is absent from `markets_by_ticker` (the
+watchlist-derived dict). Exchange-wide flow is overwhelmingly unknown
+tickers, so subscribing without that path handled would raise the message
+volume enormously while producing the same signals. Needs either an
+on-demand market fetch or a degraded-confidence path that scores on the
+print alone.
+
+Other channels this app does not use yet, both relevant to "realtime
+everything": `market_lifecycle_v2` (realtime open/close/settlement, versus
+today's REST polling — directly relevant to the stale-`close_time` bug
+class) and `orderbook_delta` (real depth, versus the sampled top-of-book
+snapshots `services/series_watcher.py` now records).
