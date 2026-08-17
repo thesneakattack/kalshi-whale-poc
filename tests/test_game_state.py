@@ -17,6 +17,9 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(gs, "DB_PATH", tmp_path / "game_state.db")
     monkeypatch.setattr(gs, "_buffer", [])
     monkeypatch.setattr(gs, "_last_fingerprint", {})
+    # Also module-level, and added later than the others - without resetting
+    # it, one test's rate-limit state suppresses the next test's first write.
+    monkeypatch.setattr(gs, "_last_write_at", {})
     yield
 
 
@@ -125,3 +128,49 @@ def test_timeline_and_stats_are_readable():
     assert s["distinct_events"] == 2
     assert s["with_score"] == 2
     assert set(s["by_sport"]) == {"football", "baseball"}
+
+
+# --- non-game live-data shapes (2026-08-17) ------------------------------
+# The milestone path this module was first wired to was measured EMPTY while
+# _fetch_event_live_data held six live entries carrying crypto payloads.
+# Those are a completely different shape - OHLC candlesticks and an
+# underlying price timeseries instead of a score - and are equally worth
+# keeping.
+
+_CRYPTO = {
+    "coin": "BTC", "event_ticker": "KXBTCD-26AUG1717",
+    "maturity_ts_ms": 1786982400000,
+    "candlesticks": {"15M": [
+        {"open_ts_ms": 1786941217555, "open": 63427.04, "high": 63464.46,
+         "low": 63427.04, "close": 63464.20},
+    ]},
+    "timeseries": [{"ts_ms": 1786941217555, "value": 63427.04}],
+}
+
+
+def test_a_crypto_payload_is_stored_whole_even_with_no_sport_fields():
+    assert gs.record("KXBTCD-26AUG1717", _CRYPTO, event_type="crypto", now=1000.0) is True
+    gs.flush()
+    with sqlite3.connect(gs.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM game_states").fetchone()
+    assert row["event_type"] == "crypto"
+    assert row["home_score"] is None and row["period"] is None
+    raw = json.loads(row["raw_json"])
+    assert raw["candlesticks"]["15M"][0]["close"] == 63464.20
+    assert raw["timeseries"][0]["value"] == 63427.04
+
+
+def test_continuously_changing_payloads_are_rate_limited_not_written_every_tick():
+    """A score changes a handful of times an hour; a candlestick array
+    changes on essentially every poll, so fingerprinting alone would not
+    bound the volume."""
+    assert gs.record("EVT-C", _CRYPTO, event_type="crypto", now=1000.0) is True
+    changed = {**_CRYPTO, "timeseries": [{"ts_ms": 1786941217999, "value": 63500.0}]}
+    assert gs.record("EVT-C", changed, event_type="crypto", now=1010.0) is False  # inside interval
+    assert gs.record("EVT-C", changed, event_type="crypto", now=1100.0) is True   # past it
+
+
+def test_identical_crypto_payload_is_still_deduplicated_after_the_interval():
+    gs.record("EVT-C", _CRYPTO, event_type="crypto", now=1000.0)
+    assert gs.record("EVT-C", _CRYPTO, event_type="crypto", now=2000.0) is False

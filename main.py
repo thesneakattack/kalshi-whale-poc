@@ -2285,6 +2285,21 @@ async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> d
                         "range_options": ld.get("range_options") or [],
                     }
             cache[et] = {"data": live_data, "checked_at": now}
+            # Persist it (2026-08-17). This is the live-data path that is
+            # actually populated in practice - the milestone-driven one in
+            # _fetch_live_status only fires for events Kalshi tracks a
+            # milestone for, and was measured empty while THIS held six live
+            # entries. For crypto events the payload carries OHLC
+            # candlesticks and an underlying price timeseries; for games it
+            # carries score/period/clock. Both are fetched every tick
+            # already and both were living only in memory. Rate-limited and
+            # deduplicated inside game_state.record.
+            if live_data and (live_data.get("details") or {}):
+                game_state.record(
+                    et, live_data["details"],
+                    sport=_sport_for_event(state["event_titles"].get(et) or {}),
+                    event_type=live_data.get("type"),
+                )
     return {et: cache[et]["data"] for et in event_tickers if cache.get(et, {}).get("data") is not None}
 
 

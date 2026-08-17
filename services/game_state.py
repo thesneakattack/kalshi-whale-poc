@@ -74,6 +74,7 @@ def _connect() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_ticker TEXT NOT NULL,
             sport TEXT,
+            event_type TEXT,
             observed_at REAL NOT NULL,
             source_updated_ts INTEGER,
             status TEXT,
@@ -184,24 +185,52 @@ def _fingerprint(fields: dict) -> str:
     ))
 
 
-def record(event_ticker: str, details: dict, sport: str | None = None,
-           now: float | None = None) -> bool:
-    """Persist one game-state observation. Returns whether a row was
-    buffered - False for an unchanged state (deduplicated), a missing event
-    ticker, or any error.
+# Minimum gap between stored rows for one event, for payloads whose content
+# changes continuously. Crypto live-data carries OHLC candlesticks and a
+# price timeseries that differ on essentially every poll, so fingerprint
+# deduplication alone would not bound the volume - a sport's score changes a
+# handful of times an hour, a candlestick array changes every tick.
+_MIN_INTERVAL_SEC = 60.0
+_last_write_at: dict[str, float] = {}
 
-    Never raises: this is called from the trading loop's live-status pass,
-    where an exception would cost the tick."""
+
+def record(event_ticker: str, details: dict, sport: str | None = None,
+           event_type: str | None = None, now: float | None = None) -> bool:
+    """Persist one live-data observation. Returns whether a row was buffered
+    - False for an unchanged payload (deduplicated), one inside the
+    per-event minimum interval, a missing event ticker, or any error.
+
+    Handles ANY live-data shape, not just games: Kalshi's `type` field
+    distinguishes `football_game` from `crypto`, and the crypto payload
+    carries OHLC candlesticks plus an underlying price timeseries rather
+    than a score. Sport-specific columns stay NULL for those, and the whole
+    payload lands in raw_json either way - a shape this module has never
+    seen still gets its complete record stored from the day it appears,
+    which is the entire discipline here.
+
+    Never raises: called from the trading loop, where an exception would
+    cost the tick."""
     try:
         if not event_ticker or not details:
             return False
+        now = now if now is not None else time.time()
+        last = _last_write_at.get(event_ticker)
+        if last is not None and (now - last) < _MIN_INTERVAL_SEC:
+            return False
         fields = extract(details, sport)
         fp = _fingerprint(fields)
+        if fp == "None|None|None|None|None|None|None|None":
+            # No sport-shaped field matched at all (e.g. a crypto payload),
+            # so the generic fingerprint carries no information - fall back
+            # to the payload itself so genuine changes still register and
+            # identical repeats still don't.
+            fp = str(hash(json.dumps(details, sort_keys=True, default=str)))
         if _last_fingerprint.get(event_ticker) == fp:
             return False
         _last_fingerprint[event_ticker] = fp
+        _last_write_at[event_ticker] = now
         _buffer.append((
-            event_ticker, sport, now if now is not None else time.time(),
+            event_ticker, sport, event_type or details.get("type"), now,
             fields["source_updated_ts"], fields["status"], fields["widget_status"],
             fields["home_score"], fields["away_score"], fields["period"],
             fields["period_label"], fields["clock"], fields["winner"],
@@ -223,10 +252,10 @@ def flush() -> dict:
     try:
         with _connect() as conn:
             conn.executemany(
-                "INSERT INTO game_states (event_ticker, sport, observed_at, source_updated_ts, "
-                "status, widget_status, home_score, away_score, period, period_label, clock, "
-                "winner, last_play, last_play_ts, raw_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO game_states (event_ticker, sport, event_type, observed_at, "
+                "source_updated_ts, status, widget_status, home_score, away_score, period, "
+                "period_label, clock, winner, last_play, last_play_ts, raw_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
     except Exception:
