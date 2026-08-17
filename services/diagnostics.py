@@ -537,6 +537,92 @@ def check_config_bounds(cfg: dict) -> Check:
     )
 
 
+def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
+                      now: float | None = None) -> Check:
+    """What did over-permissive vs over-restrictive settings actually cost?
+    (2026-08-17 direct request: "you can make easy insight gains by
+    comparing trades that ignored all this stuff and the trades that were
+    way too sensitive.")
+
+    **The caveat is the whole method** (user's own, and it is the correct
+    one): this comparison is only meaningful "if the trades during that
+    observation period were real whales." A period running a $1 notional
+    floor did not observe whales at all - it observed the entire tape - so
+    including its signals would compare whale-following against
+    noise-following and conclude, meaninglessly, that whales are bad.
+
+    So every period is normalised to the SAME retroactive notional floor
+    (`min_notional`) regardless of what the config claimed at the time.
+    Only prints that would qualify as real whales under one consistent
+    definition are compared. That makes "loose config" mean "loose on
+    confidence/price/runway gates" rather than "counted things that were
+    never whales" - which is the only version of the question with an
+    answer.
+
+    Reads signal_log (which survives paper-broker resets and carries
+    raw_notional_usd per row), and reports accuracy against selectivity so
+    the cost of each extra increment of strictness is visible rather than
+    assumed."""
+    now = now if now is not None else time.time()
+    since_ts = since_ts if since_ts is not None else now - 30 * 24 * 3600
+    try:
+        with sqlite3.connect(signal_log.DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
+                "WHERE seen_at > ? AND resolved = 1 AND excluded = 0 "
+                "AND raw_notional_usd IS NOT NULL AND raw_notional_usd >= ?",
+                (since_ts, min_notional),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return Check("selectivity_curve", _UNKNOWN, f"signal_log unreadable: {exc}")
+    if len(rows) < 50:
+        return Check(
+            "selectivity_curve", _UNKNOWN,
+            f"only {len(rows)} resolved signals clear the ${min_notional:,.0f} normalisation floor — "
+            "too thin to compare permissive against restrictive",
+        )
+
+    base_acc = 100.0 * sum(r["correct"] or 0 for r in rows) / len(rows)
+    curve = []
+    for thr in (0.0, 0.3, 0.4, 0.49, 0.55, 0.6, 0.65, 0.7, 0.8):
+        kept = [r for r in rows if (r["confidence"] or 0) >= thr]
+        if not kept:
+            continue
+        acc = 100.0 * sum(r["correct"] or 0 for r in kept) / len(kept)
+        curve.append({
+            "entry_threshold": thr,
+            "signals_kept": len(kept),
+            "kept_pct": round(100.0 * len(kept) / len(rows), 1),
+            "accuracy_pct": round(acc, 1),
+            "edge_vs_all_pts": round(acc - base_acc, 1),
+        })
+    if not curve:
+        return Check("selectivity_curve", _UNKNOWN, "no threshold retained any signal")
+
+    loosest = curve[0]
+    best = max(curve, key=lambda c: c["accuracy_pct"])
+    # "Too sensitive" = strictness that buys little accuracy while
+    # discarding most of the opportunity. Flagged, not enforced.
+    # Excludes `best` itself: the most selective setting is often also the
+    # most accurate, and flagging it as "too sensitive" for discarding
+    # volume it was *right* to discard inverts the finding.
+    over = [
+        c for c in curve
+        if c is not best and c["kept_pct"] < 25 and c["accuracy_pct"] <= best["accuracy_pct"] + 1.0
+    ]
+    return Check(
+        "selectivity_curve", _OK,
+        f"normalised to real whales only (>=${min_notional:,.0f}, n={len(rows)}): accepting everything "
+        f"gives {loosest['accuracy_pct']}%, best is {best['accuracy_pct']}% at entry_threshold "
+        f"{best['entry_threshold']} (keeps {best['kept_pct']}% of signals)"
+        + (f"; {len(over)} stricter setting(s) discard >75% of signals for no further gain" if over else ""),
+        detail={"normalisation_floor_usd": min_notional, "resolved_signals": len(rows),
+                "baseline_accuracy_pct": round(base_acc, 1), "curve": curve, "best": best},
+        evidence=over,
+    )
+
+
 def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
@@ -547,6 +633,7 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
         check_runway_at_entry(cfg, since_ts, now),
         check_config_bounds(cfg),
         performance_by_epoch(since_ts, now),
+        selectivity_curve(since_ts=since_ts, now=now),
     ]
     worst = _OK
     for c in checks:

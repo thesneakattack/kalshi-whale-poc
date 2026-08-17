@@ -45,6 +45,13 @@ _COST_BASIS_FRACTION_FIELDS = ("take_profit_pct", "stop_loss_pct")
 # fees, not permission to set an arbitrary number.
 _FEE_HEADROOM = 0.05
 
+# These bounds are computed as (1 - c) / c, which is not exact in binary
+# floating point: (1 - 0.8) / 0.8 evaluates to 0.24999999999999994, so a
+# take_profit_pct of exactly 0.25 - the correct, precisely-reachable value
+# for a 0.8 ceiling - would otherwise be reported as unreachable. Real bug,
+# caught 2026-08-17 immediately after setting that value for real.
+_EPS = 1e-9
+
 
 def max_gain_fraction(unit_cost: float) -> float:
     """Largest achievable gain, as a fraction of cost basis, for a position
@@ -106,7 +113,7 @@ def check(cfg: dict, scope: str = "strategy") -> list[dict]:
     ceiling = take_profit_ceiling(cfg)
     universal = take_profit_universal(cfg)
     if tp is not None and ceiling is not None:
-        if tp > ceiling:
+        if tp > ceiling + _EPS:
             out.append({
                 "scope": scope, "field": "take_profit_pct", "value": tp,
                 "bound": round(ceiling, 3), "severity": "unreachable",
@@ -116,7 +123,7 @@ def check(cfg: dict, scope: str = "strategy") -> list[dict]:
                     f"of {tp} can never trigger for any position this config allows"
                 ),
             })
-        elif universal is not None and tp > universal:
+        elif universal is not None and tp > universal + _EPS:
             c_max = reachable_below(tp)
             out.append({
                 "scope": scope, "field": "take_profit_pct", "value": tp,
