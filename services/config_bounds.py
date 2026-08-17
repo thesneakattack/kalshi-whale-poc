@@ -39,6 +39,45 @@ config. `advisory_engine` calls `clamp()` on its own suggestions;
 # the settlement arithmetic above, rather than by taste.
 _COST_BASIS_FRACTION_FIELDS = ("take_profit_pct", "stop_loss_pct")
 
+# The tradeable price range, as an invariant rather than a setting (direct
+# instruction, 2026-08-17: "whale bets at cost 0 or 100c are just plain
+# wrong. youre not even allowed to open positions at that point, even
+# 1c/99c" — and, sharper: such prints "are just plain wrong to be logged in
+# the first place").
+#
+# Expressed as unit cost, which is already side-aware, so a "no" print at a
+# 1c yes-price is caught by the same bound that catches a "yes" print at
+# 99c.
+#
+# Why this is not config: min_unit_cost/max_unit_cost express a strategy
+# preference about where the edge lives and are meant to be tuned. This is
+# a statement about what a binary contract can arithmetically do. At unit
+# cost 1.00 the best possible outcome is breaking even; at 0.99 a win pays
+# 1c against 99c at risk, needing 99% accuracy just to break even (EV per
+# contract is exactly p - c). No configuration should be able to reach past
+# that, so nothing reads these from settings.yaml.
+#
+# Enforced in TWO places, deliberately:
+#   - services/whalewatchers/kalshi_trade_tape.py, at signal creation, so
+#     such a print never reaches signal_log at all. This is the important
+#     one: signal_log is what every accuracy statistic in this app reads,
+#     and near-certain prints are trivially "correct", so logging them
+#     inflates the headline whale win rate while describing trades nobody
+#     could ever profitably take.
+#   - services/strategy_engine.py, at entry, as defence in depth for any
+#     other signal source (the simulator, a future provider).
+MIN_TRADEABLE_UNIT_COST = 0.02
+MAX_TRADEABLE_UNIT_COST = 0.98
+
+
+def is_tradeable_unit_cost(unit_cost: float | None) -> bool:
+    """One definition, shared by the provider and the strategy engine, so
+    the thing that refuses to log a print and the thing that refuses to
+    trade it can never disagree about where the boundary is."""
+    if unit_cost is None:
+        return False
+    return MIN_TRADEABLE_UNIT_COST <= unit_cost <= MAX_TRADEABLE_UNIT_COST
+
 # A loss can slightly exceed the stake once entry+exit fees are counted
 # (services/kalshi_fees.py), so the stop-loss ceiling is not exactly 1.0.
 # Kept small and explicit rather than hand-waved: this is headroom for

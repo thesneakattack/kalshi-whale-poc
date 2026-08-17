@@ -601,8 +601,13 @@ def test_trade_when_not_enough_resolved_to_trust_the_filter(tmp_path, monkeypatc
 
 
 def test_skip_when_position_size_rounds_to_zero(tmp_path, monkeypatch):
+    # price 0.98 rather than 0.99: the tradeable-range invariant (2026-08-17)
+    # now rejects anything outside 0.02-0.98 before sizing is reached, so a
+    # 0.99 signal skips for that reason instead and no longer exercises this
+    # test's actual subject. 0.98 sits exactly on the allowed boundary and
+    # still rounds a $1 bankroll * 5% budget down to zero contracts.
     strategy, broker, risk = _strategy(tmp_path, monkeypatch, bankroll=1.0)
-    decision = strategy.evaluate(_signal(confidence=0.9, price=0.99), _cfg(max_position_pct=0.05))
+    decision = strategy.evaluate(_signal(confidence=0.9, price=0.98), _cfg(max_position_pct=0.05))
     assert decision["action"] == "skip"
     assert "zero" in decision["reason"]
 
@@ -1319,3 +1324,46 @@ def test_exit_runway_gate_is_a_no_op_without_close_time(tmp_path, monkeypatch):
         {"TICK-A": 0.50}, [], _cfg(exit_min_seconds_to_close=60), close_times={},
     )
     assert decisions == []
+
+
+# --- tradeable-price invariant (2026-08-17, direct instruction: "whale bets
+# at cost 0 or 100c are just plain wrong... you shouldnt ever be seeing
+# positions being made like this at all... not because of restrictions but
+# because of practicality") --------------------------------------------
+
+def test_rejects_a_full_dollar_unit_cost_regardless_of_config(tmp_path, monkeypatch):
+    """The case actually found in live trade history: a no-side signal at a
+    yes-price of 0.0 is a unit cost of 1.00 - paying the whole dollar for a
+    contract that can pay at most a dollar."""
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(confidence=0.99, side="no", price=0.0),
+        # Deliberately no band configured at all: this must not be reachable
+        # by loosening config, because it isn't a preference.
+        _cfg(min_unit_cost=None, max_unit_cost=None),
+    )
+    assert decision["action"] == "skip"
+    assert "tradeable range" in decision["reason"]
+
+
+def test_rejects_the_1c_and_99c_extremes_on_both_sides(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    for side, price in (("yes", 0.99), ("no", 0.01), ("yes", 0.01), ("no", 0.99)):
+        decision = strategy.evaluate(
+            _signal(confidence=0.99, side=side, price=price),
+            _cfg(min_unit_cost=None, max_unit_cost=None),
+        )
+        assert decision["action"] == "skip", f"{side} @ {price} should be refused"
+        assert "tradeable range" in decision["reason"]
+
+
+def test_allows_the_boundary_prices_themselves(tmp_path, monkeypatch):
+    """0.02 and 0.98 are the edges of what's allowed, not past them - an
+    off-by-one here would silently narrow the strategy's whole universe."""
+    from services import config_bounds
+
+    assert config_bounds.is_tradeable_unit_cost(0.02) is True
+    assert config_bounds.is_tradeable_unit_cost(0.98) is True
+    assert config_bounds.is_tradeable_unit_cost(0.019) is False
+    assert config_bounds.is_tradeable_unit_cost(0.981) is False
+    assert config_bounds.is_tradeable_unit_cost(None) is False

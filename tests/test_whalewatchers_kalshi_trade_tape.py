@@ -413,3 +413,61 @@ def test_analyst_factor_ignores_a_stale_analysis():
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert signals[0].factors["analyst_factor"] == 0.5
+
+
+# --- invalid data must never become a logged signal (2026-08-17) ---------
+
+def test_missing_price_is_refused_not_defaulted_to_zero():
+    """The root cause of positions at a unit cost of 1.00: the old
+    `float(trade.get("yes_price_dollars") or 0)` turned a MISSING price into
+    0.0, which is not a missing value but a plausible one. Every gate
+    downstream then reasoned correctly about a number Kalshi never sent."""
+    from services.whalewatchers.kalshi_trade_tape import _price_dollars
+
+    assert _price_dollars({"yes_price_dollars": "0.61"}, "yes_price_dollars") == 0.61
+    assert _price_dollars({}, "yes_price_dollars") is None
+    assert _price_dollars({"yes_price_dollars": None}, "yes_price_dollars") is None
+    assert _price_dollars({"yes_price_dollars": ""}, "yes_price_dollars") is None
+    assert _price_dollars({"yes_price_dollars": "abc"}, "yes_price_dollars") is None
+
+
+def test_notional_refuses_rather_than_inventing_a_zero():
+    """A notional built from a fabricated zero reads as 'tiny trade' and is
+    filtered out for the wrong reason - invisible in the rejection stats."""
+    assert _notional_usd({"count_fp": "100", "yes_price_dollars": "0.6"}, "yes") == 60.0
+    assert _notional_usd({"count_fp": "100"}, "yes") is None
+    assert _notional_usd({"yes_price_dollars": "0.6"}, "yes") is None
+
+
+def test_prints_at_the_price_extremes_never_become_signals(monkeypatch, tmp_path):
+    """Not merely untraded - never LOGGED. main.py logs every signal this
+    provider returns, and signal_log is what every accuracy statistic reads.
+    Measured on real data: 40.7% of logged signals sat outside the tradeable
+    range, they resolved 'correct' 99.2% of the time, and they inflated the
+    headline whale accuracy from a true 77.5% to 86.3%."""
+    from services import candidate_log, signal_log as sl
+    from services import market_analyst_agent, market_history, series_evaluator
+
+    for mod in (candidate_log, sl, market_history, series_evaluator, market_analyst_agent):
+        monkeypatch.setattr(mod, "DB_PATH", tmp_path / f"{mod.__name__.split('.')[-1]}.db", raising=False)
+
+    provider = KalshiTradeTapeProvider()
+    markets = [{"ticker": "TICK-A", "volume_24h_fp": 100000, "yes_ask_dollars": 0.5,
+                "close_time": None}]
+    cfg = {"whale_watcher_kalshi": {"min_notional_usd": 100}}
+
+    def trade(tid, yes_price, no_price, outcome):
+        return {"trade_id": tid, "ticker": "TICK-A", "count_fp": "100000",
+                "yes_price_dollars": yes_price, "no_price_dollars": no_price,
+                "taker_outcome_side": outcome, "is_block_trade": False}
+
+    tape = [
+        trade("t1", "0.00", "1.00", "no"),   # unit cost 1.00
+        trade("t2", "0.01", "0.99", "yes"),  # unit cost 0.01
+        trade("t3", "0.99", "0.01", "yes"),  # unit cost 0.99
+        trade("t4", "0.60", "0.40", "yes"),  # legitimate
+    ]
+    signals = provider._process_trades_sync(
+        tape, markets, {"TICK-A": markets[0]}, cfg, time.time(),
+    )
+    assert [s.id for s in signals] == ["t4"], "only the tradeable print may become a signal"

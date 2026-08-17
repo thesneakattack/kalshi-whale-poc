@@ -18,7 +18,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
@@ -102,7 +102,40 @@ def _taker_side(trade: dict) -> str | None:
     return None
 
 
-def _notional_usd(trade: dict, side: str) -> float:
+def _price_dollars(trade: dict, key: str) -> float | None:
+    """One price field, or None when the trade doesn't carry a usable one.
+
+    Exists because `float(trade.get(key) or 0)` - the idiom this replaces -
+    turns a MISSING price into 0.0, which is not a missing value but a
+    perfectly valid-looking one. Downstream it becomes `signal.price = 0.0`,
+    and for a no-side signal that is a unit cost of 1.00: a position paying
+    the full dollar for a contract that can pay at most a dollar. Four such
+    entries were found in real trade history (unit costs 0.97, 1.00, 0.20,
+    0.97) and were not traceable to any gate, because nothing was wrong with
+    the gates - the price handed to them was fabricated before they ever ran.
+
+    This is the same failure this codebase has now paid for three times, and
+    CLAUDE.md documents the other two: `taker_side` defaulting to "no" when
+    the field went missing, and `cost = size * price` without the no-side
+    inversion. In every case a missing or mis-derived value took on a
+    plausible number instead of failing, so nothing looked broken until the
+    money was already gone.
+
+    Kalshi emits these as fixed-point STRINGS (docs/kalshi/get-trades.md's
+    FixedPointDollars), so a real "0.00" is a non-empty string and would
+    parse to 0.0 legitimately - that case is rejected too, one layer up, by
+    the tradeable-range invariant in strategy_engine. Here the only job is
+    to never invent a number that was not sent."""
+    raw = trade.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _notional_usd(trade: dict, side: str) -> float | None:
     """Real dollar size of a trade, side-aware - the same lesson this app
     already paid for once (ROADMAP.md: open_position charged size * price
     unconditionally, but a no-side position's real cost is size * (1 -
@@ -111,10 +144,16 @@ def _notional_usd(trade: dict, side: str) -> float:
 
     `side` is passed in (resolved once by _taker_side) rather than re-read
     here, so the notional and the signal's own direction can never disagree
-    about which side the taker took."""
-    count = float(trade.get("count_fp") or 0)
-    price_key = "yes_price_dollars" if side == "yes" else "no_price_dollars"
-    price = float(trade.get(price_key) or 0)
+    about which side the taker took.
+
+    Returns None when either the count or the side's price is missing - a
+    notional derived from an invented zero is worse than no notional,
+    because it silently reads as "tiny trade" and gets filtered out for the
+    wrong reason rather than flagged as unusable."""
+    count = _price_dollars(trade, "count_fp")
+    price = _price_dollars(trade, "yes_price_dollars" if side == "yes" else "no_price_dollars")
+    if count is None or price is None:
+        return None
     return count * price
 
 
@@ -139,7 +178,8 @@ def _prescan_notional(trade: dict) -> tuple[str, float] | None:
     if side is None:
         return None
     try:
-        return side, _notional_usd(trade, side)
+        notional = _notional_usd(trade, side)
+        return (side, notional) if notional is not None else None
     except (TypeError, ValueError):
         return None
 
@@ -411,6 +451,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
 
             try:
                 notional = _notional_usd(trade, side)
+                if notional is None:
+                    # Unparseable count or price. Skip rather than let a
+                    # missing figure become $0, which would filter the trade
+                    # out as "too small" - the right answer for the wrong
+                    # reason, and invisible in the rejection stats.
+                    candidate_log.record_rejection(
+                        ticker, "whale_watcher", "unparseable_notional", 0.0, 0.0, side=side,
+                    )
+                    continue
             except (TypeError, ValueError):
                 continue
             # A single global threshold can't be right for both a
@@ -424,13 +473,47 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 candidate_log.record_rejection(ticker, "whale_watcher", "min_notional_usd", notional, min_notional, side=side)
                 continue
 
-            try:
-                # price is always the yes-side price by convention, same as
-                # every other WhaleSignal in this app (whale_simulator.py,
-                # confirmed in ROADMAP.md) - side carries direction separately.
-                price = float(trade.get("yes_price_dollars") or 0)
-                size = int(round(float(trade.get("count_fp") or 0)))
-            except (TypeError, ValueError):
+            # price is always the yes-side price by convention, same as
+            # every other WhaleSignal in this app (whale_simulator.py,
+            # confirmed in ROADMAP.md) - side carries direction separately.
+            #
+            # Parsed strictly (_price_dollars, no `or 0` default): a missing
+            # price used to become 0.0, which is not a missing value but a
+            # plausible one. That is how positions at a unit cost of 1.00
+            # got opened - the app manufactured a price Kalshi never sent,
+            # and every gate downstream then reasoned correctly about a
+            # fabricated number.
+            price = _price_dollars(trade, "yes_price_dollars")
+            raw_count = _price_dollars(trade, "count_fp")
+            if price is None or raw_count is None:
+                candidate_log.record_rejection(
+                    ticker, "whale_watcher", "unparseable_price", 0.0, 0.0, side=side,
+                )
+                continue
+            size = int(round(raw_count))
+            if size <= 0:
+                continue
+
+            # A print at (or next to) 0c/100c is not a weak signal, it is
+            # wrong data (direct instruction, 2026-08-17: "theyre wrong,
+            # intrinsic-data-wise... you shouldnt ever be seeing positions
+            # being made like this at all... and not because of restrictions
+            # but because of practicality").
+            #
+            # Rejected HERE, before the WhaleSignal is constructed, so it is
+            # never logged - not merely never traded. That distinction is
+            # the whole point: main.py logs every signal this provider
+            # returns, signal_log is what every accuracy statistic reads,
+            # and a near-certain print resolves "correct" almost always. So
+            # logging them inflates the headline whale win rate with trades
+            # that could never have been taken, which is worse than useless
+            # - it is a number that looks like evidence.
+            unit_cost = price if side == "yes" else (1.0 - price)
+            if not config_bounds.is_tradeable_unit_cost(unit_cost):
+                candidate_log.record_rejection(
+                    ticker, "whale_watcher", "tradeable_price_range",
+                    unit_cost, config_bounds.MIN_TRADEABLE_UNIT_COST, side=side,
+                )
                 continue
 
             # Do recent real prints on this exact market agree with this

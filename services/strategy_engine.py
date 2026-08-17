@@ -10,6 +10,12 @@ from services.whale_simulator import WhaleSignal
 from services.paper_broker import PaperBroker, Position
 from services.risk_manager import RiskManager
 
+# One shared definition with the provider, which refuses to LOG such a
+# print in the first place - see config_bounds for the full reasoning.
+from services.config_bounds import (  # noqa: E402
+    MAX_TRADEABLE_UNIT_COST, MIN_TRADEABLE_UNIT_COST, is_tradeable_unit_cost,
+)
+
 # Same freshness window services/market_strategy.py and services/
 # whalewatchers/kalshi_trade_tape.py already use for analyst_lean() on the
 # entry side - the event being estimated is far more stable than a
@@ -386,6 +392,42 @@ class FollowTheWhaleStrategy:
         # None (either bound) means "no limit," same convention as every
         # other optional bound in this app.
         unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+
+        # HARD VALIDITY FLOOR - not a tunable preference, and deliberately
+        # checked before the configurable band below so no config value can
+        # ever widen past it (direct instruction, 2026-08-17: "whale bets at
+        # cost 0 or 100c are just plain wrong. youre not even allowed to
+        # open positions at that point, even 1c/99c").
+        #
+        # A contract at unit cost 1.00 pays at most 1.00, so its best case is
+        # breaking even and its worst is total loss - there is no price at
+        # which that is a trade. At 0.99 the whole position risks 99c to win
+        # 1c, needing 99% accuracy just to break even (EV per contract is
+        # exactly p - c). At the other end, unit cost 0.00 means the fill
+        # carried no cost at all, which is a data artifact rather than a
+        # trade - a print at these prices is overwhelmingly a settlement-
+        # adjacent or malformed tick, not information about anything.
+        #
+        # Confirmed live rather than hypothesised: four real entries were
+        # found in trade history at unit costs 0.97, 1.00, 0.20 and 0.97,
+        # one of them carrying conf 0.25 against a 0.495 threshold - i.e.
+        # they bypassed both the price band and the confidence gate by a
+        # route not yet identified. This floor makes the whole class
+        # unreachable regardless of which path is at fault, which is the
+        # right shape of fix for an invariant that should never have been
+        # expressible.
+        if not is_tradeable_unit_cost(unit_cost):
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "tradeable_price_range",
+                unit_cost, MIN_TRADEABLE_UNIT_COST, side=signal.side,
+            )
+            return self._skip(
+                signal,
+                f"unit cost {unit_cost:.4f} is outside the tradeable range "
+                f"{MIN_TRADEABLE_UNIT_COST}-{MAX_TRADEABLE_UNIT_COST} — a contract this close to "
+                f"0 or 1 has no achievable edge, whatever the signal says",
+            )
+
         min_unit_cost = strat_cfg.get("min_unit_cost")
         max_unit_cost = strat_cfg.get("max_unit_cost")
         if min_unit_cost is not None and unit_cost < min_unit_cost:
