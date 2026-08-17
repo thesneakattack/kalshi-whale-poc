@@ -226,6 +226,22 @@ def flush() -> dict:
     return {"ticks": len(rows)}
 
 
+def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
+    """Drop index ticks older than the retention window. At ~2 ticks/second
+    across two indices this is ~172k rows/day, so it needs a bound to sit
+    unattended for a week."""
+    now = now if now is not None else time.time()
+    try:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM index_ticks WHERE observed_at < ? "
+                               "AND q15_window_size IS NULL",
+                               (now - retention_hours * 3600,))
+            return {"deleted": cur.rowcount}
+    except Exception as exc:
+        fault_log.record("index_feed", "prune", exc)
+        return {"deleted": 0, "error": str(exc)}
+
+
 def latest(index_id: str) -> dict | None:
     return _latest.get(index_id)
 

@@ -454,6 +454,23 @@ async def _spec_for(ticker: str) -> dict:
     return spec
 
 
+_last_capture_prune_at = 0.0
+
+
+def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
+    """Hourly retention sweep across the sampled capture stores. Bounded
+    and idempotent; each store's own prune() is non-raising and logs to
+    fault_log on failure."""
+    global _last_capture_prune_at
+    if now - _last_capture_prune_at < 3600:
+        return
+    _last_capture_prune_at = now
+    hours = float((cfg.get("series_watcher") or {}).get("retention_hours", 168))
+    series_watcher.prune(retention_hours=hours, now=now)
+    index_feed.prune(retention_hours=hours, now=now)
+    game_state.prune(retention_hours=hours, now=now)
+
+
 async def _resolve_settlement_windows(client: KalshiClient) -> None:
     """Fill in outcomes for observed settlement windows, driven by
     settlement_edge's own pending list rather than the discovery watchlist.
@@ -3245,6 +3262,16 @@ async def trading_loop():
             index_feed.flush()
             settlement_edge.flush()
             game_state.flush()
+            # Retention (2026-08-17). Every capture store above is
+            # unbounded by construction, and prune() existed but was never
+            # called - data/ was already 841MB with series_watcher at 130MB
+            # after a few hours and game_state at 32MB within minutes of
+            # first writing, because a crypto payload carries a whole
+            # candlestick array per row. Runs at most hourly, and never
+            # touches raw_trades or settlement-window rows: CLAUDE.md treats
+            # accumulated history as a first-class asset, so only the
+            # high-churn sampled series are trimmed.
+            _maybe_prune_capture_stores(cfg, tick_now)
             await _resolve_settlement_windows(client)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —

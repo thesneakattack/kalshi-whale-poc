@@ -290,6 +290,25 @@ def flush() -> dict:
     return {"rows": len(rows)}
 
 
+def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
+    """Drop observations older than the retention window.
+
+    Needed more here than anywhere else in the app: a crypto live-data
+    payload carries a full candlestick array plus a price timeseries, so a
+    single row is orders of magnitude larger than a trade print. Measured
+    2026-08-17, this store reached 32MB within minutes of starting to write.
+    Unbounded, it would be the largest file on disk inside a week."""
+    now = now if now is not None else time.time()
+    try:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM game_states WHERE observed_at < ?",
+                               (now - retention_hours * 3600,))
+            return {"deleted": cur.rowcount}
+    except Exception as exc:
+        fault_log.record("game_state", "prune", exc)
+        return {"deleted": 0, "error": str(exc)}
+
+
 def timeline(event_ticker: str, limit: int = 500) -> list[dict]:
     """Every recorded state for one event, oldest first - the shape a later
     analysis wants when aligning game progress against market prices."""
