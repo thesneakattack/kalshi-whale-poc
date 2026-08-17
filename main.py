@@ -40,6 +40,7 @@ from services import reset_log
 from services import series_cache
 from services import series_evaluator
 from services import series_watcher
+from services import fault_log
 from services import game_state
 from services import index_feed
 from services import settlement_edge
