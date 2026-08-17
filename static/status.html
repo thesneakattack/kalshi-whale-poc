@@ -4321,6 +4321,96 @@
         <div class="files"><code>services/market_catalog.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> · <code>tests/test_market_catalog.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 113 · the whole exchange, and the number it settles on</div>
+        <h4>Exchange-wide trade stream, the CF Benchmarks settlement feed, and the measurement that decides whether it's an edge</h4>
+        <p>Started from a direct question — "if whales are winning at 70% I shouldn't be winning at 40" — and the
+          answer needed a tool that didn't exist. <code>services/series_watcher.py</code> reconciles the two numbers
+          per series and decomposes the gap: on KXBTC15M over 24h, whales resolved 88.8% correct while the realised
+          win rate was 47.1%, of which <strong>−30.6pts is selection</strong> (the 12 signals the gates actually
+          traded resolved only 58.3% correct against an 88.8% pool — the gates pick worse than the pool they draw
+          from) and −11.2pts is exits. It also captures what the app had been discarding: <code>_process_stream_ticker</code>
+          received 15 documented <code>ticker</code> fields and kept two, dropping <code>yes_bid_size_fp</code>,
+          <code>open_interest_fp</code> and <code>ts_ms</code> — exactly the fields needed to ask why a
+          directionally-correct signal still lost money. Raw payloads are now persisted whole, <code>raw_json</code>
+          included, so a field Kalshi adds next month is captured the day it appears.
+          <br><br>
+          Coverage was the other half. <code>docs/kalshi/public-trades.md</code> states market specification is
+          optional on the <code>trade</code> channel, so it now subscribes with no <code>market_tickers</code> at
+          all — push, not poll, zero REST tokens, and it closes a gap where 425 markets traded in a 30-second window
+          against 15 watched. Three things had to change for that to produce signals rather than noise: the provider
+          used to skip any print whose ticker wasn't in the watchlist one line into scoring, so the notional gate now
+          runs <em>first</em> (pure arithmetic, no I/O) and only survivors get a market resolved — 2 of 5,162 prints on
+          KXBTC15M, so the fetch is paid for the 2; <code>kalshi_trade_ws</code> tracked trade and ticker with one
+          shared flag, which would have duplicated or blocked the firehose; and per-message SQLite writes would have
+          re-triggered the 2026-08-11 freeze, so captures batch.
+          <br><br>
+          The largest find came from reading the settlement rules instead of the prices. KXBTC15M resolves on
+          <em>"the simple average of the sixty seconds of CF Benchmarks' BRTI before close"</em>, with
+          <code>floor_strike</code> carrying the previous quarter's average — already fixed and known. Kalshi streams
+          that exact average as it accumulates (<code>cfbenchmarks_value</code>'s
+          <code>last_60s_windowed_average_15min</code>), so <code>services/index_feed.py</code> is not a signal about
+          the outcome but <strong>partial knowledge of it</strong>, and
+          <code>required_remaining_average()</code> inverts it exactly. Verified against a real 06:00:00Z boundary:
+          the window opened at 05:59:00 and counted 3 → 58 of 60 second-by-second, with 31 of the 60 settlement
+          observations known 29 seconds before close.
+          <br><br>
+          Nothing about it was assumed. A sweep of eight crypto series found they contradict each other —
+          <code>strike_type</code> is <code>greater_or_equal</code> on the 15-minute series but <code>greater</code>
+          on the dailies; the same index is named <code>BRTI</code>, <code>ETHUSDRTI</code> and <code>ERTI</code>
+          across different rules; <code>KXBTCMAXY</code> passes both the strike and operator checks but is a
+          year-long barrier market with no averaging window; <code>KXDOGED</code> has no strike at all — so
+          <code>settlement_spec()</code> refuses rather than guesses on each. Wiring it also exposed a real
+          starvation bug: subscribed alone the channel delivers exactly 50 messages in 50 seconds, but multiplexed
+          behind the trade firehose it delivered ~20 and froze, because the single reader loop awaited each message's
+          full handler before reading the next. <code>run()</code> now splits ingest from processing over a bounded
+          queue with counted overflow, and the index feed gets its own connection.
+          <br><br>
+          Whether any of that is an <em>edge</em> is a separate question, so <code>services/settlement_edge.py</code>
+          answers it by measurement instead of assertion: both forecasts of the same event — the market's own yes
+          price and the projection — recorded at the same instant, Brier-scored once the outcome stamps onto those
+          same rows. It reports <code>insufficient</code> rather than a verdict until the data earns one, and nothing
+          trades on it. Inspecting its captured rows immediately found two bugs that the wiring had hidden: the q15
+          window opens before <em>every</em> quarter-hour, so matching on index alone had recorded 1,003 observations
+          against KXBTCD markets whose close was 863 minutes away; and resolution driven from the trading loop's
+          market list never fired, because the 15-minute series rotates its ticker out of the watchlist before
+          <code>result</code> populates — a market was found <code>finalized</code> six minutes after close with 59
+          observations still pending. Both fixed and verified live: bad rows purged, 59/59 resolved.
+          <br><br>
+          Two supporting pieces landed alongside. <code>services/trade_archive.py</code> copies every trade,
+          position and summary metric into an append-only epoch before <code>POST /api/reset</code> touches anything,
+          because a prior reset had left <code>paper_broker.db</code> reaching back only six hours and made every
+          earlier trade-level question unanswerable; its <code>compare()</code> ranks epochs by <code>edge_pts</code>,
+          not win rate. And <code>min_unit_cost</code> moved 0.50 → 0.65 on measurement, not taste: across 593
+          resolved signals the 0.50–0.65 band runs −35.2% per dollar risked while 0.65–0.80 is the only positive
+          window at +2.2%. 1,084 tests passing.</p>
+        <div class="files"><code>services/index_feed.py</code> · <code>services/settlement_edge.py</code> · <code>services/series_watcher.py</code> · <code>services/trade_archive.py</code> · <code>services/kalshi_trade_ws.py</code> · <code>services/whalewatchers/kalshi_trade_tape.py</code> · <code>services/diagnostics.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> · <code>CLAUDE.md</code> · <code>docs/kalshi/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 114 · breaking up main.py</div>
+        <h4>Shared state and the first route group move out of a 5,400-line module</h4>
+        <p>Direct request: <em>"main.py is now almost 6k lines long, it would be worth it to make it more
+          modular/less monolithic for better logic targeting and also session efficiency."</em> Measured before
+          cutting anything: 3,615 lines of imports/state/loop/handlers, then 1,800 lines holding 79 routes.
+          The blocker was never file size — it was that essentially every route and stream handler reads or writes
+          the module-level <code>state</code> dict and the long-lived singletons, so nothing could be lifted out
+          without a circular import.
+          So the enabling move came first: <code>services/app_state.py</code> now owns <code>state</code> plus
+          broker/risk/strategy/shadow, the market-native pair, the account client and both websocket connections.
+          <code>main.py</code> imports them by name, which leaves all ~500 existing <code>state[...]</code>
+          references in that file untouched — a move, not a rewrite. The module imports nothing from
+          <code>main</code>, and that acyclic direction is the entire point.
+          <code>routers/diagnostics_routes.py</code> is the first group out and the template for the rest: ten
+          routes become <code>@router.*</code> on an <code>APIRouter</code>, pull shared state from
+          <code>app_state</code>, and are re-attached with <code>include_router</code> — so every path stays
+          byte-identical and no client or test moves. They belong together because between them they answer one
+          question, and share one discipline: read-only with respect to trading, and an explicit "unknown" rather
+          than a fabricated number. 5,415 → 5,124 lines, 1,084 tests passing unchanged, and all four extracted
+          paths verified serving 200 against the live app.</p>
+        <div class="files"><code>services/app_state.py</code> · <code>routers/__init__.py</code> · <code>routers/diagnostics_routes.py</code> · <code>main.py</code></div>
+      </div>
+
     </div>
   </section>
 

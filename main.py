@@ -453,6 +453,33 @@ async def _spec_for(ticker: str) -> dict:
     return spec
 
 
+async def _resolve_settlement_windows(client: KalshiClient) -> None:
+    """Fill in outcomes for observed settlement windows, driven by
+    settlement_edge's own pending list rather than the discovery watchlist.
+
+    Confirmed necessary, not assumed: a KXBTC15M market was found
+    `finalized` with `result='yes'` six minutes after close while its 59
+    observations sat unresolved, because the 15-minute series rotates its
+    ticker every quarter hour and the market had already left the watchlist
+    by the time `result` populated. The loop's existing outcome pass is
+    kept as well - it costs nothing and catches the markets that are still
+    watched - but it cannot be the only path.
+
+    One batched call (get_markets_by_tickers, 50/request) against a list
+    that is normally empty and at most a handful long."""
+    tickers = settlement_edge.unresolved_tickers()
+    if not tickers:
+        return
+    try:
+        markets = await client.get_markets_by_tickers(tickers)
+    except Exception:
+        return  # transient - the same rows are still pending next tick
+    for ticker, market in markets.items():
+        result = (market.get("result") or "").strip().lower()
+        if result in ("yes", "no"):
+            settlement_edge.resolve_window(ticker, result == "yes")
+
+
 async def _record_settlement_observations(index_id: str | None) -> None:
     """While a settlement window is open, record the projection and the
     market's own price side by side for every watched market settling on
@@ -473,6 +500,13 @@ async def _record_settlement_observations(index_id: str | None) -> None:
             continue
         spec = await _spec_for(ticker)
         if not spec.get("supported") or spec.get("index_id") != index_id:
+            continue
+        # Same index is NOT enough: the q15 window opens before every
+        # quarter-hour, so an average accumulating toward 06:00 would
+        # otherwise be recorded against a market settling at 17:00. See
+        # index_feed.window_matches_close - this was a real bug, found by
+        # inspecting the captured rows rather than trusting the wiring.
+        if not index_feed.window_matches_close(entry, settlement_edge.close_ts(spec)):
             continue
         settlement_edge.record_observation(
             ticker, spec,
@@ -3160,6 +3194,7 @@ async def trading_loop():
             # snapshot showed ticks arriving.
             index_feed.flush()
             settlement_edge.flush()
+            await _resolve_settlement_windows(client)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently

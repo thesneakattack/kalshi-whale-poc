@@ -83,6 +83,7 @@ def _connect() -> sqlite3.Connection:
 
 _buffer: list[tuple] = []
 _FLUSH_BATCH = 120
+_record_errors = 0
 
 
 def record_observation(ticker: str, spec: dict, projection: dict,
@@ -98,10 +99,10 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         if projection.get("status") != "accumulating":
             return False
         now = now if now is not None else time.time()
-        close_ts = _close_ts(spec)
+        window_end = close_ts(spec)
         _buffer.append((
-            ticker, spec["index_id"], close_ts or 0.0, now,
-            (close_ts - now) if close_ts else None,
+            ticker, spec["index_id"], window_end or 0.0, now,
+            (window_end - now) if window_end else None,
             projection["observations_known"], projection["partial_average"],
             spec["strike"], spec["comparison"], projection.get("spot"),
             projection.get("required_remaining"), projection.get("gap_from_spot"),
@@ -111,10 +112,19 @@ def record_observation(ticker: str, spec: dict, projection: dict,
             flush()
         return True
     except Exception:
+        # Counted, not just swallowed. This except exists because the
+        # recorder runs on the websocket path and must never take the
+        # stream down - but a bare `return False` also hid a real bug for a
+        # while (a renamed helper left a NameError here, and the symptom was
+        # simply that nothing was ever recorded). A non-zero value in
+        # stats() means this is failing systematically, not that the market
+        # is quiet.
+        global _record_errors
+        _record_errors += 1
         return False
 
 
-def _close_ts(spec: dict) -> float | None:
+def close_ts(spec: dict) -> float | None:
     from datetime import datetime
 
     raw = spec.get("close_time")
@@ -285,6 +295,61 @@ def edge_report(min_samples: int = _MIN_SAMPLES_FOR_VERDICT) -> dict:
     }
 
 
+def unresolved_tickers(older_than_sec: float = 120.0, limit: int = 40,
+                       now: float | None = None) -> list[str]:
+    """Markets with observations still awaiting an outcome, whose window
+    closed at least `older_than_sec` ago.
+
+    This exists because resolving from the trading loop's own market list
+    does not work, and that was confirmed rather than assumed: a
+    KXBTC15M market was found `finalized` with `result='yes'` six minutes
+    after close while its 59 observations sat unresolved. The 15-minute
+    series rotates its ticker every quarter hour, so by the time Kalshi
+    populates `result` the market has already dropped out of the discovery
+    watchlist and the loop's outcome pass never sees it again.
+
+    So resolution has to be driven from THIS store's own pending list -
+    the one place that remembers a window happened - rather than from
+    whatever the watchlist happens to contain."""
+    now = now if now is not None else time.time()
+    try:
+        with _connect() as conn:
+            return [r[0] for r in conn.execute(
+                "SELECT DISTINCT ticker FROM window_observations WHERE settled_yes IS NULL "
+                "AND window_end_ts < ? ORDER BY window_end_ts LIMIT ?",
+                (now - older_than_sec, limit),
+            )]
+    except sqlite3.Error:
+        return []
+
+
+def drop_mismatched_observations() -> int:
+    """Remove observations recorded against a window that was never this
+    market's own (see index_feed.window_matches_close).
+
+    Deleting rather than flagging, and this is the one place in this
+    codebase that deletes captured data, so the reasoning is explicit:
+    CLAUDE.md treats accumulated history as a first-class asset because it
+    is *evidence*. These rows are not evidence of anything - they pair a
+    market with the partial average of a settlement it does not settle on,
+    which is not a measurement that was taken badly but one that was never
+    of this market at all. Keeping them would mean every future scoring run
+    has to re-derive and re-apply this same exclusion.
+
+    Identified by their own recorded fields, not by ticker prefix: an
+    observation whose window_end_ts is more than one window-spacing away
+    from when it was observed cannot have been of an accumulating window."""
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM window_observations "
+                "WHERE settled_yes IS NULL AND ABS(window_end_ts - observed_at) > 900"
+            )
+            return cur.rowcount
+    except sqlite3.Error:
+        return 0
+
+
 def pending_windows() -> int:
     try:
         with _connect() as conn:
@@ -306,4 +371,5 @@ def stats() -> dict:
     except sqlite3.Error as exc:
         return {"error": str(exc)}
     return {"observations": n, "resolved": resolved or 0, "windows": windows,
-            "buffered": len(_buffer), "pending_windows": pending_windows()}
+            "buffered": len(_buffer), "pending_windows": pending_windows(),
+            "record_errors": _record_errors}

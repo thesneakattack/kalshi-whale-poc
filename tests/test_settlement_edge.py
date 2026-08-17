@@ -152,3 +152,58 @@ def test_report_is_honest_when_the_market_is_the_better_forecaster():
         out = se.edge_report(min_samples=5)
     assert out["status"] == "market_beats_projection"
     assert out["projection_better_by"] < 0
+
+
+# --- the two bugs found by inspecting captured rows, 2026-08-17 ----------
+
+def test_window_matching_rejects_a_market_settling_at_a_different_close():
+    """The q15 window opens before EVERY quarter-hour. Matching only on
+    index_id recorded 59 observations against KXBTCD markets whose close
+    was 863 minutes away - the average accumulating toward 06:00 says
+    nothing about a market settling at 17:00."""
+    from services import index_feed
+
+    entry = {"q15_window_end_ts_ms": 1_755_000_000_000}
+    close_ts = 1_755_000_000.0
+    assert index_feed.window_matches_close(entry, close_ts) is True
+    assert index_feed.window_matches_close(entry, close_ts + 30) is True     # clock skew
+    assert index_feed.window_matches_close(entry, close_ts + 900) is False   # next window
+    assert index_feed.window_matches_close(entry, close_ts + 863 * 60) is False
+    # No window open, or no close known: never a match, never a guess.
+    assert index_feed.window_matches_close({"q15_window_end_ts_ms": None}, close_ts) is False
+    assert index_feed.window_matches_close(entry, None) is False
+
+
+def test_unresolved_tickers_drives_resolution_from_this_store_not_the_watchlist():
+    """A KXBTC15M market was found finalized six minutes after close with
+    its observations still unresolved, because it had already rotated out
+    of the discovery watchlist. Resolution has to come from the one place
+    that remembers the window happened."""
+    se.record_observation("KXBTC15M-A", _SPEC,
+                          _projection(30, 63490.0, 63495.0, 63510.0), 0.6, now=1000.0)
+    se.flush()
+    close = se.close_ts(_SPEC)
+
+    # Too soon after close - not yet worth spending an API call on.
+    assert se.unresolved_tickers(older_than_sec=120, now=close + 10) == []
+    assert se.unresolved_tickers(older_than_sec=120, now=close + 300) == ["KXBTC15M-A"]
+
+    se.resolve_window("KXBTC15M-A", settled_yes=True)
+    assert se.unresolved_tickers(older_than_sec=120, now=close + 300) == []
+
+
+def test_mismatched_observations_are_removable_and_resolved_ones_are_not():
+    """The cleanup identifies bad rows by their own recorded fields - an
+    observation taken 863 minutes before the window it claims - not by
+    ticker prefix."""
+    se.record_observation("KXBTCD-X", _SPEC | {"ticker": "KXBTCD-X"},
+                          _projection(30, 1.0, 1.0, 1.0), 0.5, now=1000.0)
+    se.record_observation("KXBTC15M-A", _SPEC,
+                          _projection(30, 63490.0, 63495.0, 63510.0), 0.6,
+                          now=se.close_ts(_SPEC) - 30)
+    se.flush()
+
+    assert se.drop_mismatched_observations() == 1
+    with sqlite3.connect(se.DB_PATH) as conn:
+        remaining = [r[0] for r in conn.execute("SELECT ticker FROM window_observations")]
+    assert remaining == ["KXBTC15M-A"]

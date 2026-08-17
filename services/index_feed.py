@@ -446,6 +446,37 @@ def settlement_spec(market: dict) -> dict:
     }
 
 
+def window_matches_close(entry: dict | None, close_ts: float | None,
+                         tolerance_sec: float = 90.0) -> bool:
+    """Is the settlement window currently accumulating the one THIS market
+    settles on?
+
+    Real bug, caught 2026-08-17 by checking the recorded data instead of
+    trusting the wiring: the q15 window opens before EVERY quarter-hour
+    (:00, :15, :30, :45), but a KXBTCD market settles at 17:00 and a
+    KXBTC15M market at the next quarter. Matching only on index_id recorded
+    59 observations against five KXBTCD markets whose close was still 863
+    minutes away - the partial average accumulating toward 06:00 says
+    exactly nothing about a market settling at 17:00, and those rows would
+    have gone straight into the Brier comparison as if it did.
+
+    The channel hands us the answer directly: `window_end_ts_exclusive` is
+    the close this average is accumulating toward. Compare it to the
+    market's own close_time and require them to be the same instant.
+
+    Tolerance is deliberately loose (90s, i.e. wider than the 60-second
+    window itself but far tighter than the 15-minute spacing between
+    windows): close_time and the window boundary are published by different
+    systems and need not agree to the millisecond, but they can never be a
+    whole quarter-hour apart and still refer to the same settlement."""
+    if not entry or close_ts is None:
+        return False
+    end_ms = entry.get("q15_window_end_ts_ms")
+    if not end_ms:
+        return False
+    return abs(float(end_ms) / 1000.0 - float(close_ts)) <= tolerance_sec
+
+
 def recent_volatility(index_id: str, lookback_sec: float = 900.0,
                       now: float | None = None) -> float | None:
     """Standard deviation of one-second index moves over the lookback -

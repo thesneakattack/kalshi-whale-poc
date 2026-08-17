@@ -150,6 +150,29 @@ questions.
       `(ticker, strategy, gate_name)`, so it is unusable for population
       statistics).
 
+- [ ] **Decide whether the settlement projection is an edge, then act on
+      it or drop it.** `services/settlement_edge.py` is now recording both
+      forecasts of the same event at the same instant (the market's yes
+      price, and the projection from the partial 60-second index average)
+      and Brier-scoring them once the outcome lands —
+      `GET /api/diagnostics/settlement-edge`. It reports `insufficient`
+      until there's enough resolved data, deliberately. **Nothing trades on
+      it yet, and nothing should until that verdict flips.** If the
+      projection wins, the follow-on is real: `min_seconds_to_close: 300`
+      currently refuses entries in the final five minutes, which is exactly
+      the window where settlement is partly *known* rather than guessed —
+      that gate was the right fix for a blind system and would need
+      revisiting for one that isn't. If the market wins, say so and delete
+      the trading ambition, keeping the capture as a diagnostic.
+- [ ] **Finish breaking up `main.py`.** `services/app_state.py` +
+      `routers/diagnostics_routes.py` established the pattern (see
+      `status.html` phase 114) and took it 5,415 → 5,124 lines. The
+      remaining ~69 routes are mechanical by the same recipe. The genuinely
+      hard part is the other half: `trading_loop` (605 lines),
+      `_fetch_markets` (258), `_fetch_live_status` (204) — these have real
+      entanglement with tick ordering and shared state, and want extracting
+      one at a time with the suite green between each, not in a batch.
+
 ## P4 — Nice-to-haves
 
 - [ ] Two deferred next-steps from `docs/todo-2026-08-14-heuristics-audit-
