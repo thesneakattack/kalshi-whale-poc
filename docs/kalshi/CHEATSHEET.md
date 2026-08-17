@@ -134,3 +134,34 @@ overstate cost on a waived market.
 **Also:** `fee_rounding.md` defines net fee as **trade fee + rounding fee −
 rebate**. `services/kalshi_fees.py` models only the trade fee (correctly, incl.
 the ceil-to-$0.0001), so its output is a lower bound, not the net fee.
+
+## Which `ticker`-channel fields does the app keep, and which did it drop?
+
+`market-ticker.md` documents 15 fields on a `ticker` websocket message.
+`main.py::_process_stream_ticker` reads exactly two: `yes_bid_dollars` (into
+`state["latest_prices"]`) and `yes_ask_dollars` (onto the matching
+`state["markets"]` row). The other thirteen were discarded on arrival and,
+because `state` is in-memory only, were unrecoverable afterwards:
+
+- `yes_bid_size_fp` / `yes_ask_size_fp` — resting depth. The only way to ask
+  whether the book could actually have filled an entry at the quoted price,
+  or whether the rest was paid up for.
+- `open_interest_fp` / `dollar_open_interest` — market size, i.e. the
+  denominator for any "how big was this print relative to the market"
+  question (the 2026-08-17 volume-impact hypothesis could not be tested
+  against real book state for exactly this reason).
+- `volume_fp` / `dollar_volume` — cumulative traded size.
+- `last_trade_size_fp` — size of the print that moved the quote.
+- `ts` / `ts_ms` / `time` — exchange-side timestamps. Without these, every
+  latency figure in the app is receive-time, not exchange-time, and so
+  includes this app's own queueing.
+- `market_id` — the UUID form of the identifier, alongside the ticker.
+- `price_dollars` — last trade price (kept only as a fallback when
+  `yes_bid_dollars` is absent).
+
+`services/series_watcher.py` now persists all of them plus the whole raw
+message as `raw_json`, for the series listed in `series_watcher.series`.
+Same for trades: the provider reduces a print to a side and a notional, so
+`raw_trades` keeps the full payload and all three direction fields
+(`taker_outcome_side`, `taker_book_side`, the deprecated `taker_side`)
+separately rather than only the resolved answer.

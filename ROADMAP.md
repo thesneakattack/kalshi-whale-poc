@@ -134,6 +134,21 @@ questions.
       changeset given how central they are, not a version bump made in
       passing. The `dependency-audit` CI job stays red until this is
       resolved — that's accurate signal, not broken CI.
+- [ ] **The entry gates select a worse subset than the pool they draw
+      from.** Measured 2026-08-17 on KXBTC15M over 24h by
+      `services/series_watcher.py` (`GET /api/diagnostics/series/KXBTC15M`):
+      whale signals resolved 88.8% correct across 394 settled signals, but
+      the 12 the gates actually traded resolved only 58.3% correct — the
+      dominant term in the 88.8%-vs-47.1% accuracy/win-rate gap (−30.6pts
+      of it, against −11.2pts from exits). Adverse selection, not a bad
+      signal source: something in `entry_threshold` / the price band /
+      cooldowns / the runway gates is systematically preferring the wrong
+      end of the distribution. Not yet root-caused to a specific gate —
+      the next step is per-gate accuracy of what each one admits versus
+      rejects, which `candidate_log` cannot answer as-is (its
+      `rejected_candidates` table is upsert-deduplicated per
+      `(ticker, strategy, gate_name)`, so it is unusable for population
+      statistics).
 
 ## P4 — Nice-to-haves
 
