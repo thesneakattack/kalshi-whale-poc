@@ -103,3 +103,34 @@ bias.
 (`dollar_volume` vs `volume_fp`).
 **Found:** 2026-08-17, investigating "signals not coming in at all when they
 should, like over 2500 dollar positions."
+
+## Which field gives a trade's direction? (`taker_side` is deprecated)
+**Answer:** `taker_outcome_side` ('yes'/'no') is canonical; `taker_book_side`
+carries the same bit in book vocabulary ('bid' == yes, 'ask' == no).
+`taker_side` is **deprecated** — the docs say "will not be removed before
+May 14, 2026", a guarantee that has already expired. Read outcome →ptbook →
+legacy, in that order.
+**Gotcha:** the old code read only `taker_side` and defaulted anything
+unreadable to `"no"`, which would silently give every signal the wrong
+direction AND the wrong notional (`no_price` instead of `yes_price`) the day
+Kalshi drops the field. Return None and skip instead — for a system whose
+whole output is a directional call, guessing a side is worse than skipping
+the trade. Live-verified 2026-08-17: all 500 sampled trades carry all three
+fields and canonical resolution agrees with legacy 500/500, so migrating is
+free right now.
+**Source:** `get-trades.md`, `get-historical-trades.md` (field descriptions),
+`public-trades.md` (the WS message carries the same fields).
+
+## Documented market fields this app does not read
+**Answer (2026-08-17 audit, `get-market.md`):** `latest_expiration_time`,
+`settlement_timer_seconds`, `early_close_condition`, `expiration_value`,
+`fee_waiver_expiration_time` — all zero references in the codebase.
+**Why each matters:** `settlement_timer_seconds` is the gap between close and
+settlement, i.e. when a position actually realises; `early_close_condition`
+describes *when* a `can_close_early` market closes, while the app applies a
+blanket grace period to all of them; `fee_waiver_expiration_time` means a
+fee-inclusive P&L (which drives stop-loss/take-profit triggering) can
+overstate cost on a waived market.
+**Also:** `fee_rounding.md` defines net fee as **trade fee + rounding fee −
+rebate**. `services/kalshi_fees.py` models only the trade fee (correctly, incl.
+the ceil-to-$0.0001), so its output is a lower bound, not the net fee.

@@ -4,7 +4,7 @@ import time
 import pytest
 
 from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
-from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd
+from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd, _taker_side
 
 
 @pytest.fixture(autouse=True)
@@ -60,12 +60,40 @@ def test_enabled_is_always_true_no_credentials_needed():
 def test_notional_usd_is_side_aware():
     # yes taker: notional = count * yes_price
     yes_trade = _trade(count_fp="100.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="yes")
-    assert _notional_usd(yes_trade) == pytest.approx(60.0)
+    assert _notional_usd(yes_trade, "yes") == pytest.approx(60.0)
     # no taker: notional = count * no_price, NOT count * yes_price - the
     # exact bug class this app already shipped and fixed once (open_position's
     # no-side cost bug) applied here to real-trade classification.
     no_trade = _trade(count_fp="100.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="no")
-    assert _notional_usd(no_trade) == pytest.approx(40.0)
+    assert _notional_usd(no_trade, "no") == pytest.approx(40.0)
+
+
+# ---- taker-side resolution (2026-08-17 audit) ----
+# docs/kalshi/get-trades.md deprecates taker_side and names
+# taker_outcome_side/taker_book_side canonical. The old code read only the
+# deprecated field and defaulted anything unreadable to "no" - wrong
+# direction and wrong notional, silently, on every signal.
+
+def test_taker_side_prefers_the_canonical_outcome_field():
+    t = {"taker_outcome_side": "yes", "taker_side": "no"}
+    assert _taker_side(t) == "yes"
+
+
+def test_taker_side_falls_back_to_book_side_vocabulary():
+    # docs: 'bid' == outcome 'yes', 'ask' == outcome 'no'
+    assert _taker_side({"taker_book_side": "bid"}) == "yes"
+    assert _taker_side({"taker_book_side": "ask"}) == "no"
+
+
+def test_taker_side_still_accepts_the_legacy_field_alone():
+    assert _taker_side({"taker_side": "no"}) == "no"
+
+
+def test_taker_side_returns_none_rather_than_guessing():
+    # The critical one: an unreadable trade must not become a confident NO.
+    assert _taker_side({}) is None
+    assert _taker_side({"taker_side": ""}) is None
+    assert _taker_side({"taker_outcome_side": "maybe"}) is None
 
 
 def test_fetch_signals_returns_empty_with_no_market_context():

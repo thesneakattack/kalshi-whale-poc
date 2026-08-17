@@ -59,15 +59,51 @@ _CLUSTER_LOOKBACK_SEC = 30 * 60
 _ANALYST_FRESHNESS_SEC = 24 * 3600
 
 
-def _notional_usd(trade: dict) -> float:
+def _taker_side(trade: dict) -> str | None:
+    """Which outcome the taker is positioned for, or None when the trade
+    doesn't say.
+
+    Reads `taker_outcome_side` first, then `taker_book_side`, and only then
+    the legacy `taker_side` (2026-08-17 audit, per docs/kalshi/
+    get-trades.md): `taker_side` is explicitly deprecated - "Deprecated. Use
+    `taker_outcome_side` (or `taker_book_side`) instead... This field will
+    not be removed before May 14, 2026" - a guarantee that has already
+    expired, and the docs name the other two "the canonical way to determine
+    trade direction". Book vocabulary maps exactly: 'bid' == yes, 'ask' ==
+    no.
+
+    Returns None rather than defaulting, because the old code's
+    `"yes" if ... == "yes" else "no"` turned *every* unreadable trade into a
+    confident NO - wrong direction AND wrong notional (no_price instead of
+    yes_price), silently, on every signal. For a system whose entire output
+    is a directional call, guessing a side is strictly worse than skipping
+    the trade."""
+    outcome = str(trade.get("taker_outcome_side") or "").lower()
+    if outcome in ("yes", "no"):
+        return outcome
+    book = str(trade.get("taker_book_side") or "").lower()
+    if book == "bid":
+        return "yes"
+    if book == "ask":
+        return "no"
+    legacy = str(trade.get("taker_side") or "").lower()
+    if legacy in ("yes", "no"):
+        return legacy
+    return None
+
+
+def _notional_usd(trade: dict, side: str) -> float:
     """Real dollar size of a trade, side-aware - the same lesson this app
     already paid for once (ROADMAP.md: open_position charged size * price
     unconditionally, but a no-side position's real cost is size * (1 -
     price)). A trade's notional is count * whichever price the taker
-    actually paid, not always the yes price."""
+    actually paid, not always the yes price.
+
+    `side` is passed in (resolved once by _taker_side) rather than re-read
+    here, so the notional and the signal's own direction can never disagree
+    about which side the taker took."""
     count = float(trade.get("count_fp") or 0)
-    taker_side = str(trade.get("taker_side") or "").lower()
-    price_key = "yes_price_dollars" if taker_side == "yes" else "no_price_dollars"
+    price_key = "yes_price_dollars" if side == "yes" else "no_price_dollars"
     price = float(trade.get(price_key) or 0)
     return count * price
 
@@ -223,8 +259,17 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             if not market:
                 continue  # can't score confidence without this market's own volume/close_time - skip, don't fabricate
 
+            # Resolved before the notional gate so a rejection can be logged
+            # with a real side, and so both the gate and the emitted signal
+            # agree on direction. None means the trade carried no readable
+            # direction at all - skip it rather than guessing (see
+            # _taker_side's docstring).
+            side = _taker_side(trade)
+            if side is None:
+                continue
+
             try:
-                notional = _notional_usd(trade)
+                notional = _notional_usd(trade, side)
             except (TypeError, ValueError):
                 continue
             # A single global threshold can't be right for both a
@@ -233,12 +278,6 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # excluded_series/series_stats already key off, with the global
             # min_notional_usd as the fallback for any series with no
             # override set.
-            # Computed before the notional gate below (not after, as
-            # originally written) purely so a rejection can be logged with
-            # a real side - side itself doesn't depend on anything computed
-            # between here and its old location.
-            side = "yes" if str(trade.get("taker_side") or "").lower() == "yes" else "no"
-
             min_notional = float(min_notional_by_series.get(
                 signal_log.series_of(ticker), default_min_notional
             ))

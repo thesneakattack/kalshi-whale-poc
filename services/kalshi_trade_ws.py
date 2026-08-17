@@ -292,7 +292,15 @@ class KalshiTradeWebSocketClient:
             "yes_price_dollars": msg.get("yes_price_dollars"),
             "no_price_dollars": msg.get("no_price_dollars"),
             "count_fp": msg.get("count_fp"),
-            "taker_side": msg.get("taker_side") or msg.get("taker_outcome_side"),
+            # taker_outcome_side FIRST (2026-08-17 audit): docs/kalshi/
+            # get-trades.md marks taker_side deprecated - "will not be
+            # removed before May 14, 2026", a guarantee that has now
+            # expired - and names taker_outcome_side/taker_book_side the
+            # canonical way to determine trade direction. This used to
+            # prefer the deprecated field, so the day Kalshi drops it every
+            # trade would silently fall through to the "no" default
+            # downstream rather than failing loudly.
+            "taker_side": msg.get("taker_outcome_side") or msg.get("taker_side"),
             "taker_outcome_side": msg.get("taker_outcome_side") or msg.get("taker_side"),
             "taker_book_side": msg.get("taker_book_side"),
             "is_block_trade": msg.get("is_block_trade", False),
