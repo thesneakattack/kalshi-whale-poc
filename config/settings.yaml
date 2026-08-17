@@ -11,7 +11,7 @@ kalshi:
   categories:
   - Sports
   - Crypto
-  live_markets_only: true
+  live_markets_only: false
   poll_interval_sec: 6
   request_timeout_sec: 10
   top_series_per_category: 8
@@ -38,7 +38,7 @@ strategy:
   live_markets_only: false
   excluded_series: []
   take_profit_pct: 0.8
-  stop_loss_pct: 0.9
+  stop_loss_pct: 0.8
   exit_on_sentiment_reversal: false
   longshot_close_window_sec: 900
   exit_sentiment_min_signals: 15
@@ -50,9 +50,9 @@ strategy:
   auto_exit_staleness_weight: 0.5
   auto_exit_analyst_weight: 0.5
   auto_exit_gain_reference_pct: 0.95
-  auto_exit_loss_reference_pct: 0.9
+  auto_exit_loss_reference_pct: 0.85
   auto_exit_stale_after_sec: 7200
-  auto_exit_normal_volatility: 0.02
+  auto_exit_normal_volatility: 0.1
   auto_exit_volatility_lookback_sec: 1800
   auto_exit_series_track_record_weight: 0
   longshot_price_threshold: 0.05
@@ -154,7 +154,43 @@ event_schedule:
   web_search_enabled: true
   max_resolutions_per_tick: 5
 strategy_overrides:
-  by_category: {}
+  by_category:
+    Sports:
+      entry_threshold: 0.495
+      max_position_pct: 0.05
+      cooldown_sec: 120
+      close_window_sec: 7920
+      special_market_min_seconds_to_close: 243
+      max_open_positions_per_series: 0
+      kelly_fraction_of_cap: 0.3
+      min_unit_cost: 0.5
+      max_unit_cost: 0.8
+      min_whale_winrate_pct: 50
+      min_resolved_for_whale_filter: 20
+      live_markets_only: false
+      excluded_series: []
+      take_profit_pct: 0.8
+      stop_loss_pct: 0.9
+      exit_on_sentiment_reversal: true
+      longshot_close_window_sec: 900
+      exit_sentiment_min_signals: 15
+      exit_sentiment_lean_pct: 90
+      auto_exit_enabled: true
+      auto_exit_threshold: 0.9
+      auto_exit_pnl_weight: 0.2
+      auto_exit_sentiment_weight: 1.5
+      auto_exit_staleness_weight: 0.5
+      auto_exit_analyst_weight: 0.5
+      auto_exit_gain_reference_pct: 0.95
+      auto_exit_loss_reference_pct: 0.9
+      auto_exit_stale_after_sec: 7200
+      auto_exit_normal_volatility: 0.02
+      auto_exit_volatility_lookback_sec: 1800
+      auto_exit_series_track_record_weight: 0
+      longshot_price_threshold: 0.05
+      longshot_entry_threshold_bonus: 0.05
+      use_limit_orders: false
+      limit_order_timeout_sec: 60
   by_series:
     KXBTC15M:
       entry_threshold: 0.495
