@@ -37,7 +37,7 @@ strategy:
   special_market_min_seconds_to_close: 270
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
-  min_unit_cost: 0.5
+  min_unit_cost: 0.65
   max_unit_cost: 0.8
   min_whale_winrate_pct: 50
   min_resolved_for_whale_filter: 20
@@ -177,7 +177,7 @@ strategy_overrides:
       special_market_min_seconds_to_close: 243
       max_open_positions_per_series: 0
       kelly_fraction_of_cap: 0.3
-      min_unit_cost: 0.5
+      min_unit_cost: 0.65
       max_unit_cost: 0.8
       min_whale_winrate_pct: 50
       min_resolved_for_whale_filter: 20
@@ -216,7 +216,7 @@ strategy_overrides:
       special_market_min_seconds_to_close: 243
       max_open_positions_per_series: 0
       kelly_fraction_of_cap: 0.3
-      min_unit_cost: 0.5
+      min_unit_cost: 0.65
       max_unit_cost: 0.8
       min_whale_winrate_pct: 50
       min_resolved_for_whale_filter: 20
