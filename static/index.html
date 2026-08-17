@@ -3093,8 +3093,8 @@ function renderPositions(positions, prices, recentTrades, signals) {
           ${comboLegsHTML(p.ticker)}
         </td>
         <td>${p.size.toLocaleString()}</td>
-        <td>${(p.entry_price*100).toFixed(0)}¢</td>
-        <td>${(current*100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
+        <td>${((p.side === 'yes' ? p.entry_price : 1 - p.entry_price) * 100).toFixed(0)}¢</td>
+        <td>${((p.side === 'yes' ? current : 1 - current) * 100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
         <td>${fmt(cost)}${p.entry_fee ? `<div style="font-size:10px; color:var(--muted);" title="Real Kalshi taker fee, already deducted from bankroll at entry - shown separately rather than folded into Cost, same convention as Trading History's own Fees column">+${fmt(p.entry_fee)} fee</div>` : ''}</td>
         <td>${fmt(p.size)}</td>
         <td>${fmt(value)}</td>
@@ -5234,12 +5234,28 @@ function renderHistoryTrades() {
     const ctx = marketContext(t.ticker, t.side);
     const subLine = ctx.positionMeans
       ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(ctx.positionMeans)}</div>` : '';
+    // Side-aware unit cost, not raw yes-price (2026-08-17 direct report:
+    // "wins are showing up as losses (0c exit when the result is 100c)").
+    // entry_price/exit_price are always stored in the yes-price convention
+    // (WhaleSignal.price's own documented meaning), so a "no" position that
+    // WINS settles with yes-price at 0.0 - correct data, but this column is
+    // labeled "Exit" and a viewer reads "0¢" as a total wipeout, not as
+    // "the yes side went to zero, which is exactly what a no-side win looks
+    // like." Confirmed against real trade history: KXATPMATCH-26AUG17FERDE
+    // is a no-side win, +$96.92, that rendered as "22¢ -> 0¢" here while
+    // cost_basis/cash_back a few columns over already showed the correct
+    // $363.48 -> $466.00 - same underlying data, displayed two different
+    // ways, only one of them right. Same bug class CLAUDE.md's "a displayed
+    // value must match its label" section already documents once.
+    const entryUnitCost = t.entry_price !== null && t.entry_price !== undefined
+      ? (t.side === 'yes' ? t.entry_price : 1 - t.entry_price) : null;
+    const exitUnitCost = t.side === 'yes' ? t.exit_price : 1 - t.exit_price;
     return `<tr title="${esc(title)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
       <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>
       <td>${t.size.toLocaleString()}</td>
-      <td>${t.entry_price !== null ? (t.entry_price * 100).toFixed(0) + '¢' : '—'}</td>
-      <td>${(t.exit_price * 100).toFixed(0)}¢</td>
+      <td>${entryUnitCost !== null ? (entryUnitCost * 100).toFixed(0) + '¢' : '—'}</td>
+      <td>${(exitUnitCost * 100).toFixed(0)}¢</td>
       <td>${t.cost_basis !== null && t.cost_basis !== undefined ? fmt(t.cost_basis) : '—'}</td>
       <td>${fmt(t.cash_back ?? 0)}</td>
       <td style="color:var(--muted);">${fmt(t.fees_paid ?? 0)}</td>
