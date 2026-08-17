@@ -488,7 +488,26 @@ class KalshiTradeWebSocketClient:
                 created_time = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
             except (TypeError, ValueError, OSError):
                 created_time = None
+        # PASS EVERYTHING THROUGH, then overlay the normalised names
+        # (2026-08-17, direct and repeated instruction: "I keep insisting
+        # that you stop shaving off fields and values from the various
+        # shapes you get but you persist").
+        #
+        # This used to build a fixed dict of twelve keys and silently drop
+        # anything else Kalshi sent. That was worse than it looked, because
+        # it is UPSTREAM of series_watcher.record_trade: the `raw_json`
+        # column added specifically to preserve unknown fields was, for
+        # every websocket trade, storing this already-shaved dict rather
+        # than the real payload. The capture built to stop field loss was
+        # itself being fed pre-shaved data.
+        #
+        # `**msg` first means a field Kalshi adds tomorrow arrives intact,
+        # reaches the raw store, and is queryable from the day it appears.
+        # The explicit keys below still win, so every existing consumer sees
+        # exactly what it saw before - `ticker` is still the normalised
+        # alias for `market_ticker`, which itself now also survives.
         return {
+            **msg,
             "trade_id": msg.get("trade_id"),
             "ticker": msg.get("market_ticker"),
             "yes_price_dollars": msg.get("yes_price_dollars"),

@@ -155,8 +155,23 @@ index_feed:
   underlying_tickers: []
 series_watcher:
   enabled: true
+  # Raw-print capture is deliberately WIDER than what the strategy trades
+  # (2026-08-17). The min_notional gate was measured to be geometrically
+  # biased toward near-certain prices - 44 of the 58 prints clearing $2,500
+  # sit at unit cost >=0.95 - so if capture were scoped to what passes the
+  # filter, the stored history would inherit that same bias and could never
+  # be used to evaluate a different filter later. Capturing the full tape
+  # for these series keeps the record usable even if the current approach is
+  # scrapped entirely.
   series:
     - KXBTC15M
+    - KXETH15M
+    - KXBTCD
+    - KXETHD
+    - KXMLBGAME
+    - KXNFLGAME
+    - KXNBAGAME
+    - KXATPMATCH
   book_snapshot_interval_sec: 5
   retention_hours: 168
 series_evaluator:

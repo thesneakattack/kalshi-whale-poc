@@ -104,6 +104,60 @@ async def get_settlement_edge(min_samples: int = 200):
     return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
 
 
+@router.get("/api/health/pipeline")
+async def get_pipeline_health():
+    """One place to confirm the whole flow is actually alive between
+    sessions - capture, signal generation, evaluation and every persisted
+    store, with the age of the most recent write for each.
+
+    Exists because "is it running" and "is it producing" are different
+    questions (2026-08-17 direct request: make sure that between sessions
+    the whole flow is working "at peak low latency and effectiveness, so
+    even if we scrap things data gathered is still useful"). The app can
+    look perfectly healthy - ticking, connected, no errors - while
+    producing nothing, and a stale last-write timestamp is the only thing
+    that shows it."""
+    import sqlite3 as _sq
+
+    from services import candidate_log, game_state, signal_log
+
+    now = time.time()
+
+    def _age(db_path, table, col):
+        try:
+            with _sq.connect(db_path) as conn:
+                n, last = conn.execute(f"SELECT COUNT(*), MAX({col}) FROM {table}").fetchone()
+            return {"rows": n, "last_write_sec_ago": round(now - last, 1) if last else None}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    return {
+        "generated_at": now,
+        "running": state.get("running"),
+        "last_tick_duration_sec": state.get("last_tick_duration_sec"),
+        "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
+        "markets_watched": len(state.get("markets") or []),
+        "trade_stream": state.get("trade_stream_status"),
+        "index_stream": state.get("index_stream_status"),
+        "stores": {
+            "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),
+            "book_snapshots": _age(series_watcher.DB_PATH, "book_snapshots", "observed_at"),
+            "signals": _age(signal_log.DB_PATH, "signals", "seen_at"),
+            "rejections": _age(candidate_log.DB_PATH, "rejected_candidates", "rejected_at"),
+            "index_ticks": _age(index_feed.DB_PATH, "index_ticks", "observed_at"),
+            "settlement_observations": _age(
+                settlement_edge.DB_PATH, "window_observations", "observed_at"),
+            "game_states": _age(game_state.DB_PATH, "game_states", "observed_at"),
+        },
+        "buffered_unwritten": {
+            "series_watcher_trades": series_watcher.capture_stats().get("buffered_trades"),
+            "index_feed_ticks": index_feed.snapshot().get("buffered_ticks"),
+            "settlement_edge": settlement_edge.stats().get("buffered"),
+            "game_state": game_state.stats().get("buffered"),
+        },
+    }
+
+
 @router.get("/api/index")
 async def get_index_feed():
     """Live CF Benchmarks / Pyth index values (services/index_feed.py)."""

@@ -40,6 +40,7 @@ from services import reset_log
 from services import series_cache
 from services import series_evaluator
 from services import series_watcher
+from services import game_state
 from services import index_feed
 from services import settlement_edge
 from services import trade_archive
@@ -1906,6 +1907,17 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
             # watchlisted market, not just a live/finished label.
             if details:
                 state["live_game_state"][et] = {"details": details, "updated_at": now}
+                # Persist it too (2026-08-17). The line above has been
+                # parsing this correctly since 08-16, but into an in-memory
+                # dict that dies with the process - so score/period/clock
+                # history has been arriving and evaporating every restart.
+                # Storing it costs zero extra API calls (this payload is
+                # already fetched for widget_status) and is what makes
+                # questions like "did this whale print land right after a
+                # scoring play" answerable later. Deduplicated on real state
+                # change, so a finished game polled for hours writes once.
+                game_state.record(et, details, sport=_sport_for_event(
+                    state["event_titles"].get(et) or {}))
 
     # Schedule fallback, direct request: "otherwise use the schedule and
     # its previous live status to operate" - but a direct correction right
@@ -2255,7 +2267,17 @@ async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> d
             if isinstance(result, dict):
                 ld = result.get("live_data") or {}
                 if ld:
+                    # **ld first (2026-08-17): this used to keep five named
+                    # keys and drop the rest of the live-data response.
+                    # Same instruction, same reason as
+                    # KalshiTradeWebSocketClient.normalize_trade - a field
+                    # Kalshi adds should arrive intact rather than be
+                    # discarded before anything can notice it exists. The
+                    # explicit keys still win, so `details` is still
+                    # guaranteed to be a dict and `range_options` a list for
+                    # every existing consumer.
                     live_data = {
+                        **ld,
                         "type": ld.get("type"),
                         "details": ld.get("details") or {},
                         "is_historical": ld.get("is_historical"),
@@ -3194,6 +3216,7 @@ async def trading_loop():
             # snapshot showed ticks arriving.
             index_feed.flush()
             settlement_edge.flush()
+            game_state.flush()
             await _resolve_settlement_windows(client)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —

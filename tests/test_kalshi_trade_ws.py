@@ -259,3 +259,33 @@ def test_scoped_mode_is_unchanged_by_the_new_flag():
 
     for m in client._ws.sent:
         assert m["params"]["market_tickers"] == ["TICK-A"]
+
+
+def test_normalize_trade_preserves_fields_it_does_not_know_about():
+    """Direct, repeated instruction (2026-08-17): stop shaving fields off
+    the shapes Kalshi sends.
+
+    This mattered more than it looked: normalize_trade runs UPSTREAM of
+    series_watcher.record_trade, so the raw_json column added specifically
+    to preserve unknown fields was, for every websocket trade, storing an
+    already-shaved dict rather than the real payload."""
+    msg = {
+        "trade_id": "t1", "market_ticker": "TICK-A",
+        "yes_price_dollars": "0.61", "no_price_dollars": "0.39",
+        "count_fp": "100.00", "taker_outcome_side": "yes",
+        "taker_book_side": "bid", "is_block_trade": False,
+        "ts": 1, "ts_ms": 1000,
+        # Neither of these has ever existed in this app's schema.
+        "some_new_kalshi_field": "keep me",
+        "price_level_structure": "deci_cent",
+    }
+    out = KalshiTradeWebSocketClient.normalize_trade(msg)
+
+    assert out["some_new_kalshi_field"] == "keep me"
+    assert out["price_level_structure"] == "deci_cent"
+    # The original key survives alongside the normalised alias.
+    assert out["market_ticker"] == "TICK-A"
+    assert out["ticker"] == "TICK-A"
+    # Normalisation still wins where the two overlap.
+    assert out["taker_side"] == "yes"
+    assert out["created_time"] == "1970-01-01T00:00:01Z"
