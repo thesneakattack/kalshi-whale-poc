@@ -61,6 +61,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import fault_log
 from services import signal_log, trade_analytics
 from services import paper_broker as pb_module
 from services.diagnostics import Check
@@ -260,7 +261,8 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
         if len(_trade_buffer) >= _FLUSH_BATCH:
             flush()
         return True
-    except Exception:
+    except Exception as exc:
+        fault_log.record("series_watcher", "record_trade", exc)
         return False
 
 
@@ -299,7 +301,8 @@ def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = N
         if len(_book_buffer) >= _FLUSH_BATCH:
             flush()
         return True
-    except Exception:
+    except Exception as exc:
+        fault_log.record("series_watcher", "record_book", exc)
         return False
 
 
@@ -357,8 +360,10 @@ def flush() -> dict:
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     books,
                 )
-    except Exception:
+    except Exception as exc:
         _dropped_rows += len(trades) + len(books)
+        fault_log.record("series_watcher", "flush", exc,
+                         context=f"{len(trades)} trade + {len(books)} book row(s) dropped")
         return {"trades": 0, "books": 0, "dropped": len(trades) + len(books)}
     return {"trades": len(trades), "books": len(books)}
 

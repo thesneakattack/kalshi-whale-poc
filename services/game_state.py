@@ -50,6 +50,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import fault_log
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "game_state.db"
 
 # Buffered for the same reason every other capture path in this app is: the
@@ -91,6 +93,20 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # CREATE TABLE IF NOT EXISTS does NOT add a column to a table that
+    # already exists, so a column added after the first row was ever written
+    # needs an explicit guarded ALTER - the idiom CLAUDE.md mandates for
+    # exactly this reason.
+    #
+    # Learned the hard way here, within hours: `event_type` was added to the
+    # CREATE above without this, so on any process that had already created
+    # the table the INSERT carried 16 values against 15 columns and raised.
+    # flush()'s broad `except` then swallowed it and returned a drop count
+    # nobody was reading, so game_states sat at 0 rows looking like a quiet
+    # market rather than a broken write.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(game_states)")}
+    if "event_type" not in cols:
+        conn.execute("ALTER TABLE game_states ADD COLUMN event_type TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_gs_event ON game_states (event_ticker, observed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_gs_time ON game_states (observed_at)")
     return conn
@@ -192,6 +208,7 @@ def _fingerprint(fields: dict) -> str:
 # handful of times an hour, a candlestick array changes every tick.
 _MIN_INTERVAL_SEC = 60.0
 _last_write_at: dict[str, float] = {}
+_last_flush_error: str | None = None
 
 
 def record(event_ticker: str, details: dict, sport: str | None = None,
@@ -240,7 +257,8 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
         if len(_buffer) >= _FLUSH_BATCH:
             flush()
         return True
-    except Exception:
+    except Exception as exc:
+        fault_log.record("game_state", "record", exc)
         return False
 
 
@@ -258,8 +276,17 @@ def flush() -> dict:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
-    except Exception:
-        return {"rows": 0, "dropped": len(rows)}
+    except Exception as exc:
+        # Surface the reason, don't just count the loss. A silent drop here
+        # already cost this module every row it should have written: the
+        # store read as "no games happening" when it was actually raising on
+        # every insert. A capture layer that fails quietly is worse than one
+        # that fails loudly, because the whole point is being trusted while
+        # nobody is watching.
+        global _last_flush_error
+        _last_flush_error = str(exc)
+        print(f"[game_state] flush failed, {len(rows)} row(s) dropped: {exc}")
+        return {"rows": 0, "dropped": len(rows), "error": str(exc)}
     return {"rows": len(rows)}
 
 
@@ -292,5 +319,5 @@ def stats() -> dict:
     return {
         "observations": n, "distinct_events": events, "with_score": scored,
         "first_at": first, "last_at": last, "by_sport": by_sport,
-        "buffered": len(_buffer),
+        "buffered": len(_buffer), "last_flush_error": _last_flush_error,
     }

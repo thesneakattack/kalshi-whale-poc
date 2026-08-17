@@ -72,7 +72,48 @@ Reproduce the table above first — the sample is small (11–218 prints) and
 
 ---
 
-## Shipped this session (all pushed, CI green, 1,093 tests)
+## Start here next session: `GET /api/health/faults`
+
+`services/fault_log.py` now records every swallowed exception and edge
+case, deduplicated with a count and the first traceback. A large `count` or
+a recent `last_seen` means something is failing **right now, silently**.
+
+It exists because that failure mode already cost real data the same day:
+`game_state` shipped with `event_type` added to its CREATE TABLE but no
+guarded ALTER, so every INSERT raised on a pre-existing table, `flush()`
+caught it, and the store sat at 0 rows looking exactly like "no games are
+on." Found only by manually calling `flush()` and reading the return value.
+Fixed (guarded ALTER + the fault log + a printed message), but the lesson is
+the point: **a capture layer that fails quietly is worse than one that fails
+loudly.**
+
+Also check `GET /api/health/pipeline` — row counts and last-write age for
+every store, plus `faults_last_24h`. That one call answers "is it actually
+producing," which is a different question from "is it running."
+
+### Data capture verified working between sessions
+
+| store | status |
+|---|---|
+| `raw_trades` | 179k+ rows, 8 series, writing every ~5s |
+| `book_snapshots` | writing, 5s sampling |
+| `index_ticks` | 13k+, 2.00/sec across BRTI + ETHUSD_RTI |
+| `settlement_observations` | writes only in the final minute before a quarter-hour (expected gaps) |
+| `game_states` | **was silently broken**, now writing |
+| `signals` / `rejections` | writing; `min_notional_usd` dominates rejections at ~3.6k/hr |
+
+Live-status lookahead widened **1h → 12h** (lookback 6h → 8h): 30 Sports
+events were on the watchlist with only ONE live-status entry, because a
+game scheduled for 13:35 is ~7.5h away at 06:00. No sports score/period was
+being captured at all. Bounded by the existing 5-minute repoll cache and
+10-per-tick cap, so this lengthens the rotation rather than multiplying API
+calls.
+
+**Note:** `_EVENT_LIVE_DATA_EXCLUDED_CATEGORIES = {"Sports"}` — sports game
+state comes from the *milestone* path, not the crypto live-data endpoint.
+Crypto events carry OHLC candlesticks + a price timeseries there instead.
+
+## Shipped this session (all pushed, CI green, 1,118 tests)
 
 | commit | what |
 |---|---|

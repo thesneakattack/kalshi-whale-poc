@@ -119,7 +119,7 @@ async def get_pipeline_health():
     that shows it."""
     import sqlite3 as _sq
 
-    from services import candidate_log, game_state, signal_log
+    from services import candidate_log, fault_log, game_state, signal_log
 
     now = time.time()
 
@@ -149,6 +149,11 @@ async def get_pipeline_health():
                 settlement_edge.DB_PATH, "window_observations", "observed_at"),
             "game_states": _age(game_state.DB_PATH, "game_states", "observed_at"),
         },
+        # Anything that failed and was swallowed (services/fault_log.py).
+        # A non-empty value here is the difference between "quiet market"
+        # and "broken component" - the distinction that cost game_state
+        # every row it should have written on 2026-08-17.
+        "faults_last_24h": fault_log.summary(since_ts=now - 86400),
         "buffered_unwritten": {
             "series_watcher_trades": series_watcher.capture_stats().get("buffered_trades"),
             "index_feed_ticks": index_feed.snapshot().get("buffered_ticks"),
@@ -156,6 +161,17 @@ async def get_pipeline_health():
             "game_state": game_state.stats().get("buffered"),
         },
     }
+
+
+@router.get("/api/health/faults")
+async def get_faults(limit: int = 50, component: str | None = None, hours: float = 24.0):
+    """Every swallowed exception and edge case, deduplicated with a count
+    (services/fault_log.py). Start a session here: a large `count` or a
+    recent `last_seen` means something is failing right now, silently."""
+    from services import fault_log as fl
+
+    return {"summary": fl.summary(since_ts=time.time() - hours * 3600),
+            "faults": fl.recent(limit=limit, component=component)}
 
 
 @router.get("/api/index")

@@ -56,6 +56,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import fault_log
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "index_feed.db"
 
 # Sixty one-second observations per settlement window - the "sixty seconds"
@@ -172,7 +174,8 @@ def record_cfbenchmarks(msg: dict, now: float | None = None) -> bool:
         if len(_tick_buffer) >= _FLUSH_BATCH:
             flush()
         return True
-    except Exception:
+    except Exception as exc:
+        fault_log.record("index_feed", "record", exc)
         return False
 
 
@@ -216,8 +219,9 @@ def flush() -> dict:
                 "q15_window_size, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
-    except Exception:
+    except Exception as exc:
         _dropped_rows += len(rows)
+        fault_log.record("index_feed", "flush", exc, context=f"{len(rows)} tick(s) dropped")
         return {"ticks": 0, "dropped": len(rows)}
     return {"ticks": len(rows)}
 

@@ -34,6 +34,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import fault_log
 from services import index_feed
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "settlement_edge.db"
@@ -121,6 +122,7 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         # is quiet.
         global _record_errors
         _record_errors += 1
+        fault_log.record("settlement_edge", "record_observation", exc)
         return False
 
 
@@ -150,7 +152,8 @@ def flush() -> dict:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
-    except Exception:
+    except Exception as exc:
+        fault_log.record("settlement_edge", "flush", exc, context=f"{len(rows)} observation(s) dropped")
         return {"observations": 0, "dropped": len(rows)}
     return {"observations": len(rows)}
 

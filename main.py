@@ -1756,8 +1756,21 @@ async def _fetch_trade_tape(
     return trades
 
 
-_LIVE_STATUS_LOOKBACK_SEC = 6 * 3600  # keep tracking an event up to 6h after its scheduled start
-_LIVE_STATUS_LOOKAHEAD_SEC = 3600  # start tracking an event up to 1h before its scheduled start
+_LIVE_STATUS_LOOKBACK_SEC = 8 * 3600  # keep tracking an event up to 8h after its scheduled start
+# Widened 1h -> 12h on 2026-08-17. Measured live: 30 Sports events were on
+# the watchlist while live_status held ONE entry and live_game_state held
+# zero, because a game scheduled for 13:35 is ~7.5h away at 06:00 and fell
+# outside a 1-hour lookahead. Nothing was tracked, so no score/period/clock
+# was ever captured for any of them.
+#
+# Widening is bounded, not open-ended: _LIVE_STATUS_REPOLL_SEC (5 min)
+# caches each event's status and _LIVE_STATUS_MAX_POLL_PER_TICK (10) caps
+# how many are refreshed in any one tick, so a larger candidate pool
+# lengthens the rotation rather than multiplying per-tick API calls. Those
+# two bounds are what make this safe, and they must stay if this is widened
+# further - see their own comments for the 2026-08-15 incident that put
+# them there.
+_LIVE_STATUS_LOOKAHEAD_SEC = 12 * 3600
 # Direct request: once markets/whale data have populated the system, "no
 # need to check if a market is live... every tick... they should have
 # scheduled open and close times for you to do some light polling to track

@@ -1033,12 +1033,27 @@ def test_fetch_live_status_polls_a_new_event_with_no_cache():
 
 
 def test_fetch_live_status_excludes_events_starting_far_in_the_future():
+    # Lookahead widened 1h -> 12h on 2026-08-17: 30 Sports events sat on the
+    # watchlist while live_status held ONE entry, because a game scheduled
+    # for 13:35 is ~7.5h out at 06:00 and fell outside the old bound, so no
+    # score/period/clock was ever captured for any of them. 3h is now
+    # deliberately INSIDE the window; the exclusion is tested past 12h.
     main.state["live_status_cache"].clear()
     fake = _FakeLiveClient()
-    markets = [_market_at(offset_sec=3 * 3600)]  # starts in 3h - past the 1h lookahead
+    markets = [_market_at(offset_sec=14 * 3600)]  # starts in 14h - past the 12h lookahead
     result = asyncio.run(main._fetch_live_status(fake, markets))
     assert result == {}
     assert fake.milestone_calls == []  # never even attempted a poll
+
+
+def test_fetch_live_status_now_tracks_a_game_scheduled_later_today():
+    """The case the widening exists for - a game hours away must be tracked
+    so its live state is captured once it starts."""
+    main.state["live_status_cache"].clear()
+    fake = _FakeLiveClient(widget_status="none")
+    markets = [_market_at(offset_sec=7 * 3600)]
+    asyncio.run(main._fetch_live_status(fake, markets))
+    assert fake.milestone_calls == ["EVT-A"]
 
 
 def test_fetch_live_status_regression_includes_event_that_started_three_hours_ago():
@@ -1053,9 +1068,11 @@ def test_fetch_live_status_regression_includes_event_that_started_three_hours_ag
 
 
 def test_fetch_live_status_excludes_events_that_started_more_than_six_hours_ago():
+    # Lookback widened 6h -> 8h alongside the lookahead change, so a long
+    # game (extra innings, rain delay) stays tracked to its real end.
     main.state["live_status_cache"].clear()
     fake = _FakeLiveClient()
-    markets = [_market_at(offset_sec=-7 * 3600)]
+    markets = [_market_at(offset_sec=-9 * 3600)]
     result = asyncio.run(main._fetch_live_status(fake, markets))
     assert result == {}
     assert fake.milestone_calls == []
