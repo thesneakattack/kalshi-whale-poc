@@ -7,6 +7,13 @@ from the commands noted; nothing in this file is an estimate.
 **Read this before `ROADMAP.md`** — the roadmap says what's open in general,
 this says what was just learned and what to do with it first.
 
+**Companion doc:** `docs/position-management-findings-2026-08-17.md` covers
+everything *after* a position opens (the volatility factor that was a
+constant, the unused candlestick data, the four un-consolidated exit paths)
+plus a full list of what was asked for this session and not delivered —
+most notably the **backtesting arsenal**, which was requested and never
+started.
+
 ---
 
 ## The one finding that reframes everything

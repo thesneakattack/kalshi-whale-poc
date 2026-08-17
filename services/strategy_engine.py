@@ -861,7 +861,29 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     normal_vol = strat_cfg.get("auto_exit_normal_volatility", 0.02)
     vol_lookback = strat_cfg.get("auto_exit_volatility_lookback_sec", 1800)
     vol = market_history.volatility(ticker, vol_lookback) if normal_vol else None
-    vol_ratio = max(0.25, min(4.0, vol / normal_vol)) if vol is not None and normal_vol else 1.0
+    # `vol == 0` is treated as NO READING, not as "perfectly calm"
+    # (2026-08-17). volatility() returns None when there aren't enough
+    # snapshots, but a real 0.0 when there are and the price never moved -
+    # and measured live, 142 of 183 well-sampled markets sat at exactly
+    # 0.0, because a price that hasn't ticked in 30 minutes usually means
+    # nobody is trading it, not that it is genuinely placid.
+    #
+    # Feeding that zero through made vol_ratio pin to its 0.25 floor for
+    # 78% of markets - a constant, not a discriminator - permanently
+    # quartering gain_ref and loss_ref so pnl_factor saturated on a ~24%
+    # move instead of the configured ~95%. The auto-exit believed nearly
+    # every position was at a P&L extreme. That was invisible from config,
+    # since every knob involved looked reasonable; only the ratio's own
+    # distribution showed it.
+    #
+    # No value of auto_exit_normal_volatility could fix it either - a zero
+    # numerator clamps to the floor regardless - so this belongs at the
+    # point of use, and falling back to 1.0 restores exactly the "unscaled
+    # behaviour" this block's own comment above says it intends.
+    vol_ratio = (
+        max(0.25, min(4.0, vol / normal_vol))
+        if vol is not None and vol > 0 and normal_vol else 1.0
+    )
     gain_ref *= vol_ratio
     loss_ref *= vol_ratio
 

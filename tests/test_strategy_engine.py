@@ -1367,3 +1367,50 @@ def test_allows_the_boundary_prices_themselves(tmp_path, monkeypatch):
     assert config_bounds.is_tradeable_unit_cost(0.019) is False
     assert config_bounds.is_tradeable_unit_cost(0.981) is False
     assert config_bounds.is_tradeable_unit_cost(None) is False
+
+
+# --- volatility scaling of the auto-exit references (2026-08-17) ---------
+
+def test_zero_volatility_is_treated_as_no_reading_not_as_perfect_calm(tmp_path, monkeypatch):
+    """Measured live: 142 of 183 well-sampled markets returned volatility
+    exactly 0.0 - a price that hasn't ticked in 30 minutes usually means
+    nobody is trading it. Feeding that through pinned vol_ratio to its 0.25
+    floor for 78% of markets, permanently quartering gain_ref/loss_ref so
+    the pnl factor saturated on a ~24% move instead of the configured ~95%.
+
+    Asserted through the public behaviour: an identical position must score
+    the same whether volatility reads 0.0 or is unavailable."""
+    from services import market_history, strategy_engine
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.50, reason="entry")
+    cfg = _cfg(auto_exit_normal_volatility=0.002, auto_exit_volatility_lookback_sec=1800,
+               auto_exit_gain_reference_pct=0.95, auto_exit_loss_reference_pct=0.85)["strategy"]
+
+    pos = broker.positions["TICK-A"]
+    monkeypatch.setattr(market_history, "volatility", lambda *a, **k: None)
+    unavailable, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+
+    monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.0)
+    flat, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+
+    assert flat == pytest.approx(unavailable), (
+        "a flat/untraded market must not be scored as if it were four times calmer than normal"
+    )
+
+
+def test_real_volatility_still_scales_the_references(tmp_path, monkeypatch):
+    """The factor must still discriminate among markets that actually move -
+    the fix is about zero, not about disabling the mechanism."""
+    from services import market_history, strategy_engine
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.50, reason="entry")
+    cfg = _cfg(auto_exit_normal_volatility=0.002)["strategy"]
+
+    pos = broker.positions["TICK-A"]
+    monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.0005)
+    calm, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.02)
+    wild, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    assert calm != wild, "volatility must still change the outcome when it is real"
