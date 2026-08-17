@@ -72,6 +72,47 @@ Reproduce the table above first — the sample is small (11–218 prints) and
 
 ---
 
+## Left running unattended from 2026-08-17 — verified safe
+
+Checked before walking away, and two things were found and fixed in the
+checking rather than assumed:
+
+- **`prune()` was written and never called from anywhere.** `data/` was at
+  841MB (`market_history` 581MB, `series_watcher` 130MB after a few hours of
+  exchange-wide capture, `game_state` 32MB within *minutes* of first
+  writing, because a crypto live-data row carries a whole candlestick array
+  plus a price timeseries). Now swept hourly by
+  `main._maybe_prune_capture_stores`, honouring
+  `series_watcher.retention_hours` (168).
+- **All three prune paths then executed for real**, not just reviewed —
+  `series_watcher`, `index_feed`, `game_state` each returned cleanly (0
+  deletions, correct: nothing was 168h old yet).
+
+**Disk: 923G free, 4% used.** At the observed rate a week is ~10–20GB, so
+this is nowhere near a constraint — which also de-prioritises
+`market_history.db` (581MB, unbounded, retention never traced). Look there
+only if disk ever does get tight.
+
+What the sweep deliberately never deletes: `raw_trades` (one row per real
+exchange print, and the dataset any re-analysis of the whale threshold
+depends on) and `index_feed`'s settlement-window rows
+(`q15_window_size IS NOT NULL`, the paired observations `settlement_edge`
+scores). Only high-churn sampled series are trimmed.
+
+Safe to leave: paper mode, `kalshi_account.trading_enabled: false`.
+
+### First three commands on return
+
+1. `GET /api/health/faults` — a large `count` or recent `last_seen` means
+   something is failing **silently, right now**
+2. `GET /api/health/pipeline` — row counts and last-write age per store
+3. `GET /api/diagnostics/settlement-edge` — a week should move it off
+   `insufficient`, which decides whether the index projection is real
+
+A week of accumulation should make both headline open questions answerable
+on real data: the settlement-edge verdict, and whether a contract-count
+whale threshold beats the dollar one.
+
 ## Start here next session: `GET /api/health/faults`
 
 `services/fault_log.py` now records every swallowed exception and edge
