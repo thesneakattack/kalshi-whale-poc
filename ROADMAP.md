@@ -33,6 +33,12 @@ Use the `/sync-status-docs` skill — it checks the item off here (a bare
 phase to `status.html` in one pass. Resist the urge to leave a factual
 trail in this file itself; that's exactly how it got long twice already.
 
+> **Starting a fresh session?** Read
+> `docs/next-session-pickup-2026-08-17.md` first. It carries the measured
+> findings from 2026-08-17 (the dollar-vs-contract whale-threshold bias, the
+> real 77.5% tradeable whale accuracy, the epoch-aware diagnostics blocker)
+> in a ready-to-act form, so none of it has to be re-derived.
+
 ## Path to production
 
 P0 — the code-level gates around real money (order schema verified against
@@ -150,6 +156,35 @@ questions.
       `(ticker, strategy, gate_name)`, so it is unusable for population
       statistics).
 
+- [ ] **Switch the whale threshold from dollars to contract count (or add
+      one alongside).** Measured 2026-08-17 across 145,785 real captured
+      prints: a dollar gate is geometrically biased toward near-certainty,
+      because $2,500 buys 125,000 contracts at 2c but only 2,505 at 99.8c.
+      Its clear rate climbs monotonically with price (0.00% below 0.50,
+      0.85% at >=0.98), and **44 of the 58 prints that clear $2,500 (75.9%)
+      sit at unit cost >=0.95** — the band that bleeds. Mean unit cost of
+      everything it selects: **0.926**. A `count >= 5,000` selector plus the
+      tradeable-range filter lands at mean 0.759 with 27.3% inside the only
+      profitable band, against 8.6% today. **This is the single biggest
+      measured lever on the 70%/70% target.** Left unshipped deliberately —
+      it changes what the app considers a whale, which is a strategy call.
+      Full tables and the implementation note are in
+      `docs/next-session-pickup-2026-08-17.md`.
+- [ ] **Make the diagnostics epoch-aware — blocks trusting any other
+      number.** `check_price_band_adherence` and
+      `check_threshold_integrity` judge history against *today's* config, so
+      a config change 8 hours ago makes them report FAIL on trades that were
+      compliant when placed. Real cost: `price_band_adherence` reported 72%
+      out-of-band; judged against the band actually live at each trade's
+      timestamp it was 4 of 39. `performance_by_epoch` already does this
+      correctly via `config_performance.applied_changes` — reuse it.
+- [ ] **Find the four-entry gate bypass.** Four real entries at unit costs
+      0.97, 1.00, 0.20, 0.97 (08/16 21:26–22:25), one at `conf 0.25` against
+      a 0.495 threshold, so they skipped both the price band and the
+      confidence gate. Prices in the reason string match the recorded
+      prices, and `shadow_mode`/`market_strategy` are ruled out. The
+      `01b126c` invariant makes the class unreachable going forward, but a
+      gate that *can* be skipped is worse than no gate.
 - [ ] **Decide whether the settlement projection is an edge, then act on
       it or drop it.** `services/settlement_edge.py` is now recording both
       forecasts of the same event at the same instant (the market's yes
