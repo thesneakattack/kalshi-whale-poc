@@ -31,6 +31,13 @@ def test_classify_close_type_recognizes_every_known_prefix():
         "closed: auto-exit: composite confidence 65% >= 60% threshold (factors: pnl=60%, sentiment=100%) (realized +10.00)": "auto_exit",
         "closed: market settled YES - position won (realized +50.00)": "settled_win",
         "closed: market settled NO - position lost (realized -50.00)": "settled_loss",
+        # Real gap found 2026-08-17, direct report ("certain trades being
+        # closed by 'unknown'"): both of these reasons existed in the code
+        # (strategy_engine's ROADMAP #1 runway gate, position_netting.py)
+        # with no matching pattern here, so they silently fell through to
+        # None and rendered as "unknown" close type.
+        "closed: runway exhausted: 45s to close (floor 120s) — closing rather than riding to settlement (realized +5.00)": "runway_exhausted",
+        "closed: position netting (dominant, event EVT-1): would trim, cheaper to hold the favorite (realized +2.00)": "position_netting",
     }
     for reason, expected in cases.items():
         assert ta.classify_close_type(reason) == expected

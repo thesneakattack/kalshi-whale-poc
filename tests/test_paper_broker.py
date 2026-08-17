@@ -1,3 +1,4 @@
+import sqlite3
 import time
 
 import pytest
@@ -262,6 +263,113 @@ def test_close_position_no_side_uses_inverted_price(tmp_path, monkeypatch):
     entry_fee = taker_fee(100, 0.4)
     close_fee = taker_fee(100, 0.2)
     assert broker.bankroll == pytest.approx(1020.0 - entry_fee - close_fee)  # 940 + 80, fee-adjusted
+
+
+# --- correct_erroneous_close (2026-08-17, remediation for the real
+# Cirstea/Kalinskaya incident - a stop-loss fired on a fabricated
+# exit_price of 0.0 one tick after market_history's own independent REST
+# data had sat pinned at 0.99 for 13+ minutes) -----------------------------
+
+def test_correct_erroneous_close_reverses_the_bankroll_debit(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    # Captured right after the ENTRY, before the bad close runs at all -
+    # this is the invariant that matters: undoing a close's effect must
+    # restore bankroll to exactly this, regardless of whether the close
+    # itself was a net credit or debit relative to the entry (closing
+    # always credits SOME cash_back unless price is exactly 0/1 for the
+    # held side, so "does bankroll drop at close" isn't the right check).
+    bankroll_before_bad_close = broker.bankroll
+    trade = broker.close_position("TICK-A", exit_price=0.3, reason="stop-loss hit: fabricated")
+    assert broker.bankroll != bankroll_before_bad_close  # the close really moved it
+
+    result = broker.correct_erroneous_close(trade.id)
+    assert result is not None
+    assert result["ticker"] == "TICK-A"
+    assert result["corrected_credit"] == 0.0  # no corrected_price given
+    # Restored to exactly what it was before the bad close - not a guessed
+    # "fair settlement" number, just an undo of this specific fabricated
+    # debit (see the method's own docstring for why).
+    assert broker.bankroll == pytest.approx(bankroll_before_bad_close)
+
+
+def test_correct_erroneous_close_can_credit_a_corroborated_price_instead(tmp_path, monkeypatch):
+    """The Cirstea/Kalinskaya shape: the fabricated close paid ~0, but
+    market_history's own independent data said the price was really 0.99
+    moments before. corrected_price re-credits what SHOULD have been paid
+    at the trusted price, not a guessed settlement outcome."""
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    trade = broker.close_position("TICK-A", exit_price=0.0, reason="stop-loss hit: fabricated")
+    bankroll_after_bad_close = broker.bankroll
+
+    result = broker.correct_erroneous_close(trade.id, corrected_price=0.99)
+    assert result["corrected_credit"] == pytest.approx(99.0, abs=0.5)  # ~100*0.99 minus a small fee
+    assert broker.bankroll > bankroll_after_bad_close + 90  # real money credited back
+
+
+def test_correct_erroneous_close_flags_the_trade_excluded_in_memory_and_on_disk(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    trade = broker.close_position("TICK-A", exit_price=0.0, reason="stop-loss hit: fabricated")
+
+    broker.correct_erroneous_close(trade.id)
+
+    # In-memory - what the dashboard's History table actually reads.
+    matched = [t for t in broker.trade_log if t.id == trade.id]
+    assert matched and matched[0].excluded is True
+    # On disk - what a fresh process would load on restart.
+    with sqlite3.connect(broker.db_path) as conn:
+        assert conn.execute("SELECT excluded FROM trades WHERE id = ?", (trade.id,)).fetchone()[0] == 1
+
+
+def test_correct_erroneous_close_refuses_to_touch_an_entry_row(tmp_path, monkeypatch):
+    """Safety guard - this must never be pointed at an entry by mistake,
+    since only a CLOSE's exit_price was ever fabricated."""
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    entry_trade = broker.trade_log[0]
+    bankroll_before = broker.bankroll
+
+    result = broker.correct_erroneous_close(entry_trade.id)
+    assert result is None
+    assert broker.bankroll == bankroll_before
+
+
+def test_correct_erroneous_close_is_safe_to_run_twice(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    trade = broker.close_position("TICK-A", exit_price=0.0, reason="stop-loss hit: fabricated")
+
+    first = broker.correct_erroneous_close(trade.id)
+    bankroll_after_first = broker.bankroll
+    second = broker.correct_erroneous_close(trade.id)
+
+    assert first is not None
+    assert second is None  # already excluded - no-op, not a double-credit
+    assert broker.bankroll == pytest.approx(bankroll_after_first)
+
+
+def test_correct_erroneous_close_returns_none_for_unknown_trade_id(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    assert broker.correct_erroneous_close("nonexistent") is None
+
+
+def test_correct_erroneous_close_excluded_trade_vanishes_from_build_trade_history(tmp_path, monkeypatch):
+    """The actual point - a corrected close must stop being counted as a
+    loss (or a win) anywhere trade_analytics reads it."""
+    from services import trade_analytics
+
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    trade = broker.close_position("TICK-A", exit_price=0.0, reason="stop-loss hit: fabricated")
+
+    before = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    assert len(before) == 1 and before[0]["won"] is False
+
+    broker.correct_erroneous_close(trade.id)
+    after = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    assert after == []
 
 
 def test_close_position_returns_none_for_no_open_position(tmp_path, monkeypatch):

@@ -3977,6 +3977,11 @@ const HISTORY_CLOSE_TYPE_LABELS = {
   take_profit: 'Take-Profit', stop_loss: 'Stop-Loss', sentiment_reversal: 'Sentiment Reversal',
   momentum_reversal: 'Momentum Reversal', auto_exit: 'Auto-Exit', settled_win: 'Settled (Won)',
   settled_loss: 'Settled (Lost)', unknown: 'Unknown',
+  // Matches trade_analytics.py's runway_exhausted pattern, added 2026-08-17
+  // alongside it - without an entry here this would still render, just as
+  // the raw key instead of "Unknown", since HISTORY_CLOSE_TYPE_LABELS[key]
+  // falls back to the key itself (not to 'unknown') when missing.
+  runway_exhausted: 'Runway Exhausted', position_netting: 'Position Netting',
 };
 
 // Plain-language narrative (2026-08-14/15 direct request) - the very first

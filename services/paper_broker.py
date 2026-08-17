@@ -78,6 +78,14 @@ class Trade:
     # trade_analytics.build_trade_history derives time_to_open_sec from
     # this directly rather than re-joining signal_log after the fact.
     signal_seen_at: float | None = None
+    # Flagged by correct_erroneous_close (2026-08-17) - a CLOSE trade whose
+    # exit_price was confirmed fabricated (a stop-loss fired on a price
+    # market_history's own independent data said was wrong). False for
+    # every trade before this existed and for every entry - only ever set
+    # on a specific, individually-confirmed close row. trade_analytics.
+    # build_trade_history skips these entirely rather than counting them as
+    # a loss or a phantom win.
+    excluded: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -151,6 +159,17 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # docstring) - same idempotent-migration pattern, added after this
     # table already had live rows.
     _add_column_if_missing(conn, "trades", "signal_seen_at", "REAL")
+    # excluded (2026-08-17 direct request/incident: a real WTA position -
+    # Cirstea/Kalinskaya - was closed by check_exits at a fabricated
+    # exit_price of 0.0 one tick after market_history's own REST-polled
+    # price had sat pinned at 0.99 for 13+ minutes - real damage to real
+    # (paper) bankroll, and real contamination of every downstream win-rate
+    # /P&L statistic that reads this table. Same non-destructive idiom
+    # signal_log.excluded already established: a bad CLOSE row is flagged,
+    # never deleted, so history stays a first-class asset (CLAUDE.md) while
+    # ceasing to count as evidence. See PaperBroker.correct_erroneous_close.
+    _add_column_if_missing(conn, "trades", "excluded", "INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)")
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -209,11 +228,12 @@ class PaperBroker:
                     "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee FROM positions"
                 ):
                     self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0)
-                for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at in conn.execute(
-                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, signal_seen_at "
-                    "FROM trades ORDER BY timestamp ASC"
+                for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded in conn.execute(
+                    "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
+                    "signal_seen_at, excluded FROM trades ORDER BY timestamp ASC"
                 ):
-                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0, signal_seen_at))
+                    self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0,
+                                                signal_seen_at, bool(excluded)))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
                 for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at in conn.execute(
                     "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, signal_seen_at "
@@ -464,6 +484,82 @@ class PaperBroker:
                  trade.config_fingerprint, close_fee),
             )
         return trade
+
+    def correct_erroneous_close(self, trade_id: str, corrected_price: float | None = None) -> dict | None:
+        """Reverse a specific CLOSE trade's fabricated bankroll impact,
+        optionally re-crediting a corrected value, and flag it `excluded` -
+        the remediation half of the 2026-08-17 stop-loss price-
+        corroboration fix (see strategy_engine.check_exits and
+        market_history.recent_price). A confirmed-bad close (a stop-loss
+        that fired on a fabricated exit_price - see the `excluded` column's
+        own comment above) doesn't just leave one wrong row: it left real
+        (paper) bankroll wrong, and every trade-level win-rate/P&L
+        statistic downstream of `trades` counted it.
+
+        Two steps, both optional-but-composable:
+
+        1. ALWAYS: reverse exactly the fabricated close's own `cash_back` -
+           undoes what the bad exit_price actually did to bankroll, no
+           assumption involved, since that number is read straight off the
+           row itself.
+        2. IF `corrected_price` is given: credit what SHOULD have been paid
+           at that price instead, using the same side-aware cash math and a
+           freshly-computed real fee (not the stale one from the bad
+           close). The intended input is
+           `market_history.recent_price(ticker, ..., as_of=<the close's own
+           timestamp>)` - the same independent, already-trusted corroboration
+           source the going-forward fix uses, so the correction and the
+           prevention share one definition of "what the price actually
+           was." Deliberately NOT "what did the market eventually settle
+           at" (that requires external confirmation this function has no
+           way to verify on its own) - just "what was the last price this
+           app's own trusted data actually recorded," which is directly
+           computable and requires no assumption about the eventual
+           outcome.
+
+        Guarded to ONLY ever touch a `closed:` trade (never an entry) and
+        only a trade that hasn't already been corrected, so this is safe to
+        re-run. Returns None (no-op) if the trade doesn't exist, isn't a
+        close, or is already excluded."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT ticker, side, size, price, fee, reason, excluded FROM trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            ticker, side, size, bad_price, fee, reason, already_excluded = row
+            if already_excluded or not reason.startswith("closed:"):
+                return None
+            fee = fee or 0.0
+            bad_gross = size * bad_price if side == "yes" else size * (1 - bad_price)
+            reversed_cash_back = bad_gross - fee
+            self.bankroll -= reversed_cash_back
+
+            corrected_credit = 0.0
+            if corrected_price is not None:
+                good_gross = size * corrected_price if side == "yes" else size * (1 - corrected_price)
+                good_fee = kalshi_fees.taker_fee(size, corrected_price, ticker=ticker)
+                corrected_credit = good_gross - good_fee
+                self.bankroll += corrected_credit
+
+            conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
+            conn.execute("UPDATE trades SET excluded = 1 WHERE id = ?", (trade_id,))
+        # Also flip the in-memory copy - trade_analytics.build_trade_history
+        # (and therefore the dashboard's History table, /api/state's
+        # recent_trades, and every P&L summary main.py computes) reads
+        # self.trade_log directly, not a fresh SQL query, so without this
+        # the correction would be invisible until the next process restart.
+        for t in self.trade_log:
+            if t.id == trade_id:
+                t.excluded = True
+                break
+        return {
+            "trade_id": trade_id, "ticker": ticker,
+            "reversed_cash_back": round(reversed_cash_back, 2),
+            "corrected_credit": round(corrected_credit, 2),
+            "bankroll_after": round(self.bankroll, 2),
+        }
 
     def reset(self, starting_bankroll: float):
         """Wipes the persisted account and starts fresh — used by POST

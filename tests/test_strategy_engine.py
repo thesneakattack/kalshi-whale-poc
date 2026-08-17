@@ -729,6 +729,69 @@ def test_check_exits_stop_loss_does_not_trigger_above_limit(tmp_path, monkeypatc
     assert decisions == []
 
 
+# --- price corroboration (2026-08-17, direct instruction "fix this
+# immediately" after a real WTA position - Cirstea/Kalinskaya - was
+# liquidated via stop-loss at exit_price 0.0 one tick after market_history's
+# own REST-polled price had sat pinned at 0.99 for 13+ minutes) ----------
+
+def test_check_exits_distrusts_a_ws_price_far_from_a_fresh_rest_snapshot(tmp_path, monkeypatch):
+    """The exact failure reproduced: a single garbage WS tick (0.0) must
+    not liquidate a position market_history's own fresh REST data says is
+    worth 0.99. Corroboration should override current_price before the
+    stop-loss check ever sees the garbage value."""
+    from services import strategy_engine, market_history
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.99)
+
+    decisions = strategy.check_exits({"TICK-A": 0.0}, [], _cfg(stop_loss_pct=0.4))
+    assert decisions == [], "a 0.99 corroborated price must not stop-loss a yes position"
+    assert "TICK-A" in broker.positions
+
+
+def test_check_exits_still_fires_when_ws_and_rest_agree(tmp_path, monkeypatch):
+    """Corroboration must not disable real stop-losses - only distrust an
+    isolated outlier tick."""
+    from services import strategy_engine, market_history
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.31)
+
+    decisions = strategy.check_exits({"TICK-A": 0.3}, [], _cfg(stop_loss_pct=0.3))
+    assert len(decisions) == 1
+    assert "stop-loss" in decisions[0]["reason"]
+
+
+def test_check_exits_fails_open_with_no_recent_snapshot(tmp_path, monkeypatch):
+    """No market_history data (illiquid ticker, cold start) must not block
+    a stop-loss that would otherwise correctly fire - same behaviour as
+    before this fix existed."""
+    from services import strategy_engine, market_history
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: None)
+
+    decisions = strategy.check_exits({"TICK-A": 0.3}, [], _cfg(stop_loss_pct=0.3))
+    assert len(decisions) == 1
+
+
+def test_check_exits_allows_a_genuine_large_move_within_the_deviation_band(tmp_path, monkeypatch):
+    """A real, large, fast move that both sources already agree on
+    (within the deviation band) must fire immediately, not be delayed."""
+    from services import strategy_engine, market_history
+
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.7, reason="entry")
+    # WS and REST agree closely (within the 0.30 band) that price cratered.
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.32)
+
+    decisions = strategy.check_exits({"TICK-A": 0.3}, [], _cfg(stop_loss_pct=0.4))
+    assert len(decisions) == 1
+
+
 def test_check_exits_skips_position_opened_this_same_tick(tmp_path, monkeypatch):
     # Live bug, 2026-08-11: a position the signal loop just opened this
     # tick was immediately stop-lossed against latest_prices snapshotted

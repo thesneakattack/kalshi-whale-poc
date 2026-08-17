@@ -254,7 +254,7 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
             ).fetchall()
             closes = conn.execute(
                 "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%' ORDER BY timestamp",
+                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0 ORDER BY timestamp",
                 (since_ts,),
             ).fetchall()
     except sqlite3.Error as exc:
@@ -365,7 +365,7 @@ def performance_by_epoch(since_ts: float | None = None, now: float | None = None
             conn.row_factory = sqlite3.Row
             closes = conn.execute(
                 "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%'",
+                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0",
                 (since_ts,),
             ).fetchall()
     except sqlite3.Error as exc:

@@ -192,7 +192,8 @@ def _seed_trade(tid, ticker, side, price, ts, reason, signal_seen_at=None, size=
         conn.execute(
             "CREATE TABLE IF NOT EXISTS trades (id TEXT PRIMARY KEY, ticker TEXT NOT NULL, "
             "side TEXT NOT NULL, size INTEGER NOT NULL, price REAL NOT NULL, reason TEXT NOT NULL, "
-            "timestamp REAL NOT NULL, config_fingerprint TEXT, fee REAL, signal_seen_at REAL)"
+            "timestamp REAL NOT NULL, config_fingerprint TEXT, fee REAL, signal_seen_at REAL, "
+            "excluded INTEGER NOT NULL DEFAULT 0)"
         )
         conn.execute(
             "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "

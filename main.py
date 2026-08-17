@@ -5089,6 +5089,38 @@ async def get_reset_history(limit: int = 50):
     return {"events": reset_log.recent(limit=min(max(limit, 1), 200))}
 
 
+@app.post("/api/admin/correct-trade")
+async def correct_trade(trade_id: str, corrected_price: float | None = None):
+    """Remediate one confirmed-fabricated CLOSE trade -
+    services/paper_broker.py's correct_erroneous_close, called through the
+    live app (not a detached script) so it mutates the SAME in-memory
+    `broker` object this server is actually using, not just the on-disk
+    file - CLAUDE.md's own data/*.db warning is exactly this failure mode
+    in reverse (a script writing to the DB out from under a live process
+    leaves the live process's memory stale).
+
+    Added 2026-08-17 for a real, confirmed incident: strategy_engine.
+    check_exits closed a real WTA position (Cirstea/Kalinskaya) via
+    stop-loss at a fabricated exit_price of 0.0 one tick after
+    market_history's own independently-polled REST price had sat pinned at
+    0.99 for 13+ minutes - see check_exits' own comment on the
+    corroboration fix this same incident produced. Two more tennis
+    positions showed the identical shape the same night.
+
+    Deliberately requires the caller to supply `trade_id` explicitly (never
+    a bulk/pattern-matched sweep) and, when correcting to a real price
+    rather than just reversing the fabricated debit, requires
+    `corrected_price` explicitly too - this endpoint applies a correction,
+    it does not decide which trades need one."""
+    result = broker.correct_erroneous_close(trade_id, corrected_price=corrected_price)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"trade {trade_id!r} not found, not a close, or already corrected",
+        )
+    return result
+
+
 @app.post("/api/reset")
 async def reset_broker(body: ResetBody = ResetBody()):
     cfg = config_store.get()

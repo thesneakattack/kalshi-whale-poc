@@ -445,7 +445,7 @@ def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[d
             rows = conn.execute(
                 "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
                 "fee, signal_seen_at FROM trades "
-                "WHERE ticker LIKE ? AND timestamp > ? AND timestamp <= ? ORDER BY timestamp",
+                "WHERE ticker LIKE ? AND timestamp > ? AND timestamp <= ? AND excluded = 0 ORDER BY timestamp",
                 (f"{series}-%", since_ts - 7 * 86400, before_ts),
             ).fetchall()
     except sqlite3.Error:

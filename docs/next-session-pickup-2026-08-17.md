@@ -112,6 +112,190 @@ an already-proven pattern used elsewhere in this exact file. **Do a real
 Selenium pass on the History and Positions tabs before trusting this
 fully.**
 
+## RESOLVED tonight: root cause fixed, live data remediated, verified
+
+Everything below this line was still open as of the stopgap. All of it is
+now fixed at the root, not just contained, and 1,132 tests pass.
+
+**1. Root cause fixed.** `services/market_history.py::recent_price(ticker,
+max_age_sec, as_of)` returns the most recent REST-polled snapshot within a
+freshness window, or `None` (fail-open) if there isn't one.
+`strategy_engine.check_exits` now calls it before trusting `current_price`
+for a stop-loss/take-profit decision: if a fresh snapshot disagrees with
+the websocket-sourced price by more than 0.30, the corroborated value
+overrides it. `_PRICE_CORROBORATION_MAX_AGE_SEC = 120`,
+`_PRICE_CORROBORATION_MAX_DEVIATION = 0.30` - wide enough to never delay a
+genuine large real move (worst case, confirmed on the very next tick once
+REST catches up), tight enough to catch the demonstrated 0.99-vs-0.0
+failure with enormous margin. The `strategy_overrides.by_category.Sports.
+stop_loss_pct: null` stopgap can be removed now that the mechanism itself
+is fixed - left in place for now as defense in depth, but it's no longer
+load-bearing.
+
+**2. Corrupted data remediated, not just excluded.** Added
+`trades.excluded` (same non-destructive idiom as `signal_log.excluded` -
+flagged, never deleted) plus
+`PaperBroker.correct_erroneous_close(trade_id, corrected_price=None)`,
+which reverses a specific close's fabricated bankroll impact and,
+optionally, credits what should have been paid at a corroborated price
+instead - deliberately NOT a guessed "fair settlement" value, just
+`market_history.recent_price` at the close's own timestamp, the same
+trusted source the going-forward fix uses. `trade_analytics.
+build_trade_history` skips excluded rows entirely (neither a loss nor a
+phantom win); `diagnostics.py` and `series_watcher.py`'s close-row queries
+now filter `excluded = 0` too, so win-rate/P&L stats stop counting them
+everywhere, not just in the History table.
+
+**3. Applied live, through the running server, not a detached script.**
+Added `POST /api/admin/correct-trade` specifically so the correction
+mutates the SAME in-memory `broker` object the live app is using (a
+separate `ddev exec` script would update the DB but leave the live
+process's memory stale until restart - the exact desync CLAUDE.md's
+`data/*.db` warning describes, in reverse). Called for all three confirmed
+trades, corroborated price 0.99 for each (computed independently per
+trade, at its own close timestamp):
+
+```
+4e5fe02f  KXATPCHALLENGERMATCH-...SAKPOL-SAK   credited $554.01
+e7d76da0  KXATPCHALLENGERMATCH-...MARMID-MID   credited $493.66
+c6437ce7  KXWTAMATCH-...CIRKAL-CIR             credited $580.72
+                                          total: $1,628.39
+```
+
+Verified both live (`GET /api/state` bankroll) and on disk (`excluded=1`
+on all three rows) agree, and that `build_trade_history` no longer
+produces a row for any of the three. A fourth trade sharing the same event
+prefix (`KXWTAMATCH-...CIRKAL-KAL`, the *Kalinskaya*-wins contract, closed
+at a moderate 0.50 with no 0.99-pinned signature) was checked and
+deliberately left untouched - it doesn't show the fabricated-price shape,
+and if Kalinskaya's real win probability was genuinely falling as
+Cirstea's comeback developed, a moderate stop-loss there is plausibly
+legitimate, not a bug.
+
+**4. A second, related display bug found and fixed while auditing every
+`close_position()` call site for the same shape:** trades closed via the
+`exit_min_seconds_to_close` runway gate (shipped earlier this session) and
+via `position_netting.py` had no matching pattern in `trade_analytics.
+classify_close_type`, so they silently rendered as `"unknown"` - directly
+matching a separate report ("certain trades being closed by 'unknown'").
+Both patterns added (`runway_exhausted`, `position_netting`), plus
+`runway_exhausted` joins `_EARLY_PROFIT_TYPES` (it's a deliberate early
+exit ahead of settlement, same as take-profit/auto-exit/reversal). Verified
+live: 0 unknown close types remain in the current account, down from 1.
+
+## CRITICAL, confirmed and stopgapped: stop-loss can liquidate a WINNING position at a fabricated price
+
+Direct instruction to double-check: a real Cirstea/Kalinskaya WTA position
+was reported as a loss, and per the user's own real-world account Cirstea
+won (comeback in set two, Kalinskaya retired injured in the final set).
+Verified against this app's own independent data stores, not assumed:
+
+```
+market_history (REST-polled, independent of the exit path):
+  22:22:54 -> 22:35:59  yes_price PINNED AT 0.99 for 13+ minutes straight
+  22:36:15              yes_price 0.5   (one tick after the close)
+
+paper_broker trade log:
+  22:07:58  OPEN   yes  587 ct @ 0.69   "whale print 13743 @ 0.69 (conf 0.8)"
+  22:36:14  CLOSE  yes  587 ct @ 0.00   "stop-loss hit: unrealized loss 102%
+                                          of cost basis (limit 40%)
+                                          (realized -413.82)"
+```
+
+The real market believed this position was a near-lock winner (0.99, i.e.
+99% implied) for over thirteen minutes, and then, one tick later, the
+app's own exit logic recorded the price as exactly **0.0** and liquidated
+at a $413.82 loss. This is not a legitimate stop-loss catching a real
+reversal - the real market never moved.
+
+**Root cause, found in `services/strategy_engine.py::check_exits`:**
+
+```python
+current_price = latest_prices.get(ticker, pos.entry_price)
+```
+
+`latest_prices` is `state["latest_prices"]`, written in place by the
+websocket `ticker` channel handler (`_process_stream_ticker` in
+`main.py`) on every single tick update, with **no corroboration against
+any other source** - not against `market_history`'s independently-polled
+REST price sitting right there in the same process, not against a moving
+average, not against a sanity bound on how far price can move in one
+tick. A single garbage/outlier tick - almost certainly a thin, in-play
+sports order book briefly presenting a near-zero top-of-book quote - gets
+trusted completely and immediately triggers liquidation.
+
+**This is not isolated.** Checked all stop-loss closes at <=5c across
+every tennis series tonight: **3 for 3** show the identical shape -
+`market_history` pinned near 0.99 for minutes, then an exit at exactly
+0.0:
+
+| time (UTC) | ticker | loss |
+|---|---|---|
+| 21:46:09 | `KXATPCHALLENGERMATCH-...SAKPOL-SAK` | (stop-loss, exit 0.0) |
+| 22:01:17 | `KXATPCHALLENGERMATCH-...MARMID-MID` | (stop-loss, exit 0.0) |
+| 22:36:14 | `KXWTAMATCH-...CIRKAL-CIR` | -$413.82 (confirmed against a real result) |
+
+**Checked and ruled out as a wider problem, not assumed:** zero crypto
+(`KXBTC*`/`KXETH*`) stop-loss closes at <=5c tonight, in the same window,
+on far more actively-traded series. This looks like an illiquid in-play
+sports order book producing a single degenerate quote, not a universal
+parsing bug - consistent with the fix being scoped to Sports rather than
+applied globally.
+
+**Stopgap applied** (`config/settings.yaml`,
+`strategy_overrides.by_category.Sports.stop_loss_pct: null`) - a one-line,
+fully reversible config change, not a code change, chosen deliberately
+over touching `check_exits`' core logic this late in an already
+error-prone session. Verified live via `GET /api/config` immediately
+after saving (also re-confirms tonight's config-reload fix is working).
+Take-profit and settlement-based closing are untouched - only the
+mechanism that was demonstrably destroying winning positions is disabled,
+and only for the one category where it was observed.
+
+**The real fix, for next session, with a clear head:** `current_price`
+must be corroborated before it's allowed to trigger a stop-loss -
+compare against `market_history`'s most recent REST snapshot for the same
+ticker, and either require the two to roughly agree, or require the WS
+price to persist across two consecutive ticks before acting on it. Given
+`check_exits`' own docstring already documents a near-identical prior
+incident (2026-08-11, a same-tick stale-quote fake -21% loss, fixed via
+`opened_since`), this general class - "a single untrusted price read can
+liquidate a position" - has now caused real damage twice and is worth
+fixing at the root rather than patching each new shape of it.
+
+**Also confirmed while investigating:** the unexplained `settings.yaml`
+diff flagged earlier tonight is not just sitting there - it is **live and
+was actively governing every trade** placed this session, including the
+ones destroyed by this bug. `strategy_overrides.by_category` and
+`by_series` were both empty (`{}`) before this stopgap, meaning every
+position - Sports and Crypto alike - was running on the single global
+`strategy.stop_loss_pct: 0.403` (~40%) from that diff, not the
+category-tuned values from earlier tonight. Confirmed the "(limit 40%)"
+text in the trade reasons above matches `0.403` exactly. This diff is
+still uncommitted and still unexplained - see its own section below - but
+it is not inert, and that changes its priority for next session from
+"investigate when convenient" to "understand this before trusting any
+further live trades."
+
+## Answering directly: does the REST->websocket architecture change fix "slow whale stream, decision making, and management"?
+
+Partially, and it's worth being precise about which part. Whale-follow
+**signal generation and entry decisions already run off the websocket
+trade stream in real time**, not gated by the 6-second tick -
+`_process_stream_trade` calls `evaluate()` directly as each trade arrives.
+The 6-second REST cadence mainly gates: full market-list rediscovery,
+settlement/close detection (see `market_lifecycle_v2` above),
+`market_history` snapshot resolution, and live sports game state. So the
+proposed architecture change would speed up *discovery and settlement
+detection*, not the moment-to-moment whale-signal path, which is already
+fast when `trade_stream` is healthy (confirmed tonight:
+`dropped_messages: 0`).
+
+**Position management is a separate, more serious problem than latency** -
+see the critical finding directly above. The stop-loss bug isn't slow, it's
+wrong, and fixing "decision making and management" starts there, not with
+websocket migration.
+
 ## ARCHITECTURE: most of the 6-second REST cadence has a websocket replacement
 
 Direct point, correctly made: "I don't see why REST API polling should even

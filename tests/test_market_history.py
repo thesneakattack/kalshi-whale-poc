@@ -166,3 +166,28 @@ def test_compute_hypothetical_trades_skips_window_with_no_prior_snapshot(tmp_pat
 
     trades = mh.compute_hypothetical_trades(lookback_windows_sec=(86400,))
     assert trades == []
+
+
+# --- recent_price / stop-loss corroboration (2026-08-17) -----------------
+
+def test_recent_price_returns_the_latest_snapshot_within_the_window(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    now = time.time()
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.5, "spread": 0.01,
+                          "volume_24h": 100, "time_to_close_sec": 100}], timestamp=now - 60)
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.99, "spread": 0.01,
+                          "volume_24h": 100, "time_to_close_sec": 100}], timestamp=now - 5)
+    assert mh.recent_price("TICK-A", max_age_sec=120, as_of=now) == 0.99
+
+
+def test_recent_price_is_none_when_the_only_snapshot_is_too_stale(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    now = time.time()
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.5, "spread": 0.01,
+                          "volume_24h": 100, "time_to_close_sec": 100}], timestamp=now - 300)
+    assert mh.recent_price("TICK-A", max_age_sec=120, as_of=now) is None
+
+
+def test_recent_price_is_none_for_an_unknown_ticker(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    assert mh.recent_price("NEVER-SEEN", max_age_sec=120) is None

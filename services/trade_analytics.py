@@ -37,6 +37,16 @@ _CLOSE_TYPE_PATTERNS = [
     ("stop_loss", re.compile(r"^closed: stop-loss hit")),
     ("sentiment_reversal", re.compile(r"^closed: whale sentiment reversed")),
     ("auto_exit", re.compile(r"^closed: auto-exit")),
+    # ROADMAP #1's runway gate (strategy_engine.check_exits'
+    # exit_min_seconds_to_close, shipped this session) - real gap, direct
+    # report ("certain trades being closed by 'unknown'"): this pattern
+    # never existed, so every runway-exhausted close fell through
+    # classify_close_type to None and rendered as "unknown" in the UI.
+    ("runway_exhausted", re.compile(r"^closed: runway exhausted")),
+    # services/position_netting.py's own close reason - a second real gap
+    # found while auditing every close_position() call site for this same
+    # bug shape after the runway_exhausted one above turned out to be real.
+    ("position_netting", re.compile(r"^closed: position netting")),
     # market_strategy.py's whale-independent analog to sentiment_reversal -
     # same "close if the signal this position was entered on has flipped
     # against the held side" idea, using real price momentum instead of
@@ -50,7 +60,8 @@ _REALIZED_RE = re.compile(r"\(realized ([+-][\d.]+)\)")
 # Close types that represent a deliberate profit-taking exit ahead of
 # settlement - the only ones "left on the table" is a meaningful, honest
 # number for (see build_trade_history).
-_EARLY_PROFIT_TYPES = ("take_profit", "auto_exit", "sentiment_reversal", "momentum_reversal")
+_EARLY_PROFIT_TYPES = ("take_profit", "auto_exit", "sentiment_reversal", "momentum_reversal",
+                       "runway_exhausted")
 
 
 def classify_close_type(reason: str) -> str | None:
@@ -76,6 +87,18 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
     last_entry: dict[str, dict] = {}
     rows = []
     for t in trade_log:
+        # excluded (2026-08-17): a CLOSE trade flagged by
+        # PaperBroker.correct_erroneous_close after a confirmed-fabricated
+        # exit_price - real incident, a stop-loss fired on a price
+        # market_history's own independent data said was wrong, corrupting
+        # win rate/P&L for every consumer of this function. Skipped
+        # entirely rather than zeroed, so it neither counts as a loss nor
+        # as a phantom win - it simply never happened, as far as any stat
+        # built from this function is concerned. Never set on an entry row
+        # (correct_erroneous_close only ever touches `closed:` rows), so
+        # this can't orphan a later close's pairing.
+        if t.get("excluded"):
+            continue
         if not t["reason"].startswith("closed:"):
             last_entry[t["ticker"]] = t
             continue

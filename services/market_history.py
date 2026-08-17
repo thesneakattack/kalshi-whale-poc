@@ -183,6 +183,40 @@ def volatility(ticker: str, lookback_sec: float, as_of: float | None = None) -> 
     return variance ** 0.5
 
 
+def recent_price(ticker: str, max_age_sec: float, as_of: float | None = None) -> float | None:
+    """Most recent snapshot's yes_price, or None if there isn't one within
+    max_age_sec.
+
+    Added 2026-08-17 as the corroboration source for
+    strategy_engine.check_exits' stop-loss/take-profit decision - direct,
+    confirmed-live incident: a real WTA position (Cirstea/Kalinskaya) was
+    liquidated via stop-loss at exit_price 0.0 one tick after this exact
+    table's own independently REST-polled snapshots had sat pinned at 0.99
+    for 13+ minutes straight. `latest_prices.get(ticker, pos.entry_price)`
+    (state["latest_prices"], written by the websocket ticker channel) was
+    trusted with zero corroboration against this already-known-good REST
+    price sitting in the same process. Three tennis positions showed the
+    identical shape the same night; zero crypto positions did, consistent
+    with a thin/illiquid in-play sports order book producing one garbage
+    quote rather than a universal parsing bug.
+
+    "No recent snapshot" (illiquid ticker, cold start, or a genuinely new
+    market with no REST history yet) returns None - the caller's contract
+    is to fail OPEN in that case (trust current_price as before, same as
+    today), not to block every exit decision just because corroboration
+    isn't available yet."""
+    as_of = as_of if as_of is not None else time.time()
+    with _connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT yes_price, timestamp FROM snapshots WHERE ticker = ? AND timestamp <= ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (ticker, as_of),
+        ).fetchone()
+    if row is None or (as_of - row[1]) > max_age_sec:
+        return None
+    return row[0]
+
+
 def snapshot_count(ticker: str | None = None) -> int:
     with _connect(DB_PATH) as conn:
         if ticker:

@@ -29,6 +29,31 @@ _ANALYST_FRESHNESS_SEC = 24 * 3600
 # field (tests, ml_feed's synthetic configs) still get a sane default.
 _MAX_CLOSE_WINDOW_SEC = 2 * 3600
 
+# Stop-loss/take-profit price corroboration (2026-08-17, direct instruction
+# to fix immediately after confirming a real WTA position - Cirstea/
+# Kalinskaya - was liquidated via stop-loss at exit_price 0.0 one tick
+# after market_history's own independently REST-polled price had sat
+# pinned at 0.99 for 13+ minutes. See check_exits' own comment at the
+# corroboration call site for the full incident writeup.
+#
+# _MAX_AGE_SEC: how stale a market_history snapshot may be and still count
+# as corroboration. Generous relative to a healthy ~6-20s REST tick, so a
+# genuinely brief slow tick doesn't spuriously disable protection; tight
+# enough that a truly stale snapshot (a ticker that fell out of the
+# watchlist) can't offer false comfort.
+_PRICE_CORROBORATION_MAX_AGE_SEC = 120.0
+# _MAX_DEVIATION: how far the WS-sourced current_price may disagree with a
+# fresh, independent REST snapshot before it's distrusted. 0.30 is
+# deliberately wide - it must never block a genuine, large, fast real
+# move (a real match-deciding swing can legitimately cover 20-30 points in
+# seconds) while still catching the demonstrated failure (a 0.99 gap:
+# 0.99 real vs 0.0 fabricated) with enormous margin. A real fast move that
+# also outruns this margin will simply be confirmed on the very next tick,
+# once market_history's own REST poll catches up - a few seconds of delay
+# on a rare legitimate case, against eliminating instant liquidation of a
+# winning position on a garbage single tick. Clearly favorable trade.
+_PRICE_CORROBORATION_MAX_DEVIATION = 0.30
+
 
 def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
     """Shared by every strategy's check_exits (FollowTheWhaleStrategy below,
@@ -659,6 +684,35 @@ class FollowTheWhaleStrategy:
             exit_min_seconds_to_close = strat_cfg.get("exit_min_seconds_to_close")
 
             current_price = latest_prices.get(ticker, pos.entry_price)
+            # Corroborate against market_history's independently
+            # REST-polled price before trusting a single websocket tick for
+            # a stop-loss/take-profit decision (2026-08-17, direct
+            # instruction: "fix this immediately"). Real, confirmed-live
+            # incident: a WTA position (Cirstea/Kalinskaya) was liquidated
+            # via stop-loss at exit_price 0.0 one tick after market_history
+            # had sat pinned at 0.99 for 13+ minutes - the real market
+            # believed this position was a near-lock winner, and per the
+            # user's own direct confirmation of the real match result, it
+            # was. `latest_prices` is written by the websocket ticker
+            # handler with no corroboration at all; a single garbage quote
+            # (a thin, in-play sports order book briefly presenting a
+            # near-zero top-of-book price) was trusted completely and
+            # instantly destroyed a winning position. Confirmed the same
+            # night on 3 of 3 checked tennis positions and 0 of 0 crypto
+            # ones in the same window - scoped to corroboration for
+            # everyone, not just tennis, since the failure mode (trusting
+            # one unconfirmed tick) is general even though this particular
+            # trigger looks illiquidity-specific.
+            #
+            # "No recent snapshot" (market_history.recent_price returns
+            # None) changes nothing - fails open, exactly like before this
+            # fix, so an illiquid/newly-discovered ticker with no REST
+            # history yet is never blocked from having its stop-loss work.
+            corroborated = market_history.recent_price(
+                ticker, _PRICE_CORROBORATION_MAX_AGE_SEC, as_of=exit_now,
+            )
+            if corroborated is not None and abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION:
+                current_price = corroborated
             # broker.cost_basis(), not pos.size * pos.entry_price directly -
             # that formula is only correct for the yes side; see
             # PaperBroker.cost_basis's docstring and open_position's unit_cost.
