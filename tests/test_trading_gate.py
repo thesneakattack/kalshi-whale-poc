@@ -1563,7 +1563,7 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
 
     captured = {}
 
-    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None):
+    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None, close_times=None):
         captured["opened_since"] = opened_since
         return []
     monkeypatch.setattr(main.strategy, "check_exits", fake_check_exits)

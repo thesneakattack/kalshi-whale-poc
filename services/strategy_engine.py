@@ -200,6 +200,42 @@ class FollowTheWhaleStrategy:
             )
             return self._skip(signal, "close time is not within the trade window")
 
+        # Entry-side MINIMUM runway (ROADMAP #1, 2026-08-16 — "otherwise I
+        # can't trust any insights whatsoever"). close_window_sec above is
+        # only an UPPER bound; nothing refused an entry once too little time
+        # remained to actually manage the position before close, so a
+        # position could open with seconds of runway and ride straight to
+        # settlement having crossed none of take_profit/stop_loss/auto_exit.
+        # The special_market_min_seconds_to_close grace below looks like it
+        # covers this but doesn't - it only fires for markets with
+        # can_close_early/collateral_return_type/mutually_exclusive set,
+        # which plain crypto price-crossing markets (KXBTC15M) never have.
+        # This one is universal and applies regardless of those flags.
+        # Confirmed live cost of not having it (24h to 2026-08-17T00:00Z):
+        # 755 KXBTC15M whale signals fired inside the final 60 seconds of
+        # their market's life, and 12 of 25 stop-losses fired only after
+        # price had already gapped >=10 points past the configured limit -
+        # a percentage stop cannot help on a market that settles to zero.
+        # Skipped when is_live, same reasoning the close_window check above
+        # already uses: for an in-play event the scheduled close time isn't
+        # authoritative.
+        min_seconds_to_close = strat_cfg.get("min_seconds_to_close")
+        if (
+            not is_live
+            and min_seconds_to_close
+            and seconds_to_close is not None
+            and seconds_to_close < min_seconds_to_close
+        ):
+            candidate_log.record_rejection(
+                signal.ticker, "whale_follow", "min_seconds_to_close",
+                seconds_to_close, min_seconds_to_close, side=signal.side,
+            )
+            return self._skip(
+                signal,
+                f"only {seconds_to_close:.0f}s of runway left before close "
+                f"(minimum {min_seconds_to_close:.0f}s) — too late to manage a position",
+            )
+
         # Conservative gate for markets with early-close or special settlement
         try:
             # lazy import main to avoid circular import at module load time
@@ -460,6 +496,7 @@ class FollowTheWhaleStrategy:
     def check_exits(
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
         opened_since: float | None = None, category_by_ticker: dict | None = None,
+        close_times: dict | None = None,
     ) -> list[dict]:
         """Actively manages already-open positions instead of leaving them
         untouched until settlement - direct request: this app had zero exit
@@ -542,6 +579,15 @@ class FollowTheWhaleStrategy:
         base_cfg = cfg["strategy"]
         overrides = cfg.get("strategy_overrides")
         category_by_ticker = category_by_ticker or {}
+        # ticker -> close_time string, resolved by main.py from the markets
+        # it already fetched this tick (zero new API calls, same
+        # "already-fetched, don't fetch again" discipline as
+        # category_by_ticker above). Position itself doesn't carry a
+        # close_time, and it couldn't safely: close_time is mutable
+        # (docs/kalshi/market_lifecycle.md's close_date_updated event), so
+        # a value captured at entry could be stale by exit time.
+        close_times = close_times or {}
+        exit_now = time.time()
 
         market_results = market_results or {}
         decisions = []
@@ -568,6 +614,7 @@ class FollowTheWhaleStrategy:
             reversal_lean_pct = strat_cfg.get("exit_sentiment_lean_pct", 65)
             auto_exit_enabled = strat_cfg.get("auto_exit_enabled", False)
             auto_exit_threshold = strat_cfg.get("auto_exit_threshold", 0.6)
+            exit_min_seconds_to_close = strat_cfg.get("exit_min_seconds_to_close")
 
             current_price = latest_prices.get(ticker, pos.entry_price)
             # broker.cost_basis(), not pos.size * pos.entry_price directly -
@@ -601,6 +648,23 @@ class FollowTheWhaleStrategy:
                 reason = (
                     f"stop-loss hit: unrealized loss {-pnl_pct:.0%} of cost basis "
                     f"(limit {stop_loss_pct:.0%})"
+                )
+            elif (
+                exit_min_seconds_to_close
+                and (secs_left := market_history.seconds_to_close(close_times.get(ticker), exit_now)) is not None
+                and secs_left <= exit_min_seconds_to_close
+            ):
+                # Time-to-close forced decision (ROADMAP #1's second gate).
+                # take_profit/stop_loss/auto_exit are all purely price-driven,
+                # so nothing forced a decision as runway ran out - a position
+                # could sit through its market's final seconds and settle
+                # unmanaged. Safe as an elif (unlike exit_on_reversal below,
+                # see that branch's comment): this condition tests both
+                # "enabled" and "actually triggered" in one expression, so it
+                # never consumes the chain's one shot without setting a reason.
+                reason = (
+                    f"runway exhausted: {secs_left:.0f}s to close "
+                    f"(floor {exit_min_seconds_to_close:.0f}s) — closing rather than riding to settlement"
                 )
             else:
                 # Real bug found 2026-08-14: this used to be `elif

@@ -1226,3 +1226,96 @@ def test_evaluate_skips_when_a_limit_order_is_already_pending_on_the_ticker(tmp_
     assert second["action"] == "skip"
     assert "already resting" in second["reason"]
     assert len(broker.pending_orders) == 1  # the first order, untouched
+
+
+# ---- ROADMAP #1: minimum-runway gates (entry + exit) ----
+# 2026-08-16/17 direct report: "position management didn't reverse sentiment
+# immediately" / positions riding to settlement unmanaged. close_window_sec
+# was only an UPPER bound on time-to-close; nothing refused an entry, or
+# forced an exit, once too little runway remained to manage the position.
+
+def test_entry_rejected_when_runway_below_minimum(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 45))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time),
+        _cfg(entry_threshold=0.65, close_window_sec=4 * 3600, min_seconds_to_close=300),
+    )
+    assert decision["action"] == "skip"
+    assert "runway" in decision["reason"]
+
+
+def test_entry_allowed_when_runway_above_minimum(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 1800))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time),
+        _cfg(entry_threshold=0.65, close_window_sec=4 * 3600, min_seconds_to_close=300),
+    )
+    assert decision["action"] == "trade"
+
+
+def test_min_seconds_to_close_unset_is_a_no_op(tmp_path, monkeypatch):
+    # Backward compatibility: every existing config with no
+    # min_seconds_to_close set must behave exactly as before.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 5))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time),
+        _cfg(entry_threshold=0.65, close_window_sec=4 * 3600),
+    )
+    assert decision["action"] == "trade"
+
+
+def test_min_seconds_to_close_skipped_when_market_is_live(tmp_path, monkeypatch):
+    # Same reasoning close_window already uses: for an in-play event the
+    # scheduled close time isn't authoritative.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 5))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time),
+        _cfg(entry_threshold=0.65, close_window_sec=4 * 3600, min_seconds_to_close=300),
+        is_live=True,
+    )
+    assert decision["action"] == "trade"
+
+
+def test_exit_forced_when_runway_exhausted(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", 100, 0.50, "test entry")
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 20))
+    # Price flat, so neither take-profit nor stop-loss would ever fire -
+    # this position would otherwise ride straight to settlement.
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.50}, [], _cfg(exit_min_seconds_to_close=60),
+        close_times={"TICK-A": close_time},
+    )
+    assert len(decisions) == 1
+    assert "runway exhausted" in decisions[0]["reason"]
+
+
+def test_exit_not_forced_while_runway_remains(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", 100, 0.50, "test entry")
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.50}, [], _cfg(exit_min_seconds_to_close=60),
+        close_times={"TICK-A": close_time},
+    )
+    assert decisions == []
+
+
+def test_exit_runway_gate_is_a_no_op_without_close_time(tmp_path, monkeypatch):
+    # No close_time known for the ticker - degrade honestly, never guess.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", 100, 0.50, "test entry")
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.50}, [], _cfg(exit_min_seconds_to_close=60), close_times={},
+    )
+    assert decisions == []

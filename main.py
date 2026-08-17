@@ -274,6 +274,22 @@ def _bump_generation():
     state["generation"] += 1
 
 
+def _close_time_by_ticker() -> dict:
+    # ticker -> close_time, for check_exits' runway-exhausted gate
+    # (strategy.exit_min_seconds_to_close, ROADMAP #1). Same
+    # already-in-memory, zero-new-API-calls construction as
+    # _category_by_ticker below, but sourced from state["markets"] rather
+    # than market_titles: close_time is mutable upstream
+    # (docs/kalshi/market_lifecycle.md's close_date_updated event), so this
+    # deliberately reads the freshest per-tick markets list every call
+    # instead of anything cached at entry time.
+    return {
+        m["ticker"]: m.get("close_time")
+        for m in (state.get("markets") or [])
+        if m.get("ticker") and m.get("close_time")
+    }
+
+
 def _category_by_ticker() -> dict:
     # Per-series/category config overrides (services/config_overrides.py,
     # 2026-08-15 direct request) - built from the already-in-memory
@@ -440,7 +456,7 @@ async def _process_stream_trade(trade: dict) -> None:
         await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
     for close_decision in strategy.check_exits(
         state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
-        category_by_ticker=_category_by_ticker(),
+        category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
     ):
         await _handle_close_decision(close_decision)
     _bump_generation()
@@ -473,7 +489,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         cfg_now = config_store.get()
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
-            opened_since=now, category_by_ticker=_category_by_ticker(),
+            opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
         ):
             await _handle_close_decision(close_decision)
     _bump_generation()
@@ -3288,7 +3304,7 @@ async def trading_loop():
             # docstring for the live incident this fixes.
             for close_decision in strategy.check_exits(
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
-                category_by_ticker=_category_by_ticker(),
+                category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
             ):
                 await _handle_close_decision(close_decision)
 
