@@ -22,6 +22,7 @@ from services import backtest
 from services import calibration_history
 from services import candidate_log
 from services import cross_strategy
+from services import diagnostics
 from services import regime_analytics
 from services import stats_power
 from services import confidence_calibration
@@ -4661,6 +4662,27 @@ def _shadow_state() -> dict:
         "recent_trades": shadow.recent(25),
         **shadow.stats(),
     }
+
+
+@app.get("/api/diagnostics")
+async def get_diagnostics(hours: float = 24.0):
+    """Read-only performance/integrity report - services/diagnostics.py.
+    Offline checks only (no API calls); see /api/diagnostics/coverage for
+    the one check that needs real exchange data."""
+    now = time.time()
+    return diagnostics.run_offline(config_store.get(), since_ts=now - hours * 3600, now=now)
+
+
+@app.get("/api/diagnostics/coverage")
+async def get_diagnostics_coverage(pages: int = 2):
+    """The one check the app cannot answer from its own stores: how much
+    real exchange-wide whale flow it never sees. Makes 1-2 real API calls
+    (GET /markets/trades, exchange-wide), so it's a separate route rather
+    than part of /api/diagnostics' always-safe offline set."""
+    cfg = config_store.get()
+    watched = {m["ticker"] for m in (state.get("markets") or []) if m.get("ticker")}
+    check = await diagnostics.check_coverage(cfg, watched, pages=pages)
+    return check.to_dict()
 
 
 @app.get("/api/config")
