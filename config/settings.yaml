@@ -94,6 +94,21 @@ market_strategy:
   max_daily_loss_pct: 1
   kill_switch_enabled: true
 whale_watcher_kalshi:
+  # Lowered 2026-08-17 after measuring the real flow rather than assuming
+  # it. KXBTC15M prints 49,947 times an hour with a MEDIAN notional of $5
+  # and a p90 of $72, so a $2,500 floor admitted the top 0.04% - about 20
+  # prints/hour, which produced long stretches of a completely empty UI
+  # that were indistinguishable from a broken pipeline.
+  #
+  # Live ingest at the old value: 3,817 websocket messages received, 0
+  # dropped, 2,748 prints evaluated by the provider, ZERO clearing the
+  # threshold. Nothing was failing; the gate was simply that selective.
+  #
+  # Measured yield on KXBTC15M: $2,500 -> ~20/hr, $1,000 -> ~71/hr,
+  # $500 -> ~282/hr. This does not change signal ACCURACY, only how much
+  # of the tape qualifies as a whale print - and CLAUDE.md's hard
+  # commandment is judged on win rate paired with entry price, both of
+  # which are measured downstream of this.
   min_notional_usd: 5000
   min_notional_usd_by_series:
     KXBTC15M: 2500

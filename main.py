@@ -55,7 +55,7 @@ from services.http_client import close_client, get_and_reset_rate_limit_hits
 from services.kalshi_client import KalshiClient
 from services.kalshi_account_client import KalshiAccountClient
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
-from services.whale_simulator import WhaleSimulator
+from services.whale_simulator import WhaleSignal, WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
 from services.market_strategy import MarketNativeStrategy
 from services.paper_broker import PaperBroker
