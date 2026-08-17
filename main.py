@@ -350,10 +350,18 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     state["signal_feed"].insert(0, signal.to_dict())
     state["signal_feed"] = state["signal_feed"][:50]
     state["stats"]["signals_seen"] += 1
+    # excluded= (2026-08-17): while an experiment window is open
+    # (services/data_quarantine.start), signals are still logged in full and
+    # still trade - only their status as *evidence* changes, so a deliberate
+    # test never silently corrupts the 30-day stats the way the 28-minute
+    # $1-threshold latency test did on 08-16. Read from state, not a fresh
+    # DB hit per signal: this is the hot path (20k signals in 28 minutes at
+    # peak), and state["experiment_active"] is refreshed once per tick.
     signal_log.log_signal(
         signal.ticker, signal.side, signal.size, signal.confidence,
         state["whale_source"], signal.timestamp, factors=signal.factors,
         raw_context=signal.raw_context, price=signal.price,
+        excluded=bool(state.get("experiment_active")),
     )
 
     market_info = state["market_titles"].get(signal.ticker) or {}

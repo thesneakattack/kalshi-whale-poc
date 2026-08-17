@@ -119,6 +119,23 @@ def _connect() -> sqlite3.Connection:
     # price. Nullable: rows logged before this field existed have no price
     # to backfill.
     _add_column_if_missing(conn, "signals", "price", "REAL")
+    # excluded (2026-08-17 direct request: "protect against tests that
+    # corrupt and keeping logs where valuable insights are gained
+    # pristine"). A row logged during a deliberate experiment - a threshold
+    # dropped to probe latency, a config being swept - is real data about
+    # the exchange but is NOT evidence about how the strategy performs, and
+    # averaging it into a 30-day statistic silently corrupts every
+    # sample-size-gated heuristic downstream. Before this the only remedy
+    # was deletion (services/reset_log.py records a real instance: 19,995
+    # rows destroyed to move a headline win rate off 64.8% back to its true
+    # 74.2%), which fixes the number by throwing away history CLAUDE.md
+    # explicitly calls a first-class asset.
+    #
+    # Default 0 so every existing row, and every row written by any code
+    # path that doesn't know about this column, counts exactly as it did
+    # before - this is opt-in exclusion, never opt-out inclusion.
+    _add_column_if_missing(conn, "signals", "excluded", "INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_excluded ON signals (excluded, seen_at)")
     return conn
 
 
@@ -137,22 +154,51 @@ def series_of(ticker: str) -> str:
 def log_signal(
     ticker: str, side: str, size: int, confidence: float, source: str,
     seen_at: float | None = None, factors: dict | None = None, raw_context: dict | None = None,
-    price: float | None = None,
+    price: float | None = None, excluded: bool = False,
 ):
+    """excluded=True marks this signal as not-evidence at write time - used
+    when an experiment is active (services/data_quarantine.is_active), so a
+    deliberate test window never enters the statistics in the first place
+    rather than having to be cleaned up afterwards. The row is still
+    written in full; only the stats readers skip it."""
     raw_context = raw_context or {}
     with _connect() as conn:
         conn.execute(
             "INSERT INTO signals "
             "(ticker, series, side, size, confidence, source, seen_at, factors_json, "
-            "raw_notional_usd, raw_spread, raw_volume_24h, price) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "raw_notional_usd, raw_spread, raw_volume_24h, price, excluded) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ticker, series_of(ticker), side, size, confidence, source, seen_at or time.time(),
                 json.dumps(factors) if factors is not None else None,
                 raw_context.get("notional_usd"), raw_context.get("spread"), raw_context.get("volume_24h"),
-                price,
+                price, 1 if excluded else 0,
             ),
         )
+
+
+def mark_excluded_range(after: float, before: float, excluded: bool = True) -> int:
+    """Flip the excluded flag on every signal in (after, before] WITHOUT
+    deleting anything - the non-destructive alternative to clear_range()
+    (2026-08-17 direct request: "protect against tests that corrupt and
+    keeping logs where valuable insights are gained pristine").
+
+    Deletion was the only tool for this before, and it worked but cost
+    real history: a 28-minute deliberate latency test on 2026-08-16 dragged
+    the 30-day headline win rate from 74.2% to 64.8%, and the only way to
+    fix the number was to destroy 19,995 rows that still described real
+    exchange behaviour. Excluding instead keeps every row queryable and is
+    fully reversible (excluded=False restores them), which matters because
+    CLAUDE.md treats accumulated history as a first-class asset.
+
+    Returns how many rows changed. See services/data_quarantine.py for the
+    provenance layer that records WHY a range was excluded."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE signals SET excluded = ? WHERE seen_at > ? AND seen_at <= ?",
+            (1 if excluded else 0, after, before),
+        )
+        return cur.rowcount
 
 
 def recent_sides_for_ticker(ticker: str, since_ts: float) -> list[str]:
@@ -254,7 +300,8 @@ def series_stats(ticker: str, days: int = 30) -> dict:
             "SELECT COUNT(*) FROM signals WHERE series = ? AND seen_at >= ?", (series, since)
         ).fetchone()[0]
         resolved_count, correct_sum = conn.execute(
-            "SELECT COUNT(*), SUM(correct) FROM signals WHERE series = ? AND seen_at >= ? AND resolved = 1",
+            "SELECT COUNT(*), SUM(correct) FROM signals WHERE series = ? AND seen_at >= ? AND resolved = 1 "
+            "AND excluded = 0",
             (series, since),
         ).fetchone()
     resolved_count = resolved_count or 0
@@ -279,7 +326,7 @@ def resolved_signals_with_series(days: int = 30) -> list[dict]:
     since = time.time() - days * 86400
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT series, correct FROM signals WHERE seen_at >= ? AND resolved = 1",
+            "SELECT series, correct FROM signals WHERE seen_at >= ? AND resolved = 1 AND excluded = 0",
             (since,),
         ).fetchall()
     return [{"series": series, "correct": bool(correct)} for series, correct in rows]
@@ -299,7 +346,7 @@ def all_series_stats(days: int = 30) -> dict[str, dict]:
         rows = conn.execute(
             """
             SELECT series, COUNT(*) AS resolved, SUM(correct) AS correct_sum
-            FROM signals WHERE seen_at >= ? AND resolved = 1
+            FROM signals WHERE seen_at >= ? AND resolved = 1 AND excluded = 0
             GROUP BY series
             """,
             (since,),
@@ -460,7 +507,7 @@ def resolved_signals_with_factors() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h "
-            "FROM signals WHERE resolved = 1 AND factors_json IS NOT NULL",
+            "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL",
         ).fetchall()
     results = []
     for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h in rows:
@@ -558,7 +605,7 @@ def stats(days: int = 30) -> dict:
     with _connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM signals WHERE seen_at >= ?", (since,)).fetchone()[0]
         resolved_count, correct_sum = conn.execute(
-            "SELECT COUNT(*), SUM(correct) FROM signals WHERE seen_at >= ? AND resolved = 1", (since,)
+            "SELECT COUNT(*), SUM(correct) FROM signals WHERE seen_at >= ? AND resolved = 1 AND excluded = 0", (since,)
         ).fetchone()
         first_seen = conn.execute("SELECT MIN(seen_at) FROM signals").fetchone()[0]
     resolved_count = resolved_count or 0
