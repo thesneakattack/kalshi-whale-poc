@@ -52,7 +52,7 @@ requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
-from services import config_overrides, regime_analytics, signal_log, stats_power, trade_analytics, trade_category
+from services import config_bounds, config_overrides, regime_analytics, signal_log, stats_power, trade_analytics, trade_category
 
 # Real bug found live (2026-08-15, docs/profit-maximization-assessment-
 # 2026-08-15.md): every "is this win-rate gap big enough to act on"
@@ -270,7 +270,8 @@ def _longshot_bonus_recommendation(rows: list[dict], strat_cfg: dict) -> dict | 
     }
 
 
-def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str, current_value: float | None) -> dict | None:
+def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str, current_value: float | None,
+                             strat_cfg: dict | None = None) -> dict | None:
     """take_profit_pct / stop_loss_pct: suggest the current value adjusted
     by what was actually observed on that variant's own closes of this
     type - average left_on_table for take-profit (banked early, "how much
@@ -319,6 +320,17 @@ def _exit_pct_recommendation(rows: list[dict], close_type: str, config_path: str
             f"gaps between poll ticks) - tightening stop_loss_pct to {suggested:.2f} targets that gap."
         )
         significance_t = stats_power.one_sample_t_score(overshoots)
+    # Bound the suggestion to what a position can physically reach
+    # (services/config_bounds.py, 2026-08-17 direct report: "the avisory is
+    # askings me to change my max loss when it comes to auto closing is
+    # 1.75 the cost of opening my position"). The take-profit branch above
+    # is `current_value + avg_left_pct` with no ceiling, so a run of trades
+    # that each left a lot on the table could push it past 1.0 - a
+    # take_profit_pct that no position can ever hit doesn't fail loudly, it
+    # silently disables take-profit while stop-loss keeps firing.
+    suggested, clamp_note = config_bounds.clamp(config_path, suggested, strat_cfg or {})
+    if clamp_note:
+        rationale = f"{rationale} ({clamp_note})"
     full_path = f"strategy.{config_path}"
     return {
         "id": rec_id(full_path, suggested, n),
@@ -464,10 +476,10 @@ def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     rec = _longshot_bonus_recommendation(rows, strat_cfg)
     if rec:
         out.append(rec)
-    rec = _exit_pct_recommendation(rows, "take_profit", "take_profit_pct", strat_cfg.get("take_profit_pct"))
+    rec = _exit_pct_recommendation(rows, "take_profit", "take_profit_pct", strat_cfg.get("take_profit_pct"), strat_cfg)
     if rec:
         out.append(rec)
-    rec = _exit_pct_recommendation(rows, "stop_loss", "stop_loss_pct", strat_cfg.get("stop_loss_pct"))
+    rec = _exit_pct_recommendation(rows, "stop_loss", "stop_loss_pct", strat_cfg.get("stop_loss_pct"), strat_cfg)
     if rec:
         out.append(rec)
     rec = _auto_exit_threshold_recommendation(rows, strat_cfg)

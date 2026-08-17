@@ -513,6 +513,30 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
 
 # ---------------------------------------------------------------- runner
 
+def check_config_bounds(cfg: dict) -> Check:
+    """Are any cost-basis-fraction settings set beyond what a binary
+    contract can physically reach? An unreachable take_profit_pct or
+    stop_loss_pct doesn't error - it silently disables that rule, which is
+    far worse than a loud failure because the config keeps *claiming* the
+    protection is on. See services/config_bounds.py for the arithmetic and
+    the real 2026-08-17 case that motivated it."""
+    from services import config_bounds
+
+    violations = config_bounds.check_all(cfg)
+    if not violations:
+        return Check("config_bounds", _OK, "every exit threshold is physically reachable")
+    unreachable = [v for v in violations if v["severity"] == "unreachable"]
+    status = _FAIL if unreachable else _WARN
+    lead = violations[0]
+    return Check(
+        "config_bounds", status,
+        f"{len(violations)} setting(s) outside their achievable range — "
+        f"{lead['scope']}.{lead['field']}={lead['value']}: {lead['detail']}",
+        detail={"violations": len(violations), "unreachable": len(unreachable)},
+        evidence=violations,
+    )
+
+
 def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
@@ -521,6 +545,7 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
         check_threshold_integrity(cfg, since_ts, now),
         check_price_band_adherence(cfg, since_ts, now),
         check_runway_at_entry(cfg, since_ts, now),
+        check_config_bounds(cfg),
         performance_by_epoch(since_ts, now),
     ]
     worst = _OK

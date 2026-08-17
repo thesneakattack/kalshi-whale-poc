@@ -206,7 +206,8 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
     report = diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
     assert report["overall"] == "fail"
     assert {c["name"] for c in report["checks"]} == {
-        "threshold_integrity", "price_band_adherence", "runway_at_entry", "performance_by_epoch",
+        "threshold_integrity", "price_band_adherence", "runway_at_entry",
+        "config_bounds", "performance_by_epoch",
     }
 
 
