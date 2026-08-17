@@ -22,6 +22,13 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(pb_module, "DB_PATH", tmp_path / "paper_broker.db")
     monkeypatch.setattr(data_quarantine, "DB_PATH", tmp_path / "quarantine.db")
     sw._last_book_write.clear()
+    # Capture is buffered now (see series_watcher.flush) and the buffers are
+    # module globals, so they have to be reset between tests or one test's
+    # unflushed rows land in the next one's database.
+    monkeypatch.setattr(sw, "_trade_buffer", [])
+    monkeypatch.setattr(sw, "_book_buffer", [])
+    monkeypatch.setattr(sw, "_dropped_rows", 0)
+    monkeypatch.setattr(sw, "_quarantine_cache", None)
     yield
 
 
@@ -46,6 +53,7 @@ def _trade(trade_id, ticker="KXBTC15M-26AUG17-B1", outcome="yes", count="1000.00
 def test_record_trade_keeps_the_whole_payload_not_just_the_derived_fields():
     trade = _trade("t1", some_future_kalshi_field="whatever it adds next")
     assert sw.record_trade(trade, CFG, now=1000.0) is True
+    sw.flush()
 
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -62,8 +70,14 @@ def test_record_trade_keeps_the_whole_payload_not_just_the_derived_fields():
 
 def test_record_trade_ignores_unwatched_series_and_duplicate_ids():
     assert sw.record_trade(_trade("t1", ticker="KXETH15M-26AUG17-B1"), CFG) is False
+    # Both of these buffer - the return value means "accepted", not
+    # "written", now that capture is batched. Deduplication happens at the
+    # flush, via the trade_id primary key and INSERT OR IGNORE, which is
+    # also what makes the REST and websocket paths safe to both capture the
+    # same print.
     assert sw.record_trade(_trade("t1"), CFG) is True
-    assert sw.record_trade(_trade("t1"), CFG) is False  # same trade_id, INSERT OR IGNORE
+    assert sw.record_trade(_trade("t1"), CFG) is True
+    sw.flush()
 
     with sqlite3.connect(sw.DB_PATH) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_trades").fetchone()[0] == 1
@@ -75,6 +89,7 @@ def test_record_trade_stores_all_three_direction_fields_separately():
     field disappears is visible in the data, not inferred from a support
     ticket."""
     sw.record_trade(_trade("t1", outcome="no"), CFG)
+    sw.flush()
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM raw_trades").fetchone()
@@ -88,6 +103,7 @@ def test_record_trade_marks_side_unreadable_rather_than_guessing():
     for key in ("taker_outcome_side", "taker_book_side", "taker_side"):
         trade.pop(key)
     assert sw.record_trade(trade, CFG) is True
+    sw.flush()
     with sqlite3.connect(sw.DB_PATH) as conn:
         side, notional = conn.execute("SELECT resolved_side, notional_usd FROM raw_trades").fetchone()
     assert side is None and notional is None
@@ -109,6 +125,7 @@ def test_record_book_keeps_the_fields_process_stream_ticker_throws_away():
         "last_trade_size_fp": "25.00", "ts_ms": 1_755_000_000_000,
     }
     assert sw.record_book(msg, CFG, now=1000.0) is True
+    sw.flush()
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM book_snapshots").fetchone()
@@ -139,6 +156,7 @@ def test_capture_disabled_writes_nothing():
 def test_prune_drops_old_book_snapshots_but_never_trades():
     sw.record_trade(_trade("t1"), CFG, now=1000.0)
     sw.record_book({"market_ticker": "KXBTC15M-A"}, CFG, now=1000.0)
+    sw.flush()
     result = sw.prune(retention_hours=1.0, now=1000.0 + 2 * 3600)
     assert result["book_snapshots_deleted"] == 1
     with sqlite3.connect(sw.DB_PATH) as conn:
@@ -150,6 +168,7 @@ def test_quarantined_window_marks_captured_trades_excluded():
 
     data_quarantine.start("latency probe", reason="deliberate test")
     sw.record_trade(_trade("t1"), CFG, now=1000.0)
+    sw.flush()
     with sqlite3.connect(sw.DB_PATH) as conn:
         assert conn.execute("SELECT excluded FROM raw_trades").fetchone()[0] == 1
 
@@ -187,6 +206,7 @@ def test_funnel_reports_every_stage_and_separates_capture_from_signals():
     _seed_signal("KXBTC15M-B", "yes", 1010.0, 0.70, correct=0)
     sw.record_trade(_trade("t1", ticker="KXBTC15M-A", count="10000.00"), CFG, now=1000.0)
     sw.record_trade(_trade("t2", ticker="KXBTC15M-A", count="10.00"), CFG, now=1001.0)
+    sw.flush()
 
     out = sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0)
     stages = {s["stage"]: s["count"] for s in out["stages"]}
@@ -357,6 +377,7 @@ def test_book_context_reports_spread_and_depth_when_snapshots_exist():
         "market_ticker": "KXBTC15M-A", "yes_bid_dollars": "0.58", "yes_ask_dollars": "0.62",
         "yes_bid_size_fp": "900.00", "yes_ask_size_fp": "100.00",
     }, CFG, now=1004.0)
+    sw.flush()
 
     out = sw.book_context_at_entry("KXBTC15M", hours=24, now=2000.0)
     assert out["status"] == "ok"

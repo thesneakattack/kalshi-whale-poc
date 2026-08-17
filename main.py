@@ -109,7 +109,17 @@ account = KalshiAccountClient(
     cfg["kalshi"]["request_timeout_sec"],
     cfg["kalshi_account"]["trading_enabled"],
 )  # real account — only active if KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH are set in .env
-trade_stream = KalshiTradeWebSocketClient(account_base_url)
+# exchange_wide_trades (2026-08-17): subscribe the trade channel with no
+# market_tickers so every print on the exchange arrives, not just those on
+# the rotating watchlist - the single largest measured gap in this system
+# (425 markets trading in a 30s window against 15 watched; 5 of 5 whale
+# prints >=$2,500 invisible). Read at import time, like every other
+# constructor arg here; flipping it needs a real restart, not a live config
+# reload, because it changes what this connection subscribed to at handshake.
+trade_stream = KalshiTradeWebSocketClient(
+    account_base_url,
+    exchange_wide_trades=bool(cfg["kalshi"].get("trade_stream_exchange_wide", False)),
+)
 
 state = {
     "running": True,
@@ -442,6 +452,29 @@ async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
     trade_category.record_category(ticker, category, tick_now, subcategory=subcategory)
 
 
+_stream_client_cache: dict[str, KalshiClient] = {}
+
+
+def _stream_market_client(cfg: dict) -> KalshiClient:
+    """One reused KalshiClient for the websocket trade path.
+
+    Everywhere else in this file constructs a KalshiClient per request
+    handler, which is fine at request cadence. This path runs once per
+    inbound trade message - on an exchange-wide subscription that is
+    thousands per minute - so it gets a cached instance keyed by base URL
+    (re-created if the config's base_url is ever edited live). The
+    underlying HTTP connection pool and the shared rate limiter both live in
+    services/http_client.py, so this shares them with every other caller
+    exactly as a fresh instance would."""
+    base_url = cfg["kalshi"]["base_url"]
+    cached = _stream_client_cache.get(base_url)
+    if cached is None:
+        cached = KalshiClient(base_url, cfg["kalshi"]["request_timeout_sec"])
+        _stream_client_cache.clear()
+        _stream_client_cache[base_url] = cached
+    return cached
+
+
 async def _process_stream_trade(trade: dict) -> None:
     if not trade.get("trade_id"):
         return
@@ -461,7 +494,17 @@ async def _process_stream_trade(trade: dict) -> None:
     cfg_now = config_store.get()
     config_fp = config_performance.fingerprint(cfg_now)
     signals = await whale_provider.fetch_signals(
-        market_context={"markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now},
+        market_context={
+            "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
+            # Lets the provider resolve a market that isn't on the watchlist
+            # when an off-list print clears the notional gate - required for
+            # exchange-wide trades to produce signals at all, since scoring
+            # needs the market's own volume/close_time and this app skips
+            # rather than fabricates one. Gated behind the notional check
+            # inside the provider, so it costs nothing on the ~99.9% of
+            # prints that never qualify.
+            "client": _stream_market_client(cfg_now),
+        },
     )
     if not signals:
         _bump_generation()
@@ -3182,6 +3225,11 @@ async def trading_loop():
             # deliberate overlap between the two paths costs nothing.
             for tape_trade in trade_tape:
                 series_watcher.record_trade(tape_trade, cfg)
+            # One batched write per tick for everything the websocket path
+            # buffered in between (see series_watcher.flush) - the capture
+            # layer never writes per message, which is what makes it safe
+            # to run against an exchange-wide subscription.
+            series_watcher.flush()
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
@@ -3288,7 +3336,10 @@ async def trading_loop():
             elif whale_provider.enabled:
                 try:
                     new_signals = await whale_provider.fetch_signals(
-                        market_context={"markets": markets, "trade_tape": trade_tape, "cfg": cfg},
+                        market_context={
+                            "markets": markets, "trade_tape": trade_tape, "cfg": cfg,
+                            "client": client,
+                        },
                     )
                     state["whale_source"] = whale_provider.name
                 except Exception as e:

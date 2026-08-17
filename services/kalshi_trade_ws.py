@@ -14,7 +14,26 @@ _DEMO_WS_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 
 
 class KalshiTradeWebSocketClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, exchange_wide_trades: bool = False):
+        # exchange_wide_trades (2026-08-17, direct goal: "realtime data
+        # across everything" / "zero latency and maximum insight"):
+        # subscribe the `trade` channel with NO market_tickers, which
+        # docs/kalshi/public-trades.md explicitly permits ("market
+        # specification optional"), so every trade on the exchange arrives
+        # instead of only those on this app's own rotating watchlist.
+        #
+        # That watchlist scoping was the single largest measured gap in the
+        # system: a print on an unwatched market was never received at all -
+        # not filtered, not logged, not counted as rejected - and 425
+        # markets were observed trading in a 30-second window against 15
+        # watched, with 5 of 5 whale prints >=$2,500 invisible.
+        #
+        # The `ticker` channel deliberately stays scoped to the desired set
+        # even in this mode. market-ticker.md permits going wide there too,
+        # but a price update on every market on the exchange fires on every
+        # field change and would be a genuine firehose, for data this app
+        # only needs on markets it might actually trade.
+        self.exchange_wide_trades = exchange_wide_trades
         self.base_url = (base_url or "").strip().lower()
         self.key_id = os.getenv("KALSHI_API_KEY_ID", "").strip()
         self.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "").strip()
@@ -45,7 +64,13 @@ class KalshiTradeWebSocketClient:
         # trade/ticker - deterministic on every fresh connect, since the raw
         # WS handshake always wins the race against the REST-based
         # market-discovery pipeline that feeds set_market_tickers().
-        self._market_channels_subscribed = False
+        #
+        # Split into one flag per channel 2026-08-17 (see
+        # _sync_subscriptions): exchange-wide trade goes up on connect with
+        # no watchlist, while ticker still waits for one, so a single shared
+        # flag would either duplicate the trade subscription or block it.
+        self._trade_subscribed = False
+        self._ticker_subscribed = False
         self._message_id = 1
         self._update_event = asyncio.Event()
         self._stop = False
@@ -106,7 +131,8 @@ class KalshiTradeWebSocketClient:
                         self._ws = websocket
                         self._subscription_sids = {}
                         self._subscribed_tickers = set()
-                        self._market_channels_subscribed = False
+                        self._trade_subscribed = False
+                        self._ticker_subscribed = False
                         self._message_id = 1
                     if on_status is not None:
                         await on_status({"connected": True, "error": None, "ws_url": self.ws_url})
@@ -151,7 +177,8 @@ class KalshiTradeWebSocketClient:
                     self._ws = None
                     self._subscription_sids = {}
                     self._subscribed_tickers = set()
-                    self._market_channels_subscribed = False
+                    self._trade_subscribed = False
+                    self._ticker_subscribed = False
                 if self._stop:
                     break
                 await asyncio.sleep(backoff)
@@ -205,33 +232,64 @@ class KalshiTradeWebSocketClient:
                 await on_position(data.get("msg") or {})
 
     async def _sync_subscriptions(self, force_subscribe: bool = False) -> None:
+        # force_subscribe is now implied rather than read: run() resets both
+        # per-channel flags before calling this on a fresh connection, which
+        # is exactly what the parameter used to express. Kept in the
+        # signature so the call site still reads as intentional.
         async with self._lock:
             ws = self._ws
         if ws is None:
             return
         desired = set(self._desired_tickers)
-        if force_subscribe or not self._market_channels_subscribed:
-            if not desired:
-                return
-            await self._send({
-                "id": self._next_message_id(),
-                "cmd": "subscribe",
-                "params": {"channels": ["trade"], "market_tickers": sorted(desired)},
-            })
-            await self._send({
-                "id": self._next_message_id(),
-                "cmd": "subscribe",
-                "params": {"channels": ["ticker"], "market_tickers": sorted(desired), "send_initial_snapshot": True},
-            })
-            self._subscribed_tickers = desired
-            self._market_channels_subscribed = True
+
+        # trade and ticker are tracked separately (2026-08-17). They used to
+        # share one _market_channels_subscribed flag, which was fine only
+        # because both were subscribed in the same breath off the same
+        # watchlist. In exchange-wide mode they have genuinely different
+        # lifecycles: trade can and should go up immediately on connect with
+        # no watchlist at all, while ticker still has to wait for one. One
+        # shared flag would either re-subscribe trade every time a watchlist
+        # finally arrived (duplicate firehose) or block trade until it did
+        # (defeating the point).
+        if not self._trade_subscribed:
+            trade_params: dict = {"channels": ["trade"]}
+            if not self.exchange_wide_trades:
+                trade_params["market_tickers"] = sorted(desired)
+            if self.exchange_wide_trades or desired:
+                await self._send({
+                    "id": self._next_message_id(),
+                    "cmd": "subscribe",
+                    "params": trade_params,
+                })
+                self._trade_subscribed = True
+                if not self.exchange_wide_trades:
+                    self._subscribed_tickers = desired
+
+        if not self._ticker_subscribed:
+            if desired:
+                await self._send({
+                    "id": self._next_message_id(),
+                    "cmd": "subscribe",
+                    "params": {"channels": ["ticker"], "market_tickers": sorted(desired), "send_initial_snapshot": True},
+                })
+                self._ticker_subscribed = True
+                self._subscribed_tickers = desired
             return
+
         to_add = sorted(desired - self._subscribed_tickers)
         to_remove = sorted(self._subscribed_tickers - desired)
         # Only the trade/ticker sids - self._subscription_sids also holds the
         # unrelated account-wide fill/market_positions sids (see run()), which
         # don't take a market_tickers add/remove payload at all.
-        market_channel_sids = [self._subscription_sids[c] for c in ("trade", "ticker") if c in self._subscription_sids]
+        #
+        # And in exchange-wide mode, not `trade` either: that subscription
+        # has no market list to add to or delete from, and
+        # docs/kalshi/websocket-connection.md documents no action for
+        # switching one between scoped and unscoped. Sending add_markets
+        # against it would either error or, worse, silently narrow the
+        # firehose back down to a watchlist.
+        market_channels = ("ticker",) if self.exchange_wide_trades else ("trade", "ticker")
+        market_channel_sids = [self._subscription_sids[c] for c in market_channels if c in self._subscription_sids]
         if to_add:
             for sid in market_channel_sids:
                 await self._send({

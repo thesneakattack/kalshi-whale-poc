@@ -38,6 +38,16 @@ _TREND_FULL_SCALE = 0.05
 # last-10 list. Bounded so a long-running process doesn't grow this
 # unbounded; old entries age out in insertion order once the cap is hit.
 _MAX_SEEN_TRADE_IDS = 5000
+# How long an on-demand market lookup stays usable before it's re-fetched
+# (_resolve_unknown_markets). Short enough that volume_24h/close_time can't
+# go badly stale on a fast-moving market, long enough that a market printing
+# repeatedly costs one call rather than one per print.
+_MARKET_CACHE_TTL_SEC = 300
+_MAX_MARKET_CACHE = 2000
+# Ceiling on markets resolved in a single fetch_signals() call - see
+# _resolve_unknown_markets. get_markets_by_tickers batches 50/request, so
+# this is 2 requests worst case.
+_MAX_ONDEMAND_MARKET_FETCH = 100
 # How far back to look for other real whale prints on the same market when
 # scoring composite_confidence_breakdown's agreement_factor - shorter than
 # diagnostikon/polymarket-whale-momentum-trader's 48h default (see
@@ -108,6 +118,32 @@ def _notional_usd(trade: dict, side: str) -> float:
     return count * price
 
 
+def min_notional_for(ticker: str, wwk_cfg: dict) -> float:
+    """This series' whale threshold, or the global default. Public and used
+    by BOTH the pre-scan in fetch_signals and the real gate in
+    _process_trades_sync - one definition, so the pre-scan can never decide
+    a print is worth resolving a market for that the real gate would then
+    reject (or, worse, the reverse)."""
+    default = float(wwk_cfg.get("min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD))
+    by_series = wwk_cfg.get("min_notional_usd_by_series") or {}
+    return float(by_series.get(signal_log.series_of(ticker), default))
+
+
+def _prescan_notional(trade: dict) -> tuple[str, float] | None:
+    """(side, notional) for one raw print, using nothing but the print
+    itself - no DB, no market data, no state mutation. Deliberately cheap
+    and side-effect free: this runs over EVERY message on an exchange-wide
+    subscription, including the ~99.9% that will never clear a whale
+    threshold, so it must not touch disk and must not mark anything seen."""
+    side = _taker_side(trade)
+    if side is None:
+        return None
+    try:
+        return side, _notional_usd(trade, side)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_trade_time(created_time: str | None) -> float | None:
     if not created_time:
         return None
@@ -160,6 +196,17 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
     def __init__(self):
         self._seen_trade_ids: set[str] = set()
         self._seen_order: deque[str] = deque()
+        # ticker -> (fetched_at, market|None) for markets resolved on demand
+        # because a whale-sized print arrived on a market outside the
+        # watchlist (see _resolve_unknown_markets). None is cached too - a
+        # negative result, so a ticker Kalshi won't return doesn't trigger a
+        # fresh lookup on every subsequent print.
+        self._market_cache: dict[str, tuple[float, dict | None]] = {}
+        # Counters for /api/state - how much of the flow is arriving from
+        # outside the watchlist, which is the whole point of going
+        # exchange-wide and needs to be observable rather than assumed.
+        self.stats = {"prescanned": 0, "whale_sized_offlist": 0, "markets_resolved": 0,
+                      "resolve_failures": 0}
 
     @property
     def enabled(self) -> bool:
@@ -206,9 +253,88 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         cfg = market_context.get("cfg") or {}
         markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
         now = time.time()
+        await self._resolve_unknown_markets(
+            trade_tape, markets_by_ticker, cfg, market_context.get("client"), now,
+        )
         return await asyncio.to_thread(
             self._process_trades_sync, trade_tape, markets, markets_by_ticker, cfg, now,
         )
+
+    async def _resolve_unknown_markets(
+        self, trade_tape: list[dict], markets_by_ticker: dict[str, dict], cfg: dict,
+        client, now: float,
+    ) -> None:
+        """Fetch market data for whale-sized prints on markets outside the
+        watchlist, so an exchange-wide trade subscription actually produces
+        signals instead of silently dropping ~98% of the flow.
+
+        Before this, _process_trades_sync's `if not market: continue` made
+        the trade websocket's own subscription list a hard ceiling on what
+        this app could ever see - a print on any unwatched market was not
+        filtered or logged, it was never received at all, and once it was
+        received (exchange-wide) it was dropped one line into scoring for
+        want of a volume figure.
+
+        The ordering here is what makes it affordable, and it is the exact
+        inverse of the old loop's: gate on NOTIONAL FIRST (pure arithmetic
+        on the print itself - no DB, no network), and only then resolve a
+        market for the handful that survive. Measured on KXBTC15M
+        2026-08-17: 2 of 5,162 prints cleared the $2,500 threshold. Paying
+        one batched REST call for those 2 is trivial; paying it for all
+        5,162 would not be. Results are cached per ticker (negatives
+        included), so a market that keeps printing is fetched once, not
+        once per print.
+
+        Degrades to today's behaviour - skip the print - when there is no
+        client, when the fetch fails, or when Kalshi doesn't return the
+        market. A missing market means the confidence score would have to
+        be fabricated, and CLAUDE.md's standing rule is that this app
+        skips rather than guesses."""
+        wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
+        wanted: set[str] = set()
+        for trade in trade_tape:
+            ticker = trade.get("ticker")
+            trade_id = trade.get("trade_id")
+            if not ticker or not trade_id or trade_id in self._seen_trade_ids:
+                continue
+            self.stats["prescanned"] += 1
+            if ticker in markets_by_ticker:
+                continue
+            cached = self._market_cache.get(ticker)
+            if cached is not None and (now - cached[0]) < _MARKET_CACHE_TTL_SEC:
+                if cached[1] is not None:
+                    markets_by_ticker[ticker] = cached[1]
+                continue
+            scan = _prescan_notional(trade)
+            if scan is None or scan[1] < min_notional_for(ticker, wwk_cfg):
+                continue
+            self.stats["whale_sized_offlist"] += 1
+            wanted.add(ticker)
+
+        if not wanted or client is None:
+            return
+        # Bounded per call: a burst of whale prints across many unwatched
+        # markets must not turn into an unbounded batch against the shared
+        # rate limiter (services/http_client.py) - the same lesson
+        # _LIVE_STATUS_MAX_POLL_PER_TICK already encodes in main.py.
+        # Anything over the cap is simply not resolved this round; the next
+        # print on that market gets another chance.
+        batch = sorted(wanted)[:_MAX_ONDEMAND_MARKET_FETCH]
+        try:
+            fetched = await client.get_markets_by_tickers(batch)
+        except Exception:
+            self.stats["resolve_failures"] += 1
+            return
+        for ticker in batch:
+            market = fetched.get(ticker)
+            self._market_cache[ticker] = (now, market)
+            if market is not None:
+                markets_by_ticker[ticker] = market
+                self.stats["markets_resolved"] += 1
+        # Unbounded growth guard - same shape as _MAX_SEEN_TRADE_IDS above.
+        if len(self._market_cache) > _MAX_MARKET_CACHE:
+            for ticker in sorted(self._market_cache, key=lambda t: self._market_cache[t][0])[:len(self._market_cache) // 2]:
+                del self._market_cache[ticker]
 
     def _process_trades_sync(
         self, trade_tape: list[dict], markets: list[dict], markets_by_ticker: dict[str, dict],
@@ -226,8 +352,6 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         next), and every SQLite connection opened below is created and used
         entirely within this same thread, never shared across threads."""
         wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
-        default_min_notional = float(wwk_cfg.get("min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD))
-        min_notional_by_series = wwk_cfg.get("min_notional_usd_by_series") or {}
         signals: list[WhaleSignal] = []
         # series_evaluator's denominator - "how many real trades has this
         # series actually produced," regardless of whether a given trade
@@ -257,7 +381,24 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 trades_observed_by_series[series] = trades_observed_by_series.get(series, 0) + 1
             market = markets_by_ticker.get(ticker)
             if not market:
-                continue  # can't score confidence without this market's own volume/close_time - skip, don't fabricate
+                # Can't score confidence without this market's own
+                # volume/close_time - skip, don't fabricate. Post
+                # exchange-wide subscription this should be rare rather
+                # than the norm: _resolve_unknown_markets has already
+                # fetched any off-watchlist market whose print cleared the
+                # notional gate, so reaching here means either a
+                # sub-threshold print (expected, the overwhelming majority)
+                # or a resolution that genuinely failed. Only the latter is
+                # worth logging, and only that case is checked, so the hot
+                # path stays free of a DB write per uninteresting trade.
+                if _prescan_notional(trade) is not None and ticker:
+                    side_n = _prescan_notional(trade)
+                    if side_n[1] >= min_notional_for(ticker, wwk_cfg):
+                        candidate_log.record_rejection(
+                            ticker, "whale_watcher", "market_unresolved", side_n[1],
+                            min_notional_for(ticker, wwk_cfg), side=side_n[0],
+                        )
+                continue
 
             # Resolved before the notional gate so a rejection can be logged
             # with a real side, and so both the gate and the emitted signal
@@ -278,9 +419,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # excluded_series/series_stats already key off, with the global
             # min_notional_usd as the fallback for any series with no
             # override set.
-            min_notional = float(min_notional_by_series.get(
-                signal_log.series_of(ticker), default_min_notional
-            ))
+            min_notional = min_notional_for(ticker, wwk_cfg)
             if notional < min_notional:
                 candidate_log.record_rejection(ticker, "whale_watcher", "min_notional_usd", notional, min_notional, side=side)
                 continue

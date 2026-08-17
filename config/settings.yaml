@@ -14,6 +14,12 @@ kalshi:
   live_markets_only: false
   poll_interval_sec: 6
   request_timeout_sec: 10
+  # Subscribe the trade websocket with no market_tickers, so every print on
+  # the exchange arrives instead of only those on the rotating watchlist
+  # (docs/kalshi/public-trades.md: "market specification optional"). Costs
+  # zero REST tokens - this is push, not poll. Read at startup, so changing
+  # it needs a real restart, not a live config reload.
+  trade_stream_exchange_wide: true
   top_series_per_category: 30
 whale_signal:
   signal_frequency_sec: 12

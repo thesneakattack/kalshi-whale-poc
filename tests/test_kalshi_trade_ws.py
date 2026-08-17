@@ -112,7 +112,7 @@ def test_existing_trade_and_ticker_dispatch_still_work_with_new_optional_params(
 # --- _sync_subscriptions vs. the account-wide fill/market_positions sids
 # (2026-08-16, live-confirmed incident: "the whale watching stream has
 # halted completely, no signals at all" - see kalshi_trade_ws.py's own
-# _market_channels_subscribed docstring for the full root-cause writeup) ----
+# _trade_subscribed/_ticker_subscribed docstring for the full writeup) ----
 
 def test_real_ticker_subscribe_not_swallowed_by_unrelated_fill_sids():
     # Reproduces the exact failure sequence: the connection's initial
@@ -124,7 +124,8 @@ def test_real_ticker_subscribe_not_swallowed_by_unrelated_fill_sids():
     client = _client()
     client._ws = _FakeWebSocket()
     client._subscription_sids = {"fill": 1, "market_positions": 2}
-    client._market_channels_subscribed = False
+    client._trade_subscribed = False
+    client._ticker_subscribed = False
     client._desired_tickers = {"TICK-A", "TICK-B"}
 
     asyncio.run(client._sync_subscriptions(force_subscribe=False))
@@ -137,7 +138,8 @@ def test_real_ticker_subscribe_not_swallowed_by_unrelated_fill_sids():
     assert channels_subscribed == {"trade", "ticker"}
     for m in subscribe_cmds:
         assert m["params"]["market_tickers"] == ["TICK-A", "TICK-B"]
-    assert client._market_channels_subscribed is True
+    assert client._trade_subscribed is True
+    assert client._ticker_subscribed is True
 
 
 def test_incremental_update_only_targets_trade_ticker_sids():
@@ -147,7 +149,8 @@ def test_incremental_update_only_targets_trade_ticker_sids():
     client = _client()
     client._ws = _FakeWebSocket()
     client._subscription_sids = {"fill": 1, "market_positions": 2, "trade": 3, "ticker": 4}
-    client._market_channels_subscribed = True
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
     client._subscribed_tickers = {"TICK-A"}
     client._desired_tickers = {"TICK-A", "TICK-B"}
 
@@ -160,3 +163,99 @@ def test_incremental_update_only_targets_trade_ticker_sids():
     for m in sent:
         assert m["params"]["market_tickers"] == ["TICK-B"]
         assert m["params"]["action"] == "add_markets"
+
+
+# --- exchange-wide trade subscription (2026-08-17, "realtime data across
+# everything"). docs/kalshi/public-trades.md: "market specification
+# optional" - omitting market_tickers streams every trade on the exchange,
+# which is the fix for the measured ~98% coverage loss. --------------------
+
+def _wide_client():
+    return KalshiTradeWebSocketClient(
+        "https://external-api.kalshi.com/trade-api/v2", exchange_wide_trades=True,
+    )
+
+
+def test_exchange_wide_trade_subscribe_omits_market_tickers():
+    client = _wide_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = {"TICK-A", "TICK-B"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    trade = [m for m in client._ws.sent if m["params"]["channels"] == ["trade"]]
+    ticker = [m for m in client._ws.sent if m["params"]["channels"] == ["ticker"]]
+    assert len(trade) == 1
+    # The whole point: no market list at all on the trade channel.
+    assert "market_tickers" not in trade[0]["params"]
+    # ticker stays scoped - exchange-wide price updates would be a firehose
+    # for data this app only needs on markets it might actually trade.
+    assert ticker[0]["params"]["market_tickers"] == ["TICK-A", "TICK-B"]
+
+
+def test_exchange_wide_trade_subscribes_before_any_watchlist_exists():
+    """The scoped path deliberately no-ops with an empty desired set (a
+    per-ticker subscribe with no tickers is meaningless). Exchange-wide has
+    no such dependency, and must not inherit that wait - the raw websocket
+    handshake always beats the REST market-discovery pipeline, so waiting
+    would cost real prints on every single connect."""
+    client = _wide_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    channels = [c for m in client._ws.sent for c in m["params"]["channels"]]
+    assert channels == ["trade"]
+    assert client._trade_subscribed is True
+    assert client._ticker_subscribed is False
+
+
+def test_trade_channel_is_not_resubscribed_when_the_watchlist_arrives_later():
+    """The regression the two flags exist to prevent: with one shared
+    flag, the ticker subscribe that arrives with the first watchlist would
+    drag a second trade subscribe along with it - two exchange-wide
+    firehoses on one connection."""
+    client = _wide_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    client._desired_tickers = {"TICK-A"}
+    asyncio.run(client._sync_subscriptions())
+
+    trade_subs = [m for m in client._ws.sent
+                  if m["cmd"] == "subscribe" and m["params"]["channels"] == ["trade"]]
+    assert len(trade_subs) == 1
+    assert client._ticker_subscribed is True
+
+
+def test_exchange_wide_never_sends_add_markets_against_the_trade_sid():
+    """update_subscription has no documented action for switching a
+    subscription between scoped and unscoped (websocket-connection.md lists
+    only add_markets/delete_markets/get_snapshot), so an add_markets against
+    the exchange-wide trade sid would at best error and at worst silently
+    narrow the firehose back down to a watchlist."""
+    client = _wide_client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"trade": 3, "ticker": 4}
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
+    client._subscribed_tickers = {"TICK-A"}
+    client._desired_tickers = {"TICK-A", "TICK-B"}
+
+    asyncio.run(client._sync_subscriptions())
+
+    sids_used = {m["params"]["sid"] for m in client._ws.sent}
+    assert sids_used == {4}, "only the ticker sid may take market_tickers updates"
+
+
+def test_scoped_mode_is_unchanged_by_the_new_flag():
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = {"TICK-A"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    for m in client._ws.sent:
+        assert m["params"]["market_tickers"] == ["TICK-A"]

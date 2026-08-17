@@ -89,6 +89,28 @@ _BOOK_MATCH_WINDOW_SEC = 30.0
 
 _last_book_write: dict[str, float] = {}
 
+# Buffered writes (2026-08-17, exchange-wide subscription). record_trade is
+# now called once per inbound websocket trade message, and with the trade
+# channel subscribed exchange-wide that is thousands per minute rather than
+# the watchlist's handful. A per-message sqlite3.connect() + INSERT on the
+# event loop is precisely the pattern that froze the whole app for minutes
+# on 2026-08-11 (see kalshi_trade_tape.fetch_signals' docstring) - so rows
+# accumulate in memory and land as one executemany per batch instead.
+#
+# The trade-off is explicit: up to _FLUSH_BATCH rows can be lost if the
+# process dies uncleanly. That is acceptable here and nowhere else in this
+# app - this store is an observability record, not trading state, and
+# paper_broker/risk_manager still write through immediately.
+_trade_buffer: list[tuple] = []
+_book_buffer: list[tuple] = []
+_FLUSH_BATCH = 500
+# Hard ceiling if flush() somehow never runs - drop oldest rather than grow
+# without bound. Reaching this means something is wrong upstream, so it's
+# counted, not silent.
+_MAX_BUFFER = 20000
+_dropped_rows = 0
+_quarantine_cache: tuple[float, bool] | None = None
+
 
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
@@ -226,26 +248,18 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
         side = _taker_side(trade)
         notional = _notional_usd(trade, side) if side else None
 
-        from services import data_quarantine
-
-        excluded = 1 if data_quarantine.is_active() else 0
-        with _connect() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO raw_trades "
-                "(trade_id, ticker, series, observed_at, exchange_ts, taker_outcome_side, "
-                " taker_book_side, taker_side_legacy, resolved_side, count_fp, yes_price_dollars, "
-                " no_price_dollars, notional_usd, is_block_trade, excluded, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    str(trade_id), ticker, series, now if now is not None else time.time(),
-                    _exchange_ts(trade), trade.get("taker_outcome_side"), trade.get("taker_book_side"),
-                    trade.get("taker_side"), side, _float(trade.get("count_fp")),
-                    _float(trade.get("yes_price_dollars")), _float(trade.get("no_price_dollars")),
-                    notional, 1 if trade.get("is_block_trade") else 0, excluded,
-                    json.dumps(trade, default=str),
-                ),
-            )
-            return cur.rowcount > 0
+        _trade_buffer.append((
+            str(trade_id), ticker, series, now if now is not None else time.time(),
+            _exchange_ts(trade), trade.get("taker_outcome_side"), trade.get("taker_book_side"),
+            trade.get("taker_side"), side, _float(trade.get("count_fp")),
+            _float(trade.get("yes_price_dollars")), _float(trade.get("no_price_dollars")),
+            notional, 1 if trade.get("is_block_trade") else 0,
+            1 if _quarantine_active() else 0,
+            json.dumps(trade, default=str),
+        ))
+        if len(_trade_buffer) >= _FLUSH_BATCH:
+            flush()
+        return True
     except Exception:
         return False
 
@@ -273,26 +287,80 @@ def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = N
             return False
         _last_book_write[ticker] = now
 
-        with _connect() as conn:
-            conn.execute(
-                "INSERT INTO book_snapshots "
-                "(ticker, series, observed_at, exchange_ts, price_dollars, yes_bid_dollars, "
-                " yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, volume_fp, open_interest_fp, "
-                " dollar_volume, dollar_open_interest, last_trade_size_fp, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    ticker, series, now, _exchange_ts(ticker_msg),
-                    _float(ticker_msg.get("price_dollars")), _float(ticker_msg.get("yes_bid_dollars")),
-                    _float(ticker_msg.get("yes_ask_dollars")), _float(ticker_msg.get("yes_bid_size_fp")),
-                    _float(ticker_msg.get("yes_ask_size_fp")), _float(ticker_msg.get("volume_fp")),
-                    _float(ticker_msg.get("open_interest_fp")), _float(ticker_msg.get("dollar_volume")),
-                    _float(ticker_msg.get("dollar_open_interest")), _float(ticker_msg.get("last_trade_size_fp")),
-                    json.dumps(ticker_msg, default=str),
-                ),
-            )
+        _book_buffer.append((
+            ticker, series, now, _exchange_ts(ticker_msg),
+            _float(ticker_msg.get("price_dollars")), _float(ticker_msg.get("yes_bid_dollars")),
+            _float(ticker_msg.get("yes_ask_dollars")), _float(ticker_msg.get("yes_bid_size_fp")),
+            _float(ticker_msg.get("yes_ask_size_fp")), _float(ticker_msg.get("volume_fp")),
+            _float(ticker_msg.get("open_interest_fp")), _float(ticker_msg.get("dollar_volume")),
+            _float(ticker_msg.get("dollar_open_interest")), _float(ticker_msg.get("last_trade_size_fp")),
+            json.dumps(ticker_msg, default=str),
+        ))
+        if len(_book_buffer) >= _FLUSH_BATCH:
+            flush()
         return True
     except Exception:
         return False
+
+
+def _quarantine_active() -> bool:
+    """data_quarantine.is_active() opens a SQLite connection, and this is
+    now the exchange-wide hot path - so the answer is cached for a second
+    rather than asked once per print. A quarantine window is minutes long
+    at minimum; a one-second lag at its boundary cannot mislabel anything
+    that matters."""
+    global _quarantine_cache
+    now = time.time()
+    if _quarantine_cache is None or (now - _quarantine_cache[0]) > 1.0:
+        from services import data_quarantine
+
+        try:
+            _quarantine_cache = (now, data_quarantine.is_active())
+        except Exception:
+            return False
+    return _quarantine_cache[1]
+
+
+def flush() -> dict:
+    """Write buffered captures as two executemany batches. Called from the
+    trading loop each tick and automatically once a buffer reaches
+    _FLUSH_BATCH - see the buffer declarations above for why this is
+    batched rather than written per message.
+
+    Never raises, for the same reason record_trade doesn't: a failed
+    observability write must not take down the trading loop that called
+    it. On failure the rows are dropped rather than retried forever, and
+    counted in _dropped_rows so the loss is visible in capture_stats
+    instead of silent."""
+    global _trade_buffer, _book_buffer, _dropped_rows
+    trades, books = _trade_buffer, _book_buffer
+    _trade_buffer, _book_buffer = [], []
+    if not trades and not books:
+        return {"trades": 0, "books": 0}
+    try:
+        with _connect() as conn:
+            if trades:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO raw_trades "
+                    "(trade_id, ticker, series, observed_at, exchange_ts, taker_outcome_side, "
+                    " taker_book_side, taker_side_legacy, resolved_side, count_fp, yes_price_dollars, "
+                    " no_price_dollars, notional_usd, is_block_trade, excluded, raw_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    trades,
+                )
+            if books:
+                conn.executemany(
+                    "INSERT INTO book_snapshots "
+                    "(ticker, series, observed_at, exchange_ts, price_dollars, yes_bid_dollars, "
+                    " yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, volume_fp, open_interest_fp, "
+                    " dollar_volume, dollar_open_interest, last_trade_size_fp, raw_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    books,
+                )
+    except Exception:
+        _dropped_rows += len(trades) + len(books)
+        return {"trades": 0, "books": 0, "dropped": len(trades) + len(books)}
+    return {"trades": len(trades), "books": len(books)}
 
 
 def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
@@ -331,6 +399,10 @@ def capture_stats(series: str | None = None) -> dict:
         "series": series,
         "raw_trades": trades, "raw_trades_first_at": first_t, "raw_trades_last_at": last_t,
         "book_snapshots": books, "book_first_at": first_b, "book_last_at": last_b,
+        # Rows captured but not yet written (see flush()). Reported so a
+        # count read right after a burst isn't mistaken for data loss.
+        "buffered_trades": len(_trade_buffer), "buffered_books": len(_book_buffer),
+        "dropped_rows": _dropped_rows,
     }
 
 
