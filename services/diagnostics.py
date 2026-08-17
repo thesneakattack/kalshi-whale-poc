@@ -627,6 +627,14 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
     calls); callers that want it await it separately and merge the result."""
+    # Imported here, not at module level: services/series_watcher.py imports
+    # Check from this module, so a top-level import either way round would
+    # be circular. Same lazy-import idiom _close_ts_for_tickers already uses
+    # for market_catalog.
+    from services import series_watcher
+
+    now_ts = now if now is not None else time.time()
+    hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
     checks = [
         check_threshold_integrity(cfg, since_ts, now),
         check_price_band_adherence(cfg, since_ts, now),
@@ -635,6 +643,12 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
         performance_by_epoch(since_ts, now),
         selectivity_curve(since_ts=since_ts, now=now),
     ]
+    # One per watched series (services/series_watcher.watched_series) - the
+    # accuracy-vs-realised-win-rate reconciliation, which is per-series by
+    # construction: a blended number across every series answers nobody's
+    # question about a specific one.
+    for series in series_watcher.watched_series(cfg):
+        checks.append(series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
     worst = _OK
     for c in checks:
         if c.status == _FAIL:

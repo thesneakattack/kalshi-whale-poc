@@ -15,6 +15,7 @@ from services import config_performance as cp_module
 from services import diagnostics
 from services import market_catalog as mc_module
 from services import paper_broker as pb_module
+from services import series_watcher as sw_module
 from services import signal_log as sl_module
 from services import trade_category as tc_module
 
@@ -26,6 +27,9 @@ def dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(cp_module, "DB_PATH", tmp_path / "config_performance.db")
     monkeypatch.setattr(mc_module, "DB_PATH", tmp_path / "market_catalog.db")
     monkeypatch.setattr(tc_module, "DB_PATH", tmp_path / "trade_category.db")
+    # run_offline now includes one series_funnel check per watched series
+    # (services/series_watcher.py), which opens its own store.
+    monkeypatch.setattr(sw_module, "DB_PATH", tmp_path / "series_watcher.db")
     return tmp_path
 
 
@@ -208,6 +212,11 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
     assert {c["name"] for c in report["checks"]} == {
         "threshold_integrity", "price_band_adherence", "runway_at_entry",
         "config_bounds", "performance_by_epoch", "selectivity_curve",
+        # One per services/series_watcher.watched_series entry - the
+        # accuracy-vs-realised-win-rate reconciliation, per-series by
+        # construction (a blended figure across every series answers
+        # nobody's question about a specific one).
+        "series_funnel:KXBTC15M",
     }
 
 

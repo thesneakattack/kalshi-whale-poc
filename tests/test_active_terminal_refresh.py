@@ -15,6 +15,7 @@ from services import config_performance as cp_module
 from services import market_history as mh_module
 from services import market_catalog as mc_module
 from services import series_evaluator as se_module
+from services import series_watcher as sw_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="active_terminal_refresh_"))
 pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
@@ -23,6 +24,10 @@ cp_module.DB_PATH = _tmp_dir / "config_performance.db"
 mh_module.DB_PATH = _tmp_dir / "market_history.db"
 mc_module.DB_PATH = _tmp_dir / "market_catalog.db"
 se_module.DB_PATH = _tmp_dir / "series_evaluator.db"
+# main.py captures raw prints/book snapshots through series_watcher on the
+# stream + tick paths - redirect it like every other store so a test run
+# can never write into the real data/series_watcher.db (CLAUDE.md).
+sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
 
 import main  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

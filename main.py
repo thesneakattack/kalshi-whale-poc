@@ -39,6 +39,7 @@ from services import position_netting
 from services import reset_log
 from services import series_cache
 from services import series_evaluator
+from services import series_watcher
 from services import signal_log
 from services import suggestion_decisions
 from services import title_cache
@@ -447,6 +448,12 @@ async def _process_stream_trade(trade: dict) -> None:
     state["trade_tape"].insert(0, trade)
     state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
     state["trade_tape_last_fetch_ts"] = time.time()
+    # Same reasoning as _process_stream_ticker's record_book: persist the
+    # full print for watched series before the provider reduces it to a
+    # side and a notional. state["trade_tape"] is a 200-entry in-memory ring
+    # that dies with the process, so without this there is no record of what
+    # the exchange actually printed - only of what survived the filters.
+    series_watcher.record_trade(trade, config_store.get())
     if not state["running"] or not _streaming_trade_tape_enabled():
         _bump_generation()
         return
@@ -486,6 +493,18 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     # same stale-price-vs-fresh-entry shape as the original bug, just via
     # the ticker path instead of the tick-poll one.
     now = time.time()
+    # Capture the WHOLE message before anything below narrows it (2026-08-17
+    # direct instruction: "keep in mind all the api data you keep shaving off
+    # that ends up making your tasks harder"). The two lines below keep
+    # yes_bid_dollars/yes_ask_dollars and drop the other thirteen fields
+    # docs/kalshi/market-ticker.md documents - yes_bid_size_fp/yes_ask_size_fp
+    # (was there depth at the price I crossed), open_interest_fp/volume_fp
+    # (how big was this print relative to the market), ts_ms (exchange-side
+    # timing, not receive time). Every one of those is needed to explain why
+    # a directionally-correct signal still lost money, and none of them were
+    # recoverable after the fact. Self-throttling and never raises - see
+    # series_watcher.record_book.
+    series_watcher.record_book(ticker_msg, config_store.get(), now)
     try:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
@@ -3155,6 +3174,14 @@ async def trading_loop():
             # cap, which was silently dropping real trades from detection
             # under normal load, not just trimming the display).
             state["trade_tape"] = trade_tape[:_TRADE_TAPE_UI_CAP]
+            # Capture the REST-polled tape too, not just the websocket path
+            # (_process_stream_trade) - the two are independent sources of
+            # the same prints, and a watcher that only sees one of them
+            # would under-report exactly when the stream is the thing
+            # that's broken. record_trade dedupes on trade_id, so the
+            # deliberate overlap between the two paths costs nothing.
+            for tape_trade in trade_tape:
+                series_watcher.record_trade(tape_trade, cfg)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
@@ -4691,6 +4718,26 @@ async def get_diagnostics_coverage(pages: int = 2):
     watched = {m["ticker"] for m in (state.get("markets") or []) if m.get("ticker")}
     check = await diagnostics.check_coverage(cfg, watched, pages=pages)
     return check.to_dict()
+
+
+@app.get("/api/diagnostics/series/{series}")
+async def get_series_watcher(series: str, hours: float = 24.0):
+    """End-to-end report for one series (services/series_watcher.py) - the
+    funnel from raw exchange print to closed position, the
+    accuracy-vs-realised-win-rate reconciliation, and the spread/depth
+    context at each entry. Read-only, no API calls.
+
+    Separate from /api/diagnostics' blended set because the question is
+    per-series by construction: a win rate averaged across every series
+    answers nobody's question about a specific one."""
+    cfg = config_store.get()
+    now = time.time()
+    return {
+        "funnel": series_watcher.funnel(series, hours=hours, cfg=cfg, now=now),
+        "reconcile": series_watcher.reconcile(series, hours=hours, cfg=cfg, now=now),
+        "book_context": series_watcher.book_context_at_entry(series, hours=hours, now=now),
+        "capture": series_watcher.capture_stats(series),
+    }
 
 
 @app.get("/api/config")
