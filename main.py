@@ -41,6 +41,7 @@ from services import series_cache
 from services import series_evaluator
 from services import series_watcher
 from services import index_feed
+from services import settlement_edge
 from services import trade_archive
 from services import signal_log
 from services import suggestion_decisions
@@ -613,8 +614,61 @@ async def _process_stream_index(msg_type: str, msg: dict) -> None:
     step."""
     if msg_type == "cfbenchmarks_value":
         index_feed.record_cfbenchmarks(msg)
+        await _record_settlement_observations(msg.get("index_id"))
     elif msg_type == "pyth_value":
         index_feed.record_pyth(msg)
+
+
+# ticker -> settlement spec (services/index_feed.settlement_spec). A market's
+# rules/strike/close are immutable once listed, so this is cached rather than
+# re-fetched: the 15-minute series rotates its ticker every quarter hour, so
+# this is a handful of fetches an hour, not one per index tick.
+_settlement_spec_cache: dict[str, dict] = {}
+
+
+async def _spec_for(ticker: str) -> dict:
+    spec = _settlement_spec_cache.get(ticker)
+    if spec is None:
+        cfg = config_store.get()
+        client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+        try:
+            spec = index_feed.settlement_spec(await client.get_market(ticker))
+        except Exception:
+            # Don't cache a transport failure as "unsupported" - that would
+            # permanently blind this market on one bad request.
+            return {"supported": False, "reason": "market fetch failed"}
+        _settlement_spec_cache[ticker] = spec
+        if len(_settlement_spec_cache) > 500:
+            _settlement_spec_cache.clear()
+    return spec
+
+
+async def _record_settlement_observations(index_id: str | None) -> None:
+    """While a settlement window is open, record the projection and the
+    market's own price side by side for every watched market settling on
+    this index (services/settlement_edge.py).
+
+    This is the measurement that decides whether the index feed is an edge
+    or merely interesting: both forecasts of the same binary event, captured
+    at the same instant, scored against the realised outcome later. Nothing
+    here trades - see settlement_edge's own docstring."""
+    if not index_id:
+        return
+    entry = index_feed.latest(index_id)
+    if not entry or not entry.get("q15_window_size"):
+        return  # not in a settlement window; nothing to compare
+    for market in (state.get("markets") or []):
+        ticker = market.get("ticker")
+        if not ticker:
+            continue
+        spec = await _spec_for(ticker)
+        if not spec.get("supported") or spec.get("index_id") != index_id:
+            continue
+        settlement_edge.record_observation(
+            ticker, spec,
+            index_feed.settlement_projection(index_id, spec["strike"]),
+            state["latest_prices"].get(ticker),
+        )
 
 
 async def _process_stream_fill(fill_msg: dict) -> None:
@@ -3013,6 +3067,14 @@ async def trading_loop():
                 result = (m.get("result") or "").strip().lower()
                 if result in ("yes", "no") and m.get("ticker"):
                     market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
+                    # Close the loop on any settlement-window observations
+                    # taken for this market (services/settlement_edge.py) -
+                    # the realised outcome is written onto the rows that
+                    # forecast it, so scoring can never pair an observation
+                    # with a different window's result. No-op (0 rows) for
+                    # the overwhelming majority of markets, which are not
+                    # index-settled and were never observed.
+                    settlement_edge.resolve_window(m["ticker"], result == "yes")
 
             # Calibration-history tracking (Gap 6, docs/config-tuning-data-
             # gaps-2026-08-10.md) - confidence_calibration.py already
@@ -3287,6 +3349,7 @@ async def trading_loop():
             # observed live as index_ticks holding 0 rows while the in-memory
             # snapshot showed ticks arriving.
             index_feed.flush()
+            settlement_edge.flush()
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
             # "yes_bid" (cents) doesn't exist on the live API and silently
@@ -4882,6 +4945,15 @@ async def post_archive_snapshot(label: str, reason: str | None = None):
     """Take an archive checkpoint WITHOUT resetting anything - for marking
     the boundary of a config experiment while it's still running."""
     return trade_archive.archive_epoch(label=label, reason=reason, cfg=config_store.get())
+
+
+@app.get("/api/diagnostics/settlement-edge")
+async def get_settlement_edge(min_samples: int = 200):
+    """Does the streaming partial settlement average beat the market's own
+    price? Brier scores for both forecasts of the same event at the same
+    instant (services/settlement_edge.py). Reports "insufficient" rather
+    than a verdict until there's enough resolved data to mean anything."""
+    return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
 
 
 @app.get("/api/index")
