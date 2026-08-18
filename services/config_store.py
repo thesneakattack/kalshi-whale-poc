@@ -70,8 +70,22 @@ class ConfigStore:
                     self._data[key].update(value)
                 else:
                     self._data[key] = value
-            with open(self._path, "w") as f:
+            # Atomic write (2026-08-17, real live incident: a background
+            # task's cfg["kalshi"]["base_url"] raised KeyError mid-session,
+            # right after this exact write path ran). open(path, "w")
+            # truncates the file to zero bytes before writing a single byte
+            # back, so any concurrent reader - this same app's own get()
+            # mtime-triggered reload, or a separate process (e.g. a `ddev
+            # exec` script) reading the same bind-mounted file - can observe
+            # a torn, partially-written file mid-flight. Writing to a temp
+            # file in the same directory and replacing it over the real path
+            # is a single atomic filesystem rename: any reader sees either
+            # the complete old file or the complete new one, never a partial
+            # write in between.
+            tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+            with open(tmp_path, "w") as f:
                 yaml.safe_dump(self._data, f, sort_keys=False)
+            tmp_path.replace(self._path)
             # Own write - record the new mtime so get()'s change detection
             # doesn't immediately re-read the file we just produced.
             try:
