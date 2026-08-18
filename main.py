@@ -4194,6 +4194,55 @@ async def get_confidence_calibration_report():
     return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
 
 
+@app.post("/api/confidence-calibration/apply")
+async def apply_confidence_calibration_suggestion():
+    # Manual apply path (2026-08-17 direct report: "it doesn't auto apply.
+    # doesn't update its values on the frontend, doesn't actually refine
+    # itself over time. just does nothing"). Before this route, the ONLY
+    # way suggested_weights could ever reach the live config was the
+    # auto-apply toggle - itself gated behind a typed confirmation phrase,
+    # a resolved-signal floor, AND only even checked once per
+    # snapshot_interval_sec (6h default) with a further
+    # auto_apply_cooldown_sec (24h default) between real applies. A human
+    # already looking at a good suggestion in the report table had no way
+    # to act on it except retyping every factor by hand into the Config
+    # tab. Same manual-apply shape as apply_advisory_recommendation above:
+    # always available regardless of auto_apply_enabled, always a
+    # human-initiated click, recomputes the report fresh rather than
+    # trusting anything the request claims.
+    cc_cfg = config_store.get()["confidence_calibration"]
+    if not cc_cfg["enabled"]:
+        raise HTTPException(status_code=400, detail="confidence calibration is disabled")
+
+    cfg = config_store.get()
+    current_fp = config_performance.fingerprint(cfg)
+    rows = signal_log.resolved_signals_with_factors()
+    current_weights = cfg.get("whale_confidence_weights") or {}
+    result = confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
+    if result["report"] is None:
+        raise HTTPException(status_code=400, detail=result["gated_reason"])
+
+    blended = confidence_calibration.blended_weights_for_auto_apply(
+        current_weights, result["report"].get("suggested_weights"),
+    )
+    if blended is None or blended == current_weights:
+        raise HTTPException(status_code=400, detail="no discriminating factor yet - nothing to apply")
+
+    config_store.update({"whale_confidence_weights": blended})
+    new_fp = config_performance.fingerprint(config_store.get())
+    config_performance.log_applied_change(
+        config_path="whale_confidence_weights", old_value=current_weights, new_value=blended,
+        rationale=(
+            f"Manually applied calibration-suggested weights "
+            f"(n={result['report']['resolved_count']} resolved signals)."
+        ),
+        trade_count=result["report"]["resolved_count"],
+        fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False, source="calibration-manual",
+    )
+    _bump_generation()
+    return {"applied": True, "new_weights": blended}
+
+
 @app.get("/api/confidence-calibration/history")
 async def get_confidence_calibration_history(limit: int = 100):
     # services/calibration_history.py - Gap 6 of docs/config-tuning-data-

@@ -3,14 +3,9 @@ kalshi:
   base_url: https://external-api.kalshi.com/trade-api/v2
   markets_watchlist:
   - KXBTC15M
-  # "merge" (default, unchanged behavior): the pinned list above is always
-  # included alongside whatever automatic discovery finds - see
-  # _fetch_markets' own comment for the 2026-08-15 incident that made merge
-  # the default (a non-empty pin used to silently replace discovery
-  # entirely). "exclusive": discovery is skipped altogether and the
-  # watchlist is ONLY the pinned list - for deliberately narrowing focus to
-  # a hand-picked set of markets rather than surfacing everything Kalshi
-  # has, without needing an empty watchlist_size/categories workaround.
+  - KXMLBGAME-26AUG171805BALTB-TB
+  - KXMLBGAME-26AUG171805BALTB-BAL
+  - KXMLBGAME-26AUG171840STLCING2-STL
   markets_watchlist_mode: merge
   watchlist_size: 150
   max_children_per_parent: 3
@@ -110,13 +105,13 @@ whale_watcher_kalshi:
 whale_confidence_weights:
   depth_factor: 0.05
   unusualness_factor: 0.05
-  proximity_factor: 0.1
-  context_factor: 0.12
-  agreement_factor: 0.18
+  proximity_factor: 0.12
+  context_factor: 0.11
+  agreement_factor: 0.17
   cluster_factor: 0.07
-  trend_factor: 0.45
-  analyst_factor: 0
-  block_trade_factor: 0
+  trend_factor: 0.43
+  analyst_factor: 0.0
+  block_trade_factor: 0.0
 advisory:
   enabled: true
   min_resolved_trades_per_variant: 10
@@ -185,25 +180,6 @@ event_schedule:
   max_resolutions_per_tick: 5
 strategy_overrides:
   by_category:
-    # EMERGENCY STOPGAP, 2026-08-17. stop_loss_pct disabled for Sports only
-    # after confirming 3-for-3 real positions (2 ATP Challenger, 1 WTA -
-    # Cirstea/Kalinskaya) closed at exit_price exactly 0.0 seconds after
-    # market_history's independently-polled REST price had sat pinned at
-    # 0.99 for 13+ minutes straight. current_price = latest_prices.get(
-    # ticker, pos.entry_price) in strategy_engine.check_exits trusts a
-    # single WS ticker tick with zero corroboration against the
-    # already-known-good REST price sitting in market_history - a thin/
-    # illiquid in-play sports order book apparently produced one garbage
-    # near-zero quote, and the position was liquidated instantly at a
-    # fabricated price on what the real market (and, per direct user
-    # confirmation for the Cirstea match, the real result) was a WINNING
-    # position. Zero occurrences found on crypto (deep order books) in the
-    # same window - this is category-scoped deliberately, not applied
-    # globally. Real fix (corroborate against market_history / require
-    # 2-tick confirmation before trusting a single-tick stop-loss) is
-    # deliberately NOT attempted here - see docs/next-session-pickup-
-    # 2026-08-17.md. This is a one-line, fully reversible stopgap; take-
-    # profit/settlement-based closing are untouched.
     Sports:
       stop_loss_pct: null
   by_series: {}

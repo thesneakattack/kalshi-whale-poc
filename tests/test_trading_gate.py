@@ -52,6 +52,7 @@ config_store_module.config_store.reload()
 import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
 from services import market_analyst_agent  # noqa: E402  (same module object main.py's own import binds - no pre-import DB redirect needed here, done per-test below instead)
+from services.whale_simulator import DEFAULT_WEIGHTS  # noqa: E402
 
 # Bare (non-context-manager) TestClient does not trigger ASGI lifespan, so
 # main.trading_loop() never starts - these tests only exercise the HTTP
@@ -997,6 +998,137 @@ def test_advisory_apply_end_to_end_handles_a_market_strategy_recommendation():
     changes = client.get("/api/advisory/applied-changes").json()["changes"]
     assert changes[0]["config_path"] == "market_strategy.min_momentum_delta"
     assert changes[0]["new_value"] == 0.04
+
+
+# --- Whale-signal calibration manual apply -----------------------------------
+# POST /api/confidence-calibration/apply (2026-08-17, direct report: "it
+# doesn't auto apply. doesn't update its values on the frontend, doesn't
+# actually refine itself over time. just does nothing"). Before this route,
+# suggested_weights could only ever reach the live config via the auto-apply
+# toggle - gated behind a typed confirmation phrase and only even checked
+# once per confidence_calibration.snapshot_interval_sec. Same manual-apply
+# shape as the advisory apply route above: always available regardless of
+# auto_apply_enabled, recomputes the report fresh.
+
+def _reset_calibration_state():
+    main.config_store.update({
+        "confidence_calibration": {"enabled": False, "min_resolved_signals": 30, "auto_apply_enabled": False},
+        "whale_confidence_weights": dict(DEFAULT_WEIGHTS),
+    })
+
+
+def _seed_calibration_signals(monkeypatch, tmp_path, n_per_bucket=10, discriminate=True):
+    """Writes real resolved signals through signal_log (not synthetic dicts -
+    the route reads signal_log.resolved_signals_with_factors() directly, so
+    a dict-level fixture like tests/test_confidence_calibration.py's own
+    _discriminating_dataset can't exercise the HTTP layer end to end).
+    depth_factor cleanly predicts correctness (low third wrong, high third
+    right) when discriminate=True, mirroring that same module's fixture
+    shape; every other factor held constant so it can never discriminate -
+    when discriminate=False, depth_factor is held constant too, so nothing
+    in the report ever suggests a change."""
+    import services.signal_log as signal_log_module
+    monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
+    now = time.time() - 1000
+    for i in range(n_per_bucket):
+        depth = 0.5 if not discriminate else 0.1 + i * 0.01
+        signal_log_module.log_signal(
+            f"TICK-LOW-{i}", "yes", 1000, 0.5, "real-provider", seen_at=now,
+            factors={"depth_factor": depth, "unusualness_factor": 0.5, "proximity_factor": 0.5,
+                     "context_factor": 0.5, "agreement_factor": 0.5, "cluster_factor": 0.5,
+                     "trend_factor": 0.5, "analyst_factor": 0.5, "block_trade_factor": 0.5},
+        )
+    for i in range(n_per_bucket):
+        depth = 0.5 if not discriminate else 0.9 + i * 0.01
+        signal_log_module.log_signal(
+            f"TICK-HIGH-{i}", "yes", 1000, 0.5, "real-provider", seen_at=now,
+            factors={"depth_factor": depth, "unusualness_factor": 0.5, "proximity_factor": 0.5,
+                     "context_factor": 0.5, "agreement_factor": 0.5, "cluster_factor": 0.5,
+                     "trend_factor": 0.5, "analyst_factor": 0.5, "block_trade_factor": 0.5},
+        )
+    batch = signal_log_module.unresolved_batch(limit=n_per_bucket * 2, older_than_sec=0)
+    for row in batch:
+        correct = discriminate and row["ticker"].startswith("TICK-HIGH")
+        signal_log_module.mark_resolved(row["id"], correct=correct)
+
+
+def test_calibration_apply_rejected_when_disabled():
+    _reset_calibration_state()
+    resp = client.post("/api/confidence-calibration/apply")
+    assert resp.status_code == 400
+    assert "disabled" in resp.json()["detail"]
+
+
+def test_calibration_apply_rejected_when_not_enough_resolved_signals(tmp_path, monkeypatch):
+    _reset_calibration_state()
+    main.config_store.update({"confidence_calibration": {"enabled": True, "min_resolved_signals": 30}})
+    _seed_calibration_signals(monkeypatch, tmp_path, n_per_bucket=5)  # 10 rows, below the 30 floor
+    resp = client.post("/api/confidence-calibration/apply")
+    assert resp.status_code == 400
+    assert "10/30" in resp.json()["detail"]
+
+
+def test_calibration_apply_rejected_when_nothing_discriminates(tmp_path, monkeypatch):
+    _reset_calibration_state()
+    main.config_store.update({"confidence_calibration": {"enabled": True, "min_resolved_signals": 20}})
+    _seed_calibration_signals(monkeypatch, tmp_path, n_per_bucket=10, discriminate=False)
+    resp = client.post("/api/confidence-calibration/apply")
+    assert resp.status_code == 400
+    assert "nothing to apply" in resp.json()["detail"]
+    assert main.config_store.get()["whale_confidence_weights"] == dict(DEFAULT_WEIGHTS)
+
+
+def test_calibration_apply_end_to_end_updates_config_and_logs_change(tmp_path, monkeypatch):
+    _reset_calibration_state()
+    main.config_store.update({"confidence_calibration": {"enabled": True, "min_resolved_signals": 20}})
+    _seed_calibration_signals(monkeypatch, tmp_path, n_per_bucket=10, discriminate=True)
+
+    report_resp = client.get("/api/confidence-calibration/report")
+    assert report_resp.status_code == 200
+    suggested = report_resp.json()["report"]["suggested_weights"]
+    assert suggested is not None
+
+    apply_resp = client.post("/api/confidence-calibration/apply")
+    assert apply_resp.status_code == 200
+    body = apply_resp.json()
+    assert body["applied"] is True
+    new_weights = main.config_store.get()["whale_confidence_weights"]
+    assert new_weights == body["new_weights"]
+    # depth_factor is the only real signal in this fixture - it should have
+    # moved off DEFAULT_WEIGHTS' own value, same as the report's own suggestion.
+    assert new_weights["depth_factor"] != DEFAULT_WEIGHTS["depth_factor"]
+
+    changes = client.get("/api/advisory/applied-changes").json()["changes"]
+    match = next(c for c in changes if c["config_path"] == "whale_confidence_weights")
+    assert match["source"] == "calibration-manual"
+    assert match["auto_applied"] is False
+
+
+def test_calibration_apply_twice_against_unchanged_data_does_not_crash(tmp_path, monkeypatch):
+    # blended_weights_for_auto_apply is not a fixed point: suggested_weights
+    # is recomputed fresh from the raw signal data each call (unaware of
+    # what config it's blending into), while current_weights on the second
+    # call is already the first call's renormalized output - re-blending a
+    # renormalized value against a raw one shifts the total again rather
+    # than converging, so a second apply against literally unchanged data
+    # legitimately finds a new (if small) delta rather than "nothing to
+    # apply." Documenting the real behavior here rather than assuming
+    # idempotency the underlying blend was never designed to have -
+    # services/confidence_calibration.py's own test_blended_weights_* suite
+    # covers that function's math in isolation; this just confirms the
+    # route survives being called repeatedly, same as a human clicking
+    # twice would.
+    _reset_calibration_state()
+    main.config_store.update({"confidence_calibration": {"enabled": True, "min_resolved_signals": 20}})
+    _seed_calibration_signals(monkeypatch, tmp_path, n_per_bucket=10, discriminate=True)
+
+    first = client.post("/api/confidence-calibration/apply")
+    assert first.status_code == 200
+
+    second = client.post("/api/confidence-calibration/apply")
+    assert second.status_code in (200, 400)
+    if second.status_code == 400:
+        assert "nothing to apply" in second.json()["detail"]
 
 
 # --- MarketNativeStrategy / market_history debug endpoints -------------------

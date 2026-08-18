@@ -1956,7 +1956,30 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n) => n === undefined || n === null ? '—' : Number(n).toLocaleString(undefined, {style:'currency', currency:'USD'});
 
 async function fetchJSON(url, opts) {
+  // Real bug found 2026-08-17 investigating "the whale calibration tool...
+  // doesn't actually refine itself... just does nothing": fetch() only
+  // rejects on a network failure, never on an HTTP error status - a 400/404/
+  // 500 is still a "successful" fetch as far as the Promise is concerned.
+  // This function used to hand res.json() straight back regardless of
+  // status, so every catch(e) block anywhere in this file that calls
+  // fetchJSON - and there are dozens, all written assuming a failed request
+  // throws - was silently dead code for any error the backend reports via
+  // its own status code (virtually every raise HTTPException(...) in
+  // main.py). A button whose action hit a 400 (disabled feature, nothing to
+  // apply, stale/not-found recommendation) would read the response body,
+  // find no exception, and run its own success path anyway - "Applied ✓" on
+  // a request that outright failed, with the backend's own detail message
+  // never even surfaced. Confirmed live via the calibration panel's own new
+  // Apply button: a 400 "nothing to apply" response rendered as "Applied ✓".
   const res = await fetch(url, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body && body.detail) detail = body.detail;
+    } catch (e) { /* body wasn't JSON or was empty - keep statusText */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -4316,11 +4339,16 @@ async function toggleAutoApply(elId, enable, enableUrl, disableUrl, confirmPhras
       `its own cooldown, with no manual review step each time. You can turn it back off anytime with one click.`
     );
     if (phrase === null) return;
-    const result = await fetchJSON(enableUrl, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirmation_phrase: phrase}),
-    });
-    if (!result.auto_apply_enabled) {
-      alert(result.detail || 'Confirmation phrase did not match.');
+    try {
+      await fetchJSON(enableUrl, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirmation_phrase: phrase}),
+      });
+    } catch (e) {
+      // fetchJSON now throws on the backend's own 400 (wrong phrase)
+      // instead of silently resolving with a {detail: ...} body
+      // (2026-08-17 fetchJSON fix) - e.message carries the same text that
+      // used to be read as result.detail.
+      alert(e.message || 'Confirmation phrase did not match.');
       return;
     }
   } else {
@@ -4339,7 +4367,21 @@ function updateHistoryActionLine(text, isGood) {
   el.innerHTML = isGood ? `<span class="nothing-needed">✓ ${esc(text)}</span>` : esc(text);
 }
 
+// In-flight guard (2026-08-17, real bug found testing the calibration
+// panel's own equivalent below): this panel re-renders wholesale
+// (el.innerHTML = ...) every 5s while the History tab is active
+// (refreshHistoryInsightsIfActive), which was replacing the exact button a
+// user had just clicked with a fresh element before the in-flight apply's
+// own feedback (`btn.textContent = 'Applied ✓'`) had a chance to land -
+// mutating a DOM node that had already been detached from the page is not
+// an error, just silently invisible, so a click that genuinely worked (or
+// genuinely failed) looked like it "did nothing." Skipping the periodic
+// re-render while an apply is in flight keeps the clicked button's own
+// identity stable until its own feedback has actually been shown.
+let advisoryApplyInFlight = false;
+
 async function loadAdvisory() {
+  if (advisoryApplyInFlight) return;
   const badge = $('advisory-status-badge');
   const el = $('advisory-recommendations');
   try {
@@ -4408,18 +4450,45 @@ async function applyAdvisoryRecommendation(id, btn) {
   // would be both redundant friction and inconsistent with "No thanks"
   // right next to it having none.
   btn.disabled = true;
+  advisoryApplyInFlight = true;
   try {
     await fetchJSON('/api/advisory/recommendations/apply', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
     });
     btn.textContent = 'Applied ✓';
     loadConfig();
-    setTimeout(loadAdvisory, 800);
-    setTimeout(loadChangeHistory, 800);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'Apply failed — retry';
+  } finally {
+    advisoryApplyInFlight = false;
   }
+  setTimeout(loadAdvisory, 800);
+  setTimeout(loadChangeHistory, 800);
+}
+
+async function applyCalibrationSuggestion(btn) {
+  // Manual apply path for whale-signal calibration (2026-08-17 direct
+  // report: "doesn't actually refine itself over time. just does
+  // nothing."). Before this, suggested_weights could only ever reach the
+  // live config via the auto-apply toggle above - typed-confirmation
+  // gated, and only even checked once per snapshot_interval_sec. Same
+  // no-confirm()-dialog reasoning as applyAdvisoryRecommendation: clicking
+  // this clearly-labeled button IS the deliberate choice.
+  btn.disabled = true;
+  calibrationApplyInFlight = true;
+  try {
+    await fetchJSON('/api/confidence-calibration/apply', {method: 'POST'});
+    btn.textContent = 'Applied ✓';
+    loadConfig();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Apply failed — retry';
+  } finally {
+    calibrationApplyInFlight = false;
+  }
+  setTimeout(loadCalibrationReport, 800);
+  setTimeout(loadChangeHistory, 800);
 }
 
 // Change History (Item 3D, 2026-08-10) - every config-change source in
@@ -4431,7 +4500,7 @@ async function applyAdvisoryRecommendation(id, btn) {
 // as a plain logged row with no fabricated delta.
 const CHANGE_SOURCE_LABEL = {
   manual: 'manual edit', 'unified-advisory': 'advisory', 'series-analyst': 'AI (series)',
-  'full-spectrum-analyst': 'AI (full-spectrum)',
+  'full-spectrum-analyst': 'AI (full-spectrum)', 'calibration-manual': 'whale-signal calibration',
 };
 
 async function loadChangeHistory() {
@@ -4492,7 +4561,16 @@ async function loadChangeHistory() {
 // data for the first time (2026-08-10): unusualness_factor/agreement_factor
 // both discriminated negatively - this panel is what makes that visible
 // without needing to hit the API directly.
+// In-flight guard - same real bug and same fix as advisoryApplyInFlight
+// above (found here first, 2026-08-17): this panel also re-renders
+// wholesale every 5s while the History tab is active, which could replace
+// the "Apply suggested weights" button out from under a click before its
+// own feedback landed, making a click that worked (or failed) look like it
+// silently did nothing.
+let calibrationApplyInFlight = false;
+
 async function loadCalibrationReport() {
+  if (calibrationApplyInFlight) return;
   const badge = $('calibration-status-badge');
   const el = $('calibration-report');
   try {
@@ -4544,6 +4622,10 @@ async function loadCalibrationReport() {
         <thead><tr><th>Factor</th><th>High−Low Gap</th><th>Discriminates</th><th>Current Weight</th><th>Suggested Weight</th></tr></thead>
         <tbody>${factorRows}</tbody>
       </table>
+      ${Object.keys(suggested).length ? `<div style="margin-bottom:14px;">
+        <button onclick="applyCalibrationSuggestion(this)">Apply suggested weights</button>
+        <span style="font-size:11px; color:var(--muted); margin-left:8px;">Writes the Suggested Weight column above into whale_confidence_weights right now - the only other way these numbers reach the live config is the auto-apply toggle above, which only checks once per confidence_calibration.snapshot_interval_sec and then waits auto_apply_cooldown_sec between real applies.</span>
+      </div>` : ''}
       ${bandsRows ? `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Confidence bands (predicted vs. observed)</div>
       <table class="positions-table">
         <thead><tr><th>Band</th><th>n</th><th>Predicted</th><th>Observed</th><th>Gap</th></tr></thead>
@@ -6459,16 +6541,20 @@ function tradingGateHTML() {
 
 async function confirmEnableTrading() {
   const phrase = document.getElementById('trading-confirm-input').value;
-  const result = await fetchJSON('/api/trading/enable', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({confirmation_phrase: phrase}),
-  });
-  if (result.trading_enabled) {
+  try {
+    await fetchJSON('/api/trading/enable', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirmation_phrase: phrase}),
+    });
     tradingGateOpen = false;
     refresh();
-  } else {
+  } catch (e) {
+    // fetchJSON now throws on the backend's own 400 (wrong phrase / no
+    // real account connected) instead of silently resolving with a
+    // {detail: ...} body (2026-08-17 fetchJSON fix) - e.message carries
+    // the same text that used to be read as result.detail.
     const err = document.getElementById('trading-gate-error');
-    if (err) err.textContent = result.detail || 'Failed to enable real trading.';
+    if (err) err.textContent = e.message || 'Failed to enable real trading.';
   }
 }
 
