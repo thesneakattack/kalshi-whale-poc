@@ -72,6 +72,102 @@ Reproduce the table above first — the sample is small (11–218 prints) and
 
 ---
 
+## CRITICAL, fixed 2026-08-17: fetchJSON never checked HTTP status - every action button's error handling was dead code
+
+Direct report: "the whale calibration tool... doesn't auto apply. doesn't
+update its values on the frontend, doesn't actually refine itself over
+time. just does nothing." Investigating that one specific panel found a
+bug in the single most central helper function in `static/index.html`,
+used by essentially every fetch call in the file:
+
+```js
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  return res.json();       // BUG: never checked res.ok
+}
+```
+
+`fetch()` only rejects on a genuine network failure - a 400/404/500
+response is still a "successful" fetch as far as the Promise is concerned.
+This function handed `res.json()` back regardless of status, so **every
+`catch(e)` block anywhere in this file that calls `fetchJSON` - and there
+are dozens, all written assuming a failed request throws - was silently
+dead code for any error the backend reports via its own status code**,
+which is how virtually every `raise HTTPException(...)` in `main.py`
+communicates failure. A button whose action hit a 400 (disabled feature,
+nothing to apply, a stale/not-found recommendation) would read the
+response body, find no exception, and run its own success path anyway -
+"Applied ✓" on a request that outright failed, the backend's own `detail`
+message never even surfaced. Confirmed live and reproducibly via a real
+`selenium-chrome` browser session: a `POST /api/confidence-calibration/
+apply` call that correctly 400'd with "nothing to apply" still rendered
+the button as "Applied ✓".
+
+**Fixed at the root** (`static/index.html`'s `fetchJSON`): now checks
+`res.ok` and throws an `Error` carrying the backend's own `detail` message
+on any non-2xx response, so every existing `catch(e)` block starts working
+exactly as its own code already implied it should.
+
+**That fix has real blast radius - two other call sites were relying on
+the old broken behavior and needed fixing in the same pass**, found via
+`grep -n "\.detail"` across the file rather than assumed:
+- `toggleAutoApply` (the advisory/calibration auto-apply confirmation-phrase
+  flow) used to read `result.detail` off a "resolved" 400 body to `alert()`
+  the real reason a wrong phrase failed. Under the new contract that 400
+  throws instead of resolving, so this needed a `try/catch` wrapped around
+  it, reading `e.message` instead - same alert text, now via the correct
+  path. **Verified live**: a deliberately wrong confirmation phrase still
+  shows the exact `alert("Confirmation phrase did not match...")` text.
+- `confirmEnableTrading` - **the real-trading typed-confirmation gate**,
+  the single most safety-critical UI flow in this app - had the identical
+  pattern (`result.detail` read off a resolved 400 body). Without fixing
+  this one, a wrong phrase would have failed *safely* (trading still never
+  enables on the wrong phrase - the backend gate was never the broken
+  part) but *silently*, with no error text shown and only an unhandled
+  promise rejection in the console. Fixed the same way, verified the
+  backend invariant itself was never at risk before or after.
+
+**A second, independent bug found in the same investigation**: the
+calibration panel (and the advisory panel, same code shape) re-renders its
+entire section wholesale (`el.innerHTML = ...`) every 5s while the History
+tab is active. A click's own async apply call could still be in flight
+when that timer fired, replacing the just-clicked button with a fresh one
+before the click's own `btn.textContent = 'Applied ✓'` feedback landed -
+mutating a DOM node already detached from the page is not an error, just
+silently invisible. Fixed with a simple in-flight guard
+(`calibrationApplyInFlight`/`advisoryApplyInFlight`) that skips the
+periodic re-render while an apply from that panel is pending. Both fixes
+were necessary together - confirmed via a `window.fetch` wrapper logging
+real request timing in a live browser session: before both fixes, a click
+against real live data (a full `signal_log` table scan, several seconds)
+showed neither success nor failure text, ever; after, it reliably shows
+one or the other within a few seconds of the request actually resolving.
+
+**Also shipped in the same pass, the actual feature that started this**:
+whale-signal calibration had no way for a human to act on a good
+suggestion except retyping every factor by hand into the Config tab - the
+auto-apply toggle was the only path that ever wrote `suggested_weights`
+into the live config, and it's gated behind a typed confirmation phrase
+*and* only even checked once per `confidence_calibration.
+snapshot_interval_sec` (6h default). Added `POST /api/confidence-
+calibration/apply` (mirrors `apply_advisory_recommendation`'s existing
+manual-apply shape exactly: always available regardless of
+`auto_apply_enabled`, recomputes the report fresh, logs to the same
+change-history audit trail as `calibration-manual`) plus an "Apply
+suggested weights" button in the panel itself. Verified end to end against
+real production data (34,530 resolved signals): applied live, config
+updated, change history logged, verified via a real browser click - not
+just curl.
+
+Tests: `tests/test_config_store.py` (atomicity, see the settings.yaml
+section below) and 5 new route-level tests in `tests/test_trading_gate.py`
+covering the disabled/under-threshold/nothing-to-discriminate/success/
+repeated-apply cases for the new endpoint, seeded through real
+`signal_log` rows (not synthetic dicts) so the HTTP layer is actually
+exercised. 1,144 tests passing.
+
+---
+
 ## URGENT, fixed this session: no-side wins displayed as losses
 
 Direct report: "wins are showing up as losses (0c exit when the result is
@@ -95,22 +191,20 @@ already use two columns over, so a `no`-side win (yes-price settling to
 CLAUDE.md's "a displayed value must match its label" section already
 documents once, in a different spot.
 
-**Fixed**, in the History table and in the main Open Positions table (same
-bug, same fix, found while checking for siblings). **NOT yet fixed** in two
-lower-traffic spots found during the same sweep, left for next session
-rather than rushed:
-- Mutually-exclusive combo-legs table (`static/index.html` ~line 3174,
-  `${(m.entry_price*100)}¢ → ${(m.current_price*100)}¢`)
-- `market_strategy` panel (~line 4877) - lower priority, that strategy is
-  `enabled: false` by default
+**Fixed everywhere**, as of 2026-08-17 (`a44f41d`): the History table, the
+main Open Positions table, the mutually-exclusive combo-legs table
+(`static/index.html` ~line 3185), and the `market_strategy` panel's own
+positions and recent-trades lists (~line 4893, ~line 4914) all now apply
+the side-aware `side === 'yes' ? price : 1 - price` inversion.
 
-**Not verified in a real browser** - the `selenium-chrome` container
-crashed mid-session (Chrome binary crash, unrelated to this change) and
-wasn't retried under time pressure. Confirmed instead: HTTP 200 on the
-served page, brace-balance check on the edited region, and the fix mirrors
-an already-proven pattern used elsewhere in this exact file. **Do a real
-Selenium pass on the History and Positions tabs before trusting this
-fully.**
+**Verified in a real browser**, not just HTTP 200 + brace-balancing - a
+selenium-chrome session against the live History tab found a real no-side
+closed trade (`KXATPMATCH-26AUG17ZVEATM-ATM`, `entry_price=0.2`,
+`exit_price=0.18`, `side=no`) and confirmed the rendered row reads "80¢ →
+82¢" (matching `cost_basis=$377.60 = 472 × 0.80` exactly), not the raw
+"20¢ → 18¢". Same row also confirms the `runway_exhausted`/
+`position_netting` close-type fix on live data: it renders "Position
+Netting", not "unknown".
 
 ## RESOLVED tonight: root cause fixed, live data remediated, verified
 
@@ -368,34 +462,39 @@ and doc-verified; the implementation is not - do it with a clear head,
 one piece at a time, suite green between each, starting with #3 (smallest,
 lowest-risk, and directly reinforces tonight's volatility fix).
 
-## URGENT, not yet actioned: tick duration blew out, rate limiter tripping
+## RESOLVED 2026-08-17: per-phase tick timing instrumentation shipped
 
 Direct request: "find the bottleneck in the whale stream (data
 transmission vs analysis vs decision vs opening vs management vs
-exiting)." Measured, not guessed, in the last few minutes of this session:
+exiting)." Was measured once at `last_tick_duration_sec: 19.63` against a
+6s `poll_interval_sec` with 3 rate-limit hits and 60 markets watched, but
+**could not be attributed to a specific phase** - `trading_loop` had no
+per-phase timing, only one number for the whole tick.
 
-```
-last_tick_duration_sec:  19.63    (poll_interval_sec is configured at 6)
-last_tick_rate_limit_hits: 3      (was 0 for essentially the entire session)
-markets watched: 60               (was 179 a few hours earlier)
-```
+**Fixed** (`main.py::trading_loop`, `services/app_state.py`): 8
+checkpoints now wrap the tick end to end - `market_fetch`,
+`resolve_and_record`, `calibration_advisory`, `market_strategy`,
+`event_and_tradetape_fetch`, `capture_flush_and_titles`,
+`signal_and_entry`, `exit_management` - each storing its own elapsed
+seconds into `state["tick_phase_timings"]`, exposed on `GET /api/state`
+alongside the existing `last_tick_duration_sec`. Declared outside the
+tick's `try/except` so a mid-tick exception still leaves whatever phases
+completed visible instead of losing the whole breakdown.
 
-A tick running 3x+ its own configured interval, now actually tripping the
-rate limiter, is real operational degradation - not a display artifact,
-not a stale-feed illusion. **This could not be attributed to a specific
-phase** (fetch/analysis/decision/open/manage/exit) because
-`trading_loop`/`_fetch_markets` have no per-phase timing instrumentation -
-`last_tick_duration_sec` is one number for the whole tick. Guessing which
-`asyncio.gather()` block dominates would have been exactly the kind of
-unverified claim this session got burned by twice already, so it wasn't
-guessed.
-
-**Concrete first step for next session:** wrap each major phase in
-`trading_loop` (market fetch, event/live-status fetch, trade-tape/signal
-generation, strategy evaluate, exit checks, account sync) in its own timer
-and store them as `state["tick_phase_timings"]` alongside the existing
-single number. That turns "the tick is slow" into "phase X is slow,"
-which is the actual answer to "find the bottleneck."
+**Verified live**, not just unit-tested: sampled 5 consecutive real ticks
+via `curl /api/state`. Current watchlist (~31-33 markets, well below the
+60-market state that produced the 19.63s tick) shows no rate-limit hits
+and phase sums matching `last_tick_duration_sec` within ~0.2s (the
+untimed remainder is `config_performance.record_variant` +
+`series_evaluator.evaluate_pending` + `KalshiClient` construction at the
+very top, plus `client.close()` in `finally` - all sub-millisecond,
+deliberately left uninstrumented). `market_fetch` and `resolve_and_record`
+dominate every sampled tick (2.2-3.1s and 0.4-1.3s respectively) with
+`event_and_tradetape_fetch` consistently small (0.001-0.7s) - the opposite
+of what the REST-vs-websocket architecture research below guessed would
+be the bottleneck. **Next time the tick blows out again (watchlist back
+up near 60+), read `tick_phase_timings` first** rather than re-guessing;
+this is now a one-`curl` answer instead of a re-investigation.
 
 ### The other half of the request: make the watchlist size configurable
 
@@ -408,35 +507,39 @@ config-reloadable as of this session's `config_store` fix - lowering
 mitigation. What is genuinely missing, per "highly configurable": there is
 no per-category watchlist cap (Sports and Crypto currently share one global
 number) and no dashboard control for it - both real gaps, worth building
-once the phase-timing data above says whether watchlist SIZE is actually
-what's driving the 19.63s tick, versus something else entirely (a slow
-`_fetch_live_status` under the widened 12h lookahead from earlier this
-session is a real candidate worth ruling out first).
+once watchlist growth reproduces the blowout again and `tick_phase_timings`
+(now shipped, see above) confirms `market_fetch` is still the dominant
+phase at that size. **`_fetch_live_status` under the widened 12h lookahead
+is already ruled out**, not just deprioritized - it lives inside the
+`event_and_tradetape_fetch` phase, sampled at 0.001-0.7s across 5 live
+ticks while `market_fetch` ran 2.2-3.1s on the same ticks. Whatever was
+driving the 19.63s tick, it wasn't that.
 
-## Unexplained: an uncommitted settings.yaml diff, not authored by me
+## RESOLVED: the "unauthored" settings.yaml diff, plus a real race it exposed
 
-Found via `git status` at end of session - a working-tree diff to
-`config/settings.yaml` that neither I nor, as far as the record shows, the
-dashboard's Config tab produced. Values include
-`entry_threshold: 0.4455`, `close_window_sec: 10599.6`,
-`special_market_min_seconds_to_close: 218.7`,
-`take_profit_pct: 0.459`/`stop_loss_pct: 0.403`, reworked
-`whale_confidence_weights`, and both `strategy_overrides.by_category` and
-`by_series` wiped to `{}` - the Sports and KXBTC15M overrides gone
-entirely.
+Explained by `1eba8f5` (same night, committed before this pickup doc's
+first draft was finished): `ConfigStore.reload()` ran once at construction
+and nothing ever called it again, so the running process silently kept
+serving whatever config it loaded at startup while every file edit -
+dashboard save included, since `update()` writes the same file `get()`
+never re-read - was invisible to it until a restart. The "unauthored"
+values were real, intended config; the process just never picked them up,
+so every diagnostic run that session was describing a configuration the
+live app was not actually running. `get()` now stats the file and re-reads
+on mtime change, closing the gap.
 
-Ruled out, not assumed: `config_performance.applied_changes` has no
-corresponding rows in the last 30 minutes (a `config_store.update()` call -
-the dashboard's own save path - always logs there), and both
-`auto_apply_enabled` flags (advisory, confidence_calibration) are `false`.
-A `config_store.update()` call would be logged; a direct edit to the file
-would not be, by design, regardless of who or what made it. The odd
-fractional values read like optimizer/sweep output, not hand-typed numbers.
-
-**Left uncommitted and untouched** - not reverted, not applied, not
-guessed at. `git diff config/settings.yaml` shows the exact change before
-deciding whether to keep it, and it's worth confirming who/what wrote it
-before either committing or discarding.
+That fix widened who reads `settings.yaml` live, which surfaced a second,
+smaller, genuinely new bug on 2026-08-17: `ConfigStore.update()` wrote via
+a direct `open(path, "w")` - truncate-then-write, not atomic - so a
+concurrent reader (this app's own `get()`, or a separate process touching
+the same bind-mounted file, e.g. a `ddev exec` test run) could catch a
+torn, partially-written file mid-flight. Caught live: a background task's
+`cfg["kalshi"]["base_url"]` raised `KeyError` immediately after a dashboard
+config save ran. Fixed the same way this class of bug is always fixed -
+write to a temp file in the same directory, then atomically replace the
+real path (`services/config_store.py`, tests in
+`tests/test_config_store.py`) - so any reader now sees either the complete
+old file or the complete new one, never a partial write in between.
 
 ## Left running unattended from 2026-08-17 — verified safe
 
