@@ -383,10 +383,35 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
         return
+    matched_market = None
     for market in state["markets"]:
         if market.get("ticker") == ticker:
             market["yes_ask_dollars"] = ticker_msg.get("yes_ask_dollars")
+            matched_market = market
             break
+    if matched_market is not None:
+        # Raises market_history's real time resolution using data already
+        # in this message - see market_history.record_snapshot_from_ticker's
+        # docstring and docs/next-session-pickup-2026-08-17.md's REST-vs-
+        # websocket architecture finding (item #3, "smallest, lowest-risk").
+        # volume_24h/close_time come from the cached REST market object
+        # (matched_market), not the ticker message - the ws ticker channel
+        # only carries all-time volume_fp (docs/kalshi/market-ticker.md),
+        # and labeling that "volume_24h" would be exactly the kind of
+        # mislabeled-value bug CLAUDE.md already documents twice.
+        yes_bid_raw = ticker_msg.get("yes_bid_dollars")
+        yes_ask_raw = ticker_msg.get("yes_ask_dollars")
+        spread = None
+        if yes_bid_raw is not None and yes_ask_raw is not None:
+            try:
+                spread = max(float(yes_ask_raw) - float(yes_bid_raw), 0.0)
+            except (TypeError, ValueError):
+                spread = None
+        market_history.record_snapshot_from_ticker(
+            ticker, state["latest_prices"][ticker], spread=spread,
+            volume_24h=float(matched_market.get("volume_24h_fp") or 0.0),
+            close_time=matched_market.get("close_time"), now=now,
+        )
     if state["running"] and state.get("signal_feed"):
         cfg_now = config_store.get()
         for close_decision in strategy.check_exits(

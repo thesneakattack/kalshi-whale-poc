@@ -5,6 +5,7 @@ from services import market_history as mh
 
 def _mh(tmp_path, monkeypatch):
     monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    mh._last_ticker_snapshot.clear()  # module-level throttle state, shared across tests
     return mh
 
 
@@ -191,3 +192,54 @@ def test_recent_price_is_none_when_the_only_snapshot_is_too_stale(tmp_path, monk
 def test_recent_price_is_none_for_an_unknown_ticker(tmp_path, monkeypatch):
     _mh(tmp_path, monkeypatch)
     assert mh.recent_price("NEVER-SEEN", max_age_sec=120) is None
+
+
+# --- record_snapshot_from_ticker (2026-08-17 websocket architecture item #3) -
+
+def test_record_snapshot_from_ticker_writes_a_row(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    wrote = mh.record_snapshot_from_ticker(
+        "TICK-A", 0.55, spread=0.02, volume_24h=1234.0, close_time=close_time, now=now,
+    )
+    assert wrote is True
+    assert mh.snapshot_count("TICK-A") == 1
+    with mh._connect(tmp_path / "market_history.db") as conn:
+        row = conn.execute(
+            "SELECT yes_price, spread, volume_24h FROM snapshots WHERE ticker = ?", ("TICK-A",),
+        ).fetchone()
+    assert row == (0.55, 0.02, 1234.0)
+
+
+def test_record_snapshot_from_ticker_is_throttled_per_ticker(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    now = time.time()
+    assert mh.record_snapshot_from_ticker("TICK-A", 0.5, now=now) is True
+    # Same ticker, 1 second later - well inside _TICKER_SNAPSHOT_MIN_INTERVAL_SEC.
+    assert mh.record_snapshot_from_ticker("TICK-A", 0.51, now=now + 1) is False
+    assert mh.snapshot_count("TICK-A") == 1
+    # A different ticker isn't throttled by TICK-A's own last-write time.
+    assert mh.record_snapshot_from_ticker("TICK-B", 0.4, now=now + 1) is True
+    # Past the throttle window - the next update for TICK-A goes through.
+    assert mh.record_snapshot_from_ticker(
+        "TICK-A", 0.6, now=now + mh._TICKER_SNAPSHOT_MIN_INTERVAL_SEC + 0.01,
+    ) is True
+    assert mh.snapshot_count("TICK-A") == 2
+
+
+def test_record_snapshot_from_ticker_never_raises_and_logs_the_fault(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    faults = []
+    monkeypatch.setattr(
+        mh.fault_log, "record",
+        lambda component, operation, exc, **kw: faults.append((component, operation)),
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated db failure")
+
+    monkeypatch.setattr(mh, "record_snapshots", _boom)
+    result = mh.record_snapshot_from_ticker("TICK-A", 0.5, now=time.time())
+    assert result is False
+    assert faults == [("market_history", "record_snapshot_from_ticker")]

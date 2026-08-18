@@ -26,6 +26,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from services import fault_log
 from services.signal_log import series_of
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_history.db"
@@ -36,6 +37,19 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_history.db"
 # report "30-minute momentum" computed from two snapshots 90 seconds apart,
 # which is noise dressed up as a real reading.
 _MIN_WINDOW_COVERAGE = 0.5
+
+# How often one ticker's websocket-pushed price is worth its own snapshot
+# row (2026-08-17, see record_snapshot_from_ticker) - the channel fires on
+# every field change, far more often than momentum()/volatility() need to
+# see. Same cadence question series_watcher.record_book already asks for
+# its own (unrelated) book-snapshot table; reused here rather than invented
+# fresh - see series_watcher._DEFAULT_BOOK_INTERVAL_SEC.
+_TICKER_SNAPSHOT_MIN_INTERVAL_SEC = 5.0
+
+# ticker -> last snapshot timestamp written via the ticker-stream path,
+# kept separate from the REST tick's own cadence (that path has no
+# throttle - it already runs at most once per poll_interval_sec).
+_last_ticker_snapshot: dict[str, float] = {}
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -107,6 +121,54 @@ def record_snapshots(rows: list[dict], timestamp: float | None = None):
                 for r in rows
             ],
         )
+
+
+def record_snapshot_from_ticker(
+    ticker: str, yes_price: float, spread: float | None = None,
+    volume_24h: float | None = None, close_time: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """Same snapshots table as record_snapshots, fed from the ticker
+    websocket stream instead of waiting for the next REST tick - raises
+    this table's real time resolution for actively-trading markets using
+    data already flowing into main.py's state["latest_prices"]
+    (_process_stream_ticker), no new subscription or API cost. Part of the
+    2026-08-17 REST-vs-websocket architecture finding (see docs/next-
+    session-pickup-2026-08-17.md): momentum()/volatility() were measured at
+    exactly 0.0 for 78% of markets because 6-second REST-only sampling was
+    too sparse.
+
+    Throttled per ticker (_TICKER_SNAPSHOT_MIN_INTERVAL_SEC), since the
+    channel fires on every field change, not just price - momentum()/
+    volatility() need real elapsed time between samples to measure a trend,
+    not a row per tick of book noise. Returns False (no-op, not an error)
+    when throttled, so callers don't need their own gating logic.
+
+    Never raises - this runs on the websocket message path, where main.py's
+    own kalshi_trade_ws consumer already swallows exceptions per-message
+    (see its docstring), but silently is exactly the failure mode
+    services/fault_log.py exists to prevent, so any real fault is recorded
+    there rather than just disappearing."""
+    try:
+        now = now if now is not None else time.time()
+        last = _last_ticker_snapshot.get(ticker)
+        if last is not None and (now - last) < _TICKER_SNAPSHOT_MIN_INTERVAL_SEC:
+            return False
+        _last_ticker_snapshot[ticker] = now
+        record_snapshots(
+            [{
+                "ticker": ticker,
+                "yes_price": yes_price,
+                "spread": spread,
+                "volume_24h": volume_24h,
+                "time_to_close_sec": seconds_to_close(close_time, now),
+            }],
+            timestamp=now,
+        )
+        return True
+    except Exception as exc:
+        fault_log.record("market_history", "record_snapshot_from_ticker", exc)
+        return False
 
 
 def record_outcome(ticker: str, result: str, resolved_at: float | None = None):
