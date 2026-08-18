@@ -171,6 +171,7 @@ state = {
     "running": True,
     "last_tick_duration_sec": None,  # wall-clock time of the most recently completed tick, see trading_loop
     "last_tick_rate_limit_hits": 0,  # 429s hit during that same tick - services/http_client.py's rolling counter
+    "tick_phase_timings": {},  # wall-clock seconds per named phase of the most recent tick, see trading_loop
     "markets": [],
     "latest_prices": {},
     "latest_asks": {},  # maker/limit-order path (2026-08-15) - see check_pending_fills wiring below

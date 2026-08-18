@@ -2883,6 +2883,17 @@ async def trading_loop():
         # incident, but nothing in state could show a tick running long or
         # rate-limit hits piling up before it actually broke something.
         tick_start_wall = time.time()
+        # Per-phase breakdown of the same tick (2026-08-17, docs/next-session-
+        # pickup-2026-08-17.md "URGENT, not yet actioned" item) -
+        # last_tick_duration_sec alone couldn't say *which* phase of a 19.63s
+        # tick against a 6s poll_interval_sec was slow; guessing which
+        # asyncio.gather() block dominated would have been exactly the kind
+        # of unverified claim this project has been burned by before.
+        # Declared outside try/except so a mid-tick exception still leaves
+        # whatever phases completed before the failure visible, rather than
+        # losing the whole breakdown.
+        phase_timings: dict[str, float] = {}
+        _phase_t = tick_start_wall
         try:
             # Config-variant fingerprint (docs/advisory-engine-plan.md) -
             # computed once per tick, same cfg snapshot every trade decision
@@ -2948,6 +2959,8 @@ async def trading_loop():
                 _fetch_exchange_status(client),
             )
             await _fetch_category_metadata(client)
+            phase_timings["market_fetch"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
             state["account"] = account_snapshot
             if exchange_status is not None:
                 state["exchange_status"] = exchange_status
@@ -3005,6 +3018,8 @@ async def trading_loop():
                     # the overwhelming majority of markets, which are not
                     # index-settled and were never observed.
                     settlement_edge.resolve_window(m["ticker"], result == "yes")
+            phase_timings["resolve_and_record"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
 
             # Calibration-history tracking (Gap 6, docs/config-tuning-data-
             # gaps-2026-08-10.md) - confidence_calibration.py already
@@ -3151,6 +3166,8 @@ async def trading_loop():
                             auto_applied=True, source="unified-advisory-auto",
                         )
                         _bump_generation()
+            phase_timings["calibration_advisory"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
 
             # MarketNativeStrategy (services/market_strategy.py) - runs every
             # tick alongside the whale-follow strategy below, entirely off
@@ -3189,6 +3206,8 @@ async def trading_loop():
             state["market_results"] = market_results
             if _streaming_trade_tape_enabled():
                 await trade_stream.set_market_tickers([m["ticker"] for m in markets if m.get("ticker")])
+            phase_timings["market_strategy"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
             trade_tape_since = state.get("trade_tape_last_fetch_ts")
@@ -3207,6 +3226,8 @@ async def trading_loop():
                     _fetch_live_status(client, markets),
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
+            phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
             state["event_titles"].update(event_titles)
             # Mutually-exclusive pair detection (2026-08-14 direct request,
             # services/mutual_exclusivity.py) - recomputed fresh every tick
@@ -3351,6 +3372,8 @@ async def trading_loop():
             state["series_track_record"] = {
                 m["ticker"]: signal_log.series_stats(m["ticker"], days=30) for m in markets if m.get("ticker")
             }
+            phase_timings["capture_flush_and_titles"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
             state["last_poll"] = time.time()
             state["error"] = None
             state["equity_history"].append({"t": state["last_poll"], "equity": broker.equity(state["latest_prices"])})
@@ -3428,6 +3451,8 @@ async def trading_loop():
 
             for signal in new_signals:
                 await _handle_signal(signal, cfg, market_results, config_fp, tick_now)
+            phase_timings["signal_and_entry"] = round(time.time() - _phase_t, 3)
+            _phase_t = time.time()
 
             # Maker/limit-order path (2026-08-15) - resolves resting limit
             # orders strategy.evaluate() may have placed above (opt-in,
@@ -3469,6 +3494,7 @@ async def trading_loop():
                 broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg,
             ):
                 await _handle_close_decision(close_decision)
+            phase_timings["exit_management"] = round(time.time() - _phase_t, 3)
 
         except Exception as e:
             state["error"] = str(e)
@@ -3482,6 +3508,7 @@ async def trading_loop():
 
         state["last_tick_duration_sec"] = round(time.time() - tick_start_wall, 2)
         state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
+        state["tick_phase_timings"] = phase_timings
         _bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
@@ -4749,6 +4776,7 @@ def _build_state_body() -> dict:
         "last_poll": state["last_poll"],
         "last_tick_duration_sec": state["last_tick_duration_sec"],
         "last_tick_rate_limit_hits": state["last_tick_rate_limit_hits"],
+        "tick_phase_timings": state["tick_phase_timings"],
         # Real bug found and fixed 2026-08-15, same session that added
         # me_pairs in the first place: _build_state_body() is a curated
         # whitelist, not a passthrough of the whole state dict, and this key
