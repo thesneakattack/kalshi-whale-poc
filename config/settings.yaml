@@ -30,11 +30,11 @@ whale_signal:
   live_markets_only: false
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.4455
+  entry_threshold: 0.401
   max_position_pct: 0.05
   cooldown_sec: 120
-  close_window_sec: 10599.6
-  special_market_min_seconds_to_close: 218.7
+  close_window_sec: 11659.56
+  special_market_min_seconds_to_close: 196.83
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
   min_unit_cost: 0.65
