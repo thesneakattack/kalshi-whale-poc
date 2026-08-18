@@ -3182,7 +3182,7 @@ function renderPositionNettingGroups(groups) {
         <td title="${esc(label.full)}">${esc(label.short)}</td>
         <td><span class="side-tag ${m.side}">${esc(m.side)}</span></td>
         <td>${m.size}</td>
-        <td>${(m.entry_price * 100).toFixed(0)}¢ → ${(m.current_price * 100).toFixed(0)}¢</td>
+        <td>${((m.side === 'yes' ? m.entry_price : 1 - m.entry_price) * 100).toFixed(0)}¢ → ${((m.side === 'yes' ? m.current_price : 1 - m.current_price) * 100).toFixed(0)}¢</td>
       </tr>`;
     }).join('');
     const rec = g.recommendation;
@@ -4890,7 +4890,7 @@ async function loadMarketNativeState() {
           ${contextLineHTML(p.ticker, p.side)}
         </div>
         <div class="nums">
-          <span>${p.size.toLocaleString()} @ ${(p.entry_price*100).toFixed(0)}¢</span>
+          <span>${p.size.toLocaleString()} @ ${((p.side === 'yes' ? p.entry_price : 1 - p.entry_price)*100).toFixed(0)}¢</span>
           <span style="color:${pnl >= 0 ? 'var(--yes)' : 'var(--no)'};">${fmt(pnl)}</span>
         </div>
       </div>`;
@@ -4911,7 +4911,7 @@ async function loadMarketNativeState() {
           ${contextLineHTML(t.ticker, t.side)}
         </div>
         <div class="nums">
-          <span>${t.size.toLocaleString()} @ ${(t.price*100).toFixed(0)}¢</span>
+          <span>${t.size.toLocaleString()} @ ${((t.side === 'yes' ? t.price : 1 - t.price)*100).toFixed(0)}¢</span>
           <span style="color:var(--muted);">${when}</span>
           ${resultHtml}
         </div>
