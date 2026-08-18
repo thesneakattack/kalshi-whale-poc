@@ -1806,6 +1806,82 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
     assert before <= captured["opened_since"] <= after
 
 
+# --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,
+# docs/next-session-pickup-2026-08-17.md item #2 of the REST-vs-websocket
+# architecture finding). Only close_date_updated is wired to change
+# anything yet - see the function's own docstring for why determined/
+# settled stay observation-only until a real message has been verified.
+
+def _reset_lifecycle_stats():
+    main.state["lifecycle_stream_stats"] = {"events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None}
+
+
+def test_lifecycle_close_date_updated_refreshes_matching_market():
+    _reset_lifecycle_stats()
+    main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
+    gen_before = main.state["generation"]
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 1735689600},
+    ))
+
+    assert main.state["markets"][0]["close_time"] == "2025-01-01T00:00:00Z"
+    assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 1
+    assert main.state["lifecycle_stream_stats"]["events_by_type"]["close_date_updated"] == 1
+    assert main.state["generation"] > gen_before
+
+
+def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
+    _reset_lifecycle_stats()
+    main.state["markets"] = [{"ticker": "TICK-B", "close_time": "2026-01-01T00:00:00Z"}]
+    gen_before = main.state["generation"]
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 1735689600},
+    ))
+
+    # The event still counts toward observability...
+    assert main.state["lifecycle_stream_stats"]["events_by_type"]["close_date_updated"] == 1
+    # ...but nothing was actually updated, since TICK-A isn't in state["markets"].
+    assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 0
+    assert main.state["markets"][0]["close_time"] == "2026-01-01T00:00:00Z"
+    assert main.state["generation"] == gen_before
+
+
+def test_lifecycle_non_close_date_event_only_updates_stats():
+    # determined/settled deliberately stay observation-only for now - see
+    # _process_stream_lifecycle's docstring.
+    _reset_lifecycle_stats()
+    main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "determined", "market_ticker": "TICK-A", "result": "yes"},
+    ))
+
+    assert main.state["lifecycle_stream_stats"]["events_by_type"]["determined"] == 1
+    assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 0
+    assert main.state["markets"][0]["close_time"] == "2026-01-01T00:00:00Z"
+
+
+def test_lifecycle_ignores_message_missing_event_type_or_ticker():
+    _reset_lifecycle_stats()
+    asyncio.run(main._process_stream_lifecycle({"market_ticker": "TICK-A"}))
+    asyncio.run(main._process_stream_lifecycle({"event_type": "created"}))
+    assert main.state["lifecycle_stream_stats"]["events_by_type"] == {}
+
+
+def test_lifecycle_close_date_updated_tolerates_unparseable_close_ts():
+    _reset_lifecycle_stats()
+    main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": "not-a-number"},
+    ))
+
+    assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 0
+    assert main.state["markets"][0]["close_time"] == "2026-01-01T00:00:00Z"
+
+
 # --- _fetch_event_titles: mutually_exclusive extraction --------------------
 # Real Kalshi field, already present on every get_event() response this
 # function was already fetching - previously discarded. Direct report:

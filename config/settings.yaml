@@ -19,6 +19,7 @@ kalshi:
   poll_interval_sec: 6
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
+  market_lifecycle_stream_enabled: true
   top_series_per_category: 30
 whale_signal:
   signal_frequency_sec: 12

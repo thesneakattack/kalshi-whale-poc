@@ -289,3 +289,90 @@ def test_normalize_trade_preserves_fields_it_does_not_know_about():
     # Normalisation still wins where the two overlap.
     assert out["taker_side"] == "yes"
     assert out["created_time"] == "1970-01-01T00:00:01Z"
+
+
+# --- market_lifecycle_v2 (2026-08-17, docs/next-session-pickup-2026-08-17.md
+# item #2 of the REST-vs-websocket architecture finding) -------------------
+
+def _lifecycle_client():
+    return KalshiTradeWebSocketClient(
+        "https://external-api.kalshi.com/trade-api/v2", subscribe_lifecycle=True,
+    )
+
+
+def test_lifecycle_message_dispatches_to_on_lifecycle_callback():
+    client = _client()
+    received = []
+
+    async def on_lifecycle(msg):
+        received.append(msg)
+
+    raw = json.dumps({
+        "type": "market_lifecycle_v2",
+        "msg": {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 123},
+    })
+    asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
+
+    assert received == [{"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 123}]
+
+
+def test_lifecycle_message_is_a_noop_when_no_callback_given():
+    client = _client()
+    raw = json.dumps({"type": "market_lifecycle_v2", "msg": {"event_type": "created", "market_ticker": "TICK-A"}})
+    # Must not raise even though on_lifecycle is omitted entirely.
+    asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None))
+
+
+def test_lifecycle_shape_is_logged_once_per_event_type(capsys):
+    client = _client()
+
+    async def on_lifecycle(msg):
+        pass
+
+    created = json.dumps({"type": "market_lifecycle_v2", "msg": {"event_type": "created", "market_ticker": "TICK-A"}})
+    settled = json.dumps({"type": "market_lifecycle_v2", "msg": {"event_type": "settled", "market_ticker": "TICK-A"}})
+    asyncio.run(client._handle_message(created, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
+    asyncio.run(client._handle_message(created, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
+    asyncio.run(client._handle_message(settled, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
+
+    out = capsys.readouterr().out
+    # 'created' logged exactly once despite two messages...
+    assert out.count("first real 'market_lifecycle_v2' 'created' shape") == 1
+    # ...but 'settled' gets its own first-time log, since each event_type
+    # is a genuinely different shape (docs/kalshi/market-and-event-
+    # lifecycle.md - most fields are conditional on which event_type this is).
+    assert out.count("first real 'market_lifecycle_v2' 'settled' shape") == 1
+
+
+def test_lifecycle_subscribe_is_opt_in_and_exchange_wide():
+    client = _lifecycle_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()  # no watchlist at all - must not block this
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    lifecycle_subs = [m for m in client._ws.sent if m["params"]["channels"] == ["market_lifecycle_v2"]]
+    assert len(lifecycle_subs) == 1
+    assert "market_tickers" not in lifecycle_subs[0]["params"]
+    assert client._lifecycle_subscribed is True
+
+
+def test_lifecycle_subscribe_is_off_by_default():
+    client = _client()  # subscribe_lifecycle defaults False
+    client._ws = _FakeWebSocket()
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    assert all(m["params"]["channels"] != ["market_lifecycle_v2"] for m in client._ws.sent)
+
+
+def test_lifecycle_not_resubscribed_on_a_later_sync():
+    client = _lifecycle_client()
+    client._ws = _FakeWebSocket()
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    client._desired_tickers = {"TICK-A"}
+    asyncio.run(client._sync_subscriptions())
+
+    lifecycle_subs = [m for m in client._ws.sent if m["params"]["channels"] == ["market_lifecycle_v2"]]
+    assert len(lifecycle_subs) == 1

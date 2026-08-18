@@ -151,6 +151,15 @@ trade_stream = KalshiTradeWebSocketClient(
     exchange_wide_trades=bool(cfg["kalshi"].get("trade_stream_exchange_wide", False)),
     # The indices the crypto series settle against - see
     # services/index_feed.py. Empty list disables the subscription.
+    # market_lifecycle_v2 (2026-08-17, docs/next-session-pickup-2026-08-17.md
+    # item #2) - unconditionally exchange-wide push notifications for
+    # market open/close/settlement, replacing part of the 6-second REST
+    # poll's own job. Lives on this connection (already built for
+    # exchange-wide volume via the reader/worker queue split), never on
+    # index_stream below - see KalshiTradeWebSocketClient.__init__'s own
+    # comment for why that isolation matters. Same config-gated,
+    # read-at-import-time rollout shape as trade_stream_exchange_wide above.
+    subscribe_lifecycle=bool(cfg["kalshi"].get("market_lifecycle_stream_enabled", True)),
 )
 # Index feeds get their OWN connection (2026-08-17), not a channel on the
 # trade socket. Measured: subscribed alone, cfbenchmarks_value delivers
@@ -277,6 +286,12 @@ state = {
         "ws_url": trade_stream.status.get("ws_url"),
         "mode": "stream" if whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled else "poll",
     },
+    # market_lifecycle_v2 observability (2026-08-17) - a genuinely new,
+    # never-before-observed-live channel (see main.py._process_stream_
+    # lifecycle), exposed on /api/state so its real event volume/shape can
+    # be verified without grepping logs, same reasoning as
+    # kalshi_trade_tape.py's own self.stats for exchange-wide trade.
+    "lifecycle_stream_stats": {"events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None},
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
     "account": {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,

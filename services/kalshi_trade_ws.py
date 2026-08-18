@@ -23,7 +23,8 @@ _INGEST_QUEUE_MAX = 20000
 class KalshiTradeWebSocketClient:
     def __init__(self, base_url: str, exchange_wide_trades: bool = False,
                  index_ids: list[str] | None = None,
-                 underlying_tickers: list[str] | None = None):
+                 underlying_tickers: list[str] | None = None,
+                 subscribe_lifecycle: bool = False):
         # exchange_wide_trades (2026-08-17, direct goal: "realtime data
         # across everything" / "zero latency and maximum insight"):
         # subscribe the `trade` channel with NO market_tickers, which
@@ -43,6 +44,19 @@ class KalshiTradeWebSocketClient:
         # field change and would be a genuine firehose, for data this app
         # only needs on markets it might actually trade.
         self.exchange_wide_trades = exchange_wide_trades
+        # market_lifecycle_v2 (2026-08-17, REST-vs-websocket architecture
+        # finding, docs/next-session-pickup-2026-08-17.md item #2): push-
+        # based open/close/settlement notifications, replacing the 6-second
+        # REST poll's own close_time/result checks for the specific case of
+        # a close date getting revised ahead of schedule - see
+        # main.py._process_stream_lifecycle. docs/kalshi/market-and-event-
+        # lifecycle.md is explicit that "market_ticker filters are not
+        # supported" - like exchange-wide trade, there is no way to scope
+        # this to a watchlist, so it's a constructor-level opt-in (default
+        # off) rather than always-on, kept OFF the dedicated index_stream
+        # connection specifically to preserve that connection's physical
+        # isolation from any other channel's volume (see app_state.py).
+        self.subscribe_lifecycle = subscribe_lifecycle
         # CF Benchmarks index IDs to stream (docs/kalshi/cfbenchmarks-value.md).
         # This channel is what several crypto series literally settle
         # against - KXBTC15M's own rules_primary, read live 2026-08-17:
@@ -96,11 +110,13 @@ class KalshiTradeWebSocketClient:
         self._trade_subscribed = False
         self._ticker_subscribed = False
         self._index_subscribed = False
+        self._lifecycle_subscribed = False
         self._message_id = 1
         self._update_event = asyncio.Event()
         self._stop = False
         self._logged_fill_shape = False
         self._logged_position_shape = False
+        self._logged_lifecycle_event_types: set[str] = set()
         # Ingest counters - exposed through status so a stalled consumer
         # shows up as a number rather than as a market that looks quiet.
         self.messages_received = 0
@@ -161,7 +177,7 @@ class KalshiTradeWebSocketClient:
         })
 
     async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None,
-                  on_index=None) -> None:
+                  on_index=None, on_lifecycle=None) -> None:
         backoff = 1.0
         while not self._stop:
             if not self.enabled:
@@ -184,6 +200,7 @@ class KalshiTradeWebSocketClient:
                         self._subscribed_tickers = set()
                         self._trade_subscribed = False
                         self._ticker_subscribed = False
+                        self._lifecycle_subscribed = False
                         self._message_id = 1
                     if on_status is not None:
                         await on_status({"connected": True, "error": None, "ws_url": self.ws_url})
@@ -241,7 +258,7 @@ class KalshiTradeWebSocketClient:
                             try:
                                 await self._handle_message(
                                     raw, on_trade, on_ticker, on_status, on_fill,
-                                    on_position, on_index,
+                                    on_position, on_index, on_lifecycle,
                                 )
                             except Exception:
                                 # One malformed or mishandled message must not
@@ -282,12 +299,13 @@ class KalshiTradeWebSocketClient:
                     self._subscribed_tickers = set()
                     self._trade_subscribed = False
                     self._ticker_subscribed = False
+                    self._lifecycle_subscribed = False
                 if self._stop:
                     break
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None, on_index=None) -> None:
+    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
         data = json.loads(raw_message)
         msg_type = data.get("type")
         if msg_type == "subscribed":
@@ -322,6 +340,23 @@ class KalshiTradeWebSocketClient:
             return
         if msg_type == "trade":
             await on_trade(self.normalize_trade(data.get("msg") or {}))
+            return
+        if msg_type == "market_lifecycle_v2":
+            # docs/kalshi/market-and-event-lifecycle.md's msg.event_type
+            # names which of created/activated/deactivated/close_date_
+            # updated/determined/settled/price_level_structure_updated/
+            # metadata_updated this is. Each shape is logged once (same
+            # "verify against a real payload before trusting it" idiom as
+            # fill/market_positions below) since only close_date_updated
+            # has been wired to do anything yet - see main.py's
+            # _process_stream_lifecycle.
+            msg = data.get("msg") or {}
+            event_type = msg.get("event_type")
+            if event_type and event_type not in self._logged_lifecycle_event_types:
+                self._logged_lifecycle_event_types.add(event_type)
+                print(f"[kalshi_ws] first real 'market_lifecycle_v2' {event_type!r} shape (verify parsing against this): {msg!r}")
+            if on_lifecycle is not None:
+                await on_lifecycle(msg)
             return
         if msg_type == "ticker":
             await on_ticker(data.get("msg") or {})
@@ -383,6 +418,17 @@ class KalshiTradeWebSocketClient:
                 self._trade_subscribed = True
                 if not self.exchange_wide_trades:
                     self._subscribed_tickers = desired
+
+        # market_lifecycle_v2 - opt-in (see __init__), unconditionally
+        # exchange-wide like trade above, so it goes up once on connect and
+        # never participates in add_markets/delete_markets either.
+        if self.subscribe_lifecycle and not self._lifecycle_subscribed:
+            await self._send({
+                "id": self._next_message_id(),
+                "cmd": "subscribe",
+                "params": {"channels": ["market_lifecycle_v2"]},
+            })
+            self._lifecycle_subscribed = True
 
         # Index feeds are wholly independent of the watchlist - they take
         # index_ids/underlying_tickers, and the docs are explicit that

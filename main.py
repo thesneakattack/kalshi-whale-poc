@@ -614,6 +614,60 @@ async def _process_stream_position(position_msg: dict) -> None:
     _bump_generation()
 
 
+async def _process_stream_lifecycle(msg: dict) -> None:
+    """market_lifecycle_v2 (2026-08-17, docs/next-session-pickup-2026-08-17.md
+    item #2 of the REST-vs-websocket architecture finding) - exchange-wide
+    push notifications for market open/close/settlement
+    (docs/kalshi/market-and-event-lifecycle.md), replacing part of what the
+    6-second REST tick's own market-list fetch currently has to wait for.
+
+    Only `close_date_updated` is wired to actually change anything yet -
+    the highest-value, lowest-risk slice: it's the exact real, previously-
+    diagnosed bug class (ROADMAP.md/CLAUDE.md's stale-close_time
+    investigation - Kalshi can revise a market's close_date_updated ahead
+    of its originally scheduled close, and until now this app only learned
+    that on its next REST poll of that specific market, which never
+    happens at all for a market that has already rotated off the
+    watchlist). `determined`/`settled` (the real settlement path) are
+    deliberately left un-wired here - re-routing this app's real outcome/
+    P&L resolution onto a channel with zero live-verified message history
+    is exactly the kind of partial-verification rush CLAUDE.md's own
+    incident log (and this same date's session) warns against; the REST
+    poll stays authoritative for that until a real settled event has been
+    observed and checked against it.
+
+    Every event_type still counts toward lifecycle_stream_stats
+    (services/app_state.py) so real volume/shape is visible on
+    /api/state without grepping logs - this is a genuinely new,
+    never-observed-live channel."""
+    event_type = msg.get("event_type")
+    ticker = msg.get("market_ticker")
+    if not event_type or not ticker:
+        return
+    stats = state["lifecycle_stream_stats"]
+    stats["events_by_type"][event_type] = stats["events_by_type"].get(event_type, 0) + 1
+    stats["last_event_at"] = time.time()
+
+    if event_type != "close_date_updated":
+        return
+    close_ts = msg.get("close_ts")
+    if close_ts is None:
+        return
+    try:
+        new_close_time = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return
+    updated = False
+    for market in state["markets"]:
+        if market.get("ticker") == ticker:
+            market["close_time"] = new_close_time
+            updated = True
+            break
+    if updated:
+        stats["close_time_updates_applied"] += 1
+        _bump_generation()
+
+
 async def _handle_trade_stream_status(status: dict) -> None:
     state["trade_stream_status"] = {
         "enabled": _streaming_trade_tape_enabled(),
@@ -3547,6 +3601,7 @@ async def lifespan(app: FastAPI):
             trade_stream.run(
                 _process_stream_trade, _process_stream_ticker, _handle_trade_stream_status,
                 on_fill=_process_stream_fill, on_position=_process_stream_position,
+                on_lifecycle=_process_stream_lifecycle,
             )
         )
     index_stream_task = None
@@ -4870,6 +4925,7 @@ def _build_state_body() -> dict:
         "account": state["account"],
         "exchange_status": state["exchange_status"],
         "trade_stream_status": state["trade_stream_status"],
+        "lifecycle_stream_stats": state["lifecycle_stream_stats"],
         "shadow": _shadow_state(),
     }
     _state_body_cache["generation"] = state["generation"]
