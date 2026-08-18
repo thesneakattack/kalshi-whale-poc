@@ -3,6 +3,15 @@ kalshi:
   base_url: https://external-api.kalshi.com/trade-api/v2
   markets_watchlist:
   - KXBTC15M
+  # "merge" (default, unchanged behavior): the pinned list above is always
+  # included alongside whatever automatic discovery finds - see
+  # _fetch_markets' own comment for the 2026-08-15 incident that made merge
+  # the default (a non-empty pin used to silently replace discovery
+  # entirely). "exclusive": discovery is skipped altogether and the
+  # watchlist is ONLY the pinned list - for deliberately narrowing focus to
+  # a hand-picked set of markets rather than surfacing everything Kalshi
+  # has, without needing an empty watchlist_size/categories workaround.
+  markets_watchlist_mode: merge
   watchlist_size: 150
   max_children_per_parent: 3
   min_volume_24h: 5000

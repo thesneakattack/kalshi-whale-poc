@@ -1450,11 +1450,19 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     # pinning a handful of tickers (e.g. one political market's own
     # candidates) silently zeroed out every other category's whale-signal
     # coverage for as long as the pin stayed set. Direct instruction:
-    # "merge: keep KXPRESNOMD pinned + add real discovery." Now always
-    # fetched, always merged with whatever discovery below finds - pinned
+    # "merge: keep KXPRESNOMD pinned + add real discovery." Merge is the
+    # default (kalshi.markets_watchlist_mode: merge) - the pinned list is
+    # fetched and merged with whatever discovery below finds, and pinned
     # tickers don't count against watchlist_size's cap, same "always
     # included, exempt from the cap" treatment extra_tickers already gets
     # a few lines down.
+    #
+    # 2026-08-17 direct request restored the choice this fix removed, as an
+    # explicit opt-in rather than the old implicit either/or:
+    # markets_watchlist_mode: "exclusive" skips discovery entirely (see
+    # below) so the watchlist is ONLY the pinned list - for deliberately
+    # narrowing to a hand-picked set rather than the 2026-08-15 bug's
+    # accidental version of the same thing.
     #
     # Series-level pins (2026-08-16 direct request: "the market watch list
     # should act as that override, that's what the pinned list is for" -
@@ -1480,8 +1488,18 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         await _cached_market_fetch(client, literal_pins) if literal_pins else []
     )
 
+    # Exclusive mode (2026-08-17 direct request: "give the option to merge
+    # with discovery or make it exclusive to the manual list") - skips
+    # BOTH discovery branches below entirely, including the real REST
+    # hydration calls the live_markets_only path makes, rather than running
+    # discovery and throwing its result away at the merge step. `markets`
+    # ends up exactly `pinned_markets` once the merge below runs a no-op
+    # union against an empty list.
+    exclusive = cfg["kalshi"].get("markets_watchlist_mode") == "exclusive"
     min_volume = cfg["kalshi"].get("min_volume_24h", 0)
-    if cfg["kalshi"].get("live_markets_only"):
+    if exclusive:
+        markets: list[dict] = []
+    elif cfg["kalshi"].get("live_markets_only"):
         # Direct request: discovery itself, not just whether an already-
         # selected market's signal gets acted on, should be able to only
         # ever pick currently-live markets. Round-robin's usual top-n cut

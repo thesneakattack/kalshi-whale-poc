@@ -605,6 +605,82 @@ def test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run():
     assert tickers == ["SERA-M1", "SERA-M2", "SERB-M1"]
 
 
+# --- markets_watchlist_mode (2026-08-17 direct request: "give the option
+# to merge with discovery or make it exclusive to the manual list") -------
+
+def test_fetch_markets_merge_mode_is_the_unchanged_default():
+    """No markets_watchlist_mode key at all, and the field set explicitly
+    to "merge", must both behave exactly like before this feature existed -
+    pinned plus whatever discovery contributes."""
+    main.state["discovery_cache"]["markets"] = [
+        {"ticker": "DISCOVERED-M1", "event_ticker": "DISCOVERED-EVT1"},
+    ]
+    fake = _FakePinnedMarketClient({
+        "PINNED-M1": {"ticker": "PINNED-M1", "event_ticker": "PINNED-EVT1"},
+    })
+    for mode_cfg in (
+        {"kalshi": {"markets_watchlist": ["PINNED-M1"], "watchlist_size": 50, "max_children_per_parent": None}},
+        {"kalshi": {"markets_watchlist": ["PINNED-M1"], "watchlist_size": 50,
+                    "max_children_per_parent": None, "markets_watchlist_mode": "merge"}},
+    ):
+        markets = asyncio.run(main._fetch_markets(fake, mode_cfg))
+        tickers = {m["ticker"] for m in markets}
+        assert tickers == {"PINNED-M1", "DISCOVERED-M1"}
+
+
+def test_fetch_markets_exclusive_mode_skips_discovery_entirely():
+    """The actual feature: exclusive mode must produce ONLY the pinned
+    list, even though discovery_cache genuinely has other markets sitting
+    in it ready to contribute - proving discovery is skipped, not just
+    coincidentally empty."""
+    main.state["discovery_cache"]["markets"] = [
+        {"ticker": "DISCOVERED-M1", "event_ticker": "DISCOVERED-EVT1"},
+    ]
+    fake = _FakePinnedMarketClient({
+        "PINNED-M1": {"ticker": "PINNED-M1", "event_ticker": "PINNED-EVT1"},
+    })
+    cfg = {"kalshi": {"markets_watchlist": ["PINNED-M1"], "watchlist_size": 50,
+                      "max_children_per_parent": None, "markets_watchlist_mode": "exclusive"}}
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    tickers = {m["ticker"] for m in markets}
+    assert tickers == {"PINNED-M1"}
+    assert "DISCOVERED-M1" not in tickers
+
+
+def test_fetch_markets_exclusive_mode_with_empty_pin_list_is_an_empty_watchlist():
+    """No fallback to discovery when the pin list is empty in exclusive
+    mode - an empty watchlist is the honest answer, not a silent revert to
+    automatic discovery."""
+    main.state["discovery_cache"]["markets"] = [
+        {"ticker": "DISCOVERED-M1", "event_ticker": "DISCOVERED-EVT1"},
+    ]
+    fake = _FakePinnedMarketClient({})
+    cfg = {"kalshi": {"markets_watchlist": [], "watchlist_size": 50,
+                      "max_children_per_parent": None, "markets_watchlist_mode": "exclusive"}}
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    assert markets == []
+
+
+def test_fetch_markets_exclusive_mode_also_skips_the_live_only_rest_calls():
+    """Exclusive must short-circuit BEFORE the live_markets_only branch,
+    not just filter its output - that branch makes real REST hydration
+    calls (_FakeLiveClient raises if any discovery method is actually
+    called), so reaching it at all in exclusive mode would be wasted work
+    at best and a live incident at worst."""
+    class _ExplodingIfCalledClient(_FakePinnedMarketClient):
+        async def get_candidate_markets(self, min_volume, series_tickers):
+            raise AssertionError("discovery must not run in exclusive mode")
+
+    fake = _ExplodingIfCalledClient({
+        "PINNED-M1": {"ticker": "PINNED-M1", "event_ticker": "PINNED-EVT1"},
+    })
+    cfg = {"kalshi": {"markets_watchlist": ["PINNED-M1"], "watchlist_size": 50,
+                      "max_children_per_parent": None, "markets_watchlist_mode": "exclusive",
+                      "live_markets_only": True}}
+    markets = asyncio.run(main._fetch_markets(fake, cfg))
+    assert {m["ticker"] for m in markets} == {"PINNED-M1"}
+
+
 def test_fetch_markets_live_only_excludes_ineligible_series_when_enabled():
     # The BEFORE-check (direct request): a series currently serving backoff
     # must not be re-admitted to the watchlist, regardless of whether it

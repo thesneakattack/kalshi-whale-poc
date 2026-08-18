@@ -1129,12 +1129,6 @@
 <div class="view" id="view-terminal">
 <div class="layout">
 
-  <!-- Markets being watched -->
-  <div class="col">
-    <div class="panel-title">Watchlist <span id="market-count"></span> <span id="markets-list-toggle" style="float:right;"></span></div>
-    <div id="markets-list"><div class="empty">Loading markets…</div></div>
-  </div>
-
   <!-- Why: signal tape + decisions -->
   <div class="col">
     <div id="halted-banner-slot"></div>
@@ -1149,6 +1143,13 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       <div id="signal-decision-feed-list" class="scroll-panel"><div class="empty">Waiting for signals and decisions…</div></div>
     </div>
   </div>
+  
+  <!-- Markets being watched -->
+  <div class="col">
+    <div class="panel-title">Watchlist <span id="market-count"></span> <span id="markets-list-toggle" style="float:right;"></span></div>
+    <div id="markets-list"><div class="empty">Loading markets…</div></div>
+  </div>
+
 
   <!-- Quick operational actions - the detailed settings form moved to the
        Config tab (ROADMAP.md Phase 0.5), these stay here since they're used
@@ -1915,6 +1916,16 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         </div>
 
         <div class="panel-title" style="margin-top:24px;">Pinned Watchlist <span id="pinned-watchlist-count"></span></div>
+        <div class="field" style="margin-bottom:8px;">
+          <label>Mode
+            <span class="info-icon" title="Merge: pinned markets are always watched alongside whatever automatic discovery finds - the default, and what keeps other categories' whale-signal coverage from silently going to zero just because you pinned something. Exclusive: discovery is skipped entirely and ONLY the pinned markets below are watched - for deliberately narrowing focus to a hand-picked set.">ⓘ</span>
+          </label>
+          <select id="cfg-watchlist-mode">
+            <option value="merge">Merge with automatic discovery</option>
+            <option value="exclusive">Exclusive — pinned markets only</option>
+          </select>
+          <span class="config-path">kalshi.markets_watchlist_mode</span>
+        </div>
         <div id="pinned-watchlist-list"><div class="empty">Nothing pinned — using automatic discovery above.</div></div>
       </div>
     </details>
@@ -7014,6 +7025,7 @@ async function loadConfig() {
   $('cfg-min-volume').value = cfg.kalshi.min_volume_24h ?? 1;
   $('cfg-categories').value = (cfg.kalshi.categories || []).join(', ');
   $('cfg-discovery-live-only').checked = !!cfg.kalshi.live_markets_only;
+  $('cfg-watchlist-mode').value = cfg.kalshi.markets_watchlist_mode || 'merge';
   $('cfg-max-children-per-parent').value = cfg.kalshi.max_children_per_parent ?? '';
   if (!$('market-search-category').value) $('market-search-category').value = (cfg.kalshi.categories || [])[0] || '';
   renderPinnedWatchlist(cfg.kalshi.markets_watchlist || []);
@@ -7159,6 +7171,7 @@ $('save-config-btn').addEventListener('click', async () => {
       min_volume_24h: parseFloat($('cfg-min-volume').value) || 0,
       categories: $('cfg-categories').value.split(',').map(s => s.trim()).filter(Boolean),
       live_markets_only: $('cfg-discovery-live-only').checked,
+      markets_watchlist_mode: $('cfg-watchlist-mode').value,
       max_children_per_parent: $('cfg-max-children-per-parent').value === '' ? null : parseInt($('cfg-max-children-per-parent').value),
     },
   };
@@ -7330,7 +7343,13 @@ function renderPinnedWatchlist(tickers) {
   $('pinned-watchlist-count').textContent = tickers.length ? `(${tickers.length})` : '';
   const el = $('pinned-watchlist-list');
   if (!tickers.length) {
-    el.innerHTML = '<div class="empty">Nothing pinned — using automatic discovery above.</div>';
+    // Mode-aware (2026-08-17): in exclusive mode there IS no discovery
+    // fallback - an empty pin list means an empty watchlist, not "using
+    // automatic discovery above," which would be actively wrong to claim.
+    const exclusive = $('cfg-watchlist-mode').value === 'exclusive';
+    el.innerHTML = exclusive
+      ? '<div class="empty">Nothing pinned — exclusive mode means the watchlist is empty until you add something.</div>'
+      : '<div class="empty">Nothing pinned — using automatic discovery above.</div>';
     return;
   }
   el.innerHTML = tickers.map(t => {
