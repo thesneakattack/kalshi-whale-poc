@@ -265,12 +265,22 @@ questions.
       about a status/close_time revision the instant Kalshi emits it,
       instead of only catching it on the next scan or the real-time
       confirmation pass that currently bounds (not eliminates) the
-      staleness window. Real architectural scope — a new persistent WS
-      subscription, wiring its events into the catalog's SQLite rows or an
-      in-memory overlay, reconnect/backfill handling — flagged for a
-      dedicated pass. Would also extend the low-latency, event-driven model
-      `trade_stream` already proves out for trade detection to market
-      lifecycle/catalog freshness too.
+      staleness window. **Half shipped 2026-08-17**: the subscription now
+      exists (`KalshiTradeWebSocketClient(subscribe_lifecycle=True)`,
+      config-gated via `kalshi.market_lifecycle_stream_enabled`) and
+      `close_date_updated` is wired into the **in-memory overlay**
+      (`state["markets"]`, via `main._process_stream_lifecycle`) — verified
+      live against real messages for every documented `event_type`,
+      including one real `close_date_updated` applied with zero exceptions.
+      Still open: wiring the same events into `market_catalog`'s SQLite
+      rows (this fix only reaches the live tick's in-memory market list,
+      not the persistent catalog), plus `determined`/`settled` into the
+      real settlement pipeline (`market_history.record_outcome`,
+      `candidate_log`/`market_analyst_agent`'s `resolve_from_market_results`,
+      `settlement_edge.resolve_window` all still REST-only) — see
+      `docs/next-session-pickup-2026-08-17.md`'s "Recommended shape" section
+      for the full verification detail and why settlement wiring was
+      deliberately left for its own dedicated pass.
 
 ## Shipped
 

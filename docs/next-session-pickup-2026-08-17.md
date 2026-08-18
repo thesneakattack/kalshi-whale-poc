@@ -440,27 +440,80 @@ no WS order-entry channel exists - and `fill`/`market_positions` already
 push confirmations back once real trading is enabled. This part of the
 architecture is already right and doesn't need to change.
 
-### Recommended shape, not yet built
+### Recommended shape - #3 and half of #2 now shipped
 
 Four things currently share one `poll_interval_sec: 6` cadence that have
 genuinely different freshness requirements:
 1. Price/trade data - already WS, zero latency, done.
-2. Open/close/settlement detection - could move to push via
-   `market_lifecycle_v2` (new subscription, real work, real payoff).
-3. `market_history` snapshot resolution - could move to push via the
-   already-flowing ticker stream (smaller change, same payoff class as #2).
-4. Live sports game state - genuinely REST-only, but decouple its polling
-   interval from the other three; it doesn't need to run at 6s.
+2. Open/close/settlement detection - **`close_date_updated` now live** via
+   `market_lifecycle_v2` (see below); `determined`/`settled` deliberately
+   still REST-only.
+3. **SHIPPED 2026-08-17**: `market_history` snapshot resolution now also
+   fires from the already-flowing ticker stream, not just the REST tick.
+4. Live sports game state - genuinely REST-only, still on the shared 6s
+   cadence; decoupling it is still open.
 
-**Not started tonight, deliberately** - this touches `trading_loop`,
-`kalshi_trade_ws.py` (a new channel subscription), and `market_history`'s
-write path across several files, and this session already produced two
-real incidents (a wrong config override that opened and lost money on a
-real position, and a broken feed rehydration reverted twice) from moving
-on partial verification under time pressure. The research above is real
-and doc-verified; the implementation is not - do it with a clear head,
-one piece at a time, suite green between each, starting with #3 (smallest,
-lowest-risk, and directly reinforces tonight's volatility fix).
+**#3, done**: `services/market_history.record_snapshot_from_ticker()`,
+called from `main.py`'s `_process_stream_ticker` right after it updates
+`state["latest_prices"]`. Throttled to one write per ticker per 5s
+(`_TICKER_SNAPSHOT_MIN_INTERVAL_SEC`, matching `series_watcher`'s own
+book-snapshot cadence) so an active market's snapshots interleave with the
+REST tick's rather than replacing it outright. `volume_24h`/`close_time`
+are read from the cached REST market object (`state["markets"]`), never
+from the ticker message itself - the WS ticker channel only carries
+all-time `volume_fp`, not `volume_24h_fp`, and labeling that "volume_24h"
+would have been exactly CLAUDE.md's mislabeled-value bug class. Verified
+live, not just unit-tested: sampled real per-ticker snapshot timestamps in
+a 30s window and found sub-6-second gaps (down to ~1.0-1.2s) on actively
+trading tickers, confirming the WS path is genuinely adding samples
+between REST ticks rather than sitting dormant. Never raises - wrapped
+with `services/fault_log.py`, same contract as `series_watcher.record_book`.
+
+**#2, half done**: `KalshiTradeWebSocketClient` gained `subscribe_lifecycle`
+(constructor-level opt-in, config-gated via
+`kalshi.market_lifecycle_stream_enabled`, default `true`, read at import
+time like `exchange_wide_trades` - needs a real restart, not just
+`--reload`, to pick up a change). Subscribed unconditionally exchange-wide
+on `trade_stream` only (docs/kalshi/market-and-event-lifecycle.md: "market_
+ticker filters are not supported" - there's no way to scope it), deliberately
+**not** on `index_stream`, to preserve that connection's own physical
+isolation from unrelated channel volume. `main.py._process_stream_lifecycle`
+dispatches on `event_type`; only `close_date_updated` is wired to actually
+mutate state (refreshes `state["markets"]`'s `close_time` for the matching
+ticker) - the exact real bug class this project has already been bitten by
+twice (stale `close_time`, see CLAUDE.md). `determined`/`settled` (the real
+settlement path) are deliberately left observation-only: re-routing this
+app's real outcome/P&L resolution onto a channel with zero prior live
+history would be exactly the kind of partial-verification rush CLAUDE.md's
+incident log already warns against, so the REST poll stays authoritative
+for outcomes for now.
+
+**Verified live** (not just unit-tested) via a real `ddev restart` +
+`/api/state`'s new `lifecycle_stream_stats` field: within ~2 minutes of
+reconnecting, real messages arrived for every documented `event_type` -
+`created` (325), `determined` (37, e.g. `{'market_ticker':
+'KXXRP15M-26AUG172200-00', 'result': 'no', 'settlement_value': '0.0000',
+...}`), `settled` (12), `metadata_updated` (12), and `close_date_updated`
+(25, one of which matched a ticker in `state["markets"]` and produced
+`close_time_updates_applied: 1`) - every shape matched the docs exactly,
+and zero exceptions appeared in the logs. The other 24 `close_date_updated`
+events didn't apply, which is the correct, expected behavior: this app's
+`state["markets"]` is scoped to the current watchlist, not the whole
+exchange, so a close-date change on a market this app isn't tracking is
+correctly a no-op rather than a crash.
+
+**Still open**: wiring `determined`/`settled` into the real settlement
+pipeline (`market_history.record_outcome`, `candidate_log.
+resolve_from_market_results`, `market_analyst_agent.
+resolve_from_market_results`, `settlement_edge.resolve_window` all currently
+only run off the REST tick's own `market.result` check) - now that a real
+`determined` shape has been observed and matches the docs exactly
+(`result`/`settlement_value` present, as documented), this is lower-risk
+than it was, but it's still real, separate work touching several files that
+all currently assume REST is the only source of truth for outcomes - do
+this as its own dedicated pass with its own tests, not a same-session
+tack-on. Item #4 (decoupling live sports polling from the 6s cadence) is
+also still open.
 
 ## RESOLVED 2026-08-17: per-phase tick timing instrumentation shipped
 
@@ -540,6 +593,27 @@ write to a temp file in the same directory, then atomically replace the
 real path (`services/config_store.py`, tests in
 `tests/test_config_store.py`) - so any reader now sees either the complete
 old file or the complete new one, never a partial write in between.
+
+**Addendum, 2026-08-17 later the same day**: the identical `KeyError('base_
+url')` signature from the same function (`_refresh_discovery_cache_
+background`) still appears once at the very end of a full `pytest` run,
+even after the atomic-write fix above, with no test failures. Traced this
+time, not just re-observed: it's a distinct, test-only artifact, unrelated
+to the file-write race - `tests/test_trading_gate.py` has several
+`_fetch_markets(...)` calls using minimal `cfg` fixtures (e.g. `cfg =
+{"kalshi": {"markets_watchlist": [...], "watchlist_size": 50, ...}}`, no
+`base_url` key at all). `_fetch_markets` calls `_maybe_refresh_discovery_
+cache(cfg)`, which - since `main.state["discovery_cache"]` is a real
+module-level global, not reset between tests - can find the cache "stale"
+and fire `asyncio.create_task(_refresh_discovery_cache_background(cfg))`
+with that same minimal cfg. The task runs to completion (raising) on
+whichever event loop is active when it's scheduled, and because nothing
+in the test ever awaits or cancels it, Python only reports the swallowed
+exception later, at garbage-collection time - hence it landing after the
+"N passed" summary line rather than against a specific test. Harmless
+(no test fails, no real data touched, doesn't reproduce outside `pytest`),
+but worth knowing so a future session doesn't re-diagnose the config_store
+race a second time on seeing this line reappear.
 
 ## Left running unattended from 2026-08-17 — verified safe
 
