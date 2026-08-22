@@ -4455,6 +4455,44 @@
         <div class="files"><code>services/market_watch/market_watch.py</code> · <code>services/market_watch/CHEATSHEET.md</code> · <code>main.py</code> · <code>tests/test_trading_gate.py</code> · <code>services/state_view.py</code> · <code>services/market_lookup.py</code> · <code>services/account_positions.py</code> · <code>services/ws_manager.py</code> · <code>services/config/</code> · <code>services/position/routes.py</code> · <code>services/history/</code> · <code>services/analytics/</code> · <code>services/whale_stream/</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 116 · epoch-aware diagnostics</div>
+        <h4>Judging history against the config that was actually live, not today's</h4>
+        <p><code>services/diagnostics.py</code>'s <code>check_threshold_integrity</code> and
+          <code>check_price_band_adherence</code> judged every historical row against <em>today's</em> live config —
+          a config change made hours after a signal or trade was recorded made that row look like a violation it
+          never actually was. <code>performance_by_epoch</code>, in the same file, already solved the equivalent
+          problem correctly for a different question (win rate per config epoch), by reading
+          <code>config_performance.applied_changes</code> — every live tuning change, timestamped, with its old and
+          new value. Reused that same data source for point-in-time lookups instead: two new helpers,
+          <code>_fetch_path_changes(paths, since_ts)</code> (one query per check, not one per row) and
+          <code>_historical_value(cfg, path, ts, changes)</code> — the value at a given <code>"section.field"</code>
+          path at time <code>ts</code> is the <code>old_value</code> of the earliest recorded change to that exact
+          path after <code>ts</code>, or today's live value (via <code>services/config/config_paths.py</code>'s
+          <code>_config_value_at_path</code>) if nothing has changed since. <code>check_threshold_integrity</code>
+          now rewinds <code>whale_watcher_kalshi.min_notional_usd</code>/<code>.min_notional_usd_by_series</code> per
+          signal, keyed on its own <code>seen_at</code>; <code>check_price_band_adherence</code> rewinds all four
+          layers <code>config_overrides.resolve()</code> reads — <code>strategy.min_unit_cost</code>/
+          <code>.max_unit_cost</code> plus both <code>strategy_overrides</code> tiers — per trade, keyed on its own
+          <code>timestamp</code>. Caught two bugs in the first draft before they ever ran: a nonexistent import
+          path (<code>services.config</code> has no <code>config_performance</code> — that's the flat
+          <code>services/config_performance.py</code>, already imported correctly elsewhere in the file) and a
+          missing <code>_config_value_at_path</code> import entirely — both found by re-reading the diff, not by
+          the test suite. Three new tests in <code>tests/test_diagnostics.py</code> prove the fix in both
+          directions — a stale-config false positive now clears, and a real violation from before a later config
+          change still gets caught — and all 11 pre-existing tests in that file pass unchanged (with no
+          <code>applied_changes</code> rows seeded, the new lookups return nothing and both checks fall back to
+          today's value exactly as before — backward compatibility fell out of the design, it didn't need its own
+          special case). Full suite: 1,161 passed. Live-verified against <code>GET /api/diagnostics</code>: both
+          checks report <code>epoch_aware: true</code>, and getting the epoch right immediately surfaced a
+          genuine, previously-uninterpretable finding rather than resolving to zero — <code>check_threshold_
+          integrity</code> still reports 1,169/1,900 signals (61.5%) below the floor that was truly live for their
+          series, spot-checked against real evidence (a $2,297 print judged against a contemporaneous, unchanged
+          $5,000 floor) to confirm this is a real number, not the same epoch-attribution bug reappearing. Not
+          root-caused — captured as its own new ROADMAP.md item.</p>
+        <div class="files"><code>services/diagnostics.py</code> · <code>tests/test_diagnostics.py</code></div>
+      </div>
+
     </div>
   </section>
 

@@ -103,6 +103,49 @@ def test_threshold_integrity_unknown_when_no_data(dbs):
     assert c.status == "unknown"
 
 
+def test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config(dbs):
+    # A signal recorded 2 hours ago when the floor was only 100 - compliant
+    # at the time. The floor was then raised to 5000 an hour ago. Judging
+    # this signal against TODAY's 5000 floor (the pre-fix behavior) would
+    # manufacture a false violation; judged against the floor actually live
+    # at seen_at, it's clean. This is the exact bug ROADMAP.md's "Make the
+    # diagnostics epoch-aware" item measured live (72% -> 4/39).
+    now = time.time()
+    _seed_signals([("L-1", "KXA", 150.0, now - 7200)])
+    cp_module._connect().close()
+    with sqlite3.connect(cp_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
+            "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
+            (now - 3600, "whale_watcher_kalshi.min_notional_usd", "100", "5000", "test", 0, "fp0", "fp1"),
+        )
+    cfg = _cfg()  # today's live min_notional_usd is 5000
+    c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now)
+    assert c.status == "ok"
+    assert c.detail["violations"] == 0
+    assert c.detail["epoch_aware"] is True
+
+
+def test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_raise(dbs):
+    # Same setup, but the signal's own notional (50) was already below the
+    # floor that was live when it was recorded (100) - a real violation,
+    # not a stale-config artifact, and the epoch-aware fix must not paper
+    # over it.
+    now = time.time()
+    _seed_signals([("M-1", "KXA", 50.0, now - 7200)])
+    cp_module._connect().close()
+    with sqlite3.connect(cp_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
+            "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
+            (now - 3600, "whale_watcher_kalshi.min_notional_usd", "100", "5000", "test", 0, "fp0", "fp1"),
+        )
+    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now)
+    assert c.status == "fail"
+    assert c.detail["violations"] == 1
+    assert c.evidence[0]["floor_at_the_time"] == 100.0
+
+
 # ---- price band ----
 
 def test_price_band_flags_entries_above_max_unit_cost(dbs):
@@ -128,6 +171,28 @@ def test_price_band_uses_side_aware_unit_cost_not_raw_price(dbs):
     assert c.detail["above"] == 1
     assert c.evidence[0]["unit_cost"] == pytest.approx(0.95)
     assert c.evidence[0]["max_gain_per_contract"] == pytest.approx(0.05)
+
+
+def test_price_band_is_epoch_aware_not_judged_against_todays_band(dbs):
+    # Entered at unit_cost 0.9 two hours ago, when max_unit_cost was still
+    # 0.95 - inside the band at the time. max_unit_cost was then tightened
+    # to 0.8 an hour ago. Judging this entry against today's 0.8 band (the
+    # pre-fix behavior) would manufacture a false "above max" violation.
+    now = time.time()
+    _seed_trades([("N-1", "yes", 0.9, "whale print 9000 @ 0.9 (conf 0.6)", now - 7200)])
+    cp_module._connect().close()
+    with sqlite3.connect(cp_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
+            "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
+            (now - 3600, "strategy.max_unit_cost", "0.95", "0.8", "test", 0, "fp0", "fp1"),
+        )
+    cfg = _cfg()  # today's live max_unit_cost is 0.8
+    c = diagnostics.check_price_band_adherence(cfg, since_ts=now - 10800, now=now)
+    assert c.status == "ok"
+    assert c.detail["above"] == 0
+    assert c.detail["inside"] == 1
+    assert c.detail["epoch_aware"] is True
 
 
 # ---- runway ----

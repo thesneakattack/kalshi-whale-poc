@@ -32,6 +32,7 @@ reports status "unknown" with the reason, never a fabricated number. That
 matters more here than usual: this module exists to be trusted when other
 numbers are in doubt.
 """
+import json
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,7 @@ from datetime import datetime, timezone
 
 from services import config_performance, signal_log
 from services import paper_broker as pb_module
+from services.config.config_paths import _config_value_at_path
 
 _OK = "ok"
 _WARN = "warn"
@@ -103,21 +105,69 @@ def _unit_cost(side: str, yes_price: float | None) -> float | None:
     return yes_price if side == "yes" else 1.0 - yes_price
 
 
+def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
+    """Every config_performance.applied_changes row for these exact
+    config_path values, recorded after since_ts - the raw material
+    _historical_value rewinds. One query per check (not one per row)."""
+    try:
+        with sqlite3.connect(config_performance.DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" for _ in paths)
+            rows = conn.execute(
+                f"SELECT applied_at, config_path, old_value FROM applied_changes "
+                f"WHERE applied_at > ? AND config_path IN ({placeholders})",
+                (since_ts, *paths),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [{"applied_at": r["applied_at"], "config_path": r["config_path"],
+              "old_value": json.loads(r["old_value"])} for r in rows]
+
+
+def _historical_value(cfg: dict, path: str, ts: float, changes: list[dict]):
+    """What config_path's value actually was at time ts, not today -
+    reconstructed by rewinding to the earliest recorded applied_changes row
+    for this exact path with applied_at > ts. That row's old_value is
+    exactly what was live right up until that first later change; if no
+    change to this path was ever recorded after ts, nothing has moved since,
+    so today's live value (from cfg) already equals the value at ts. This is
+    the fix for the epoch-blindness these checks were originally written
+    with: judging a historical row against *today's* config makes a
+    config change made after that row was recorded look like a violation it
+    never actually was (see ROADMAP.md's "Make the diagnostics epoch-aware"
+    item and performance_by_epoch below, which already got this right for a
+    different shape of question)."""
+    later = sorted(
+        (c for c in changes if c["config_path"] == path and c["applied_at"] > ts),
+        key=lambda c: c["applied_at"],
+    )
+    if later:
+        return later[0]["old_value"]
+    return _config_value_at_path(cfg, path)
+
+
 # ---------------------------------------------------------------- integrity
 
+_MIN_NOTIONAL_PATH = "whale_watcher_kalshi.min_notional_usd"
+_MIN_NOTIONAL_BY_SERIES_PATH = "whale_watcher_kalshi.min_notional_usd_by_series"
+
+
 def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
-    """Do the signals actually in signal_log respect the notional gate the
-    config currently declares? A violation is not necessarily a live bug -
-    history outlives config, so rows recorded under an older, looser value
-    stay exactly as they were - but it is always a live *statistics* bug,
-    because every consumer of signal_log (confidence_calibration,
-    regime_analytics, the whale-winrate filter) reads those rows without
-    knowing which config epoch produced them."""
+    """Do the signals actually in signal_log respect the notional gate that
+    was actually LIVE when each one was recorded - not the gate config
+    declares today. History outlives config: a row recorded under an
+    earlier, looser value is not a live bug, but judging it against today's
+    value instead of the value live at seen_at manufactures a false
+    violation (epoch-blind, same failure ROADMAP.md's "Make the diagnostics
+    epoch-aware" item measured: 72% reported out-of-band on price_band_
+    adherence collapsed to 4/39 once judged epoch-correctly). Every
+    consumer of signal_log (confidence_calibration, regime_analytics, the
+    whale-winrate filter) reads these rows without knowing which config
+    epoch produced them, which is exactly why this check has to get the
+    epoch right rather than just the gate's current shape."""
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    wwk = cfg.get("whale_watcher_kalshi") or {}
-    default_min = float(wwk.get("min_notional_usd", 0) or 0)
-    by_series = wwk.get("min_notional_usd_by_series") or {}
+    changes = _fetch_path_changes([_MIN_NOTIONAL_PATH, _MIN_NOTIONAL_BY_SERIES_PATH], since_ts)
 
     try:
         with sqlite3.connect(signal_log.DB_PATH) as conn:
@@ -135,8 +185,10 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
 
     violations, per_series = [], {}
     for r in rows:
-        floor = float(by_series.get(r["series"], default_min))
-        bucket = per_series.setdefault(r["series"], {"n": 0, "under": 0, "floor": floor, "min_seen": None})
+        default_min_hist = float(_historical_value(cfg, _MIN_NOTIONAL_PATH, r["seen_at"], changes) or 0)
+        by_series_hist = _historical_value(cfg, _MIN_NOTIONAL_BY_SERIES_PATH, r["seen_at"], changes) or {}
+        floor = float(by_series_hist.get(r["series"], default_min_hist))
+        bucket = per_series.setdefault(r["series"], {"n": 0, "under": 0, "min_seen": None})
         bucket["n"] += 1
         val = r["raw_notional_usd"]
         if bucket["min_seen"] is None or val < bucket["min_seen"]:
@@ -145,7 +197,7 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
             bucket["under"] += 1
             violations.append({
                 "ticker": r["ticker"], "series": r["series"],
-                "notional": round(val, 2), "floor": floor,
+                "notional": round(val, 2), "floor_at_the_time": floor,
                 "seen_at": r["seen_at"],
             })
 
@@ -154,30 +206,45 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
     status = _OK if under == 0 else (_WARN if pct < 5 else _FAIL)
     return Check(
         "threshold_integrity", status,
-        f"{under}/{len(rows)} signals ({pct:.1f}%) sit below the currently-configured "
-        f"min_notional for their series"
-        + ("" if under == 0 else " — stale rows from an older config still skew every stat that reads signal_log"),
+        f"{under}/{len(rows)} signals ({pct:.1f}%) sit below the min_notional that was actually "
+        f"live for their series at the time"
+        + ("" if under == 0 else " — real gate violations, not stale-config artifacts"),
         detail={"window_start": since_ts, "total": len(rows), "violations": under,
-                "pct": round(pct, 2), "by_series": per_series},
+                "pct": round(pct, 2), "by_series": per_series, "epoch_aware": True},
         evidence=violations,
     )
 
 
+_MIN_UNIT_COST_PATH = "strategy.min_unit_cost"
+_MAX_UNIT_COST_PATH = "strategy.max_unit_cost"
+_OVERRIDES_BY_CATEGORY_PATH = "strategy_overrides.by_category"
+_OVERRIDES_BY_SERIES_PATH = "strategy_overrides.by_series"
+
+
 def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
-    """Did entries respect min_unit_cost/max_unit_cost - the price-band gate
-    added by commit 52456f0 to fix the "near 70% win rate but only pennies
-    earned" problem? Overpaying above the band is the specific failure that
-    bug was about: at $0.95/contract a win pays 5c while a loss costs 95c,
-    so even a 70% win rate is deeply negative EV. Resolves the band
-    per-trade through the same category/series override chain the strategy
-    itself uses, so a series with its own override is judged against ITS
-    band, not the global default."""
+    """Did entries respect min_unit_cost/max_unit_cost as they actually
+    stood at ENTRY TIME - not as they stand today? Judging a historical
+    entry against today's band is the same epoch-blindness
+    check_threshold_integrity above just got fixed for: a real live
+    measurement found price_band_adherence reporting 72% out-of-band before
+    this fix, judged against the band that was actually live when each
+    trade was placed it was 4/39 (see ROADMAP.md's "Make the diagnostics
+    epoch-aware" item). The gate itself, when it was violated for real,
+    matters a lot: at $0.95/contract a win pays 5c while a loss costs 95c,
+    so even a 70% win rate is deeply negative EV - added by commit
+    52456f0 to fix exactly that "near 70% win rate but only pennies
+    earned" problem. Resolves the band per-trade through the same
+    category/series override chain the strategy itself uses, with every
+    layer (base band + both override tiers) individually rewound to its
+    entry-time value, not just the base."""
     from services import config_overrides, trade_category
 
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    base = cfg.get("strategy") or {}
-    overrides = cfg.get("strategy_overrides")
+    changes = _fetch_path_changes(
+        [_MIN_UNIT_COST_PATH, _MAX_UNIT_COST_PATH, _OVERRIDES_BY_CATEGORY_PATH, _OVERRIDES_BY_SERIES_PATH],
+        since_ts,
+    )
 
     try:
         with sqlite3.connect(pb_module.DB_PATH) as conn:
@@ -195,8 +262,16 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
     cats = trade_category.categories_for_tickers([r["ticker"] for r in rows])
     above, below, inside, offenders = 0, 0, 0, []
     for r in rows:
+        base_hist = {
+            "min_unit_cost": _historical_value(cfg, _MIN_UNIT_COST_PATH, r["timestamp"], changes),
+            "max_unit_cost": _historical_value(cfg, _MAX_UNIT_COST_PATH, r["timestamp"], changes),
+        }
+        overrides_hist = {
+            "by_category": _historical_value(cfg, _OVERRIDES_BY_CATEGORY_PATH, r["timestamp"], changes),
+            "by_series": _historical_value(cfg, _OVERRIDES_BY_SERIES_PATH, r["timestamp"], changes),
+        }
         strat = config_overrides.resolve(
-            base, overrides, category=cats.get(r["ticker"]), series=signal_log.series_of(r["ticker"]),
+            base_hist, overrides_hist, category=cats.get(r["ticker"]), series=signal_log.series_of(r["ticker"]),
         )
         lo, hi = strat.get("min_unit_cost"), strat.get("max_unit_cost")
         uc = _unit_cost(r["side"], r["price"])
@@ -221,7 +296,8 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
         "price_band_adherence", status,
         f"{above} entries above max_unit_cost, {below} below min_unit_cost, "
         f"{inside} inside the band ({out_pct:.0f}% out of band)",
-        detail={"above": above, "below": below, "inside": inside, "out_of_band_pct": round(out_pct, 1)},
+        detail={"above": above, "below": below, "inside": inside, "out_of_band_pct": round(out_pct, 1),
+                "epoch_aware": True},
         evidence=offenders,
     )
 

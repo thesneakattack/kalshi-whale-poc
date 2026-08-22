@@ -170,14 +170,23 @@ questions.
       it changes what the app considers a whale, which is a strategy call.
       Full tables and the implementation note are in
       `docs/next-session-pickup-2026-08-17.md`.
-- [ ] **Make the diagnostics epoch-aware — blocks trusting any other
-      number.** `check_price_band_adherence` and
-      `check_threshold_integrity` judge history against *today's* config, so
-      a config change 8 hours ago makes them report FAIL on trades that were
-      compliant when placed. Real cost: `price_band_adherence` reported 72%
-      out-of-band; judged against the band actually live at each trade's
-      timestamp it was 4 of 39. `performance_by_epoch` already does this
-      correctly via `config_performance.applied_changes` — reuse it.
+- [ ] **New finding, surfaced by the epoch-aware fix above: real
+      `min_notional_usd` violations, not stale-config artifacts.** Measured
+      2026-08-22 live over 24h post-fix: `check_threshold_integrity` still
+      reports 1169/1900 signals (61.5%) below the `min_notional_usd` that
+      was genuinely live for their series at `seen_at` — spot-checked
+      several evidence rows directly (e.g. a $2,297 print judged against a
+      contemporaneous $5,000 floor, no config change involved) to confirm
+      this isn't an epoch-attribution bug reappearing in a different shape.
+      Not yet root-caused: `signal_log`'s own docstring already flags that
+      a violation here "is not necessarily a live bug" if signal_log logs
+      every observed candidate print rather than only ones that cleared the
+      whale gate — needs checking whether these 1169 rows are pre-gate
+      candidates (expected, not a bug) or genuinely-passed signals that
+      should never have cleared the notional floor (a real gate leak,
+      possibly related to the still-open "four-entry gate bypass" item
+      below). Not started - this is now a trustworthy number to
+      investigate, not previously.
 - [ ] **Find the four-entry gate bypass.** Four real entries at unit costs
       0.97, 1.00, 0.20, 0.97 (08/16 21:26–22:25), one at `conf 0.25` against
       a 0.495 threshold, so they skipped both the price band and the
