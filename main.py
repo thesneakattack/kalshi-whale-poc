@@ -75,6 +75,19 @@ from services.analytics.market_analyst_orchestrator import (  # noqa: E402
     _run_series_analysis, _series_evaluator_overview_with_crosscheck, _series_suggestions_from_raw,
 )
 from services.config.config_paths import _config_value_at_path, _types_compatible  # noqa: E402
+from services.whale_stream import decision_bridge, index_stream_handlers, whale_stream_handlers  # noqa: E402
+from services.whale_stream.decision_bridge import (  # noqa: E402
+    _broadcast_signal_decision, _handle_close_decision, _handle_fill_decision, _handle_signal,
+    _shadow_reference_bankroll,
+)
+from services.whale_stream.whale_stream_handlers import (  # noqa: E402
+    _fetch_trade_tape, _fetch_trades_for_ticker, _process_stream_fill, _process_stream_position,
+    _process_stream_ticker, _process_stream_trade, _stream_market_client, _streaming_trade_tape_enabled,
+)
+from services.whale_stream.index_stream_handlers import (  # noqa: E402
+    _noop_stream_trade, _noop_stream_ticker, _process_stream_index, _record_settlement_observations,
+    _resolve_settlement_windows, _spec_for,
+)
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream, market_broker,
     market_risk, market_strategy, risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -94,315 +107,6 @@ from services.state_view import (  # noqa: E402
 from services.ws_manager import ws_manager  # noqa: E402
 
 
-def _streaming_trade_tape_enabled() -> bool:
-    # Kalshi's websocket market-data stream is authenticated, so this can only
-    # replace the polled trade tape when the real trade-tape provider is active
-    # AND websocket credentials loaded successfully. Fallback stays on the
-    # existing REST polling path otherwise.
-    return whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled
-
-
-async def _broadcast_signal_decision(signal_payload: dict | None, decision_payload: dict) -> None:
-    await ws_manager.broadcast({
-        "type": "signal_decision",
-        "signal": signal_payload,
-        "decision": decision_payload,
-    })
-
-
-async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str, tick_now: float) -> dict:
-    state["signal_feed"].insert(0, signal.to_dict())
-    state["signal_feed"] = state["signal_feed"][:50]
-    state["stats"]["signals_seen"] += 1
-    # excluded= (2026-08-17): while an experiment window is open
-    # (services/data_quarantine.start), signals are still logged in full and
-    # still trade - only their status as *evidence* changes, so a deliberate
-    # test never silently corrupts the 30-day stats the way the 28-minute
-    # $1-threshold latency test did on 08-16. Read from state, not a fresh
-    # DB hit per signal: this is the hot path (20k signals in 28 minutes at
-    # peak), and state["experiment_active"] is refreshed once per tick.
-    signal_log.log_signal(
-        signal.ticker, signal.side, signal.size, signal.confidence,
-        state["whale_source"], signal.timestamp, factors=signal.factors,
-        raw_context=signal.raw_context, price=signal.price,
-        excluded=bool(state.get("experiment_active")),
-    )
-
-    market_info = state["market_titles"].get(signal.ticker) or {}
-    event_ticker = market_info.get("event_ticker")
-    is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
-    # Structural/schedule-based mid-series signal (services/event_lifecycle.py,
-    # 2026-08-15) - a second, independent path to the same "should scheduled
-    # close-time protections be bypassed" question that the milestone-based
-    # is_live above already answers for team sports. Real live incident:
-    # multi-day tournament/field "outright winner" markets (e.g. a golf
-    # major) often have NO Kalshi milestone tracking at all
-    # (_fetch_live_status's own docstring already confirms "most real
-    # candidates get no milestone at all"), so is_live alone stayed False
-    # for the tournament's own day 3 of 4 - not because the event wasn't
-    # actually happening, but because nothing here had a way to know that
-    # from schedule data. Only consulted when the milestone-based signal
-    # didn't already say live, and never overrides a real "not live" from
-    # Kalshi's own data - purely additive.
-    if not is_live and event_ticker:
-        is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
-    event_info = state["event_titles"].get(event_ticker) or {}
-    category = event_info.get("category")
-    subcategory = _sport_for_event(event_info)
-    me_complement = (state.get("me_pairs") or {}).get(signal.ticker)
-
-    decision = strategy.evaluate(
-        signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
-        latest_prices=state["latest_prices"], category=category, me_complement=me_complement,
-        market_titles=state["market_titles"], event_titles=state["event_titles"], markets=state["markets"],
-    )
-    state["decision_feed"].insert(0, decision)
-    state["decision_feed"] = state["decision_feed"][:50]
-    # limit_order_placed (2026-08-15, strategy.use_limit_orders) is neither
-    # a completed trade nor a skip - it's still pending, resolved later by
-    # PaperBroker.check_pending_fills (see _handle_fill_decision, which
-    # records the eventual fill's own trades_placed/category the same way
-    # a market-order trade already does here).
-    if decision["action"] == "trade":
-        state["stats"]["trades_placed"] += 1
-    elif decision["action"] == "limit_order_placed":
-        state["stats"]["limit_orders_placed"] += 1
-    else:
-        state["stats"]["skipped"] += 1
-    asyncio.create_task(_broadcast_signal_decision(signal.to_dict(), decision))
-    if decision["action"] == "trade":
-        trade_category.record_category(signal.ticker, category, tick_now, subcategory=subcategory)
-
-    if cfg.get("mode") in ("shadow", "live"):
-        shadow_bankroll, shadow_bankroll_source = _shadow_reference_bankroll(state.get("account") or {}, cfg)
-        shadow.evaluate(
-            signal, cfg, shadow_bankroll, shadow_bankroll_source,
-            is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
-        )
-    return decision
-
-
-async def _handle_close_decision(close_decision: dict) -> None:
-    state["decision_feed"].insert(0, close_decision)
-    state["decision_feed"] = state["decision_feed"][:50]
-    state["stats"]["trades_placed"] += 1
-    asyncio.create_task(_broadcast_signal_decision(None, close_decision))
-
-
-async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
-    # Maker/limit-order path (2026-08-15) - a resting order that just
-    # filled is an ENTRY event (mirrors _handle_signal's own tail: decision
-    # feed, trades_placed stat, category capture), not a close, even though
-    # it's discovered via PaperBroker.check_pending_fills rather than
-    # strategy.evaluate(). category_by_ticker() is already cheap/cached
-    # per-tick (see its own docstring) - fine to call again here.
-    state["decision_feed"].insert(0, fill_decision)
-    state["decision_feed"] = state["decision_feed"][:50]
-    state["stats"]["trades_placed"] += 1
-    asyncio.create_task(_broadcast_signal_decision(None, fill_decision))
-    ticker = fill_decision["trade"]["ticker"]
-    category = _category_by_ticker().get(ticker)
-    subcategory = _subcategory_by_ticker().get(ticker)
-    trade_category.record_category(ticker, category, tick_now, subcategory=subcategory)
-
-
-_stream_client_cache: dict[str, KalshiClient] = {}
-
-
-def _stream_market_client(cfg: dict) -> KalshiClient:
-    """One reused KalshiClient for the websocket trade path.
-
-    Everywhere else in this file constructs a KalshiClient per request
-    handler, which is fine at request cadence. This path runs once per
-    inbound trade message - on an exchange-wide subscription that is
-    thousands per minute - so it gets a cached instance keyed by base URL
-    (re-created if the config's base_url is ever edited live). The
-    underlying HTTP connection pool and the shared rate limiter both live in
-    services/http_client.py, so this shares them with every other caller
-    exactly as a fresh instance would."""
-    base_url = cfg["kalshi"]["base_url"]
-    cached = _stream_client_cache.get(base_url)
-    if cached is None:
-        cached = KalshiClient(base_url, cfg["kalshi"]["request_timeout_sec"])
-        _stream_client_cache.clear()
-        _stream_client_cache[base_url] = cached
-    return cached
-
-
-async def _process_stream_trade(trade: dict) -> None:
-    if not trade.get("trade_id"):
-        return
-    state["trade_tape"].insert(0, trade)
-    state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
-    state["trade_tape_last_fetch_ts"] = time.time()
-    # Same reasoning as _process_stream_ticker's record_book: persist the
-    # full print for watched series before the provider reduces it to a
-    # side and a notional. state["trade_tape"] is a 200-entry in-memory ring
-    # that dies with the process, so without this there is no record of what
-    # the exchange actually printed - only of what survived the filters.
-    series_watcher.record_trade(trade, config_store.get())
-    if not state["running"] or not _streaming_trade_tape_enabled():
-        bump_generation()
-        return
-
-    cfg_now = config_store.get()
-    config_fp = config_performance.fingerprint(cfg_now)
-    signals = await whale_provider.fetch_signals(
-        market_context={
-            "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
-            # Lets the provider resolve a market that isn't on the watchlist
-            # when an off-list print clears the notional gate - required for
-            # exchange-wide trades to produce signals at all, since scoring
-            # needs the market's own volume/close_time and this app skips
-            # rather than fabricates one. Gated behind the notional check
-            # inside the provider, so it costs nothing on the ~99.9% of
-            # prints that never qualify.
-            "client": _stream_market_client(cfg_now),
-        },
-    )
-    if not signals:
-        bump_generation()
-        return
-
-    now = time.time()
-    for signal in signals:
-        await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
-    for close_decision in strategy.check_exits(
-        state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
-        category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-    ):
-        await _handle_close_decision(close_decision)
-    bump_generation()
-
-
-async def _process_stream_ticker(ticker_msg: dict) -> None:
-    ticker = ticker_msg.get("market_ticker")
-    if not ticker:
-        return
-    # opened_since=now (2026-08-16 self-review finding): this was the one
-    # of check_exits' three call sites (main tick loop, _process_stream_trade,
-    # here) missing the 2026-08-11 same-tick stale-price guard - see
-    # services/strategy_engine.py's opened_since docstring for the original
-    # incident. The ticker and trade WS channels are independent streams
-    # with no ordering guarantee between them, so a ticker update reflecting
-    # a moment before a whale's fill can still be processed right after
-    # _process_stream_trade opens a position on that fresher fill price -
-    # same stale-price-vs-fresh-entry shape as the original bug, just via
-    # the ticker path instead of the tick-poll one.
-    now = time.time()
-    # Capture the WHOLE message before anything below narrows it (2026-08-17
-    # direct instruction: "keep in mind all the api data you keep shaving off
-    # that ends up making your tasks harder"). The two lines below keep
-    # yes_bid_dollars/yes_ask_dollars and drop the other thirteen fields
-    # docs/kalshi/market-ticker.md documents - yes_bid_size_fp/yes_ask_size_fp
-    # (was there depth at the price I crossed), open_interest_fp/volume_fp
-    # (how big was this print relative to the market), ts_ms (exchange-side
-    # timing, not receive time). Every one of those is needed to explain why
-    # a directionally-correct signal still lost money, and none of them were
-    # recoverable after the fact. Self-throttling and never raises - see
-    # series_watcher.record_book.
-    series_watcher.record_book(ticker_msg, config_store.get(), now)
-    try:
-        state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
-    except (TypeError, ValueError):
-        return
-    matched_market = None
-    for market in state["markets"]:
-        if market.get("ticker") == ticker:
-            market["yes_ask_dollars"] = ticker_msg.get("yes_ask_dollars")
-            matched_market = market
-            break
-    if matched_market is not None:
-        # Raises market_history's real time resolution using data already
-        # in this message - see market_history.record_snapshot_from_ticker's
-        # docstring and docs/next-session-pickup-2026-08-17.md's REST-vs-
-        # websocket architecture finding (item #3, "smallest, lowest-risk").
-        # volume_24h/close_time come from the cached REST market object
-        # (matched_market), not the ticker message - the ws ticker channel
-        # only carries all-time volume_fp (docs/kalshi/market-ticker.md),
-        # and labeling that "volume_24h" would be exactly the kind of
-        # mislabeled-value bug CLAUDE.md already documents twice.
-        yes_bid_raw = ticker_msg.get("yes_bid_dollars")
-        yes_ask_raw = ticker_msg.get("yes_ask_dollars")
-        spread = None
-        if yes_bid_raw is not None and yes_ask_raw is not None:
-            try:
-                spread = max(float(yes_ask_raw) - float(yes_bid_raw), 0.0)
-            except (TypeError, ValueError):
-                spread = None
-        market_history.record_snapshot_from_ticker(
-            ticker, state["latest_prices"][ticker], spread=spread,
-            volume_24h=float(matched_market.get("volume_24h_fp") or 0.0),
-            close_time=matched_market.get("close_time"), now=now,
-        )
-    if state["running"] and state.get("signal_feed"):
-        cfg_now = config_store.get()
-        for close_decision in strategy.check_exits(
-            state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
-            opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-        ):
-            await _handle_close_decision(close_decision)
-    bump_generation()
-
-
-async def _noop_stream_trade(_trade: dict) -> None:
-    """index_stream subscribes to no trade/ticker channels at all (its
-    index_ids are the only thing it asks for), so these can never fire -
-    they exist because run()'s signature takes them positionally."""
-    return
-
-
-async def _noop_stream_ticker(_ticker_msg: dict) -> None:
-    return
-
-
-async def _handle_index_stream_status(status: dict) -> None:
-    state["index_stream_status"] = {**status, "updated_at": time.time()}
-
-
-async def _process_stream_index(msg_type: str, msg: dict) -> None:
-    """CF Benchmarks / Pyth index ticks (services/index_feed.py).
-
-    For the crypto series this is the settlement quantity itself, not a
-    proxy for it - KXBTC15M settles on "the simple average of the sixty
-    seconds of CF Benchmarks' BRTI before <close>", and
-    cfbenchmarks_value's last_60s_windowed_average_15min IS that average,
-    accumulating one observation per second. ~1 message/sec/index, buffered
-    the same way trade capture is, so this never writes on the event loop.
-    Deliberately does NOT trigger check_exits or any trading action yet -
-    capture and projection first, acting on it is a separate, deliberate
-    step."""
-    if msg_type == "cfbenchmarks_value":
-        index_feed.record_cfbenchmarks(msg)
-        await _record_settlement_observations(msg.get("index_id"))
-    elif msg_type == "pyth_value":
-        index_feed.record_pyth(msg)
-
-
-# ticker -> settlement spec (services/index_feed.settlement_spec). A market's
-# rules/strike/close are immutable once listed, so this is cached rather than
-# re-fetched: the 15-minute series rotates its ticker every quarter hour, so
-# this is a handful of fetches an hour, not one per index tick.
-_settlement_spec_cache: dict[str, dict] = {}
-
-
-async def _spec_for(ticker: str) -> dict:
-    spec = _settlement_spec_cache.get(ticker)
-    if spec is None:
-        cfg = config_store.get()
-        client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
-        try:
-            spec = index_feed.settlement_spec(await client.get_market(ticker))
-        except Exception:
-            # Don't cache a transport failure as "unsupported" - that would
-            # permanently blind this market on one bad request.
-            return {"supported": False, "reason": "market fetch failed"}
-        _settlement_spec_cache[ticker] = spec
-        if len(_settlement_spec_cache) > 500:
-            _settlement_spec_cache.clear()
-    return spec
-
-
 _last_capture_prune_at = 0.0
 
 
@@ -418,194 +122,6 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     series_watcher.prune(retention_hours=hours, now=now)
     index_feed.prune(retention_hours=hours, now=now)
     game_state.prune(retention_hours=hours, now=now)
-
-
-async def _resolve_settlement_windows(client: KalshiClient) -> None:
-    """Fill in outcomes for observed settlement windows, driven by
-    settlement_edge's own pending list rather than the discovery watchlist.
-
-    Confirmed necessary, not assumed: a KXBTC15M market was found
-    `finalized` with `result='yes'` six minutes after close while its 59
-    observations sat unresolved, because the 15-minute series rotates its
-    ticker every quarter hour and the market had already left the watchlist
-    by the time `result` populated. The loop's existing outcome pass is
-    kept as well - it costs nothing and catches the markets that are still
-    watched - but it cannot be the only path.
-
-    One batched call (get_markets_by_tickers, 50/request) against a list
-    that is normally empty and at most a handful long."""
-    tickers = settlement_edge.unresolved_tickers()
-    if not tickers:
-        return
-    try:
-        markets = await client.get_markets_by_tickers(tickers)
-    except Exception:
-        return  # transient - the same rows are still pending next tick
-    for ticker, market in markets.items():
-        result = (market.get("result") or "").strip().lower()
-        if result in ("yes", "no"):
-            settlement_edge.resolve_window(ticker, result == "yes")
-
-
-async def _record_settlement_observations(index_id: str | None) -> None:
-    """While a settlement window is open, record the projection and the
-    market's own price side by side for every watched market settling on
-    this index (services/settlement_edge.py).
-
-    This is the measurement that decides whether the index feed is an edge
-    or merely interesting: both forecasts of the same binary event, captured
-    at the same instant, scored against the realised outcome later. Nothing
-    here trades - see settlement_edge's own docstring."""
-    if not index_id:
-        return
-    entry = index_feed.latest(index_id)
-    if not entry or not entry.get("q15_window_size"):
-        return  # not in a settlement window; nothing to compare
-    for market in (state.get("markets") or []):
-        ticker = market.get("ticker")
-        if not ticker:
-            continue
-        spec = await _spec_for(ticker)
-        if not spec.get("supported") or spec.get("index_id") != index_id:
-            continue
-        # Same index is NOT enough: the q15 window opens before every
-        # quarter-hour, so an average accumulating toward 06:00 would
-        # otherwise be recorded against a market settling at 17:00. See
-        # index_feed.window_matches_close - this was a real bug, found by
-        # inspecting the captured rows rather than trusting the wiring.
-        if not index_feed.window_matches_close(entry, settlement_edge.close_ts(spec)):
-            continue
-        settlement_edge.record_observation(
-            ticker, spec,
-            index_feed.settlement_projection(index_id, spec["strike"]),
-            state["latest_prices"].get(ticker),
-        )
-
-
-async def _process_stream_fill(fill_msg: dict) -> None:
-    """2026-08-15 direct request: "the open positions should feed from the
-    websocket stream and analysis trigger api calls for position
-    management." Best-effort parsing, deliberately defensive throughout
-    (dict.get() via the existing _slim_fill/_FILL_FIELDS, never assumes a
-    field exists) - see services/kalshi_trade_ws.py's own comment on why
-    this can't be verified against a real message yet (fill events need a
-    real order fill; kalshi_account.trading_enabled is off, the standing
-    P0 safety gate). If the real shape turns out to use different field
-    names, _slim_fill just returns Nones and the fill_id check below skips
-    it - a safe no-op, not a crash or corrupted state, while the raw shape
-    (logged once by kalshi_trade_ws.py) stays available to fix the field
-    mapping once verified.
-
-    Prepends to the existing state["account"]["fills"] list (same shape/
-    cap the REST path already produces, so nothing downstream needs to
-    know which source a given fill came from) - deduped by fill_id since
-    _fetch_account_snapshot's own periodic REST poll (still running, now
-    on a 20s cache - see that function's own comment) will naturally
-    reconcile/overwrite this with verified data regardless, so a
-    WS-sourced fill only ever needs to survive until the next reconcile."""
-    if not state["account"].get("connected"):
-        return
-    fill = _slim_fill(fill_msg)
-    if not fill.get("fill_id"):
-        return  # doesn't look like a real fill message - never guess into real account state
-    fills = (state["account"].get("fills") or {}).get("fills") or []
-    if any(f.get("fill_id") == fill["fill_id"] for f in fills):
-        return  # already have it - the REST reconciliation poll likely beat this message here
-    state["account"]["fills"] = {"fills": ([fill] + fills)[:50]}
-    bump_generation()
-
-
-async def _process_stream_position(position_msg: dict) -> None:
-    """Same best-effort/defensive shape as _process_stream_fill above -
-    same "safe no-op if the real shape doesn't match, never corrupt real
-    account state on a guess" reasoning."""
-    if not state["account"].get("connected"):
-        return
-    position = _slim_position(position_msg)
-    ticker = position.get("ticker")
-    if not ticker:
-        return
-    positions = state["account"].get("positions") or {"market_positions": [], "event_positions": []}
-    market_positions = list(positions.get("market_positions") or [])
-    for i, p in enumerate(market_positions):
-        if p.get("ticker") == ticker:
-            market_positions[i] = position
-            break
-    else:
-        market_positions.append(position)
-    state["account"]["positions"] = {**positions, "market_positions": market_positions}
-    bump_generation()
-
-
-async def _process_stream_lifecycle(msg: dict) -> None:
-    """market_lifecycle_v2 (2026-08-17, docs/next-session-pickup-2026-08-17.md
-    item #2 of the REST-vs-websocket architecture finding) - exchange-wide
-    push notifications for market open/close/settlement
-    (docs/kalshi/market-and-event-lifecycle.md), replacing part of what the
-    6-second REST tick's own market-list fetch currently has to wait for.
-
-    Only `close_date_updated` is wired to actually change anything yet -
-    the highest-value, lowest-risk slice: it's the exact real, previously-
-    diagnosed bug class (ROADMAP.md/CLAUDE.md's stale-close_time
-    investigation - Kalshi can revise a market's close_date_updated ahead
-    of its originally scheduled close, and until now this app only learned
-    that on its next REST poll of that specific market, which never
-    happens at all for a market that has already rotated off the
-    watchlist). `determined`/`settled` (the real settlement path) are
-    deliberately left un-wired here - re-routing this app's real outcome/
-    P&L resolution onto a channel with zero live-verified message history
-    is exactly the kind of partial-verification rush CLAUDE.md's own
-    incident log (and this same date's session) warns against; the REST
-    poll stays authoritative for that until a real settled event has been
-    observed and checked against it.
-
-    Every event_type still counts toward lifecycle_stream_stats
-    (services/app_state.py) so real volume/shape is visible on
-    /api/state without grepping logs - this is a genuinely new,
-    never-observed-live channel."""
-    event_type = msg.get("event_type")
-    ticker = msg.get("market_ticker")
-    if not event_type or not ticker:
-        return
-    stats = state["lifecycle_stream_stats"]
-    stats["events_by_type"][event_type] = stats["events_by_type"].get(event_type, 0) + 1
-    stats["last_event_at"] = time.time()
-
-    if event_type != "close_date_updated":
-        return
-    close_ts = msg.get("close_ts")
-    if close_ts is None:
-        return
-    try:
-        new_close_time = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    except (TypeError, ValueError, OSError, OverflowError):
-        return
-    updated = False
-    for market in state["markets"]:
-        if market.get("ticker") == ticker:
-            market["close_time"] = new_close_time
-            updated = True
-            break
-    if updated:
-        stats["close_time_updates_applied"] += 1
-        bump_generation()
-
-
-async def _handle_trade_stream_status(status: dict) -> None:
-    state["trade_stream_status"] = {
-        "enabled": _streaming_trade_tape_enabled(),
-        "connected": bool(status.get("connected")),
-        "error": status.get("error"),
-        "ws_url": status.get("ws_url") or trade_stream.status.get("ws_url"),
-        "mode": "stream" if _streaming_trade_tape_enabled() else "poll",
-    }
-    if status.get("error"):
-        state["error"] = status["error"]
-    asyncio.create_task(ws_manager.broadcast({
-        "type": "trade_stream_status",
-        "status": state["trade_stream_status"],
-    }))
-    bump_generation()
 
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
@@ -1495,104 +1011,6 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
     return overlaid
 
 
-_TRADE_TAPE_UI_CAP = 100  # display-only cap for state["trade_tape"] (the Trade
-# Tape panel) - a human never needs to scroll more than this. Used to be the
-# SAME cap whale-signal detection's input was truncated to as well (direct
-# report, 2026-08-11: "i feel like... its not the only reason whale
-# positions were undercounted" - correct: confirmed live, this cap was
-# filling up within ~2 minutes under real load, meaning every trade past the
-# 100 most-recent *platform-wide, across every watched market combined* was
-# silently dropped before whale-filtering ever saw it, real size/threshold
-# irrelevant). Detection input is not sliced to this at all anymore - see
-# _fetch_trade_tape below, which is genuinely unbounded per direct
-# follow-up: "i want trade tape to be unlimited, never capped, for
-# whale-watch-worthy markets" (i.e. whatever's on the current watchlist -
-# the same scope series_evaluator.py already judges as "whale-worthy").
-_TRADE_TAPE_FETCH_LIMIT = 100  # per-ticker get_trades() page size - Kalshi's
-# own API default. Not a data limit - _fetch_trades_for_ticker below pages
-# via cursor until Kalshi itself reports no more pages, so a ticker with
-# more real trades than one page holds still gets every one of them, not
-# just the first 100.
-_TRADE_TAPE_MAX_PAGES_PER_TICKER = 50  # pure infinite-loop circuit breaker
-# (5000 trades on one ticker within one poll interval) in case the API ever
-# returns a non-empty cursor forever - not a designed cap, astronomically
-# above anything real trading volume should ever produce per ticker per
-# tick; matches the documented "empty cursor = no more pages" contract.
-
-
-async def _fetch_trades_for_ticker(client: KalshiClient, ticker: str, min_ts: int | None) -> list[dict]:
-    """Pages through every real trade on this one ticker since min_ts,
-    newest-first (Kalshi's real ordering, confirmed directly) - stops only
-    when the API's own cursor comes back empty (its documented "no more
-    pages" signal), not after some fixed count. A single ticker producing
-    more than one page's worth of trades within one poll interval is a
-    genuine edge case, but this must hold even then per direct instruction
-    ("never capped").
-
-    min_ts=None (no watermark yet - the very first tick after a cold
-    start/restart) is deliberately NOT paginated - a real bug caught live
-    while shipping this fix: with no min_ts floor, Kalshi has no natural
-    stopping point short of a ticker's entire trade history, so every
-    watched ticker would page up to _TRADE_TAPE_MAX_PAGES_PER_TICKER pages
-    each on that first tick, all concurrently - confirmed live as the
-    direct cause of a real request timeout right after a restart. Once
-    min_ts is set (every tick after the first), the query is naturally
-    bounded to "since last successful fetch," which is what actually makes
-    unbounded pagination safe."""
-    if min_ts is None:
-        resp = await client.get_trades(ticker=ticker, limit=_TRADE_TAPE_FETCH_LIMIT, min_ts=None)
-        return resp.get("trades") or []
-    trades = []
-    cursor = None
-    for _ in range(_TRADE_TAPE_MAX_PAGES_PER_TICKER):
-        resp = await client.get_trades(ticker=ticker, limit=_TRADE_TAPE_FETCH_LIMIT, min_ts=min_ts, cursor=cursor)
-        page = resp.get("trades") or []
-        trades.extend(page)
-        cursor = resp.get("cursor") or None
-        if not cursor or not page:
-            break
-    return trades
-
-
-async def _fetch_trade_tape(
-    client: KalshiClient, markets: list[dict], since_ts: float | None = None,
-) -> list[dict]:
-    """Full-exchange trade tape (ROADMAP.md Phase 0.5), scoped to the current
-    watchlist rather than the whole exchange - get_trades with no ticker
-    filter returns trades across every Kalshi market, most of which aren't
-    on anyone's watchlist here and would just be noise next to the
-    whale-signal concept this ties into. One fully-paginated fetch per
-    watched market, concurrently (same pattern _fetch_markets already uses
-    for its explicit-watchlist branch), merged and sorted newest-first.
-    Genuinely unbounded - no cap anywhere in this function - per direct
-    instruction (2026-08-11): "i want trade tape to be unlimited, never
-    capped, for whale-watch-worthy markets." Any display-size limiting
-    (e.g. the Trade Tape UI panel) happens at the call site, not here.
-
-    since_ts (real, SDK-confirmed min_ts param): when given, fetches every
-    real trade on each ticker since that watermark instead of just "the
-    most recent page" - a small overlap margin is subtracted so a trade
-    landing right at the boundary can't fall through a gap between two
-    polls; the whale-watcher provider already dedupes by trade_id
-    (services/whalewatchers/kalshi_trade_tape.py's _seen_trade_ids), so a
-    little re-fetched overlap is harmless. None on the very first call
-    (no watermark yet) falls back to "just show recent activity," same as
-    before this fix."""
-    tickers = [m["ticker"] for m in markets if m.get("ticker")]
-    if not tickers:
-        return []
-    min_ts = int(since_ts) - 10 if since_ts is not None else None
-    results = await asyncio.gather(
-        *(_fetch_trades_for_ticker(client, t, min_ts) for t in tickers), return_exceptions=True
-    )
-    trades = []
-    for result in results:
-        if isinstance(result, list):
-            trades.extend(result)
-    trades.sort(key=lambda t: t.get("created_time") or "", reverse=True)
-    return trades
-
-
 _LIVE_STATUS_LOOKBACK_SEC = 8 * 3600  # keep tracking an event up to 8h after its scheduled start
 # Widened 1h -> 12h on 2026-08-17. Measured live: 30 Sports events were on
 # the watchlist while live_status held ONE entry and live_game_state held
@@ -2094,24 +1512,6 @@ async def _check_signal_resolutions(client: KalshiClient):
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
-
-
-def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float, str]:
-    """What shadow mode treats as "your real bankroll" for position sizing.
-    Prefers the real connected account's balance (Kalshi reports it in
-    cents, same field the dashboard's account bar divides by 100 to
-    display); falls back to config's starting_bankroll, clearly labeled as
-    a fallback, so shadow mode is still meaningfully testable without a
-    real Kalshi account connected."""
-    if account_snapshot.get("connected"):
-        bal = account_snapshot.get("balance") or {}
-        cents = bal.get("balance") if isinstance(bal, dict) else None
-        if cents is not None:
-            try:
-                return float(cents) / 100.0, "real_account"
-            except (TypeError, ValueError):
-                pass
-    return float(cfg["risk"]["starting_bankroll"]), "configured_starting_bankroll (no real account connected)"
 
 
 async def trading_loop():
@@ -2764,9 +2164,11 @@ async def lifespan(app: FastAPI):
     if _streaming_trade_tape_enabled():
         trade_stream_task = asyncio.create_task(
             trade_stream.run(
-                _process_stream_trade, _process_stream_ticker, _handle_trade_stream_status,
-                on_fill=_process_stream_fill, on_position=_process_stream_position,
-                on_lifecycle=_process_stream_lifecycle,
+                whale_stream_handlers._process_stream_trade, whale_stream_handlers._process_stream_ticker,
+                whale_stream_handlers._handle_trade_stream_status,
+                on_fill=whale_stream_handlers._process_stream_fill,
+                on_position=whale_stream_handlers._process_stream_position,
+                on_lifecycle=whale_stream_handlers._process_stream_lifecycle,
             )
         )
     index_stream_task = None
@@ -2775,8 +2177,9 @@ async def lifespan(app: FastAPI):
         # comment for why this isn't just another channel on trade_stream.
         index_stream_task = asyncio.create_task(
             index_stream.run(
-                _noop_stream_trade, _noop_stream_ticker, _handle_index_stream_status,
-                on_index=_process_stream_index,
+                index_stream_handlers._noop_stream_trade, index_stream_handlers._noop_stream_ticker,
+                index_stream_handlers._handle_index_stream_status,
+                on_index=index_stream_handlers._process_stream_index,
             )
         )
     yield

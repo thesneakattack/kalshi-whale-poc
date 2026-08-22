@@ -232,6 +232,23 @@ questions.
       instead of main.py surgery. Design the export shape (flat file?
       separate read-only DB copy? on-demand endpoint?) as its own pass once
       the modularization ships.
+- [ ] **Consider removing the Market-Native strategy entirely.** Direct
+      instruction (2026-08-22): "i think we can remove the entire market
+      native strategy stuff for now, its over-complicating things." It's
+      already off by default (`market_strategy.enabled: false`,
+      `services/app_state.py`'s own comment), but the CODE duplication it
+      causes is real and touches nearly everything: a second broker/risk
+      pair (`market_broker`/`market_risk`), a second decision feed, a
+      `strategy` param on every regime endpoint choosing between the two
+      trade logs, `market-strategy-calibration`/`cross-strategy` routes,
+      its own trading_loop phase, and its own frontend tab. Queued rather
+      than done now - the in-progress main.py modularization already moved
+      several of these routes into their new homes
+      (`services/position/routes.py`'s `get_market_strategy_state`,
+      `services/analytics/routes.py`'s `market-strategy-calibration`/
+      `cross-strategy` routes) - a real removal pass should happen as its
+      own deliberate step once modularization ships, not mid-phase, so it
+      can cleanly touch every one of those files once instead of twice.
 - [ ] **Consider a dedicated charts/graphs module, possibly server-rendered
       via Plotly or Matplotlib.** Direct instruction (2026-08-22): "should
       histographs be their own module as well? i think they should... also
