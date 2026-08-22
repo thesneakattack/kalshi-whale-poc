@@ -1,0 +1,29 @@
+# Docker build context exclusions.
+#
+# The fastapi image's /app is always overlaid by a bind mount at runtime
+# (.ddev/docker-compose.fastapi.yaml: "../:/app"), so nothing copied in by
+# the Dockerfile's `COPY . .` is ever actually used by the running
+# container - only requirements.txt/requirements-dev.txt (copied and
+# installed *before* that COPY) matter for the built image itself.
+# Excluding everything below only shrinks build-context transfer and
+# image size; it does not change runtime behavior.
+
+# Live SQLite data - multi-GB and changes on nearly every request, which
+# busted the COPY layer's cache on almost every build.
+data/
+
+# Secrets - never bake these into an image layer (layers persist in image
+# history even after a later step "deletes" the file).
+.env
+*.pem
+*.key
+kalshi_devkey_private.txt
+
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+.vscode/
