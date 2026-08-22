@@ -1,6 +1,6 @@
 import pytest
 
-from services import advisory_engine as ae
+from services.advisory import advisory_engine as ae
 from services import trade_analytics
 from services import trade_category as tc
 

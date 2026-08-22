@@ -11,9 +11,10 @@ import os
 import time
 
 from services import (
-    advisory_engine, candidate_log, config_performance, market_analyst_agent, ml_feed,
+    candidate_log, config_performance, market_analyst_agent, ml_feed,
     regime_analytics, series_evaluator, signal_log, stats_power, suggestion_decisions, trade_analytics,
 )
+from services.advisory import advisory_engine
 from services.app_state import broker, bump_generation, market_broker, state
 from services.config.config_paths import _types_compatible
 from services.kalshi_client import KalshiClient
@@ -159,7 +160,7 @@ def _series_suggestions_from_raw(cfg: dict, series: str, raw_suggestions: list[d
     """Converts services/market_analyst_agent.analyze_series()'s raw
     {"action": "exclude"|"include", "rationale"} output into this app's
     unified suggestion shape ({config_path, current_value, suggested_value,
-    id, rationale}, same as services/advisory_engine.py's rule-based
+    id, rationale}, same as services/advisory/advisory_engine.py's rule-based
     suggestions) - done here, not in market_analyst_agent.py, since it
     needs the live config to compute the actual before/after
     strategy.excluded_series list. A no-op action (e.g. the model suggests

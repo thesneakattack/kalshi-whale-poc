@@ -237,7 +237,7 @@ def compute_summary(rows: list[dict]) -> dict:
         # Sample-size honesty, made numeric rather than left to
         # confidence_label's coarse low/moderate/higher bucketing alone -
         # stats_power.margin_of_error_pts is the same real math
-        # services/advisory_engine.py already gates recommendations on,
+        # services/advisory/advisory_engine.py already gates recommendations on,
         # now exposed for direct display ("the real win rate is probably
         # within +/- this many points of what we observed").
         "win_rate_margin_pts": (

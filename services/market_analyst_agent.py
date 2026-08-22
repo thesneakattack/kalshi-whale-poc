@@ -8,7 +8,7 @@ formulas; this one reads a market's actual title/rules/category and this
 app's own accumulated real track record, and asks an LLM to form an
 independent probability estimate the way a human analyst would - not
 trained on this app's historical data (there isn't enough of it yet, see
-services/whale_calibration/confidence_calibration.py's and services/advisory_engine.py's own
+services/whale_calibration/confidence_calibration.py's and services/advisory/advisory_engine.py's own
 "rule-based, not ML" reasoning, which applies with even more force to
 actually training a model), reasoning from first principles and context per
 market instead.
@@ -272,7 +272,7 @@ async def analyze_market(
 # of question, so it gets its own tool schema rather than overloading
 # _TOOL_SCHEMA above. The only thing this mode can suggest changing is
 # strategy.excluded_series membership: this app's per-field suggestion
-# apply mechanism (services/advisory_engine.py's generalized
+# apply mechanism (services/advisory/advisory_engine.py's generalized
 # `section.field` split) only ever handles a single flat scalar per
 # config_path, and min_notional_usd_by_series is a nested dict keyed by
 # series - applying a change to one series' entry there without clobbering

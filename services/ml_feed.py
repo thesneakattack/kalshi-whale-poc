@@ -8,7 +8,7 @@ let's not pursue that until the project is already finished."
 
 This module is the shape of that future export - one point-in-time bundle
 combining everything a future ML agent would read *alongside* (not instead
-of) services/advisory_engine.py's rule-based recommendations. No model, no
+of) services/advisory/advisory_engine.py's rule-based recommendations. No model, no
 training pipeline, no feature engineering lives here - that's the actual
 future work this is scaffolding for. build_context_snapshot() is a pure
 function so it's cheap to keep correct as the data sources it wraps evolve;

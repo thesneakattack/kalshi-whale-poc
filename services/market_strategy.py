@@ -28,7 +28,7 @@ trading this has no separate confirmation-phrase gate - the same risk
 class as the existing whale-follow paper strategy.
 
 Heuristic (deliberately simple and explainable, not fitted/trained - same
-"rule-based first" decision as services/advisory_engine.py): momentum
+"rule-based first" decision as services/advisory/advisory_engine.py): momentum
 continuation (follow the market's own recent real price movement, via
 services/market_history.py's logged snapshots) gated by three risk-
 reducing filters - a moderate, genuinely-uncertain price band (avoids

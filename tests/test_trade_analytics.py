@@ -209,7 +209,7 @@ def test_compute_summary_aggregates_wins_losses_and_by_close_type():
 
 # ---- exit_management_split ---------------------------------------------------
 # The one piece of the old compute_insights() (removed 2026-08-10, merged
-# into services/advisory_engine.py - see that module's docstring) that
+# into services/advisory/advisory_engine.py - see that module's docstring) that
 # doesn't map onto a single tunable config field, so it stayed here as its
 # own descriptive function instead of being forced into advisory_engine's
 # {config_path, suggested_value} suggestion shape.

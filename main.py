@@ -19,7 +19,7 @@ from services import logging_config
 logging_config.configure()
 
 from services import accounts_store
-from services import advisory_engine
+from services.advisory import advisory_engine
 from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
@@ -73,6 +73,7 @@ from services.config import routes as config_routes  # noqa: E402
 from services.position import routes as position_routes  # noqa: E402
 from services.exits import routes as exits_routes  # noqa: E402
 from services.whale_calibration import routes as whale_calibration_routes  # noqa: E402
+from services.advisory import routes as advisory_routes  # noqa: E402
 from services.history import routes as history_routes  # noqa: E402
 from services.analytics import routes as analytics_routes  # noqa: E402
 from services.analytics.market_analyst_orchestrator import (  # noqa: E402
@@ -967,6 +968,7 @@ app.include_router(config_routes.router)
 app.include_router(position_routes.router)
 app.include_router(exits_routes.router)
 app.include_router(whale_calibration_routes.router)
+app.include_router(advisory_routes.router)
 app.include_router(history_routes.router)
 app.include_router(analytics_routes.router)
 

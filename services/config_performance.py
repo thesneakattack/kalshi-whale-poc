@@ -1,7 +1,7 @@
 """
 Config-variant fingerprinting and the audit trail for advisory-engine config
 changes (see docs/advisory-engine-plan.md). Answers "which strategy config
-was active when this trade was placed" so services/advisory_engine.py can
+was active when this trade was placed" so services/advisory/advisory_engine.py can
 score each config variant on its own resolved trades instead of blending
 every config the user has ever run into one number.
 
@@ -136,7 +136,7 @@ def log_applied_change(
     # source (2026-08-10, Item 3D): which of this app's config-change
     # sources produced this row - "manual" (a plain Config-tab save via
     # POST /api/config, previously never logged at all), "unified-advisory"
-    # (services/advisory_engine.py's apply route), or a future
+    # (services/advisory/advisory_engine.py's apply route), or a future
     # "series-analyst"/"full-spectrum-analyst" once the market analyst
     # agent can suggest changes too (Item 3B/3C). Kept as a plain string,
     # not an enum, so a new source never needs a schema migration - same

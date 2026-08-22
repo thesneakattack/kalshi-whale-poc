@@ -43,7 +43,7 @@ from starlette.middleware.sessions import SessionMiddleware
 load_dotenv()  # reads .env if present; every var is optional, see .env.example
 
 from services import accounts_store
-from services import advisory_engine
+from services.advisory import advisory_engine
 from services import auth as auth_service
 from services import backtest
 from services.whale_calibration import calibration_history
