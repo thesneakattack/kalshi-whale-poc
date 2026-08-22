@@ -71,8 +71,9 @@ from services.history import routes as history_routes  # noqa: E402
 from services.analytics import routes as analytics_routes  # noqa: E402
 from services.analytics.market_analyst_orchestrator import (  # noqa: E402
     _analyzing_series, _analyzing_tickers, _build_full_spectrum_context, _build_series_context,
-    _full_spectrum_suggestions_from_raw, _run_full_spectrum_analysis, _run_market_analyst_for_ticker,
-    _run_series_analysis, _series_evaluator_overview_with_crosscheck, _series_suggestions_from_raw,
+    _CONFIDENCE_RANK, _full_spectrum_suggestions_from_raw, _run_full_spectrum_analysis,
+    _run_market_analyst_for_ticker, _run_series_analysis, _series_evaluator_overview_with_crosscheck,
+    _series_suggestions_from_raw,
 )
 from services.config.config_paths import _config_value_at_path, _types_compatible  # noqa: E402
 from services.whale_stream import decision_bridge, index_stream_handlers, whale_stream_handlers  # noqa: E402
@@ -83,6 +84,7 @@ from services.whale_stream.decision_bridge import (  # noqa: E402
 from services.whale_stream.whale_stream_handlers import (  # noqa: E402
     _fetch_trade_tape, _fetch_trades_for_ticker, _process_stream_fill, _process_stream_position,
     _process_stream_ticker, _process_stream_trade, _stream_market_client, _streaming_trade_tape_enabled,
+    _TRADE_TAPE_UI_CAP,
 )
 from services.whale_stream.index_stream_handlers import (  # noqa: E402
     _noop_stream_trade, _noop_stream_ticker, _process_stream_index, _record_settlement_observations,
