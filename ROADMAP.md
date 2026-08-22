@@ -303,6 +303,26 @@ questions.
       agreement. Planning item only - not started, no design decided yet
       (how far to take it, whether a framework gets introduced, whether it
       becomes a separate repo).
+
+      **Concrete direction added (2026-08-22, right after Phase 7 of the
+      main.py modularization shipped): "index.html can also be modularized
+      - it does not need to be an SPA."** `static/index.html` is 7,716
+      lines - one inline HTML/CSS/JS file where a single `showView()`
+      function toggles 7 tabs (Portfolio, Markets, Whale Watch, Terminal,
+      Market-Native, History, Config), the frontend's own version of the
+      exact shape of problem main.py just spent seven phases fixing. The
+      cheaper alternative to the framework/build-step question above:
+      split the tabs into separate real pages (browser nav instead of
+      `showView()`), the same no-build-step pattern `status.html`/
+      `login.html`/`accounts.html` already use, just applied to the main
+      dashboard's own tabs - no bundler, no framework, just more files.
+      One real coupling to design around first (confirmed by reading the
+      code, not assumed): all 7 tabs currently render off one shared
+      `refresh()` call that fetches `/api/state` once - splitting into
+      pages means either each page polling independently (cheap given the
+      existing ETag/304 caching already noted elsewhere in this file) or
+      slicing `/api/state` itself per page. Not started - captured here
+      per direct instruction rather than scoped or built yet.
 - [ ] **Per-module data-consumption audit + report.** Direct instruction
       (2026-08-22): "do a deep dive on each module and what data is pulled
       from where... maximize data consumption efficiency and effectiveness.
