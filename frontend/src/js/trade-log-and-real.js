@@ -1,5 +1,5 @@
 import { HISTORY_CLOSE_TYPE_LABELS } from './history-core.js';
-import { $, advToggleHTML, comboLegsHTML, contextLineHTML, costHTML, esc, eventTitles, fetchJSON, fmt, isAdvanced, marketContext, marketLabel, marketTitles, parseConfidence, payoutHTML, sortHeaderHTML, sortRows } from './shared-utils.js';
+import { $, advToggleHTML, comboLegsHTML, contextLineHTML, costHTML, esc, eventTitles, fetchJSON, fmt, isAdvanced, marketContext, marketLabel, marketTitles, parseConfidence, payoutHTML, sideAdjustedPrice, sortHeaderHTML, sortRows } from './shared-utils.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
@@ -32,7 +32,7 @@ function renderTrades(trades, prices) {
       const resultHtml = isClose
         ? `<span style="color:${t.won ? 'var(--yes)' : 'var(--no)'}; font-weight:600;">${t.won ? '✅ Won' : '❌ Lost'} ${fmt(t.realized_pnl ?? 0)}</span>
            <span style="color:var(--muted); font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
-        : `${costHTML(t.size, t.side === 'yes' ? t.price : (1 - t.price))} ${payoutHTML(t.size)}`;
+        : `${costHTML(t.size, sideAdjustedPrice(t.side, t.price))} ${payoutHTML(t.size)}`;
       return `
       <div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
         <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
@@ -183,7 +183,7 @@ function renderRealPositions(positions) {
       // the exact no-side math this codebase has gotten wrong before
       // (CLAUDE.md's documented bug pattern).
       const yesPrice = p.current_yes_price_dollars;
-      const heldPrice = yesPrice == null ? null : (side === 'no' ? 1 - yesPrice : yesPrice);
+      const heldPrice = yesPrice == null ? null : sideAdjustedPrice(side, yesPrice);
       return {
         ticker: p.ticker || p.market_ticker || 'unknown',
         qty, side, heldPrice,
@@ -270,7 +270,7 @@ function renderRealPositions(positions) {
       // convention - invert for a no position (CLAUDE.md's documented
       // no-side-math bug pattern).
       const yesPrice = p.current_yes_price_dollars;
-      const heldPrice = yesPrice == null ? null : (side === 'no' ? 1 - yesPrice : yesPrice);
+      const heldPrice = yesPrice == null ? null : sideAdjustedPrice(side, yesPrice);
       const priceHtml = heldPrice != null ? ` · ${(heldPrice*100).toFixed(0)}¢ now` : '';
       const updated = p.last_updated_ts ? new Date(p.last_updated_ts).toLocaleTimeString() : null;
       const tickerEt = (marketTitles[ticker] && marketTitles[ticker].event_ticker) || '';

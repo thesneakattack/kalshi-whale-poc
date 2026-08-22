@@ -103,10 +103,20 @@ function payoutHTML(count) {
 // The actual dollar amount put into a position/trade (contracts x price) -
 // requested directly: "the actual money total put into the position," not
 // just contract count and price per contract, which requires doing that
-// multiplication in your head.
+// multiplication in your head. Expects an already side-adjusted price -
+// see sideAdjustedPrice below for callers starting from a raw yes-price.
 function costHTML(count, price) {
   if (count == null || price == null || isNaN(count) || isNaN(price)) return '';
   return `<span class="cost" title="Contracts x price, before fees">${fmt(Math.abs(count) * price)} put in</span>`;
+}
+
+// The no-side inversion every no-side dollar/percentage/likelihood figure
+// needs (CLAUDE.md's "no-side dollar math" bug pattern) - price is always
+// expressed in yes terms; a "no" position's real unit cost/value is
+// (1 - price), never price itself. One place this math happens now,
+// instead of reimplemented inline at every call site.
+function sideAdjustedPrice(side, price) {
+  return side === 'no' ? (1 - price) : price;
 }
 
 // Shared Simple/Advanced toggle — see ROADMAP.md Phase 0.5. panelId is a
@@ -207,7 +217,7 @@ function comboLegsHTML(ticker) {
     const legLabel = marketLabel(leg.market_ticker);
     const legPrice = prices[leg.market_ticker];
     const priceHtml = legPrice != null
-      ? ` — ${leg.side === 'no' ? ((1 - legPrice) * 100).toFixed(0) : (legPrice * 100).toFixed(0)}¢`
+      ? ` — ${(sideAdjustedPrice(leg.side, legPrice) * 100).toFixed(0)}¢`
       : '';
     return `<div class="combo-leg"><span class="side-tag ${esc(leg.side)}">${esc(leg.side)}</span> ${esc(legLabel.short)}${priceHtml}</div>`;
   }).join('');
@@ -620,7 +630,7 @@ function renderMarkets(markets, prices) {
 // are visible or their order, and forcing a "smooth" diff onto that would
 // just be wrong, not smoother.
 
-export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, dedupeInversionPairs, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
+export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, dedupeInversionPairs, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sideAdjustedPrice, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
@@ -661,6 +671,7 @@ window.renderMarkets = renderMarkets;
 window.rerenderMarketPanel = rerenderMarketPanel;
 window.seriesLabel = seriesLabel;
 window.seriesOf = seriesOf;
+window.sideAdjustedPrice = sideAdjustedPrice;
 window.sortHeaderHTML = sortHeaderHTML;
 window.sortRows = sortRows;
 window.sportsLiveSummary = sportsLiveSummary;

@@ -2,7 +2,7 @@ import { loadConfig } from './config-panel.js';
 import { renderEquityChart } from './equity-and-cards.js';
 import { HISTORY_CLOSE_TYPE_LABELS, historyDurationHTML, renderAutoApplyToggle, renderSuggestionCard, updateHistoryActionLine } from './history-core.js';
 import { showView } from './main.js';
-import { $, contextLineHTML, esc, fetchJSON, fmt, formatConfigValue, marketLabel, marketTitles, seriesLabel } from './shared-utils.js';
+import { $, contextLineHTML, esc, fetchJSON, fmt, formatConfigValue, marketLabel, marketTitles, seriesLabel, sideAdjustedPrice } from './shared-utils.js';
 import { sourceLabel } from './trading-gate-and-connectivity.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
@@ -604,7 +604,7 @@ async function loadMarketNativeState() {
           ${contextLineHTML(p.ticker, p.side)}
         </div>
         <div class="nums">
-          <span>${p.size.toLocaleString()} @ ${((p.side === 'yes' ? p.entry_price : 1 - p.entry_price)*100).toFixed(0)}¢</span>
+          <span>${p.size.toLocaleString()} @ ${(sideAdjustedPrice(p.side, p.entry_price)*100).toFixed(0)}¢</span>
           <span style="color:${pnl >= 0 ? 'var(--yes)' : 'var(--no)'};">${fmt(pnl)}</span>
         </div>
       </div>`;
@@ -625,7 +625,7 @@ async function loadMarketNativeState() {
           ${contextLineHTML(t.ticker, t.side)}
         </div>
         <div class="nums">
-          <span>${t.size.toLocaleString()} @ ${((t.side === 'yes' ? t.price : 1 - t.price)*100).toFixed(0)}¢</span>
+          <span>${t.size.toLocaleString()} @ ${(sideAdjustedPrice(t.side, t.price)*100).toFixed(0)}¢</span>
           <span style="color:var(--muted);">${when}</span>
           ${resultHtml}
         </div>

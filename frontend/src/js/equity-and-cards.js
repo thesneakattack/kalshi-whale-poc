@@ -1,6 +1,6 @@
 import { HISTORY_CLOSE_TYPE_LABELS, historyDurationHTML, historyFilter, historyTotal, historyTrades } from './history-core.js';
 import { seriesMeta } from './polling-and-websocket.js';
-import { $, comboLegsHTML, esc, eventLiveDataLineHTML, eventTitles, fmt, liveBadgeHTML, marketContext, marketLabel, marketTaxonomyHTML, marketTitles, priceChangeHTML, seriesLabel, seriesOf, uniqueSorted } from './shared-utils.js';
+import { $, comboLegsHTML, esc, eventLiveDataLineHTML, eventTitles, fmt, liveBadgeHTML, marketContext, marketLabel, marketTaxonomyHTML, marketTitles, priceChangeHTML, seriesLabel, seriesOf, sideAdjustedPrice, uniqueSorted } from './shared-utils.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
@@ -46,8 +46,8 @@ function renderHistoryTrades() {
     // ways, only one of them right. Same bug class CLAUDE.md's "a displayed
     // value must match its label" section already documents once.
     const entryUnitCost = t.entry_price !== null && t.entry_price !== undefined
-      ? (t.side === 'yes' ? t.entry_price : 1 - t.entry_price) : null;
-    const exitUnitCost = t.side === 'yes' ? t.exit_price : 1 - t.exit_price;
+      ? sideAdjustedPrice(t.side, t.entry_price) : null;
+    const exitUnitCost = sideAdjustedPrice(t.side, t.exit_price);
     return `<tr title="${esc(title)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
       <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>

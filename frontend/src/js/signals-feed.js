@@ -1,6 +1,6 @@
 import { computeWhaleLean, divergencePts } from './equity-and-cards.js';
 import { seriesMeta, terminalLatestPrices } from './polling-and-websocket.js';
-import { $, advToggleHTML, comboLegsHTML, contextLineHTML, esc, eventLiveDataLineHTML, eventTitles, fetchJSON, fmt, isAdvanced, liveBadgeHTML, marketContext, marketLabel, marketTaxonomyHTML, marketTitles, priceChangeHTML, sortHeaderHTML, sortRows } from './shared-utils.js';
+import { $, advToggleHTML, comboLegsHTML, contextLineHTML, esc, eventLiveDataLineHTML, eventTitles, fetchJSON, fmt, isAdvanced, liveBadgeHTML, marketContext, marketLabel, marketTaxonomyHTML, marketTitles, priceChangeHTML, sideAdjustedPrice, sortHeaderHTML, sortRows } from './shared-utils.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
@@ -125,7 +125,7 @@ function renderSignals(signals) {
     // price is always the yes price (see whale_simulator.py) - a "no" print's
     // real dollar size is size*(1-price), not size*price, same convention
     // as PaperBroker.cost_basis/open_position's unit_cost.
-    const dollarSize = s.price != null ? fmt(s.size * (s.side === 'yes' ? s.price : (1 - s.price))) : null;
+    const dollarSize = s.price != null ? fmt(s.size * sideAdjustedPrice(s.side, s.price)) : null;
     const sEt = (marketTitles[s.ticker] && marketTitles[s.ticker].event_ticker) || '';
     return `
     <div class="signal-card" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(s.ticker)}', '${esc(sEt)}')">
@@ -329,7 +329,7 @@ function renderSignalDecisionFeed(signalFeed, decisionFeed, latestPrices) {
     const size = (d.signal && d.signal.size) || (d.trade && d.trade.size) || 0;
     const price = (d.signal && d.signal.price) || (d.trade && d.trade.price) || 0;
     const conf = (d.signal && d.signal.confidence) || 0;
-    const dollarSize = price != null ? fmt(size * ((d.side || 'yes') === 'yes' ? price : (1 - price))) : null;
+    const dollarSize = price != null ? fmt(size * sideAdjustedPrice(d.side || 'yes', price)) : null;
     const detail = d.action === 'trade'
       ? `${(d.signal && d.signal.side || '').toUpperCase()} × ${size} @ ${(price*100).toFixed(0)}¢`
       : d.action === 'skip'
@@ -394,7 +394,7 @@ function renderDecisionTable() {
     const size = d.action === 'close' ? d.trade.size : (d.action === 'trade' ? d.trade.size : d.signal.size);
     const price = d.action === 'close' ? d.trade.price : (d.action === 'trade' ? d.trade.price : d.signal.price);
     const notional = (size != null && price != null)
-      ? size * (side === 'yes' ? price : (1 - price))
+      ? size * sideAdjustedPrice(side, price)
       : null;
     if (d.action === 'close') {
       return {
@@ -586,7 +586,7 @@ function renderPositions(positions, prices, recentTrades, signals) {
       // missing the no-side (1-price) inversion and would have silently
       // under-costed any "no" position the day it somehow did fire).
       const cost = p.cost_basis;
-      const value = p.side === 'yes' ? p.size * current : p.size * (1 - current);
+      const value = p.size * sideAdjustedPrice(p.side, current);
       const ret = value - cost;
       const retPct = cost ? (ret / cost * 100) : 0;
       totalContracts += p.size; totalCost += cost; totalValue += value;
@@ -602,8 +602,8 @@ function renderPositions(positions, prices, recentTrades, signals) {
           ${comboLegsHTML(p.ticker)}
         </td>
         <td>${p.size.toLocaleString()}</td>
-        <td>${((p.side === 'yes' ? p.entry_price : 1 - p.entry_price) * 100).toFixed(0)}¢</td>
-        <td>${((p.side === 'yes' ? current : 1 - current) * 100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
+        <td>${(sideAdjustedPrice(p.side, p.entry_price) * 100).toFixed(0)}¢</td>
+        <td>${(sideAdjustedPrice(p.side, current) * 100).toFixed(0)}¢ ${priceChangeHTML(p.ticker, prices[p.ticker])}</td>
         <td>${fmt(cost)}${p.entry_fee ? `<div style="font-size:10px; color:var(--muted);" title="Real Kalshi taker fee, already deducted from bankroll at entry - shown separately rather than folded into Cost, same convention as Trading History's own Fees column">+${fmt(p.entry_fee)} fee</div>` : ''}</td>
         <td>${fmt(p.size)}</td>
         <td>${fmt(value)}</td>
@@ -680,7 +680,7 @@ function renderPositionNettingGroups(groups) {
         <td title="${esc(label.full)}">${esc(label.short)}</td>
         <td><span class="side-tag ${m.side}">${esc(m.side)}</span></td>
         <td>${m.size}</td>
-        <td>${((m.side === 'yes' ? m.entry_price : 1 - m.entry_price) * 100).toFixed(0)}¢ → ${((m.side === 'yes' ? m.current_price : 1 - m.current_price) * 100).toFixed(0)}¢</td>
+        <td>${(sideAdjustedPrice(m.side, m.entry_price) * 100).toFixed(0)}¢ → ${(sideAdjustedPrice(m.side, m.current_price) * 100).toFixed(0)}¢</td>
       </tr>`;
     }).join('');
     const rec = g.recommendation;

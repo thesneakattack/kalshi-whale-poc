@@ -1,6 +1,6 @@
 import { computeWhaleLean, renderEquityChart } from './equity-and-cards.js';
 import { consecutiveRefreshFailures, lastSuccessfulRefresh, refresh } from './polling-and-websocket.js';
-import { $, _setAccountMode, accountMode, contextLineHTML, esc, fetchJSON, fmt, marketLabel } from './shared-utils.js';
+import { $, _setAccountMode, accountMode, contextLineHTML, esc, fetchJSON, fmt, marketLabel, sideAdjustedPrice } from './shared-utils.js';
 import { renderPositions } from './signals-feed.js';
 import { loadRealOrders, realOrdersLoaded, renderRealFills, renderRealPositions, renderTrades } from './trade-log-and-real.js';
 
@@ -197,7 +197,7 @@ function renderDummiesPanel(positions, prices, signals, startingBankroll) {
     const sideWord = p.side === 'yes' ? 'YES' : 'NO';
     const sideClass = p.side === 'yes' ? 'hl-yes' : 'hl-no';
     const currentYes = prices[p.ticker] ?? p.entry_price;
-    const likelihood = Math.round((p.side === 'yes' ? currentYes : (1 - currentYes)) * 100);
+    const likelihood = Math.round(sideAdjustedPrice(p.side, currentYes) * 100);
     // No local fallback - see the identical fix/comment in renderPositionsTable above.
     const capitalAtRisk = p.cost_basis;
     const riskPct = startingBankroll ? (capitalAtRisk / startingBankroll * 100) : 0;
