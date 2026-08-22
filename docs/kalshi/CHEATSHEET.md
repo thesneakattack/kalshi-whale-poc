@@ -209,3 +209,27 @@ everything": `market_lifecycle_v2` (realtime open/close/settlement, versus
 today's REST polling — directly relevant to the stale-`close_time` bug
 class) and `orderbook_delta` (real depth, versus the sampled top-of-book
 snapshots `services/series_watcher.py` now records).
+
+## Is `docs/kalshi/`'s `FeeType` enum (`quadratic`/`quadratic_with_maker_fees`/`flat`) exhaustive?
+**Answer:** No — live Kalshi data already returns a fourth value,
+`quadratic_with_combo_maker_fees`, on at least 3 real series (e.g.
+`KXMVECROSSCATEGORY`, category `Exotics`, combo/multivariate markets). This
+isn't a stale-mirror problem: neither `docs/kalshi/` (fetched 2026-08-16)
+nor the *latest published* `kalshi-python-async` SDK release (3.28.0,
+checked directly — same 3-value enum as the pinned 3.27.0) document it
+either. Kalshi's live API is ahead of both its own docs and its own SDK
+here, not just this app's copy of either.
+**Gotcha:** the SDK's `get_series_list` deserializes the full ~13,300-series
+response into typed Pydantic `Series` objects internally — one series with
+an enum value the installed `FeeType` doesn't recognise raises and fails
+the **entire** call, every time, for every series, not just the combo ones.
+Bumping the SDK version will not fix this (3.28.0 has the identical enum).
+**Fix:** `services/kalshi_client.py::get_series_list` now fetches `/series`
+raw via `_get_json` (bypassing the SDK's typed client entirely for this one
+call) instead of `self._client.get_series_list`, so an unrecognised
+`fee_type` is just a string in a dict, not a validation failure.
+**Source:** installed vs. downloaded `kalshi_python_async/models/fee_type.py`
+(3.27.0 and 3.28.0 wheels, both missing the value), `get-series-list.md`
+(same 3-value enum documented).
+**Found:** 2026-08-21, `fastapi` logs spamming `[market_catalog] background
+scan batch failed entirely` every cycle.

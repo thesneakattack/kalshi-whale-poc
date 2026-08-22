@@ -97,9 +97,22 @@ class KalshiClient:
         get_markets(series_ticker=...) against just the real, currently
         active series returns clean single-outcome markets directly
         (verified: KXMLBGAME, KXBTCD, KXATPMATCH all returned real,
-        well-titled, actively-trading markets this way)."""
-        resp = await call_with_backoff(self._client.get_series_list, include_volume=True)
-        series = [s.model_dump(mode="json") for s in resp.series]
+        well-titled, actively-trading markets this way).
+
+        Fetched raw (via _get_json), not through the SDK's typed
+        get_series_list - found live 2026-08-21: Kalshi now returns
+        fee_type: "quadratic_with_combo_maker_fees" on at least one live
+        series, which isn't in kalshi_python_async's FeeType enum (checked
+        both the installed 3.27.0 and the latest published 3.28.0 - neither
+        has it, and it isn't in docs/kalshi/ either, so this is Kalshi's
+        live API ahead of its own published docs and SDK, not a stale
+        pin). The SDK's Pydantic-validated get_series_list raises on that
+        single bad series and fails the ENTIRE ~12,500-series response,
+        every call, with no way to skip just the offending item short of
+        reaching into SDK internals. Raw JSON has no such enum to
+        validate against and needs no SDK version to catch up."""
+        data = await self._get_json("/series", params={"include_volume": True})
+        series = data.get("series", [])
         if category:
             series = [s for s in series if (s.get("category") or "").lower() == category.lower()]
         return series
