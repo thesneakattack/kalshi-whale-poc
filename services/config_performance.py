@@ -37,7 +37,7 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
     # reads/writes (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't
     # add a column to an existing table with existing rows, so a new column
     # needs an explicit, idempotent ALTER TABLE guarded by a check - same
-    # pattern services/market_catalog.py/signal_log.py already established.
+    # pattern services/market_catalog/market_catalog.py/signal_log.py already established.
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")

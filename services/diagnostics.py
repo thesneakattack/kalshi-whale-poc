@@ -76,7 +76,7 @@ def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     upstream anyway (docs/kalshi/market_lifecycle.md's close_date_updated).
     Missing tickers are simply absent from the result - callers bucket
     those as "unknown" rather than guessing."""
-    from services import market_catalog
+    from services.market_catalog import market_catalog
 
     unique = list({t for t in tickers if t})
     if not unique:

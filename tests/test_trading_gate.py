@@ -23,7 +23,7 @@ import pytest
 
 from services import config_performance as cp_module
 from services import config_store as config_store_module
-from services import market_catalog as mc_module
+from services.market_catalog import market_catalog as mc_module
 from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -1459,7 +1459,7 @@ def test_fetch_live_status_does_not_surface_game_state_for_empty_details():
 # --- _fetch_markets (live_markets_only): catalog rows must be hydrated with
 # real prices, not left at whatever fallback state["latest_prices"] uses ----
 # Real, confirmed-live bug: market_catalog rows only ever carry schedule/
-# title/volume metadata (see services/market_catalog.py - no yes_bid_dollars
+# title/volume metadata (see services/market_catalog/market_catalog.py - no yes_bid_dollars
 # column exists), so every live-only-selected market silently fell through
 # to state["latest_prices"]'s `float(m.get("yes_bid_dollars") or 0.5)`
 # fallback - every card showed 50c/50c YES/NO and never moved. Direct

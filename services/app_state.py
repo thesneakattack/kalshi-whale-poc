@@ -58,7 +58,7 @@ from services import event_schedule
 from services import market_strategy_calibration
 from services import config_performance
 from services import market_analyst_agent
-from services import market_catalog
+from services.market_catalog import market_catalog
 from services import market_history
 from services import ml_feed
 from services import mutual_exclusivity

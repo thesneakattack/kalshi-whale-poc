@@ -30,7 +30,8 @@ import math
 from typing import Dict, Any, List
 
 from services.kalshi_client import KalshiClient
-from services import market_catalog, title_cache
+from services import title_cache
+from services.market_catalog import market_catalog
 
 
 async def inspect_market_event(client: KalshiClient, ticker: str) -> Dict[str, Any]:

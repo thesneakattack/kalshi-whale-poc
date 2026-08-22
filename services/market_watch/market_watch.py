@@ -17,9 +17,10 @@ import time
 from datetime import datetime
 
 from services import (
-    event_lifecycle, game_state, market_catalog, market_history, series_cache,
+    event_lifecycle, game_state, market_history, series_cache,
     series_evaluator, signal_log, task_supervisor,
 )
+from services.market_catalog import market_catalog
 from services.app_state import bump_generation, state
 from services.kalshi_client import KalshiClient
 from services.market_lookup import _sport_for_event
@@ -282,7 +283,7 @@ async def _get_top_series(client: KalshiClient, categories: list[str] | None = N
     return result
 
 
-# Series scanned per background batch to build services/market_catalog.py's
+# Series scanned per background batch to build services/market_catalog/market_catalog.py's
 # near-term catalog. Cut from 40 to 10 (2026-08-15 tick_duration
 # investigation) - confirmed live as the real remaining root cause after
 # fixing three other uncached/uncapped call sites (propagate_
@@ -542,7 +543,7 @@ _DISCOVERY_TERMINAL_STATUSES = {"closed", "determined", "disputed", "amended", "
 async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
     """Discovery's selection pipeline, now sourced entirely from
     market_catalog's already-persisted, independently-scanned data
-    (services/market_catalog.py's open_candidates) instead of a fresh
+    (services/market_catalog/market_catalog.py's open_candidates) instead of a fresh
     get_candidate_markets REST fetch per series - 2026-08-15 direct "no
     stone unturned" API audit, the definitive fix for the same incident
     _DISCOVERY_REFRESH_SEC's own comment describes: "no more excessive api

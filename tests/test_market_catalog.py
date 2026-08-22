@@ -1,6 +1,6 @@
 import time
 
-from services import market_catalog as mc
+from services.market_catalog import market_catalog as mc
 
 
 def _mc(tmp_path, monkeypatch):

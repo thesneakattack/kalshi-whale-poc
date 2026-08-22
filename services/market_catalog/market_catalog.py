@@ -37,7 +37,7 @@ from pathlib import Path
 
 from services import title_cache
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_catalog.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "market_catalog.db"
 
 # Direct scope correction: "maybe it doesn't have to be a FULL catalog but
 # enough of sensible ones with enough volume and schedule close to being

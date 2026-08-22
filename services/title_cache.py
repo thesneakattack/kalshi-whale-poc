@@ -46,7 +46,7 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
     # writes (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a
     # column to an existing table with existing rows, so a new column needs
     # an explicit, idempotent ALTER TABLE guarded by a check - same pattern
-    # services/market_catalog.py/paper_broker.py/signal_log.py already
+    # services/market_catalog/market_catalog.py/paper_broker.py/signal_log.py already
     # established.
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
@@ -123,7 +123,7 @@ def market_title_fields(m: dict) -> dict:
     """The title/yes_sub_title/no_sub_title fallback shape, in one place -
     previously reimplemented independently in three spots (main.py's
     new_market_titles builder, the /api/markets/search route, and
-    services/market_catalog.py's upsert_markets), each free to drift from
+    services/market_catalog/market_catalog.py's upsert_markets), each free to drift from
     the other two. `title` falls back to `yes_sub_title` (a market can have
     a real yes_sub_title with no separate title at all - e.g. one child of
     a multi-outcome event) and then to the raw ticker as a last resort,

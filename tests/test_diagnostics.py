@@ -13,7 +13,7 @@ import pytest
 
 from services import config_performance as cp_module
 from services import diagnostics
-from services import market_catalog as mc_module
+from services.market_catalog import market_catalog as mc_module
 from services import paper_broker as pb_module
 from services import series_watcher as sw_module
 from services import signal_log as sl_module
