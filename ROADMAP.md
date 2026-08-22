@@ -210,6 +210,28 @@ questions.
 
 ## P4 — Nice-to-haves
 
+- [ ] **Move analytics/advisory computation out of the live tick loop —
+      dump the underlying data and let external tooling analyze it.**
+      Direct instruction (2026-08-21): "considering we dont care so much
+      about analytics as we do performance right now, maybe it would be
+      best to add a data dump feature for analytics to run on it outside
+      of the system itself." Ties directly to the latency/responsiveness
+      problems found the same session (message drops under exchange-wide
+      trade load, tick-duration budget overruns, a silently-wedged
+      websocket stream) — `trading_loop`'s `calibration_advisory` phase
+      (confidence-calibration snapshot-and-auto-apply, advisory_engine
+      recommendations) runs in-process every tick and is a candidate
+      contributor. Deliberately queued rather than built immediately: the
+      main.py modularization in progress the same session (see below) is
+      lifting analytics/advisory routes and the market-analyst
+      orchestration into their own bounded files first (`routers/
+      analytics_routes.py`, `services/market_analyst_orchestrator.py`) —
+      once that lands, swapping "compute live" for "dump raw data
+      (signal_log/candidate_log/config_performance/trade_analytics) +
+      analyze externally" becomes a self-contained change to those files
+      instead of main.py surgery. Design the export shape (flat file?
+      separate read-only DB copy? on-demand endpoint?) as its own pass once
+      the modularization ships.
 - [ ] Two deferred next-steps from `docs/todo-2026-08-14-heuristics-audit-
       and-exit-tuning.md`, never picked back up: a time-til-close exit
       factor (auto-exit scoring currently has no awareness of how close a
