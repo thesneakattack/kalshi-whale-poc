@@ -1,6 +1,6 @@
 import pytest
 
-from services import confidence_calibration as cc
+from services.whale_calibration import confidence_calibration as cc
 from services.whale_simulator import DEFAULT_WEIGHTS
 
 

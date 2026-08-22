@@ -46,13 +46,13 @@ from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
 from services import backtest
-from services import calibration_history
+from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import cross_strategy
 from services import diagnostics
 from services import regime_analytics
 from services import stats_power
-from services import confidence_calibration
+from services.whale_calibration import confidence_calibration
 from services import event_lifecycle
 from services import event_schedule
 from services import market_strategy_calibration

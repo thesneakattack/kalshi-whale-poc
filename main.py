@@ -21,11 +21,11 @@ logging_config.configure()
 from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
-from services import calibration_history
+from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import diagnostics
 from services import regime_analytics
-from services import confidence_calibration
+from services.whale_calibration import confidence_calibration
 from services import event_lifecycle
 from services import event_schedule
 from services import config_performance
@@ -72,6 +72,7 @@ from routers import diagnostics_routes  # noqa: E402
 from services.config import routes as config_routes  # noqa: E402
 from services.position import routes as position_routes  # noqa: E402
 from services.exits import routes as exits_routes  # noqa: E402
+from services.whale_calibration import routes as whale_calibration_routes  # noqa: E402
 from services.history import routes as history_routes  # noqa: E402
 from services.analytics import routes as analytics_routes  # noqa: E402
 from services.analytics.market_analyst_orchestrator import (  # noqa: E402
@@ -428,7 +429,7 @@ async def trading_loop():
                                 # "predict how those changes may improve (or worsen)"
                                 # (direct report) - the biggest observed calibration
                                 # gap is exactly what suggested_weights was derived to
-                                # address (services/confidence_calibration.py's
+                                # address (services/whale_calibration/confidence_calibration.py's
                                 # _suggested_weights renormalizes toward the
                                 # best-discriminating factors) - cite it plainly rather
                                 # than fabricate a forward win-rate number this app has
@@ -965,6 +966,7 @@ app.include_router(diagnostics_routes.router)
 app.include_router(config_routes.router)
 app.include_router(position_routes.router)
 app.include_router(exits_routes.router)
+app.include_router(whale_calibration_routes.router)
 app.include_router(history_routes.router)
 app.include_router(analytics_routes.router)
 

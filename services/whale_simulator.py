@@ -36,7 +36,7 @@ class WhaleSignal:
     # only populated by providers that compute one - None for the simulator.
     # Persisted alongside the signal (services/signal_log.py's factors_json)
     # so a future calibration pass has more than just the final blended
-    # number to learn from - see services/confidence_calibration.py.
+    # number to learn from - see services/whale_calibration/confidence_calibration.py.
     factors: dict | None = None
     # Raw, unscored inputs behind the factor breakdown above - notional
     # dollar size, market spread, market 24h volume, as they existed at
@@ -191,7 +191,7 @@ class WhaleSimulator:
 @dataclass
 class ConfidenceBreakdown:
     """Every factor that went into a composite_confidence score, not just
-    the final blended number - what services/confidence_calibration.py
+    the final blended number - what services/whale_calibration/confidence_calibration.py
     needs to later ask "which of these factors actually predicted a correct
     call", something the plain float alone can't answer after the fact."""
     depth_factor: float
@@ -211,7 +211,7 @@ class ConfidenceBreakdown:
 
 # The weights this formula shipped with, before any real calibration data
 # existed to check them against - now the fallback default (and the
-# reference point services/confidence_calibration.py's report compares a
+# reference point services/whale_calibration/confidence_calibration.py's report compares a
 # live config override against), not the only source of truth. See
 # config/settings.yaml's whale_confidence_weights section - config.
 # block_trade_factor added 2026-08-15 (consuming docs/kalshi/public-trades.md
@@ -259,7 +259,7 @@ def composite_confidence_breakdown(
     names, falling back to DEFAULT_WEIGHTS for the rest, so a config that's
     missing a newer factor's key (e.g. before cluster_factor existed)
     degrades to that factor's original weight rather than silently scoring
-    it as 0. Direct finding (2026-08-10, services/confidence_calibration.py
+    it as 0. Direct finding (2026-08-10, services/whale_calibration/confidence_calibration.py
     enabled against real data for the first time): unusualness_factor and
     agreement_factor both showed NEGATIVE discrimination against ~9200 real
     resolved signals (the "high" bucket for each actually won LESS often

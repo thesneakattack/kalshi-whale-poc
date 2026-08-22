@@ -1,7 +1,7 @@
 """
 Calibration tooling for MarketNativeStrategy's own composite confidence
 score (services/market_strategy.py's _entry_confidence) - "web of expertise"
-audit (2026-08-11) gap #5: services/confidence_calibration.py has done this
+audit (2026-08-11) gap #5: services/whale_calibration/confidence_calibration.py has done this
 for the whale-follow side since 2026-08-08, but market_strategy's own
 confidence factors (momentum/liquidity/spread, plus analyst when fresh) -
 an explicitly parallel dataset - had zero calibration tooling of its own.

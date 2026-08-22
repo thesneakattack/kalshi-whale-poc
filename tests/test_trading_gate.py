@@ -1118,7 +1118,7 @@ def test_calibration_apply_twice_against_unchanged_data_does_not_crash(tmp_path,
     # legitimately finds a new (if small) delta rather than "nothing to
     # apply." Documenting the real behavior here rather than assuming
     # idempotency the underlying blend was never designed to have -
-    # services/confidence_calibration.py's own test_blended_weights_* suite
+    # services/whale_calibration/confidence_calibration.py's own test_blended_weights_* suite
     # covers that function's math in isolation; this just confirms the
     # route survives being called repeatedly, same as a human clicking
     # twice would.

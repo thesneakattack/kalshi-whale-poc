@@ -66,7 +66,7 @@ def _connect() -> sqlite3.Connection:
     # table scan, increasingly expensive as this table grows (38k+ rows and
     # climbing fast under the current stress-test config).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker_seen ON signals (ticker, seen_at)")
-    # services/confidence_calibration.py's whole input - the individual
+    # services/whale_calibration/confidence_calibration.py's whole input - the individual
     # confidence factors, not just the blended score, so a future pass can
     # ask "which factors actually predicted a correct call" instead of only
     # ever seeing the number they were already blended into. Added after
@@ -495,7 +495,7 @@ def total_count(resolved_only: bool = False) -> int:
 
 
 def resolved_signals_with_factors() -> list[dict]:
-    """services/confidence_calibration.py's entire input: resolved signals
+    """services/whale_calibration/confidence_calibration.py's entire input: resolved signals
     that carry a real per-factor confidence breakdown. factors_json IS NOT
     NULL is the filter, not a source string match - only real providers
     (services/whalewatchers/kalshi_trade_tape.py) ever populate it, so this

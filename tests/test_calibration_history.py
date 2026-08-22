@@ -1,6 +1,6 @@
 import pytest
 
-from services import calibration_history as ch
+from services.whale_calibration import calibration_history as ch
 
 
 @pytest.fixture(autouse=True)

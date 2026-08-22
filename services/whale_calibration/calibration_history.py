@@ -1,6 +1,6 @@
 """
 Calibration-history tracking - Gap 6 of docs/config-tuning-data-gaps-2026-
-08-10.md. services/confidence_calibration.py already computes everything
+08-10.md. services/whale_calibration/confidence_calibration.py already computes everything
 needed (overall win rate, per-factor discrimination gaps, current weights)
 but only ever as a single point-in-time snapshot recomputed fresh on every
 request - there was no way to ask "is calibration improving as more data
@@ -21,7 +21,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "calibration_history.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "calibration_history.db"
 
 
 def _connect() -> sqlite3.Connection:

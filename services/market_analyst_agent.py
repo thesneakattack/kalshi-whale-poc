@@ -8,7 +8,7 @@ formulas; this one reads a market's actual title/rules/category and this
 app's own accumulated real track record, and asks an LLM to form an
 independent probability estimate the way a human analyst would - not
 trained on this app's historical data (there isn't enough of it yet, see
-services/confidence_calibration.py's and services/advisory_engine.py's own
+services/whale_calibration/confidence_calibration.py's and services/advisory_engine.py's own
 "rule-based, not ML" reasoning, which applies with even more force to
 actually training a model), reasoning from first principles and context per
 market instead.
