@@ -306,3 +306,13 @@ state = {
     # nothing - see get_state()/_build_state_body().
     "generation": 0,
 }
+
+
+def bump_generation() -> None:
+    """Marks a real change to anything /api/state reports - see
+    state["generation"]'s own comment above. Lives here (not in main.py)
+    so every router/module that mutates `state` can call it without
+    reaching back into main.py - main.py's modularization pass (2026-08-21)
+    moved this alongside `state` itself since it's called from nearly every
+    bucket main.py is being split into."""
+    state["generation"] += 1

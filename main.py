@@ -72,38 +72,22 @@ from services.strategy_engine import FollowTheWhaleStrategy
 # working unchanged.
 from routers import diagnostics_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
-    account, account_base_url, broker, cfg, index_stream, market_broker, market_risk,
-    market_strategy, risk, shadow, state, strategy, trade_stream, whale_provider, whale_sim,
+    account, account_base_url, broker, bump_generation, cfg, index_stream, market_broker,
+    market_risk, market_strategy, risk, shadow, state, strategy, trade_stream, whale_provider,
+    whale_sim,
 )
-
-
-class WebSocketManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-        self.lock = asyncio.Lock()
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        async with self.lock:
-            self.active_connections.append(websocket)
-
-    async def disconnect(self, websocket: WebSocket) -> None:
-        async with self.lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict) -> None:
-        text = json.dumps(message)
-        async with self.lock:
-            connections = list(self.active_connections)
-        for connection in connections:
-            try:
-                await connection.send_text(text)
-            except Exception:
-                await self.disconnect(connection)
-
-
-ws_manager = WebSocketManager()
+from services.account_positions import (  # noqa: E402
+    _fetch_account_snapshot, _join_real_position_prices, _real_account_position_tickers,
+    _slim_fill, _slim_order, _slim_position,
+)
+from services.market_lookup import (  # noqa: E402
+    _category_by_ticker, _close_time_by_ticker, _sport_for_event, _subcategory_by_ticker,
+)
+from services.state_view import (  # noqa: E402
+    _enrich_recent_trades, _enriched_broker_state, _relevant_tickers, _scoped_event_live_data,
+    _scoped_event_titles, _scoped_live_game_state, _scoped_market_titles, _series_meta_map,
+)
+from services.ws_manager import ws_manager  # noqa: E402
 
 
 def _streaming_trade_tape_enabled() -> bool:
@@ -112,72 +96,6 @@ def _streaming_trade_tape_enabled() -> bool:
     # AND websocket credentials loaded successfully. Fallback stays on the
     # existing REST polling path otherwise.
     return whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled
-
-def _bump_generation():
-    state["generation"] += 1
-
-
-def _close_time_by_ticker() -> dict:
-    # ticker -> close_time, for check_exits' runway-exhausted gate
-    # (strategy.exit_min_seconds_to_close, ROADMAP #1). Same
-    # already-in-memory, zero-new-API-calls construction as
-    # _category_by_ticker below, but sourced from state["markets"] rather
-    # than market_titles: close_time is mutable upstream
-    # (docs/kalshi/market_lifecycle.md's close_date_updated event), so this
-    # deliberately reads the freshest per-tick markets list every call
-    # instead of anything cached at entry time.
-    return {
-        m["ticker"]: m.get("close_time")
-        for m in (state.get("markets") or [])
-        if m.get("ticker") and m.get("close_time")
-    }
-
-
-def _category_by_ticker() -> dict:
-    # Per-series/category config overrides (services/config_overrides.py,
-    # 2026-08-15 direct request) - built from the already-in-memory
-    # state["market_titles"]/state["event_titles"] (pure dict comprehension,
-    # zero new API calls), covering every KNOWN ticker rather than just
-    # this tick's markets list, so an open position that's rotated off the
-    # watchlist still resolves a category for check_exits.
-    return {
-        ticker: (state["event_titles"].get(info.get("event_ticker")) or {}).get("category")
-        for ticker, info in state["market_titles"].items()
-        if info.get("event_ticker")
-    }
-
-
-def _sport_for_event(event_info: dict) -> str | None:
-    # SPORT ("Baseball"), not the finer per-competition string
-    # ("Pro Baseball") - reverse-mapped through category_metadata's
-    # sport_by_competition (see _fetch_category_metadata's own comment:
-    # get-filters-for-sports.md documents competitions as nested WITHIN a
-    # sport, e.g. filters_by_sports["Baseball"]["competitions"] contains
-    # "Pro Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several
-    # competitions, one sport). Falls back to the raw competition string
-    # only if the reverse map hasn't been built yet (category_metadata's
-    # first fetch hasn't completed) or doesn't recognize it - a real
-    # subcategory late is better than none, even if slightly coarser than
-    # intended for one refresh cycle.
-    competition = event_info.get("competition")
-    if not competition:
-        return None
-    sport_by_competition = state["category_metadata"].get("sport_by_competition") or {}
-    return sport_by_competition.get(competition, competition)
-
-
-def _subcategory_by_ticker() -> dict:
-    # Mirrors _category_by_ticker exactly, one field over - 2026-08-16
-    # direct request for a series -> subcategory -> category fallback
-    # chain in whale-confidence win-rate segmentation (see
-    # services/trade_category.py's own subcategory docstring for why this
-    # isn't category_tags - that field is the same full facet-filter
-    # vocabulary on every event in a category, not per-event data).
-    return {
-        ticker: _sport_for_event(state["event_titles"].get(info.get("event_ticker")) or {})
-        for ticker, info in state["market_titles"].items()
-        if info.get("event_ticker")
-    }
 
 
 async def _broadcast_signal_decision(signal_payload: dict | None, decision_payload: dict) -> None:
@@ -320,7 +238,7 @@ async def _process_stream_trade(trade: dict) -> None:
     # the exchange actually printed - only of what survived the filters.
     series_watcher.record_trade(trade, config_store.get())
     if not state["running"] or not _streaming_trade_tape_enabled():
-        _bump_generation()
+        bump_generation()
         return
 
     cfg_now = config_store.get()
@@ -339,7 +257,7 @@ async def _process_stream_trade(trade: dict) -> None:
         },
     )
     if not signals:
-        _bump_generation()
+        bump_generation()
         return
 
     now = time.time()
@@ -350,7 +268,7 @@ async def _process_stream_trade(trade: dict) -> None:
         category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
     ):
         await _handle_close_decision(close_decision)
-    _bump_generation()
+    bump_generation()
 
 
 async def _process_stream_ticker(ticker_msg: dict) -> None:
@@ -420,7 +338,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
             opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
         ):
             await _handle_close_decision(close_decision)
-    _bump_generation()
+    bump_generation()
 
 
 async def _noop_stream_trade(_trade: dict) -> None:
@@ -590,7 +508,7 @@ async def _process_stream_fill(fill_msg: dict) -> None:
     if any(f.get("fill_id") == fill["fill_id"] for f in fills):
         return  # already have it - the REST reconciliation poll likely beat this message here
     state["account"]["fills"] = {"fills": ([fill] + fills)[:50]}
-    _bump_generation()
+    bump_generation()
 
 
 async def _process_stream_position(position_msg: dict) -> None:
@@ -612,7 +530,7 @@ async def _process_stream_position(position_msg: dict) -> None:
     else:
         market_positions.append(position)
     state["account"]["positions"] = {**positions, "market_positions": market_positions}
-    _bump_generation()
+    bump_generation()
 
 
 async def _process_stream_lifecycle(msg: dict) -> None:
@@ -666,7 +584,7 @@ async def _process_stream_lifecycle(msg: dict) -> None:
             break
     if updated:
         stats["close_time_updates_applied"] += 1
-        _bump_generation()
+        bump_generation()
 
 
 async def _handle_trade_stream_status(status: dict) -> None:
@@ -683,7 +601,7 @@ async def _handle_trade_stream_status(status: dict) -> None:
         "type": "trade_stream_status",
         "status": state["trade_stream_status"],
     }))
-    _bump_generation()
+    bump_generation()
 
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
@@ -820,7 +738,7 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
                         res = "yes" if rt == mapped_winner_ticker else "no"
                         market_results[rt] = res
                         market_history.record_outcome(rt, res, resolved_at=now_ts)
-                    _bump_generation()
+                    bump_generation()
         # Reapply already-known winners from cache (no new API calls) so a
         # tick that skipped re-polling a resolved event still sees a
         # complete market_results, matching pre-caching per-tick behavior.
@@ -851,85 +769,6 @@ _MARKET_FIELDS = (
 
 def _slim_market(m: dict) -> dict:
     return {k: m.get(k) for k in _MARKET_FIELDS}
-
-
-def _enrich_recent_trades(paper_broker_instance: PaperBroker) -> list[dict]:
-    """PaperBroker.state()'s recent_trades are raw Trade rows - a close
-    trade among them carries no realized_pnl/close_type/won at all, the
-    same "displayed value doesn't match its label" bug class CLAUDE.md
-    already documents once (the Portfolio header's old Unrealized P&L).
-    Real bug found live (2026-08-10, direct user report: "not seeing the
-    results of the positions in the trade log") - every row in the
-    Portfolio Trade Log rendered identically whether it was a still-open
-    entry or an already-settled close, showing "cost to enter"/"payout if
-    right" even for a trade that had already won or lost.
-
-    Re-derives via trade_analytics.build_trade_history() over the FULL
-    trade_log (not just the tail-25 slice state() itself returns) so an
-    entry outside the recent window still pairs correctly with a close
-    inside it, then merges the derived fields back onto just the recent-25
-    raw rows by (ticker, timestamp) - a close trade's own timestamp is
-    exactly build_trade_history()'s exit_timestamp for that row, a stable,
-    unambiguous join key requiring no new IDs."""
-    full_history = trade_analytics.build_trade_history([t.to_dict() for t in paper_broker_instance.trade_log])
-    by_key = {(r["ticker"], r["exit_timestamp"]): r for r in full_history}
-    recent = [t.to_dict() for t in paper_broker_instance.trade_log[-25:][::-1]]
-    for t in recent:
-        derived = by_key.get((t["ticker"], t["timestamp"]))
-        if derived is not None:
-            t["close_type"] = derived["close_type"]
-            t["realized_pnl"] = derived["realized_pnl"]
-            t["won"] = derived["won"]
-            t["entry_price"] = derived["entry_price"]
-            t["hold_sec"] = derived["hold_sec"]
-    return recent
-
-
-def _enrich_positions_with_signal_activity(positions: list[dict]) -> list[dict]:
-    """Adds signals_since_entry_count/whale_lean_since_entry to each open
-    position - 2026-08-16 direct report: a position's card showed only the
-    single whale print that opened it, nothing about whale activity since,
-    making the ongoing sentiment-driven exit reasoning (strategy_engine.
-    check_exits' _whale_lean/_exit_confidence, which really is running
-    every tick - see that module) invisible even though it's real.
-    state["signal_feed"] can't answer this itself: it's one 50-slot window
-    shared across every ticker in the app, so a busy ticker crowds out a
-    quiet one within seconds - signal_log.for_ticker queries the full
-    persisted history instead, scoped to exactly this ticker since this
-    position's own opened_at. One extra indexed query per open position
-    per state build - cheap at the position counts this app actually
-    carries (single digits to low tens), not per signal."""
-    for p in positions:
-        # count is the real total (can exceed for_ticker's own row cap
-        # under stress-test load); matches (bounded) is only for the lean
-        # weighting below, which doesn't need every row to be representative.
-        p["signals_since_entry_count"] = signal_log.count_for_ticker(p["ticker"], since_ts=p["opened_at"])
-        matches = signal_log.for_ticker(p["ticker"], since_ts=p["opened_at"])
-        if matches:
-            yes_weight = sum(s["size"] * s["confidence"] for s in matches if s["side"] == "yes")
-            no_weight = sum(s["size"] * s["confidence"] for s in matches if s["side"] == "no")
-            total = yes_weight + no_weight
-            p["whale_lean_since_entry"] = {
-                "count": len(matches),
-                "yes_pct": (yes_weight / total * 100) if total else 50.0,
-            }
-        else:
-            p["whale_lean_since_entry"] = None
-    return positions
-
-
-def _enriched_broker_state(paper_broker_instance: PaperBroker, latest_prices: dict[str, float]) -> dict:
-    """broker.state() plus the two enrichments _build_state_body's raw
-    positions/recent_trades otherwise lack (see each enrichment function's
-    own docstring for the real reports behind them) - one call to state()
-    rather than the caller spreading it twice, which would recompute
-    equity()/cost_basis() for every position a second time for nothing."""
-    base = paper_broker_instance.state(latest_prices)
-    return {
-        **base,
-        "positions": _enrich_positions_with_signal_activity(base["positions"]),
-        "recent_trades": _enrich_recent_trades(paper_broker_instance),
-    }
 
 
 _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
@@ -1143,128 +982,6 @@ async def _scan_catalog_batch_background(cfg: dict) -> None:
     finally:
         catalog_state["scanning"] = False
         await client.close()
-
-
-def _series_meta_map(series_tickers: set[str]) -> dict:
-    """series_of()'s ticker prefix (see services/signal_log.py) already
-    equals a real series ticker in practice - what's been missing is a real
-    name for it. This is the "better Kalshi series metadata" ROADMAP.md's
-    series/category grouping item was waiting on: get_series_list (already
-    fetched and cached hourly for the watchlist/search, see
-    _get_series_cache) carries a real title and a real, clean 18-category
-    taxonomy (via `category`) plus finer tags (e.g. "Tennis", "Soccer") per
-    series - zero extra API cost to expose, just data that was already
-    being fetched and then discarded. Lets the dashboard show "ITF Women's
-    Match" / "Sports · Tennis" instead of a raw ticker prefix like
-    "KXITFWMATCH" wherever a whale-accuracy series is surfaced.
-
-    Scoped to series_tickers (the series actually relevant right now, from
-    state["series_track_record"]) rather than the full cache - confirmed
-    directly, not assumed, that dumping the whole thing was a real mistake:
-    the full series_cache is ~9,400 entries and ballooned /api/state from
-    ~30KB to over 1MB, undoing the entire earlier efficiency pass in one
-    line. A handful of entries (however many distinct series are on the
-    current watchlist) costs nothing by comparison."""
-    if not series_tickers:
-        return {}
-    return {
-        s["ticker"]: {"title": s.get("title"), "category": s.get("category"), "tags": s.get("tags") or []}
-        for s in state["series_cache"]["series"]
-        if s["ticker"] in series_tickers
-    }
-
-
-def _real_account_position_tickers(account: dict) -> set[str]:
-    """Tickers of the *real* connected Kalshi account's currently open
-    positions only - deliberately excludes fills (see trading_loop's own
-    extra_tickers comment for why folding fills into anything that drives
-    the live watchlist fetch is wrong: fills are historical trade records
-    that can span days/weeks, unlike a position, which naturally drops out
-    the tick it closes). Shared by trading_loop (feeds _fetch_markets'
-    extra_tickers) and _relevant_tickers below (feeds /api/state's title
-    scoping) so both stay defined identically rather than drifting."""
-    return {
-        p.get("ticker") for p in ((account.get("positions") or {}).get("market_positions") or []) if p.get("ticker")
-    }
-
-
-def _relevant_tickers() -> set[str]:
-    """Every ticker actually shown on this tick's /api/state response -
-    current watchlist, open positions, the Trade Log's own last-25 closed
-    trades (broker.state()'s "recent_trades", exactly what
-    static/index.html's renderTrades() actually displays - added 2026-08-09,
-    a real, confirmed-live gap: a position's ticker dropped out of this set
-    the instant it closed and aged out of the watchlist/signal/decision
-    feeds, even though the Trade Log kept showing that trade, so it fell
-    back to its raw ticker until something else - visiting History, whose
-    own endpoint separately backfills the shared client-side title cache -
-    happened to pull the title back in), whatever's still in the capped
-    signal/decision feeds, and the *real* connected Kalshi account's own
-    open positions/recent fills (renderRealPositions/renderRealFills call
-    the same marketLabel() as the paper panels - they were only ever
-    missing an entry to look up, same bug class, added alongside the
-    trade_log fix above once it turned out real-account tickers had no
-    title-resolution path at all, not even a lagging one). state["market_titles"]/
-    state["event_titles"] themselves accumulate unbounded for the app's
-    whole lifetime now (see services/title_cache.py) so history/clusters can
-    still resolve an old ticker's title on their own separately-scoped
-    requests, but /api/state itself must stay scoped to this same small set
-    - same reasoning, same ~1MB regression risk, as _series_meta_map above.
-
-    Real bug found live (2026-08-10, direct report - a Market-Native trade
-    log row showing a raw ticker like "KXMLBGAME-26AUG101940BALMIN-BAL"
-    instead of its resolved title): this only ever included the
-    whale-follow `broker`'s own positions/trade_log, the exact same gap
-    already found and fixed once for `broker` itself (see this docstring's
-    own history above) - just never extended to `market_broker` when the
-    Market-Native tab was built, since GET /api/market-strategy/state
-    reuses this same function to scope its own market_titles. A market-
-    native trade that ages out of the current watchlist had no title-
-    resolution path at all, not even a lagging one - it rendered fine only
-    as long as an EARLIER poll had already cached the title client-side;
-    a fresh page load (or a long-since-closed market-native position)
-    never got the chance."""
-    tickers = {m["ticker"] for m in state["markets"] if m.get("ticker")}
-    tickers |= set(broker.positions.keys())
-    tickers |= {t.ticker for t in broker.trade_log[-25:]}
-    tickers |= set(market_broker.positions.keys())
-    tickers |= {t.ticker for t in market_broker.trade_log[-25:]}
-    tickers |= {s["ticker"] for s in state["signal_feed"] if s.get("ticker")}
-    for d in state["decision_feed"]:
-        t = d.get("ticker") or (d.get("signal") or {}).get("ticker")
-        if t:
-            tickers.add(t)
-    for d in state["market_decision_feed"]:
-        t = d.get("ticker")
-        if t:
-            tickers.add(t)
-    account = state.get("account") or {}
-    tickers |= _real_account_position_tickers(account)
-    tickers |= {
-        f.get("ticker") or f.get("market_ticker")
-        for f in ((account.get("fills") or {}).get("fills") or [])
-        if f.get("ticker") or f.get("market_ticker")
-    }
-    return tickers
-
-
-def _scoped_market_titles(tickers: set[str]) -> dict:
-    return {t: state["market_titles"][t] for t in tickers if t in state["market_titles"]}
-
-
-def _scoped_event_titles(market_titles: dict) -> dict:
-    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
-    return {et: state["event_titles"][et] for et in event_tickers if et in state["event_titles"]}
-
-
-def _scoped_event_live_data(market_titles: dict) -> dict:
-    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
-    return {et: state["event_live_data"][et] for et in event_tickers if et in state["event_live_data"]}
-
-
-def _scoped_live_game_state(market_titles: dict) -> dict:
-    event_tickers = {v["event_ticker"] for v in market_titles.values() if v.get("event_ticker")}
-    return {et: state["live_game_state"][et] for et in event_tickers if et in state["live_game_state"]}
 
 
 async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) -> dict:
@@ -2080,145 +1797,6 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     return result
 
 
-_POSITION_FIELDS = (
-    "ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars",
-    # fees_paid_dollars/total_traded_dollars/last_updated_ts added after a
-    # direct data-usage review found them: real fields (confirmed against a
-    # real connected account), fetched-for-free on every get_positions()
-    # call, previously trimmed here and never reaching the frontend at all —
-    # a real position's fees directly eat into its P&L, so showing exposure
-    # without what it cost to get there was an incomplete picture on a
-    # panel that's specifically about real money.
-    "fees_paid_dollars", "total_traded_dollars", "last_updated_ts",
-)
-# Kalshi's own EventPosition has no price field either (same as
-# MarketPosition - confirmed against the SDK's models), so this doesn't need
-# a price join the way market_positions does below - it's purely the
-# real parent-event grouping/exposure rollup, previously fetched every tick
-# and then dropped entirely before /api/state (direct report: real
-# positions on child markets of the same event rendered as unrelated flat
-# rows with no grouping at all).
-_EVENT_POSITION_FIELDS = (
-    "event_ticker", "total_cost_dollars", "total_cost_shares_fp",
-    "event_exposure_dollars", "realized_pnl_dollars", "fees_paid_dollars",
-)
-_FILL_FIELDS = (
-    "ticker", "market_ticker", "side", "action", "count_fp", "yes_price_dollars", "no_price_dollars",
-    # created_time/fee_cost/is_taker/fill_id/order_id added for the same
-    # reason as _POSITION_FIELDS above — most notably created_time: the real
-    # Trade Log had no timestamp at all before this, so real fills couldn't
-    # be read in time order or checked for recency.
-    "created_time", "fee_cost", "is_taker", "fill_id", "order_id",
-)
-# Same trim idea as _slim_market: keep only what renderRealPositions/
-# renderRealFills actually read (field names confirmed against a real
-# connected account, not guessed — see the comment above renderRealPositions
-# for why that mattered). event_positions/cursor/... are real fields, just
-# not currently rendered anywhere. Keeps fills well under the ~13.4KB a full
-# 25-fill page would otherwise cost, the single largest piece of /api/state's
-# payload, while still keeping every field the UI actually shows.
-
-# Real order history - GetOrders' full real fields confirmed against a live
-# connected account (docstring in kalshi_account_client.py has the full
-# example). Unlike positions/fills, order history isn't part of the main
-# poll loop at all (see GET /api/account/orders below) - it's on-demand,
-# same "paginated, fetched only when that panel is actually open" pattern
-# as GET /api/signals/history and GET /api/trading-history, not something
-# every 15s tick needs to pull.
-_ORDER_FIELDS = (
-    "order_id", "ticker", "side", "action", "type", "status",
-    "yes_price_dollars", "no_price_dollars", "fill_count_fp", "remaining_count_fp", "initial_count_fp",
-    "taker_fees_dollars", "maker_fees_dollars", "created_time", "last_update_time", "client_order_id",
-)
-
-
-def _slim_order(o: dict) -> dict:
-    return {k: o.get(k) for k in _ORDER_FIELDS}
-
-
-
-def _slim_position(p: dict) -> dict:
-    return {k: p.get(k) for k in _POSITION_FIELDS}
-
-
-def _slim_event_position(p: dict) -> dict:
-    return {k: p.get(k) for k in _EVENT_POSITION_FIELDS}
-
-
-def _join_real_position_prices(account_snapshot: dict, latest_prices: dict) -> None:
-    """Kalshi's real MarketPosition has no price field at all (confirmed
-    against the SDK's models) - this app has never joined a real position
-    against its market's current price, for any real position, anywhere
-    (direct report). Attached backend-side, from the same latest_prices
-    every other price display already reads, rather than re-derived
-    client-side at the render call site - CLAUDE.md's own documented bug
-    pattern for displayed financial figures. Real position tickers are
-    already force-fetched into `markets` every tick
-    (_real_account_position_tickers, phase 60/61), so this should always
-    resolve; None (not a fabricated default) if a ticker genuinely isn't
-    there yet. Mutates each position dict in place."""
-    real_positions = ((account_snapshot.get("positions") or {}).get("market_positions")) or []
-    for p in real_positions:
-        p["current_yes_price_dollars"] = latest_prices.get(p.get("ticker"))
-
-
-def _slim_fill(f: dict) -> dict:
-    return {k: f.get(k) for k in _FILL_FIELDS}
-
-
-_ACCOUNT_SNAPSHOT_REFRESH_SEC = 20  # 2026-08-15 "no stone unturned" API audit - this used to fetch
-# balance/positions/fills via 3 uncached REST calls on literally every tick, unconditionally, the
-# one real REST-call site this whole pass hadn't touched yet. A real Kalshi WS channel exists for
-# this (market_positions/fill, confirmed in docs/kalshi/websocket-connection.md's channel list) but
-# fill events specifically cannot be observed or verified against real data right now - real trading
-# is off (kalshi_account.trading_enabled: false, same P0 safety gate as always), so no order can ever
-# fill, so there is no live message to confirm this app's parsing of that channel's real shape
-# against. Shipping unverified parsing for real-account financial data is exactly the class of risk
-# CLAUDE.md's safety posture warns against - a wrong field name would silently misreport real
-# positions, not just crash loudly. A real interval cache is the safe, immediately-effective
-# version of the same fix instead: same three REST calls, same data, just not re-fetched more often
-# than something could plausibly have changed. See docs/next-steps-2026-08-15-pt2.md for the
-# WS-channel design, deferred pending either a real fill to verify parsing against or explicit
-# sign-off to ship best-effort parsing with a REST reconciliation safety net.
-_account_snapshot_cache: dict = {"fetched_at": 0.0, "snapshot": None}
-
-
-async def _fetch_account_snapshot(cfg: dict) -> dict:
-    account.trading_enabled = cfg["kalshi_account"]["trading_enabled"]
-    if not account.enabled:
-        return {
-            "connected": False, "balance": None, "positions": None, "fills": None,
-            "error": account.status["error"], "trading_enabled": account.trading_enabled,
-        }
-    now_ts = time.time()
-    cached = _account_snapshot_cache["snapshot"]
-    if cached is not None and (now_ts - _account_snapshot_cache["fetched_at"]) < _ACCOUNT_SNAPSHOT_REFRESH_SEC:
-        return {**cached, "trading_enabled": account.trading_enabled}
-    try:
-        # balance, positions, and fills are independent reads — fetch all three
-        # at once instead of one after another.
-        balance, positions, fills = await asyncio.gather(
-            account.get_balance(), account.get_positions(), account.get_fills(limit=50)
-        )
-        positions = {
-            "market_positions": [_slim_position(p) for p in (positions.get("market_positions") or [])],
-            "event_positions": [_slim_event_position(p) for p in (positions.get("event_positions") or [])],
-        }
-        fills = {"fills": [_slim_fill(f) for f in (fills.get("fills") or [])]}
-        snapshot = {
-            "connected": True, "balance": balance, "positions": positions, "fills": fills,
-            "error": None, "trading_enabled": account.trading_enabled,
-        }
-        _account_snapshot_cache["snapshot"] = snapshot
-        _account_snapshot_cache["fetched_at"] = now_ts
-        return snapshot
-    except Exception as e:
-        return {
-            "connected": True, "balance": None, "positions": None, "fills": None,
-            "error": str(e), "trading_enabled": account.trading_enabled,
-        }
-
-
 async def _fetch_exchange_status(client: KalshiClient) -> dict | None:
     # A transient hiccup here shouldn't take down the whole poll tick the way
     # a markets/account failure would (nothing downstream depends on it) —
@@ -2641,7 +2219,7 @@ async def _analyze_market_uncached(
         estimated_probability=result["estimated_probability"], llm_confidence=result["confidence"],
         reasoning=result["reasoning"], model=ma_cfg.get("model", "claude-sonnet-5"), analyzed_at=now,
     )
-    _bump_generation()
+    bump_generation()
     return {"ok": True, **result, "market_price": market_price}
 
 
@@ -2750,7 +2328,7 @@ async def _run_series_analysis(cfg: dict, series: str) -> dict:
         analysis_id = market_analyst_agent.record_series_analysis(
             series=series, summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
         )
-        _bump_generation()
+        bump_generation()
         return {"ok": True, "analysis_id": analysis_id, "series": series, "summary": result["summary"], "suggestions": suggestions}
     finally:
         _analyzing_series.discard(series)
@@ -2944,7 +2522,7 @@ async def _run_full_spectrum_analysis(cfg: dict) -> dict:
         analysis_id = market_analyst_agent.record_full_spectrum_analysis(
             summary=result["summary"], suggestions=suggestions, model=model, analyzed_at=now,
         )
-        _bump_generation()
+        bump_generation()
         return {"ok": True, "analysis_id": analysis_id, "summary": result["summary"], "suggestions": suggestions}
     finally:
         _full_spectrum_analyzing = False
@@ -3183,7 +2761,7 @@ async def trading_loop():
                                     fingerprint_before=fp_before, fingerprint_after=fp_after,
                                     auto_applied=True, source="calibration-auto-apply",
                                 )
-                                _bump_generation()
+                                bump_generation()
 
             # Advisory auto-apply - real bug found live (2026-08-10):
             # advisory.auto_apply_enabled was already protected from
@@ -3245,7 +2823,7 @@ async def trading_loop():
                             fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
                             auto_applied=True, source="unified-advisory-auto",
                         )
-                        _bump_generation()
+                        bump_generation()
             phase_timings["calibration_advisory"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
@@ -3589,7 +3167,7 @@ async def trading_loop():
         state["last_tick_duration_sec"] = round(time.time() - tick_start_wall, 2)
         state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
         state["tick_phase_timings"] = phase_timings
-        _bump_generation()
+        bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
 
@@ -4036,7 +3614,7 @@ async def enable_advisory_auto_apply(body: EnableAutoApplyBody):
         rationale="Enabled via the typed advisory-auto-apply confirmation phrase.", trade_count=0,
         fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
     )
-    _bump_generation()
+    bump_generation()
     return {"auto_apply_enabled": True}
 
 
@@ -4054,7 +3632,7 @@ async def disable_advisory_auto_apply():
             rationale="Disabled via the dashboard.", trade_count=0,
             fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
         )
-    _bump_generation()
+    bump_generation()
     return {"auto_apply_enabled": False}
 
 
@@ -4073,7 +3651,7 @@ async def enable_calibration_auto_apply(body: EnableAutoApplyBody):
         rationale="Enabled via the typed calibration-auto-apply confirmation phrase.", trade_count=0,
         fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
     )
-    _bump_generation()
+    bump_generation()
     return {"auto_apply_enabled": True}
 
 
@@ -4088,7 +3666,7 @@ async def disable_calibration_auto_apply():
             rationale="Disabled via the dashboard.", trade_count=0,
             fingerprint_before=fp, fingerprint_after=fp, auto_applied=False, source="manual",
         )
-    _bump_generation()
+    bump_generation()
     return {"auto_apply_enabled": False}
 
 
@@ -4162,7 +3740,7 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
         rationale=match["rationale"], trade_count=match["n"],
         fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False, source="unified-advisory",
     )
-    _bump_generation()
+    bump_generation()
     return {"applied": match, "new_config": config_store.get()["strategy"]}
 
 
@@ -4181,7 +3759,7 @@ async def decline_suggestion(body: DeclineSuggestionBody):
     # gone from the live recommendation set (or was never real) is still a
     # perfectly valid "no thanks," it just has nothing left to suppress.
     suggestion_decisions.decline(body.id, body.config_path, body.rationale)
-    _bump_generation()
+    bump_generation()
     return {"declined": True, "id": body.id}
 
 
@@ -4194,7 +3772,7 @@ async def undecline_suggestion(body: UndeclineSuggestionBody):
     # "You can revisit this anytime" - the Advanced-section "previously
     # declined" list's per-row undo action.
     existed = suggestion_decisions.undecline(body.id)
-    _bump_generation()
+    bump_generation()
     return {"undeclined": existed, "id": body.id}
 
 
@@ -4320,7 +3898,7 @@ async def apply_confidence_calibration_suggestion():
         trade_count=result["report"]["resolved_count"],
         fingerprint_before=current_fp, fingerprint_after=new_fp, auto_applied=False, source="calibration-manual",
     )
-    _bump_generation()
+    bump_generation()
     return {"applied": True, "new_weights": blended}
 
 
@@ -4574,7 +4152,7 @@ async def post_market_analyst_series_apply(body: MarketAnalystSeriesApplyBody):
         rationale=match["rationale"], trade_count=0,
         fingerprint_before=fp_before, fingerprint_after=fp_after, auto_applied=False, source="series-analyst",
     )
-    _bump_generation()
+    bump_generation()
     return {"applied": match, "new_config": config_store.get()["strategy"]}
 
 
@@ -4629,7 +4207,7 @@ async def post_market_analyst_full_spectrum_apply(body: MarketAnalystFullSpectru
         rationale=match["rationale"], trade_count=0,
         fingerprint_before=fp_before, fingerprint_after=fp_after, auto_applied=False, source="full-spectrum-analyst",
     )
-    _bump_generation()
+    bump_generation()
     return {"applied": match, "new_config": config_store.get()}
 
 
@@ -4844,7 +4422,7 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
         }
         state["market_titles"].update(searched_titles)
         title_cache.save_market_titles(searched_titles)
-        _bump_generation()  # market_titles changed - invalidate the cached /api/state body, see _build_state_body
+        bump_generation()  # market_titles changed - invalidate the cached /api/state body, see _build_state_body
         return {
             "markets": [_slim_market(m) for m in results],
             "market_titles": {m["ticker"]: state["market_titles"][m["ticker"]] for m in results if m.get("ticker")},
@@ -5043,7 +4621,7 @@ async def update_config(body: ConfigPatch):
             fingerprint_before=fp_before, fingerprint_after=fp_after,
             auto_applied=False, source="manual",
         )
-    _bump_generation()
+    bump_generation()
     return new_cfg
 
 
@@ -5072,7 +4650,7 @@ async def enable_trading(body: EnableTradingBody):
         rationale="Enabled via the typed real-trading confirmation phrase.", trade_count=0,
         fingerprint_before=fp_before, fingerprint_after=fp_before, auto_applied=False, source="manual",
     )
-    _bump_generation()
+    bump_generation()
     return {"trading_enabled": True}
 
 
@@ -5088,28 +4666,28 @@ async def disable_trading():
         rationale="Disabled real trading.", trade_count=0,
         fingerprint_before=fp_before, fingerprint_after=fp_before, auto_applied=False, source="manual",
     )
-    _bump_generation()
+    bump_generation()
     return {"trading_enabled": False}
 
 
 @app.post("/api/toggle")
 async def toggle_running():
     state["running"] = not state["running"]
-    _bump_generation()
+    bump_generation()
     return {"running": state["running"]}
 
 
 @app.post("/api/risk/halt")
 async def halt_trading():
     risk.manual_halt("Manually halted from dashboard")
-    _bump_generation()
+    bump_generation()
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
 
 
 @app.post("/api/risk/resume")
 async def resume_trading():
     risk.resume()
-    _bump_generation()
+    bump_generation()
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
 
 
@@ -5121,14 +4699,14 @@ async def halt_market_native():
     # and had no way to be manually managed, only services/risk_manager.py's
     # automatic daily rollover fix - see reset_day - could ever clear it).
     market_risk.manual_halt("Manually halted from dashboard")
-    _bump_generation()
+    bump_generation()
     return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
 
 
 @app.post("/api/market-risk/resume")
 async def resume_market_native():
     market_risk.resume()
-    _bump_generation()
+    bump_generation()
     return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
 
 
@@ -5139,7 +4717,7 @@ async def resume_shadow():
     # live (2026-08-10) it had been stuck halted (-99.7%) with no recovery
     # path, dormant only because mode was "paper" at the time.
     shadow.resume()
-    _bump_generation()
+    bump_generation()
     return {"halted": shadow.halted, "halt_reason": shadow.halt_reason}
 
 
@@ -5394,7 +4972,7 @@ async def reset_broker(body: ResetBody = ResetBody()):
         deleted = trade_category.clear_range(body.range_end, body.range_start)
         _log("trade_category", deleted)
         cleared.append("trade_category")
-    _bump_generation()
+    bump_generation()
     return {"ok": True, "cleared": cleared, "scope": scope}
 
 

@@ -51,6 +51,7 @@ config_store_module.config_store.reload()
 
 import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
+from services import account_positions  # noqa: E402
 from services import market_analyst_agent  # noqa: E402  (same module object main.py's own import binds - no pre-import DB redirect needed here, done per-test below instead)
 from services.whale_simulator import DEFAULT_WEIGHTS  # noqa: E402
 
@@ -210,7 +211,7 @@ def test_state_market_titles_includes_a_recently_closed_trades_ticker(monkeypatc
     monkeypatch.setitem(main.state["market_titles"], "TICK-CLOSED", {"title": "A Real Title"})
     main.broker.open_position("TICK-CLOSED", "yes", size=10, price=0.5, reason="entry")
     main.broker.close_position("TICK-CLOSED", exit_price=0.6, reason="test close")
-    main._bump_generation()
+    main.bump_generation()
 
     resp = client.get("/api/state")
     assert resp.status_code == 200
@@ -239,7 +240,7 @@ def test_state_market_titles_includes_real_account_position_and_fill_tickers(mon
         "positions": {"market_positions": [{"ticker": "REAL-POS", "position_fp": "10"}]},
         "fills": {"fills": [{"ticker": "REAL-FILL", "side": "yes", "count_fp": "5"}]},
     })
-    main._bump_generation()
+    main.bump_generation()
 
     resp = client.get("/api/state")
     assert resp.status_code == 200
@@ -1157,7 +1158,7 @@ def test_market_strategy_state_endpoint_reports_disabled_by_default():
 def test_market_strategy_state_endpoint_uses_its_own_broker_not_the_whale_ones():
     main.broker.reset(starting_bankroll=7777.0)
     main.market_broker.reset(starting_bankroll=8888.0)
-    main._bump_generation()  # direct .reset() calls above bypass the route that normally does this - see get_state()'s ETag cache
+    main.bump_generation()  # direct .reset() calls above bypass the route that normally does this - see get_state()'s ETag cache
     resp = client.get("/api/market-strategy/state")
     assert resp.json()["broker"]["bankroll"] == 8888.0
     # And the whale-follow broker's own state endpoint is unaffected.
@@ -2020,7 +2021,7 @@ def test_slim_event_position_keeps_the_real_event_fields():
         "event_exposure_dollars": "0.0", "realized_pnl_dollars": "0.48", "fees_paid_dollars": "0.04",
         "cursor": "should not leak through",
     }
-    result = main._slim_event_position(event_position)
+    result = account_positions._slim_event_position(event_position)
     assert result["event_ticker"] == "EVT-A"
     assert result["total_cost_dollars"] == "4.84"
     assert "cursor" not in result
