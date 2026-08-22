@@ -1,6 +1,6 @@
 import pytest
 
-from services import backtest
+from services.backtest import backtest
 
 
 # --- entry_threshold_sweep ---------------------------------------------------

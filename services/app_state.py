@@ -45,7 +45,7 @@ load_dotenv()  # reads .env if present; every var is optional, see .env.example
 from services import accounts_store
 from services.advisory import advisory_engine
 from services import auth as auth_service
-from services import backtest
+from services.backtest import backtest
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import cross_strategy

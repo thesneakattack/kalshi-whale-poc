@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import (
-    backtest, candidate_log,
+    candidate_log,
     config_performance, cross_strategy, market_analyst_agent, market_strategy_calibration,
     regime_analytics, series_evaluator, signal_log, suggestion_decisions, trade_analytics,
 )
@@ -171,27 +171,6 @@ async def get_regime_by_subcategory(strategy: str = "whale_follow"):
     trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
     rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
     return {"strategy": strategy, "buckets": regime_analytics.by_subcategory(rows)}
-
-
-@router.get("/api/backtest/entry-threshold")
-async def get_backtest_entry_threshold():
-    # services/backtest.py - Gap 2 of docs/config-tuning-data-gaps-2026-08-
-    # 10.md, stateless replay against every already-logged resolved signal.
-    # Always safe to call - pure read, no enable flag.
-    rows = signal_log.resolved_signals_with_factors()
-    current_threshold = config_store.get()["strategy"]["entry_threshold"]
-    return {"current_threshold": current_threshold, "sweep": backtest.entry_threshold_sweep(rows)}
-
-
-@router.get("/api/backtest/min-whale-winrate")
-async def get_backtest_min_whale_winrate():
-    strat_cfg = config_store.get()["strategy"]
-    series_stats = signal_log.all_series_stats(days=30)
-    signal_rows = signal_log.resolved_signals_with_series(days=30)
-    sweep = backtest.min_whale_winrate_pct_sweep(
-        series_stats, signal_rows, min_resolved_for_filter=strat_cfg.get("min_resolved_for_whale_filter", 10),
-    )
-    return {"current_floor": strat_cfg.get("min_whale_winrate_pct", 40), "sweep": sweep}
 
 
 @router.get("/api/market-analyst/status")

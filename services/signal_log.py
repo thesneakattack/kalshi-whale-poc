@@ -320,7 +320,7 @@ def resolved_signals_with_series(days: int = 30) -> list[dict]:
     """Every resolved signal's series + outcome, no factors_json filter
     (unlike resolved_signals_with_factors, which exists for confidence
     calibration specifically and deliberately excludes simulator-sourced
-    rows) - services/backtest.py's min_whale_winrate_pct_sweep needs the
+    rows) - services/backtest/backtest.py's min_whale_winrate_pct_sweep needs the
     full resolved population, tagged by series, to recombine under a
     candidate floor."""
     since = time.time() - days * 86400
@@ -334,7 +334,7 @@ def resolved_signals_with_series(days: int = 30) -> list[dict]:
 
 def all_series_stats(days: int = 30) -> dict[str, dict]:
     """Same shape as series_stats() but for every series at once (one GROUP
-    BY query instead of N per-series ones) - what services/backtest.py's
+    BY query instead of N per-series ones) - what services/backtest/backtest.py's
     min_whale_winrate_pct_sweep (Gap 2, docs/config-tuning-data-gaps-
     2026-08-10.md) needs: "if the floor were X instead of Y, which series
     would be excluded, and what would the aggregate win rate of what's left
