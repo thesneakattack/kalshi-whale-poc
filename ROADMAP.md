@@ -232,6 +232,26 @@ questions.
       instead of main.py surgery. Design the export shape (flat file?
       separate read-only DB copy? on-demand endpoint?) as its own pass once
       the modularization ships.
+- [ ] **Consider a dedicated charts/graphs module, possibly server-rendered
+      via Plotly or Matplotlib.** Direct instruction (2026-08-22): "should
+      histographs be their own module as well? i think they should... also
+      maybe we should use something like plotly or matplotlib." Right now
+      chart-shaped time series (`cumulative_pnl_curve` in
+      `/api/trading-history`, `equity_history`/`real_balance_history` in
+      `/api/state`) are just raw `{t, value}` arrays computed inline where
+      they're used, and rendering happens client-side in `static/`'s plain
+      JS (no build step/bundler - see CLAUDE.md's Quick file map). Two
+      separable questions worth answering before building anything: (1)
+      does the chart-DATA assembly deserve its own module, separate from
+      History (`services/history/`) - probably yes if this grows, marginal
+      if it stays 2-3 fields; (2) does moving actual rendering server-side
+      via Plotly/Matplotlib change anything for the better - it would add a
+      real dependency and a departure from the "no build step" static-page
+      philosophy, so weigh that against whatever it'd actually buy (SVG/PNG
+      export? richer interactivity than hand-rolled JS already gives?)
+      before committing to it. Queued rather than built now - the
+      in-progress main.py modularization (see below) is the current
+      priority; do this as its own deliberate pass once that ships.
 - [ ] Two deferred next-steps from `docs/todo-2026-08-14-heuristics-audit-
       and-exit-tuning.md`, never picked back up: a time-til-close exit
       factor (auto-exit scoring currently has no awareness of how close a
