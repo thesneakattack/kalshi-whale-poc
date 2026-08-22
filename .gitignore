@@ -9,6 +9,13 @@ data/*.db-wal
 .ddev/.web
 .ddev/db_snapshots
 
+# frontend/src/js/*.js is the real, committed source (real ES modules).
+# node_modules and the esbuild-produced bundle are both generated - `ddev
+# start`'s post-start hook runs `npm install`, and web_extra_daemons' watch
+# mode (re)builds the bundle automatically, so neither needs to be committed.
+frontend/node_modules/
+static/js/dashboard.bundle.js
+
 # Kalshi RSA private key — never commit this, wherever KALSHI_PRIVATE_KEY_PATH points
 *.pem
 *.key

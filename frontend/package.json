@@ -1,0 +1,15 @@
+{
+  "name": "kalshi-whale-poc-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build tooling for static/index.html's dashboard JS. Source lives in src/js/ as real ES modules (import/export); esbuild bundles them into static/js/dashboard.bundle.js, which is what index.html actually loads. Edits to src/js/ need a rebuild (npm run build, or npm run watch during active development) - they are not served directly.",
+  "scripts": {
+    "build": "esbuild src/js/main.js --bundle --format=iife --outfile=../static/js/dashboard.bundle.js",
+    "watch": "esbuild src/js/main.js --bundle --format=iife --outfile=../static/js/dashboard.bundle.js --watch",
+    "lint": "eslint src/js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "eslint": "^10.0.0"
+  }
+}

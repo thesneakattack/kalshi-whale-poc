@@ -1,0 +1,896 @@
+/* Extracted from index.html's inline <style> block (2026-08-22
+   modularization) - dashboard-only styling, no build step/preprocessor. */
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --no: #F97066;
+    --whale: #F5B942;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+  /* Thin, semi-transparent scrollbars everywhere - the default OS scrollbar
+     read as heavy/ugly against this app's dark theme, direct request. */
+  * { scrollbar-width: thin; scrollbar-color: rgba(231,235,238,0.18) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background-color: rgba(231,235,238,0.18); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  *::-webkit-scrollbar-thumb:hover { background-color: rgba(231,235,238,0.32); }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--yes); box-shadow: 0 0 8px var(--yes); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .equity-strip { display: flex; gap: 28px; font-family: var(--mono); }
+  .equity-strip .item { text-align: right; }
+  .equity-strip .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .equity-strip .value { font-size: 16px; font-weight: 600; }
+  .value.pos { color: var(--yes); }
+  .value.neg { color: var(--no); }
+
+  .layout {
+    display: grid;
+    /* Controls only ever holds 4 buttons + one line of text - fixed at a
+       width that comfortably fits that, not an equal-ish fractional share
+       of the viewport, which was leaving a large empty column on anything
+       wider than a laptop screen (confirmed live via a real screenshot -
+       direct report: "the controls column... sure is taking up a lot of
+       space that it doesn't need to be"). The freed space goes to
+       Watchlist/Signals, the two panels with actual scrollable content. */
+    grid-template-columns: 1.4fr 1.3fr 260px;
+    gap: 1px;
+    background: var(--panel-border);
+    height: calc(100vh - 57px);
+  }
+  .view#view-terminal > .col { display: flex; flex-direction: column; min-height: 0; }
+  .view#view-terminal > .col > div:not(#signal-decision-feed), .view#view-terminal > .col > .panel-title { flex-shrink: 0; }
+  .col { background: var(--bg); overflow-y: auto; padding: 16px; }
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  /* Native title-attribute tooltip, matching every other hover-explainer in
+     this app (e.g. the whale-confidence badge, the impact tag) rather than
+     a custom popover component - no build step, plain HTML/CSS/JS. */
+  .info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    font-size: 10px;
+    font-style: normal;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: help;
+    margin-left: 6px;
+  }
+  /* Dotted config-path chip - same monospace style already used on the
+     History tab's Advisory Recommendations panel
+     (strategy.exit_sentiment_min_signals-style). Direct report: a
+     suggestion there names a variable with nothing on the Config page to
+     visually match it against - putting the exact same text next to the
+     field itself closes that gap without inventing a new visual language,
+     and doubles as the jump target for jumpToConfigSetting(). */
+  .config-path {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-left: 6px;
+  }
+  /* Brief highlight after jumpToConfigSetting() scrolls a suggestion's
+     target field into view (Advisory Recommendations -> Config tab) - the
+     same idea as this app's other "poof, look here" moments (e.g. the
+     apply-button's own "Applied ✓" state), just for navigation instead of
+     an action outcome. */
+  .jump-highlight {
+    outline: 2px solid var(--whale);
+    outline-offset: 3px;
+    border-radius: 4px;
+    transition: outline-color 0.3s;
+  }
+  /* Shared Simple/Advanced per-panel toggle — one pattern reused by every
+     panel that has a denser "Advanced" view, instead of each panel
+     inventing its own. Defaults to Simple; choice persists per panel via
+     localStorage (see isAdvanced/toggleAdvanced below). */
+  .adv-toggle {
+    background: none;
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .adv-toggle:hover { color: var(--text); border-color: var(--muted); }
+  .adv-toggle.on { color: var(--whale); border-color: var(--whale); background: rgba(245,185,66,0.1); }
+
+  .market-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .market-row .ticker { color: var(--text); font-weight: 600; }
+  .market-row .price { color: var(--muted); }
+
+  /* The watchlist now selects/counts by parent series, not individual
+     markets (ROADMAP.md) - a whole tournament's pairings shouldn't just
+     appear as N disconnected rows with no indication they're all one
+     series. Only shown for a series with more than one market - a
+     one-market series (the common case) renders exactly as before, no
+     added clutter. */
+  .series-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 10px 4px 4px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .series-header:first-child { padding-top: 0; }
+  .series-header .count { font-family: var(--mono); font-weight: 400; text-transform: none; letter-spacing: normal; }
+  .series-section {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .series-section-header {
+    display: flex; align-items: baseline; gap: 8px; justify-content: space-between;
+    padding: 0 4px; cursor: pointer;
+  }
+  .series-section-title { font-size: 13px; font-weight: 700; }
+  .series-section-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  .series-section .cards-grid { margin: 0; }
+
+  .position-row, .trade-row, .decision-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .position-row .name, .trade-row .name, .decision-row .name { flex: 1; min-width: 0; }
+  .position-row .nums, .trade-row .nums, .decision-row .nums {
+    text-align: right; white-space: nowrap; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  }
+  .pnl.pos { color: var(--yes); }
+  .pnl.neg { color: var(--no); }
+  .payout { font-size: 10px; color: var(--muted); }
+  .cost { font-size: 10px; color: var(--muted); }
+
+  .funnel-bar {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 9px 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .funnel-bar b { color: var(--text); font-size: 13px; }
+
+  .signal-card, .decision-card {
+    border: 1px solid var(--panel-border);
+    border-left-width: 8px;
+    border-left-style: solid;
+    border-left-color: transparent;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    animation: slide-in 0.3s ease;
+  }
+  .signal-card.opening { border-left-color: var(--yes); }
+  .signal-card.skipped { border-left-color: rgba(148,163,184,0.3); }
+  .signal-card.won { border-left-color: var(--yes); }
+  .signal-card.lost { border-left-color: var(--no); }
+  .signal-card.closed { border-left-color: var(--whale); }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .signal-card .top-row, .decision-card .top-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .side-tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .side-tag.yes { background: rgba(45,212,191,0.15); color: var(--yes); }
+  .side-tag.no { background: rgba(249,112,102,0.15); color: var(--no); }
+  /* What sport/category, the real matchup, and what Yes/No actually means -
+     e.g. "Sports · San Diego vs Arizona · Betting: San Diego wins" instead
+     of a bare ticker and a side tag. See marketContext()/contextLineHTML(). */
+  .context-line { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .cat-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--whale); }
+  .scope-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; color: var(--yes); }
+  .meta-chip {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.04em; color: var(--muted); background: rgba(148,163,184,0.12); margin-right: 4px;
+  }
+  .live-data-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.04em; color: #04231c; background: rgba(45,212,191,0.75); margin-right: 6px;
+  }
+  .live-data-box {
+    margin: 10px 0 14px; padding: 10px 12px; border-radius: 8px; background: rgba(45,212,191,0.08);
+    border: 1px solid rgba(45,212,191,0.2); font-size: 12px; line-height: 1.5;
+  }
+  .position-means { color: var(--text); }
+  /* Signal card "impact" tag (ROADMAP.md Phase 0.5) - low/medium/high,
+     relative to the currently visible feed, matched against Polywhaler's
+     per-print impact tagging. */
+  .impact-tag { text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+  .impact-tag.low { color: var(--muted); background: rgba(148,163,184,0.12); }
+  .impact-tag.medium { color: var(--whale); background: rgba(245,185,66,0.15); }
+  .impact-tag.high { color: var(--danger); background: rgba(229,72,77,0.15); }
+
+  /* Portfolio positions table - grouped per market/event with a Total row,
+     matching real Kalshi's own positions-table column structure (Market,
+     Contracts, Avg price, Cost, Payout if right, Market value, Total
+     return), confirmed directly against real Kalshi screenshots rather
+     than invented. Replaced the earlier one-position-per-line-item
+     div layout. */
+  .positions-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  .positions-table th {
+    text-align: right; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--panel-border);
+    position: sticky; top: 0; background: var(--bg);
+  }
+  .positions-table th:first-child, .positions-table td:first-child { text-align: left; }
+  .positions-table td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+  .positions-table tr.group-header td {
+    text-align: left; font-weight: 600; padding-top: 14px; padding-bottom: 6px;
+    border-bottom: none; font-family: var(--sans);
+  }
+  .positions-table tr.total-row td { font-weight: 700; border-top: 1px solid var(--panel-border); }
+  .positions-table td.pos { color: var(--yes); }
+  .positions-table td.neg { color: var(--no); }
+
+  /* Whale confidence badge - how whales are leaning on this specific
+     position's market, and whether that agrees with the side actually
+     held. Reuses computeWhaleLean(), already built for the Whale Watch
+     tab's market cards. */
+  .whale-conf { font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: 4px; white-space: nowrap; }
+  .whale-conf.aligned { background: rgba(45,212,191,0.12); color: var(--yes); }
+  .whale-conf.against { background: rgba(249,112,102,0.12); color: var(--no); }
+
+  /* Why this position was opened - the whale print (size/price/confidence)
+     that triggered it, from the trade's own already-persisted `reason`
+     field (services/paper_broker.py's Trade.reason) - real data that was
+     already being sent to the frontend and simply never displayed. */
+  .whale-reason { display: inline; margin-left: 4px; }
+  .whale-reason summary { display: inline; cursor: pointer; list-style: none; font-size: 12px; }
+  .whale-reason summary::-webkit-details-marker { display: none; }
+  .whale-reason-body {
+    font-family: var(--sans); font-size: 11px; color: var(--text); text-align: left;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 8px 10px; margin-top: 6px; white-space: normal;
+  }
+  .whale-reason-body div { margin-bottom: 4px; }
+  .whale-reason-body div:last-child { margin-bottom: 0; }
+  /* Real per-leg breakdown for a genuine combo/MVE market - same disclosure
+     visual language as .whale-reason above, not a new pattern. */
+  .combo-legs { margin-top: 4px; font-size: 11px; }
+  .combo-legs summary { cursor: pointer; color: var(--muted); }
+  .combo-leg { padding: 3px 0 3px 12px; }
+  .conf-bar { height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .conf-fill { height: 100%; background: var(--whale); }
+  .decision-card.trade { border-left: 3px solid var(--yes); }
+  .decision-card.skip { border-left: 3px solid var(--panel-border); opacity: 0.7; }
+  .decision-card.close { border-left: 3px solid var(--whale); }
+  .positions-table tr.opening > td:first-child,
+  .positions-table tr.won > td:first-child { border-left: 6px solid var(--yes); }
+  .positions-table tr.skipped > td:first-child { border-left: 6px solid rgba(148,163,184,0.3); }
+  .positions-table tr.lost > td:first-child { border-left: 6px solid var(--no); }
+  .positions-table tr.closed > td:first-child { border-left: 6px solid var(--whale); }
+  .positions-table td:first-child { padding-left: 10px; }
+  .action-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  .action-tag.trade { color: var(--yes); }
+  .action-tag.close { color: var(--whale); }
+  .action-tag.skip { color: var(--muted); }
+
+  /* Advanced sortable/filterable tables - Trade Log and Strategy Decisions
+     (ROADMAP.md Phase 0.5's "Trade log / decision feed" item). Reuses
+     .positions-table's look; click a header to sort by that column. */
+  .positions-table.sortable th.sortable { cursor: pointer; user-select: none; }
+  .positions-table.sortable th.sortable:hover { color: var(--text); }
+  .table-filter-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 11px; color: var(--muted); }
+  .table-filter-row input, .table-filter-row select {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    padding: 4px 6px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
+  }
+
+  .config-group { margin-bottom: 20px; }
+  .config-group h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; margin: 0 0 10px 0; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .field input, .field select {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 7px 9px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--whale); }
+
+  /* Config tab as a multi-section control panel, direct request ("hard to
+     make sense of for a like-I'm-5 user... more of a multi-section control
+     panel") - each settings group becomes a collapsible <details>, not one
+     long flat scroll. Native <details>/<summary> rather than a hand-rolled
+     JS accordion - free keyboard support, no extra state to track. */
+  .config-section {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    background: var(--panel);
+  }
+  .config-section > summary {
+    cursor: pointer;
+    padding: 12px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  .config-section > summary::-webkit-details-marker { display: none; }
+  .config-section > summary::before {
+    content: '▸';
+    color: var(--muted);
+    font-size: 11px;
+    transition: transform 0.15s ease;
+    flex-shrink: 0;
+  }
+  .config-section[open] > summary::before { transform: rotate(90deg); }
+  .config-section > summary .section-desc {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  .config-section .section-body { padding: 4px 14px 16px; }
+
+  /* History tab redesign (2026-08-14/15, direct request): "a like-I'm-5
+     person who knows nothing about trading" needs to see, act, observe,
+     and - most importantly - choose to hold back, without that feeling
+     like skipping a step. One card style for every suggestion this app
+     produces (Advisory, per-series analyst, full-spectrum analyst),
+     replacing each source's own bespoke .signal-card markup. Deliberately
+     NOT .signal-card/.decision-card - those use --mono at 12px, a dense
+     "data readout" register that reads as technical, the opposite of what
+     a plain-language recommendation needs. */
+  .suggestion-card {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .suggestion-card .suggestion-headline { font-size: 14px; line-height: 1.5; margin-bottom: 6px; }
+  .suggestion-card .suggestion-confidence { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .suggestion-card details.suggestion-why { margin: 8px 0 12px; }
+  .suggestion-card details.suggestion-why summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); list-style: none;
+  }
+  .suggestion-card details.suggestion-why summary::-webkit-details-marker { display: none; }
+  .suggestion-card details.suggestion-why summary::before { content: '▸ '; }
+  .suggestion-card details.suggestion-why[open] summary::before { content: '▾ '; }
+  .suggestion-card .suggestion-why-body {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    margin-top: 6px; padding-left: 14px; border-left: 2px solid var(--panel-border);
+  }
+  /* Equal-weight accept/decline - direct instruction: not a bright
+     "Apply" next to a barely-visible dismiss. Same base button size/
+     border/padding for both; only a subtle left-accent color tells them
+     apart, same restrained language .signal-card's own colored left
+     border already uses elsewhere in this app. */
+  .suggestion-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .suggestion-yes-btn, .suggestion-no-btn {
+    flex: 1 1 200px; border-left-width: 4px; border-left-style: solid; text-align: left;
+  }
+  .suggestion-yes-btn { border-left-color: var(--yes); }
+  .suggestion-no-btn { border-left-color: var(--muted); }
+  .suggestion-decided {
+    font-size: 13px; color: var(--muted); padding: 4px 0;
+  }
+  .suggestion-decided.accepted { color: var(--yes); }
+
+  /* Plain-language narrative + tiered disclosure (same request) - the
+     beginner-facing summary above everything else, and the wrapper
+     everything power-user-dense moves into. Reuses .config-section's own
+     collapsible look (already built for this exact "like-I'm-5" framing
+     on the Config tab) rather than a second visual language for the same
+     idea. */
+  .history-narrative {
+    font-size: 15px; line-height: 1.6; padding: 14px 16px; margin-bottom: 20px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+  }
+  .history-narrative .nothing-needed { color: var(--yes); }
+
+  /* Data-quality badges - flags config that isn't "fully baked" yet
+     because of what it's calibrated against, direct request: "highlight
+     config options that aren't fully baked yet due to data limitations
+     (like not real/complete whale watch data or lack of trade history)."
+     Meanings spelled out once in #config-badge-legend rather than repeated
+     inline everywhere a badge appears. */
+  .data-badge {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  .data-badge.sim { color: var(--whale); background: rgba(245,185,66,0.15); }
+  .data-badge.hist { color: var(--muted); background: rgba(124,135,148,0.18); }
+  .data-badge.new { color: var(--no); background: rgba(249,112,102,0.15); }
+  .field .data-badge { margin-left: 8px; }
+
+  /* Whichever whale-signal source (simulator vs. real) isn't the one
+     actually running gets grayed out AND its inputs disabled (see
+     setSectionInputsDisabled in the JS) - not just described in prose.
+     Set from loadConfig()/refresh() via lastWhaleSource, not hardcoded,
+     since which one is "inactive" depends on runtime config/.env, not a
+     fixed default. The accordion itself (<summary>) stays clickable either
+     way - collapsing/expanding to read an inactive section's values is
+     still allowed, only editing them is blocked. A transient fetch-failure
+     fallback (the real provider is selected but this tick's fetch failed)
+     deliberately leaves both sections enabled - see updateWhaleProviderStatus. */
+  .config-section.provider-inactive { opacity: 0.5; }
+  .config-section.provider-inactive summary { cursor: pointer; }
+  .config-section.provider-inactive input:disabled,
+  .config-section.provider-inactive select:disabled { cursor: not-allowed; }
+
+  button {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--yes); color: #06231F; border: none; }
+  button.danger { background: var(--danger); color: white; border: none; }
+  .btn-row { display: flex; gap: 8px; margin-top: 6px; }
+
+  .account-bar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 8px 20px;
+    background: rgba(229,72,77,0.08);
+    border-bottom: 1px solid var(--danger);
+    font-family: var(--mono);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .account-bar.disconnected { background: var(--panel); border-bottom: 1px solid var(--panel-border); }
+  .account-bar .tag { color: var(--danger); font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
+  .account-bar.disconnected .tag { color: var(--muted); }
+  .account-bar .field { color: var(--text); }
+  .account-bar .field .label { color: var(--muted); margin-right: 4px; }
+  /* min-width: 0 overrides the flex-item default of min-width: auto, which
+     otherwise refuses to let this text shrink/wrap below its own unbroken
+     content width even inside a flex-wrap container - a classic flexbox
+     overflow gotcha, confirmed live: this exact rule was the real cause of
+     a page-wide horizontal scrollbar on a narrow viewport, not the .msg
+     text itself being too long to wrap. */
+  .account-bar .msg { color: var(--muted); min-width: 0; }
+  .account-bar details { margin-left: auto; }
+  .account-bar summary { cursor: pointer; color: var(--muted); }
+  .account-bar pre { max-height: 200px; overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; margin: 6px 0 0; font-size: 11px; }
+
+  .trading-status { display: flex; align-items: center; gap: 8px; }
+  .trading-status .badge-on { color: white; background: var(--danger); font-weight: 700; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 4px; font-size: 11px; }
+  .trading-status .badge-off { color: var(--muted); font-size: 11px; }
+  .trading-gate {
+    width: 100%;
+    margin-top: 8px;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    font-family: var(--sans);
+  }
+  .trading-gate .warn { color: var(--danger); font-weight: 600; margin-bottom: 8px; }
+  .trading-gate .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .trading-gate input {
+    font-family: var(--mono);
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 4px;
+    width: 260px;
+    margin-right: 8px;
+  }
+  .trading-gate button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .util-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 20px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--panel-border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .util-bar .tools { display: flex; align-items: center; gap: 12px; }
+  .util-bar .tools .label { text-transform: uppercase; letter-spacing: 0.08em; margin-right: 2px; }
+  .util-bar a { color: var(--muted); text-decoration: none; }
+  .util-bar a:hover { color: var(--text); }
+  #session-info { display: flex; align-items: center; gap: 8px; }
+  #session-info button {
+    background: none; border: 1px solid var(--panel-border); color: var(--muted);
+    font-family: var(--sans); font-size: 10px; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+  }
+  .mode-tag {
+    font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--yes); border: 1px solid var(--yes); padding: 3px 7px; border-radius: 4px; align-self: center;
+  }
+  /* Header follows Portfolio's paper/real toggle (accountMode) — this used to
+     always show paper numbers regardless of which account was selected below,
+     so someone in Real mode saw the wrong account's figures at a glance. */
+  .mode-tag.real { color: var(--danger); border-color: var(--danger); }
+
+  #exchange-status-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #exchange-status-badge.open { color: var(--muted); }
+  #exchange-status-badge.closed { color: var(--whale); background: rgba(245,185,66,0.15); }
+  /* Visible staleness/connectivity state (ROADMAP.md Phase 0.5) - same
+     loud-badge pattern as exchange-status-badge above, applied to "can the
+     dashboard actually reach the server" instead of "is the exchange open."
+     A silent console.error on a failed poll isn't enough for an app whose
+     whole premise is "watch this and trust what it shows you." */
+  #connectivity-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #connectivity-badge.stale { color: var(--danger); background: rgba(229,72,77,0.15); animation: connectivity-pulse 1.6s ease-in-out infinite; }
+  #trade-stream-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+  #trade-stream-badge.connected { color: var(--yes); border: 1px solid rgba(45,212,191,0.35); background: rgba(45,212,191,0.1); }
+  #trade-stream-badge.degraded { color: var(--whale); border: 1px solid rgba(245,185,66,0.35); background: rgba(245,185,66,0.12); }
+  #trade-stream-badge.error { color: var(--danger); border: 1px solid rgba(229,72,77,0.35); background: rgba(229,72,77,0.12); }
+  @keyframes connectivity-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  /* "Live" the way Kalshi's own UI badges it - see isLive()'s comment for
+     what this is actually based on (occurrence_datetime + status), not
+     Kalshi's real live-sports-data integration. */
+  .live-badge {
+    display: inline-block; white-space: nowrap;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+    color: white; background: var(--danger); padding: 1px 6px; border-radius: 4px;
+    animation: pulse 1.6s infinite;
+  }
+
+  .closing-badge {
+    display: inline-block; white-space: nowrap;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+    color: white; background: var(--whale); padding: 1px 6px; border-radius: 4px;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    padding: 0 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    padding: 12px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--whale); }
+  .view { display: none; }
+  .view.active { display: block; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 20px; }
+
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  /* Markets sharing an event_ticker are outcomes of one underlying question
+     (e.g. "who wins the Wyndham Championship" -> one row per golfer), not
+     unrelated markets - previously rendered as either fully disconnected
+     cards (no indication of the relationship) or, briefly, as N full cards
+     awkwardly grouped under one header. Real Kalshi lists each outcome as
+     a compact row (name + price) inside one card, confirmed directly
+     against real Kalshi screenshots, not designed from guesswork - this
+     matches that pattern instead of inventing a different one. */
+  .event-card {
+    grid-column: span 2;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .event-card-header { display: flex; align-items: baseline; gap: 8px; }
+  .event-card-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+  .outcome-rows { display: flex; flex-direction: column; gap: 4px; }
+  .outcome-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .outcome-row:hover { background: var(--bg); }
+  .outcome-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 10px; }
+  .outcome-prices { display: flex; gap: 6px; flex-shrink: 0; }
+  .mini-price { padding: 3px 8px; border-radius: 6px; font-weight: 700; min-width: 34px; text-align: center; }
+  .mini-price.yes { background: rgba(45,212,191,0.1); color: var(--yes); }
+  .mini-price.no { background: rgba(249,112,102,0.1); color: var(--no); }
+  .market-card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .market-card .title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+  .market-card .prices { display: flex; gap: 10px; }
+  /* Price-change indicators (ROADMAP.md Phase 0.5) - persistent, not a
+     transient flash: visible continuously once a per-ticker baseline
+     exists (see priceChangeHTML), updating in place every tick. No
+     animation - a steady badge, not something drawing attention to itself
+     on every single poll. */
+  .price-flash { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
+  .price-flash.up { color: var(--yes); background: rgba(45,212,191,0.14); }
+  .price-flash.down { color: var(--no); background: rgba(249,112,102,0.14); }
+  .price-btn { flex: 1; text-align: center; border-radius: 8px; padding: 10px 8px; font-family: var(--mono); }
+  .price-btn.yes { background: rgba(45,212,191,0.1); border: 1px solid var(--yes); }
+  .price-btn.no { background: rgba(249,112,102,0.1); border: 1px solid var(--no); }
+  .price-btn .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .price-btn .val { font-size: 20px; font-weight: 700; }
+  .price-btn.yes .val { color: var(--yes); }
+  .price-btn.no .val { color: var(--no); }
+  .prob-bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--no); }
+  .prob-bar .fill { height: 100%; background: var(--yes); }
+  .market-card .meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; justify-content: space-between; }
+
+  .whale-lean { border-top: 1px solid var(--panel-border); padding-top: 10px; }
+  .whale-lean .headline { font-size: 12px; font-weight: 700; }
+  .whale-lean .headline.yes { color: var(--yes); }
+  .whale-lean .headline.no { color: var(--no); }
+  .whale-lean .headline.none { color: var(--muted); font-weight: 400; }
+  .whale-bar { height: 10px; border-radius: 5px; overflow: hidden; display: flex; margin-top: 6px; background: var(--panel-border); }
+  .whale-bar .yes-seg { background: var(--yes); }
+  .whale-bar .no-seg { background: var(--no); }
+  .whale-lean .sub { font-size: 10px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .winrate-block { border-top: 1px solid var(--panel-border); padding-top: 10px; margin-top: 2px; }
+  .winrate-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .winrate-block .sub { font-size: 10px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+
+  .account-toggle { display: flex; gap: 8px; margin-bottom: 16px; }
+  .account-toggle .toggle-btn {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--muted);
+    font-family: var(--sans); font-size: 12px; font-weight: 600; padding: 9px 16px; border-radius: 6px; cursor: pointer;
+  }
+  .account-toggle .toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #toggle-btn-paper.active { border-color: var(--yes); color: var(--yes); background: rgba(45,212,191,0.1); }
+  #toggle-btn-real.active { border-color: var(--danger); color: var(--danger); background: rgba(229,72,77,0.1); }
+  .raw-json { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 240px; margin-top: 8px; }
+  /* The backend already caps every feed sent here (25-50 rows) - this bounds
+     the DOM too, so a full feed scrolls internally instead of making the
+     whole page huge. Same pattern as .raw-json/.col above, just applied to
+     list panels that previously had no height constraint at all. */
+  .scroll-panel { max-height: 420px; overflow-y: auto; padding-right: 2px; }
+  #signal-decision-feed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  #signal-decision-feed-filter { flex: 0 0 auto; }
+  #signal-decision-feed-list { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
+  /* Same idea as .scroll-panel above, just taller - this bounds the
+     Markets/Whale Watch market-card grid (#markets-cards/#whale-cards),
+     which is this tab's primary content (not a secondary feed) and can run
+     to hundreds of individual markets on a wide watchlist. Missed by the
+     original .scroll-panel pass entirely - direct report: it was extending
+     the whole page to a "ridiculous height" instead of scrolling internally
+     like every other feed panel already does. */
+  .cards-scroll-panel { max-height: 640px; overflow-y: auto; padding-right: 2px; }
+  .raw-json summary { cursor: pointer; color: var(--muted); font-size: 11px; margin-top: 8px; }
+
+  .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+  .stat-cards .cell { background: var(--panel); padding: 12px 16px; }
+  .stat-cards .cell .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  .stat-cards .cell .val { font-family: var(--mono); font-size: 18px; font-weight: 600; margin-top: 4px; }
+
+  /* "trading for dummies" panel — plain-English sentences, not a stat table */
+  .dummies-intro {
+    background: rgba(245,185,66,0.08); border: 1px solid var(--whale); border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 12px; font-size: 12.5px; color: var(--text); line-height: 1.8;
+  }
+  .dummies-intro b { color: var(--whale); }
+  .dummies-card {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 10px; font-size: 13px; line-height: 1.85; font-family: var(--sans);
+  }
+  .dummies-card b { color: var(--text); }
+  .dummies-card .hl-yes { color: var(--yes); font-weight: 700; }
+  .dummies-card .hl-no { color: var(--no); font-weight: 700; }
+  .dummies-card .hl-whale { color: var(--whale); font-weight: 700; }
+  .dummies-verdict { margin-top: 8px; font-weight: 700; font-size: 13px; }
+  .dummies-verdict.aligned { color: var(--yes); }
+  .dummies-verdict.against { color: var(--no); }
+  .dummies-verdict.unknown { color: var(--muted); font-weight: 400; }
+
+  .empty { color: var(--muted); font-size: 12px; padding: 20px 0; text-align: center; }
+
+  /* Per-market drill-down modal — order book (+ later: chart, per-market
+     trades, see ROADMAP.md). Deliberately a modal, not another tab: opened
+     from wherever a market appears (card, row, signal), for one market at a
+     time, then dismissed back to whatever you were looking at. */
+  .market-detail-backdrop {
+    display: none;
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 100; align-items: center; justify-content: center; padding: 20px;
+  }
+  .market-detail-backdrop.open { display: flex; }
+  .market-detail-panel {
+    background: var(--bg); border: 1px solid var(--panel-border); border-radius: 10px;
+    width: 100%; max-width: 640px; max-height: 85vh; overflow-y: auto;
+    padding: 20px;
+  }
+  .market-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+  .market-detail-title { font-size: 15px; font-weight: 600; line-height: 1.4; }
+  .market-detail-header button { padding: 5px 10px; flex-shrink: 0; }
+
+  .book-summary { display: flex; gap: 12px; margin-bottom: 16px; }
+  .book-summary .price-btn { flex: 1; }
+  .book-summary .spread { text-align: center; }
+  .book-summary .spread .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .book-summary .spread .val { font-family: var(--mono); font-size: 16px; font-weight: 700; margin-top: 4px; }
+
+  .book-ladder { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-family: var(--mono); font-size: 12px; }
+  .book-ladder .side h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; }
+  .book-ladder .levels { max-height: 240px; overflow-y: auto; padding-right: 2px; }
+  .book-ladder .level { display: flex; justify-content: space-between; padding: 4px 8px; border-radius: 4px; margin-bottom: 2px; }
+  .book-ladder .side.yes .level { background: rgba(45,212,191,0.08); }
+  .book-ladder .side.no .level { background: rgba(249,112,102,0.08); }
+  .book-ladder .price { font-weight: 700; }
+  .book-ladder .side.yes .price { color: var(--yes); }
+  .book-ladder .side.no .price { color: var(--no); }
+  .book-ladder .size { color: var(--muted); }
+  .halted-banner {
+    background: rgba(229,72,77,0.12);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  /* Global, impossible-to-miss "is this real money" indicator (ROADMAP.md
+     P1) - the header's PAPER/REAL tag and the account-connection bar are
+     both easy to miss for a total beginner, especially once a real account
+     is connected. This is a full-width, sticky banner above everything
+     else, in one of exactly two states - reassuring by default, loud only
+     when real trading is genuinely enabled - so it's not crying wolf the
+     rest of the time. */
+  .real-money-banner {
+    position: sticky; top: 0; z-index: 200; width: 100%;
+    text-align: center; padding: 7px 12px; font-weight: 700; font-size: 12.5px;
+    letter-spacing: 0.02em; font-family: var(--mono);
+  }
+  .real-money-banner.safe { background: var(--yes); color: #04231c; }
+  .real-money-banner.danger { background: var(--danger); color: #fff; animation: real-money-pulse 1.6s ease-in-out infinite; }
+  @keyframes real-money-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+
+  /* Mobile/responsive pass (ROADMAP.md P3) - this app had zero @media
+     breakpoints before this; the Terminal view's fixed 3-column grid in
+     particular (.layout, grid-template-columns: 1.3fr 1.2fr 1fr) was
+     unusable on a phone, and several fixed-height/fixed-gap elements
+     (header, equity strip, util-bar, tab-bar) didn't wrap. Verified live
+     against real narrow-viewport renders (390px and 768px), not just
+     read off the CSS - see status.html for what was actually checked. */
+  @media (max-width: 860px) {
+    .wrap { padding: 14px; }
+    header { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; }
+    header h1 { font-size: 13px; flex-wrap: wrap; }
+    .equity-strip { flex-wrap: wrap; gap: 16px; width: 100%; }
+    .util-bar { flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 14px; }
+    .tab-bar { padding: 0 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab-btn { padding: 10px 10px; font-size: 11px; white-space: nowrap; }
+
+    /* The dense 3-column trading-terminal layout doesn't fit a phone
+       screen at any font size - stack into one column and let the page
+       scroll normally instead of each column independently scrolling a
+       fixed viewport-height box (calc(100vh - 57px) is itself a desktop-
+       only assumption: mobile browser chrome resizes the visible viewport
+       as you scroll, which fights a fixed vh height). */
+    .layout { display: block; height: auto; background: none; gap: 0; }
+    .col { overflow-y: visible; padding: 14px; border-bottom: 1px solid var(--panel-border); }
+
+    .cards-grid { grid-template-columns: 1fr; }
+    .stat-cards { grid-template-columns: repeat(2, 1fr); }
+    .book-ladder { grid-template-columns: 1fr; }
+
+    /* Wide sortable tables (screener, trade log, signal history, ...)
+       would otherwise force the whole page to scroll sideways - contain
+       the overflow to just the table itself, same idea as .scroll-panel's
+       vertical scroll but horizontal. */
+    .positions-table { display: block; max-width: 100%; overflow-x: auto; white-space: nowrap; }
+
+    .market-detail-backdrop, #help-backdrop { padding: 10px; }
+    .market-detail-panel { padding: 14px; max-height: 90vh; }
+
+    .table-filter-row { gap: 8px; }
+    .config-group .field[style*="flex"] { flex-wrap: wrap; }
+    .account-bar { padding: 8px 14px; }
+    .account-bar .tag { white-space: normal; }
+  }

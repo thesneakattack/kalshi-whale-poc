@@ -14,3 +14,23 @@ type: generic
 docroot: static
 use_dns_when_possible: true
 web_environment: []
+# frontend/'s JS is real ES modules bundled by esbuild into
+# static/js/dashboard.bundle.js (frontend/package.json) - matching the
+# backend's "edit a .py file, uvicorn --reload picks it up in ~1-2s, no
+# manual step" iteration loop, run esbuild's own watch mode as a daemon in
+# this container (which already ships Node) so editing frontend/src/js/*.js
+# rebuilds the bundle automatically instead of silently serving a stale one.
+web_extra_daemons:
+  - name: "esbuild-watch"
+    command: "npm run watch"
+    directory: /var/www/html/frontend
+# frontend/node_modules is gitignored (like data/*.db, never committed) -
+# a fresh clone needs it installed before esbuild-watch above can run at
+# all, so do it automatically on every start rather than leaving it as a
+# manual one-off step someone has to remember (see CLAUDE.md's pyflakes
+# note for what that gap looks like when it's NOT automated). Cheap no-op
+# after the first run - npm skips reinstalling what's already there.
+hooks:
+  post-start:
+    - exec: "cd frontend && npm install"
+      service: web

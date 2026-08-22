@@ -53,8 +53,16 @@ def test_static_index_served_from_web_container():
     resp = requests.get(url, timeout=5)
     assert resp.status_code == 200
     assert '<div class="view" id="view-terminal">' in resp.text
-    # Ensure our new cache-clearing helper exists in the served JS
-    assert 'clearTerminalFeedCaches' in resp.text
+    # index.html's <script>/<style> got extracted into real ES modules under
+    # frontend/src/js/ + static/css/dashboard.css (2026-08-22 modularization,
+    # later bundled with esbuild - see frontend/package.json), so the page
+    # itself now loads one built bundle rather than inlining everything or
+    # loading 12 separate files - assert the page references and can fetch
+    # it, and spot-check a helper that lives inside the bundle.
+    assert '<script src="js/dashboard.bundle.js"></script>' in resp.text
+    js_resp = requests.get('http://web/js/dashboard.bundle.js', timeout=5)
+    assert js_resp.status_code == 200
+    assert 'clearTerminalFeedCaches' in js_resp.text
 
 
 def test_api_state_available_and_shapes():

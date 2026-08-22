@@ -330,8 +330,81 @@ questions.
       `refresh()` call that fetches `/api/state` once - splitting into
       pages means either each page polling independently (cheap given the
       existing ETag/304 caching already noted elsewhere in this file) or
-      slicing `/api/state` itself per page. Not started - captured here
-      per direct instruction rather than scoped or built yet.
+      slicing `/api/state` itself per page. The multi-page split itself
+      (browser nav replacing `showView()`) is still not started.
+
+      **Shipped increment (2026-08-22): `index.html`'s inline `<style>`/
+      `<script>` extracted into a real frontend build, not just files.**
+      First cut was a pure byte-range split into 12 plain `<script src>`
+      files sharing one global scope (no real module boundaries) - direct
+      correction from the user mid-session: "no-build-step" was never an
+      actual instruction, it was CLAUDE.md's description of the *existing*
+      pages, and the frontend-separation item above already says the
+      framework/bundler question is undecided. Given the choice between
+      adding a bundler (real ES modules, npm libraries, no framework) or a
+      full UI-framework rewrite, went with the bundler: **`frontend/`** is
+      now a real npm project (`esbuild` + `eslint`) - `frontend/src/js/*.js`
+      are the 12 files as genuine ES modules (`import`/`export`, no shared
+      global scope), bundled by `npm run build`/`npm run watch`
+      (`frontend/package.json`) into `static/js/dashboard.bundle.js`, which
+      is the only thing `index.html` now loads. `index.html`: 7,716 -> 1,073
+      lines. `.ddev/config.yaml` runs `npm install` on every `ddev start`
+      (`hooks.post-start`) and esbuild's own watch mode as a background
+      daemon (`web_extra_daemons`) so editing `frontend/src/js/*.js`
+      rebuilds automatically - the same "save a file, it just works" loop
+      `uvicorn --reload` already gives the backend.
+
+      Converting to real modules surfaced a correctness class classic
+      scripts never had to deal with, worked through methodically rather
+      than by guessing: (1) inline HTML `onclick=`/`onchange=`/`oninput=`
+      handlers (some built indirectly through a function parameter, e.g.
+      `renderSuggestionCard(rec, acceptOnclickJS)`) resolve identifiers
+      against `window`, not module scope - found the full set (not just the
+      obvious top-level ones) via an acorn AST walk over every handler
+      string across all 12 files, not by re-grepping the same regex twice
+      and assuming completeness. Every top-level function gets a blanket
+      `window.fn = fn` exposure per file (cheap, harmless if unused - closes
+      the risk of missing one buried in a nested string-template chain);
+      the specific state objects handlers mutate by property
+      (`decisionFilter`, `screenerState`, `realPositionsState`, ...) get the
+      same, individually. (2) Five values (`lastSignals`, `lastTradeTape`,
+      `terminalSignalFeed`, `terminalDecisionFeed`, `tradeTapeMinSize`) get
+      wholesale-*reassigned* elsewhere, which a one-time `window.x = x`
+      would silently go stale after - replaced their inline reads/writes
+      with small same-module wrapper functions (`_rerenderSignalsFilter()`
+      etc.) instead. (3) The real ES-module-specific one: importers get a
+      read-only live view of an imported binding, so a variable can only be
+      *reassigned* by the file that declares it - an AST script found every
+      case where the plain byte-range split had put a `let` in one file but
+      its only reassignment in another (`terminalSignalFeed` and 9 others,
+      all actually owned by `polling-and-websocket.js`'s poll loop
+      regardless of which file the split happened to leave them in) and
+      either relocated the declaration to its real owner or added a setter
+      where two different files legitimately mutate it (`accountMode`).
+      `eslint`'s `no-undef` (this project's JS equivalent of the backend's
+      `pyflakes` check, wired as `npm run lint`) caught what none of this
+      manual analysis did: a **genuine pre-existing bug**, unrelated to the
+      split - `comboLegsHTML()` read a `state` variable that has never
+      existed anywhere in this codebase (`git show` on the last commit
+      confirms it predates this session). Its own comment already named the
+      intended source ("the same ... latest global `prices` caches"), so
+      fixed to read `terminalLatestPrices` instead of guessing new behavior.
+      Verified throughout, not just at the end: `diff` against a
+      reconstructed concatenation of the original inline script (no code
+      lost/reordered) before any conversion; an AST script cross-checked
+      every file's real import/export graph; `eslint --no-undef` and
+      `node --check` both clean on every generated module; the built
+      bundle's watch-mode auto-rebuild verified live (edited a source file,
+      confirmed the served bundle changed within seconds, confirmed a
+      dangling trailing *comment* genuinely doesn't survive esbuild's
+      output - false alarm caught before it became a wrong conclusion).
+      Full suite (1,161 tests) green throughout; the one test coupled to
+      the old file layout (`tests/test_e2e_terminal_static_and_api.py`,
+      asserting a JS helper's name in `index.html`'s own response body)
+      fixed to fetch `js/dashboard.bundle.js` instead. `.ddev/nginx/
+      kalshi-proxy.conf` gained a `no-store` rule for `*.css`/`*.js`, same
+      stale-asset-after-edit risk this project already hit once for
+      `.html`.
 - [ ] **Per-module data-consumption audit + report.** Direct instruction
       (2026-08-22): "do a deep dive on each module and what data is pulled
       from where... maximize data consumption efficiency and effectiveness.
