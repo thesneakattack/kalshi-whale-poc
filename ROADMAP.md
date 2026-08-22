@@ -187,13 +187,24 @@ questions.
       possibly related to the still-open "four-entry gate bypass" item
       below). Not started - this is now a trustworthy number to
       investigate, not previously.
-- [ ] **Find the four-entry gate bypass.** Four real entries at unit costs
+- [x] **Find the four-entry gate bypass.** Four real entries at unit costs
       0.97, 1.00, 0.20, 0.97 (08/16 21:26–22:25), one at `conf 0.25` against
       a 0.495 threshold, so they skipped both the price band and the
       confidence gate. Prices in the reason string match the recorded
       prices, and `shadow_mode`/`market_strategy` are ruled out. The
       `01b126c` invariant makes the class unreachable going forward, but a
-      gate that *can* be skipped is worse than no gate.
+      gate that *can* be skipped is worse than no gate. **Root-caused
+      2026-08-22:** `PaperBroker.check_pending_fills()` called
+      `open_position()` for a filled limit order using only the fill-time
+      price — `entry_threshold`/the tradeable-price-range floor/
+      `min_unit_cost`/`max_unit_cost` were only ever checked once, at
+      placement time. Fixed by extracting those gates from
+      `strategy_engine.evaluate()` into a shared `_validate_entry_price()`,
+      called both by `evaluate()` and a new
+      `FollowTheWhaleStrategy.validate_pending_fill()`, wired into
+      `check_pending_fills` via a `validate_fn` callback — a rejected fill
+      now cancels the resting order and records a `"fill_rejected"`
+      decision instead of opening a position (commit 6921543).
 - [ ] **Decide whether the settlement projection is an edge, then act on
       it or drop it.** `services/settlement_edge.py` is now recording both
       forecasts of the same event at the same instant (the market's yes

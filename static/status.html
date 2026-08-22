@@ -4566,6 +4566,76 @@
           <code>tests/test_e2e_terminal_static_and_api.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 118 · framework-alternatives audit</div>
+        <h4>Not a framework migration: three narrow fixes mapped 1:1 to diagnosed bugs</h4>
+        <p>Direct question: given the bugs already found, should the app move off its "handspun logic" onto a
+          framework that does state management, task orchestration, or frontend reactivity better? Investigated
+          before writing any code — three <code>Explore</code> agents covered the backend concurrency/execution
+          model, the position-lifecycle/gate logic, and the post-esbuild frontend state. None of the diagnosed bugs
+          turned out to be the class a heavy framework (Temporal/Celery, an ORM, a full SPA framework) actually
+          solves — they were a missing task-death detector, a specific gate re-validation gap, and duplicated
+          derivation logic. Adopting one of those would also have conflicted with this repo's standing
+          one-SQLite-file-per-concern, no-ORM instruction. Three narrow, in-house patterns shipped instead, each
+          traced to a real measured bug rather than chosen speculatively.
+          <br><br>
+          <b>Task supervision + logging</b> (commit <code>aa6d98b</code>): every <code>asyncio.create_task()</code>
+          call site in <code>main.py</code>/<code>market_watch.py</code> was fire-and-forget — an unhandled
+          exception just silently ended the task, no restart, no trace. The exact shape behind three already-
+          diagnosed live incidents (<code>6973974</code>'s subscription-flag bug, <code>a31ae51</code>'s stale-
+          session reuse, <code>12323cc</code>'s duplicate-LLM-call race). New <code>services/task_supervisor.py</code>
+          wraps a coroutine, logs and records any exception into the existing <code>services/fault_log.py</code>,
+          and optionally restarts — used for the three long-running loops (<code>trading_loop</code>,
+          <code>trade_stream</code>, <code>index_stream</code>) that must never just stay dead. Also added a
+          one-line stdlib <code>logging</code> setup (<code>services/logging_config.py</code>) — the app had zero
+          <code>logging</code> usage anywhere before this, only <code>print()</code> and <code>fault_log</code>.
+          <br><br>
+          <b>The "four-entry gate bypass" fix</b> (commit <code>6921543</code>): root-caused a ROADMAP.md item open
+          since 2026-08-17 (four real entries at unit costs 0.97, 1.00, 0.20, 0.97, one at <code>conf 0.25</code>
+          against a 0.495 threshold). <code>PaperBroker.check_pending_fills()</code> called
+          <code>open_position()</code> for a filled limit order using only the fill-time price —
+          <code>entry_threshold</code>/the tradeable-price-range floor/<code>min_unit_cost</code>/
+          <code>max_unit_cost</code> were only ever checked once, at placement time, against the price the order
+          asked for. Since price can move between placement and fill, a resting order could fill at a price a
+          fresh signal at that price would have been gate-rejected for. Fixed by extracting those gates from
+          <code>strategy_engine.evaluate()</code> into a shared <code>_validate_entry_price()</code>, called both
+          by <code>evaluate()</code> itself and by a new <code>FollowTheWhaleStrategy.validate_pending_fill()</code>,
+          wired into <code>check_pending_fills</code> via a <code>validate_fn</code> callback (defaults to
+          <code>None</code>, so every pre-existing caller/test is unaffected). A rejected fill now cancels the
+          resting order and records a <code>"fill_rejected"</code> decision instead of opening a position.
+          <code>market_strategy.py</code>'s <code>MarketNativeStrategy</code> has no limit-order path at all, so
+          needed no changes. No new position-status enum/state machine added — the fix is "validate right before
+          <code>open_position()</code> is called," at both call sites, nothing more.
+          <br><br>
+          <b>Frontend no-side-price centralization</b> (commit <code>d64b633</code>): even right after phase 117's
+          esbuild modularization, the exact no-side inversion formula CLAUDE.md's "Bug pattern to watch for"
+          section warns about (<code>side === 'yes' ? price : 1 - price</code>) was still hand-copied at 13
+          confirmed call sites across 6 module files — modularization split the files but never centralized this
+          one recurring piece of logic. New <code>sideAdjustedPrice(side, price)</code> in
+          <code>shared-utils.js</code> replaces every inline reimplementation. <code>costHTML()</code>'s signature
+          deliberately left unchanged — <code>trade-log-and-real.js</code> has one call site that already passes an
+          already-side-correct price sourced directly from Kalshi's own <code>yes</code>/<code>no_price_dollars</code>
+          fields, so folding the inversion into <code>costHTML</code> itself would have double-inverted that site.
+          <br><br>
+          Full suite green throughout (1,178 tests after 13 new ones — 4 for <code>task_supervisor</code>, 9 across
+          <code>test_paper_broker.py</code>/<code>test_strategy_engine.py</code> for the fill-revalidation fix), CI
+          confirmed green on <code>pytest</code> (dependency-audit's 20 pre-existing tracked CVEs unaffected, same
+          count as before), and the live <code>ddev</code> app spot-checked post-reload (<code>GET /api/state</code>
+          returning clean, no new errors, structured log lines now visible in <code>ddev logs -s fastapi</code>).</p>
+        <div class="files"><code>services/task_supervisor.py</code> · <code>services/logging_config.py</code> ·
+          <code>main.py</code> · <code>services/market_watch/market_watch.py</code> ·
+          <code>services/market_analyst_agent.py</code> · <code>services/game_state.py</code> ·
+          <code>services/kalshi_trade_ws.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/whale_stream/decision_bridge.py</code> ·
+          <code>frontend/src/js/shared-utils.js</code> · <code>frontend/src/js/signals-feed.js</code> ·
+          <code>frontend/src/js/equity-and-cards.js</code> · <code>frontend/src/js/advisory-calibration.js</code> ·
+          <code>frontend/src/js/trade-log-and-real.js</code> ·
+          <code>frontend/src/js/trading-gate-and-connectivity.js</code> ·
+          <code>tests/test_task_supervisor.py</code> · <code>tests/test_paper_broker.py</code> ·
+          <code>tests/test_strategy_engine.py</code> · <code>tests/test_kalshi_trade_ws.py</code> ·
+          <code>tests/test_market_analyst_agent.py</code> · <code>tests/test_trading_gate.py</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -4650,6 +4720,8 @@
           <tr><td class="mod">services/series_cache.py</td><td class="note">persists the ~9,400-series catalog (<code>state["series_cache"]</code>) across restarts, <code>data/series_cache.db</code> — a <code>uvicorn --reload</code> restart no longer forces an immediate full re-fetch of data that's still fresh per its own 1h TTL, same fix shape as <code>title_cache.py</code>'s own restart-survival</td><td class="loc">72</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/market_strategy.py</td><td class="note"><code>MarketNativeStrategy</code> — a second, fully independent automated paper strategy, momentum continuation gated by price-band/spread/volume/time-to-close filters, zero whale-signal input by design — but as of phase 56, <code>_entry_confidence()</code> also folds in <code>market_analyst_agent.analyst_lean()</code> when a fresh estimate exists for that exact ticker (conditionally added to the averaged factor set, not a fixed weight, so an ordinary momentum-only entry is completely unaffected when nobody has analyzed that market). <code>check_exits</code>' <code>pnl_pct</code> is fee-inclusive and <code>evaluate_all()</code>'s kill-switch check uses real equity, not bankroll-only (phase 58, same fixes as strategy_engine.py) — also fixed a real live regression the equity fix introduced (an unguarded <code>float()</code> on an empty-string price aborting the tick before title-fetching ran) and the identical pre-existing latent bug in <code>check_exits</code>' own price lookup. Own capital pool (<code>main.py</code>'s <code>market_broker</code>/<code>market_risk</code>). Disabled by default (<code>market_strategy.enabled</code>), backend-only, no dashboard panel yet. Phases 75-76: concentration-risk + edge-aware sizing checks now shared with <code>strategy_engine.py</code>. Phase 78: every discovery/entry gate (<code>min_price</code>/<code>max_price</code>/<code>max_spread</code>/<code>min_volume_24h</code>/<code>min_seconds_to_close</code>/<code>min_momentum_delta</code>/<code>entry_confidence_threshold</code>) now logs its rejections to <code>candidate_log.record_rejection()</code></td><td class="loc">307</td><td><span class="pill gated">built, disabled by default</span></td></tr>
           <tr><td class="mod">services/market_watch/market_watch.py</td><td class="note">market discovery and catalog scanning — extracted from <code>main.py</code> phase 115 (see timeline), the largest single piece of the seven-phase modularization. Owns the pinned-watchlist + volume-ranked discovery + background catalog-scan trio that decides which markets <code>trading_loop</code> sees each tick (<code>_fetch_markets</code>, <code>_get_top_series</code>/<code>_get_series_cache</code>, <code>_scan_catalog_batch</code>, <code>_refresh_discovery_cache</code>), plus live exchange/milestone/event-live-data fetching (<code>_fetch_live_status</code>, <code>_fetch_exchange_status</code>, <code>propagate_milestone_winners</code>, <code>_fetch_event_live_data</code>). No routes of its own — called from <code>trading_loop</code> and from <code>/api/markets/search</code>. See its own <code>CHEATSHEET.md</code> for the full <code>docs/kalshi/</code> map and handoff detail</td><td class="loc">1333</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/task_supervisor.py</td><td class="note">phase 118 — <code>supervise(coro_fn, component, operation, restart=False)</code>, a single wrapper around <code>asyncio.create_task</code> that logs and records (into <code>fault_log</code>) any exception a background task raises instead of letting it silently disappear. <code>restart=True</code> for the three long-running loops (<code>trading_loop</code>, <code>trade_stream</code>, <code>index_stream</code>); one-shot background tasks (signal-resolution check, catalog scan, discovery-cache refresh) default to log-and-drop, matching prior behavior otherwise. Not a task registry or supervisor tree — returns a plain <code>asyncio.Task</code>, still <code>.cancel()</code>-able exactly as before</td><td class="loc">59</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/logging_config.py</td><td class="note">phase 118 — one-line stdlib <code>logging.basicConfig</code> setup, called once at process start (<code>main.py</code>, right after <code>load_dotenv()</code>). The app had zero <code>logging</code> usage anywhere before this, only <code>print()</code> and <code>fault_log</code>'s durable table; this adds the immediate, human-readable trace visible in <code>ddev logs -s fastapi</code></td><td class="loc">20</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/title_cache.py</td><td class="note">write-through persistence for market/event titles (<code>data/title_cache.db</code>) — survives <code>uvicorn --reload</code> restarts and watchlist rotation, fixing raw tickers leaking into signal history/clusters/positions; event rows also carry <code>mutually_exclusive</code> (tells a 2-outcome inversion pair apart from independent sibling props or a genuine multi-outcome market) and <code>competition</code>/<code>competition_scope</code> (real display context, e.g. "Wyndham Championship"). New <code>market_title_fields()</code> (phase 65) is the single shared title/yes_sub_title/no_sub_title builder, replacing three independently-drifting copies (<code>main.py</code> x2, <code>market_catalog.py</code>)</td><td class="loc">169</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/config_store.py</td><td class="note">live-reloadable YAML config, no restart</td><td class="loc">43</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/auth.py</td><td class="note">Google OAuth flow, session helpers, auth middleware</td><td class="loc">121</td><td><span class="pill dormant">dormant</span></td></tr>
