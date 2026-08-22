@@ -88,7 +88,7 @@ from dateutil import parser as _dateutil_parser
 from services.http_client import get_client
 from services.kalshi_client import KalshiClient
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "event_schedule.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "event_schedule.db"
 
 SOURCE_STRIKE_DATE = "strike_date"
 SOURCE_MILESTONE = "milestone"
@@ -189,7 +189,7 @@ def needs_resolution(cached: dict | None, now: float) -> bool:
 
 
 def _parse_ts(value: str | None) -> float | None:
-    # Same parsing idiom as services/event_lifecycle.py's _parse_ts /
+    # Same parsing idiom as services/market_events/event_lifecycle.py's _parse_ts /
     # services/market_history.py's seconds_to_close - no value (or an
     # unparseable one) returns None rather than guessing.
     if not value:

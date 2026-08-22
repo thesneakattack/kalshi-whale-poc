@@ -114,7 +114,7 @@ def test_event_titles_competition_is_none_when_legitimately_absent(tmp_path, mon
 def test_event_titles_round_trip_carries_strike_date_and_nested_fields(tmp_path, monkeypatch):
     # 2026-08-15: the fields main.py._fetch_event_titles has always
     # extracted (part of its own required_event_fields re-fetch check) but
-    # this table never had columns for - services/event_schedule.py now
+    # this table never had columns for - services/market_events/event_schedule.py now
     # depends on strike_date specifically (confirmed live against KXFED,
     # not covered by the milestone API at all).
     cache = _tc(tmp_path, monkeypatch)

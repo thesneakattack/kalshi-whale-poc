@@ -5,7 +5,7 @@ the same event where exactly one can resolve YES (e.g. "Team A to win" /
 matrix where one market's row is the exact inversion of the other's).
 Direct request (2026-08-14): this relationship needs detecting
 algorithmically and accounted for in trading decisions, not just detected
-by a one-off manual inspection script (services/event_inspector.py already
+by a one-off manual inspection script (services/market_events/event_inspector.py already
 had a version of this heuristic, but nothing in the live app ever called
 it) or shown for display only (main.py's own event-title cache has carried
 Kalshi's real mutually_exclusive flag since before this module existed,
@@ -22,7 +22,7 @@ Kalshi's own event.mutually_exclusive flag (fetched every tick by main.py's
 _fetch_event_titles, cached in state["event_titles"]) is the authoritative
 signal - a real True/False Kalshi itself asserts about how the event's
 markets settle, not an inference. A price-sum-to-~1.0 fallback (the same
-heuristic services/event_inspector.py already used for manual inspection)
+heuristic services/market_events/event_inspector.py already used for manual inspection)
 covers the transient case where an event's flag hasn't been backfilled yet
 (main.py's own _fetch_event_titles docstring: "real Kalshi events always
 return a real True/False... a cached None uniquely means this entry

@@ -9,7 +9,8 @@ importing from the whale-stream module just for its own loop body.
 """
 import asyncio
 
-from services import event_lifecycle, signal_log, trade_category
+from services import signal_log, trade_category
+from services.market_events import event_lifecycle
 from services.app_state import shadow, state, strategy
 from services.market_lookup import _category_by_ticker, _sport_for_event, _subcategory_by_ticker
 from services.ws_manager import ws_manager
@@ -62,7 +63,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     market_info = state["market_titles"].get(signal.ticker) or {}
     event_ticker = market_info.get("event_ticker")
     is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
-    # Structural/schedule-based mid-series signal (services/event_lifecycle.py,
+    # Structural/schedule-based mid-series signal (services/market_events/event_lifecycle.py,
     # 2026-08-15) - a second, independent path to the same "should scheduled
     # close-time protections be bypassed" question that the milestone-based
     # is_live above already answers for team sports. Real live incident:

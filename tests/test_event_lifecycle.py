@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from services import event_lifecycle as el
+from services.market_events import event_lifecycle as el
 
 
 def _iso(dt: datetime) -> str:

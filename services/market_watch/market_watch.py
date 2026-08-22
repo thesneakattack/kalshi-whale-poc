@@ -17,9 +17,10 @@ import time
 from datetime import datetime
 
 from services import (
-    event_lifecycle, game_state, market_history, series_cache,
+    game_state, market_history, series_cache,
     series_evaluator, signal_log, task_supervisor,
 )
+from services.market_events import event_lifecycle
 from services.market_catalog import market_catalog
 from services.app_state import bump_generation, state
 from services.kalshi_client import KalshiClient

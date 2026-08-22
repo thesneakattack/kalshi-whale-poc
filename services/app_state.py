@@ -53,8 +53,8 @@ from services import diagnostics
 from services import regime_analytics
 from services import stats_power
 from services.whale_calibration import confidence_calibration
-from services import event_lifecycle
-from services import event_schedule
+from services.market_events import event_lifecycle
+from services.market_events import event_schedule
 from services import market_strategy_calibration
 from services import config_performance
 from services import market_analyst_agent
@@ -184,7 +184,7 @@ state = {
     "markets": [],
     "latest_prices": {},
     "latest_asks": {},  # maker/limit-order path (2026-08-15) - see check_pending_fills wiring below
-    "event_phase": {},  # event_ticker -> pre_tail/mid_series/post_tail/no_occurrence, see services/event_lifecycle.py
+    "event_phase": {},  # event_ticker -> pre_tail/mid_series/post_tail/no_occurrence, see services/market_events/event_lifecycle.py
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
     # than {} - these two accumulate over the app's whole lifetime, not just
     # since the last uvicorn --reload restart, so a ticker/event learned
@@ -257,7 +257,7 @@ state = {
     # Same background-task decoupling as discovery_cache above, for
     # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
     "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
-    # Seeded from data/event_schedule.db (services/event_schedule.py,
+    # Seeded from data/event_schedule.db (services/market_events/event_schedule.py,
     # 2026-08-15) - event_ticker -> {"start_ts", "end_ts", "source",
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's
     # is_live computation.

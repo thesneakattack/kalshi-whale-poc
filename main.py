@@ -26,8 +26,8 @@ from services import candidate_log
 from services import diagnostics
 from services import regime_analytics
 from services.whale_calibration import confidence_calibration
-from services import event_lifecycle
-from services import event_schedule
+from services.market_events import event_lifecycle
+from services.market_events import event_schedule
 from services import config_performance
 from services import market_analyst_agent
 from services.market_catalog import market_catalog
@@ -603,7 +603,7 @@ async def trading_loop():
             # best-effort - an event not yet cached there just falls back to
             # event_lifecycle.classify_phase's safe single-game-shaped
             # narrow window, same "don't guess" idiom _fetch_live_status
-            # already uses). See services/event_lifecycle.py's own module
+            # already uses). See services/market_events/event_lifecycle.py's own module
             # docstring for the real incident this closes.
             el_cfg = cfg.get("event_lifecycle") or {}
             _sibling_counts: dict[str, int] = {}

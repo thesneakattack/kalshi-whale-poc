@@ -27,7 +27,7 @@ dict - meaning every restart silently dropped them, and
 required_event_fields' own "re-fetch if a required field is missing" check
 then forced a full get_event() re-fetch of every already-cached event on
 the very next tick. Confirmed live: this is exactly the field
-services/event_schedule.py depends on (strike_date is a real, precise
+services/market_events/event_schedule.py depends on (strike_date is a real, precise
 schedule signal for single-date announcement events like Fed decisions -
 confirmed live against KXFED - that isn't covered by the milestone API at
 all), so losing it every restart wasn't just wasted calls, it was silently
