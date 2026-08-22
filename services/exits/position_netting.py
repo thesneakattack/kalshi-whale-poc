@@ -233,7 +233,7 @@ def _materiality_bar(
     """The noise filter (direct request: "it needs to filter out noise...
     account for volatility"): small, noisy expected-value differences
     don't trigger churn. Scaled by the group's own current volatility
-    using the exact same pattern strategy_engine._exit_confidence already
+    using the exact same pattern exit_engine._exit_confidence already
     established (market_history.volatility() vs. a configured "normal"
     baseline, vol_ratio clamped to [0.25, 4.0]) rather than inventing a
     second volatility-normalization idiom - a noisier read on the group's

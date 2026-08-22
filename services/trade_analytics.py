@@ -43,7 +43,7 @@ _CLOSE_TYPE_PATTERNS = [
     # never existed, so every runway-exhausted close fell through
     # classify_close_type to None and rendered as "unknown" in the UI.
     ("runway_exhausted", re.compile(r"^closed: runway exhausted")),
-    # services/position_netting.py's own close reason - a second real gap
+    # services/exits/position_netting.py's own close reason - a second real gap
     # found while auditing every close_position() call site for this same
     # bug shape after the runway_exhausted one above turned out to be real.
     ("position_netting", re.compile(r"^closed: position netting")),

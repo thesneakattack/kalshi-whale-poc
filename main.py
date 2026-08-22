@@ -33,7 +33,7 @@ from services import market_analyst_agent
 from services import market_catalog
 from services import market_history
 from services import mutual_exclusivity
-from services import position_netting
+from services.exits import position_netting
 from services import reset_log
 from services import series_cache
 from services import series_evaluator
@@ -71,6 +71,7 @@ from services.strategy_engine import FollowTheWhaleStrategy
 from routers import diagnostics_routes  # noqa: E402
 from services.config import routes as config_routes  # noqa: E402
 from services.position import routes as position_routes  # noqa: E402
+from services.exits import routes as exits_routes  # noqa: E402
 from services.history import routes as history_routes  # noqa: E402
 from services.analytics import routes as analytics_routes  # noqa: E402
 from services.analytics.market_analyst_orchestrator import (  # noqa: E402
@@ -861,7 +862,7 @@ async def trading_loop():
             # above only blocks a NEW entry into a confirmed complement -
             # it does nothing for positions already open, partial hedges,
             # or N-way concentration). Runs after check_exits, on whatever
-            # survived per-position rules - see services/position_netting.py
+            # survived per-position rules - see services/exits/position_netting.py
             # for the payout-profile math. Entirely opt-in
             # (position_netting.enabled, default False) and a no-op until
             # deliberately turned on.
@@ -963,6 +964,7 @@ app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=
 app.include_router(diagnostics_routes.router)
 app.include_router(config_routes.router)
 app.include_router(position_routes.router)
+app.include_router(exits_routes.router)
 app.include_router(history_routes.router)
 app.include_router(analytics_routes.router)
 

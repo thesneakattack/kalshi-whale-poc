@@ -4,7 +4,7 @@ from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services.kalshi_fees import taker_fee
 from services.paper_broker import PaperBroker
-from services.position_netting import (
+from services.exits.position_netting import (
     classify, describe_groups, find_groups, payout_profile, review,
 )
 

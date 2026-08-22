@@ -62,7 +62,7 @@ from services import market_catalog
 from services import market_history
 from services import ml_feed
 from services import mutual_exclusivity
-from services import position_netting
+from services.exits import position_netting
 from services import reset_log
 from services import series_cache
 from services import series_evaluator

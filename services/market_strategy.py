@@ -38,10 +38,10 @@ thin/illiquid markets) - plus a minimum time-to-close so there's still room
 to react if wrong. Composite entry confidence blends momentum strength,
 liquidity, and spread quality into one 0-1 score, same weighted-factor
 mental model as whale_simulator._score_confidence and
-strategy_engine._exit_confidence.
+exit_engine._exit_confidence.
 
 Exits mirror FollowTheWhaleStrategy.check_exits' shape (settlement first
-via strategy_engine.close_if_settled, then opt-in take-profit/stop-loss),
+via exit_engine.close_if_settled, then opt-in take-profit/stop-loss),
 plus an optional momentum-reversal exit - the market-native analog of
 "whale sentiment reversed," using market_history.momentum() instead of the
 whale signal_feed. No auto-exit composite algorithm yet (a possible future
@@ -50,7 +50,8 @@ extension, matching FollowTheWhaleStrategy's auto_exit_enabled).
 from services import candidate_log, config_overrides, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
-from services.strategy_engine import close_if_settled, kelly_scaled_max_size, open_position_count_in_series
+from services.exits.exit_engine import close_if_settled
+from services.strategy_engine import kelly_scaled_max_size, open_position_count_in_series
 
 # How fresh a market_analyst_agent estimate must be to fold into this
 # strategy's entry confidence - same freshness window as the whale-follow
@@ -62,7 +63,7 @@ _ANALYST_FRESHNESS_SEC = 24 * 3600
 
 def _entry_confidence(mom: dict, volume: float, spread: float, strat_cfg: dict, side: str, ticker: str) -> tuple[float, dict]:
     """Composite 0-1 score, same weighted-factor idiom as
-    whale_simulator._score_confidence / strategy_engine._exit_confidence.
+    whale_simulator._score_confidence / exit_engine._exit_confidence.
     momentum/liquidity/spread are always present here (momentum is already
     required non-None by the caller's gate; volume/spread are always
     numeric), so those three alone would need no weighting - a plain

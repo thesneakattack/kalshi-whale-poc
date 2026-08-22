@@ -14,7 +14,7 @@ line ranges in main.py.
 """
 from fastapi import APIRouter, HTTPException
 
-from services import position_netting, trade_analytics
+from services import trade_analytics
 from services.account_positions import _slim_order
 from services.app_state import account, broker, bump_generation, market_broker, market_risk, risk, shadow, state
 from services.config_store import config_store
@@ -73,19 +73,6 @@ async def get_market_strategy_state():
         "market_titles": scoped_market_titles,
         "latest_prices": state["latest_prices"],
     }
-
-
-@router.get("/api/position-netting/groups")
-async def get_position_netting_groups():
-    # services/position_netting.py - read-only, safe to call anytime
-    # regardless of position_netting.enabled (same "observe before you
-    # choose to act" principle as the rest of this app's history/advisory
-    # surfaces). Lets the user see exactly how any currently-open
-    # mutually-exclusive-event group (a real hedge/concentration pattern
-    # or not) is classified before ever turning automated action on.
-    return {"groups": position_netting.describe_groups(
-        broker, state["market_titles"], state["event_titles"], state["latest_prices"], config_store.get(),
-    )}
 
 
 @router.post("/api/risk/halt")

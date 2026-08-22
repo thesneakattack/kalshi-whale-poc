@@ -1,11 +1,15 @@
 # Position module — cheat sheet
 
 Owns: `routes.py` (account order history, Market-Native state, risk
-halt/resume for all 3 independent risk trackers, position-netting
-diagnostics, erroneous-close correction) + `services/account_positions.py`
-(real-account snapshot fetch/trimming). `services/paper_broker.py` is the
-actual broker — already clean, lives flat, not moved into this folder (see
-the modularization plan's "Folder-per-concern restructuring" section).
+halt/resume for all 3 independent risk trackers, erroneous-close
+correction) + `services/account_positions.py` (real-account snapshot
+fetch/trimming). `services/paper_broker.py` is the actual broker — already
+clean, lives flat, not moved into this folder (see the modularization
+plan's "Folder-per-concern restructuring" section). Position-netting
+diagnostics (`GET /api/position-netting/groups`) moved to
+`services/exits/routes.py` (2026-08-22, modularization Phase 1/9) —
+exit-related HTTP surface lives with the exit-decision logic it reads
+(`position_netting.describe_groups`), not here.
 
 ## Relevant Kalshi API docs (real account, not paper)
 

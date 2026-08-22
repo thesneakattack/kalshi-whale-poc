@@ -1560,7 +1560,8 @@ def test_zero_volatility_is_treated_as_no_reading_not_as_perfect_calm(tmp_path, 
 
     Asserted through the public behaviour: an identical position must score
     the same whether volatility reads 0.0 or is unavailable."""
-    from services import market_history, strategy_engine
+    from services import market_history
+    from services.exits import exit_engine
 
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.50, reason="entry")
@@ -1569,10 +1570,10 @@ def test_zero_volatility_is_treated_as_no_reading_not_as_perfect_calm(tmp_path, 
 
     pos = broker.positions["TICK-A"]
     monkeypatch.setattr(market_history, "volatility", lambda *a, **k: None)
-    unavailable, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    unavailable, _ = exit_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
 
     monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.0)
-    flat, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    flat, _ = exit_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
 
     assert flat == pytest.approx(unavailable), (
         "a flat/untraded market must not be scored as if it were four times calmer than normal"
@@ -1582,7 +1583,8 @@ def test_zero_volatility_is_treated_as_no_reading_not_as_perfect_calm(tmp_path, 
 def test_real_volatility_still_scales_the_references(tmp_path, monkeypatch):
     """The factor must still discriminate among markets that actually move -
     the fix is about zero, not about disabling the mechanism."""
-    from services import market_history, strategy_engine
+    from services import market_history
+    from services.exits import exit_engine
 
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     broker.open_position("TICK-A", "yes", size=100, price=0.50, reason="entry")
@@ -1590,7 +1592,7 @@ def test_real_volatility_still_scales_the_references(tmp_path, monkeypatch):
 
     pos = broker.positions["TICK-A"]
     monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.0005)
-    calm, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    calm, _ = exit_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
     monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.02)
-    wild, _ = strategy_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
+    wild, _ = exit_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
     assert calm != wild, "volatility must still change the outcome when it is real"

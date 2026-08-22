@@ -473,7 +473,7 @@ class PaperBroker:
 
         # Real Kalshi taker fee on this leg (services/kalshi_fees.py) -
         # naturally 0.0 at exit_price 0.0/1.0 (settlement's terminal payout,
-        # see strategy_engine.close_if_settled), matching that settlement
+        # see exit_engine.close_if_settled), matching that settlement
         # isn't a fee-charged trade in the first place. "realized" here is
         # now the TRUE net P&L including both legs' fees: pos.entry_fee was
         # already deducted from bankroll back at open_position time, so
