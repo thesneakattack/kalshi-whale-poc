@@ -24,7 +24,8 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import diagnostics, index_feed, series_watcher, settlement_edge, trade_archive
+from services import index_feed, series_watcher, settlement_edge, trade_archive
+from services.diagnostics import diagnostics
 from services.app_state import state, trade_stream, whale_provider
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
 from services.config_store import config_store
@@ -34,7 +35,7 @@ router = APIRouter()
 
 @router.get("/api/diagnostics")
 async def get_diagnostics(hours: float = 24.0):
-    """Read-only performance/integrity report - services/diagnostics.py.
+    """Read-only performance/integrity report - services/diagnostics/diagnostics.py.
     Offline checks only (no API calls); see /api/diagnostics/coverage for
     the one check that needs real exchange data."""
     now = time.time()

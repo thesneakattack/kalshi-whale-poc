@@ -23,7 +23,7 @@ from services.advisory import advisory_engine
 from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
-from services import diagnostics
+from services.diagnostics import diagnostics
 from services import regime_analytics
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
@@ -68,7 +68,7 @@ from services.strategy_engine import FollowTheWhaleStrategy
 # that module's docstring. Imported by name here so every existing
 # reference in this file (`state[...]`, `broker.`, `risk.`, ...) keeps
 # working unchanged.
-from routers import diagnostics_routes  # noqa: E402
+from services.diagnostics import routes as diagnostics_routes  # noqa: E402
 from services.config import routes as config_routes  # noqa: E402
 from services.position import routes as position_routes  # noqa: E402
 from services.exits import routes as exits_routes  # noqa: E402
@@ -962,7 +962,7 @@ allowed_origins = (
 )
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=["*"], allow_headers=["*"])
 
-# Extracted route groups (2026-08-17) - see routers/diagnostics_routes.py for
+# Extracted route groups (2026-08-17) - see services/diagnostics/routes.py for
 # the pattern. include_router preserves every path exactly as it was when
 # these were @app.* in this file, so nothing client-side or test-side moves.
 app.include_router(diagnostics_routes.router)

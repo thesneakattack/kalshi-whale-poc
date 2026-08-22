@@ -328,7 +328,7 @@ def test_reconcile_excludes_quarantined_signals():
 # ------------------------------------------------------------------ the plug
 
 def test_check_series_funnel_returns_a_diagnostics_check():
-    from services.diagnostics import Check
+    from services.diagnostics.diagnostics import Check
 
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)

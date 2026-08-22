@@ -49,7 +49,7 @@ from services.backtest import backtest
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import cross_strategy
-from services import diagnostics
+from services.diagnostics import diagnostics
 from services import regime_analytics
 from services import stats_power
 from services.whale_calibration import confidence_calibration

@@ -3,7 +3,7 @@ History routes - "what happened": browsable signal history, persistent
 flow clustering, the Trading History tab (win/loss record + cumulative
 P&L curve), and market_history's own tracked-ticker/hypothetical-trade
 summaries. Extracted 2026-08-22 as part of main.py's modularization pass,
-following the routers/diagnostics_routes.py convention: an APIRouter,
+following the services/diagnostics/routes.py convention: an APIRouter,
 shared state from services.app_state only, main.py does
 app.include_router(...) at the same paths as before.
 """

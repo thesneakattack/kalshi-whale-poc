@@ -6,7 +6,7 @@ ROADMAP.md's queued split item): market-strategy calibration (the separate
 Market-Native strategy's own tuning), candidate-log/cross-strategy/regime
 segmentation, backtesting, and the market-analyst LLM agent. Extracted
 2026-08-22 as part of main.py's modularization pass, following the
-routers/diagnostics_routes.py convention: an APIRouter, shared state from
+services/diagnostics/routes.py convention: an APIRouter, shared state from
 services.app_state only, main.py does app.include_router(...) at the same
 paths as before. /api/suggestions/* stays here too - shared infrastructure
 both advisory and market-analyst read from, not owned by either.

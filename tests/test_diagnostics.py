@@ -1,5 +1,5 @@
 """
-services/diagnostics.py - performance/integrity checks.
+services/diagnostics/diagnostics.py - performance/integrity checks.
 
 Every test redirects each module's DB_PATH into tmp_path (the established
 convention throughout tests/*.py, and a hard requirement per CLAUDE.md:
@@ -12,7 +12,7 @@ import time
 import pytest
 
 from services import config_performance as cp_module
-from services import diagnostics
+from services.diagnostics import diagnostics
 from services.market_catalog import market_catalog as mc_module
 from services import paper_broker as pb_module
 from services import series_watcher as sw_module

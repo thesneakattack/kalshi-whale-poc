@@ -64,7 +64,7 @@ from pathlib import Path
 from services import fault_log
 from services import signal_log, trade_analytics
 from services import paper_broker as pb_module
-from services.diagnostics import Check
+from services.diagnostics.diagnostics import Check
 from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "series_watcher.db"
@@ -845,7 +845,7 @@ def book_context_at_entry(series: str | None = None, hours: float = 24.0,
 def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.0,
                         now: float | None = None) -> Check:
     """diagnostics-compatible wrapper — this is the plug. Returns the same
-    Check shape every other check in services/diagnostics.py returns, so
+    Check shape every other check in services/diagnostics/diagnostics.py returns, so
     run_offline can include it and /api/diagnostics renders it with no
     special-casing."""
     series = series or (watched_series(cfg) or [DEFAULT_SERIES])[0]

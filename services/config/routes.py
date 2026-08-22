@@ -2,7 +2,7 @@
 GET/POST /api/config - reads and writes config/settings.yaml through
 services/config_store.py, with change-history logging via
 services/config_performance.py. Extracted 2026-08-21 as part of main.py's
-modularization pass, following the routers/diagnostics_routes.py
+modularization pass, following the services/diagnostics/routes.py
 convention: an APIRouter, shared state from services.app_state only,
 main.py does app.include_router(...) at the same path as before.
 """

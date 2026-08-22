@@ -3,7 +3,7 @@ Position routes - the paper broker's real-account mirror (order history),
 the Market-Native strategy's own state endpoint, manual risk-halt controls
 for all three independent risk trackers, position-netting diagnostics, and
 the erroneous-close correction admin route. Extracted 2026-08-22 as part
-of main.py's modularization pass, following the routers/diagnostics_routes.py
+of main.py's modularization pass, following the services/diagnostics/routes.py
 convention: an APIRouter, shared state from services.app_state only,
 main.py does app.include_router(...) at the same paths as before.
 
