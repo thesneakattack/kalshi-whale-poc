@@ -199,15 +199,6 @@ questions.
       that gate was the right fix for a blind system and would need
       revisiting for one that isn't. If the market wins, say so and delete
       the trading ambition, keeping the capture as a diagnostic.
-- [ ] **Finish breaking up `main.py`.** `services/app_state.py` +
-      `routers/diagnostics_routes.py` established the pattern (see
-      `status.html` phase 114) and took it 5,415 → 5,124 lines. The
-      remaining ~69 routes are mechanical by the same recipe. The genuinely
-      hard part is the other half: `trading_loop` (605 lines),
-      `_fetch_markets` (258), `_fetch_live_status` (204) — these have real
-      entanglement with tick ordering and shared state, and want extracting
-      one at a time with the suite green between each, not in a batch.
-
 ## P4 — Nice-to-haves
 
 - [ ] **Move analytics/advisory computation out of the live tick loop —
@@ -475,8 +466,11 @@ overhaul, active position management, whale-tracking maturity (real trade-
 tape provider, composite confidence scoring, advisory/recommendation
 engine, market analyst agent, position netting, calibration, per-series
 overrides), reliability/engineering hygiene (test suite + CI, official SDK
-migration, rate-limit correctness), and dozens of live-reported bugs found
-and fixed session by session. `static/status.html` (`/status`) is the
-complete, phase-by-phase record — 109 phases and counting. For the detailed
-prose version of this file as it stood before each condensing pass, see
-`docs/roadmap-archive-2026-08-09.md` and `docs/roadmap-archive-2026-08-16.md`.
+migration, rate-limit correctness), the full main.py modularization
+(whale stream / market watch / position / position management / history /
+analytics / config — main.py 5,450 → 1,716 lines across 7 phases), and
+dozens of live-reported bugs found and fixed session by session.
+`static/status.html` (`/status`) is the complete, phase-by-phase record —
+115 phases and counting. For the detailed prose version of this file as it
+stood before each condensing pass, see `docs/roadmap-archive-2026-08-09.md`
+and `docs/roadmap-archive-2026-08-16.md`.
