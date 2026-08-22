@@ -31,11 +31,14 @@ analyze_market() returns None rather than raising - a caller can always
 attempt a call and get a clean "not available" signal back.
 """
 import json
+import logging
 import os
 import sqlite3
 import time
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_analyst.db"
 
@@ -254,12 +257,9 @@ async def analyze_market(
         # Data-robustness audit finding (2026-08-10): this used to be a bare
         # `except Exception: return None` - the real error was discarded
         # entirely, and main.py's caller returned a message saying "see
-        # server logs" even though no logging framework exists anywhere in
-        # this app (confirmed by repo-wide grep). stdout is captured by
-        # `ddev logs -s fastapi` per this project's own documented
-        # workflow, so that message is now actually true instead of
-        # pointing at logs that don't exist.
-        print(f"[market_analyst_agent] analyze_market failed for this call: {e!r}")
+        # server logs." stdout is captured by `ddev logs -s fastapi` per
+        # this project's own documented workflow.
+        logger.exception("analyze_market failed for this call")
         return None
 
 
@@ -393,7 +393,7 @@ async def analyze_series(series_ctx: dict, model: str, api_key: str | None = Non
                 return result
         return None
     except Exception as e:
-        print(f"[market_analyst_agent] analyze_series failed for this call: {e!r}")
+        logger.exception("analyze_series failed for this call")
         return None
 
 
@@ -608,7 +608,7 @@ async def analyze_full_spectrum(context: dict, model: str, api_key: str | None =
                 return result
         return None
     except Exception as e:
-        print(f"[market_analyst_agent] analyze_full_spectrum failed for this call: {e!r}")
+        logger.exception("analyze_full_spectrum failed for this call")
         return None
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
 
@@ -60,7 +61,8 @@ def test_market_positions_message_is_a_noop_when_no_callback_given():
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None))
 
 
-def test_fill_shape_is_logged_only_once(capsys):
+def test_fill_shape_is_logged_only_once(caplog):
+    caplog.set_level(logging.INFO)
     client = _client()
 
     async def on_fill(msg):
@@ -70,11 +72,11 @@ def test_fill_shape_is_logged_only_once(capsys):
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_fill=on_fill))
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_fill=on_fill))
 
-    out = capsys.readouterr().out
-    assert out.count("first real 'fill' message shape") == 1
+    assert caplog.text.count("first real 'fill' message shape") == 1
 
 
-def test_position_shape_is_logged_only_once(capsys):
+def test_position_shape_is_logged_only_once(caplog):
+    caplog.set_level(logging.INFO)
     client = _client()
 
     async def on_position(msg):
@@ -84,8 +86,7 @@ def test_position_shape_is_logged_only_once(capsys):
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
 
-    out = capsys.readouterr().out
-    assert out.count("first real 'market_positions' message shape") == 1
+    assert caplog.text.count("first real 'market_positions' message shape") == 1
 
 
 def test_existing_trade_and_ticker_dispatch_still_work_with_new_optional_params():
@@ -323,7 +324,8 @@ def test_lifecycle_message_is_a_noop_when_no_callback_given():
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None))
 
 
-def test_lifecycle_shape_is_logged_once_per_event_type(capsys):
+def test_lifecycle_shape_is_logged_once_per_event_type(caplog):
+    caplog.set_level(logging.INFO)
     client = _client()
 
     async def on_lifecycle(msg):
@@ -335,13 +337,12 @@ def test_lifecycle_shape_is_logged_once_per_event_type(capsys):
     asyncio.run(client._handle_message(created, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
     asyncio.run(client._handle_message(settled, on_trade=None, on_ticker=None, on_status=None, on_lifecycle=on_lifecycle))
 
-    out = capsys.readouterr().out
     # 'created' logged exactly once despite two messages...
-    assert out.count("first real 'market_lifecycle_v2' 'created' shape") == 1
+    assert caplog.text.count("first real 'market_lifecycle_v2' 'created' shape") == 1
     # ...but 'settled' gets its own first-time log, since each event_type
     # is a genuinely different shape (docs/kalshi/market-and-event-
     # lifecycle.md - most fields are conditional on which event_type this is).
-    assert out.count("first real 'market_lifecycle_v2' 'settled' shape") == 1
+    assert caplog.text.count("first real 'market_lifecycle_v2' 'settled' shape") == 1
 
 
 def test_lifecycle_subscribe_is_opt_in_and_exchange_wide():

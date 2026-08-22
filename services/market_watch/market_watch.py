@@ -18,7 +18,7 @@ from datetime import datetime
 
 from services import (
     event_lifecycle, game_state, market_catalog, market_history, series_cache,
-    series_evaluator, signal_log,
+    series_evaluator, signal_log, task_supervisor,
 )
 from services.app_state import bump_generation, state
 from services.kalshi_client import KalshiClient
@@ -385,7 +385,10 @@ def _maybe_scan_catalog_batch(cfg: dict) -> None:
     if due and not catalog_state["scanning"]:
         catalog_state["scanning"] = True
         catalog_state["last_started_at"] = now_ts
-        catalog_state["task"] = asyncio.create_task(_scan_catalog_batch_background(cfg))
+        catalog_state["task"] = task_supervisor.supervise(
+            lambda: _scan_catalog_batch_background(cfg),
+            component="market_catalog", operation="scan_batch",
+        )
 
 
 async def _scan_catalog_batch_background(cfg: dict) -> None:
@@ -393,13 +396,14 @@ async def _scan_catalog_batch_background(cfg: dict) -> None:
     the end of that same tick - see _refresh_discovery_cache's identical
     reasoning) and delegates the real work to _scan_catalog_batch
     unchanged, so its existing behavior/tests keep working when called
-    directly with an explicit client."""
+    directly with an explicit client. Exceptions are caught and recorded
+    by task_supervisor.supervise (the caller) - this only needs its own
+    finally to release the "scanning" flag and close the client regardless
+    of outcome."""
     catalog_state = state["catalog_scan"]
     client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _scan_catalog_batch(client, cfg)
-    except Exception as exc:
-        print(f"[market_catalog] background scan batch failed entirely, will retry next cycle: {exc!r}")
     finally:
         catalog_state["scanning"] = False
         await client.close()
@@ -510,7 +514,10 @@ def _maybe_refresh_discovery_cache(cfg: dict) -> None:
     stale = now_ts - disc_cache["fetched_at"] > _DISCOVERY_REFRESH_SEC
     if stale and not disc_cache["refreshing"]:
         disc_cache["refreshing"] = True
-        disc_cache["task"] = asyncio.create_task(_refresh_discovery_cache_background(cfg))
+        disc_cache["task"] = task_supervisor.supervise(
+            lambda: _refresh_discovery_cache_background(cfg),
+            component="discovery_cache", operation="refresh",
+        )
 
 
 # Real, live-confirmed finding (2026-08-16, "close_time mutability"
@@ -643,19 +650,16 @@ async def _refresh_discovery_cache_background(cfg: dict) -> None:
     _check_signal_resolutions_background/_check_signal_resolutions - that
     function's own docstring already described this exact pattern as if
     _refresh_discovery_cache followed it too, which is what surfaced this
-    gap on review."""
+    gap on review. Exceptions are now caught and recorded by
+    task_supervisor.supervise (the caller, see _maybe_refresh_discovery_cache
+    above) instead of a bare print - this only needs its own finally to
+    release the "refreshing" flag and close the client regardless of
+    outcome. The stale cache stays in place and _maybe_refresh_discovery_cache
+    will try again next time it's due."""
     disc_cache = state["discovery_cache"]
     client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _refresh_discovery_cache(cfg, client)
-    except Exception as exc:
-        # No logging framework exists anywhere in this app yet (same gap
-        # _scan_catalog_batch's own per-series failure print already
-        # documented) - stdout is captured by `ddev logs -s fastapi`, so a
-        # failed background refresh is at least visible there instead of
-        # vanishing with zero trace. The stale cache stays in place and
-        # _maybe_refresh_discovery_cache will try again next time it's due.
-        print(f"[discovery] background refresh failed, will retry next cycle: {exc!r}")
     finally:
         disc_cache["refreshing"] = False
         await client.close()

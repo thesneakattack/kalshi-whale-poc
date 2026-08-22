@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 
@@ -262,7 +263,7 @@ def test_analyze_market_clamps_out_of_range_values(tmp_path, monkeypatch):
     assert result["confidence"] == 0.0
 
 
-def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch, capsys):
+def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch, caplog):
     agent = _agent(tmp_path, monkeypatch)
 
     class _FakeMessages:
@@ -276,15 +277,15 @@ def test_analyze_market_returns_none_when_the_call_raises(tmp_path, monkeypatch,
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
+    caplog.set_level(logging.ERROR)
     result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
     # Data-robustness audit finding (2026-08-10): this used to be a bare
     # `except Exception: return None` with the real error discarded
     # entirely and a caller message pointing at "server logs" that don't
-    # exist (no logging framework exists anywhere in this app) - now at
-    # least visible via stdout (ddev logs -s fastapi).
-    captured = capsys.readouterr()
-    assert "network error" in captured.out
+    # exist - now logged (visible via `ddev logs -s fastapi`) via the
+    # module logger.
+    assert "network error" in caplog.text
 
 
 def test_analyze_market_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):
@@ -431,7 +432,7 @@ def test_analyze_series_defaults_suggestions_to_empty_list_when_absent(tmp_path,
     assert result["suggestions"] == []
 
 
-def test_analyze_series_returns_none_when_the_call_raises(tmp_path, monkeypatch, capsys):
+def test_analyze_series_returns_none_when_the_call_raises(tmp_path, monkeypatch, caplog):
     agent = _agent(tmp_path, monkeypatch)
 
     class _FakeMessages:
@@ -445,10 +446,10 @@ def test_analyze_series_returns_none_when_the_call_raises(tmp_path, monkeypatch,
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
+    caplog.set_level(logging.ERROR)
     result = asyncio.run(agent.analyze_series({"series": "KXTICK"}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
-    captured = capsys.readouterr()
-    assert "series network error" in captured.out
+    assert "series network error" in caplog.text
 
 
 def test_analyze_series_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):
@@ -608,7 +609,7 @@ def test_analyze_full_spectrum_defaults_suggestions_to_empty_list_when_absent(tm
     assert result["suggestions"] == []
 
 
-def test_analyze_full_spectrum_returns_none_when_the_call_raises(tmp_path, monkeypatch, capsys):
+def test_analyze_full_spectrum_returns_none_when_the_call_raises(tmp_path, monkeypatch, caplog):
     agent = _agent(tmp_path, monkeypatch)
 
     class _FakeMessages:
@@ -622,10 +623,10 @@ def test_analyze_full_spectrum_returns_none_when_the_call_raises(tmp_path, monke
     import anthropic
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
 
+    caplog.set_level(logging.ERROR)
     result = asyncio.run(agent.analyze_full_spectrum({}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
-    captured = capsys.readouterr()
-    assert "full spectrum network error" in captured.out
+    assert "full spectrum network error" in caplog.text
 
 
 def test_analyze_full_spectrum_returns_none_when_model_skips_the_tool(tmp_path, monkeypatch):

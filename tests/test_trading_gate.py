@@ -19,6 +19,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from services import config_performance as cp_module
 from services import config_store as config_store_module
 from services import market_catalog as mc_module
@@ -1754,6 +1756,11 @@ def test_refresh_discovery_cache_background_creates_and_closes_its_own_client(mo
 
 
 def test_refresh_discovery_cache_background_still_closes_client_on_failure(monkeypatch):
+    # task_supervisor.supervise (the real caller, see lifespan/
+    # _maybe_refresh_discovery_cache) is what catches this now - this
+    # function itself just guarantees cleanup via `finally` and lets the
+    # exception propagate, so calling it directly (as this test does) must
+    # now expect the raise too.
     mc_module.clear_all()
     main.state["event_titles"].clear()
     main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": True, "task": None}
@@ -1765,9 +1772,10 @@ def test_refresh_discovery_cache_background_still_closes_client_on_failure(monke
     monkeypatch.setattr(market_watch, "KalshiClient", _FakeBackgroundClient)
     monkeypatch.setattr(main.market_catalog, "open_candidates", _boom)
 
-    asyncio.run(main._refresh_discovery_cache_background(
-        _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
-    ))
+    with pytest.raises(RuntimeError, match="Session is closed"):
+        asyncio.run(main._refresh_discovery_cache_background(
+            _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
+        ))
 
     assert len(_FakeBackgroundClient.instances) == 1
     assert _FakeBackgroundClient.instances[0].closed is True

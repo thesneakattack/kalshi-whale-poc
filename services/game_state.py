@@ -46,11 +46,14 @@ which is exactly the mistake this app already made with the ticker channel
 and had to fix retroactively.
 """
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
 
 from services import fault_log
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "game_state.db"
 
@@ -285,7 +288,7 @@ def flush() -> dict:
         # nobody is watching.
         global _last_flush_error
         _last_flush_error = str(exc)
-        print(f"[game_state] flush failed, {len(rows)} row(s) dropped: {exc}")
+        logger.exception("flush failed, %d row(s) dropped", len(rows))
         return {"rows": 0, "dropped": len(rows), "error": str(exc)}
     return {"rows": len(rows)}
 

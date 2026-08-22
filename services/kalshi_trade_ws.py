@@ -1,11 +1,14 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
 
 import websockets
+
+logger = logging.getLogger(__name__)
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -336,7 +339,7 @@ class KalshiTradeWebSocketClient:
             # routed anywhere, because its whole purpose is telling a human
             # which identifiers are real (a live sweep found the same index
             # named BRTI / ETHUSDRTI / ERTI across different series' rules).
-            print(f"[kalshi_ws] {msg_type}: {data.get('msg')!r}")
+            logger.info("%s: %r", msg_type, data.get('msg'))
             return
         if msg_type == "trade":
             await on_trade(self.normalize_trade(data.get("msg") or {}))
@@ -354,7 +357,7 @@ class KalshiTradeWebSocketClient:
             event_type = msg.get("event_type")
             if event_type and event_type not in self._logged_lifecycle_event_types:
                 self._logged_lifecycle_event_types.add(event_type)
-                print(f"[kalshi_ws] first real 'market_lifecycle_v2' {event_type!r} shape (verify parsing against this): {msg!r}")
+                logger.info("first real 'market_lifecycle_v2' %r shape (verify parsing against this): %r", event_type, msg)
             if on_lifecycle is not None:
                 await on_lifecycle(msg)
             return
@@ -374,14 +377,14 @@ class KalshiTradeWebSocketClient:
             # exists) for the same reason.
             if not self._logged_fill_shape:
                 self._logged_fill_shape = True
-                print(f"[kalshi_ws] first real 'fill' message shape (verify parsing against this): {data!r}")
+                logger.info("first real 'fill' message shape (verify parsing against this): %r", data)
             if on_fill is not None:
                 await on_fill(data.get("msg") or {})
             return
         if msg_type == "market_positions":
             if not self._logged_position_shape:
                 self._logged_position_shape = True
-                print(f"[kalshi_ws] first real 'market_positions' message shape (verify parsing against this): {data!r}")
+                logger.info("first real 'market_positions' message shape (verify parsing against this): %r", data)
             if on_position is not None:
                 await on_position(data.get("msg") or {})
 

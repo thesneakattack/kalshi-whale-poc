@@ -15,6 +15,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # reads .env if present; every var is optional, see .env.example
 
+from services import logging_config
+logging_config.configure()
+
 from services import accounts_store
 from services import advisory_engine
 from services import auth as auth_service
@@ -36,6 +39,7 @@ from services import series_cache
 from services import series_evaluator
 from services import series_watcher
 from services import fault_log
+from services import task_supervisor
 from services import game_state
 from services import index_feed
 from services import settlement_edge
@@ -159,20 +163,23 @@ def _maybe_check_signal_resolutions(cfg: dict) -> None:
     if due and not check_state["checking"]:
         check_state["checking"] = True
         check_state["last_checked_at"] = now_ts
-        check_state["task"] = asyncio.create_task(_check_signal_resolutions_background(cfg))
+        check_state["task"] = task_supervisor.supervise(
+            lambda: _check_signal_resolutions_background(cfg),
+            component="signal_resolution", operation="background_check",
+        )
 
 
 async def _check_signal_resolutions_background(cfg: dict) -> None:
     """Owns its own KalshiClient - see _refresh_discovery_cache's
     identical reasoning (the calling tick's own client closes at the end
     of that same tick, well before an independent background task would
-    finish)."""
+    finish). Exceptions are caught and recorded by task_supervisor.supervise
+    (the caller) - this only needs its own finally to release the
+    "checking" flag and close the client regardless of outcome."""
     check_state = state["signal_resolution_check"]
     client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _check_signal_resolutions(client)
-    except Exception as exc:
-        print(f"[signal_resolution] background check failed, will retry next cycle: {exc!r}")
     finally:
         check_state["checking"] = False
         await client.close()
@@ -861,28 +868,35 @@ async def trading_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(trading_loop())
+    # restart=True on these three: they're the long-running loops the app
+    # depends on for its entire purpose (ticking, whale trades, index
+    # data) - if one dies from an unhandled exception it must come back,
+    # not just vanish. See task_supervisor.py's own docstring for the
+    # incidents (6973974, a31ae51, 12323cc) this is meant to catch.
+    task = task_supervisor.supervise(trading_loop, component="trading_loop", operation="run", restart=True)
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
-        trade_stream_task = asyncio.create_task(
-            trade_stream.run(
+        trade_stream_task = task_supervisor.supervise(
+            lambda: trade_stream.run(
                 whale_stream_handlers._process_stream_trade, whale_stream_handlers._process_stream_ticker,
                 whale_stream_handlers._handle_trade_stream_status,
                 on_fill=whale_stream_handlers._process_stream_fill,
                 on_position=whale_stream_handlers._process_stream_position,
                 on_lifecycle=whale_stream_handlers._process_stream_lifecycle,
-            )
+            ),
+            component="trade_stream", operation="run", restart=True,
         )
     index_stream_task = None
     if index_stream.enabled and (index_stream.index_ids or index_stream.underlying_tickers):
         # Its own connection and its own task - see index_stream's own
         # comment for why this isn't just another channel on trade_stream.
-        index_stream_task = asyncio.create_task(
-            index_stream.run(
+        index_stream_task = task_supervisor.supervise(
+            lambda: index_stream.run(
                 index_stream_handlers._noop_stream_trade, index_stream_handlers._noop_stream_ticker,
                 index_stream_handlers._handle_index_stream_status,
                 on_index=index_stream_handlers._process_stream_index,
-            )
+            ),
+            component="index_stream", operation="run", restart=True,
         )
     yield
     if trade_stream_task is not None:
