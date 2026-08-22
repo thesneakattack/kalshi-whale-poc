@@ -71,6 +71,41 @@ completion first over everything else, skip expensive testing until the
 end"). **That final full-suite pass has not happened yet** - do it before
 declaring the whole plan done, not just per-phase live checks.
 
+## Important correction, found right after this doc's first draft: use pyflakes, not just AST orphan-checks
+
+The AST "orphan top-level def" check used through Phases 1-6 only catches
+one failure mode (a definition that should've been deleted but wasn't).
+It does NOT catch the opposite, more dangerous failure mode: a moved
+constant/function that's still referenced directly by name somewhere else
+in `main.py`'s surviving code, but never imported back. Caught live, the
+hard way: right after writing this doc's first draft, a routine live
+health check found `state["error"]` showing `"name '_TRADE_TAPE_UI_CAP'
+is not defined"` - `trading_loop`'s own REST-polled (non-streaming)
+trade-tape path used that constant directly, and it was moved to
+`services/whale_stream/whale_stream_handlers.py` in Phase 6 without being
+imported back. Installed `pyflakes` into the ddev container
+(`ddev exec -s fastapi pip install pyflakes`, not present by default) and
+ran it against `main.py` - it immediately found a **second**, not-yet-
+triggered instance of the identical bug class: `_CONFIDENCE_RANK` (moved
+to `market_analyst_orchestrator.py`) used directly inside
+`trading_loop`'s `calibration_advisory` auto-apply logic, never imported
+back. Both fixed in commit `f7490c6`.
+
+**For Phase 7 specifically** (~1,300 lines moving, by far the largest
+single extraction in this plan): run `ddev exec -s fastapi python3 -m
+pyflakes main.py` after the move and **grep the output for "undefined
+name"** before considering the phase done - ignore the "imported but
+unused" and "redefinition of unused 'cfg'" noise (both expected/harmless,
+see below), but any `undefined name` hit is a real bug exactly like the
+two above, and Phase 7's block is over 10x the size of Phase 6's, so the
+odds of at least one more constant/function being referenced from
+`trading_loop` without being imported back are real. `pyflakes` also
+flags every `from services.X import _foo` this session's pattern
+deliberately adds purely for `main._foo(...)` test-compatibility as
+"imported but unused" (from `main.py`'s own code's perspective, true -
+they're used by external test files reaching into `main.` namespace) -
+that noise is expected and not a bug, don't chase it down.
+
 ## Start here: Phase 7 (the last one) - market watch / discovery
 
 Not started. This is the **largest and highest-risk remaining phase**
