@@ -71,6 +71,8 @@ from services.strategy_engine import FollowTheWhaleStrategy
 # reference in this file (`state[...]`, `broker.`, `risk.`, ...) keeps
 # working unchanged.
 from routers import diagnostics_routes  # noqa: E402
+from services.config import routes as config_routes  # noqa: E402
+from services.config.config_paths import _config_value_at_path, _types_compatible  # noqa: E402
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream, market_broker,
     market_risk, market_strategy, risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -2358,37 +2360,6 @@ _PROTECTED_CONFIG_PATHS = {
 _CONFIDENCE_RANK = {"low": 0, "moderate": 1, "higher": 2}
 
 
-def _config_value_at_path(cfg: dict, config_path: str):
-    """Reads a "section.field" path out of a live config dict - the read
-    side of the same section/field split every apply route already does
-    for writes (config_store.update({section: {field: value}})). Used to
-    catch a stale suggestion: an LLM-derived suggestion (series/full-
-    spectrum analyst) is looked up from what was persisted at analysis
-    time, not recomputed fresh the way a rule-based Advisory recommendation
-    is - if the live config's actual current value has since drifted from
-    what the suggestion assumed (a manual edit, an auto-apply, or a second
-    analysis elsewhere), blindly applying it would silently overwrite based
-    on a stale premise and log a fabricated "before" value that was never
-    actually live. Missing section/field reads as None, same as dict.get."""
-    section, _, field = config_path.partition(".")
-    return (cfg.get(section) or {}).get(field)
-
-
-def _types_compatible(a, b) -> bool:
-    """Loose type-compatibility check for a full-spectrum suggestion's
-    value against the field's current one - int/float are interchangeable
-    (a human editing the Config tab's number inputs doesn't distinguish
-    them either), bool is checked strictly on both sides since Python's
-    bool is technically an int subclass and a stray True/False landing in
-    a numeric field would be a real, confusing config corruption, not a
-    reasonable suggestion."""
-    if isinstance(a, bool) or isinstance(b, bool):
-        return isinstance(a, bool) and isinstance(b, bool)
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return True
-    return type(a) is type(b)
-
-
 def _build_full_spectrum_context(cfg: dict) -> dict:
     """Assembles services/market_analyst_agent.build_full_spectrum_prompt()'s
     input (Item 3C) - deliberately every value here is an aggregated
@@ -3234,6 +3205,7 @@ app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=
 # the pattern. include_router preserves every path exactly as it was when
 # these were @app.* in this file, so nothing client-side or test-side moves.
 app.include_router(diagnostics_routes.router)
+app.include_router(config_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.
@@ -3291,10 +3263,6 @@ async def auth_logout(request: Request):
 
 
 # ---- API -------------------------------------------------------------------
-
-class ConfigPatch(BaseModel):
-    patch: dict
-
 
 class ApplyRecommendationBody(BaseModel):
     id: str
@@ -4566,63 +4534,6 @@ def _shadow_state() -> dict:
         **shadow.stats(),
     }
 
-
-
-@app.get("/api/config")
-async def get_config():
-    return config_store.get()
-
-
-@app.post("/api/config")
-async def update_config(body: ConfigPatch):
-    if "kalshi_account" in body.patch and "trading_enabled" in (body.patch.get("kalshi_account") or {}):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "kalshi_account.trading_enabled can't be changed through /api/config — "
-                "use POST /api/trading/enable (requires a connected account and a typed "
-                "confirmation phrase) or POST /api/trading/disable."
-            ),
-        )
-    if "advisory" in body.patch and "auto_apply_enabled" in (body.patch.get("advisory") or {}):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "advisory.auto_apply_enabled can't be changed through /api/config — "
-                "use POST /api/advisory/auto-apply/enable (requires a typed confirmation "
-                "phrase) or POST /api/advisory/auto-apply/disable."
-            ),
-        )
-    if "confidence_calibration" in body.patch and "auto_apply_enabled" in (body.patch.get("confidence_calibration") or {}):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "confidence_calibration.auto_apply_enabled can't be changed through /api/config — "
-                "use POST /api/confidence-calibration/auto-apply/enable (requires a typed "
-                "confirmation phrase) or POST /api/confidence-calibration/auto-apply/disable."
-            ),
-        )
-    # Change-history logging (Item 3D, 2026-08-10) - this was the one real
-    # gap in config_performance.log_applied_change()'s coverage: every plain
-    # Config-tab save went completely unlogged before this, even though the
-    # Advisory apply route has always had a full audit trail. Logged AFTER
-    # config_store.update() so fingerprint_after reflects the config that
-    # actually took effect, but the diff itself is computed against the
-    # pre-update snapshot (diff_patch reads old_cfg, not the live store).
-    old_cfg = config_store.get()
-    fp_before = config_performance.fingerprint(old_cfg)
-    changes = config_performance.diff_patch(old_cfg, body.patch)
-    new_cfg = config_store.update(body.patch)
-    fp_after = config_performance.fingerprint(new_cfg)
-    for config_path, old_value, new_value in changes:
-        config_performance.log_applied_change(
-            config_path=config_path, old_value=old_value, new_value=new_value,
-            rationale="Manual edit via the Config tab.", trade_count=0,
-            fingerprint_before=fp_before, fingerprint_after=fp_after,
-            auto_applied=False, source="manual",
-        )
-    bump_generation()
-    return new_cfg
 
 
 @app.post("/api/trading/enable")
