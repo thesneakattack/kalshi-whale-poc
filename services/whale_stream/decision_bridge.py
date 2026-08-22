@@ -129,8 +129,14 @@ async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
     # per-tick (see its own docstring) - fine to call again here.
     state["decision_feed"].insert(0, fill_decision)
     state["decision_feed"] = state["decision_feed"][:50]
-    state["stats"]["trades_placed"] += 1
     asyncio.create_task(_broadcast_signal_decision(None, fill_decision))
+    # "four-entry gate bypass" fix (2026-08-22, main.py's check_pending_fills
+    # validate_fn) - a fill that failed re-validation at its fill-time price
+    # never became a trade; there's no ["trade"] key to read here.
+    if fill_decision["action"] != "trade":
+        state["stats"]["skipped"] += 1
+        return
+    state["stats"]["trades_placed"] += 1
     ticker = fill_decision["trade"]["ticker"]
     category = _category_by_ticker().get(ticker)
     subcategory = _subcategory_by_ticker().get(ticker)

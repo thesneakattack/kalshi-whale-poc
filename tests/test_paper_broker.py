@@ -598,6 +598,71 @@ def test_check_pending_fills_leaves_order_pending_without_a_fresh_quote(tmp_path
     assert "TICK-A" in broker.pending_orders  # not guessed at, not dropped either
 
 
+# --- check_pending_fills' validate_fn (the "four-entry gate bypass" fix) --
+# A resting order was previously validated once, at PLACEMENT time, against
+# the price it asked for - nothing re-checked the price it actually filled
+# at, which could have moved well past what any fresh signal at that price
+# would have cleared. validate_fn re-runs that check at fill time.
+
+def test_check_pending_fills_rejects_a_fill_when_validate_fn_says_no(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order(
+        "TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60, confidence=0.9,
+    )
+    calls = []
+
+    def _reject(ticker, side, price, confidence):
+        calls.append((ticker, side, price, confidence))
+        return False, "price moved outside the tradeable band by fill time"
+
+    fills = broker.check_pending_fills(
+        latest_bids={"TICK-A": 0.49}, latest_asks={"TICK-A": 0.50}, validate_fn=_reject,
+    )
+    assert calls == [("TICK-A", "yes", 0.50, 0.9)]
+    assert len(fills) == 1
+    assert fills[0]["action"] == "fill_rejected"
+    assert fills[0]["reason"] == "price moved outside the tradeable band by fill time"
+    # No position opened, no cost/fee charged, and the order is gone (not
+    # left stuck re-attempting the same rejected fill forever).
+    assert broker.positions == {}
+    assert broker.bankroll == 1000.0
+    assert broker.pending_orders == {}
+
+
+def test_check_pending_fills_still_opens_a_position_when_validate_fn_says_yes(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order(
+        "TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60, confidence=0.9,
+    )
+    fills = broker.check_pending_fills(
+        latest_bids={"TICK-A": 0.49}, latest_asks={"TICK-A": 0.50},
+        validate_fn=lambda ticker, side, price, confidence: (True, None),
+    )
+    assert len(fills) == 1
+    assert fills[0]["action"] == "trade"
+    assert "TICK-A" in broker.positions
+
+
+def test_check_pending_fills_default_validate_fn_none_skips_revalidation(tmp_path, monkeypatch):
+    # Regression guard: every pre-existing caller/test omits validate_fn
+    # entirely and must keep behaving exactly as before this fix.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=time.time() + 60)
+    fills = broker.check_pending_fills(latest_bids={"TICK-A": 0.49}, latest_asks={"TICK-A": 0.50})
+    assert len(fills) == 1
+    assert fills[0]["action"] == "trade"
+    assert "TICK-A" in broker.positions
+
+
+def test_pending_order_confidence_persists_across_restart(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.place_limit_order(
+        "TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=1234567890.0, confidence=0.77,
+    )
+    resumed = pb.PaperBroker(starting_bankroll=1000.0)
+    assert resumed.pending_orders["TICK-A"].confidence == pytest.approx(0.77)
+
+
 def test_pending_orders_persist_across_restart(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch)
     broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.5, reason="r", expires_at=1234567890.0)

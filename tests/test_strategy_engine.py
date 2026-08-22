@@ -1296,6 +1296,123 @@ def test_evaluate_skips_when_a_limit_order_is_already_pending_on_the_ticker(tmp_
     assert len(broker.pending_orders) == 1  # the first order, untouched
 
 
+def test_evaluate_carries_signal_confidence_onto_the_resting_order(tmp_path, monkeypatch):
+    # The resting order needs its own signal's confidence available at fill
+    # time (check_pending_fills' validate_fn) - the price it was PLACED at
+    # doesn't tell you the confidence a fresh signal at the FILL price would
+    # need to clear.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    strategy.evaluate(_signal(confidence=0.77, price=0.5), _cfg(use_limit_orders=True))
+    assert broker.pending_orders["TICK-A"].confidence == pytest.approx(0.77)
+
+
+# ---- "four-entry gate bypass" fix: fill-time re-validation ----
+# check_pending_fills previously called open_position() straight off
+# whatever price the market happened to fill at, with none of
+# entry_threshold/the price band re-checked against that price - only
+# ever checked once, at placement time, against the price the order
+# ASKED for. See strategy_engine._validate_entry_price's own docstring.
+
+def test_validate_entry_price_rejects_confidence_below_threshold(tmp_path, monkeypatch):
+    from services.strategy_engine import _validate_entry_price
+
+    v = _validate_entry_price("yes", 0.5, confidence=0.5, effective_threshold=0.65, strat_cfg={})
+    assert v.ok is False
+    assert v.gate_name == "entry_threshold"
+
+
+def test_validate_entry_price_rejects_the_hard_zero_or_one_floor(tmp_path, monkeypatch):
+    from services.strategy_engine import _validate_entry_price
+
+    v = _validate_entry_price("yes", 0.995, confidence=0.99, effective_threshold=0.65, strat_cfg={})
+    assert v.ok is False
+    assert v.gate_name == "tradeable_price_range"
+
+
+def test_validate_entry_price_rejects_outside_configured_min_max_band(tmp_path, monkeypatch):
+    from services.strategy_engine import _validate_entry_price
+
+    strat_cfg = {"min_unit_cost": 0.6, "max_unit_cost": 0.8}
+    below = _validate_entry_price("yes", 0.4, confidence=0.9, effective_threshold=0.65, strat_cfg=strat_cfg)
+    assert below.ok is False and below.gate_name == "min_unit_cost"
+    above = _validate_entry_price("yes", 0.9, confidence=0.9, effective_threshold=0.65, strat_cfg=strat_cfg)
+    assert above.ok is False and above.gate_name == "max_unit_cost"
+
+
+def test_validate_entry_price_side_aware_unit_cost(tmp_path, monkeypatch):
+    # signal.price is always the YES price - a "no" order at price=0.9 has a
+    # real unit cost of 0.1 (1 - 0.9), which the band below permits even
+    # though 0.9 itself wouldn't.
+    from services.strategy_engine import _validate_entry_price
+
+    strat_cfg = {"min_unit_cost": 0.05, "max_unit_cost": 0.5}
+    v = _validate_entry_price("no", 0.9, confidence=0.9, effective_threshold=0.65, strat_cfg=strat_cfg)
+    assert v.ok is True
+
+
+def test_validate_entry_price_passes_inside_every_band():
+    from services.strategy_engine import _validate_entry_price
+
+    v = _validate_entry_price(
+        "yes", 0.7, confidence=0.9, effective_threshold=0.65,
+        strat_cfg={"min_unit_cost": 0.6, "max_unit_cost": 0.8},
+    )
+    assert v.ok is True
+    assert v.gate_name is None
+
+
+def test_validate_pending_fill_records_a_rejection_in_candidate_log(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(min_unit_cost=0.6, max_unit_cost=0.8)
+    ok, reason = strategy.validate_pending_fill("TICK-A", "yes", 0.9, confidence=0.9, cfg=cfg)
+    assert ok is False
+    assert "maximum unit cost" in reason
+    gates = {g["gate_name"]: g for g in cl_module.gate_summary()}
+    assert gates["max_unit_cost"]["rejected_count"] == 1
+
+
+def test_check_pending_fills_end_to_end_rejects_a_fill_that_moved_outside_the_band(tmp_path, monkeypatch):
+    # Full path: evaluate() places a resting order at a price/confidence
+    # that clears every gate, then the market moves before it fills - the
+    # fill-time price now violates max_unit_cost. Before this fix,
+    # check_pending_fills had no way to know that and would have opened
+    # the position anyway.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(use_limit_orders=True, min_unit_cost=0.3, max_unit_cost=0.6)
+    decision = strategy.evaluate(_signal(confidence=0.8, price=0.5), cfg)
+    assert decision["action"] == "limit_order_placed"
+
+    def _validate_fill(ticker, side, price, confidence):
+        return strategy.validate_pending_fill(ticker, side, price, confidence, cfg)
+
+    # Ask has dropped to 0.2 - a genuinely better fill price than the 0.5
+    # limit asked for, but 0.2 is below max_unit_cost's floor of 0.3.
+    fills = broker.check_pending_fills(
+        latest_bids={"TICK-A": 0.18}, latest_asks={"TICK-A": 0.20}, validate_fn=_validate_fill,
+    )
+    assert len(fills) == 1
+    assert fills[0]["action"] == "fill_rejected"
+    assert broker.positions == {}
+    assert broker.pending_orders == {}
+    assert broker.bankroll == 10000.0
+
+
+def test_check_pending_fills_end_to_end_still_fills_inside_the_band(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    cfg = _cfg(use_limit_orders=True, min_unit_cost=0.3, max_unit_cost=0.6)
+    strategy.evaluate(_signal(confidence=0.8, price=0.5), cfg)
+
+    def _validate_fill(ticker, side, price, confidence):
+        return strategy.validate_pending_fill(ticker, side, price, confidence, cfg)
+
+    fills = broker.check_pending_fills(
+        latest_bids={"TICK-A": 0.44}, latest_asks={"TICK-A": 0.45}, validate_fn=_validate_fill,
+    )
+    assert len(fills) == 1
+    assert fills[0]["action"] == "trade"
+    assert "TICK-A" in broker.positions
+
+
 # ---- ROADMAP #1: minimum-runway gates (entry + exit) ----
 # 2026-08-16/17 direct report: "position management didn't reverse sentiment
 # immediately" / positions riding to settlement unmanaged. close_window_sec

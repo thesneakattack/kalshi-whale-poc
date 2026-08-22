@@ -4,6 +4,7 @@ Swap this out to change strategy without touching the broker, risk
 manager, or data sources.
 """
 import time
+from typing import NamedTuple
 
 from services import candidate_log, config_overrides, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.whale_simulator import WhaleSignal
@@ -138,6 +139,103 @@ def kelly_scaled_max_size(max_size: float, confidence: float, effective_threshol
     raw_scale = min(1.0, max(0.0, (confidence - effective_threshold) / (1.0 - effective_threshold)))
     scale = 1.0 - kelly_fraction * (1.0 - raw_scale)
     return max_size * scale
+
+
+def _effective_entry_threshold(
+    strat_cfg: dict, price: float, is_live: bool, seconds_to_close: float | None,
+) -> tuple[float, bool]:
+    """The confidence bar a signal must clear before it can trade.
+
+    Favorite-longshot bias, confirmed on real Kalshi data (Bürgi, Deng &
+    Whelan 2025 - see docs/prediction-markets-research-reference.md Part
+    1.2): longshot-priced contracts (near $0 or $1) are systematically
+    overpriced relative to their real win rate, and the bias is far worse
+    for takers - this app's real order path (services/
+    kalshi_account_client.py defaults to time_in_force="immediate_or_
+    cancel") - than makers. A flat entry_threshold applied the same way at
+    every price point ignores this; a signal priced in longshot territory
+    needs to clear a higher bar, not the same one. market_strategy.py
+    already handles this differently (a hard min_price/max_price exclusion
+    band) - this is the whale-follow strategy's own gap to close,
+    graduated rather than a hard cutoff since a strong enough signal can
+    still be worth it even in that zone.
+
+    Shared by evaluate() (which also keeps effective_threshold around for
+    kelly_scaled_max_size, below) and validate_pending_fill() (which
+    re-derives it at the fill-time price, not the placement-time one - see
+    _validate_entry_price's own docstring for why that re-derivation
+    exists at all)."""
+    longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
+    longshot_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
+    longshot_close_window = strat_cfg.get("longshot_close_window_sec", 900)
+    is_longshot = price <= longshot_zone or price >= (1 - longshot_zone)
+    is_near_close = seconds_to_close is not None and seconds_to_close <= longshot_close_window
+    if is_longshot and (is_live or is_near_close):
+        longshot_bonus = 0.0
+    effective_threshold = strat_cfg["entry_threshold"] + (longshot_bonus if is_longshot else 0.0)
+    return effective_threshold, is_longshot
+
+
+class EntryValidation(NamedTuple):
+    ok: bool
+    gate_name: str | None = None
+    observed: float | None = None
+    threshold: float | None = None
+    reason: str | None = None
+
+
+def _validate_entry_price(
+    side: str, price: float, confidence: float, effective_threshold: float,
+    strat_cfg: dict, is_longshot: bool = False,
+) -> EntryValidation:
+    """Every price/confidence/band-dependent admission check a signal must
+    clear before it becomes a position - shared by evaluate()'s market-
+    order path and check_pending_fills()'s limit-fill path (via
+    FollowTheWhaleStrategy.validate_pending_fill) so a resting order that
+    fills at a moved price is held to the same bar a fresh signal at that
+    price would be.
+
+    Root-caused the still-open "four-entry gate bypass" ROADMAP item: four
+    real entries at unit costs 0.97, 1.00, 0.20, 0.97, one of them at conf
+    0.25 against a 0.495 threshold - check_pending_fills previously called
+    open_position() with none of this re-checked at all, only whatever the
+    order looked like at placement time."""
+    if confidence < effective_threshold:
+        reason = f"confidence {confidence} below threshold ({effective_threshold:.2f}"
+        reason += " - longshot zone)" if is_longshot else ")"
+        return EntryValidation(False, "entry_threshold", confidence, effective_threshold, reason)
+
+    unit_cost = price if side == "yes" else (1 - price)
+
+    # HARD VALIDITY FLOOR - not a tunable preference, and deliberately
+    # checked before the configurable band below so no config value can
+    # ever widen past it (direct instruction, 2026-08-17: "whale bets at
+    # cost 0 or 100c are just plain wrong. youre not even allowed to open
+    # positions at that point, even 1c/99c"). A contract at unit cost 1.00
+    # pays at most 1.00, so its best case is breaking even and its worst is
+    # total loss - there is no price at which that is a trade.
+    if not is_tradeable_unit_cost(unit_cost):
+        return EntryValidation(
+            False, "tradeable_price_range", unit_cost, MIN_TRADEABLE_UNIT_COST,
+            f"unit cost {unit_cost:.4f} is outside the tradeable range "
+            f"{MIN_TRADEABLE_UNIT_COST}-{MAX_TRADEABLE_UNIT_COST} — a contract this close to "
+            f"0 or 1 has no achievable edge, whatever the signal says",
+        )
+
+    min_unit_cost = strat_cfg.get("min_unit_cost")
+    max_unit_cost = strat_cfg.get("max_unit_cost")
+    if min_unit_cost is not None and unit_cost < min_unit_cost:
+        return EntryValidation(
+            False, "min_unit_cost", unit_cost, min_unit_cost,
+            f"price {unit_cost:.2f} is below the minimum unit cost of {min_unit_cost:.2f}",
+        )
+    if max_unit_cost is not None and unit_cost > max_unit_cost:
+        return EntryValidation(
+            False, "max_unit_cost", unit_cost, max_unit_cost,
+            f"price {unit_cost:.2f} is above the maximum unit cost of {max_unit_cost:.2f}",
+        )
+
+    return EntryValidation(True)
 
 
 class FollowTheWhaleStrategy:
@@ -317,42 +415,14 @@ class FollowTheWhaleStrategy:
         if series in excluded_series:
             return self._skip(signal, f'series "{series}" is manually excluded')
 
-        # Favorite-longshot bias, confirmed on real Kalshi data (Bürgi, Deng
-        # & Whelan 2025 - see docs/prediction-markets-research-reference.md
-        # Part 1.2): longshot-priced contracts (near $0 or $1) are
-        # systematically overpriced relative to their real win rate, and
-        # the bias is far worse for takers - this app's real order path
-        # (services/kalshi_account_client.py defaults to
-        # time_in_force="immediate_or_cancel") - than makers. A flat
-        # entry_threshold applied the same way at every price point ignores
-        # this; a signal priced in longshot territory needs to clear a
-        # higher bar, not the same one. market_strategy.py already handles
-        # this differently (a hard min_price/max_price exclusion band) -
-        # this is the whale-follow strategy's own gap to close, graduated
-        # rather than a hard cutoff since a strong enough signal can still
-        # be worth it even in that zone.
-        longshot_zone = strat_cfg.get("longshot_price_threshold", 0.15)
-        longshot_bonus = strat_cfg.get("longshot_entry_threshold_bonus", 0.15)
-        longshot_close_window = strat_cfg.get("longshot_close_window_sec", 900)
-        is_longshot = signal.price <= longshot_zone or signal.price >= (1 - longshot_zone)
-        is_near_close = (
-            seconds_to_close is not None
-            and seconds_to_close <= longshot_close_window
-        )
-        if is_longshot and (is_live or is_near_close):
-            longshot_bonus = 0.0
         # strat_cfg["entry_threshold"] is already category/series-resolved
         # (see this method's own docstring + config_overrides.resolve()
-        # call above) - no separate lookup needed here anymore.
-        effective_threshold = strat_cfg["entry_threshold"] + (longshot_bonus if is_longshot else 0.0)
-        if signal.confidence < effective_threshold:
-            reason = f"confidence {signal.confidence} below threshold ({effective_threshold:.2f}"
-            reason += " - longshot zone)" if is_longshot else ")"
-            candidate_log.record_rejection(
-                signal.ticker, "whale_follow", "entry_threshold",
-                signal.confidence, effective_threshold, side=signal.side,
-            )
-            return self._skip(signal, reason)
+        # call above) - no separate lookup needed here. effective_threshold
+        # is kept around past the price-band validation below too, for
+        # kelly_scaled_max_size's sizing curve further down.
+        effective_threshold, is_longshot = _effective_entry_threshold(
+            strat_cfg, signal.price, bool(is_live), seconds_to_close,
+        )
 
         # Avoid this whale's picks on markets like this one once they've proven
         # unreliable here — but only once there's enough resolved history to
@@ -394,84 +464,32 @@ class FollowTheWhaleStrategy:
                 signal, f'already holding a position on "{me_complement}", this market\'s mutually-exclusive complement',
             )
 
-        # Price-band gate (2026-08-15, direct priority: "figure out why even
-        # with a near 70% winrate only pennies are earned"). Real trade-
-        # history analysis (606 settled trades) found the answer precisely:
-        # bucketing every settled trade by unit_cost (the actual side-aware
-        # price paid per contract - signal.price if yes, 1-signal.price if
-        # no) showed real money is made almost entirely in one band and lost
-        # everywhere else:
-        #   unit_cost 0.1-0.5: net -$1,588 (155 trades) - buying cheap/
-        #     underdog contracts, the classic favorite-longshot-bias losing
-        #     side, already partially addressed by longshot_price_threshold/
-        #     longshot_entry_threshold_bonus below but that only scrutinizes
-        #     the extreme ends (<=5c/>=95c) - this data shows real losses
-        #     extend across the whole sub-50c range, not just the extremes.
-        #   unit_cost 0.5-0.8: net +$1,152 (230 trades, the only
-        #     consistently profitable band)
-        #   unit_cost 0.8-1.0: net -$314 (208 trades) - the counterintuitive
-        #     half of the finding: 78-94% win rates in this band (buying
-        #     heavy favorites) still net NEGATIVE, because a win only pays a
-        #     few cents while a loss costs nearly the full dollar paid - the
-        #     textbook "high win rate, thin edge" trap, not visible from win
-        #     rate alone.
-        # A hard band, not another graduated bonus - the existing longshot
-        # bonus already tried "graduated" for the extremes and the losses
-        # persisted well inside where that bonus ever applies. Same
-        # min_price/max_price precedent market_strategy.py already uses
-        # successfully, adapted to unit_cost (side-aware) since whale-follow
-        # trades both sides under one signal.price (always the yes price).
-        # None (either bound) means "no limit," same convention as every
-        # other optional bound in this app.
-        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
-
-        # HARD VALIDITY FLOOR - not a tunable preference, and deliberately
-        # checked before the configurable band below so no config value can
-        # ever widen past it (direct instruction, 2026-08-17: "whale bets at
-        # cost 0 or 100c are just plain wrong. youre not even allowed to
-        # open positions at that point, even 1c/99c").
-        #
-        # A contract at unit cost 1.00 pays at most 1.00, so its best case is
-        # breaking even and its worst is total loss - there is no price at
-        # which that is a trade. At 0.99 the whole position risks 99c to win
-        # 1c, needing 99% accuracy just to break even (EV per contract is
-        # exactly p - c). At the other end, unit cost 0.00 means the fill
-        # carried no cost at all, which is a data artifact rather than a
-        # trade - a print at these prices is overwhelmingly a settlement-
-        # adjacent or malformed tick, not information about anything.
-        #
-        # Confirmed live rather than hypothesised: four real entries were
-        # found in trade history at unit costs 0.97, 1.00, 0.20 and 0.97,
-        # one of them carrying conf 0.25 against a 0.495 threshold - i.e.
-        # they bypassed both the price band and the confidence gate by a
-        # route not yet identified. This floor makes the whole class
-        # unreachable regardless of which path is at fault, which is the
-        # right shape of fix for an invariant that should never have been
-        # expressible.
-        if not is_tradeable_unit_cost(unit_cost):
+        # Confidence + price-band gate, both re-derivable at a moved price -
+        # see _validate_entry_price's own docstring for why this is a
+        # shared function rather than inlined here (the "four-entry gate
+        # bypass" fix: check_pending_fills's limit-fill path calls the same
+        # function via validate_pending_fill, at the fill-time price,
+        # instead of trusting whatever passed at placement time). Real
+        # trade-history analysis (606 settled trades, 2026-08-15) is what
+        # motivated the unit_cost band in the first place: money is made
+        # almost entirely in the unit_cost 0.5-0.8 range (+$1,152/230
+        # trades) and lost everywhere else, including the counterintuitive
+        # 0.8-1.0 band (-$314/208 trades despite 78-94% win rates - a win
+        # only pays a few cents while a loss costs nearly the full dollar
+        # paid). The hard 0/1 floor inside _validate_entry_price is a
+        # separate, non-configurable invariant (direct instruction,
+        # 2026-08-17: "whale bets at cost 0 or 100c are just plain wrong")
+        # motivated by the same four real entries (unit costs 0.97, 1.00,
+        # 0.20, 0.97) this whole fix closes the remaining gap on.
+        validation = _validate_entry_price(
+            signal.side, signal.price, signal.confidence, effective_threshold, strat_cfg, is_longshot=is_longshot,
+        )
+        if not validation.ok:
             candidate_log.record_rejection(
-                signal.ticker, "whale_follow", "tradeable_price_range",
-                unit_cost, MIN_TRADEABLE_UNIT_COST, side=signal.side,
+                signal.ticker, "whale_follow", validation.gate_name,
+                validation.observed, validation.threshold, side=signal.side,
             )
-            return self._skip(
-                signal,
-                f"unit cost {unit_cost:.4f} is outside the tradeable range "
-                f"{MIN_TRADEABLE_UNIT_COST}-{MAX_TRADEABLE_UNIT_COST} — a contract this close to "
-                f"0 or 1 has no achievable edge, whatever the signal says",
-            )
-
-        min_unit_cost = strat_cfg.get("min_unit_cost")
-        max_unit_cost = strat_cfg.get("max_unit_cost")
-        if min_unit_cost is not None and unit_cost < min_unit_cost:
-            candidate_log.record_rejection(
-                signal.ticker, "whale_follow", "min_unit_cost", unit_cost, min_unit_cost, side=signal.side,
-            )
-            return self._skip(signal, f"price {unit_cost:.2f} is below the minimum unit cost of {min_unit_cost:.2f}")
-        if max_unit_cost is not None and unit_cost > max_unit_cost:
-            candidate_log.record_rejection(
-                signal.ticker, "whale_follow", "max_unit_cost", unit_cost, max_unit_cost, side=signal.side,
-            )
-            return self._skip(signal, f"price {unit_cost:.2f} is above the maximum unit cost of {max_unit_cost:.2f}")
+            return self._skip(signal, validation.reason)
 
         # Concentration risk (deep-scan finding 2, 2026-08-10): the check
         # above only ever guards the exact same ticker - nothing previously
@@ -536,7 +554,7 @@ class FollowTheWhaleStrategy:
             order = self.broker.place_limit_order(
                 ticker=signal.ticker, side=signal.side, size=contracts, limit_price=signal.price,
                 reason=reason, expires_at=time.time() + timeout_sec, config_fingerprint=config_fingerprint,
-                signal_seen_at=signal.timestamp,
+                signal_seen_at=signal.timestamp, confidence=signal.confidence,
             )
             if order is None:
                 return self._skip(signal, "a limit order is already resting on this ticker")
@@ -566,6 +584,30 @@ class FollowTheWhaleStrategy:
 
     def _skip(self, signal: WhaleSignal, reason: str) -> dict:
         return {"action": "skip", "signal": signal.to_dict(), "reason": reason}
+
+    def validate_pending_fill(
+        self, ticker: str, side: str, price: float, confidence: float | None, cfg: dict,
+        category: str | None = None, is_live: bool = False, seconds_to_close: float | None = None,
+    ) -> tuple[bool, str | None]:
+        """Callback wired into PaperBroker.check_pending_fills (main.py) -
+        see _validate_entry_price's own docstring for the "four-entry gate
+        bypass" bug this closes. A resting limit order was validated once,
+        at placement time, against the price it was PLACED at - but it
+        fills later, at whatever price the market has moved to by then,
+        with nothing re-checking that fill price against the same gates a
+        fresh signal at that price would have to clear. Re-resolves
+        strat_cfg the same way evaluate() does (category/series-aware, see
+        evaluate's own docstring) since a fill can land well after the tick
+        that placed the order."""
+        series = signal_log.series_of(ticker)
+        strat_cfg = config_overrides.resolve(cfg["strategy"], cfg.get("strategy_overrides"), category=category, series=series)
+        effective_threshold, is_longshot = _effective_entry_threshold(strat_cfg, price, is_live, seconds_to_close)
+        validation = _validate_entry_price(side, price, confidence or 0.0, effective_threshold, strat_cfg, is_longshot=is_longshot)
+        if not validation.ok:
+            candidate_log.record_rejection(
+                ticker, "whale_follow", validation.gate_name, validation.observed, validation.threshold, side=side,
+            )
+        return validation.ok, validation.reason
 
     def check_exits(
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,

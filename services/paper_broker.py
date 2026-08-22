@@ -53,6 +53,12 @@ class PendingOrder:
     reason: str
     config_fingerprint: str | None = None
     signal_seen_at: float | None = None
+    # Carried from the signal that placed this order so check_pending_fills
+    # can re-validate the fill-time price against the same confidence gate
+    # a fresh signal at that price would have to clear - see
+    # strategy_engine.py's _validate_entry_price docstring for the bug
+    # this closes.
+    confidence: float | None = None
 
 
 @dataclass
@@ -190,6 +196,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         """
     )
     _add_column_if_missing(conn, "pending_orders", "signal_seen_at", "REAL")
+    _add_column_if_missing(conn, "pending_orders", "confidence", "REAL")
     return conn
 
 
@@ -235,12 +242,12 @@ class PaperBroker:
                     self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0,
                                                 signal_seen_at, bool(excluded)))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
-                for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at in conn.execute(
-                    "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, signal_seen_at "
-                    "FROM pending_orders"
+                for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence in conn.execute(
+                    "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, "
+                    "signal_seen_at, confidence FROM pending_orders"
                 ):
                     self.pending_orders[ticker] = PendingOrder(
-                        ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at,
+                        ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence,
                     )
 
     def _connect(self) -> sqlite3.Connection:
@@ -322,6 +329,7 @@ class PaperBroker:
     def place_limit_order(
         self, ticker: str, side: str, size: int, limit_price: float, reason: str,
         expires_at: float, config_fingerprint: str | None = None, signal_seen_at: float | None = None,
+        confidence: float | None = None,
     ) -> PendingOrder | None:
         """Rests a limit order instead of filling instantly at the quoted
         price - the paper-mode maker-order simulation (2026-08-15, docs/
@@ -349,16 +357,16 @@ class PaperBroker:
         order = PendingOrder(
             ticker=ticker, side=side, size=size, limit_price=limit_price,
             placed_at=time.time(), expires_at=expires_at, reason=reason,
-            config_fingerprint=config_fingerprint, signal_seen_at=signal_seen_at,
+            config_fingerprint=config_fingerprint, signal_seen_at=signal_seen_at, confidence=confidence,
         )
         self.pending_orders[ticker] = order
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO pending_orders "
-                "(ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, signal_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, "
+                "signal_seen_at, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (order.ticker, order.side, order.size, order.limit_price, order.placed_at,
-                 order.expires_at, order.reason, order.config_fingerprint, order.signal_seen_at),
+                 order.expires_at, order.reason, order.config_fingerprint, order.signal_seen_at, order.confidence),
             )
         return order
 
@@ -369,6 +377,7 @@ class PaperBroker:
 
     def check_pending_fills(
         self, latest_bids: dict[str, float], latest_asks: dict[str, float], now: float | None = None,
+        validate_fn=None,
     ) -> list[dict]:
         """Runs once per tick (main.py, right after the signal-evaluation
         loop) - resolves every resting limit order against this tick's
@@ -397,6 +406,19 @@ class PaperBroker:
         off the watchlist, etc.) leaves the order pending untouched rather
         than guessing.
 
+        validate_fn(ticker, side, fill_price, confidence) -> (ok, reason),
+        when given, re-checks the fill-time price/confidence against the
+        same gates a fresh signal at that price would have to clear
+        (services/strategy_engine.py's FollowTheWhaleStrategy.
+        validate_pending_fill) - the order was only ever validated once,
+        at PLACEMENT time, against the price it asked for; nothing
+        previously re-checked the price it actually filled at, which is
+        the confirmed root cause of the "four-entry gate bypass" (real
+        entries at unit costs 0.97, 1.00, 0.20, 0.97 that should never have
+        cleared entry_threshold/the price band). None (the default) skips
+        re-validation entirely, preserving this method's exact prior
+        behavior for every existing caller/test.
+
         Returns one decision dict per fill, in the same shape evaluate()'s
         caller already expects from a market-order trade."""
         now = now if now is not None else time.time()
@@ -417,6 +439,15 @@ class PaperBroker:
             if available_unit_cost > limit_unit_cost:
                 continue  # market hasn't come to this order's price yet
             fill_price = available_unit_cost if order.side == "yes" else (1 - available_unit_cost)
+            if validate_fn is not None:
+                ok, reason = validate_fn(order.ticker, order.side, fill_price, order.confidence)
+                if not ok:
+                    self._cancel_pending(ticker)
+                    fills.append({
+                        "action": "fill_rejected", "ticker": order.ticker, "side": order.side,
+                        "price": fill_price, "reason": reason, "source": "limit_order",
+                    })
+                    continue
             self._cancel_pending(ticker)  # remove from pending before opening - a different dict than positions
             trade = self.open_position(
                 ticker=order.ticker, side=order.side, size=order.size, price=fill_price,

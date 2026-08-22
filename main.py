@@ -814,7 +814,29 @@ async def trading_loop():
             # opened_since guard immediately below) so a just-filled
             # position isn't exit-checked this same tick against
             # state["latest_prices"], snapshotted before this fill happened.
-            for fill_decision in broker.check_pending_fills(state["latest_prices"], state["latest_asks"]):
+            #
+            # validate_fn re-checks the fill-time price/confidence against
+            # the same gates evaluate() applied at placement time (the
+            # "four-entry gate bypass" fix - see strategy_engine.py's
+            # validate_pending_fill/_validate_entry_price docstrings). Same
+            # is_live/category/seconds_to_close derivation as
+            # _handle_signal's own (decision_bridge.py), just computed
+            # fresh at fill time instead of signal time.
+            def _validate_fill(ticker: str, side: str, price: float, confidence: float | None) -> tuple[bool, str | None]:
+                market_info = state["market_titles"].get(ticker) or {}
+                event_ticker = market_info.get("event_ticker")
+                is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
+                if not is_live and event_ticker:
+                    is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
+                seconds_to_close = market_history.seconds_to_close(_close_time_by_ticker().get(ticker), tick_now)
+                return strategy.validate_pending_fill(
+                    ticker, side, price, confidence, cfg,
+                    category=_category_by_ticker().get(ticker), is_live=is_live, seconds_to_close=seconds_to_close,
+                )
+
+            for fill_decision in broker.check_pending_fills(
+                state["latest_prices"], state["latest_asks"], validate_fn=_validate_fill,
+            ):
                 await _handle_fill_decision(fill_decision, tick_now)
 
             # Active position management - runs every tick regardless of
