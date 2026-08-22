@@ -148,7 +148,8 @@ class FollowTheWhaleStrategy:
     def evaluate(
         self, signal: WhaleSignal, cfg: dict, is_live: bool | None = None, market_results: dict | None = None,
         config_fingerprint: str | None = None, latest_prices: dict | None = None, category: str | None = None,
-        me_complement: str | None = None,
+        me_complement: str | None = None, market_titles: dict | None = None, event_titles: dict | None = None,
+        markets: list | None = None,
     ) -> dict:
         """Returns a decision dict describing what happened (trade or skip + why).
         is_live comes from main.py's milestone/live-data lookup (see
@@ -174,6 +175,14 @@ class FollowTheWhaleStrategy:
         category/series-aware, not just entry_threshold (this subsumes the
         older, single-field entry_threshold_by_category mechanism - see
         config/settings.yaml's strategy_overrides).
+
+        market_titles/event_titles/markets: state["market_titles"]/
+        state["event_titles"]/state["markets"] passed through explicitly by
+        the caller, used only by the special-market conservative gate below
+        (can_close_early/collateral_return_type/mutually_exclusive lookup).
+        Previously read via a lazy `import main` reach-around; main.py's
+        modularization pass replaced that with explicit params like every
+        other input here.
 
         me_complement (2026-08-14 direct request): the other ticker in a
         confirmed 2-outcome mutually-exclusive pair (services/
@@ -269,18 +278,16 @@ class FollowTheWhaleStrategy:
 
         # Conservative gate for markets with early-close or special settlement
         try:
-            # lazy import main to avoid circular import at module load time
-            import main as _main
-            m_info = (_main.state.get("market_titles") or {}).get(signal.ticker) or {}
+            m_info = (market_titles or {}).get(signal.ticker) or {}
             et = m_info.get("event_ticker")
-            ev = (_main.state.get("event_titles") or {}).get(et) or {}
+            ev = (event_titles or {}).get(et) or {}
             special_flags = {
                 "can_close_early": False,
                 "collateral_return_type": None,
                 "mutually_exclusive": False,
             }
             # market-level can_close_early is exposed in state["markets"] slim maps
-            for m in (_main.state.get("markets") or []):
+            for m in (markets or []):
                 if m.get("ticker") == signal.ticker:
                     special_flags["can_close_early"] = bool(m.get("can_close_early"))
                     break

@@ -232,6 +232,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     decision = strategy.evaluate(
         signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,
         latest_prices=state["latest_prices"], category=category, me_complement=me_complement,
+        market_titles=state["market_titles"], event_titles=state["event_titles"], markets=state["markets"],
     )
     state["decision_feed"].insert(0, decision)
     state["decision_feed"] = state["decision_feed"][:50]
