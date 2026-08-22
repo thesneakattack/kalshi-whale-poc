@@ -249,6 +249,133 @@ questions.
       `cross-strategy` routes) - a real removal pass should happen as its
       own deliberate step once modularization ships, not mid-phase, so it
       can cleanly touch every one of those files once instead of twice.
+- [ ] **Split `services/analytics/` further: advisory and whale calibration
+      should each be their own module.** Direct instruction (2026-08-22).
+      `services/analytics/routes.py` currently lumps advisory (`/api/advisory/*`,
+      backed by `services/advisory_engine.py`) and confidence calibration
+      (`/api/confidence-calibration/*`, backed by
+      `services/confidence_calibration.py` + `services/calibration_history.py`)
+      in with regime/backtest/candidate-log/cross-strategy/market-analyst
+      under one generic "analytics" umbrella. Split into `services/advisory/`
+      and `services/whale_calibration/` (naming TBD - "whale_calibration" to
+      distinguish from `market_strategy_calibration`, which calibrates the
+      separate Market-Native strategy and may go away entirely per the
+      Market-Native removal item above), each with routes.py + a
+      CHEATSHEET.md, same convention as every other module this session.
+      What's left in `services/analytics/` after the split: regime/backtest/
+      candidate-log/cross-strategy/market-analyst/series-evaluator - worth
+      a fresh look at whether that residual grouping still makes sense as
+      one module once advisory/calibration are pulled out, or whether it
+      wants further splitting too.
+- [ ] **Flatten the config surface - too many independent knobs to track
+      which ones are actually load-bearing.** Direct instruction
+      (2026-08-22): "the config settings, strategies, options, knobs,
+      levers, widgets, need to be flattened a bit because there's too much
+      variability to track the usefulness of these instruments." The
+      3-day config-drift incident earlier this session (reverted, see
+      CLAUDE.md's HARD COMMANDMENT section) is direct proof this is a real
+      problem, not a hypothetical one: dozens of independently-tunable
+      `strategy.*` fields drifted into a combination nobody would have
+      chosen deliberately, and it went unnoticed for days precisely
+      because there were too many knobs to eyeball at once.
+      `config/settings.yaml`'s `strategy` section alone has ~30 fields
+      (entry/exit thresholds, sizing, multiple `auto_exit_*_weight` scoring
+      blends, longshot handling, runway gates...), doubled by
+      `market_strategy`'s near-duplicate set (candidate for removal per
+      the Market-Native item above), multiplied again by
+      `strategy_overrides.by_category`/`by_series` layering on top, plus
+      `whale_confidence_weights`' own 7-factor blend. Needs an audit pass
+      (which knobs have actually been touched/mattered vs. which are
+      vestigial or redundant with another) before deciding what to cut,
+      consolidate, or fold into a computed/derived value instead of a
+      free-floating setting - not done now, this is a planning item.
+- [ ] **Separate the frontend from the backend completely.** Direct
+      instruction (2026-08-22). Already partially true at the *serving*
+      level (see CLAUDE.md's "Dev workflow" section): `main.py` is
+      API-only, no HTML; `web` (nginx) serves `static/*.html` directly and
+      reverse-proxies `/api/`+`/auth/` to `fastapi`, which has no public
+      URL of its own. What's NOT separated: `static/`'s pages are each a
+      single file of inline HTML/CSS/JS with no build step, no bundler, no
+      independent project structure of their own, and no formal API
+      contract - the frontend JS just knows the shape of `/api/state`'s
+      response by convention, the same coupling-by-convention that's
+      caused real bugs this project has already hit (CLAUDE.md's "displayed
+      value must match its label" bug pattern is partly a symptom of this).
+      Ties into the same "work on modules independently, separate repos or
+      at least separate Claude sessions" goal as the backend modularization
+      work this session - a real frontend/backend split would mean: the
+      frontend becomes its own real project (own directory structure at
+      minimum; a real build step/framework and possibly its own repo as
+      the fuller version), and a formal, versioned API contract between
+      them (FastAPI's own OpenAPI schema generation is free and already
+      available, just unused for this today) instead of implicit shape
+      agreement. Planning item only - not started, no design decided yet
+      (how far to take it, whether a framework gets introduced, whether it
+      becomes a separate repo).
+- [ ] **Per-module data-consumption audit + report.** Direct instruction
+      (2026-08-22): "do a deep dive on each module and what data is pulled
+      from where... maximize data consumption efficiency and effectiveness.
+      i suspect things are using rest api calls where they shouldn't, data
+      pulled from where they shouldnt." For each module, trace every data
+      source it touches (real Kalshi REST call, real Kalshi websocket
+      stream, this app's own SQLite store, in-memory `state`) and flag
+      anywhere a cheaper/fresher source should be used instead - exactly
+      the "REST call that should've been a websocket, or a websocket
+      that's already flowing but re-fetched via REST anyway" shape of bug
+      this project has hit before (see CLAUDE.md's REST-vs-websocket
+      architecture notes). This becomes tractable specifically because of
+      this session's modularization work - a report organized module by
+      module needs real module boundaries to organize around, which
+      didn't exist before this session.
+      **Real groundwork already exists, this isn't starting from zero**:
+      (1) each new module's own `CHEATSHEET.md` already documents its
+      relevant `docs/kalshi/` pages; (2) a docs-mining pass this session
+      already found several concrete, still-open instances of exactly this
+      bug shape - an uncapped `asyncio.gather` per series in `_fetch_markets`'
+      pinned-watchlist branch (no semaphore), `services/series_evaluator.py`'s
+      `evaluate_pending()` opening one new SQLite connection per series
+      inside its own loop (real N+1), `regime_analytics.by_category()` and
+      `trade_analytics.compute_summary()` both computed twice on identical
+      input inside the advisory/full-spectrum context builders,
+      `market_history.snapshots`' `spread`/`volume_24h`/`time_to_close_sec`
+      columns written every tick but read by nothing; (3)
+      `docs/next-session-pickup-2026-08-17.md` already has a full REST-vs-
+      websocket architecture breakdown (what's already migrated, what's
+      deliberately still REST, what's a genuine gap). The new work is
+      making this systematic and complete per module rather than
+      incidental findings, and producing it as one organized report.
+      Not started - planning item only.
+- [ ] **Retrospective sweep: which targeted datapoints/logic were built on
+      a wrong understanding of the Kalshi API or the streaming/REST
+      split.** Direct instruction (2026-08-22): "revisit datapoints we've
+      targeted and the flow while maintaining api doc context, streaming
+      and rest api data, and see where we made mistakes in
+      approach/logic/solution building." Distinct from the data-consumption
+      efficiency audit above - that one asks "is this the right *source*
+      for this data" (REST vs. WS vs. cache), this one asks "did we
+      correctly understand what the data itself *means*" before building
+      logic on it. This project's own history already has a real pattern
+      of exactly this mistake, caught reactively rather than swept for
+      proactively: reading `category_tags` as per-event sport data when
+      it's really a fixed facet-filter vocabulary (`docs/kalshi/CHEATSHEET.md`'s
+      first entry), the deprecated `taker_side` field defaulting to "no" on
+      any unreadable value, the dollar-denominated whale-notional threshold
+      being geometrically biased toward near-certain prices (the single
+      biggest reframing finding of the 2026-08-17 session - a *targeted
+      datapoint* that was wrong, not just inefficiently fetched), the
+      no-side cost-math bug (`size * price` instead of
+      `size * (1 - price)`), trusting a single uncorroborated websocket
+      price tick for a stop-loss decision. CLAUDE.md's "Bug pattern to
+      watch for" section and `docs/kalshi/CHEATSHEET.md` both exist because
+      of this exact failure shape, but so far every entry was added
+      *after* a live incident forced the investigation, never as a
+      deliberate sweep. The new work: go through each module's data
+      inputs deliberately (not waiting for the next incident to reveal
+      one), checking each against `docs/kalshi/` and against whether the
+      REST-vs-streaming choice for it was ever actually validated or just
+      assumed. Not started - planning item only, and worth doing after (or
+      alongside) the data-consumption audit above since they'll cover a lot
+      of the same ground from two different angles.
 - [ ] **Consider a dedicated charts/graphs module, possibly server-rendered
       via Plotly or Matplotlib.** Direct instruction (2026-08-22): "should
       histographs be their own module as well? i think they should... also
