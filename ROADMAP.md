@@ -260,24 +260,22 @@ questions.
       `cross-strategy` routes) - a real removal pass should happen as its
       own deliberate step once modularization ships, not mid-phase, so it
       can cleanly touch every one of those files once instead of twice.
-- [ ] **Split `services/analytics/` further: advisory and whale calibration
+- [x] **Split `services/analytics/` further: advisory and whale calibration
       should each be their own module.** Direct instruction (2026-08-22).
-      `services/analytics/routes.py` currently lumps advisory (`/api/advisory/*`,
-      backed by `services/advisory_engine.py`) and confidence calibration
-      (`/api/confidence-calibration/*`, backed by
-      `services/confidence_calibration.py` + `services/calibration_history.py`)
-      in with regime/backtest/candidate-log/cross-strategy/market-analyst
-      under one generic "analytics" umbrella. Split into `services/advisory/`
-      and `services/whale_calibration/` (naming TBD - "whale_calibration" to
-      distinguish from `market_strategy_calibration`, which calibrates the
-      separate Market-Native strategy and may go away entirely per the
-      Market-Native removal item above), each with routes.py + a
-      CHEATSHEET.md, same convention as every other module this session.
-      What's left in `services/analytics/` after the split: regime/backtest/
-      candidate-log/cross-strategy/market-analyst/series-evaluator - worth
-      a fresh look at whether that residual grouping still makes sense as
-      one module once advisory/calibration are pulled out, or whether it
-      wants further splitting too.
+      Shipped as Phases 2-3/9 of the same-day continued-modularization
+      pass: `services/whale_calibration/` (confidence_calibration.py +
+      calibration_history.py, zero cross-imports, cleanest split) and
+      `services/advisory/` (advisory_engine.py, one real cross-import -
+      `regime_analytics` - kept as a plain shared dependency rather than
+      dragged along), each with routes.py + CHEATSHEET.md. What's left in
+      `services/analytics/`: regime/candidate-log/cross-strategy/
+      market-analyst/series-evaluator/market-strategy-calibration - backtest
+      also moved out (Phase 4/9, `services/backtest/`). See
+      `services/analytics/CHEATSHEET.md` for the residual scope and a new
+      deferred item: `market_analyst_agent.py`/`market_analyst_orchestrator.py`
+      are real split candidates too, but genuinely entangled with advisory/
+      series-evaluator (checked directly, not assumed) - queued as its own
+      future pass rather than rushed here.
 - [ ] **Flatten the config surface - too many independent knobs to track
       which ones are actually load-bearing.** Direct instruction
       (2026-08-22): "the config settings, strategies, options, knobs,

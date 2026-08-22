@@ -1,12 +1,28 @@
 # Analytics module — cheat sheet
 
-Owns: `routes.py` (advisory/calibration/regime/backtest/market-analyst/
-series-evaluator routes) + `market_analyst_orchestrator.py` (the one part
-of this concern that's real logic, not routing — LLM-based market/series/
-full-spectrum analysis, with its own in-flight guard sets).
+Owns: `routes.py` (`/api/suggestions/*` — shared decline/undecline/declined
+infrastructure, not advisory-owned; `/api/market-strategy-calibration/*` —
+the separate Market-Native strategy's own tuning; `/api/candidate-log/*`,
+`/api/cross-strategy/*`, `/api/regime/*` — segmentation/comparison reads;
+`/api/market-analyst/*`, `/api/series-evaluator/*`) +
+`market_analyst_orchestrator.py` (the one part of this concern that's real
+logic, not routing — LLM-based market/series/full-spectrum analysis, with
+its own in-flight guard sets). This is what's left after advisory
+(`services/advisory/`) and whale calibration (`services/whale_calibration/`)
+were split out 2026-08-22, per the ROADMAP.md item queued the same day —
+see those modules' own `CHEATSHEET.md` for what moved and why.
 `services/diagnostics.py`/`series_watcher.py`/`settlement_edge.py`/
-`config_performance.py`/`advisory_engine.py`/`confidence_calibration.py`
-are already clean and stay flat for now.
+`config_performance.py` are already clean and stay flat for now.
+
+**Deferred, not done this pass**: `market_analyst_agent.py` (818 lines) +
+`market_analyst_orchestrator.py` (431 lines) are real candidates for their
+own `services/market_analyst/` module, but checked directly before
+deciding not to split them here: `market_analyst_orchestrator.py` imports
+`advisory_engine.generate_recommendations` directly (to build LLM context)
+and exposes `_series_evaluator_overview_with_crosscheck`, which `main.py`'s
+`trading_loop` also imports directly — genuine entanglement with
+advisory/series-evaluator territory that a same-pass split would touch
+twice. New `ROADMAP.md` item, not started.
 
 ## No direct Kalshi API surface — except one real cost center
 
@@ -30,15 +46,23 @@ real-money code path, not a plain analytics read.
   `trade_analytics`), `signal_log`, `config_performance`'s audit trail —
   all already-produced data, nothing this module generates itself except
   LLM analysis records.
-- **Downstream — this is the one place with a real write-back loop:**
-  `advisory_engine`/`confidence_calibration` auto-apply write straight into
-  `config_store` from `trading_loop`'s `calibration_advisory` phase
-  (in `main.py`, not through `services/config/routes.py`'s manual path —
-  see that module's own cheat sheet for the distinction). This in-process,
-  every-tick computation is exactly what ROADMAP.md's P4 "move analytics
-  out of the live loop" item is about — read that entry before adding more
-  work to this phase of the tick loop.
-- `_series_evaluator_overview_with_crosscheck` (defined here) is also
-  called directly from `main.py`'s `trading_loop` for the same
-  calibration_advisory auto-apply logic — a real, deliberate main.py→this
-  module dependency, not leftover coupling.
+- **`market_analyst_orchestrator.py` → `services/advisory/advisory_engine.py`**
+  is a real, deliberate cross-module import (LLM context-building needs the
+  same recommendation set the dashboard shows) — same shared-dependency
+  pattern as `services/advisory/`'s own import of `regime_analytics`. Don't
+  read this as leftover coupling from before the split; it's the mirror
+  image of it.
+- `_series_evaluator_overview_with_crosscheck` (defined in
+  `market_analyst_orchestrator.py`) is called directly from `main.py`'s
+  `trading_loop` for the `calibration_advisory` phase's auto-apply logic —
+  a real, deliberate `main.py`→this module dependency, not leftover
+  coupling. Also called from `services/advisory/routes.py` for the same
+  reason (advisory recommendations fold in series-evaluator's verdict).
+- **Downstream:** `market_strategy_calibration`'s own auto-apply loop (if
+  any) and every read-only route here return data only — no
+  `config_store.update()` call anywhere in this residual module. The real
+  write-back loops (`advisory`/`whale_calibration` auto-apply) moved with
+  those modules; see their own `CHEATSHEET.md`s. ROADMAP.md's P4 "move
+  analytics out of the live tick loop" item is about `trading_loop`'s
+  `calibration_advisory` phase as a whole, spanning this module and its
+  two siblings — read that entry before adding more work to that phase.
