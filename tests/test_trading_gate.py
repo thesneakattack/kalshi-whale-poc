@@ -1471,6 +1471,11 @@ def _cfg_live_only(**overrides):
 
 def test_fetch_markets_live_only_hydrates_catalog_rows_with_real_prices():
     main.state["live_status_cache"].clear()
+    # SERA-EVT1-YES is reused (with different hydrated values) across this
+    # test group - _cached_market_fetch's own cache must not leak a value
+    # from one test into the next now that live_markets_only hydration
+    # goes through it too (2026-08-23).
+    main.state["market_object_cache"].clear()
     mc_module.clear_all()
     # A catalog row has no price fields at all - matches what
     # market_catalog.upsert_markets/candidates_in_window actually store.
@@ -1495,6 +1500,11 @@ def test_fetch_markets_live_only_hydrates_an_already_settled_market_too():
     # status="open" per-series batch this replaced), so an already-settled
     # market hydrates on the same single call - no separate fallback needed.
     main.state["live_status_cache"].clear()
+    # SERA-EVT1-YES is reused (with different hydrated values) across this
+    # test group - _cached_market_fetch's own cache must not leak a value
+    # from one test into the next now that live_markets_only hydration
+    # goes through it too (2026-08-23).
+    main.state["market_object_cache"].clear()
     mc_module.clear_all()
     mc_module.upsert_markets("SERA", "Sports", [{
         "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
@@ -1521,6 +1531,11 @@ def test_fetch_markets_live_only_falls_back_to_catalog_row_when_fetch_fails():
     # path's own confirmation fallback uses (see
     # test_refresh_discovery_cache_keeps_a_market_the_confirm_call_could_not_return).
     main.state["live_status_cache"].clear()
+    # SERA-EVT1-YES is reused (with different hydrated values) across this
+    # test group - _cached_market_fetch's own cache must not leak a value
+    # from one test into the next now that live_markets_only hydration
+    # goes through it too (2026-08-23).
+    main.state["market_object_cache"].clear()
     mc_module.clear_all()
     mc_module.upsert_markets("SERA", "Sports", [{
         "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
@@ -1536,6 +1551,56 @@ def test_fetch_markets_live_only_falls_back_to_catalog_row_when_fetch_fails():
     assert len(markets) == 1
     assert markets[0]["ticker"] == "SERA-EVT1-YES"
     assert "yes_bid_dollars" not in markets[0]  # the original, price-less catalog row
+
+
+def test_fetch_markets_live_only_hydration_is_cached_not_refetched_every_tick():
+    # The actual fix (2026-08-23, direct report of real REST rate limiting
+    # "especially position sections"): live_markets_only hydration now
+    # goes through _cached_market_fetch, the same TTL-cached path pinned/
+    # extra_tickers already used - a second call within the cache window
+    # must not re-hit get_markets_by_tickers at all.
+    main.state["live_status_cache"].clear()
+    main.state["market_object_cache"].clear()
+    mc_module.clear_all()
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "active",
+    }])
+    fake = _FakeHydrationClient(
+        hydrated_markets={
+            "SERA-EVT1-YES": {"ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.73"},
+        },
+        widget_status="live",
+    )
+    first = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
+    assert first[0]["yes_bid_dollars"] == "0.73"
+    assert fake.get_markets_by_tickers_calls == ["SERA-EVT1-YES"]
+
+    second = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
+    assert second[0]["yes_bid_dollars"] == "0.73"  # still hydrated, from cache
+    assert fake.get_markets_by_tickers_calls == ["SERA-EVT1-YES"]  # no second REST call
+
+
+def test_cached_market_fetch_evicts_oldest_once_past_the_size_cap(monkeypatch):
+    # Unbounded growth guard added 2026-08-23 alongside routing
+    # live_markets_only's hydration through this cache too - a much
+    # larger, faster-rotating ticker population than the small pinned/
+    # open-position set this cache originally served.
+    main.state["market_object_cache"].clear()
+    monkeypatch.setattr(discovery_cache, "_MAX_MARKET_OBJECT_CACHE", 4)
+
+    class _FakeClient:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: {"ticker": t} for t in tickers}
+
+    fake = _FakeClient()
+    asyncio.run(discovery_cache._cached_market_fetch(fake, ["A", "B", "C"]))
+    asyncio.run(discovery_cache._cached_market_fetch(fake, ["D", "E"]))  # 5 total, past the cap of 4
+    cache = main.state["market_object_cache"]
+    assert len(cache) <= 4
+    # Oldest-written entries (A, B) are the eviction candidates; the two
+    # just-written this call (D, E) must never be evicted.
+    assert "D" in cache and "E" in cache
 
 
 # --- _refresh_discovery_cache: real-time terminal-status confirmation

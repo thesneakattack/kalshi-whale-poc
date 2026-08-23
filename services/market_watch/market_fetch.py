@@ -155,27 +155,27 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # report: "showing 50c in green and red for all sets of yes/no
         # values all across the app. its not updating either."
         #
-        # Hydrated via ONE batched get_markets_by_tickers call (2026-08-23
-        # rewrite - ROADMAP.md's "per-module data-consumption audit" gap-
-        # check). The original fix here fanned out client.get_markets(
-        # limit=100, series_ticker=s) per distinct selected series via
-        # asyncio.gather with no cap - at today's live watchlist_size (150)
-        # that's up to ~50 markets' worth of series firing concurrently,
-        # each one alone (limit=100 markets * 10 tokens/market, see
-        # KalshiClient._MARKETS_BY_TICKERS_BATCH_SIZE's own comment)
-        # already able to exceed Kalshi's entire 600-token read-burst
-        # budget by itself - the exact "uncapped burst stalls every OTHER
-        # call sharing the same limiter" failure live_status._fetch_live_
-        # status already hit and fixed once (see _LIVE_STATUS_MAX_POLL_
-        # PER_TICK's comment), just not yet applied here. get_markets_by_
-        # tickers already chunks to 50/request, sequentially (never
-        # concurrent), and - a genuine correctness fix riding along, not
-        # just efficiency - carries no status filter, so it no longer
-        # needs the separate per-ticker fallback the old status="open"
-        # batch required for an already-settled market.
+        # Hydrated via _cached_market_fetch, same TTL-cached path the
+        # pinned-watchlist and extra_tickers branches already use (2026-08-23,
+        # second pass - direct report that real REST rate limiting was
+        # happening, "especially position sections", after a first pass the
+        # same day had only fixed the *concurrency* half of this). That
+        # first pass fanned out client.get_markets(limit=100,
+        # series_ticker=s) per distinct selected series via an uncapped
+        # asyncio.gather, replaced with one safe batched get_markets_by_
+        # tickers call - genuinely safer, but still UNCACHED, still firing
+        # on every single tick regardless of whether the selected tickers
+        # had changed since the last one. That's the same "re-fetch every
+        # tick unconditionally" bug _cached_market_fetch's own docstring
+        # already names for the other two branches, just not yet applied
+        # here - this call's structural fields (title, close_time, status)
+        # don't need per-6-second freshness any more than a pinned
+        # ticker's do, and price still comes from the WS ticker-channel
+        # overlay below regardless of source.
         selected_tickers = sorted(m["ticker"] for m in markets if m.get("ticker"))
         try:
-            hydrated_by_ticker = await client.get_markets_by_tickers(selected_tickers)
+            hydrated = await _cached_market_fetch(client, selected_tickers)
+            hydrated_by_ticker = {m["ticker"]: m for m in hydrated if m.get("ticker")}
         except Exception:
             # Degrade to the original catalog rows (schedule/title info,
             # just no live price) rather than losing the whole tick's

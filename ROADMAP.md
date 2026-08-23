@@ -538,6 +538,42 @@ questions.
       asset" rule. The real gap is that no consumer was ever built - worth
       a future item in its own right (a diagnostic or ml_feed.py extension
       that actually reads this data), not a deletion.
+- [x] **Real REST rate limiting, direct report (2026-08-23): "happening in
+      the history and especially position sections... I've insisted
+      multiple times on streams to inform those sections and using REST
+      API to only verify and act on decisions, not monitor data and make
+      decisions every tick."** Root-caused to the same
+      `live_markets_only` hydration branch this session's earlier data-
+      consumption-audit pass had already touched once (the uncapped-
+      `asyncio.gather` fix, same day) - that pass fixed the *concurrency*
+      half (one safe batched `get_markets_by_tickers` call instead of N
+      concurrent per-series ones) but missed the *caching* half: it still
+      called that batched fetch **unconditionally on every tick**, with no
+      TTL, unlike the pinned-watchlist and `extra_tickers` branches, which
+      already routed through `_cached_market_fetch` (a 300s structural-
+      field cache, price freshness from the WS ticker-channel overlay
+      instead - the exact "websocket stream everything you can... leave
+      the api calls for things that are absolutely necessary" instruction
+      from 2026-08-15). Confirmed via direct instrumentation (wrapping
+      the fake client's method, not just reading the code) that the
+      uncached call really did fire every `_fetch_markets` invocation.
+      Fixed by routing `live_markets_only` hydration through
+      `_cached_market_fetch` too, so all three branches now share one
+      consistent "REST only when structurally stale, price always from
+      the WS stream" pattern. Added a size cap + oldest-first eviction to
+      that shared cache (`_MAX_MARKET_OBJECT_CACHE = 2000`, same shape as
+      `kalshi_trade_tape.py`'s own `_MAX_MARKET_CACHE`) since it now
+      serves a much larger, faster-rotating ticker population than the
+      small pinned/open-position set it originally did - unbounded growth
+      over a long-running process would be the wrong trade for a cache
+      whose whole point is avoiding REST calls. Real REST calls for
+      account/position data (`_fetch_account_snapshot`) were already on a
+      20s cache from an earlier pass, and a private, authenticated `fill`/
+      `market_positions` WebSocket subscription already exists and is
+      wired (`services/whale_stream/whale_stream_handlers.py`'s
+      `_process_stream_fill`/`_process_stream_position`, subscribed in
+      `kalshi_trade_ws.py`'s `run()`) - neither of those needed a change
+      here; the gap was specifically the market-hydration path.
 - [ ] **Retrospective sweep: which targeted datapoints/logic were built on
       a wrong understanding of the Kalshi API or the streaming/REST
       split.** Direct instruction (2026-08-22): "revisit datapoints we've

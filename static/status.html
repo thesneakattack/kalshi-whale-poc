@@ -4820,6 +4820,42 @@
           <code>CLAUDE.md</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 123 · the caching half, not just the concurrency half</div>
+        <h4>Real REST rate limiting, direct report: phase 122's own live_markets_only fix was incomplete</h4>
+        <p>Direct report, same day as phase 122: "rest api rate limiting is happening in the history and especially
+          position sections. i've insisted multiple times on streams to inform those sections and using REST API
+          to only verify and act on decisions, not monitor data and make decisions every tick." Root-caused to the
+          exact branch phase 122 had just touched: that pass replaced an uncapped concurrent
+          <code>asyncio.gather</code> (one <code>get_markets(series_ticker=s)</code> call per selected series) with
+          one safe batched <code>get_markets_by_tickers</code> call - genuinely safer, but still fired
+          <b>unconditionally on every tick</b>, no caching, unlike the pinned-watchlist and <code>extra_tickers</code>
+          branches sitting right next to it in the same function, which already routed through
+          <code>_cached_market_fetch</code> - a 300-second structural-field cache with price freshness coming from
+          the WS ticker-channel overlay instead, exactly the "websocket stream everything you can... leave the api
+          calls for things that are absolutely necessary" instruction from 2026-08-15. Confirmed the gap was real,
+          not theoretical, via direct instrumentation (wrapping the fake client's own method to log calls, not just
+          reading the code) - the uncached call fired on every single <code>_fetch_markets</code> invocation.
+          Fixed by routing <code>live_markets_only</code> hydration through <code>_cached_market_fetch</code> too,
+          so all three branches now share one consistent pattern. Added a size cap + oldest-first eviction to that
+          shared cache (<code>_MAX_MARKET_OBJECT_CACHE = 2000</code>, same shape as
+          <code>kalshi_trade_tape.py</code>'s own <code>_MAX_MARKET_CACHE</code>) since it now serves a much larger,
+          faster-rotating population than the small pinned/open-position set it originally did. Also traced (no
+          change needed) the other two things "position sections" could plausibly have meant: real-account
+          balance/positions/fills (<code>_fetch_account_snapshot</code>) were already on a 20-second cache from an
+          earlier pass, and a private, authenticated <code>fill</code>/<code>market_positions</code> WebSocket
+          subscription already exists and is wired end to end
+          (<code>whale_stream_handlers._process_stream_fill</code>/<code>_process_stream_position</code>,
+          subscribed in <code>kalshi_trade_ws.py</code>'s <code>run()</code>) - neither needed a fix here. Three new
+          tests: caching actually prevents a second REST call within the TTL window (direct instrumentation, not
+          just "still passes"), the new eviction logic under a lowered cap, and cache-isolation fixes for three
+          existing hydration tests that started colliding once live_markets_only began sharing the cache (same
+          ticker, different hydrated values, across tests in the same file). Full suite (1,144 tests) green.</p>
+        <div class="files"><code>services/market_watch/market_fetch.py</code> ·
+          <code>services/market_watch/discovery_cache.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 

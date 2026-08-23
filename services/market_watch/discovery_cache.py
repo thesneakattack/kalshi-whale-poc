@@ -18,6 +18,15 @@ _PINNED_MARKET_REFRESH_SEC = 300  # structural fields (title, close_time, status
 # (see market_fetch._fetch_markets' live-price overlay), not from re-fetching the whole market
 # object every tick.
 
+_MAX_MARKET_OBJECT_CACHE = 2000  # Same bound/eviction shape as
+# services/whalewatchers/kalshi_trade_tape.py's _MAX_MARKET_CACHE (2026-08-23:
+# this cache started serving a much larger, faster-rotating population once
+# market_fetch._fetch_markets' live_markets_only branch was routed through
+# _cached_market_fetch too, alongside the small/stable pinned-ticker and
+# open-position population it originally served) - unbounded growth over a
+# long-running process is the wrong trade for a cache whose whole point is
+# avoiding REST calls, not accumulating every ticker ever seen.
+
 _DISCOVERY_REFRESH_SEC = 300  # 2026-08-15, second incident on the same code path: "you made the
 # market watch list and whale watching grind to a halt and markets aren't even appearing anymore."
 # The first fix (this constant alone, at 90s, still AWAITED inline every time it was due) was
@@ -81,15 +90,19 @@ async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) ->
 
 
 async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list[dict]:
-    """Shared by market_fetch._fetch_markets' pinned-watchlist and
-    extra_tickers handling (2026-08-15, "websocket stream everything you
-    can... leave the api calls for things that are absolutely necessary") -
-    both used to re-fetch every one of their tickers via individual REST
-    get_market() calls on every single tick, unconditionally. A ticker's
-    structural fields (title, event_ticker, occurrence_datetime, close_time,
-    status) change rarely; price comes from the WS ticker-channel stream
-    instead (_fetch_markets' own live-price overlay right before it
-    returns), not from re-fetching the whole market object.
+    """Shared by market_fetch._fetch_markets' pinned-watchlist, extra_tickers,
+    and live_markets_only hydration (2026-08-15, "websocket stream
+    everything you can... leave the api calls for things that are
+    absolutely necessary") - all three used to re-fetch every one of their
+    tickers via REST on every single tick, unconditionally (live_markets_
+    only's own fix landed later, 2026-08-23, after a direct report that
+    real REST rate limiting was happening - it had been upgraded from an
+    uncapped concurrent gather to one safe batched call, but still
+    uncached, still firing every tick). A ticker's structural fields
+    (title, event_ticker, occurrence_datetime, close_time, status) change
+    rarely; price comes from the WS ticker-channel stream instead
+    (_fetch_markets' own live-price overlay right before it returns), not
+    from re-fetching the whole market object.
     state["market_object_cache"] (one shared cache, not two - same ticker->
     market shape and refresh semantics either way) only bounds how stale
     the *structural* fields can get, via _PINNED_MARKET_REFRESH_SEC - never
@@ -112,6 +125,12 @@ async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list
             if r is not None:
                 r["_cached_at"] = now_ts
                 cache[t] = r
+        # Unbounded growth guard (2026-08-23) - same shape as
+        # kalshi_trade_tape.py's _MAX_MARKET_CACHE eviction. Only worth
+        # checking right after a real write, not on every cache-hit call.
+        if len(cache) > _MAX_MARKET_OBJECT_CACHE:
+            for t in sorted(cache, key=lambda t: cache[t]["_cached_at"])[:len(cache) // 2]:
+                del cache[t]
     return [
         {k: v for k, v in cache[t].items() if k != "_cached_at"}
         for t in tickers if t in cache
