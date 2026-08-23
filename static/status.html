@@ -5126,6 +5126,43 @@
           <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 130 · candidate-log population stats</div>
+        <h4>Rejected-candidate counterfactual data stops undercounting itself</h4>
+        <p>ROADMAP.md's entry-gate adverse-selection finding (whale signals resolved 88.8% correct but the ones
+          actually traded won only 58.3%) named the exact thing blocking a per-gate root cause:
+          <code>services/candidate_log.py</code>'s <code>rejected_candidates</code> table dedups on
+          <code>(ticker, strategy, gate_name)</code>, so a ticker rejected fifty times by the same gate over its
+          life counted as one data point, not fifty - "unusable for population statistics." Fixed additively, not
+          by changing the existing table: a new <code>rejection_events</code> table carries no dedup key at all -
+          the true population - while every current consumer of <code>gate_summary()</code>/
+          <code>rejected_candidates</code> (advisory_engine, the dashboard) keeps reading the deduped view
+          unchanged. <code>record_rejection()</code> now dual-writes both tables;
+          <code>resolve_from_market_results()</code> dual-resolves, batching the new table's resolution by ticker
+          (one indexed <code>UPDATE ... WHERE ticker = ?</code>) rather than by row, since a busy ticker can carry
+          far more event rows than the deduped table ever would. New
+          <code>candidate_log.population_gate_summary()</code> answers the same "what would this gate's rejects
+          have done" question from the real population, reporting <code>"insufficient"</code> per gate rather than
+          a win rate earned from too few samples - same honesty convention <code>services/settlement_edge.py</code>'s
+          <code>edge_report()</code> already uses. Exposed via <code>GET /api/candidate-log/summary</code>'s new
+          <code>population_gates</code> key. <code>clear_all</code>/<code>clear_range</code>/<code>count_range</code>
+          updated to cover both tables, so a Danger Zone purge (or its preview count) doesn't leave the population
+          table stale or undercounted. Verified live, not just in tests: within minutes of shipping,
+          <code>whale_watcher_kalshi.min_contracts</code> rejects already showed a well-calibrated 49.9%
+          hypothetical win rate over ~5,300 resolved samples - directionally sane (a good gate should reject near
+          a coin flip), unlike <code>entry_threshold</code>'s old deduped 73% figure. Important caveat documented
+          rather than fixed: this (and <code>advisory_engine</code>'s existing, separate rejected-candidate
+          recommendation mechanism, which already has 4 live unapplied suggestions to loosen
+          <code>entry_threshold</code>/<code>min_whale_winrate_pct</code>/<code>close_window_sec</code>/
+          <code>special_market_min_seconds_to_close</code>) compares win rate alone, no cost term -
+          <code>services/advisory/CHEATSHEET.md</code> already flags this exact trap, and
+          <code>record_rejection()</code> never captured the rejected candidate's price/unit_cost to begin with, so
+          this can't yet be made cost-aware without new instrumentation. 20 new/updated tests in
+          <code>tests/test_candidate_log.py</code>; full suite (1,188 tests) green.</p>
+        <div class="files"><code>services/candidate_log.py</code> · <code>services/analytics/routes.py</code> ·
+          <code>tests/test_candidate_log.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
