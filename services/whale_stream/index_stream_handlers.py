@@ -67,6 +67,19 @@ async def _spec_for(ticker: str) -> dict:
             # Don't cache a transport failure as "unsupported" - that would
             # permanently blind this market on one bad request.
             return {"supported": False, "reason": "market fetch failed"}
+        finally:
+            # Real live leak (2026-08-23): this client was never closed on
+            # any path - a fresh KalshiClient (and its SDK-managed aiohttp
+            # session, see services/kalshi_client.py's own close() docstring)
+            # leaked on every cache miss. This module's own docstring above
+            # already knew the cadence ("the 15-minute series rotates its
+            # ticker every quarter hour, so this is a handful of fetches an
+            # hour") - that's exactly the ~15-minute "Unclosed connector"
+            # pattern confirmed live in ddev logs across 5+ hours of
+            # restart-free steady-state operation, one per newly-rotated-in
+            # ticker across every crypto index series (BTC/ETH/SOL/DOGE/
+            # HYPE each running their own independent 15-minute rotation).
+            await client.close()
         _settlement_spec_cache[ticker] = spec
         if len(_settlement_spec_cache) > 500:
             _settlement_spec_cache.clear()

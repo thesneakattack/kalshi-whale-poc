@@ -210,6 +210,14 @@ async def get_index_settlement(ticker: str):
         market = await client.get_market(ticker)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"could not fetch {ticker}: {exc}")
+    finally:
+        # Real leak found 2026-08-23 auditing every KalshiClient() call site
+        # for the same missing-close() shape that caused index_stream_
+        # handlers._spec_for's live "Unclosed connector" incident - this
+        # route had zero current callers (grepped, confirmed) so it wasn't
+        # the source of that particular leak, but it's the same bug and
+        # would fire on any real hit.
+        await client.close()
     spec = index_feed.settlement_spec(market)
     if not spec.get("supported"):
         return spec
