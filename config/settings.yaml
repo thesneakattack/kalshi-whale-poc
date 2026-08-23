@@ -171,6 +171,10 @@ backup:
   # number as data/'s total footprint grows (was 8.3GB as of 2026-08-23,
   # after pruning a since-fixed 5.7GB game_state.db bloat - see that
   # module's CHEATSHEET/status.html phase 126 for the full incident).
+alerting:
+  enabled: true
+  webhook_url:  # unset by default - see services/alerting/CHEATSHEET.md for
+  # payload shape / which destinations it's compatible with as-is
 event_lifecycle:
   tournament_min_siblings: 4
   tournament_pretail_days: 5.0

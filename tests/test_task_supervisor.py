@@ -8,11 +8,16 @@ import pytest
 
 from services import fault_log as fl
 from services import task_supervisor
+from services.alerting import alerting
 
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(fl, "DB_PATH", tmp_path / "fault_log.db")
+    # 2026-08-23: a restart=True crash now also calls alerting.record_alert
+    # (see supervise's own except block) - without this redirect, a crash
+    # simulated below would write into the real, live data/alert_log.db.
+    monkeypatch.setattr(alerting, "DB_PATH", tmp_path / "alert_log.db")
     yield
 
 
@@ -76,6 +81,48 @@ def test_restarting_task_retries_after_failures_and_keeps_running():
     # failed"), so both failures get their own row, each seen once.
     assert len(rows) == 2
     assert all(r["exc_type"] == "RuntimeError" and r["count"] == 1 for r in rows)
+
+
+def test_restart_true_crash_also_raises_an_alert():
+    # trading_loop/trade_stream/index_stream are the loops that must never
+    # just stay dead - a crash there is exactly the "crash" case
+    # ROADMAP.md's alerting item names directly, so it gets both fault_log
+    # (the detailed record) and alerting (the "someone should know now"
+    # signal), unlike a one-shot task's own failure below.
+    async def _boom():
+        raise ValueError("critical loop died")
+
+    async def run():
+        task = task_supervisor.supervise(
+            _boom, component="test_component", operation="critical_loop",
+            restart=True, restart_delay_sec=3600,
+        )
+        for _ in range(200):
+            if alerting.active_alerts():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    active = alerting.active_alerts()
+    assert len(active) == 1
+    assert active[0]["category"] == "crash"
+    assert "test_component.critical_loop crashed" in active[0]["message"]
+    assert "critical loop died" in active[0]["message"]
+
+
+def test_one_shot_crash_does_not_raise_an_alert():
+    async def _boom():
+        raise ValueError("one-off background task failed")
+
+    async def run():
+        task = task_supervisor.supervise(_boom, component="test_component", operation="one_shot")
+        await task  # restart=False - caught, logged to fault_log, task ends
+
+    asyncio.run(run())
+    assert alerting.active_alerts() == []
 
 
 def test_cancellation_propagates_without_recording_a_fault():

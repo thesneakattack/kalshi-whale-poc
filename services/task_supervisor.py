@@ -52,6 +52,20 @@ def supervise(
             except Exception as exc:
                 logger.exception("%s.%s crashed", component, operation)
                 fault_log.record(component, operation, exc)
+                if restart:
+                    # Local import - services/alerting/alerting.py imports
+                    # this module (for its own fire-and-forget notification
+                    # dispatch), so a top-level import here would be
+                    # circular. Only restart=True crashes alert - those are
+                    # the loops (trading_loop/trade_stream/index_stream)
+                    # that must never just stay dead; a restart=False
+                    # one-shot task already degrades gracefully and retries
+                    # next cycle on its own, not alarm-worthy at this level.
+                    from services.alerting import alerting
+                    alerting.record_alert(
+                        "crash", "critical",
+                        f"{component}.{operation} crashed: {type(exc).__name__}: {exc}",
+                    )
                 if not restart:
                     return
             await asyncio.sleep(restart_delay_sec)
