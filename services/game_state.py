@@ -233,6 +233,28 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
     try:
         if not event_ticker or not details:
             return False
+        # Real live bloat found 2026-08-23: crypto's OHLC-candlesticks-plus-
+        # price-timeseries payload (see this function's own docstring) gets
+        # re-stored in FULL on every write, and the array only grows over a
+        # market's life - _MIN_INTERVAL_SEC above bounds write FREQUENCY,
+        # not per-write PAYLOAD size, so successive writes for the same
+        # event overwhelmingly duplicate what the previous write already
+        # stored. Measured live: 14,204 crypto rows averaging 403KB each -
+        # 5.72GB, 99.4% of this table's total size - against zero callers
+        # of this module's own timeline() anywhere in the codebase (grepped
+        # to confirm, not assumed), i.e. nothing has ever read a single one
+        # of these rows back. The underlying price data this would capture
+        # is already recorded with far better fidelity by the WS-based
+        # services/index_feed.py (~1 msg/sec vs this REST path's 60s-rate-
+        # limited snapshots) - this table's own schema (home_score/period/
+        # clock/winner/...) is sports-shaped anyway, so a crypto payload
+        # never populated any of it. Not a data-retention question (nothing
+        # here was ever a load-bearing historical asset to begin with, per
+        # the zero-consumer finding) - a wrong-module, wrong-shape write
+        # path. Sports/commodity event types are unaffected (commodity's
+        # own footprint measured negligible - 576 rows, 30MB total).
+        if (event_type or details.get("type")) == "crypto":
+            return False
         now = now if now is not None else time.time()
         last = _last_write_at.get(event_ticker)
         if last is not None and (now - last) < _MIN_INTERVAL_SEC:
@@ -291,6 +313,34 @@ def flush() -> dict:
         logger.exception("flush failed, %d row(s) dropped", len(rows))
         return {"rows": 0, "dropped": len(rows), "error": str(exc)}
     return {"rows": len(rows)}
+
+
+def prune_crypto_backlog(vacuum: bool = True) -> dict:
+    """One-time cleanup companion to the 2026-08-23 fix above (see record's
+    own docstring) - deletes every already-accumulated crypto row
+    regardless of age, then reclaims the freed disk space via VACUUM
+    (SQLite does not shrink a file on DELETE alone; the freed pages just
+    become reusable free-list space inside the same file). The write path
+    is already fixed, so no more crypto rows will ever be added going
+    forward - this only ever needs to run once, against the backlog that
+    predates that fix. Not wired into any recurring loop or route on
+    purpose - a manual, deliberate one-time operation, not a mechanism.
+
+    VACUUM cannot run inside an explicit transaction, hence the separate
+    autocommit-mode connection rather than reusing _connect()'s default
+    (implicit-transaction) behavior."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.isolation_level = None  # autocommit - required for VACUUM below
+    try:
+        rows_before = conn.execute("SELECT COUNT(*) FROM game_states").fetchone()[0]
+        cur = conn.execute("DELETE FROM game_states WHERE event_type = 'crypto'")
+        deleted = cur.rowcount
+        if vacuum:
+            conn.execute("VACUUM")
+        rows_after = conn.execute("SELECT COUNT(*) FROM game_states").fetchone()[0]
+    finally:
+        conn.close()
+    return {"rows_before": rows_before, "rows_deleted": deleted, "rows_after": rows_after}
 
 
 def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:

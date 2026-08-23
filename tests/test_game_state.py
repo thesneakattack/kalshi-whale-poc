@@ -130,12 +130,18 @@ def test_timeline_and_stats_are_readable():
     assert set(s["by_sport"]) == {"football", "baseball"}
 
 
-# --- non-game live-data shapes (2026-08-17) ------------------------------
+# --- crypto live-data (2026-08-17 stored it whole; 2026-08-23 stopped) ---
 # The milestone path this module was first wired to was measured EMPTY while
-# _fetch_event_live_data held six live entries carrying crypto payloads.
-# Those are a completely different shape - OHLC candlesticks and an
-# underlying price timeseries instead of a score - and are equally worth
-# keeping.
+# _fetch_event_live_data held six live entries carrying crypto payloads, so
+# 2026-08-17 started persisting those too - a completely different shape,
+# OHLC candlesticks and an underlying price timeseries instead of a score.
+# Reverted 2026-08-23: measured live at 14,204 rows / 5.72GB (99.4% of this
+# table) with zero callers of timeline() anywhere in the codebase ever
+# reading one back, because each write re-stores the array's full history,
+# not just the delta, and the array only grows over a market's life. The
+# underlying price data is already captured with far better fidelity by the
+# WS-based services/index_feed.py. See game_state.record's own docstring
+# for the full incident. Sport/commodity payloads are unaffected.
 
 _CRYPTO = {
     "coin": "BTC", "event_ticker": "KXBTCD-26AUG1717",
@@ -148,29 +154,54 @@ _CRYPTO = {
 }
 
 
-def test_a_crypto_payload_is_stored_whole_even_with_no_sport_fields():
-    assert gs.record("KXBTCD-26AUG1717", _CRYPTO, event_type="crypto", now=1000.0) is True
+def test_a_crypto_payload_is_never_stored_via_the_event_type_kwarg():
+    assert gs.record("KXBTCD-26AUG1717", _CRYPTO, event_type="crypto", now=1000.0) is False
+    assert gs._buffer == []  # never even queued - no DB table gets touched at all
+
+
+def test_a_crypto_payload_is_never_stored_via_the_payloads_own_type_field():
+    # live_status.py's own call site never passes event_type explicitly -
+    # record() falls back to details.get("type") for exactly this reason
+    # (see its own "event_type or details.get('type')" line), so the guard
+    # has to catch this path too, not just the explicit-kwarg one above.
+    payload = {**_CRYPTO, "type": "crypto"}
+    assert gs.record("KXBTCD-26AUG1717", payload, now=1000.0) is False
+    assert gs._buffer == []
+
+
+def test_prune_crypto_backlog_removes_only_crypto_rows():
+    # Simulate the pre-2026-08-23 backlog directly (record() itself now
+    # refuses to write crypto rows at all, so this can't go through it) -
+    # a real historical row from before the write-path fix shipped, sitting
+    # alongside a real sports row that must survive the cleanup untouched.
+    gs.record("EVT-1", _FOOTBALL, sport="football", now=1000.0)
+    gs.flush()
+    with sqlite3.connect(gs.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO game_states (event_ticker, sport, event_type, observed_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("KXBTCD-26AUG1717", None, "crypto", 500.0, json.dumps(_CRYPTO)),
+        )
+
+    result = gs.prune_crypto_backlog(vacuum=False)  # skip VACUUM here - slow, and covered by the real run
+
+    assert result == {"rows_before": 2, "rows_deleted": 1, "rows_after": 1}
+    with sqlite3.connect(gs.DB_PATH) as conn:
+        remaining = conn.execute("SELECT event_ticker, event_type FROM game_states").fetchall()
+    assert remaining == [("EVT-1", None)]
+
+
+def test_a_commodity_payload_is_still_stored_whole():
+    # Only crypto's specific bloat pattern is excluded - commodity's own
+    # measured footprint (576 rows, 30MB total) is negligible, and this
+    # module's whole discipline is "a shape it's never seen still gets
+    # stored" (its own docstring) - narrowing that further than the one
+    # measured, confirmed offender would be an unjustified behavior change.
+    payload = {"coin": "GOLD", "spot_price": 2000.0}
+    assert gs.record("KXGOLD-26AUG17", payload, event_type="commodity", now=1000.0) is True
     gs.flush()
     with sqlite3.connect(gs.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM game_states").fetchone()
-    assert row["event_type"] == "crypto"
-    assert row["home_score"] is None and row["period"] is None
-    raw = json.loads(row["raw_json"])
-    assert raw["candlesticks"]["15M"][0]["close"] == 63464.20
-    assert raw["timeseries"][0]["value"] == 63427.04
-
-
-def test_continuously_changing_payloads_are_rate_limited_not_written_every_tick():
-    """A score changes a handful of times an hour; a candlestick array
-    changes on essentially every poll, so fingerprinting alone would not
-    bound the volume."""
-    assert gs.record("EVT-C", _CRYPTO, event_type="crypto", now=1000.0) is True
-    changed = {**_CRYPTO, "timeseries": [{"ts_ms": 1786941217999, "value": 63500.0}]}
-    assert gs.record("EVT-C", changed, event_type="crypto", now=1010.0) is False  # inside interval
-    assert gs.record("EVT-C", changed, event_type="crypto", now=1100.0) is True   # past it
-
-
-def test_identical_crypto_payload_is_still_deduplicated_after_the_interval():
-    gs.record("EVT-C", _CRYPTO, event_type="crypto", now=1000.0)
-    assert gs.record("EVT-C", _CRYPTO, event_type="crypto", now=2000.0) is False
+    assert row["event_type"] == "commodity"
+    assert json.loads(row["raw_json"])["spot_price"] == 2000.0
