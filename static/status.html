@@ -5340,6 +5340,34 @@
           <code>tests/test_backup.py</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 136 · whale accuracy's own finalized-vs-determined gap</div>
+        <h4>the third occurrence of phase 134's bug, this time on the accuracy metric itself</h4>
+        <p>Per-module audit finding, fixed: <code>services/whale_calibration/CHEATSHEET.md</code> had already
+          named this exact gap while documenting the module ("the single most important thing a future audit of
+          this module's numbers should check first") but left it unfixed, distinct from phase 134's same-day fix
+          to <code>exit_engine.close_if_settled</code> and <code>whale_stream_handlers._process_stream_lifecycle</code>.
+          <code>main.py</code>'s <code>_check_signal_resolutions</code> - the function that ultimately produces
+          every row <code>confidence_calibration.py</code>'s bands and every whale-tracking win-rate filter are
+          computed from - marked a logged signal <code>correct</code>/incorrect the instant
+          <code>market.result</code> was set, which Kalshi sets at the <code>determined</code> transition, not
+          <code>finalized</code> (<code>docs/kalshi/market_lifecycle.md</code>: the result "may be disputed" and
+          can flip via <code>determined</code> &rarr; <code>disputed</code> &rarr; <code>amended</code> before
+          finally reaching <code>finalized</code>). <code>signal_log.mark_resolved</code> is a one-way write with
+          no re-check, so a live-but-rare dispute reversal would have silently corrupted the exact
+          <code>correct</code> field the whole calibration/advisory stack is built on, with no mechanism to notice
+          or repair it. Fixed the same way as phase 134's two call sites: <code>_check_signal_resolutions</code>
+          now only trusts a market's <code>result</code> once <code>status == "finalized"</code> - a ticker still
+          in the dispute window simply stays in <code>unresolved_batch</code>'s pool and gets rechecked later,
+          the same degrade path already used for a market Kalshi hasn't returned data for at all.
+          <code>tests/test_signal_resolution.py</code> gained a direct regression test (a
+          <code>determined</code>-but-not-<code>finalized</code> market must not resolve) and two existing
+          fixtures were updated to carry <code>status: "finalized"</code>, matching what a genuinely settled
+          market now needs to actually resolve.</p>
+        <div class="files"><code>main.py</code> · <code>services/whale_calibration/CHEATSHEET.md</code> ·
+          <code>tests/test_signal_resolution.py</code></div>
+      </div>
+
     </div>
   </section>
 

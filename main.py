@@ -217,15 +217,33 @@ async def _check_signal_resolutions(client: KalshiClient):
     this function just does the work when asked. See
     _SIGNAL_RESOLUTION_BATCH_SIZE above for why the batch is this large and
     why one get_markets_by_tickers call replaces what used to be N
-    individual get_market() calls."""
+    individual get_market() calls.
+
+    Only trusts a market's `result` once `status` is `finalized` (2026-08-23
+    fix, services/whale_calibration/CHEATSHEET.md's own audit finding -
+    "the single most important thing a future audit of this module's
+    numbers should check first"). Same gap, same fix shape as
+    catalog_scan.propagate_milestone_winners/whale_stream_handlers'
+    _process_stream_lifecycle (phase 134, docs/kalshi/market_lifecycle.md):
+    Kalshi sets `result` the instant a market is `determined`, but the
+    result "may be disputed" and can flip via determined -> disputed ->
+    amended before finally reaching finalized. Before this fix,
+    signal_log.mark_resolved was a one-way write straight off `determined`'s
+    result - the exact `correct` field confidence_calibration.py's bands and
+    every whale-tracking win-rate filter are computed from, with no
+    mechanism to notice or repair a later reversal. A ticker whose market
+    hasn't reached finalized yet just stays in unresolved_batch's pool and
+    gets rechecked on a later pass, same as one Kalshi hasn't returned data
+    for at all - this was already the "not yet settled" degrade path, now
+    it also covers "settled but not yet final."""
     items = signal_log.unresolved_batch(limit=_SIGNAL_RESOLUTION_BATCH_SIZE, older_than_sec=600)
     if not items:
         return
     markets = await client.get_markets_by_tickers([item["ticker"] for item in items])
     for item in items:
         market = markets.get(item["ticker"])
-        if not market:
-            continue  # market may be gone/renamed, or not yet settled — leave unresolved, retry next time
+        if not market or market.get("status") != "finalized":
+            continue  # not settled yet, or settled but still inside the dispute window — retry next time
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))

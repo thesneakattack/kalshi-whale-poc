@@ -47,14 +47,36 @@ def test_check_signal_resolutions_marks_resolved_markets_correctly(tmp_path, mon
     signal_log.log_signal("TICK-NO", "yes", 1000, 0.8, "simulated", seen_at=now - 1000)  # wrong side
     signal_log.log_signal("TICK-PENDING", "yes", 1000, 0.8, "simulated", seen_at=now - 1000)
     fake = _FakeMarketsClient({
-        "TICK-YES": {"ticker": "TICK-YES", "result": "yes"},
-        "TICK-NO": {"ticker": "TICK-NO", "result": "no"},
+        "TICK-YES": {"ticker": "TICK-YES", "result": "yes", "status": "finalized"},
+        "TICK-NO": {"ticker": "TICK-NO", "result": "no", "status": "finalized"},
         # TICK-PENDING deliberately absent - not yet settled
     })
     asyncio.run(main._check_signal_resolutions(fake))
     stats = signal_log.stats(days=30)
     assert stats["resolved"] == 2
     assert stats["correct"] == 1  # only TICK-YES's side matched the real result
+
+
+def test_check_signal_resolutions_leaves_a_determined_but_not_finalized_market_unresolved(tmp_path, monkeypatch):
+    # 2026-08-23 fix (services/whale_calibration/CHEATSHEET.md's own audit
+    # finding): Kalshi sets `result` the instant a market is `determined`,
+    # but the result "may be disputed" and can flip via determined ->
+    # disputed -> amended before finally reaching finalized
+    # (docs/kalshi/market_lifecycle.md). Marking a signal correct/incorrect
+    # off a `determined`-but-not-yet-final result risks silently corrupting
+    # signal_log's `correct` field - the exact number confidence_calibration
+    # bands and every whale-tracking win-rate filter are computed from - if
+    # a dispute later reverses it, since mark_resolved was a one-way write
+    # with no re-check.
+    _isolate(tmp_path, monkeypatch)
+    now = time.time()
+    signal_log.log_signal("TICK-DETERMINED", "yes", 1000, 0.8, "simulated", seen_at=now - 1000)
+    fake = _FakeMarketsClient({
+        "TICK-DETERMINED": {"ticker": "TICK-DETERMINED", "result": "yes", "status": "determined"},
+    })
+    asyncio.run(main._check_signal_resolutions(fake))
+    stats = signal_log.stats(days=30)
+    assert stats["resolved"] == 0  # still waiting on the dispute window to close
 
 
 def test_check_signal_resolutions_leaves_a_market_kalshi_never_returned_unresolved(tmp_path, monkeypatch):

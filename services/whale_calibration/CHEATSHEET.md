@@ -43,20 +43,21 @@ Per `docs/kalshi/market_lifecycle.md` (lines 21–23, 51–52, 68–72):
 timer restarts" if it is. The truly final state is `finalized`
 (`determined`/`amended` → `finalized`, "positions paid out").
 
-**Current behavior**: a signal is marked `correct`/incorrect the instant
-`result` is set, before the dispute window closes. If a result is disputed
-and reversed, `signal_log`'s row is never revisited — `mark_resolved` is a
-one-way write, and `unresolved_batch`'s query only ever selects rows that
-are still unresolved. **This directly feeds CLAUDE.md's HARD COMMANDMENT
-metric**: whale accuracy and the calibration bands this module reports are
-both computed straight off that same `correct` field, so a live-but-rare
-dispute reversal would silently corrupt the exact number the whole project
-is judged against, with no mechanism to notice or repair it. Not fixed
-here (a behavior change — re-checking `determined` rows for a later
-`amended`/`finalized` flip is real new work, not a refactor), but this is
-the single most important thing a future audit of this module's numbers
-should check first: how often does this actually happen, and is a
-dispute-tracking pass worth building.
+**Fixed 2026-08-23** (same "module quality" pass this cheat sheet's own
+finding named as the top priority for a future audit): `_check_signal_
+resolutions` now only trusts `market.result` once `market.status ==
+"finalized"` — same fix shape, same day, as the sibling gaps this section
+already named in `services/exits/CHEATSHEET.md` (phase 134) and
+`services/market_catalog/CHEATSHEET.md`'s `propagate_milestone_winners`. A
+ticker whose market is `determined` but not yet `finalized` simply stays in
+`unresolved_batch`'s pool and gets rechecked on a later pass — the same
+"not yet settled" degrade path this function already used for a market
+Kalshi hasn't returned data for at all, now also covering "settled but
+still inside the dispute window." `tests/test_signal_resolution.py` covers
+the regression directly (a `determined`-but-not-`finalized` market must not
+resolve). Not tracked further than this: no separate dispute-frequency
+audit was run, since the fix removes the exposure at the source rather than
+needing to first measure how often it happens.
 
 ## Handoff — who calls this module, who it calls
 
