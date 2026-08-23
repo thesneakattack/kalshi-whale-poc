@@ -91,6 +91,42 @@ questions.
       trade against real signal data, but hasn't yet been run for a real
       evaluation stretch and reviewed — that review, not the code existing,
       is the actual "trust it" gate before ever flipping `trading_enabled`.
+- [ ] **Risk enforcement lives inside strategy code, not the execution
+      layer.** Found 2026-08-22 via a gap-check against
+      `docs/prediction-market-bot-research.md`'s engineering-safety
+      checklist. `RiskManager.check_daily_loss()`/`max_trade_size()` are
+      only ever consulted from `strategy_engine.py`'s own `evaluate()`
+      (`services/strategy_engine.py:255-256,457`) — neither
+      `PaperBroker.buy`/`sell` nor
+      `services/kalshi_account_client.py`'s `create_order` independently
+      re-checks `risk.halted` or the position-size ceiling before
+      executing. This is the general shape of the bug the four-entry gate
+      bypass above already proved reachable once (a gate skipped because
+      it only ran at one call site) — a future bug in any strategy's gate
+      logic, not just the one already fixed, has no execution-layer
+      backstop. Matches the research doc's premortem #2 almost exactly:
+      "sizing, not signal, caused the blowup... risk sizing wasn't
+      independent of strategy confidence."
+- [ ] **No "flatten all positions" / emergency-close path exists.** Found
+      2026-08-22, same gap-check. Confirmed via direct search
+      (`flatten`/`liquidate`/`emergency-close` across `services/` and
+      `main.py` turn up nothing but an unrelated historical incident
+      comment) — if Kalshi access is cut off suddenly (a regulatory action,
+      a state geofencing order — see the sports-legal item below) or the
+      kill switch trips on a real account, there is no single function
+      that closes every open position at once; today that would be manual,
+      per-position action. Named directly in
+      `docs/prediction-market-bot-research.md`'s premortem #4 and §5's
+      last checklist item.
+- [ ] **No portfolio-wide exposure cap — only per-trade and (opt-in)
+      per-series ones.** Found 2026-08-22, same gap-check.
+      `max_position_pct` (`services/risk_manager.py:126-127`) caps a
+      single trade; `max_open_positions_per_series`
+      (`services/strategy_engine.py:445-452`, off by default) caps
+      position *count* within one series. Neither caps total dollar
+      exposure summed across concurrently-open positions in *different*
+      series — five maxed-out, uncorrelated positions can still add up to
+      far more aggregate risk than `max_position_pct` alone implies.
 - [ ] This runs today only under local `ddev` on one machine — no real host,
       TLS domain, process supervisor, or uptime guarantee beyond ddev's dev
       containers. Decide and build a real deployment target before real
