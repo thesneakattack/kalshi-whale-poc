@@ -40,28 +40,37 @@ checked against each page while writing this, not assumed:
   understand what the data means" mistake CLAUDE.md's own "Bug pattern to
   watch for" section warns about.
 
-## Audit finding: `market_lifecycle_v2`'s `close_date_updated` reaches the
-in-memory overlay, not this module's persisted rows — still an open,
-already-tracked gap
+## Audit finding, closed 2026-08-23: `market_lifecycle_v2` now reaches this
+module's persisted rows, not just the in-memory overlay
 
-Not a new finding — cross-checked against the still-open ROADMAP.md item
-("A real, permanent fix for the close_time-mutability gap") while writing
-this cheat sheet, confirming it's still accurate post-move: Kalshi's
-`market_lifecycle_v2` WebSocket channel (`docs/kalshi/market_lifecycle.md`)
-emits `close_date_updated` when a market's close time is revised, and
-`main.py`'s `_process_stream_lifecycle` already applies that event to the
-**in-memory** `state["markets"]` overlay. It is **not** wired into this
-module's SQLite `markets` table — `market_catalog.upsert_markets()` only
-ever gets fresh `close_ts` on the next incremental scan of that series
-(potentially hours away, per the module's own scan-batch design), not the
-instant Kalshi emits the revision. Every query in this module
-(`candidates_in_window`/`open_candidates`/`open_markets_for_series`)
-filters on `close_ts > now` using whatever's currently persisted — a
-market whose close time got pushed out is invisible to that filter until
-its next scan catches up. Real, disclosed limitation, not fixed here (out
-of scope for a modularization pass, and ROADMAP.md already scopes the fix
-as its own dedicated pass, deliberately not bundled with the earlier
-in-memory half).
+Was an open, already-tracked gap (see git history on this section for the
+original finding) — `close_date_updated` only ever updated `main.py`'s
+in-memory `state["markets"]` overlay, so `market_catalog.upsert_markets()`
+learned a revised `close_ts` only on that series' next incremental scan
+(potentially hours away). Fixed via a new `apply_lifecycle_update(ticker,
+*, close_ts=None, status=None)` (this file) - a targeted single-row UPDATE,
+not a full `upsert_markets`-style replace - called from
+`services/whale_stream/whale_stream_handlers.py`'s `_process_stream_lifecycle`
+for all three of `close_date_updated` (`close_ts`), `determined` (`status`
+-> `"determined"`), and `settled` (`status` -> `"finalized"`, the same
+values a real REST market object's own `status` field would show per
+`docs/kalshi/market_lifecycle.md`'s status table). No-op (returns `False`,
+counted separately from `close_time_updates_applied`/`outcomes_resolved_
+via_lifecycle` via `lifecycle_stream_stats.catalog_updates_applied`) for a
+ticker with no existing row - expected given this catalog is near-term-
+horizon-bounded by design, not an error. Verified live before shipping:
+real captured message shapes from `ddev logs` (`kalshi_trade_ws.py`'s own
+"first real shape" log) cross-checked against
+`docs/kalshi/market-and-event-lifecycle.md`'s schema first - `determined`
+really does carry `result`, `settled` does not, so `determined` (not
+`settled`) is the only trigger that also resolves this app's own
+market_history/settlement_edge/market_analyst_agent/candidate_log outcome
+tables, closing a second, related gap: those were previously fed
+exclusively from that tick's REST-fetched `markets` list, structurally
+blind to any ticker that rotates off the live watchlist/discovery scope
+before it settles (routine for short-lived series like KXBTC15M) -
+`market_lifecycle_v2` is exchange-wide, so this reaches every ticker the
+app ever touched, watchlisted or not.
 
 ## Handoff — who calls this module, who it calls
 

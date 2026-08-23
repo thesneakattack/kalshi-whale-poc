@@ -4897,6 +4897,60 @@
           <code>tests/test_trading_gate.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 125 · lifecycle-driven settlement</div>
+        <h4>market_lifecycle_v2 now reaches the persisted catalog and the real outcome pipeline</h4>
+        <p>Closes the second half of a gap phase 122 (2026-08-17) deliberately left open: that phase wired
+          <code>close_date_updated</code> into <code>main.py</code>'s in-memory <code>state["markets"]</code>
+          overlay only, and left <code>determined</code>/<code>settled</code> completely unwired - "re-routing
+          this app's real outcome/P&amp;L resolution onto a channel with zero live-verified message history"
+          was judged too risky to rush. Verified that precondition before touching anything this time, not just
+          reading the docs: <code>/api/state</code>'s <code>lifecycle_stream_stats</code> already showed 2,256+
+          real <code>determined</code> and 2,372+ real <code>settled</code> events processed, and
+          <code>kalshi_trade_ws.py</code>'s own "first real shape" log (in <code>ddev logs</code>) confirmed the
+          real captured payloads match <code>docs/kalshi/market-and-event-lifecycle.md</code>'s documented schema
+          exactly - <code>determined</code> carries <code>result</code>/<code>determination_ts</code>/
+          <code>settlement_value</code>, <code>settled</code> carries only <code>settled_ts</code>, no
+          <code>result</code>. That made <code>determined</code> the correct (and only) trigger. Two real gaps
+          closed: (1) <code>services/market_catalog/market_catalog.py</code>'s persisted SQLite rows never got
+          these events at all, only the next incremental per-series scan (potentially hours away) - new
+          <code>apply_lifecycle_update(ticker, *, close_ts=None, status=None)</code> does a targeted single-row
+          UPDATE, called from <code>services/whale_stream/whale_stream_handlers.py</code>'s
+          <code>_process_stream_lifecycle</code> for all three event types (<code>close_date_updated</code> ->
+          <code>close_ts</code>, <code>determined</code> -> <code>status="determined"</code>, <code>settled</code>
+          -> <code>status="finalized"</code>, the same values a real REST market object's own <code>status</code>
+          would show). (2) <code>market_history.record_outcome</code>/<code>settlement_edge.resolve_window</code>/
+          <code>market_analyst_agent.resolve_from_market_results</code>/
+          <code>candidate_log.resolve_from_market_results</code> were fed exclusively from that tick's
+          REST-fetched <code>markets</code> list - structurally blind to any ticker that rotates off the live
+          watchlist/discovery scope before it settles (routine for short-lived series like KXBTC15M), no matter
+          how fast the poll ran. <code>market_lifecycle_v2</code> is exchange-wide, so firing all four from the
+          <code>determined</code> event closes that blind spot - done in addition to, not instead of, the
+          existing REST-tick path, safe because all four are idempotent (<code>INSERT OR IGNORE</code> /
+          <code>WHERE resolved = 0</code> / <code>WHERE settled_yes IS NULL</code>). A real test-isolation bug
+          was caught along the way, not just new tests added: <code>tests/test_trading_gate.py</code>'s
+          <code>_process_stream_lifecycle</code> tests redirected <code>market_catalog</code>/
+          <code>market_history</code>'s <code>DB_PATH</code> to a tmp dir but not <code>settlement_edge</code>/
+          <code>market_analyst_agent</code>/<code>candidate_log</code>'s - since the new <code>determined</code>
+          handling now calls all three, the existing test would have queried the real, live
+          <code>data/settlement_edge.db</code>/<code>data/market_analyst.db</code>/<code>data/candidate_log.db</code>
+          on every run (harmless that specific time since the test ticker never matched a real row, but a real
+          violation of this project's test-isolation rule and a real WAL-lock contention risk against the running
+          dev server). Fixed by extending the file's existing pre-import <code>DB_PATH</code>-redirect block to
+          all three; confirmed no contamination by grepping the real databases for the exact test ticker
+          afterward. Also added: two new <code>lifecycle_stream_stats</code> counters
+          (<code>catalog_updates_applied</code>, <code>outcomes_resolved_via_lifecycle</code>) on
+          <code>/api/state</code>, so this path's real activity is directly observable rather than trusted
+          blind. Full suite (1,146 tests, up from 1,144) green. Verified against real production traffic after
+          shipping: <code>catalog_updates_applied</code> incremented on real events while
+          <code>close_time_updates_applied</code> stayed lower for the same events - direct proof the persisted-
+          catalog path reaches markets the in-memory-only overlay from phase 122 could not.</p>
+        <div class="files"><code>services/market_catalog/market_catalog.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> · <code>services/app_state.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>services/market_catalog/CHEATSHEET.md</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 

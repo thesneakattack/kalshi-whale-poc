@@ -21,14 +21,17 @@ from pathlib import Path
 
 import pytest
 
+from services import candidate_log as cl_module
 from services import config_performance as cp_module
 from services import config_store as config_store_module
 from services.market_catalog import market_catalog as mc_module
+from services import market_analyst_agent
 from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import series_evaluator as se_module
 from services import series_watcher as sw_module
+from services import settlement_edge as sedge_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="trading_gate_test_"))
 pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
@@ -41,6 +44,15 @@ se_module.DB_PATH = _tmp_dir / "series_evaluator.db"
 # stream + tick paths - redirect it like every other store so a test run
 # can never write into the real data/series_watcher.db (CLAUDE.md).
 sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
+# _process_stream_lifecycle's "determined" handling (2026-08-23) now calls
+# into all three of these on every yes/no-result event - previously
+# market_analyst_agent was only ever redirected per-test (see
+# _isolate_market_analyst_dbs below) because nothing at module scope
+# touched it; that stopped being true once test_lifecycle_* below started
+# exercising the real "determined" path instead of just observing stats.
+cl_module.DB_PATH = _tmp_dir / "candidate_log.db"
+sedge_module.DB_PATH = _tmp_dir / "settlement_edge.db"
+market_analyst_agent.DB_PATH = _tmp_dir / "market_analyst.db"
 
 _tmp_config_path = _tmp_dir / "settings.yaml"
 shutil.copy(config_store_module.CONFIG_PATH, _tmp_config_path)
@@ -50,7 +62,6 @@ config_store_module.config_store.reload()
 import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
 from services import account_positions  # noqa: E402
-from services import market_analyst_agent  # noqa: E402  (same module object main.py's own import binds - no pre-import DB redirect needed here, done per-test below instead)
 from services.market_watch import discovery_cache  # noqa: E402
 from services.whale_simulator import DEFAULT_WEIGHTS  # noqa: E402
 
@@ -1868,16 +1879,29 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
 
 # --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,
 # docs/next-session-pickup-2026-08-17.md item #2 of the REST-vs-websocket
-# architecture finding). Only close_date_updated is wired to change
-# anything yet - see the function's own docstring for why determined/
-# settled stay observation-only until a real message has been verified.
+# architecture finding). close_date_updated (2026-08-17) and
+# determined/settled (2026-08-23, once real captured message shapes from
+# ddev logs confirmed determined carries result/settled does not - see the
+# function's own docstring) are all wired to real effects now.
 
 def _reset_lifecycle_stats():
-    main.state["lifecycle_stream_stats"] = {"events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None}
+    main.state["lifecycle_stream_stats"] = {
+        "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
+        "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
+    }
+    mc_module.clear_all()
+
+
+def _seed_catalog_row(ticker: str, series_ticker: str = "SER-LC"):
+    mc_module.upsert_markets(series_ticker, "Crypto", [{
+        "ticker": ticker, "event_ticker": f"{series_ticker}-EVT", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) - timedelta(minutes=5)), "status": "active",
+    }])
 
 
 def test_lifecycle_close_date_updated_refreshes_matching_market():
     _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
     main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
     gen_before = main.state["generation"]
 
@@ -1889,6 +1913,15 @@ def test_lifecycle_close_date_updated_refreshes_matching_market():
     assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 1
     assert main.state["lifecycle_stream_stats"]["events_by_type"]["close_date_updated"] == 1
     assert main.state["generation"] > gen_before
+    # The persisted catalog row gets the same close_ts, not just the
+    # in-memory overlay - the gap this module's own CHEATSHEET.md named.
+    # (Checked via a raw column read, not candidates_in_window - that query
+    # also filters on close_ts > now, and 1735689600 above is deliberately
+    # a past timestamp, so it'd be excluded there for an unrelated reason.)
+    assert main.state["lifecycle_stream_stats"]["catalog_updates_applied"] == 1
+    with mc_module._connect(mc_module.DB_PATH) as conn:
+        close_ts = conn.execute("SELECT close_ts FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
+    assert close_ts == 1735689600
 
 
 def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
@@ -1902,25 +1935,64 @@ def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
 
     # The event still counts toward observability...
     assert main.state["lifecycle_stream_stats"]["events_by_type"]["close_date_updated"] == 1
-    # ...but nothing was actually updated, since TICK-A isn't in state["markets"].
+    # ...but nothing was actually updated, since TICK-A isn't in state["markets"]
+    # or the catalog (never seeded here).
     assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 0
+    assert main.state["lifecycle_stream_stats"]["catalog_updates_applied"] == 0
     assert main.state["markets"][0]["close_time"] == "2026-01-01T00:00:00Z"
     assert main.state["generation"] == gen_before
 
 
-def test_lifecycle_non_close_date_event_only_updates_stats():
-    # determined/settled deliberately stay observation-only for now - see
-    # _process_stream_lifecycle's docstring.
+def test_lifecycle_determined_resolves_outcome_and_catalog_status():
     _reset_lifecycle_stats()
-    main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
+    _seed_catalog_row("TICK-A")
+    cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
 
     asyncio.run(main._process_stream_lifecycle(
-        {"event_type": "determined", "market_ticker": "TICK-A", "result": "yes"},
+        {"event_type": "determined", "market_ticker": "TICK-A", "result": "yes",
+         "determination_ts": 1735689600, "settlement_value": "1.0000"},
     ))
 
-    assert main.state["lifecycle_stream_stats"]["events_by_type"]["determined"] == 1
-    assert main.state["lifecycle_stream_stats"]["close_time_updates_applied"] == 0
-    assert main.state["markets"][0]["close_time"] == "2026-01-01T00:00:00Z"
+    stats = main.state["lifecycle_stream_stats"]
+    assert stats["events_by_type"]["determined"] == 1
+    assert stats["catalog_updates_applied"] == 1  # status -> "determined"
+    assert stats["outcomes_resolved_via_lifecycle"] >= 1  # the rejected-candidate row above
+    with mc_module._connect(mc_module.DB_PATH) as conn:
+        status = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
+    assert status == "determined"
+    summary = cl_module.gate_summary()
+    matching = [g for g in summary if g["strategy"] == "whale_follow" and g["gate_name"] == "entry_threshold"]
+    assert matching and matching[0]["resolved_count"] >= 1
+
+
+def test_lifecycle_determined_ignores_scalar_result_but_still_updates_catalog():
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "determined", "market_ticker": "TICK-A", "result": "scalar"},
+    ))
+
+    stats = main.state["lifecycle_stream_stats"]
+    assert stats["catalog_updates_applied"] == 1  # status still recorded
+    assert stats["outcomes_resolved_via_lifecycle"] == 0  # no yes/no outcome to resolve
+
+
+def test_lifecycle_settled_updates_catalog_status_to_finalized():
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+
+    stats = main.state["lifecycle_stream_stats"]
+    assert stats["events_by_type"]["settled"] == 1
+    assert stats["catalog_updates_applied"] == 1
+    assert stats["outcomes_resolved_via_lifecycle"] == 0  # settled never carries a result
+    with mc_module._connect(mc_module.DB_PATH) as conn:
+        status = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
+    assert status == "finalized"
 
 
 def test_lifecycle_ignores_message_missing_event_type_or_ticker():

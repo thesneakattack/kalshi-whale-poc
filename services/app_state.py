@@ -263,7 +263,10 @@ state = {
     # lifecycle), exposed on /api/state so its real event volume/shape can
     # be verified without grepping logs, same reasoning as
     # kalshi_trade_tape.py's own self.stats for exchange-wide trade.
-    "lifecycle_stream_stats": {"events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None},
+    "lifecycle_stream_stats": {
+        "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
+        "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
+    },
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
     "account": {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,

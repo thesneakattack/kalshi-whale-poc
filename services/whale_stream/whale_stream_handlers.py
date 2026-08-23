@@ -12,11 +12,12 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import config_performance, market_history, series_watcher
+from services import candidate_log, config_performance, market_analyst_agent, market_history, series_watcher, settlement_edge
 from services.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
 from services.config_store import config_store
 from services.kalshi_client import KalshiClient
+from services.market_catalog import market_catalog
 from services.market_lookup import _category_by_ticker, _close_time_by_ticker
 from services.whale_stream.decision_bridge import _handle_close_decision, _handle_signal
 from services.ws_manager import ws_manager
@@ -260,25 +261,50 @@ async def _process_stream_lifecycle(msg: dict) -> None:
     (docs/kalshi/market-and-event-lifecycle.md), replacing part of what the
     6-second REST tick's own market-list fetch currently has to wait for.
 
-    Only `close_date_updated` is wired to actually change anything yet -
-    the highest-value, lowest-risk slice: it's the exact real, previously-
-    diagnosed bug class (ROADMAP.md/CLAUDE.md's stale-close_time
-    investigation - Kalshi can revise a market's close_date_updated ahead
-    of its originally scheduled close, and until now this app only learned
-    that on its next REST poll of that specific market, which never
-    happens at all for a market that has already rotated off the
-    watchlist). `determined`/`settled` (the real settlement path) are
-    deliberately left un-wired here - re-routing this app's real outcome/
-    P&L resolution onto a channel with zero live-verified message history
-    is exactly the kind of partial-verification rush CLAUDE.md's own
-    incident log (and this same date's session) warns against; the REST
-    poll stays authoritative for that until a real settled event has been
-    observed and checked against it.
+    `close_date_updated` was the first slice wired (2026-08-17): the exact
+    real, previously-diagnosed bug class (ROADMAP.md/CLAUDE.md's
+    stale-close_time investigation) applied to the in-memory
+    state["markets"] overlay only. `determined`/`settled` were deliberately
+    left un-wired at the time - re-routing real outcome/P&L resolution onto
+    a channel with zero live-verified message history would have been
+    exactly the kind of partial-verification rush CLAUDE.md's own incident
+    log warns against.
+
+    Both gaps closed 2026-08-23, backed by real evidence this time, not
+    just docs: `docs/kalshi/market-and-event-lifecycle.md`'s schema was
+    cross-checked against real captured message shapes already sitting in
+    `ddev logs` (`kalshi_trade_ws.py`'s own "first real shape" log line,
+    2026-08-22 traffic - 2,256+ `determined` and 2,372+ `settled` events by
+    the time this was written) - `determined` really does carry
+    `result`/`determination_ts`/`settlement_value` exactly as documented;
+    `settled` carries only `settled_ts`, no `result` field, so `determined`
+    is the only trigger this needs. Two things were still REST-only despite
+    the in-memory overlay already existing for close_date_updated:
+    1. `services/market_catalog/market_catalog.py`'s persisted `markets`
+       table only ever got a fresh close_ts/status on that series' next
+       incremental scan (potentially hours away) - `apply_lifecycle_update`
+       now applies close_ts (close_date_updated) and status
+       (determined -> "determined", settled -> "finalized", the same
+       values a real REST market object's own `status` field would show
+       per market_lifecycle.md's status table) the instant each event
+       arrives.
+    2. market_history/settlement_edge/market_analyst_agent/candidate_log's
+       outcome resolution was fed exclusively from that tick's REST-fetched
+       `markets` list - structurally blind to any ticker that rotates off
+       the live watchlist/discovery scope before it settles (routine for
+       short-lived series like KXBTC15M), regardless of poll frequency.
+       market_lifecycle_v2 is exchange-wide, so a `determined` event
+       reaches every ticker this app ever touched, watchlisted or not.
+       Firing these now (in addition to, not instead of - the REST poll
+       keeps calling the same functions every tick as a fallback) is safe:
+       all four are idempotent (INSERT OR IGNORE / `WHERE resolved = 0` /
+       `WHERE settled_yes IS NULL`), and the real observed event rate
+       (~0.06/s, measured live) is well under poll_interval_sec's own
+       tick rate, so this isn't a meaningful extra DB-load axis either.
 
     Every event_type still counts toward lifecycle_stream_stats
     (services/app_state.py) so real volume/shape is visible on
-    /api/state without grepping logs - this is a genuinely new,
-    never-observed-live channel."""
+    /api/state without grepping logs."""
     from datetime import datetime, timezone
 
     event_type = msg.get("event_type")
@@ -289,24 +315,49 @@ async def _process_stream_lifecycle(msg: dict) -> None:
     stats["events_by_type"][event_type] = stats["events_by_type"].get(event_type, 0) + 1
     stats["last_event_at"] = time.time()
 
-    if event_type != "close_date_updated":
+    if event_type == "close_date_updated":
+        close_ts = msg.get("close_ts")
+        if close_ts is None:
+            return
+        try:
+            new_close_time = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError, OSError, OverflowError):
+            return
+        updated = False
+        for market in state["markets"]:
+            if market.get("ticker") == ticker:
+                market["close_time"] = new_close_time
+                updated = True
+                break
+        if updated:
+            stats["close_time_updates_applied"] += 1
+            bump_generation()
+        if market_catalog.apply_lifecycle_update(ticker, close_ts=float(close_ts)):
+            stats["catalog_updates_applied"] += 1
         return
-    close_ts = msg.get("close_ts")
-    if close_ts is None:
+
+    if event_type == "determined":
+        result = (msg.get("result") or "").strip().lower()
+        if market_catalog.apply_lifecycle_update(ticker, status="determined"):
+            stats["catalog_updates_applied"] += 1
+        # "scalar" (or anything else non-binary) has no yes/no outcome for
+        # this app's own resolution pipeline to record against - same
+        # result in ("yes", "no") gate main.py's REST-tick path already
+        # applies to the same market_results mapping.
+        if result not in ("yes", "no"):
+            return
+        now = time.time()
+        market_history.record_outcome(ticker, result, resolved_at=now)
+        resolved = settlement_edge.resolve_window(ticker, result == "yes")
+        resolved += market_analyst_agent.resolve_from_market_results({ticker: result})
+        resolved += candidate_log.resolve_from_market_results({ticker: result})
+        stats["outcomes_resolved_via_lifecycle"] += resolved
         return
-    try:
-        new_close_time = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    except (TypeError, ValueError, OSError, OverflowError):
+
+    if event_type == "settled":
+        if market_catalog.apply_lifecycle_update(ticker, status="finalized"):
+            stats["catalog_updates_applied"] += 1
         return
-    updated = False
-    for market in state["markets"]:
-        if market.get("ticker") == ticker:
-            market["close_time"] = new_close_time
-            updated = True
-            break
-    if updated:
-        stats["close_time_updates_applied"] += 1
-        bump_generation()
 
 
 async def _handle_trade_stream_status(status: dict) -> None:

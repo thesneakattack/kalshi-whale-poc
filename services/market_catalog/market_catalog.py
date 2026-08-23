@@ -225,6 +225,38 @@ def upsert_markets(series_ticker: str, category: str | None, markets: list[dict]
         )
 
 
+def apply_lifecycle_update(ticker: str, *, close_ts: float | None = None, status: str | None = None,
+                            updated_at: float | None = None) -> bool:
+    """Targeted single-field(s) UPDATE for one real-time market_lifecycle_v2
+    event (close_date_updated/determined/settled) - unlike upsert_markets
+    (a full-row replace from a fresh REST scan), this only touches what the
+    event actually carries, the instant it arrives, rather than waiting for
+    this series' next incremental scan (potentially hours away per this
+    module's own scan-batch design - see this module's CHEATSHEET.md's
+    "Audit finding" section, which named exactly this gap for
+    close_date_updated before determined/settled had been wired up too).
+    No-op (returns False) for a ticker with no existing row - this catalog
+    is near-term-horizon-bounded by design, so a market outside that window
+    or never scanned has nothing to update yet, which is expected, not an
+    error."""
+    if close_ts is None and status is None:
+        return False
+    updated_at = updated_at if updated_at is not None else time.time()
+    sets, params = [], []
+    if close_ts is not None:
+        sets.append("close_ts = ?")
+        params.append(close_ts)
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    sets.append("updated_at = ?")
+    params.append(updated_at)
+    params.append(ticker)
+    with _connect(DB_PATH) as conn:
+        cur = conn.execute(f"UPDATE markets SET {', '.join(sets)} WHERE ticker = ?", params)
+        return cur.rowcount > 0
+
+
 def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, min_volume: float = 0) -> list[dict]:
     """Every catalog market whose occurrence_ts falls within [now -
     lookback_sec, now + lookahead_sec] - the same window shape main.py's

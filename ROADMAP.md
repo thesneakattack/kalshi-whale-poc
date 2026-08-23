@@ -696,7 +696,7 @@ questions.
       resulting trade → outcome) that doesn't exist today. Trading History
       rows already show this inline (close type + P&L); the signal feed and
       decision feed do not.
-- [ ] A real, permanent fix for the close_time-mutability gap
+- [x] A real, permanent fix for the close_time-mutability gap
       (`docs/roadmap-archive-2026-08-16.md` has the full incident): Kalshi's
       `market_lifecycle_v2` WebSocket channel (`close_date_updated`,
       `determined`, `settled`, `activated`/`deactivated` events,
@@ -704,22 +704,34 @@ questions.
       about a status/close_time revision the instant Kalshi emits it,
       instead of only catching it on the next scan or the real-time
       confirmation pass that currently bounds (not eliminates) the
-      staleness window. **Half shipped 2026-08-17**: the subscription now
-      exists (`KalshiTradeWebSocketClient(subscribe_lifecycle=True)`,
+      staleness window. Half shipped 2026-08-17: the subscription
+      (`KalshiTradeWebSocketClient(subscribe_lifecycle=True)`,
       config-gated via `kalshi.market_lifecycle_stream_enabled`) and
-      `close_date_updated` is wired into the **in-memory overlay**
-      (`state["markets"]`, via `main._process_stream_lifecycle`) — verified
-      live against real messages for every documented `event_type`,
-      including one real `close_date_updated` applied with zero exceptions.
-      Still open: wiring the same events into `market_catalog`'s SQLite
-      rows (this fix only reaches the live tick's in-memory market list,
-      not the persistent catalog), plus `determined`/`settled` into the
-      real settlement pipeline (`market_history.record_outcome`,
-      `candidate_log`/`market_analyst_agent`'s `resolve_from_market_results`,
-      `settlement_edge.resolve_window` all still REST-only) — see
-      `docs/next-session-pickup-2026-08-17.md`'s "Recommended shape" section
-      for the full verification detail and why settlement wiring was
-      deliberately left for its own dedicated pass.
+      `close_date_updated` wired into the **in-memory overlay**
+      (`state["markets"]`, via `whale_stream_handlers._process_stream_lifecycle`).
+      **Second half shipped 2026-08-23**, closing both remaining gaps at
+      once, verified against real captured message shapes from `ddev logs`
+      first (not just the docs): new `market_catalog.apply_lifecycle_update()`
+      applies `close_ts`/`status` straight to the **persisted SQLite
+      row** the instant each event arrives (`close_date_updated` ->
+      `close_ts`, `determined` -> `status="determined"`, `settled` ->
+      `status="finalized"`) — see `services/market_catalog/CHEATSHEET.md`
+      for the detail. Real captured shapes confirmed `determined` carries
+      `result`/`determination_ts`/`settlement_value` exactly as documented
+      and `settled` carries only `settled_ts`, no `result` — so
+      `determined` is also now the trigger for
+      `market_history.record_outcome`/`settlement_edge.resolve_window`/
+      `market_analyst_agent.resolve_from_market_results`/
+      `candidate_log.resolve_from_market_results`, in addition to (not
+      instead of) the existing REST-tick path — closing the structural gap
+      where a ticker that rotates off the live watchlist/discovery scope
+      before it settles (routine for short-lived series like KXBTC15M)
+      never got resolved via REST at all, since `market_lifecycle_v2` is
+      exchange-wide. All four resolution functions are idempotent, so
+      firing them from both paths is safe. Verified live post-ship:
+      `catalog_updates_applied` incrementing on real traffic with
+      `close_time_updates_applied` at 0 for the same events — proof this
+      reaches markets the in-memory overlay alone could not.
 
 ## Shipped
 
