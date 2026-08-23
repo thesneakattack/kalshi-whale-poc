@@ -5078,6 +5078,54 @@
           <code>tests/test_alerting.py</code> · <code>tests/test_task_supervisor.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 129 · settlement-edge entry</div>
+        <h4>The settlement-projection edge measured itself real - shipped the "act on it" half</h4>
+        <p><code>services/settlement_edge.py</code>'s own verdict flipped from <code>insufficient</code> to
+          <code>projection_beats_market</code>: 27,534 scored observations across 478 distinct settlement windows,
+          market Brier 0.1046 vs projection Brier 0.0171 overall, widening to 0.002 vs 0.1021 once 46-59 of the 60
+          settlement observations are known (<code>GET /api/diagnostics/settlement-edge</code>). That module is
+          explicit it "never trades... records and scores," so acting on a confirmed edge is a deliberate, separate
+          step - new <code>services/settlement_edge_entry.py</code>, off by default
+          (<code>settlement_edge_entry.enabled</code>). This is a second, independent entry path alongside
+          <code>FollowTheWhaleStrategy.evaluate()</code> - triggered by the index feed's own tick
+          (<code>index_stream_handlers._record_settlement_observations</code>, once/sec while a settlement window is
+          open) rather than a whale print, and deliberately allowed to enter inside
+          <code>strategy.min_seconds_to_close</code>'s floor, because unlike whale-follow it never tries to manage
+          the position afterward - it holds to the real $1/$0 settlement on purpose. New
+          <code>Position.hold_to_settlement</code> field (additive migration, <code>services/paper_broker.py</code>)
+          marks these so <code>exit_engine</code>'s runway-floor forced exit (the very rule that would otherwise
+          close it early at a market price that hasn't yet converged) leaves it alone; take-profit/stop-loss still
+          apply unchanged. Three independent gates before it trades: enough of the window known
+          (<code>min_observations_known</code>, default 45 - the bucket the Brier comparison actually validated),
+          a confident projection (<code>min_probability</code>, default 0.95 - not just "better than the market's
+          guess" on a near-coin-flip), and a real gap versus the market's own price
+          (<code>min_edge</code>, default 0.05) worth paying the taker fee on. Also fixed a real bug found while
+          reading <code>settlement_edge.py</code> to build this: <code>record_observation</code>'s except clause
+          didn't bind <code>exc</code> (<code>except Exception:</code>, not <code>except Exception as exc:</code>),
+          so a genuine failure would have raised a fresh <code>NameError</code> right there instead of being logged
+          - the exact "renamed helper left a NameError here" incident that function's own comment already
+          described, reintroduced by omission and never actually exercised (<code>record_errors</code> had sat at
+          0). Verified live against the real running app, not just tests: enabled the feature for ~7 minutes against
+          the real trade/index streams, covering 2 real settlement windows (observations 27,542 -> 27,653), zero
+          new <code>record_errors</code>, then reverted - caught along the way that <code>config_store.update()</code>
+          (the live <code>/api/config</code> write path every dashboard Controls-panel save and auto-apply already
+          goes through) round-trips the whole file through <code>yaml.safe_dump()</code>, which cannot preserve
+          hand-written comments - stripped every comment in <code>config/settings.yaml</code>, not just the touched
+          section, confirmed by cross-checking against git history's own repeated comment churn on that file.
+          Restored from git and reapplied cleanly; logged as a new, previously-undiagnosed ROADMAP.md item rather
+          than fixed in passing, since a real fix touches the config store's core load/save mechanism. 13 new tests
+          in <code>tests/test_settlement_edge_entry.py</code> plus a regression test for the except-clause bug in
+          <code>tests/test_settlement_edge.py</code>; full suite (1,182 tests) green.</p>
+        <div class="files"><code>services/settlement_edge_entry.py</code> · <code>services/settlement_edge.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/exits/exit_engine.py</code> ·
+          <code>services/whale_stream/index_stream_handlers.py</code> ·
+          <code>services/whale_stream/decision_bridge.py</code> ·
+          <code>services/whale_stream/CHEATSHEET.md</code> · <code>config/settings.yaml</code> ·
+          <code>tests/test_settlement_edge_entry.py</code> · <code>tests/test_settlement_edge.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 

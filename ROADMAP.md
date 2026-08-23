@@ -313,20 +313,52 @@ questions.
       `check_pending_fills` via a `validate_fn` callback — a rejected fill
       now cancels the resting order and records a `"fill_rejected"`
       decision instead of opening a position (commit 6921543).
-- [ ] **Decide whether the settlement projection is an edge, then act on
-      it or drop it.** `services/settlement_edge.py` is now recording both
-      forecasts of the same event at the same instant (the market's yes
-      price, and the projection from the partial 60-second index average)
-      and Brier-scoring them once the outcome lands —
-      `GET /api/diagnostics/settlement-edge`. It reports `insufficient`
-      until there's enough resolved data, deliberately. **Nothing trades on
-      it yet, and nothing should until that verdict flips.** If the
-      projection wins, the follow-on is real: `min_seconds_to_close: 300`
-      currently refuses entries in the final five minutes, which is exactly
-      the window where settlement is partly *known* rather than guessed —
-      that gate was the right fix for a blind system and would need
-      revisiting for one that isn't. If the market wins, say so and delete
-      the trading ambition, keeping the capture as a diagnostic.
+- [x] **Decide whether the settlement projection is an edge, then act on
+      it or drop it.** Verdict flipped 2026-08-23: `projection_beats_market`
+      on 27,534 scored observations across 478 windows (market Brier
+      0.1046 vs projection Brier 0.0171, widening to 0.002 vs 0.1021 once
+      46-59 of the 60 settlement observations are known —
+      `GET /api/diagnostics/settlement-edge`). Shipped the "act on it"
+      half the same day: `services/settlement_edge_entry.py`, off by
+      default (`settlement_edge_entry.enabled`), a second entry path
+      triggered by the index feed's own tick
+      (`index_stream_handlers._record_settlement_observations`) rather
+      than a whale print, deliberately entering inside
+      `min_seconds_to_close`'s floor because it holds to real settlement
+      instead of managing the position via price — marked via a new
+      `Position.hold_to_settlement` field (additive migration,
+      `services/paper_broker.py`) that `exit_engine`'s runway-floor forced
+      exit now skips for these positions specifically. Also fixed a real
+      bug found while reading `settlement_edge.py`: `record_observation`'s
+      except clause didn't bind `exc` (`except Exception:`, not `except
+      Exception as exc:`), so a genuine failure would have raised a fresh
+      `NameError` on the websocket path instead of being logged — the same
+      incident that function's own comment already described, reintroduced
+      by omission. Verified live against the real running app (~7 minutes,
+      2 real settlement windows, `record_errors` stayed 0) before
+      committing. Commit `8ebd36f`.
+- [ ] **Every live `/api/config` write silently strips every comment out of
+      `config/settings.yaml`, not just the field it touched.** Found
+      2026-08-23 verifying the settlement-edge item above live: toggling
+      one field via `POST /api/config` rewrote the entire file via
+      `services/config_store.py`'s `yaml.safe_dump()`, and PyYAML's
+      `safe_load`/`safe_dump` round-trip cannot preserve comments — every
+      hand-written explanation in the file (the whale-threshold reasoning,
+      the backup retention rationale, the alerting webhook pointer, ...)
+      was gone after one toggle. Confirmed this isn't new: `git log -p --
+      config/settings.yaml` shows the same comments being re-added and
+      re-stripped repeatedly across this file's history, i.e. every
+      dashboard Controls-panel save and every advisory/confidence-
+      calibration auto-apply has likely been doing this the whole time,
+      unnoticed because whoever next hand-edited the file usually restored
+      the comments without realizing why they'd vanished. Recovered this
+      session by resetting to git and reapplying just the intended change
+      (config-field-edit skill's own reset/reapply pattern) rather than
+      fixed at the root — a real fix means either switching
+      `config_store.py` to a comment-preserving YAML round-trip (e.g.
+      `ruamel.yaml`) or a merge-patch write that only touches the changed
+      keys, and either needs its own careful pass across every existing
+      `/api/config` call site and test, not a change made in passing.
 ## P4 — Nice-to-haves
 
 - [ ] **Move analytics/advisory computation out of the live tick loop —
