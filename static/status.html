@@ -5368,6 +5368,42 @@
           <code>tests/test_signal_resolution.py</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 137 · a test run wrote real trades into the live paper account</div>
+        <h4>tests/conftest.py closes a collection-order gap in the test-isolation convention itself</h4>
+        <p>Found while pulling up <code>/api/diagnostics</code> to look for other live anomalies after phases
+          135-136: <code>price_band_adherence</code> reported 2 real entries below <code>min_unit_cost</code> in
+          the running app's own paper account. The offending tickers - <code>KXTICK-A</code>, <code>OTHER-B</code> -
+          matched <code>tests/test_trading_gate.py</code>'s <code>test_build_series_context_scopes_stats_and_
+          trades_to_the_series</code> fixture data byte-for-byte, at a timestamp landing inside this session's own
+          test runs. Confirmed directly against <code>data/paper_broker.db</code>: those exact rows were really
+          there. This is precisely the failure CLAUDE.md's "Tests always redirect DB_PATH... never touch a real
+          data/*.db file" rule exists to prevent. Root cause: that convention is enforced per-file (each test file
+          redirects <code>DB_PATH</code> on the relevant modules before its own <code>import main</code>), but
+          <code>services.app_state</code>'s <code>broker</code>/<code>risk</code> singletons - and
+          <code>services.config_store</code>'s <code>config_store</code> - are constructed exactly once per
+          process, the first time anything imports them. Only whichever test file pytest happens to collect
+          *first* actually determines which redirect wins; every other file's own block is inert for that
+          singleton. <code>tests/test_signal_resolution.py</code> does <code>import main</code> with no redirection
+          of its own at all - safe only because some other file has always happened to import first. Most likely
+          trigger: <code>.claude/hooks/run_tests.py</code>'s post-edit pytest invocation, whose 60s
+          <code>subprocess.run</code> timeout was well under the suite's real ~95-110s runtime (measured directly,
+          repeatedly, this same session) - a host-side kill on timeout does not reliably kill the process
+          <code>ddev exec</code> spawned inside the container, so an orphaned full-suite run could keep executing,
+          racing whichever collection order it happened to get. Fixed at the root: new <code>tests/conftest.py</code>
+          performs the same redirect pytest already guarantees runs before any test file in the directory is
+          collected, so the very first import of these singletons - regardless of which file, or whether the suite
+          runs whole or as an isolated subset - always lands on a throwaway tmp dir. <code>.claude/hooks/
+          run_tests.py</code>'s timeout raised 60s &rarr; 240s so it stops guaranteeing its own timeout on every
+          run. Verified directly: constructing <code>main.broker</code> via a bare <code>import conftest; import
+          main</code> (no other test file involved) now resolves to the tmp dir, not
+          <code>data/paper_broker.db</code>; full suite (1,207 tests) still green; the real file's row count was
+          unchanged (still 8) after a full run post-fix. The two contaminating rows themselves are a separate,
+          deliberately-not-yet-decided cleanup - a live financial-record edit, even in paper mode, not something
+          to do silently.</p>
+        <div class="files"><code>tests/conftest.py</code> · <code>.claude/hooks/run_tests.py</code></div>
+      </div>
+
     </div>
   </section>
 

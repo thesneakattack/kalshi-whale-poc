@@ -33,9 +33,27 @@ def main():
     try:
         result = subprocess.run(
             ["ddev", "exec", "-s", "fastapi", "python3", "-m", "pytest", "-q"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=240,
         )
     except Exception:
+        # Real live incident, 2026-08-23: the suite has grown to ~95-110s
+        # (measured directly, repeatedly, the same session this was found),
+        # well past the previous 60s timeout - meaning this hook's
+        # subprocess.run() was silently hitting TimeoutExpired (a plain
+        # Exception, caught right here) on every single invocation, never
+        # once completing. Two real costs, not just a missed-regression
+        # risk: (1) this hook stopped giving any real signal at all, despite
+        # looking like it ran; (2) subprocess.run's host-side kill-on-
+        # timeout does not reliably kill the process ddev exec spawned
+        # *inside* the container - a real orphaned full-suite pytest run
+        # was caught mid-flight writing test fixture rows (tickers
+        # `KXTICK-A`/`OTHER-B` from test_trading_gate.py) into the real,
+        # live data/paper_broker.db (see tests/conftest.py's docstring for
+        # the full incident and the actual root-cause fix - this timeout
+        # bump reduces how often a timeout fires at all, it isn't the fix
+        # for cross-test contamination by itself). 240s gives real margin
+        # above measured runtime instead of a number already smaller than
+        # normal, successful completion.
         return  # ddev not running/not found - don't block the edit over tooling issues
 
     if result.returncode != 0:
