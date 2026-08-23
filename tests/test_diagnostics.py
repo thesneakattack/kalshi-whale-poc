@@ -36,7 +36,7 @@ def dbs(tmp_path, monkeypatch):
 def _cfg(**over):
     cfg = {
         "strategy": {"min_unit_cost": 0.5, "max_unit_cost": 0.8},
-        "whale_watcher_kalshi": {"min_notional_usd": 5000, "min_notional_usd_by_series": {}},
+        "whale_watcher_kalshi": {"min_contracts": 5000, "min_contracts_by_series": {}},
         "strategy_overrides": {"by_category": {}, "by_series": {}},
     }
     cfg.update(over)
@@ -44,14 +44,18 @@ def _cfg(**over):
 
 
 def _seed_signals(rows):
-    """rows: [(ticker, series, notional, seen_at)]"""
+    """rows: [(ticker, series, size, seen_at)]. factors_json is set to a
+    real (non-null) value so these rows pass check_threshold_integrity's
+    "is this a real whale_watcher row" filter - the same factors_json IS
+    NOT NULL idiom services/signal_log.py's resolved_signals_with_factors
+    already uses."""
     sl_module._connect().close()  # ensure schema
     with sqlite3.connect(sl_module.DB_PATH) as conn:
-        for ticker, series, notional, seen_at in rows:
+        for ticker, series, size, seen_at in rows:
             conn.execute(
                 "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
-                "resolved, raw_notional_usd) VALUES (?,?,?,?,?,?,?,0,?)",
-                (ticker, series, "yes", 100, 0.5, "test", seen_at, notional),
+                "resolved, factors_json) VALUES (?,?,?,?,?,?,?,0,?)",
+                (ticker, series, "yes", size, 0.5, "test", seen_at, "{}"),
             )
 
 
@@ -83,13 +87,13 @@ def test_threshold_integrity_flags_signals_below_the_configured_floor(dbs):
 
 
 def test_threshold_integrity_respects_per_series_overrides(dbs):
-    # A $2,500 print is a violation under the global 5000 floor but fine
-    # for a series whose own override is 2500 - the check must resolve the
-    # same per-series floor the provider itself uses.
+    # A 2,600-contract print is a violation under the global 5000 floor but
+    # fine for a series whose own override is 2500 - the check must resolve
+    # the same per-series floor the provider itself uses.
     now = time.time()
     _seed_signals([("B-1", "KXBTC15M", 2600.0, now - 50)])
     cfg = _cfg(whale_watcher_kalshi={
-        "min_notional_usd": 5000, "min_notional_usd_by_series": {"KXBTC15M": 2500},
+        "min_contracts": 5000, "min_contracts_by_series": {"KXBTC15M": 2500},
     })
     c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 3600, now=now)
     assert c.status == "ok"
@@ -117,9 +121,9 @@ def test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config(dbs
         conn.execute(
             "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
             "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
-            (now - 3600, "whale_watcher_kalshi.min_notional_usd", "100", "5000", "test", 0, "fp0", "fp1"),
+            (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
-    cfg = _cfg()  # today's live min_notional_usd is 5000
+    cfg = _cfg()  # today's live min_contracts is 5000
     c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now)
     assert c.status == "ok"
     assert c.detail["violations"] == 0
@@ -127,7 +131,7 @@ def test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config(dbs
 
 
 def test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_raise(dbs):
-    # Same setup, but the signal's own notional (50) was already below the
+    # Same setup, but the signal's own size (50) was already below the
     # floor that was live when it was recorded (100) - a real violation,
     # not a stale-config artifact, and the epoch-aware fix must not paper
     # over it.
@@ -138,7 +142,7 @@ def test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_ra
         conn.execute(
             "INSERT INTO applied_changes (applied_at, config_path, old_value, new_value, rationale, "
             "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
-            (now - 3600, "whale_watcher_kalshi.min_notional_usd", "100", "5000", "test", 0, "fp0", "fp1"),
+            (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
     c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now)
     assert c.status == "fail"

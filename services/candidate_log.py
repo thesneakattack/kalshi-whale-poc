@@ -2,7 +2,7 @@
 Rejected-candidate logging - closes Gap 1 of docs/config-tuning-data-gaps-
 2026-08-10.md (the "counterfactual gap"). Every entry/discovery gate in this
 app (strategy.entry_threshold, strategy.min_whale_winrate_pct,
-whale_watcher_kalshi.min_notional_usd) only ever produces a boolean "did
+whale_watcher_kalshi.min_contracts) only ever produces a boolean "did
 this candidate pass" - nothing previously recorded what happened to a
 candidate that failed. advisory_engine's own entry-threshold/longshot
 recommendations return None against real trade history specifically

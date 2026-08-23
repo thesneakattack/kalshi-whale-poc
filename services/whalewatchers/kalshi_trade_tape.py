@@ -2,9 +2,21 @@
 Real (not simulated) whale-watcher provider — Kalshi has no public trader
 identity or leaderboard (trades are anonymous member-to-member, confirmed
 directly during research, not assumed), so this is strictly size-based whale
-detection: a real trade printed on the exchange whose notional dollar value
-clears a configurable threshold. See docs/kalshi-whale-provider-and-
+detection: a real trade printed on the exchange whose CONTRACT COUNT clears
+a configurable threshold. See docs/kalshi-whale-provider-and-
 strategy-porting-plan.md Part 1 for the full research and design writeup.
+
+Contract count, not notional dollar value, is the gate (ROADMAP.md, shipped
+2026-08-22 per docs/next-session-pickup-2026-08-17.md). A fixed dollar
+threshold is geometrically biased toward near-certain prices — $2,500 buys
+125,000 contracts at 2c but only 2,505 at 99.8c — so it was never finding
+informed traders, only whoever could afford to buy a near-certainty in
+size. Measured across 145,785 real captured prints: the dollar gate's picks
+sat at mean unit cost 0.926 (75.9% of them ≥0.95, the band that bleeds
+money); a `count >= 5,000` selector lands at mean 0.759, with 27.3% inside
+the only profitable band versus 8.6% for the dollar gate. Real dollar
+notional is still computed and recorded (`_notional_usd`, `raw_context`)
+for diagnostics — it just no longer gates anything.
 
 Needs no credentials and calls no external API of its own — it classifies
 data this app already fetches every trading-loop tick (main.py's
@@ -22,7 +34,7 @@ from services import candidate_log, config_bounds, market_analyst_agent, market_
 from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
-_DEFAULT_MIN_NOTIONAL_USD = 2500.0
+_DEFAULT_MIN_CONTRACTS = 5000.0
 # Trend-consistency window - how far back to look when asking "what has
 # this market's price actually been doing lately."
 _TREND_LOOKBACK_SEC = 1800
@@ -172,31 +184,31 @@ def _notional_usd(trade: dict, side: str) -> float | None:
     return count * price
 
 
-def min_notional_for(ticker: str, wwk_cfg: dict) -> float:
+def min_contracts_for(ticker: str, wwk_cfg: dict) -> float:
     """This series' whale threshold, or the global default. Public and used
     by BOTH the pre-scan in fetch_signals and the real gate in
     _process_trades_sync - one definition, so the pre-scan can never decide
     a print is worth resolving a market for that the real gate would then
     reject (or, worse, the reverse)."""
-    default = float(wwk_cfg.get("min_notional_usd", _DEFAULT_MIN_NOTIONAL_USD))
-    by_series = wwk_cfg.get("min_notional_usd_by_series") or {}
+    default = float(wwk_cfg.get("min_contracts", _DEFAULT_MIN_CONTRACTS))
+    by_series = wwk_cfg.get("min_contracts_by_series") or {}
     return float(by_series.get(signal_log.series_of(ticker), default))
 
 
-def _prescan_notional(trade: dict) -> tuple[str, float] | None:
-    """(side, notional) for one raw print, using nothing but the print
-    itself - no DB, no market data, no state mutation. Deliberately cheap
-    and side-effect free: this runs over EVERY message on an exchange-wide
-    subscription, including the ~99.9% that will never clear a whale
-    threshold, so it must not touch disk and must not mark anything seen."""
+def _prescan_count(trade: dict) -> tuple[str, float] | None:
+    """(side, contract count) for one raw print, using nothing but the
+    print itself - no DB, no market data, no state mutation. Deliberately
+    cheap and side-effect free: this runs over EVERY message on an
+    exchange-wide subscription, including the ~99.9% that will never clear
+    a whale threshold, so it must not touch disk and must not mark anything
+    seen. Mirrors _prescan_notional's old shape, but keys off count_fp
+    directly rather than deriving a dollar notional - see this module's own
+    docstring for why count, not dollars, is the gate."""
     side = _taker_side(trade)
     if side is None:
         return None
-    try:
-        notional = _notional_usd(trade, side)
-        return (side, notional) if notional is not None else None
-    except (TypeError, ValueError):
-        return None
+    count = _price_dollars(trade, "count_fp")
+    return (side, count) if count is not None else None
 
 
 def _parse_trade_time(created_time: str | None) -> float | None:
@@ -331,10 +343,12 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         want of a volume figure.
 
         The ordering here is what makes it affordable, and it is the exact
-        inverse of the old loop's: gate on NOTIONAL FIRST (pure arithmetic
-        on the print itself - no DB, no network), and only then resolve a
-        market for the handful that survive. Measured on KXBTC15M
-        2026-08-17: 2 of 5,162 prints cleared the $2,500 threshold. Paying
+        inverse of the old loop's: gate on CONTRACT COUNT FIRST (pure
+        arithmetic on the print itself - no DB, no network), and only then
+        resolve a market for the handful that survive. Measured on KXBTC15M
+        2026-08-17: 2 of 5,162 prints cleared the $2,500 threshold that was
+        live that day (since replaced by a contract-count gate - see this
+        module's own docstring). Paying
         one batched REST call for those 2 is trivial; paying it for all
         5,162 would not be. Results are cached per ticker (negatives
         included), so a market that keeps printing is fetched once, not
@@ -360,8 +374,8 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 if cached[1] is not None:
                     markets_by_ticker[ticker] = cached[1]
                 continue
-            scan = _prescan_notional(trade)
-            if scan is None or scan[1] < min_notional_for(ticker, wwk_cfg):
+            scan = _prescan_count(trade)
+            if scan is None or scan[1] < min_contracts_for(ticker, wwk_cfg):
                 continue
             self.stats["whale_sized_offlist"] += 1
             wanted.add(ticker)
@@ -441,21 +455,21 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 # exchange-wide subscription this should be rare rather
                 # than the norm: _resolve_unknown_markets has already
                 # fetched any off-watchlist market whose print cleared the
-                # notional gate, so reaching here means either a
+                # contract-count gate, so reaching here means either a
                 # sub-threshold print (expected, the overwhelming majority)
                 # or a resolution that genuinely failed. Only the latter is
                 # worth logging, and only that case is checked, so the hot
                 # path stays free of a DB write per uninteresting trade.
-                if _prescan_notional(trade) is not None and ticker:
-                    side_n = _prescan_notional(trade)
-                    if side_n[1] >= min_notional_for(ticker, wwk_cfg):
+                if _prescan_count(trade) is not None and ticker:
+                    side_n = _prescan_count(trade)
+                    if side_n[1] >= min_contracts_for(ticker, wwk_cfg):
                         candidate_log.record_rejection(
                             ticker, "whale_watcher", "market_unresolved", side_n[1],
-                            min_notional_for(ticker, wwk_cfg), side=side_n[0],
+                            min_contracts_for(ticker, wwk_cfg), side=side_n[0],
                         )
                 continue
 
-            # Resolved before the notional gate so a rejection can be logged
+            # Resolved before the count gate so a rejection can be logged
             # with a real side, and so both the gate and the emitted signal
             # agree on direction. None means the trade carried no readable
             # direction at all - skip it rather than guessing (see
@@ -464,29 +478,36 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             if side is None:
                 continue
 
-            try:
-                notional = _notional_usd(trade, side)
-                if notional is None:
-                    # Unparseable count or price. Skip rather than let a
-                    # missing figure become $0, which would filter the trade
-                    # out as "too small" - the right answer for the wrong
-                    # reason, and invisible in the rejection stats.
-                    candidate_log.record_rejection(
-                        ticker, "whale_watcher", "unparseable_notional", 0.0, 0.0, side=side,
-                    )
-                    continue
-            except (TypeError, ValueError):
+            count = _price_dollars(trade, "count_fp")
+            if count is None:
+                # Unparseable count. Skip rather than let a missing figure
+                # become 0, which would filter the trade out as "too small"
+                # - the right answer for the wrong reason, and invisible in
+                # the rejection stats.
+                candidate_log.record_rejection(
+                    ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side,
+                )
                 continue
             # A single global threshold can't be right for both a
             # low-liquidity niche market and a high-volume political one
             # (ROADMAP.md) - series_of() reuses the same series definition
             # excluded_series/series_stats already key off, with the global
-            # min_notional_usd as the fallback for any series with no
-            # override set.
-            min_notional = min_notional_for(ticker, wwk_cfg)
-            if notional < min_notional:
-                candidate_log.record_rejection(ticker, "whale_watcher", "min_notional_usd", notional, min_notional, side=side)
+            # min_contracts as the fallback for any series with no override
+            # set. Contract count, not dollar notional, is the gate - see
+            # this module's own docstring for why.
+            min_contracts = min_contracts_for(ticker, wwk_cfg)
+            if count < min_contracts:
+                candidate_log.record_rejection(ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side)
                 continue
+
+            # Real dollar notional is no longer gated on, but is still
+            # captured for diagnostics/raw_context below (a whale-sized
+            # print's actual dollar cost is genuinely useful context, just
+            # not the selection criterion anymore).
+            try:
+                notional = _notional_usd(trade, side)
+            except (TypeError, ValueError):
+                notional = None
 
             # price is always the yes-side price by convention, same as
             # every other WhaleSignal in this app (whale_simulator.py,
@@ -499,13 +520,12 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # and every gate downstream then reasoned correctly about a
             # fabricated number.
             price = _price_dollars(trade, "yes_price_dollars")
-            raw_count = _price_dollars(trade, "count_fp")
-            if price is None or raw_count is None:
+            if price is None:
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "unparseable_price", 0.0, 0.0, side=side,
                 )
                 continue
-            size = int(round(raw_count))
+            size = int(round(count))
             if size <= 0:
                 continue
 
@@ -587,7 +607,13 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # back to price itself ("no ask data = assume no spread").
             yes_ask = float(market.get("yes_ask_dollars") or price)
             raw_context = {
-                "notional_usd": round(notional, 2),
+                # No longer the gate (contract count is - see docstring),
+                # but still real, useful context - and None rather than a
+                # fabricated 0.0 on the rare print where price parsed but
+                # notional's own internal parse still failed. See
+                # signal_log.py's raw_notional_usd docstring: nullable,
+                # only real providers with a raw_context populate it.
+                "notional_usd": round(notional, 2) if notional is not None else None,
                 "spread": round(max(yes_ask - price, 0.0), 4),
                 "volume_24h": float(market.get("volume_24h_fp") or 0.0),
             }

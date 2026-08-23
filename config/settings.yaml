@@ -75,8 +75,22 @@ risk:
 kalshi_account:
   trading_enabled: false
 whale_watcher_kalshi:
-  min_notional_usd: 5000
-  min_notional_usd_by_series:
+  # Contract count, not dollar notional, is the whale gate (ROADMAP.md,
+  # replacing min_notional_usd - a dollar gate is structurally biased
+  # toward near-certain prices; see docs/next-session-pickup-2026-08-17.md
+  # and services/whalewatchers/kalshi_trade_tape.py's module docstring).
+  # 5000 is the measured recommendation (mean unit cost 0.759 vs the old
+  # dollar gate's 0.926).
+  min_contracts: 5000
+  # Same two-tier structure the old min_notional_usd_by_series had (crypto
+  # looser than the global default, mention-style markets loosest), same
+  # round numbers - but re-validated against real historical signal sizes,
+  # not a blind field-rename: signal_log.db's own logged whale-signal sizes
+  # for KXTRUMPSAY/KXTRUMPMENTION top out at 3506/4932 contracts, so a flat
+  # 5000 global floor with no override would have gone dark on both. 2500/
+  # 500 sit at or below every affected series' observed p10, so switching
+  # units doesn't silently zero out their signal flow.
+  min_contracts_by_series:
     KXBTC15M: 2500
     KXBTCD: 2500
     KXETH15M: 2500

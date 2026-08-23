@@ -807,17 +807,21 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       <div class="section-body config-group">
         <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
           Kalshi has no public trader identity or leaderboard, so this is strictly
-          size-based: any real trade on the exchange whose dollar size clears the
+          size-based: any real trade on the exchange whose CONTRACT COUNT clears the
           threshold below becomes a whale signal, scored the same way the simulator's
-          confidence is. Active by default (needs no setup) — set
+          confidence is. Contract count, not dollar notional, is the gate — a fixed
+          dollar threshold is structurally biased toward near-certain prices (e.g.
+          $2,500 buys 125,000 contracts at 2¢ but only 2,505 at 99.8¢), so it was
+          finding whoever could afford a near-certainty in size, not informed traders.
+          Active by default (needs no setup) — set
           <code>WHALE_WATCHER_PROVIDER</code> in <code>.env</code> to something else, plus a
           restart (<code>ddev restart</code>), to turn it off instead.
         </p>
         <div id="whale-provider-status" style="font-size:12px; margin:0 0 12px;"></div>
-        <div class="field"><label>Minimum trade size to count as a whale print ($ notional) <span class="config-path">whale_watcher_kalshi.min_notional_usd</span>
-          <span class="info-icon" title="Higher = only bigger real trades count as whale prints, fewer but higher-conviction signals. Lower = smaller trades qualify too, more signals but each one is less exceptional.">ⓘ</span></label><input id="cfg-whale-min-notional" type="number" step="any" min="0"></div>
-        <div class="field"><label>Per-series overrides (comma-separated <code>PREFIX:amount</code> pairs, e.g. "KXATPMATCH:100, KXNFLGAME:5000") — falls back to the amount above for any series not listed <span class="config-path">whale_watcher_kalshi.min_notional_usd_by_series</span>
-          <span class="info-icon" title="Lets a low-liquidity series (e.g. niche tennis) use a much lower threshold than a high-volume one (e.g. a presidential election) instead of one global number trying to fit both.">ⓘ</span></label><input id="cfg-whale-min-notional-by-series" type="text" placeholder="none"></div>
+        <div class="field"><label>Minimum contract count to count as a whale print <span class="config-path">whale_watcher_kalshi.min_contracts</span>
+          <span class="info-icon" title="Higher = only bigger real trades count as whale prints, fewer but higher-conviction signals. Lower = smaller trades qualify too, more signals but each one is less exceptional.">ⓘ</span></label><input id="cfg-whale-min-contracts" type="number" step="1" min="0"></div>
+        <div class="field"><label>Per-series overrides (comma-separated <code>PREFIX:amount</code> pairs, e.g. "KXATPMATCH:100, KXNFLGAME:5000") — falls back to the amount above for any series not listed <span class="config-path">whale_watcher_kalshi.min_contracts_by_series</span>
+          <span class="info-icon" title="Lets a low-liquidity series (e.g. niche tennis) use a much lower threshold than a high-volume one (e.g. a presidential election) instead of one global number trying to fit both.">ⓘ</span></label><input id="cfg-whale-min-contracts-by-series" type="text" placeholder="none"></div>
       </div>
     </details>
 
@@ -828,7 +832,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           The watchlist is fully recomputed every tick with no memory of past ticks, so a series
           near a volume/live-status cutoff can flap in and out repeatedly. When enabled, a newly
           admitted series is observed for a while, then judged on the real fraction of its trades
-          that actually clear the whale-notional threshold above. A series that fails gets
+          that actually clear the whale contract-count threshold above. A series that fails gets
           backed off from re-admission for an escalating period (doubling each repeated failure);
           approval is sticky and never silently revoked. See the History tab's Series Evaluator
           panel for the full log, including a manual re-evaluate action. Off by default - trades
@@ -844,7 +848,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label>Hard cap on observation time (seconds) <span class="config-path">series_evaluator.max_observation_sec</span>
           <span class="info-icon" title="Forces a verdict once this much time has passed, even if the minimum trade count above was never reached - zero real trade activity by then counts as an automatic reject (a clearer 'not worthy' signal than a low rate). Prevents a quiet series from being observed forever.">ⓘ</span></label><input id="cfg-series-evaluator-max-observation-sec" type="number" step="any" min="0"></div>
         <div class="field"><label>Minimum qualifying rate to approve (0–1) <span class="config-path">series_evaluator.min_qualify_rate</span>
-          <span class="info-icon" title="The fraction of a series' real observed trades that must clear the whale-notional threshold above for it to be approved. Higher = stricter, more series get rejected. Lower = more permissive.">ⓘ</span></label><input id="cfg-series-evaluator-min-qualify-rate" type="number" step="any" min="0" max="1"></div>
+          <span class="info-icon" title="The fraction of a series' real observed trades that must clear the whale contract-count threshold above for it to be approved. Higher = stricter, more series get rejected. Lower = more permissive.">ⓘ</span></label><input id="cfg-series-evaluator-min-qualify-rate" type="number" step="any" min="0" max="1"></div>
         <div class="field"><label>Backoff base (seconds, first rejection) <span class="config-path">series_evaluator.backoff_base_sec</span>
           <span class="info-icon" title="How long a series is excluded from re-admission after its first rejection. Each subsequent rejection multiplies this by the backoff multiplier below, up to the cap.">ⓘ</span></label><input id="cfg-series-evaluator-backoff-base-sec" type="number" step="any" min="0"></div>
         <div class="field"><label>Backoff multiplier per repeated rejection <span class="config-path">series_evaluator.backoff_multiplier</span>

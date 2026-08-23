@@ -138,8 +138,8 @@ def _build_series_context(cfg: dict, series: str) -> dict:
     series-specific variant of that function), this series' own closed-
     trade summary (trade_analytics.compute_summary on rows filtered to
     tickers under this series), its current excluded_series membership +
-    per-series notional override, and its series_evaluator verdict if it's
-    ever been evaluated."""
+    per-series contract-count override, and its series_evaluator verdict if
+    it's ever been evaluated."""
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
     series_rows = [r for r in all_rows if signal_log.series_of(r["ticker"]) == series]
     evaluator_row = next((r for r in series_evaluator.overview() if r["series"] == series), None)
@@ -150,7 +150,7 @@ def _build_series_context(cfg: dict, series: str) -> dict:
         "whale_stats": signal_log.series_stats(series, days=30),
         "trade_summary": trade_analytics.compute_summary(series_rows),
         "currently_excluded": series in (strat_cfg.get("excluded_series") or []),
-        "min_notional_override": (whale_cfg.get("min_notional_usd_by_series") or {}).get(series),
+        "min_contracts_override": (whale_cfg.get("min_contracts_by_series") or {}).get(series),
         "evaluator_status": evaluator_row,
     }
 

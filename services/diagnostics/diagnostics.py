@@ -148,56 +148,66 @@ def _historical_value(cfg: dict, path: str, ts: float, changes: list[dict]):
 
 # ---------------------------------------------------------------- integrity
 
-_MIN_NOTIONAL_PATH = "whale_watcher_kalshi.min_notional_usd"
-_MIN_NOTIONAL_BY_SERIES_PATH = "whale_watcher_kalshi.min_notional_usd_by_series"
+_MIN_CONTRACTS_PATH = "whale_watcher_kalshi.min_contracts"
+_MIN_CONTRACTS_BY_SERIES_PATH = "whale_watcher_kalshi.min_contracts_by_series"
 
 
 def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
-    """Do the signals actually in signal_log respect the notional gate that
-    was actually LIVE when each one was recorded - not the gate config
-    declares today. History outlives config: a row recorded under an
-    earlier, looser value is not a live bug, but judging it against today's
-    value instead of the value live at seen_at manufactures a false
-    violation (epoch-blind, same failure ROADMAP.md's "Make the diagnostics
-    epoch-aware" item measured: 72% reported out-of-band on price_band_
-    adherence collapsed to 4/39 once judged epoch-correctly). Every
-    consumer of signal_log (confidence_calibration, regime_analytics, the
-    whale-winrate filter) reads these rows without knowing which config
+    """Do the signals actually in signal_log respect the contract-count
+    whale gate that was actually LIVE when each one was recorded - not the
+    gate config declares today. History outlives config: a row recorded
+    under an earlier, looser value is not a live bug, but judging it
+    against today's value instead of the value live at seen_at manufactures
+    a false violation (epoch-blind, same failure ROADMAP.md's "Make the
+    diagnostics epoch-aware" item measured: 72% reported out-of-band on
+    price_band_adherence collapsed to 4/39 once judged epoch-correctly).
+    Every consumer of signal_log (confidence_calibration, regime_analytics,
+    the whale-winrate filter) reads these rows without knowing which config
     epoch produced them, which is exactly why this check has to get the
-    epoch right rather than just the gate's current shape."""
+    epoch right rather than just the gate's current shape.
+
+    Checks `size` (contract count), not the old `raw_notional_usd` - the
+    live gate switched from a dollar notional floor to a contract-count
+    floor (ROADMAP.md, docs/next-session-pickup-2026-08-17.md: the dollar
+    gate was structurally biased toward near-certain prices). `size` is a
+    NOT NULL column populated by every provider, unlike raw_notional_usd
+    which only real (non-simulator) rows ever had - so `factors_json IS NOT
+    NULL` (the same real-provider filter resolved_signals_with_factors
+    already uses, in services/signal_log.py) replaces it as the "is this a
+    real whale_watcher row" filter here."""
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    changes = _fetch_path_changes([_MIN_NOTIONAL_PATH, _MIN_NOTIONAL_BY_SERIES_PATH], since_ts)
+    changes = _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
 
     try:
         with sqlite3.connect(signal_log.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT series, ticker, raw_notional_usd, seen_at FROM signals "
-                "WHERE seen_at > ? AND raw_notional_usd IS NOT NULL",
+                "SELECT series, ticker, size, seen_at FROM signals "
+                "WHERE seen_at > ? AND factors_json IS NOT NULL",
                 (since_ts,),
             ).fetchall()
     except sqlite3.Error as exc:
         return Check("threshold_integrity", _UNKNOWN, f"signal_log unreadable: {exc}")
 
     if not rows:
-        return Check("threshold_integrity", _UNKNOWN, "no signals with a recorded notional in this window")
+        return Check("threshold_integrity", _UNKNOWN, "no real whale-watcher signals in this window")
 
     violations, per_series = [], {}
     for r in rows:
-        default_min_hist = float(_historical_value(cfg, _MIN_NOTIONAL_PATH, r["seen_at"], changes) or 0)
-        by_series_hist = _historical_value(cfg, _MIN_NOTIONAL_BY_SERIES_PATH, r["seen_at"], changes) or {}
+        default_min_hist = float(_historical_value(cfg, _MIN_CONTRACTS_PATH, r["seen_at"], changes) or 0)
+        by_series_hist = _historical_value(cfg, _MIN_CONTRACTS_BY_SERIES_PATH, r["seen_at"], changes) or {}
         floor = float(by_series_hist.get(r["series"], default_min_hist))
         bucket = per_series.setdefault(r["series"], {"n": 0, "under": 0, "min_seen": None})
         bucket["n"] += 1
-        val = r["raw_notional_usd"]
+        val = r["size"]
         if bucket["min_seen"] is None or val < bucket["min_seen"]:
             bucket["min_seen"] = val
         if val < floor:
             bucket["under"] += 1
             violations.append({
                 "ticker": r["ticker"], "series": r["series"],
-                "notional": round(val, 2), "floor_at_the_time": floor,
+                "size": val, "floor_at_the_time": floor,
                 "seen_at": r["seen_at"],
             })
 
@@ -206,7 +216,7 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
     status = _OK if under == 0 else (_WARN if pct < 5 else _FAIL)
     return Check(
         "threshold_integrity", status,
-        f"{under}/{len(rows)} signals ({pct:.1f}%) sit below the min_notional that was actually "
+        f"{under}/{len(rows)} signals ({pct:.1f}%) sit below the min_contracts that was actually "
         f"live for their series at the time"
         + ("" if under == 0 else " — real gate violations, not stale-config artifacts"),
         detail={"window_start": since_ts, "total": len(rows), "violations": under,
@@ -487,7 +497,7 @@ def performance_by_epoch(since_ts: float | None = None, now: float | None = None
 # ---------------------------------------------------------------- coverage
 
 async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
-                         pages: int = 2, min_notional: float | None = None) -> Check:
+                         pages: int = 2, min_contracts: float | None = None) -> Check:
     """The check nothing else in this app can perform: compare what the app
     SAW against what the exchange actually printed.
 
@@ -507,8 +517,8 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
     if owns_client:
         client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"].get("request_timeout_sec", 10))
     wwk = cfg.get("whale_watcher_kalshi") or {}
-    floor = min_notional if min_notional is not None else float(wwk.get("min_notional_usd", 2500) or 2500)
-    by_series = wwk.get("min_notional_usd_by_series") or {}
+    floor = min_contracts if min_contracts is not None else float(wwk.get("min_contracts", 5000) or 5000)
+    by_series = wwk.get("min_contracts_by_series") or {}
 
     try:
         # ticker=None is the exchange-wide form of GET /markets/trades
@@ -530,16 +540,13 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
     if not trades:
         return Check("coverage", _UNKNOWN, "exchange-wide trade fetch returned nothing")
 
-    def notional(t):
-        count = float(t.get("count_fp") or 0)
-        taker = str(t.get("taker_side") or "").lower()
-        key = "yes_price_dollars" if taker == "yes" else "no_price_dollars"
-        return count * float(t.get(key) or 0)
+    def contract_count(t):
+        return float(t.get("count_fp") or 0)
 
     def series_floor(ticker):
         return float(by_series.get(signal_log.series_of(ticker), floor))
 
-    big = [t for t in trades if notional(t) >= series_floor(t.get("ticker") or "")]
+    big = [t for t in trades if contract_count(t) >= series_floor(t.get("ticker") or "")]
     missed = [t for t in big if (t.get("ticker") or "") not in watched_tickers]
     distinct = {t.get("ticker") for t in trades if t.get("ticker")}
     watched_active = distinct & watched_tickers
@@ -560,7 +567,7 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
         # clean bill of health.
         return Check(
             "coverage", _UNKNOWN,
-            f"no whale print cleared the notional floor in this {span_sec:.0f}s sample "
+            f"no whale print cleared the contract-count floor in this {span_sec:.0f}s sample "
             f"({len(trades)} trades) — insufficient evidence, re-run with more pages",
             detail={"sampled_trades": len(trades), "window_sec": round(span_sec, 1),
                     "distinct_markets_trading": len(distinct),
@@ -582,7 +589,7 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
             "qualifying_prints": len(big), "missed": len(missed),
             "miss_pct": round(miss_pct, 1), "missed_per_hour_est": round(per_hour) if per_hour else None,
         },
-        evidence=[{"ticker": t.get("ticker"), "notional": round(notional(t), 2),
+        evidence=[{"ticker": t.get("ticker"), "count": round(contract_count(t), 2),
                    "yes_price": t.get("yes_price_dollars")} for t in missed[:25]],
     )
 

@@ -29,7 +29,7 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     # this app's own "preserve real data" standing rule exists to prevent.
     monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
     # fetch_signals() now also calls candidate_log.record_rejection() when
-    # the min_notional_usd gate fails - same real-db-isolation reasoning.
+    # the min_contracts gate fails - same real-db-isolation reasoning.
     monkeypatch.setattr(candidate_log, "DB_PATH", tmp_path / "candidate_log.db")
 
 
@@ -102,15 +102,15 @@ def test_fetch_signals_returns_empty_with_no_market_context():
     assert asyncio.run(provider.fetch_signals(market_context={})) == []
 
 
-def test_fetch_signals_skips_trades_below_notional_threshold():
+def test_fetch_signals_skips_trades_below_contract_threshold():
     provider = KalshiTradeTapeProvider()
-    # count 100 * yes_price 0.60 = $60 notional, well under the $2500 default
+    # count 100, well under the 5,000-contract default
     trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     assert asyncio.run(provider.fetch_signals(market_context=ctx)) == []
 
 
-def test_fetch_signals_below_notional_threshold_logs_a_rejected_candidate():
+def test_fetch_signals_below_contract_threshold_logs_a_rejected_candidate():
     provider = KalshiTradeTapeProvider()
     trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
@@ -118,13 +118,13 @@ def test_fetch_signals_below_notional_threshold_logs_a_rejected_candidate():
     gates = candidate_log.gate_summary()
     assert len(gates) == 1
     assert gates[0]["strategy"] == "whale_watcher"
-    assert gates[0]["gate_name"] == "min_notional_usd"
+    assert gates[0]["gate_name"] == "min_contracts"
     assert gates[0]["rejected_count"] == 1
 
 
 def test_fetch_signals_emits_signal_above_threshold():
     provider = KalshiTradeTapeProvider()
-    # count 10000 * yes_price 0.60 = $6000, clears the $2500 default
+    # count 10000, clears the 5,000-contract default
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
@@ -161,32 +161,32 @@ def test_fetch_signals_price_is_always_the_yes_price_regardless_of_side():
 
 def test_threshold_is_configurable_via_cfg():
     provider = KalshiTradeTapeProvider()
-    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")  # $60 notional
-    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {"whale_watcher_kalshi": {"min_notional_usd": 10}}}
+    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")  # count 100
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {"whale_watcher_kalshi": {"min_contracts": 10}}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert len(signals) == 1
 
 
 def test_per_series_threshold_overrides_the_global_default():
-    # $60 notional clears a $10 series-specific override but not the $2500 global default
+    # count 100 clears a 10-contract series-specific override but not the 5,000-contract global default
     provider = KalshiTradeTapeProvider()
     trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {
         "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
-        "cfg": {"whale_watcher_kalshi": {"min_notional_usd_by_series": {"TICK": 10}}},
+        "cfg": {"whale_watcher_kalshi": {"min_contracts_by_series": {"TICK": 10}}},
     }
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert len(signals) == 1
 
 
 def test_per_series_override_only_applies_to_its_own_series():
-    # same $60 notional, but the override is keyed to a different series -
-    # must fall back to the (unmet) $2500 global default, not the override.
+    # same count-100 print, but the override is keyed to a different series -
+    # must fall back to the (unmet) 5,000-contract global default, not the override.
     provider = KalshiTradeTapeProvider()
     trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {
         "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
-        "cfg": {"whale_watcher_kalshi": {"min_notional_usd_by_series": {"OTHER": 10}}},
+        "cfg": {"whale_watcher_kalshi": {"min_contracts_by_series": {"OTHER": 10}}},
     }
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert signals == []
@@ -194,10 +194,10 @@ def test_per_series_override_only_applies_to_its_own_series():
 
 def test_series_with_no_override_falls_back_to_configured_global_default():
     provider = KalshiTradeTapeProvider()
-    trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")  # $60 notional
+    trade = _trade(ticker="TICK-A", count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")  # count 100
     ctx = {
         "markets": [_market(ticker="TICK-A")], "trade_tape": [trade],
-        "cfg": {"whale_watcher_kalshi": {"min_notional_usd": 10, "min_notional_usd_by_series": {"OTHER": 5000}}},
+        "cfg": {"whale_watcher_kalshi": {"min_contracts": 10, "min_contracts_by_series": {"OTHER": 5000}}},
     }
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert len(signals) == 1
@@ -454,7 +454,7 @@ def test_prints_at_the_price_extremes_never_become_signals(monkeypatch, tmp_path
     provider = KalshiTradeTapeProvider()
     markets = [{"ticker": "TICK-A", "volume_24h_fp": 100000, "yes_ask_dollars": 0.5,
                 "close_time": None}]
-    cfg = {"whale_watcher_kalshi": {"min_notional_usd": 100}}
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 100}}
 
     def trade(tid, yes_price, no_price, outcome):
         return {"trade_id": tid, "ticker": "TICK-A", "count_fp": "100000",

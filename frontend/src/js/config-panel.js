@@ -68,8 +68,8 @@ async function loadConfig() {
   $('cfg-size-min').value = cfg.whale_signal.whale_size_range[0];
   $('cfg-size-max').value = cfg.whale_signal.whale_size_range[1];
   $('cfg-whale-live-only').checked = !!cfg.whale_signal.live_markets_only;
-  $('cfg-whale-min-notional').value = (cfg.whale_watcher_kalshi || {}).min_notional_usd ?? 2500;
-  $('cfg-whale-min-notional-by-series').value = Object.entries((cfg.whale_watcher_kalshi || {}).min_notional_usd_by_series || {})
+  $('cfg-whale-min-contracts').value = (cfg.whale_watcher_kalshi || {}).min_contracts ?? 5000;
+  $('cfg-whale-min-contracts-by-series').value = Object.entries((cfg.whale_watcher_kalshi || {}).min_contracts_by_series || {})
     .map(([series, amount]) => `${series}:${amount}`).join(', ');
   updateWhaleProviderStatus(lastWhaleSource);
   const pollIntervalMs = ((cfg.kalshi && cfg.kalshi.poll_interval_sec) || 15) * 1000;
@@ -188,9 +188,9 @@ $('save-config-btn').addEventListener('click', async () => {
       live_markets_only: $('cfg-whale-live-only').checked,
     },
     whale_watcher_kalshi: {
-      min_notional_usd: parseFloat($('cfg-whale-min-notional').value) || 0,
-      min_notional_usd_by_series: Object.fromEntries(
-        $('cfg-whale-min-notional-by-series').value.split(',')
+      min_contracts: parseFloat($('cfg-whale-min-contracts').value) || 0,
+      min_contracts_by_series: Object.fromEntries(
+        $('cfg-whale-min-contracts-by-series').value.split(',')
           .map(pair => pair.split(':').map(s => s.trim()))
           .filter(([series, amount]) => series && amount && !isNaN(parseFloat(amount)))
           .map(([series, amount]) => [series.toUpperCase(), parseFloat(amount)])

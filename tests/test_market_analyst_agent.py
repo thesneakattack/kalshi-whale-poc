@@ -356,7 +356,7 @@ def test_clear_all_wipes_series_analyses_too(tmp_path, monkeypatch):
 
 def test_build_series_prompt_includes_series_and_context():
     ctx = {
-        "series": "KXPGATOUR", "currently_excluded": False, "min_notional_override": None,
+        "series": "KXPGATOUR", "currently_excluded": False, "min_contracts_override": None,
         "whale_stats": {"total_signals": 10, "win_rate": 60.0},
         "trade_summary": {"total_closed": 5, "win_rate_pct": 40.0},
         "evaluator_status": {"status": "approved", "trades_observed": 30, "strike_count": 0},
@@ -370,7 +370,7 @@ def test_build_series_prompt_includes_series_and_context():
 
 def test_build_series_prompt_handles_never_evaluated_series():
     ctx = {
-        "series": "KXNEW", "currently_excluded": False, "min_notional_override": None,
+        "series": "KXNEW", "currently_excluded": False, "min_contracts_override": None,
         "whale_stats": {}, "trade_summary": {}, "evaluator_status": None,
     }
     prompt = maa.build_series_prompt("KXNEW", ctx)

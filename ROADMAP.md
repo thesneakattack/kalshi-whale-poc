@@ -65,7 +65,7 @@ questions.
       was evaluated on the order of hundreds of times during its ~76s
       life. It just never crossed a configured threshold. The real gap is
       two missing gates, not speed:
-    - [ ] No entry-side minimum-runway check — `strategy_engine.evaluate()`
+    - [x] No entry-side minimum-runway check — `strategy_engine.evaluate()`
           has an upper bound on time-to-close (`close_window_sec`) but
           nothing that refuses a new entry once too little time remains to
           realistically manage a position before close.
@@ -73,12 +73,18 @@ questions.
           it would cover this but doesn't — it only applies when
           `can_close_early`/`collateral_return_type`/`mutually_exclusive`
           are set, which plain crypto price-crossing markets like
-          KXBTC15M never have.
-    - [ ] No time-to-close-aware exit rule — `check_exits()`'s three
+          KXBTC15M never have. Shipped commit `2974e42` (2026-08-16) as
+          `strategy.min_seconds_to_close`, checked in `evaluate()` right
+          after the existing `close_window_sec` upper-bound check.
+    - [x] No time-to-close-aware exit rule — `check_exits()`'s three
           opt-in layers (take-profit/stop-loss/auto-exit) are all purely
           price-driven; nothing forces a decision once a position's
           remaining runway drops below some floor, regardless of where its
-          P&L currently sits.
+          P&L currently sits. Shipped commit `2974e42` (2026-08-16) as
+          `strategy.exit_min_seconds_to_close`, an elif in the hard-rule
+          exit chain (now `services/exits/exit_engine.py` post-modularization)
+          that force-closes once remaining runway drops below the floor,
+          independent of P&L.
 
       Separately, real (not a bug) cost of the current KXBTC15M
       stress-test config itself: three consecutive stop-loss-chased
@@ -192,7 +198,7 @@ questions.
       `(ticker, strategy, gate_name)`, so it is unusable for population
       statistics).
 
-- [ ] **Switch the whale threshold from dollars to contract count (or add
+- [x] **Switch the whale threshold from dollars to contract count (or add
       one alongside).** Measured 2026-08-17 across 145,785 real captured
       prints: a dollar gate is geometrically biased toward near-certainty,
       because $2,500 buys 125,000 contracts at 2c but only 2,505 at 99.8c.
@@ -202,11 +208,28 @@ questions.
       everything it selects: **0.926**. A `count >= 5,000` selector plus the
       tradeable-range filter lands at mean 0.759 with 27.3% inside the only
       profitable band, against 8.6% today. **This is the single biggest
-      measured lever on the 70%/70% target.** Left unshipped deliberately —
-      it changes what the app considers a whale, which is a strategy call.
-      Full tables and the implementation note are in
-      `docs/next-session-pickup-2026-08-17.md`.
-- [ ] **New finding, surfaced by the epoch-aware fix above: real
+      measured lever on the 70%/70% target.** Full tables and the
+      implementation note are in `docs/next-session-pickup-2026-08-17.md`.
+      Shipped 2026-08-23, per direct confirmation to replace (not
+      alongside) the dollar gate: `whale_watcher_kalshi.min_notional_usd`/
+      `min_notional_usd_by_series` are gone, replaced by `min_contracts`
+      (default 5,000, matching the measured recommendation) and
+      `min_contracts_by_series` in `services/whalewatchers/
+      kalshi_trade_tape.py`. Real dollar notional is still computed and
+      recorded for diagnostics — it just no longer gates anything. Every
+      downstream consumer of the old dollar gate was updated in the same
+      pass, not just the gate itself: `services/diagnostics/diagnostics.py`
+      (`check_threshold_integrity` now checks `signals.size`, a NOT NULL
+      column populated by every provider, against the new floor;
+      `check_coverage` qualifies exchange-wide prints by contract count),
+      `services/series_watcher.py`'s `funnel()` (the `whale_sized_prints`
+      stage), `services/analytics/market_analyst_orchestrator.py`/
+      `services/market_analyst_agent.py` (per-series override shown to the
+      series-analyst LLM), and the live dashboard's Controls panel
+      (`static/index.html` + `frontend/src/js/config-panel.js`, which
+      esbuild rebuilds into `static/js/dashboard.bundle.js` — this field
+      really is wired to live config edits, not just documented).
+- [x] **New finding, surfaced by the epoch-aware fix above: real
       `min_notional_usd` violations, not stale-config artifacts.** Measured
       2026-08-22 live over 24h post-fix: `check_threshold_integrity` still
       reports 1169/1900 signals (61.5%) below the `min_notional_usd` that
@@ -214,15 +237,15 @@ questions.
       several evidence rows directly (e.g. a $2,297 print judged against a
       contemporaneous $5,000 floor, no config change involved) to confirm
       this isn't an epoch-attribution bug reappearing in a different shape.
-      Not yet root-caused: `signal_log`'s own docstring already flags that
-      a violation here "is not necessarily a live bug" if signal_log logs
-      every observed candidate print rather than only ones that cleared the
-      whale gate — needs checking whether these 1169 rows are pre-gate
-      candidates (expected, not a bug) or genuinely-passed signals that
-      should never have cleared the notional floor (a real gate leak,
-      possibly related to the still-open "four-entry gate bypass" item
-      below). Not started - this is now a trustworthy number to
-      investigate, not previously.
+      **Superseded 2026-08-23, not root-caused**: the dollar gate this was
+      investigating no longer exists (see the item above) —
+      `check_threshold_integrity` now checks contract count, not notional,
+      so there is no more `min_notional_usd` floor for a signal to violate.
+      If the same *shape* of question (are logged signals ever below the
+      gate that was genuinely live for them) needs re-asking against the
+      new `min_contracts` floor, it should be re-opened as a fresh item
+      against real post-switch data, not resumed from this investigation's
+      state.
 - [x] **Find the four-entry gate bypass.** Four real entries at unit costs
       0.97, 1.00, 0.20, 0.97 (08/16 21:26–22:25), one at `conf 0.25` against
       a 0.495 threshold, so they skipped both the price band and the

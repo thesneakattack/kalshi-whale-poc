@@ -532,7 +532,7 @@ _GATE_CONFIG_PATH_AND_DIRECTION = {
     # rejects when seconds_to_close is *outside* the window (usually too
     # far out) so loosening means raising the ceiling ("max"); special_
     # market_gate rejects when seconds_to_close is *below* its grace
-    # period ("min"). whale_watcher_kalshi's own min_notional_usd gate
+    # period ("min"). whale_watcher_kalshi's own min_contracts gate
     # (kalshi_trade_tape.py) also logs rejections under a third strategy
     # key, "whale_watcher" - deliberately NOT added here yet, since
     # _rejected_candidate_recommendations' current_value lookup below reads

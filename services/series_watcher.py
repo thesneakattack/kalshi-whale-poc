@@ -488,18 +488,18 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
     now = now if now is not None else time.time()
     since_ts = now - hours * 3600
 
-    min_notional = float(
-        ((cfg or {}).get("whale_watcher_kalshi") or {}).get("min_notional_usd_by_series", {}).get(series)
-        or ((cfg or {}).get("whale_watcher_kalshi") or {}).get("min_notional_usd")
+    min_contracts = float(
+        ((cfg or {}).get("whale_watcher_kalshi") or {}).get("min_contracts_by_series", {}).get(series)
+        or ((cfg or {}).get("whale_watcher_kalshi") or {}).get("min_contracts")
         or 0
     )
 
     try:
         with _connect() as conn:
             observed, whale_sized, capture_start = conn.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN notional_usd >= ? THEN 1 ELSE 0 END), MIN(observed_at) "
+                "SELECT COUNT(*), SUM(CASE WHEN count_fp >= ? THEN 1 ELSE 0 END), MIN(observed_at) "
                 "FROM raw_trades WHERE series = ? AND observed_at > ? AND excluded = 0",
-                (min_notional, series, since_ts),
+                (min_contracts, series, since_ts),
             ).fetchone()
             unreadable_side = conn.execute(
                 "SELECT COUNT(*) FROM raw_trades WHERE series = ? AND observed_at > ? "
@@ -550,7 +550,7 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
             "stage": "whale_sized_prints",
             "count": whale_sized,
             "covers_window": capture_pct,
-            "note": f"cleared the ${min_notional:,.0f} min_notional gate — {capture_note}",
+            "note": f"cleared the {min_contracts:,.0f}-contract min_contracts gate — {capture_note}",
         },
         {
             "stage": "signals_logged",
@@ -589,7 +589,7 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
         "window_hours": hours,
         "since_ts": since_ts,
         "generated_at": now,
-        "min_notional_usd": min_notional,
+        "min_contracts": min_contracts,
         "stages": stages,
         "capture_active": bool(observed),
         # What fraction of the analysis window the first two stages actually

@@ -8,21 +8,21 @@ has - no new persistence, no replay of the trading loop itself.
 
 Real, disclosed scope boundary, found while building this rather than
 assumed up front: services/signal_log.py's `signals` table stores
-`confidence`/`side`/`series`/`correct` but never `price`, `spread`,
-`volume_24h`, or raw notional - so a stateless replay can only ever cover
-gates whose comparison is a pure function of what's actually stored.
-That covers `strategy.entry_threshold` and `strategy.min_whale_winrate_pct`
-cleanly. It does NOT cover `strategy.longshot_price_threshold`/
-`longshot_entry_threshold_bonus` (needs price), any price-band/spread/
-volume/momentum-style gate (needs market_history data joined at the exact
-signal timestamp, which isn't retained), or
-`whale_watcher_kalshi.min_notional_usd` (needs raw notional,
-never logged - see services/candidate_log.py's own Gap 1 for how a NEW
-signal's notional now gets captured going forward, which doesn't help
-replay the ~16k signals that already predate it). A stateful replay
-covering those would need either richer historical logging or a full
-trading-loop replay harness - out of scope here, noted in the gaps doc as
-the harder "stateful" half deliberately not attempted this pass.
+`confidence`/`side`/`series`/`correct`/`size` but never `price`, `spread`,
+or `volume_24h` - so a stateless replay can only ever cover gates whose
+comparison is a pure function of what's actually stored. That covers
+`strategy.entry_threshold`, `strategy.min_whale_winrate_pct`, and (unlike
+when this was first written) `whale_watcher_kalshi.min_contracts` cleanly
+too - `size` is a NOT NULL column populated since the table's inception,
+so a contract-count sweep is retroactively replayable across every logged
+signal, not just ones logged after some later column was added. It does
+NOT cover `strategy.longshot_price_threshold`/`longshot_entry_threshold_
+bonus` (needs price) or any price-band/spread/volume/momentum-style gate
+(needs market_history data joined at the exact signal timestamp, which
+isn't retained). A stateful replay covering those would need either richer
+historical logging or a full trading-loop replay harness - out of scope
+here, noted in the gaps doc as the harder "stateful" half deliberately not
+attempted this pass.
 """
 
 

@@ -274,10 +274,10 @@ async def analyze_market(
 # strategy.excluded_series membership: this app's per-field suggestion
 # apply mechanism (services/advisory/advisory_engine.py's generalized
 # `section.field` split) only ever handles a single flat scalar per
-# config_path, and min_notional_usd_by_series is a nested dict keyed by
+# config_path, and min_contracts_by_series is a nested dict keyed by
 # series - applying a change to one series' entry there without clobbering
 # every other series' override would need its own bespoke merge logic.
-# Scoped out of this pass deliberately, not silently: min_notional_usd_by_
+# Scoped out of this pass deliberately, not silently: min_contracts_by_
 # series is still given to the model as read-only context (so it can reason
 # about whether the current threshold looks right), it just can't act on it
 # yet - a natural, disclosed follow-on once a real need for it shows up.
@@ -329,7 +329,7 @@ def build_series_prompt(series: str, series_ctx: dict) -> str:
     own closed-trade summary (services/trade_analytics.compute_summary,
     scoped to trades on tickers under this series), its current
     strategy.excluded_series membership and whale_watcher_kalshi.
-    min_notional_usd_by_series override (if any), and its
+    min_contracts_by_series override (if any), and its
     services/series_evaluator.py verdict (if it's ever been evaluated)."""
     whale = series_ctx.get("whale_stats") or {}
     trades = series_ctx.get("trade_summary") or {}
@@ -344,7 +344,7 @@ def build_series_prompt(series: str, series_ctx: dict) -> str:
 ## Series: {series}
 
 Currently excluded from trading: {series_ctx.get("currently_excluded")}
-Per-series whale-notional override: {series_ctx.get("min_notional_override") if series_ctx.get("min_notional_override") is not None else "none (uses the account-wide default)"}
+Per-series whale contract-count override: {series_ctx.get("min_contracts_override") if series_ctx.get("min_contracts_override") is not None else "none (uses the account-wide default)"}
 Series-worthiness gate (services/series_evaluator.py) verdict: {evaluator_line}
 
 ## Whale-signal track record for this series (last 30 days)

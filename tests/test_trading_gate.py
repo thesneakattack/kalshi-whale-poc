@@ -2289,15 +2289,15 @@ def test_build_series_context_scopes_stats_and_trades_to_the_series(tmp_path, mo
     assert ctx["currently_excluded"] is False
 
 
-def test_build_series_context_reports_excluded_and_notional_override():
+def test_build_series_context_reports_excluded_and_contracts_override():
     cfg = {
         **main.config_store.get(),
         "strategy": {**main.config_store.get()["strategy"], "excluded_series": ["KXTICK"]},
-        "whale_watcher_kalshi": {"min_notional_usd_by_series": {"KXTICK": 750}},
+        "whale_watcher_kalshi": {"min_contracts_by_series": {"KXTICK": 750}},
     }
     ctx = main._build_series_context(cfg, "KXTICK")
     assert ctx["currently_excluded"] is True
-    assert ctx["min_notional_override"] == 750
+    assert ctx["min_contracts_override"] == 750
 
 
 def test_series_suggestions_from_raw_converts_exclude_action():

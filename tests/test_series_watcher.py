@@ -34,7 +34,7 @@ def _isolated(monkeypatch, tmp_path):
 
 CFG = {
     "series_watcher": {"enabled": True, "series": ["KXBTC15M"], "book_snapshot_interval_sec": 5},
-    "whale_watcher_kalshi": {"min_notional_usd": 5000, "min_notional_usd_by_series": {"KXBTC15M": 2500}},
+    "whale_watcher_kalshi": {"min_contracts": 5000, "min_contracts_by_series": {"KXBTC15M": 2500}},
 }
 
 
@@ -212,7 +212,7 @@ def test_funnel_reports_every_stage_and_separates_capture_from_signals():
     out = sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0)
     stages = {s["stage"]: s["count"] for s in out["stages"]}
     assert stages["prints_observed"] == 2
-    assert stages["whale_sized_prints"] == 1   # $6,000 clears $2,500; $6 does not
+    assert stages["whale_sized_prints"] == 1   # 10,000 contracts clears 2,500; 10 does not
     assert stages["signals_logged"] == 2
     assert stages["signals_resolved"] == 2
     assert stages["signals_correct"] == 1
