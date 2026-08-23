@@ -5036,6 +5036,48 @@
           <code>tests/test_game_state.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 128 · monitoring/alerting</div>
+        <h4>Kill-switch trips, crashes, and connectivity loss now detect and log themselves</h4>
+        <p>ROADMAP.md's "Path to production" section named these three cases directly: "a kill-switch trip,
+          crash, or connectivity loss currently notifies no one." New <code>services/alerting/</code> package,
+          same session as phase 127's backup work. Transition-based, not level-based: an alert fires once when a
+          condition goes from OK to bad, and resolves once it goes back to OK - never re-fires every tick while
+          something stays broken, which is what would happen from naive level-checking a condition like
+          <code>risk.halted</code> every 6 seconds. Kill switch and WS connectivity
+          (<code>trade_stream_status</code>/<code>index_stream_status</code>) are polled once per tick via
+          <code>check_and_alert(cfg)</code>, called from <code>main.py</code>'s trading loop next to the other
+          <code>_maybe_*</code> checks. Crash detection deliberately isn't polled at all - it's a direct hook
+          inside <code>services/task_supervisor.py</code>'s own exception handler, the exact moment a crash
+          happens and already carrying the component/operation/exception this needs, gated to
+          <code>restart=True</code> tasks only (<code>trading_loop</code>/<code>trade_stream</code>/
+          <code>index_stream</code> - the loops that must never just stay dead; a one-shot task's own failure
+          already degrades gracefully and retries next cycle on its own). Every alert persists to a new
+          <code>data/alert_log.db</code> (same audit-trail idiom as <code>reset_log.py</code>/
+          <code>fault_log.py</code>), visible via <code>GET /api/alerts/active</code>/<code>history</code>.
+          Notification delivery is a single generic opt-in webhook POST (<code>alerting.webhook_url</code>,
+          unset by default - same "ships fully built, opt-in" precedent as
+          <code>risk.max_total_exposure_pct</code>), fire-and-forget via <code>task_supervisor.supervise</code>
+          so a slow or unreachable endpoint can never stall the trading loop, always best-effort - a failed
+          delivery still leaves the alert recorded and visible even if notification delivery itself is broken.
+          Payload is Slack-compatible (top-level <code>text</code> field) plus full structured fields for a
+          custom consumer - see <code>services/alerting/CHEATSHEET.md</code> for per-destination compatibility
+          notes (Discord/ntfy/PagerDuty need their own adapter shape). Which channel to actually point it at is
+          a separate, still-open decision - this ships the detection/logging/dispatch mechanism only.
+          Caught a real test-isolation gap while wiring the crash hook, not just added tests:
+          <code>tests/test_task_supervisor.py</code>'s <code>restart=True</code> crash simulation wrote real
+          rows into the live <code>data/alert_log.db</code> before its own <code>DB_PATH</code> redirect was
+          added - caught via <code>GET /api/alerts/active</code> showing synthetic <code>"test_component..."</code>
+          rows live, fixed the test file, and cleaned the 10 contaminated rows directly, verified clean via a
+          second full-suite run. Verified live end to end beyond just tests: real trade_stream disconnect/
+          reconnect cycles during this session's own dev-reload churn correctly created and resolved alerts.
+          Full suite (1,168 tests) green.</p>
+        <div class="files"><code>services/alerting/alerting.py</code> · <code>services/alerting/routes.py</code> ·
+          <code>services/alerting/__init__.py</code> · <code>services/alerting/CHEATSHEET.md</code> ·
+          <code>services/task_supervisor.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> ·
+          <code>tests/test_alerting.py</code> · <code>tests/test_task_supervisor.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 

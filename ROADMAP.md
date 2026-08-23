@@ -178,10 +178,21 @@ questions.
       `game_state.db` bug (crypto candlestick payloads re-stored in full
       on every write, zero consumers ever read them back) — see that
       module's own CHEATSHEET/`status.html` phase 126.
-- [ ] No monitoring/alerting beyond watching the dashboard or `ddev logs` —
+- [x] No monitoring/alerting beyond watching the dashboard or `ddev logs` —
       a kill-switch trip, crash, or connectivity loss currently notifies no
       one. Worth promoting ahead of the P4 notifications item below,
-      specifically for these three cases.
+      specifically for these three cases. Shipped 2026-08-23: new
+      `services/alerting/` package detects all three via transition-based
+      edge detection (fires once when a condition goes bad, resolves once
+      it clears) — kill switch + WS connectivity polled once per tick,
+      crash detection hooked directly into `task_supervisor.py`'s own
+      exception handler for `restart=True` tasks. Records every alert in
+      `data/alert_log.db`, exposed via `GET /api/alerts/active`/`history`.
+      Notification delivery is a generic opt-in webhook POST
+      (`alerting.webhook_url`, unset by default, Slack-compatible payload
+      shape) — **which channel to actually point it at is still an open
+      decision**, this only ships the detection/logging/dispatch mechanism
+      itself. See `services/alerting/CHEATSHEET.md`.
 - [ ] Auth is optional, single-operator Google OAuth (`services/auth.py`) —
       fine for "just me," but confirm that's still the model before real
       money sits behind it. No user table, no session-invalidation UI, no 2FA.
