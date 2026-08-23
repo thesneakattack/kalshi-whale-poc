@@ -99,7 +99,7 @@ from services.whale_stream.index_stream_handlers import (  # noqa: E402
     _noop_stream_trade, _noop_stream_ticker, _process_stream_index, _record_settlement_observations,
     _resolve_settlement_windows, _spec_for,
 )
-from services.market_watch.market_watch import (  # noqa: E402
+from services.market_watch import (  # noqa: E402
     _EVENT_LIVE_DATA_REPOLL_SEC, _fetch_category_metadata, _fetch_event_live_data,
     _fetch_event_titles, _fetch_exchange_status, _fetch_live_status, _fetch_markets,
     _get_series_cache, _get_top_series, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC,

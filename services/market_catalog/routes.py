@@ -16,7 +16,7 @@ from services.app_state import bump_generation, state
 from services.config_store import config_store
 from services.kalshi_client import KalshiClient
 from services.market_catalog import market_catalog
-from services.market_watch.market_watch import (
+from services.market_watch import (
     _fetch_live_status, _get_series_cache, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC, _slim_market,
 )
 

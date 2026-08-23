@@ -2,7 +2,7 @@
 of silently ending the task.
 
 Before this, every `asyncio.create_task(...)` call site in `main.py` /
-`services/market_watch/market_watch.py` stored the `Task` object (mostly
+`services/market_watch/` (catalog_scan.py/discovery_cache.py) stored the `Task` object (mostly
 just to `.cancel()` it on shutdown) but never awaited or inspected it. An
 unhandled exception inside one of those coroutines just ended the task with
 nothing logged and nothing restarted - confirmed as the shape behind three

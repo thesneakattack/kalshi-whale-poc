@@ -55,7 +55,7 @@ import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
 from services import account_positions  # noqa: E402
 from services import market_analyst_agent  # noqa: E402  (same module object main.py's own import binds - no pre-import DB redirect needed here, done per-test below instead)
-from services.market_watch import market_watch  # noqa: E402
+from services.market_watch import discovery_cache  # noqa: E402
 from services.whale_simulator import DEFAULT_WEIGHTS  # noqa: E402
 
 # Bare (non-context-manager) TestClient does not trigger ASGI lifespan, so
@@ -1742,7 +1742,7 @@ def test_refresh_discovery_cache_background_creates_and_closes_its_own_client(mo
     _FakeBackgroundClient.instances = []
     real_client_cls = main.KalshiClient
     _FakeBackgroundClient.round_robin_select = staticmethod(real_client_cls.round_robin_select)
-    monkeypatch.setattr(market_watch, "KalshiClient", _FakeBackgroundClient)
+    monkeypatch.setattr(discovery_cache, "KalshiClient", _FakeBackgroundClient)
 
     asyncio.run(main._refresh_discovery_cache_background(
         _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
@@ -1769,7 +1769,7 @@ def test_refresh_discovery_cache_background_still_closes_client_on_failure(monke
     def _boom(*args, **kwargs):
         raise RuntimeError("Session is closed")
 
-    monkeypatch.setattr(market_watch, "KalshiClient", _FakeBackgroundClient)
+    monkeypatch.setattr(discovery_cache, "KalshiClient", _FakeBackgroundClient)
     monkeypatch.setattr(main.market_catalog, "open_candidates", _boom)
 
     with pytest.raises(RuntimeError, match="Session is closed"):
