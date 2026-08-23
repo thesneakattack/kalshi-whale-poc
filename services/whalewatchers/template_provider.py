@@ -16,7 +16,7 @@ Steps to turn this into a real provider:
      strategy engine and dashboard don't need to know which one is active.
   5. Register it in services/whalewatchers/__init__.py's PROVIDERS dict.
 """
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 from services.whalewatchers.base import WhaleWatcherProvider
 
 

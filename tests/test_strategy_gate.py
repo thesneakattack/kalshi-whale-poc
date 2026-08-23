@@ -2,7 +2,7 @@ import time
 
 from services import paper_broker as pb_mod
 from services import risk_manager as rm_mod
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 from services.strategy_engine import FollowTheWhaleStrategy
 
 

@@ -221,7 +221,7 @@ def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_siz
     active same-actor accumulation pattern, rather than standing alone as an
     isolated large print - the live, per-signal analog of find_clusters()
     below, feeding composite_confidence_breakdown's cluster_factor (see
-    services/whale_simulator.py). Barclay & Warner's stealth-trading finding
+    services/confidence_scoring.py). Barclay & Warner's stealth-trading finding
     (docs/prediction-market-strategy-alignment-plan.md Part 2.1) is why this
     exists: the strongest real evidence on which large trades are actually
     informed says sophisticated informed traders deliberately split into a

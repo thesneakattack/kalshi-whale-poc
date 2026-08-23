@@ -26,7 +26,7 @@ import uuid
 
 from services import accounts_store
 from services.http_client import get_client
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 from services.whalewatchers.base import WhaleWatcherProvider
 
 

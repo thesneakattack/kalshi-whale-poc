@@ -5,7 +5,7 @@ never to a specific provider — so adding a new one is a new file, not a rewrit
 """
 from abc import ABC, abstractmethod
 
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 
 
 class WhaleWatcherProvider(ABC):

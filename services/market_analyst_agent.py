@@ -2,7 +2,7 @@
 An LLM-based "doctorate-level prediction market trader" agent - direct
 request (2026-08-09), following the research and design laid out in
 docs/prediction-market-strategy-alignment-plan.md Part 3. Distinct in kind
-from every other strategy in this app: services/whale_simulator.py scores
+from every other strategy in this app: services/confidence_scoring.py scores
 a candidate with fixed arithmetic formulas; this one reads a market's
 actual title/rules/category and this
 app's own accumulated real track record, and asks an LLM to form an
@@ -663,7 +663,7 @@ def analyst_lean(ticker: str, max_age_sec: float = 86400) -> float | None:
     """Most recent estimated_probability for this ticker if one exists and
     is fresh enough, else None - a single indexed SQLite read, no LLM call.
     Direct request (2026-08-09): "inform the heuristics engines... without
-    consuming AI tokens" - this is that wiring. services/whale_simulator.py's
+    consuming AI tokens" - this is that wiring. services/confidence_scoring.py's
     composite_confidence_breakdown() turns this into its own analyst_factor
     (0.5/neutral when None, same idiom as agreement_factor/trend_factor),
     so a market someone has manually analyzed keeps nudging the cheap,

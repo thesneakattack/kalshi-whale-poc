@@ -5411,6 +5411,43 @@
         <div class="files"><code>tests/conftest.py</code> · <code>.claude/hooks/run_tests.py</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 138 · confidence_scoring.py split out of whale_simulator.py</div>
+        <h4>the live confidence-scoring formula shouldn't live in a file named "simulator"</h4>
+        <p>Direct instruction (2026-08-23): "there are several things that need to be modularized still in the
+          services/ folder" - a survey of remaining flat files found this as the clearest cohesion problem, not
+          just a size one. <code>services/whale_simulator.py</code> held both <code>WhaleSignal</code>/
+          <code>WhaleSimulator</code> (the actual simulated-signal generator for paper/demo mode) and
+          <code>ConfidenceBreakdown</code>/<code>composite_confidence_breakdown</code>/<code>composite_confidence</code>/
+          <code>DEFAULT_WEIGHTS</code> - the live composite-confidence formula every real whale-watcher provider
+          scores an actual trade through (<code>services/whalewatchers/kalshi_trade_tape.py</code> and friends), a
+          pure function of its inputs with no randomness, deliberately shared as-is between real and simulated
+          signals. A live, production scoring algorithm importing from a file literally named "simulator" was a
+          real informativeness problem this app's own code had been carrying since the formula was first written.
+          New <code>services/confidence_scoring.py</code> now owns <code>WhaleSignal</code>/
+          <code>ConfidenceBreakdown</code>/<code>DEFAULT_WEIGHTS</code>/<code>composite_confidence_breakdown</code>/
+          <code>composite_confidence</code>; <code>whale_simulator.py</code> keeps only <code>WhaleSimulator</code>
+          itself (the paced, randomized print generator) and its own noise-adding <code>_score_confidence</code>
+          layer, importing the shared formula rather than owning it. Flat files, not a package - matches the
+          existing precedent for pure-computation modules with no API surface of their own
+          (<code>kalshi_fees.py</code>, <code>market_lookup.py</code>). Every real call site updated directly, no
+          re-export shim: <code>main.py</code>, <code>strategy_engine.py</code>, all four
+          <code>services/whalewatchers/*.py</code> files, <code>whale_calibration/confidence_calibration.py</code>,
+          plus every stale docstring reference across <code>market_analyst_agent.py</code>,
+          <code>signal_log.py</code>, <code>market_events/event_lifecycle.py</code>, and
+          <code>whale_calibration/CHEATSHEET.md</code>. <code>tests/test_whale_simulator.py</code> split
+          accordingly: new <code>tests/test_confidence_scoring.py</code> owns the formula's own factor-behavior
+          tests, rewritten to call <code>composite_confidence</code> directly instead of going through
+          <code>WhaleSimulator._score_confidence</code>'s 200-draw noise-averaging - simpler and more precise now
+          that the formula is directly testable on its own. Verified live post-split, including through an
+          unrelated mid-session Docker Desktop restart: full suite (1,207 tests) green, app boots and ticks
+          cleanly with zero errors, backup's phase-135 fix still holding.</p>
+        <div class="files"><code>services/confidence_scoring.py</code> · <code>services/whale_simulator.py</code> ·
+          <code>tests/test_confidence_scoring.py</code> · <code>tests/test_whale_simulator.py</code> ·
+          <code>main.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/whalewatchers/</code> · <code>services/whale_calibration/</code></div>
+      </div>
+
     </div>
   </section>
 

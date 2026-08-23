@@ -10,7 +10,7 @@ from services import risk_manager as rm_module
 from services import signal_log
 from services.kalshi_fees import taker_fee
 from services.strategy_engine import FollowTheWhaleStrategy, kelly_scaled_max_size
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 
 
 def _signal(**overrides):

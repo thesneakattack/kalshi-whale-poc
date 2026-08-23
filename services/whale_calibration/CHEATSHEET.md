@@ -17,7 +17,7 @@ whole pass.
 
 This module never calls Kalshi's API itself — it works entirely off
 `services/signal_log.py`'s already-captured, already-resolved signal rows
-(`resolved_signals_with_factors()`) and `services/whale_simulator.py`'s
+(`resolved_signals_with_factors()`) and `services/confidence_scoring.py`'s
 `DEFAULT_WEIGHTS`. But **whether a signal counts as resolved-correct at
 all is decided upstream of this module**, and that upstream logic touches
 Kalshi data directly — see the audit finding below.
@@ -76,6 +76,6 @@ needing to first measure how often it happens.
   suggestion, `main.py` is the only place that ever calls
   `config_store.update()`, same "service module never writes its own
   config" convention `advisory_engine.py` also follows.
-- **`whale_simulator.DEFAULT_WEIGHTS`** is this module's one real
+- **`confidence_scoring.DEFAULT_WEIGHTS`** is this module's one real
   cross-service import — the baseline `composite_confidence_breakdown`
   weights every suggestion is blended against.

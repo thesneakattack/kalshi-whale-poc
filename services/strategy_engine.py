@@ -7,7 +7,7 @@ import time
 from typing import NamedTuple
 
 from services import candidate_log, config_overrides, market_history, signal_log
-from services.whale_simulator import WhaleSignal
+from services.confidence_scoring import WhaleSignal
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.exits import exit_engine
@@ -247,7 +247,7 @@ class FollowTheWhaleStrategy:
         # never captured price/unit_cost at all, which blocks any
         # cost-aware version of population_gate_summary()'s hypothetical
         # win rate. signal.price is always the YES price (see
-        # whale_simulator.py) - a NO print's real per-contract cost is
+        # confidence_scoring.py) - a NO print's real per-contract cost is
         # (1 - price), not price itself.
         unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
 

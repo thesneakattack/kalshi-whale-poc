@@ -1,6 +1,6 @@
 """
 Rule-based calibration for composite_confidence_breakdown's factor weights
-(services/whale_simulator.py). Direct request (2026-08-08): "I'd also like
+(services/confidence_scoring.py). Direct request (2026-08-08): "I'd also like
 an agent to study whale prints and their actual outcomes so as to create a
 more accurate formula." Same "rule-based, not ML" decision as
 docs/advisory-engine-plan.md's §1 applied again here, for the same reasons -
@@ -41,7 +41,7 @@ this app keeps the actual config_store.update() call at the call site, not
 buried in a service module.
 """
 from services import stats_power, trade_analytics
-from services.whale_simulator import DEFAULT_WEIGHTS
+from services.confidence_scoring import DEFAULT_WEIGHTS
 
 _BUCKET_COUNT = 3
 # Derived from DEFAULT_WEIGHTS' own keys, not a second hand-maintained list -
@@ -236,7 +236,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
     current_weights: the caller's live config["whale_confidence_weights"],
     so the report's own "current_weights" field reflects whatever's
     actually scoring real signals right now, not a stale hardcoded mirror -
-    defaults to whale_simulator.DEFAULT_WEIGHTS (this formula's original
+    defaults to confidence_scoring.DEFAULT_WEIGHTS (this formula's original
     weights) when the caller has no config override to pass, same fallback
     composite_confidence_breakdown itself uses."""
     current_weights = {**DEFAULT_WEIGHTS, **(current_weights or {})}

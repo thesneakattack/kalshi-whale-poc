@@ -41,7 +41,7 @@ handful. `tournament_pretail_days` (default 5) is a reasoned starting
 value, not a measured one - wide enough to cover a standard 4-day event
 (the confirmed real case) plus a day of margin, same "ships with a
 reasoned value, gets recalibrated once real data exists" precedent as
-services/whale_simulator.py's DEFAULT_WEIGHTS. Config-tunable
+services/confidence_scoring.py's DEFAULT_WEIGHTS. Config-tunable
 (`event_lifecycle.tournament_min_siblings`/`tournament_pretail_days`), not
 hardcoded, so it can be corrected per real data without a code change.
 

@@ -31,7 +31,7 @@ from collections import deque
 from datetime import datetime
 
 from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
-from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
+from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
 _DEFAULT_MIN_CONTRACTS = 5000.0
@@ -223,7 +223,7 @@ def _parse_trade_time(created_time: str | None) -> float | None:
 def _trend_factor(ticker: str, side: str, now: float) -> float:
     """Does this print's direction agree with, or fight, the market's own
     recent real price trend? Feeds composite_confidence_breakdown's
-    trend_factor (see services/whale_simulator.py and
+    trend_factor (see services/confidence_scoring.py and
     docs/prediction-market-strategy-alignment-plan.md Part 2.4).
 
     market_history.momentum()'s delta is positive when price has been
@@ -499,7 +499,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 continue
 
             # price is always the yes-side price by convention, same as
-            # every other WhaleSignal in this app (whale_simulator.py,
+            # every other WhaleSignal in this app (confidence_scoring.py,
             # confirmed in ROADMAP.md) - side carries direction separately.
             # Parsed here, before the min_contracts gate below (moved up
             # from after it, 2026-08-23), so a min_contracts rejection - the

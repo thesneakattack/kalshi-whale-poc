@@ -1,7 +1,7 @@
 import pytest
 
 from services.whale_calibration import confidence_calibration as cc
-from services.whale_simulator import DEFAULT_WEIGHTS
+from services.confidence_scoring import DEFAULT_WEIGHTS
 
 
 def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5):

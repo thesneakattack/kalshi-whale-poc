@@ -64,7 +64,7 @@ import main  # noqa: E402  (must import after the redirects above)
 from fastapi.testclient import TestClient  # noqa: E402
 from services import account_positions  # noqa: E402
 from services.market_watch import discovery_cache  # noqa: E402
-from services.whale_simulator import DEFAULT_WEIGHTS  # noqa: E402
+from services.confidence_scoring import DEFAULT_WEIGHTS  # noqa: E402
 
 # Bare (non-context-manager) TestClient does not trigger ASGI lifespan, so
 # main.trading_loop() never starts - these tests only exercise the HTTP
