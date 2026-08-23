@@ -97,7 +97,7 @@ questions.
       trade against real signal data, but hasn't yet been run for a real
       evaluation stretch and reviewed — that review, not the code existing,
       is the actual "trust it" gate before ever flipping `trading_enabled`.
-- [ ] **Risk enforcement lives inside strategy code, not the execution
+- [x] **Risk enforcement lives inside strategy code, not the execution
       layer.** Found 2026-08-22 via a gap-check against
       `docs/prediction-market-bot-research.md`'s engineering-safety
       checklist. `RiskManager.check_daily_loss()`/`max_trade_size()` are
@@ -112,8 +112,17 @@ questions.
       logic, not just the one already fixed, has no execution-layer
       backstop. Matches the research doc's premortem #2 almost exactly:
       "sizing, not signal, caused the blowup... risk sizing wasn't
-      independent of strategy confidence."
-- [ ] **No "flatten all positions" / emergency-close path exists.** Found
+      independent of strategy confidence." Shipped 2026-08-22, commit
+      `a8de034`: `PaperBroker.open_position()` now refuses (returns `None`)
+      when the wired-in `RiskManager` is halted, or when the new
+      portfolio-wide exposure cap below would be exceeded — the same
+      choke point both a market-order entry (`strategy_engine.evaluate`)
+      and a filled resting limit order (`check_pending_fills`) already
+      pass through, so a bug in either caller's own gate logic now has a
+      backstop. `KalshiAccountClient.create_order()` gets the same halt
+      guard, with an `is_closing_order` escape hatch so a flatten/close
+      order still works during a live halt.
+- [x] **No "flatten all positions" / emergency-close path exists.** Found
       2026-08-22, same gap-check. Confirmed via direct search
       (`flatten`/`liquidate`/`emergency-close` across `services/` and
       `main.py` turn up nothing but an unrelated historical incident
@@ -123,8 +132,16 @@ questions.
       that closes every open position at once; today that would be manual,
       per-position action. Named directly in
       `docs/prediction-market-bot-research.md`'s premortem #4 and §5's
-      last checklist item.
-- [ ] **No portfolio-wide exposure cap — only per-trade and (opt-in)
+      last checklist item. Shipped 2026-08-22, commit `a8de034`:
+      `PaperBroker.close_all_positions()` plus
+      `KalshiAccountClient.flatten_all()` (side/price mapping verified
+      against `docs/kalshi/create-order-v2.md`'s `BookSide` description and
+      `get-positions.md`'s `position_fp` sign convention — no bulk-flatten
+      endpoint exists on Kalshi's own API, so this iterates and closes each
+      position individually), wired into a new `POST
+      /api/trading/flatten-all` route gated by the same typed-confirmation-
+      phrase mechanism as `/api/trading/enable`.
+- [x] **No portfolio-wide exposure cap — only per-trade and (opt-in)
       per-series ones.** Found 2026-08-22, same gap-check.
       `max_position_pct` (`services/risk_manager.py:126-127`) caps a
       single trade; `max_open_positions_per_series`
@@ -133,6 +150,13 @@ questions.
       exposure summed across concurrently-open positions in *different*
       series — five maxed-out, uncorrelated positions can still add up to
       far more aggregate risk than `max_position_pct` alone implies.
+      Shipped 2026-08-22, commit `a8de034`: new
+      `RiskManager.check_total_exposure(current_exposure, prospective_cost,
+      bankroll)`, stateless like `max_trade_size`, reads a new opt-in
+      `risk.max_total_exposure_pct` config field (default `null` = no cap,
+      same "ships fully built, opt-in" precedent as other per-series/
+      kelly-fraction knobs), enforced at the same `open_position()` choke
+      point as the execution-layer item above.
 - [ ] This runs today only under local `ddev` on one machine — no real host,
       TLS domain, process supervisor, or uptime guarantee beyond ddev's dev
       containers. Decide and build a real deployment target before real

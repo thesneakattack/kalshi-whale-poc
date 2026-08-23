@@ -4856,6 +4856,47 @@
           <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 124 · risk-architecture backstop</div>
+        <h4>Execution-layer risk enforcement, flatten-all, portfolio-wide exposure cap</h4>
+        <p>Backfilled from commit <code>a8de034</code> (2026-08-22), the earlier of two Phase-N/9 sub-phases
+          from that day's continued-modularization session — shipped and tested at the time, but never carried
+          into this file, so it sat undocumented until this pass caught it via a stale-<code>ROADMAP.md</code>
+          check. Closed 3 gaps found via a gap-check against <code>docs/prediction-market-bot-research.md</code>'s
+          engineering-safety checklist. First: <code>RiskManager.check_daily_loss()</code>/<code>max_trade_size()</code>
+          were only ever consulted from <code>strategy_engine.py</code>'s own <code>evaluate()</code> — neither
+          <code>PaperBroker.buy</code>/<code>sell</code> nor <code>KalshiAccountClient.create_order()</code>
+          independently re-checked <code>risk.halted</code> or a position-size ceiling before executing, the same
+          shape of gap the four-entry gate bypass (phase 121) had already proven reachable once. Fixed by making
+          <code>PaperBroker.open_position()</code> itself refuse (return <code>None</code>) when the wired-in
+          <code>RiskManager</code> is halted or a new exposure cap (below) would be exceeded — the same choke
+          point both a market-order entry and a filled resting limit order already pass through, so a future bug
+          in either caller's own gate logic now has a backstop. <code>KalshiAccountClient.create_order()</code>
+          gets the same halt guard, with an <code>is_closing_order</code> escape hatch so a flatten/close order
+          still works during a live halt. Second: no portfolio-wide exposure cap existed — <code>max_position_pct</code>
+          caps one trade, <code>max_open_positions_per_series</code> caps count within one series, but nothing
+          capped total dollar exposure summed across concurrently-open positions in different series. New
+          <code>RiskManager.check_total_exposure(current_exposure, prospective_cost, bankroll)</code>, stateless
+          like <code>max_trade_size</code>, reads a new opt-in <code>risk.max_total_exposure_pct</code> config
+          field (default <code>null</code> = no cap), enforced at the same <code>open_position()</code> choke
+          point. Third: no single function closed every open position at once — if Kalshi access were cut off
+          suddenly or the kill switch tripped on a real account, flattening was manual, per-position action. New
+          <code>PaperBroker.close_all_positions()</code> plus <code>KalshiAccountClient.flatten_all()</code>
+          (side/price mapping verified against <code>docs/kalshi/create-order-v2.md</code>'s <code>BookSide</code>
+          description and <code>get-positions.md</code>'s <code>position_fp</code> sign convention — no
+          bulk-flatten endpoint exists on Kalshi's own API, so this iterates and closes each position
+          individually), wired into a new <code>POST /api/trading/flatten-all</code> route gated by the same
+          typed-confirmation-phrase mechanism as <code>/api/trading/enable</code>. Re-verified live this session
+          (2026-08-23), not just trusted from the commit message: re-read every call site above and re-ran the 4
+          relevant test files fresh — 261 passed, 0 failed.</p>
+        <div class="files"><code>config/settings.yaml</code> · <code>main.py</code> ·
+          <code>services/app_state.py</code> · <code>services/kalshi_account_client.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/risk_manager.py</code> ·
+          <code>services/strategy_engine.py</code> · <code>tests/test_kalshi_account_client.py</code> ·
+          <code>tests/test_paper_broker.py</code> · <code>tests/test_risk_manager.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
