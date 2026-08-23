@@ -265,6 +265,7 @@ def check_exits(
             )
         elif (
             exit_min_seconds_to_close
+            and not pos.hold_to_settlement
             and (secs_left := market_history.seconds_to_close(close_times.get(ticker), exit_now)) is not None
             and secs_left <= exit_min_seconds_to_close
         ):
@@ -276,6 +277,19 @@ def check_exits(
             # see that branch's comment): this condition tests both
             # "enabled" and "actually triggered" in one expression, so it
             # never consumes the chain's one shot without setting a reason.
+            #
+            # not pos.hold_to_settlement (2026-08-23, services/
+            # settlement_edge_entry.py): this rule exists to stop a
+            # position from riding to settlement unmanaged when it was
+            # never supposed to be that close to close in the first place.
+            # A settlement-edge entry is the opposite case - it enters
+            # deliberately inside this same floor, specifically to hold to
+            # the real $1/$0 settlement rather than be exited early at a
+            # market price that hasn't yet converged to the now-mostly-known
+            # outcome. Forcing it closed here would cap the very edge it
+            # was opened to capture. take_profit_pct/stop_loss_pct above
+            # still apply to it unchanged - only this forced-exit floor is
+            # skipped.
             reason = (
                 f"runway exhausted: {secs_left:.0f}s to close "
                 f"(floor {exit_min_seconds_to_close:.0f}s) — closing rather than riding to settlement"

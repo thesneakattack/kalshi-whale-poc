@@ -10,10 +10,11 @@ into index_stream.run(...).
 """
 import time
 
-from services import index_feed, settlement_edge
-from services.app_state import state
+from services import index_feed, settlement_edge, settlement_edge_entry
+from services.app_state import broker, risk, state
 from services.config_store import config_store
 from services.kalshi_client import KalshiClient
+from services.whale_stream import decision_bridge
 
 # ticker -> settlement spec (services/index_feed.settlement_spec). A market's
 # rules/strike/close are immutable once listed, so this is cached rather than
@@ -116,17 +117,22 @@ async def _resolve_settlement_windows(client: KalshiClient) -> None:
 async def _record_settlement_observations(index_id: str | None) -> None:
     """While a settlement window is open, record the projection and the
     market's own price side by side for every watched market settling on
-    this index (services/settlement_edge.py).
+    this index (services/settlement_edge.py), and - if
+    settlement_edge_entry.enabled - act on it (services/
+    settlement_edge_entry.py).
 
     This is the measurement that decides whether the index feed is an edge
     or merely interesting: both forecasts of the same binary event, captured
-    at the same instant, scored against the realised outcome later. Nothing
-    here trades - see settlement_edge's own docstring."""
+    at the same instant, scored against the realised outcome later.
+    settlement_edge.py itself never trades - see its own docstring; acting
+    on a confirmed edge is a deliberate, separate, opt-in step, off by
+    default."""
     if not index_id:
         return
     entry = index_feed.latest(index_id)
     if not entry or not entry.get("q15_window_size"):
         return  # not in a settlement window; nothing to compare
+    cfg = config_store.get()
     for market in (state.get("markets") or []):
         ticker = market.get("ticker")
         if not ticker:
@@ -141,8 +147,11 @@ async def _record_settlement_observations(index_id: str | None) -> None:
         # inspecting the captured rows rather than trusting the wiring.
         if not index_feed.window_matches_close(entry, settlement_edge.close_ts(spec)):
             continue
-        settlement_edge.record_observation(
-            ticker, spec,
-            index_feed.settlement_projection(index_id, spec["strike"]),
-            state["latest_prices"].get(ticker),
+        projection = index_feed.settlement_projection(index_id, spec["strike"])
+        market_price = state["latest_prices"].get(ticker)
+        settlement_edge.record_observation(ticker, spec, projection, market_price)
+        decision = settlement_edge_entry.evaluate_entry(
+            ticker, spec, projection, market_price, cfg, broker, risk,
         )
+        if decision is not None:
+            await decision_bridge.handle_settlement_edge_entry(decision, time.time())

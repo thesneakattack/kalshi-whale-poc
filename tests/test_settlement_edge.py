@@ -192,6 +192,28 @@ def test_unresolved_tickers_drives_resolution_from_this_store_not_the_watchlist(
     assert se.unresolved_tickers(older_than_sec=120, now=close + 300) == []
 
 
+def test_record_observation_logs_a_real_failure_instead_of_crashing_on_it(monkeypatch):
+    """Real bug, caught 2026-08-23: the except clause didn't bind `exc`
+    (`except Exception:`, not `except Exception as exc:`), so any genuine
+    failure inside the try block raised a fresh NameError right here
+    instead of being logged - on the websocket path, which this function's
+    own docstring says must never go down. Force a real failure (a spec
+    missing "index_id") and confirm it's caught and counted, not re-raised
+    as something else."""
+    from services import fault_log
+
+    logged = []
+    monkeypatch.setattr(fault_log, "record", lambda *a, **k: logged.append(a))
+    before = se._record_errors
+    ok = se.record_observation(
+        "KXBTC15M-A", {"strike": 63500.0, "comparison": ">="},  # no index_id
+        _projection(30, 63490.0, 63495.0, 63510.0), 0.6,
+    )
+    assert ok is False
+    assert se._record_errors == before + 1
+    assert logged and logged[0][:2] == ("settlement_edge", "record_observation")
+
+
 def test_mismatched_observations_are_removable_and_resolved_ones_are_not():
     """The cleanup identifies bad rows by their own recorded fields - an
     observation taken 863 minutes before the window it claims - not by

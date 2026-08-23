@@ -35,6 +35,16 @@ class Position:
     # trade-log scan. Defaults to 0.0 for positions opened before this
     # field existed (see the idempotent migration below).
     entry_fee: float = 0.0
+    # Set by services/settlement_edge_entry.py (2026-08-23) - this position
+    # was deliberately opened in a settlement window's final seconds, with
+    # no intent to manage it via price-driven exits (there's no runway
+    # left to). services/exits/exit_engine.py's runway-floor forced exit
+    # (exit_min_seconds_to_close) skips positions with this set, since that
+    # rule exists specifically to stop OTHER positions from riding to
+    # settlement unmanaged - the opposite of what this one is for. False
+    # (default) for every position opened by the whale-follow strategy,
+    # unchanged behavior for all of them.
+    hold_to_settlement: bool = False
 
 
 @dataclass
@@ -162,6 +172,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # handled explicitly wherever these are reconstructed from the DB below.
     _add_column_if_missing(conn, "positions", "entry_fee", "REAL")
     _add_column_if_missing(conn, "trades", "fee", "REAL")
+    # Position.hold_to_settlement (2026-08-23, services/settlement_edge_entry.py) -
+    # same idempotent-migration pattern, added after this table already had
+    # live rows. 0/NULL on every pre-existing row reads back as False via
+    # the `or 0` below, which is correct: no position opened before this
+    # field existed was ever a settlement-edge entry.
+    _add_column_if_missing(conn, "positions", "hold_to_settlement", "INTEGER")
     # Trade.signal_seen_at (2026-08-16 direct report - see that field's own
     # docstring) - same idempotent-migration pattern, added after this
     # table already had live rows.
@@ -241,10 +257,13 @@ class PaperBroker:
                 # Resuming — the persisted account wins over whatever
                 # config/settings.yaml's starting_bankroll says right now.
                 self.bankroll, self.starting_bankroll = row
-                for ticker, side, size, entry_price, opened_at, fp, entry_fee in conn.execute(
-                    "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee FROM positions"
+                for ticker, side, size, entry_price, opened_at, fp, entry_fee, hold_to_settlement in conn.execute(
+                    "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee, "
+                    "hold_to_settlement FROM positions"
                 ):
-                    self.positions[ticker] = Position(ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0)
+                    self.positions[ticker] = Position(
+                        ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0, bool(hold_to_settlement),
+                    )
                 for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded in conn.execute(
                     "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
                     "signal_seen_at, excluded FROM trades ORDER BY timestamp ASC"
@@ -270,7 +289,7 @@ class PaperBroker:
     def open_position(
         self, ticker: str, side: str, size: int, price: float, reason: str,
         config_fingerprint: str | None = None, fee_fn=kalshi_fees.taker_fee,
-        signal_seen_at: float | None = None,
+        signal_seen_at: float | None = None, hold_to_settlement: bool = False,
     ) -> Trade | None:
         # Execution-layer risk guard (2026-08-23) - read-only checks of
         # self.risk's already-computed state, never re-invoking
@@ -320,7 +339,7 @@ class PaperBroker:
         self.bankroll -= (cost + fee)
         self.positions[ticker] = Position(
             ticker=ticker, side=side, size=actual_size, entry_price=price, opened_at=time.time(),
-            config_fingerprint=config_fingerprint, entry_fee=fee,
+            config_fingerprint=config_fingerprint, entry_fee=fee, hold_to_settlement=hold_to_settlement,
         )
         trade = Trade(
             id=str(uuid.uuid4())[:8],
@@ -341,8 +360,10 @@ class PaperBroker:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute(
                 "INSERT OR REPLACE INTO positions "
-                "(ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint, fee),
+                "(ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee, hold_to_settlement) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, side, actual_size, price, self.positions[ticker].opened_at, config_fingerprint, fee,
+                 int(hold_to_settlement)),
             )
             conn.execute(
                 "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, signal_seen_at) "

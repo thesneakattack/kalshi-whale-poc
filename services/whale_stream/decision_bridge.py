@@ -121,6 +121,25 @@ async def _handle_close_decision(close_decision: dict) -> None:
     asyncio.create_task(_broadcast_signal_decision(None, close_decision))
 
 
+async def handle_settlement_edge_entry(decision: dict, tick_now: float) -> None:
+    """A settlement-edge entry (services/settlement_edge_entry.py) just
+    opened - record it into decision_feed/stats/category the same way a
+    whale-signal trade or a filled resting order does (mirrors
+    _handle_fill_decision's tail), so it shows up in the dashboard and
+    trade history instead of trading through a side channel none of the
+    existing feeds know about. Only ever called with a "trade" decision -
+    evaluate_entry returns None (not a "skip" dict) for every non-entry
+    tick, see its own docstring for why."""
+    state["decision_feed"].insert(0, decision)
+    state["decision_feed"] = state["decision_feed"][:50]
+    asyncio.create_task(_broadcast_signal_decision(None, decision))
+    state["stats"]["trades_placed"] += 1
+    ticker = decision["trade"]["ticker"]
+    category = _category_by_ticker().get(ticker)
+    subcategory = _subcategory_by_ticker().get(ticker)
+    trade_category.record_category(ticker, category, tick_now, subcategory=subcategory)
+
+
 async def _handle_fill_decision(fill_decision: dict, tick_now: float) -> None:
     # Maker/limit-order path (2026-08-15) - a resting order that just
     # filled is an ENTRY event (mirrors _handle_signal's own tail: decision

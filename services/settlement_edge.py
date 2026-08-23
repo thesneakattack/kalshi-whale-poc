@@ -112,7 +112,7 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         if len(_buffer) >= _FLUSH_BATCH:
             flush()
         return True
-    except Exception:
+    except Exception as exc:
         # Counted, not just swallowed. This except exists because the
         # recorder runs on the websocket path and must never take the
         # stream down - but a bare `return False` also hid a real bug for a
@@ -120,6 +120,17 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         # simply that nothing was ever recorded). A non-zero value in
         # stats() means this is failing systematically, not that the market
         # is quiet.
+        #
+        # Real live bug, caught 2026-08-23 re-reading this function while
+        # building services/settlement_edge_entry.py: this `except`
+        # clause didn't bind `exc` (`except Exception:`, not `except
+        # Exception as exc:`), so any real failure raised a fresh
+        # NameError right here instead of being logged - the exact
+        # "renamed helper left a NameError here" incident this same
+        # comment already describes, reintroduced by omission. Silent
+        # because nothing has actually failed inside the try block
+        # recently (_record_errors sat at 0), so the NameError itself was
+        # never exercised.
         global _record_errors
         _record_errors += 1
         fault_log.record("settlement_edge", "record_observation", exc)

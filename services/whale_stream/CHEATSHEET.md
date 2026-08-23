@@ -51,6 +51,26 @@ stay where they are.
   `main.py` importing from the whale-stream module just for its own loop
   body.
 
+## Settlement-edge entry (2026-08-23, ROADMAP.md "Path to production")
+
+`index_stream_handlers._record_settlement_observations` does two things per
+index tick now, not one: records the paired forecast
+(`services/settlement_edge.py`) AND, since the verdict flipped to
+`projection_beats_market` on 27k+ scored observations, calls
+`services/settlement_edge_entry.evaluate_entry()` — off by default
+(`settlement_edge_entry.enabled`). This is a second, independent entry
+path alongside `FollowTheWhaleStrategy.evaluate()` (`decision_bridge.
+_handle_signal`) - triggered by the index feed's own tick, not a whale
+print, and deliberately allowed to enter inside `strategy.
+min_seconds_to_close`'s floor because it holds to real settlement instead
+of trying to manage the position (`Position.hold_to_settlement`, read by
+`services/exits/exit_engine.py`'s runway-floor exit). A resulting trade is
+recorded into `decision_feed`/`trade_category` via the new
+`decision_bridge.handle_settlement_edge_entry`, mirroring
+`_handle_fill_decision`'s tail rather than reusing it (a filled resting
+order and a settlement-edge entry are different events that happen to
+produce the same decision shape).
+
 ## Where the two performance findings from this session live now
 
 - **Message drops under exchange-wide load** (`dropped_messages` on queue

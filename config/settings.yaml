@@ -137,6 +137,23 @@ index_feed:
   - BRTI
   - ETHUSD_RTI
   underlying_tickers: []
+settlement_edge_entry:
+  # Acts on the edge services/settlement_edge.py measured (2026-08-23:
+  # 27,534 scored observations, projection Brier 0.0171 vs market Brier
+  # 0.1046 - see GET /api/diagnostics/settlement-edge). Off by default,
+  # same "ships fully built, opt-in" precedent as every other engine here.
+  # See services/settlement_edge_entry.py's module docstring.
+  enabled: false
+  # Only trade once at least this many of the 60 settlement-window
+  # observations are known - the measured edge is strongest in the
+  # 46-59-known bucket (projection Brier 0.002 vs market 0.1021).
+  min_observations_known: 45
+  min_probability: 0.95
+  # Minimum gap between the projected probability and the market's own
+  # price, in probability points, before the edge is worth paying fees on.
+  min_edge: 0.05
+  max_position_pct: 0.02
+  volatility_lookback_sec: 3600
 series_watcher:
   enabled: true
   series:
