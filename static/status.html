@@ -5448,6 +5448,43 @@
           <code>services/whalewatchers/</code> · <code>services/whale_calibration/</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 139 · a redundant per-poll refresh was resetting scroll position</div>
+        <h4>refreshActiveViewPanels() duplicated refreshHistoryInsightsIfActive() and contradicted its own neighboring comments</h4>
+        <p>Direct report (2026-08-23): scrollbar position resetting on the History tab, and any Apply button
+          there feeling "super lagg[y]" - suspected to be the graphs/polling. Confirmed: <code>frontend/src/js/
+          main.js</code>'s <code>refreshActiveViewPanels()</code> called <code>loadTradingHistory()</code> on
+          <em>every single 5s poll</em> while the History tab was open, right alongside
+          <code>refreshHistoryInsightsIfActive()</code> - which already refreshes the same ~10 "live" sub-panels
+          (advisory, calibration, regime, candidate-log, backtest, series-evaluator, market-analyst) every poll,
+          deliberately <em>without</em> touching <code>loadTradingHistory()</code>. That function's own docstring
+          says why: it "only ever ran once, on tab-open, deliberately preserving the paginated trade-log table's
+          current page." <code>refreshActiveViewPanels()</code> called it anyway, every poll, wholesale
+          rebuilding the P&amp;L chart, trade table, narrative, and summary cards (<code>el.innerHTML = ...</code>)
+          on top of duplicating all ~10 of <code>refreshHistoryInsightsIfActive()</code>'s own fetches a second
+          time - real wasted work explaining the lag, and a real DOM teardown explaining the scroll reset, twice
+          per poll tick instead of never. The same function's <code>whale</code> branch had the identical shape
+          (<code>loadSignalHistory()</code>/<code>loadSignalClusters()</code> every poll), contradicting
+          <code>showView()</code>'s own comment two lines above: "load fresh whenever the tab is opened, rather
+          than every 5s poll, so paging/sorting doesn't reset itself out from under someone actively browsing
+          it." Traced via <code>git log</code>: both functions were introduced together, unchanged, since before
+          this project's git history begins - a longstanding redundancy, not a recent regression. Removed
+          <code>refreshActiveViewPanels()</code> entirely (function, export, <code>window</code> exposure, its
+          one call site in <code>polling-and-websocket.js</code>'s <code>refresh()</code>) rather than patched -
+          <code>showView()</code>'s own tab-open call already covers the initial load for both tabs, and neither
+          tab loses any data that was ever the point of a periodic refresh: the "live" sub-panels stay live via
+          <code>refreshHistoryInsightsIfActive()</code>/<code>refresh()</code>'s own per-poll DOM updates, and the
+          paginated tables now behave exactly as their own removed neighbor's comment always said they should.
+          Verified live in a real browser via the project's own <code>selenium-chrome</code> container, not just
+          statically: zero runtime errors captured (a global <code>error</code>/<code>unhandledrejection</code>
+          listener injected before navigation) across 13s on both the History and Whale Watch tabs, with real
+          live data still rendering correctly (3 closed trades, 100% win rate, real dollar figures matching the
+          account). <code>eslint</code> clean (would have caught a missed reference).</p>
+        <div class="files"><code>frontend/src/js/main.js</code> ·
+          <code>frontend/src/js/polling-and-websocket.js</code> ·
+          <code>static/js/dashboard.bundle.js</code></div>
+      </div>
+
     </div>
   </section>
 

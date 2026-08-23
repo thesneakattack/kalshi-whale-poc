@@ -52,6 +52,23 @@ showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorag
 // only ever ran once, on tab-open, deliberately preserving the paginated
 // trade-log table's current page. But the rest of the tab is live data and
 // should still refresh while the History tab remains visible.
+//
+// A separate refreshActiveViewPanels() used to sit right after this
+// function's own call site in polling-and-websocket.js's refresh() and
+// called loadTradingHistory()/loadSignalHistory()/loadSignalClusters() on
+// every single poll while the History/Whale Watch tab was open - directly
+// contradicting the "only ever ran once, on tab-open" comment two lines
+// up, and showView()'s own comment below ("load fresh whenever the tab is
+// opened, rather than every 5s poll, so paging/sorting doesn't reset
+// itself out from under someone actively browsing it"). Real, live
+// reported symptom (2026-08-23): scrollbar position resetting on the
+// History tab and a laggy Apply button - loadTradingHistory() alone tears
+// down and rebuilds the P&L chart, the trade table, and several other
+// panels wholesale (el.innerHTML = ...) on top of everything
+// refreshHistoryInsightsIfActive() already refreshes below, every 5s,
+// duplicating ~10 of its own fetches in the process. Removed entirely
+// (2026-08-23) rather than fixed in place - it had no purpose this
+// function and showView()'s initial tab-open call didn't already cover.
 function refreshHistoryInsightsIfActive() {
   if (currentView !== 'history') return;
   loadAdvisory();
@@ -64,16 +81,6 @@ function refreshHistoryInsightsIfActive() {
   loadBacktestSweeps();
   loadSeriesEvaluator();
   loadMarketAnalyst();
-}
-
-function refreshActiveViewPanels() {
-  if (currentView === 'whale') {
-    loadSignalHistory();
-    loadSignalClusters();
-  }
-  if (currentView === 'history') {
-    loadTradingHistory();
-  }
 }
 
 // First-run walkthrough (ROADMAP.md P1) - auto-opens the Help modal once,
@@ -100,14 +107,13 @@ connectWebSocket();
 // kalshi.poll_interval_sec instead of remaining hardcoded.
 if (!refreshTimer) scheduleRefreshTimer(refreshIntervalMs);
 
-export { VIEWS, currentView, refreshActiveViewPanels, refreshHistoryInsightsIfActive, setAccountMode, showView };
+export { VIEWS, currentView, refreshHistoryInsightsIfActive, setAccountMode, showView };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
 // parameter - see shared-utils.js's header). Every top-level function in
 // this file is exposed (cheap, harmless if unused); state objects only the
 // specific ones confirmed to be read/mutated directly from a handler.
-window.refreshActiveViewPanels = refreshActiveViewPanels;
 window.refreshHistoryInsightsIfActive = refreshHistoryInsightsIfActive;
 window.setAccountMode = setAccountMode;
 window.showView = showView;

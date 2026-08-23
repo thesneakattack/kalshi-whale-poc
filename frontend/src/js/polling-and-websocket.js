@@ -1,4 +1,4 @@
-import { VIEWS, currentView, refreshActiveViewPanels, refreshHistoryInsightsIfActive } from './main.js';
+import { VIEWS, currentView, refreshHistoryInsightsIfActive } from './main.js';
 import { marketDetailTicker, refreshMarketDetail, renderAccount, renderHeaderStrip, renderRealMoneyBanner, renderScreenerTable } from './screener-and-header.js';
 import { $, advToggleHTML, eventLiveData, eventTitles, isAdvanced, marketPanelState, marketTitles, renderMarketCategorySuggestions, renderMarkets, rerenderMarketPanel } from './shared-utils.js';
 import { loadPositionNettingGroups, renderSignalDecisionFeed } from './signals-feed.js';
@@ -130,7 +130,6 @@ async function refresh() {
     if (marketDetailTicker) refreshMarketDetail();
 
     refreshHistoryInsightsIfActive();
-    refreshActiveViewPanels();
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;
