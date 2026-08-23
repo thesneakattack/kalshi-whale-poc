@@ -237,6 +237,10 @@ state = {
     # Same background-task decoupling as discovery_cache above, for
     # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
     "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # Same background-task decoupling as discovery_cache/catalog_scan
+    # above, for services/backup/backup.py's periodic data/*.db snapshot -
+    # see _maybe_run_backup.
+    "backup": {"running": False, "last_started_at": 0.0, "task": None},
     # Seeded from data/event_schedule.db (services/market_events/event_schedule.py,
     # 2026-08-15) - event_ticker -> {"start_ts", "end_ts", "source",
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's

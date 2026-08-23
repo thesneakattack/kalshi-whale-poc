@@ -106,6 +106,8 @@ from services.market_watch import (  # noqa: E402
     _MILESTONE_REPOLL_SEC, propagate_milestone_winners, _refresh_discovery_cache,
     _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
+from services.backup import _maybe_run_backup  # noqa: E402
+from services.backup import routes as backup_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream,
     risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -309,6 +311,7 @@ async def trading_loop():
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
             _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
+            _maybe_run_backup(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client),
@@ -935,6 +938,7 @@ app.include_router(backtest_routes.router)
 app.include_router(market_catalog_routes.router)
 app.include_router(history_routes.router)
 app.include_router(analytics_routes.router)
+app.include_router(backup_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.

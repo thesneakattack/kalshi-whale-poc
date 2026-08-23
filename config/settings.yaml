@@ -161,6 +161,16 @@ series_evaluator:
   backoff_max_sec: 86400
 logging:
   level: INFO
+backup:
+  enabled: true
+  interval_sec: 21600  # 6h - see services/backup/CHEATSHEET.md
+  retention_count: 14  # ~3.5 days at the default interval - kept modest because
+  # series_watcher.db's raw_trades is deliberately never pruned (CLAUDE.md's
+  # "accumulated history is a first-class asset" rule) and grows without
+  # bound, so every snapshot's real size grows over time too - revisit this
+  # number as data/'s total footprint grows (was 8.3GB as of 2026-08-23,
+  # after pruning a since-fixed 5.7GB game_state.db bloat - see that
+  # module's CHEATSHEET/status.html phase 126 for the full incident).
 event_lifecycle:
   tournament_min_siblings: 4
   tournament_pretail_days: 5.0

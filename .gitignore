@@ -6,6 +6,9 @@ venv/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# services/backup/backup.py's snapshot output - one level below the flat
+# data/*.db pattern above, so it needs its own explicit line.
+data/backups/
 .ddev/.web
 .ddev/db_snapshots
 
