@@ -93,7 +93,13 @@ risk = RiskManager(
     starting_bankroll=cfg["risk"]["starting_bankroll"],
     max_daily_loss_pct=cfg["risk"]["max_daily_loss_pct"],
     kill_switch_enabled=cfg["risk"]["kill_switch_enabled"],
+    max_total_exposure_pct=cfg["risk"].get("max_total_exposure_pct"),
 )
+# Execution-layer risk enforcement (2026-08-23) - broker.risk is assigned
+# post-construction rather than reordering broker/risk's own construction
+# order above, since broker is built first and risk depends on nothing
+# broker provides.
+broker.risk = risk
 strategy = FollowTheWhaleStrategy(broker, risk)
 shadow = ShadowTrader(default_bankroll=cfg["risk"]["starting_bankroll"])
 whale_sim = WhaleSimulator(
@@ -111,6 +117,7 @@ account = KalshiAccountClient(
     account_base_url,
     cfg["kalshi"]["request_timeout_sec"],
     cfg["kalshi_account"]["trading_enabled"],
+    risk=risk,
 )  # real account — only active if KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH are set in .env
 # exchange_wide_trades (2026-08-17): subscribe the trade channel with no
 # market_tickers so every print on the exchange arrives, not just those on

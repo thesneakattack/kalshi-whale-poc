@@ -519,6 +519,13 @@ class FollowTheWhaleStrategy:
             config_fingerprint=config_fingerprint,
             signal_seen_at=signal.timestamp,
         )
+        if trade is None:
+            # Execution-layer risk guard fired (self.risk.halted, or the
+            # portfolio exposure cap) - belt-and-suspenders against the
+            # check_daily_loss() gate above this function already passed;
+            # this only fires if that gate and this one somehow disagree,
+            # e.g. a future bug in either check.
+            return self._skip(signal, f"halted: {self.risk.halt_reason}" if self.risk.halted else "exposure cap")
         return {
             "action": "trade",
             "signal": signal.to_dict(),

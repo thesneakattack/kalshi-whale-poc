@@ -1005,6 +1005,18 @@ class EnableTradingBody(BaseModel):
     confirmation_phrase: str
 
 
+# Emergency flatten (2026-08-23 gap-check finding: no "get flat
+# immediately" path existed at all for either broker) - its own
+# confirmation phrase, same typed-confirmation pattern as real trading
+# itself, since this is a real, irreversible action against both the
+# paper account and (if connected/enabled) real capital.
+FLATTEN_CONFIRMATION_PHRASE = "FLATTEN ALL POSITIONS"
+
+
+class FlattenAllBody(BaseModel):
+    confirmation_phrase: str
+
+
 _state_body_cache = {"generation": None, "body": None}  # see get_state()
 
 
@@ -1183,6 +1195,32 @@ async def disable_trading():
     )
     bump_generation()
     return {"trading_enabled": False}
+
+
+@app.post("/api/trading/flatten-all")
+async def flatten_all_positions(body: FlattenAllBody):
+    # Emergency "get flat immediately" (2026-08-23 gap-check finding) - a
+    # real, irreversible action, so it gets the same typed-confirmation
+    # gate as real trading itself rather than a plain checkbox. Always
+    # flattens the paper account (harmless, fully reversible via the
+    # Danger Zone); also flattens the real account whenever
+    # kalshi_account.trading_enabled is true - see
+    # KalshiAccountClient.flatten_all's own docstring for the order
+    # construction and its disclosed lack of a real-fill verification yet.
+    if body.confirmation_phrase != FLATTEN_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation phrase did not match. Type exactly: "{FLATTEN_CONFIRMATION_PHRASE}"',
+        )
+    paper_closed = broker.close_all_positions(state["latest_prices"], "manual flatten-all")
+    real_result = None
+    if account.trading_enabled:
+        real_result = await account.flatten_all()
+    bump_generation()
+    return {
+        "paper_closed": [t.to_dict() for t in paper_closed],
+        "real_result": real_result,
+    }
 
 
 @app.post("/api/toggle")

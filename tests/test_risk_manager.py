@@ -197,3 +197,37 @@ def test_two_risk_manager_instances_with_different_db_paths_do_not_collide(tmp_p
     )
     assert resumed_a.halted is True
     assert resumed_b.halted is False
+
+
+# --- check_total_exposure (2026-08-23 gap-check finding: no portfolio-wide
+# exposure cap existed, only per-trade max_trade_size and opt-in
+# per-series position counts) ------------------------------------------------
+
+def test_check_total_exposure_unset_is_always_true(tmp_path, monkeypatch):
+    risk = _risk(tmp_path, monkeypatch)
+    assert risk.max_total_exposure_pct is None
+    assert risk.check_total_exposure(current_exposure=999999.0, prospective_cost=999999.0, bankroll=1000.0) is True
+
+
+def test_check_total_exposure_true_when_within_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
+    risk = rm.RiskManager(
+        starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, max_total_exposure_pct=0.5,
+    )
+    assert risk.check_total_exposure(current_exposure=200.0, prospective_cost=100.0, bankroll=1000.0) is True
+
+
+def test_check_total_exposure_false_when_cap_would_be_exceeded(tmp_path, monkeypatch):
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
+    risk = rm.RiskManager(
+        starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, max_total_exposure_pct=0.5,
+    )
+    assert risk.check_total_exposure(current_exposure=400.0, prospective_cost=200.0, bankroll=1000.0) is False
+
+
+def test_check_total_exposure_exactly_at_the_cap_is_true(tmp_path, monkeypatch):
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
+    risk = rm.RiskManager(
+        starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, max_total_exposure_pct=0.5,
+    )
+    assert risk.check_total_exposure(current_exposure=400.0, prospective_cost=100.0, bankroll=1000.0) is True

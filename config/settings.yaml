@@ -71,6 +71,7 @@ risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85
   kill_switch_enabled: true
+  max_total_exposure_pct: null
 kalshi_account:
   trading_enabled: false
 whale_watcher_kalshi:

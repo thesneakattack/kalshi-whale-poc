@@ -687,3 +687,113 @@ def test_state_includes_pending_orders(tmp_path, monkeypatch):
     state = broker.state(latest_prices={})
     assert len(state["pending_orders"]) == 1
     assert state["pending_orders"][0]["ticker"] == "TICK-A"
+
+
+# ---- execution-layer risk enforcement (2026-08-23 gap-check finding) ------
+# RiskManager was only ever consulted from strategy_engine.evaluate() before
+# this - these tests lock in the execution-layer backstop at open_position
+# itself, the one choke point both a market-order entry and a filled
+# resting limit order pass through.
+
+def _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_total_exposure_pct=None):
+    from services import risk_manager as rm
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
+    return rm.RiskManager(
+        starting_bankroll, max_daily_loss_pct=0.1, kill_switch_enabled=True,
+        max_total_exposure_pct=max_total_exposure_pct,
+    )
+
+
+def test_open_position_with_no_risk_wired_in_is_unaffected(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    trade = broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    assert trade is not None
+    assert "TICK-A" in broker.positions
+
+
+def test_open_position_refuses_when_risk_halted(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    risk = _risk(tmp_path, monkeypatch)
+    risk.manual_halt("test halt")
+    broker.risk = risk
+    trade = broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    assert trade is None
+    assert broker.positions == {}
+
+
+def test_open_position_allowed_when_risk_not_halted(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    risk = _risk(tmp_path, monkeypatch)
+    broker.risk = risk
+    trade = broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    assert trade is not None
+
+
+def test_open_position_refuses_when_exposure_cap_would_be_exceeded(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_total_exposure_pct=0.1)
+    broker.risk = risk
+    # First trade: cost 50 (100 * 0.5), within the 100 (10% of 1000) cap.
+    first = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    assert first is not None
+    # Second trade would push total exposure (50 + 60 = 110) over the cap.
+    second = broker.open_position("TICK-B", "yes", size=100, price=0.6, reason="entry")
+    assert second is None
+    assert "TICK-B" not in broker.positions
+
+
+def test_open_position_allowed_when_exposure_cap_not_exceeded(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_total_exposure_pct=0.5)
+    broker.risk = risk
+    first = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    second = broker.open_position("TICK-B", "yes", size=100, price=0.5, reason="entry")
+    assert first is not None
+    assert second is not None
+
+
+def test_open_position_exposure_cap_unset_is_a_no_op(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_total_exposure_pct=None)
+    broker.risk = risk
+    for i in range(5):
+        trade = broker.open_position(f"TICK-{i}", "yes", size=100, price=0.9, reason="entry")
+        assert trade is not None
+
+
+def test_check_pending_fills_refuses_when_risk_halted(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    risk = _risk(tmp_path, monkeypatch)
+    broker.risk = risk
+    broker.place_limit_order("TICK-A", "yes", size=100, limit_price=0.6, reason="r", expires_at=time.time() + 60)
+    risk.manual_halt("test halt")
+    fills = broker.check_pending_fills(latest_bids={}, latest_asks={"TICK-A": 0.5})
+    assert len(fills) == 1
+    assert fills[0]["action"] == "fill_rejected"
+    assert "TICK-A" not in broker.positions
+
+
+# ---- close_all_positions (2026-08-23 gap-check finding) --------------------
+# No "get flat immediately" path existed at all before this.
+
+def test_close_all_positions_closes_every_open_position(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    broker.open_position("TICK-B", "no", size=10, price=0.4, reason="entry")
+    closed = broker.close_all_positions({"TICK-A": 0.6, "TICK-B": 0.3}, "manual flatten-all")
+    assert len(closed) == 2
+    assert broker.positions == {}
+
+
+def test_close_all_positions_falls_back_to_entry_price_with_no_fresh_quote(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    closed = broker.close_all_positions({}, "manual flatten-all")
+    assert len(closed) == 1
+    assert closed[0].price == 0.5
+
+
+def test_close_all_positions_is_a_no_op_with_no_open_positions(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    closed = broker.close_all_positions({}, "manual flatten-all")
+    assert closed == []

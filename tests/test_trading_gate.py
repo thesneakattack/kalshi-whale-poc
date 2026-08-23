@@ -184,6 +184,53 @@ def test_enable_and_disable_trading_both_log_to_change_history(monkeypatch):
     assert disabled["source"] == "manual"
 
 
+# --- POST /api/trading/flatten-all (2026-08-23 gap-check finding: no ------
+# "get flat immediately" path existed at all before this) -------------------
+
+def test_flatten_all_rejects_wrong_confirmation_phrase():
+    resp = client.post("/api/trading/flatten-all", json={"confirmation_phrase": "not it"})
+    assert resp.status_code == 400
+    assert "confirmation phrase" in resp.json()["detail"].lower()
+
+
+def test_flatten_all_closes_paper_positions_with_correct_phrase():
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    main.broker.open_position("TICK-B", "no", size=10, price=0.4, reason="entry")
+    assert len(main.broker.positions) == 2
+
+    resp = client.post("/api/trading/flatten-all", json={"confirmation_phrase": "FLATTEN ALL POSITIONS"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["paper_closed"]) == 2
+    assert main.broker.positions == {}
+    assert body["real_result"] is None  # trading_enabled is false by default
+
+
+def test_flatten_all_is_a_no_op_with_no_open_positions():
+    main.broker.reset(starting_bankroll=10000.0)
+    resp = client.post("/api/trading/flatten-all", json={"confirmation_phrase": "FLATTEN ALL POSITIONS"})
+    assert resp.status_code == 200
+    assert resp.json()["paper_closed"] == []
+
+
+def test_flatten_all_also_flattens_the_real_account_when_trading_enabled(monkeypatch):
+    _reset_trading_state()
+    monkeypatch.setattr(main.account, "_client", object())
+    client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
+    assert main.account.trading_enabled is True
+
+    async def fake_flatten_all():
+        return [{"ticker": "REAL-A", "position_fp": 10.0, "order": {"ok": True}, "error": None}]
+    monkeypatch.setattr(main.account, "flatten_all", fake_flatten_all)
+
+    main.broker.reset(starting_bankroll=10000.0)
+    resp = client.post("/api/trading/flatten-all", json={"confirmation_phrase": "FLATTEN ALL POSITIONS"})
+    assert resp.status_code == 200
+    assert resp.json()["real_result"] == [{"ticker": "REAL-A", "position_fp": 10.0, "order": {"ok": True}, "error": None}]
+    _reset_trading_state()
+
+
 def test_state_endpoint_reports_trading_enabled_flag():
     _reset_trading_state()
     resp = client.get("/api/state")

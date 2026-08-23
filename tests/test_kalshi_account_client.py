@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from services import kalshi_account_client as kac_module
+from services.risk_manager import RiskManager
 
 
 def _generate_test_key_pem() -> bytes:
@@ -48,13 +49,20 @@ class _FakeSDKClient:
         return _FakeResp({"ok": True})
 
 
-def _client_with_fake_sdk(trading_enabled=True, timeout=5):
+def _client_with_fake_sdk(trading_enabled=True, timeout=5, risk=None):
     c = kac_module.KalshiAccountClient(
-        base_url="https://example.test/trade-api/v2", request_timeout_sec=timeout, trading_enabled=trading_enabled
+        base_url="https://example.test/trade-api/v2", request_timeout_sec=timeout,
+        trading_enabled=trading_enabled, risk=risk,
     )
     fake = _FakeSDKClient()
     c._client = fake  # simulate an already-connected account, no real key needed
     return c, fake
+
+
+def _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True):
+    from services import risk_manager as rm
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
+    return RiskManager(starting_bankroll, max_daily_loss_pct, kill_switch_enabled)
 
 
 # ---- credential loading (real code path, throwaway key, no network) -------
@@ -138,6 +146,134 @@ def test_cancel_order_refuses_when_trading_disabled():
     with pytest.raises(PermissionError):
         asyncio.run(c.cancel_order("order-123"))
     assert fake.calls == []
+
+
+# ---- execution-layer risk guard (2026-08-23 gap-check finding) ------------
+
+def test_create_order_refuses_when_risk_halted(tmp_path, monkeypatch):
+    risk = _risk(tmp_path, monkeypatch)
+    risk.manual_halt("test halt")
+    c, fake = _client_with_fake_sdk(trading_enabled=True, risk=risk)
+    with pytest.raises(PermissionError):
+        asyncio.run(c.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert fake.calls == []
+
+
+def test_create_order_allowed_when_risk_not_halted(tmp_path, monkeypatch):
+    risk = _risk(tmp_path, monkeypatch)
+    c, fake = _client_with_fake_sdk(trading_enabled=True, risk=risk)
+    result = asyncio.run(c.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert result == {"ok": True}
+    assert len(fake.calls) == 1
+
+
+def test_create_order_with_no_risk_wired_in_is_unaffected():
+    # None (default) is a no-op, same as every other opt-in risk gate.
+    c, fake = _client_with_fake_sdk(trading_enabled=True, risk=None)
+    result = asyncio.run(c.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert result == {"ok": True}
+
+
+def test_create_order_closing_order_bypasses_the_halt_guard(tmp_path, monkeypatch):
+    # A flatten/close must still work while halted - that's the whole
+    # point of an emergency flatten.
+    risk = _risk(tmp_path, monkeypatch)
+    risk.manual_halt("test halt")
+    c, fake = _client_with_fake_sdk(trading_enabled=True, risk=risk)
+    result = asyncio.run(c.create_order(
+        ticker="TICK-A", side="ask", count="1.00", price="0.0100", is_closing_order=True,
+    ))
+    assert result == {"ok": True}
+    assert len(fake.calls) == 1
+
+
+# ---- flatten_all (2026-08-23 gap-check finding) ----------------------------
+
+def test_flatten_all_closes_a_yes_position_by_selling_yes():
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+
+    async def get_positions(**kwargs):
+        return _FakeResp({"market_positions": [{"ticker": "TICK-YES", "position_fp": "10.00"}]})
+    fake.get_positions = get_positions
+
+    results = asyncio.run(c.flatten_all())
+    assert len(results) == 1
+    assert results[0]["ticker"] == "TICK-YES"
+    assert results[0]["error"] is None
+    name, kwargs = fake.calls[0]
+    assert name == "create_order_v2"
+    assert kwargs["side"] == "ask"
+    assert kwargs["price"] == "0.0100"
+    assert kwargs["count"] == "10.00"
+
+
+def test_flatten_all_closes_a_no_position_by_buying_yes():
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+
+    async def get_positions(**kwargs):
+        return _FakeResp({"market_positions": [{"ticker": "TICK-NO", "position_fp": "-5.00"}]})
+    fake.get_positions = get_positions
+
+    results = asyncio.run(c.flatten_all())
+    assert len(results) == 1
+    name, kwargs = fake.calls[0]
+    assert kwargs["side"] == "bid"
+    assert kwargs["price"] == "0.9900"
+    assert kwargs["count"] == "5.00"
+
+
+def test_flatten_all_skips_zero_positions():
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+
+    async def get_positions(**kwargs):
+        return _FakeResp({"market_positions": [{"ticker": "TICK-FLAT", "position_fp": "0.00"}]})
+    fake.get_positions = get_positions
+
+    results = asyncio.run(c.flatten_all())
+    assert results == []
+    assert fake.calls == []
+
+
+def test_flatten_all_bypasses_the_risk_halt_guard(tmp_path, monkeypatch):
+    risk = _risk(tmp_path, monkeypatch)
+    risk.manual_halt("test halt")
+    c, fake = _client_with_fake_sdk(trading_enabled=True, risk=risk)
+
+    async def get_positions(**kwargs):
+        return _FakeResp({"market_positions": [{"ticker": "TICK-A", "position_fp": "10.00"}]})
+    fake.get_positions = get_positions
+
+    results = asyncio.run(c.flatten_all())
+    assert len(results) == 1
+    assert results[0]["error"] is None
+
+
+def test_flatten_all_records_a_per_ticker_error_without_aborting_the_rest():
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+
+    async def get_positions(**kwargs):
+        return _FakeResp({"market_positions": [
+            {"ticker": "TICK-BAD", "position_fp": "10.00"},
+            {"ticker": "TICK-GOOD", "position_fp": "5.00"},
+        ]})
+    fake.get_positions = get_positions
+
+    call_count = {"n": 0}
+    real_create_order_v2 = fake.create_order_v2
+
+    async def flaky_create_order_v2(**kwargs):
+        call_count["n"] += 1
+        if kwargs["ticker"] == "TICK-BAD":
+            raise RuntimeError("simulated order failure")
+        return await real_create_order_v2(**kwargs)
+    fake.create_order_v2 = flaky_create_order_v2
+
+    results = asyncio.run(c.flatten_all())
+    assert len(results) == 2
+    bad = next(r for r in results if r["ticker"] == "TICK-BAD")
+    good = next(r for r in results if r["ticker"] == "TICK-GOOD")
+    assert bad["error"] == "simulated order failure"
+    assert good["error"] is None
 
 
 def test_get_balance_positions_fills_delegate_to_sdk():

@@ -78,7 +78,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 class RiskManager:
     def __init__(
         self, starting_bankroll: float, max_daily_loss_pct: float, kill_switch_enabled: bool,
-        db_path: Path | None = None,
+        db_path: Path | None = None, max_total_exposure_pct: float | None = None,
     ):
         # Same per-instance db_path pattern as services/paper_broker.py's
         # PaperBroker - defaults to the module-level DB_PATH (resolved at
@@ -90,6 +90,14 @@ class RiskManager:
         self.starting_bankroll = starting_bankroll
         self.max_daily_loss_pct = max_daily_loss_pct
         self.kill_switch_enabled = kill_switch_enabled
+        # None (default) = no portfolio-wide exposure cap - same "ships
+        # fully built, opt-in" precedent as max_open_positions_per_series/
+        # kelly_fraction_of_cap elsewhere in this app. When set, caps total
+        # dollar exposure across every currently-open position (see
+        # check_total_exposure) - a gap max_trade_size alone can't close,
+        # since several individually-small positions can still add up to
+        # far more aggregate risk than one trade's own cap implies.
+        self.max_total_exposure_pct = max_total_exposure_pct
 
         with self._connect() as conn:
             row = conn.execute(
@@ -126,6 +134,20 @@ class RiskManager:
 
     def max_trade_size(self, bankroll: float, max_position_pct: float) -> float:
         return round(bankroll * max_position_pct, 2)
+
+    def check_total_exposure(self, current_exposure: float, prospective_cost: float, bankroll: float) -> bool:
+        """True if adding prospective_cost to current_exposure (the sum of
+        every currently-open position's cost_basis - see
+        PaperBroker.cost_basis) would stay within max_total_exposure_pct of
+        bankroll. Always True when max_total_exposure_pct is unset (the
+        opt-in default) - stateless and side-effect-free, same style as
+        max_trade_size above, deliberately not a hard gate baked into
+        open_position's own signature so a caller with no RiskManager
+        wired in (or one that hasn't turned this on) sees zero behavior
+        change."""
+        if self.max_total_exposure_pct is None:
+            return True
+        return (current_exposure + prospective_cost) <= bankroll * self.max_total_exposure_pct
 
     def check_daily_loss(self, current_bankroll: float, now: float | None = None) -> bool:
         """Returns True if trading should continue; flips the kill switch if

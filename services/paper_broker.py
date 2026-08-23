@@ -16,6 +16,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from services import kalshi_fees
+from services.risk_manager import RiskManager
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_broker.db"
 
@@ -201,7 +202,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 class PaperBroker:
-    def __init__(self, starting_bankroll: float, db_path: Path | None = None):
+    def __init__(self, starting_bankroll: float, db_path: Path | None = None, risk: RiskManager | None = None):
         # db_path defaults to the module-level DB_PATH, resolved at call
         # time (not import time) so existing tests' `monkeypatch.setattr(pb,
         # "DB_PATH", ...)` pattern keeps working unchanged. Pass an explicit
@@ -209,6 +210,16 @@ class PaperBroker:
         # instance gets its own file, so two brokers never share (and can't
         # corrupt) each other's broker_meta/positions/trades tables.
         self.db_path = db_path or DB_PATH
+        # Execution-layer risk enforcement (2026-08-23 gap-check finding):
+        # before this, RiskManager was only ever consulted from inside
+        # strategy_engine.evaluate(), never at the actual execution choke
+        # point both a market-order entry and a filled resting limit order
+        # pass through - the same general shape as the four-entry gate
+        # bypass this session already fixed once (a gate that only runs at
+        # one call site is a gate that can be skipped). None (default)
+        # means no risk instance is wired in, preserving every existing
+        # caller/test's exact prior behavior.
+        self.risk = risk
         self.positions: dict[str, Position] = {}   # keyed by ticker
         self.trade_log: list[Trade] = []
         self.last_trade_time: dict[str, float] = {}  # ticker -> timestamp
@@ -260,7 +271,18 @@ class PaperBroker:
         self, ticker: str, side: str, size: int, price: float, reason: str,
         config_fingerprint: str | None = None, fee_fn=kalshi_fees.taker_fee,
         signal_seen_at: float | None = None,
-    ) -> Trade:
+    ) -> Trade | None:
+        # Execution-layer risk guard (2026-08-23) - read-only checks of
+        # self.risk's already-computed state, never re-invoking
+        # check_daily_loss() itself here: that mutates day-rollover state
+        # and strategy_engine.evaluate() already calls it once per decision
+        # against the right bankroll snapshot, so re-running it again here
+        # against a possibly-stale bankroll would double-mutate. None
+        # (no risk instance wired in) is a no-op, same as every other
+        # opt-in gate in this app.
+        if self.risk is not None and self.risk.halted:
+            return None
+
         # price is always the YES price (see module docstring/mark_to_market) -
         # a NO contract's real per-unit cost is (1 - price), not price itself.
         # This used to charge `size * price` unconditionally, which silently
@@ -272,6 +294,11 @@ class PaperBroker:
         cost = size * unit_cost
         cost = min(cost, self.bankroll)          # never go negative in the POC
         actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
+
+        if self.risk is not None:
+            current_exposure = sum(self.cost_basis(t) for t in self.positions)
+            if not self.risk.check_total_exposure(current_exposure, cost, self.bankroll):
+                return None
 
         # Real Kalshi taker fee (services/kalshi_fees.py) by default, deducted
         # as an additional cash outflow on top of cost - not folded into the
@@ -453,6 +480,16 @@ class PaperBroker:
                 reason=order.reason, config_fingerprint=order.config_fingerprint, fee_fn=kalshi_fees.maker_fee,
                 signal_seen_at=order.signal_seen_at,
             )
+            if trade is None:
+                # Execution-layer risk guard fired (self.risk.halted, or the
+                # portfolio exposure cap) - same "cancel, don't force
+                # through" outcome as a validate_fn rejection above, just a
+                # different gate.
+                fills.append({
+                    "action": "fill_rejected", "ticker": order.ticker, "side": order.side,
+                    "price": fill_price, "reason": "risk halted or exposure cap", "source": "limit_order",
+                })
+                continue
             fills.append({"action": "trade", "trade": trade.to_dict(), "reason": order.reason, "source": "limit_order"})
         return fills
 
@@ -514,6 +551,28 @@ class PaperBroker:
                  trade.config_fingerprint, close_fee),
             )
         return trade
+
+    def close_all_positions(self, latest_prices: dict[str, float], reason: str) -> list[Trade]:
+        """Flattens every currently-open position at once - the paper-mode
+        half of POST /api/trading/flatten-all (2026-08-23 gap-check
+        finding: no "get flat immediately" path existed at all). Loops a
+        snapshot of the ticker list (not self.positions directly, since
+        close_position mutates it mid-iteration) and closes each at its
+        latest known price, falling back to the position's own entry_price
+        when this tick has no fresh quote for it - same "don't guess, but
+        don't refuse to flatten either" tradeoff check_pending_fills makes
+        elsewhere, except a manual flatten-everything action should never
+        silently skip a position just because a quote is momentarily
+        missing. Direct precedent for the loop shape:
+        services/exits/position_netting.py's own review()."""
+        closed = []
+        for ticker in list(self.positions):
+            pos = self.positions[ticker]
+            price = latest_prices.get(ticker, pos.entry_price)
+            trade = self.close_position(ticker, price, reason)
+            if trade is not None:
+                closed.append(trade)
+        return closed
 
     def correct_erroneous_close(self, trade_id: str, corrected_price: float | None = None) -> dict | None:
         """Reverse a specific CLOSE trade's fabricated bankroll impact,
