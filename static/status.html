@@ -5163,6 +5163,42 @@
           <code>tests/test_candidate_log.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 131 · config comment preservation</div>
+        <h4>Every live config edit was silently deleting every comment in settings.yaml</h4>
+        <p>Found live verifying the settlement-edge item (phase 129): one <code>POST /api/config</code> toggle
+          rewrote the entire <code>config/settings.yaml</code> through PyYAML's <code>safe_load</code>/
+          <code>safe_dump</code> pair, which cannot preserve comments - every hand-written explanation in the file
+          (the whale-threshold reasoning, the backup retention rationale, the alerting webhook pointer, ...)
+          vanished after one save. <code>git log -p</code> on the file confirmed this wasn't new: the same comments
+          had been repeatedly re-added and re-stripped across this file's whole history, unnoticed because whoever
+          next hand-edited it usually restored them without realizing why they'd gone missing - every dashboard
+          Controls-panel save and every advisory/confidence-calibration auto-apply had been doing this all along.
+          Fixed the same day: <code>services/config_store.py</code> now loads and writes through
+          <code>ruamel.yaml</code>'s round-trip mode instead, which attaches comment metadata to the loaded
+          structure and keeps it through mutation and re-dump. Given how central this module is - every service
+          reads live config through it - checked directly against the real file before landing rather than assumed
+          safe: <code>CommentedMap</code> is a genuine <code>dict</code> subclass (isinstance/equality/JSON
+          serialization all behave normally, including its scalar-wrapper types like <code>ScalarFloat</code>/
+          <code>ScalarInt</code>, which still pass <code>isinstance(x, float)</code> and behave normally in
+          arithmetic); a configured indent plus a custom <code>None</code> representer reproduce the real file's
+          existing formatting byte-for-byte except one harmless <code>null</code>-vs-blank cosmetic difference on a
+          single pre-existing line; and exception-raising behavior on a truncated/malformed read was sampled at 179
+          truncation points of the real file and found identical between PyYAML and <code>ruamel.yaml</code> - the
+          existing torn-read guard in <code>get()</code> needed no logic change. That same check surfaced a
+          separate, previously-latent gap: <code>get()</code> never caught a YAML parse error at all, only
+          <code>OSError</code> - a torn read landing on genuinely malformed syntax (rather than the empty/wrong-type
+          shapes <code>fault_log</code> had actually captured) would have raised straight out of <code>get()</code>
+          uncaught. Fixed by also catching <code>YAMLError</code>. Verified live against the real running app, not
+          just tests: the exact original incident (toggling <code>settlement_edge_entry.enabled</code> via
+          <code>POST /api/config</code>) now touches only that one line - every other comment in the ~200-line file,
+          including ones in sections nowhere near the patched key, survived untouched. New dependency
+          <code>ruamel.yaml==0.18.17</code>, checked clean against <code>pip-audit</code> before pinning. 3 new
+          tests plus 4 existing tests retargeted to the new engine; full suite (1,191 tests) green.</p>
+        <div class="files"><code>services/config_store.py</code> · <code>requirements.txt</code> ·
+          <code>tests/test_config_store.py</code> · <code>config/settings.yaml</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
