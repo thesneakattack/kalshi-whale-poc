@@ -491,21 +491,53 @@ questions.
       **Real groundwork already exists, this isn't starting from zero**:
       (1) each new module's own `CHEATSHEET.md` already documents its
       relevant `docs/kalshi/` pages; (2) a docs-mining pass this session
-      already found several concrete, still-open instances of exactly this
-      bug shape - an uncapped `asyncio.gather` per series in `_fetch_markets`'
-      pinned-watchlist branch (no semaphore), `services/series_evaluator.py`'s
-      `evaluate_pending()` opening one new SQLite connection per series
-      inside its own loop (real N+1), `regime_analytics.by_category()` and
-      `trade_analytics.compute_summary()` both computed twice on identical
-      input inside the advisory/full-spectrum context builders,
-      `market_history.snapshots`' `spread`/`volume_24h`/`time_to_close_sec`
-      columns written every tick but read by nothing; (3)
-      `docs/next-session-pickup-2026-08-17.md` already has a full REST-vs-
-      websocket architecture breakdown (what's already migrated, what's
-      deliberately still REST, what's a genuine gap). The new work is
-      making this systematic and complete per module rather than
-      incidental findings, and producing it as one organized report.
-      Not started - planning item only.
+      already found several concrete instances of exactly this bug shape;
+      (3) `docs/next-session-pickup-2026-08-17.md` already has a full
+      REST-vs-websocket architecture breakdown (what's already migrated,
+      what's deliberately still REST, what's a genuine gap). **The
+      systematic, one-organized-report version of this item is still not
+      started** - what follows is progress on the four named findings only.
+
+      Of the four originally named, three were real bugs and are fixed
+      (2026-08-23, same "module quality" pass - see CLAUDE.md's current
+      top section):
+      - [x] An uncapped `asyncio.gather` (no semaphore) in `_fetch_markets`'
+            `live_markets_only` hydration branch (misnamed "pinned-watchlist"
+            in the original finding - it's the live-only elif, not the pin
+            branch) fired one `client.get_markets(limit=100, series_ticker=s)`
+            per distinct selected series - at `watchlist_size: 150`, up to
+            ~50 concurrent calls/tick, each alone able to exceed Kalshi's
+            entire 600-token read-burst budget. Replaced with one batched
+            `get_markets_by_tickers()` call (chunks to 50/request,
+            sequential) - also fixed a real correctness gap for free (no
+            status filter, so an already-settled market no longer needs a
+            separate fallback fetch).
+      - [x] `services/series_evaluator.py`'s `evaluate_pending()` opened a
+            fresh SQLite connection per ready series inside its own loop -
+            same per-call overhead this file's own `record_trades_observed_
+            bulk()` was already written to avoid once before (2026-08-11).
+            One connection for the whole call now, with a commit per verdict
+            to keep the original per-verdict durability.
+      - [x] `regime_analytics.by_category()` was computed twice on identical
+            input inside `market_analyst_orchestrator._build_full_spectrum_
+            context()`, and `trade_analytics.compute_summary()` twice inside
+            `advisory_engine.generate_recommendations()` itself (every real
+            caller passes both `gate_summaries` and `category_rows`, so this
+            wasn't a rare overlap). Both hoisted to compute once.
+
+      The fourth - `market_history.snapshots`' `spread`/`volume_24h`/
+      `time_to_close_sec` columns written every tick, read by nothing -
+      investigated and left as-is, not fixed: this is disclosed, deliberate
+      forward capture, not dead-code waste. `docs/advisory-engine-plan.md`
+      §9 (direct request, 2026-08-08: "feed... market data, historical
+      data... to a machine-learning agent... add some scaffolding for that
+      but let's not pursue that until the project is already finished")
+      names exactly this shape - persist real data ahead of a not-yet-built
+      consumer - as the intended design. Removing it would contradict that
+      instruction and CLAUDE.md's "accumulated history is a first-class
+      asset" rule. The real gap is that no consumer was ever built - worth
+      a future item in its own right (a diagnostic or ml_feed.py extension
+      that actually reads this data), not a deletion.
 - [ ] **Retrospective sweep: which targeted datapoints/logic were built on
       a wrong understanding of the Kalshi API or the streaming/REST
       split.** Direct instruction (2026-08-22): "revisit datapoints we've

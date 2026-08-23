@@ -4779,6 +4779,47 @@
           <code>tests/test_trading_gate.py</code> · <code>tests/test_market_analyst_agent.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 122 · module quality: data-consumption audit</div>
+        <h4>New standing goal (retiring the 70%/70% target): per-module effectiveness, efficiency, informativeness</h4>
+        <p>Direct instruction: "forget the 70% thing. now that things are modular the goal is to make sure each
+          module works at peak effectiveness, efficiency, and informativeness." CLAUDE.md's old "HARD COMMANDMENT"
+          section (2026-08-17: reproduce 70% whale accuracy AND 70% own win rate) was rewritten in place to state
+          this instead - the measured data stays in git history, but nothing gets judged against it going forward.
+          Picked up ROADMAP.md's "per-module data-consumption audit" item (2026-08-22) as the first work under the
+          new goal, since it already named four concrete, unfixed findings. Three were real bugs, fixed: (1)
+          <code>_fetch_markets</code>'s <code>live_markets_only</code> hydration fired an uncapped
+          <code>asyncio.gather</code> - one <code>client.get_markets(limit=100, series_ticker=s)</code> per distinct
+          selected series, no semaphore - at live <code>watchlist_size: 150</code> that's up to ~50 concurrent calls
+          every 6s tick, each one alone able to exceed Kalshi's entire 600-token read-burst budget (same failure
+          shape <code>live_status._fetch_live_status</code> already hit and fixed once, see phase 97's own
+          <code>_LIVE_STATUS_MAX_POLL_PER_TICK</code>). Replaced with one batched
+          <code>get_markets_by_tickers()</code> call - chunks to 50/request, sequential, never concurrent - which
+          also fixed a real correctness gap for free: no status filter, so an already-settled market hydrates on
+          the same call instead of needing the old per-ticker fallback branch. (2)
+          <code>series_evaluator.evaluate_pending()</code> opened a fresh SQLite connection per ready series inside
+          its own loop, the exact per-call overhead this file's own <code>record_trades_observed_bulk()</code> was
+          already written to avoid once before (2026-08-11 incident) - now one connection for the whole call, with
+          an explicit commit per verdict to keep the original per-verdict durability. (3)
+          <code>trade_analytics.compute_summary()</code> was computed twice inside
+          <code>advisory_engine.generate_recommendations()</code> itself (once for <code>gate_summaries</code>,
+          again for <code>category_rows</code> - every real caller passes both), and
+          <code>regime_analytics.by_category()</code> twice inside
+          <code>market_analyst_orchestrator._build_full_spectrum_context()</code> on the identical
+          <code>all_rows</code> input - both hoisted to compute once. The fourth finding -
+          <code>market_history.snapshots</code>' <code>spread</code>/<code>volume_24h</code>/
+          <code>time_to_close_sec</code> columns written every tick, read by nothing - was investigated and left
+          alone: <code>docs/advisory-engine-plan.md</code> §9 (2026-08-08 direct request) names exactly this shape
+          - persist real data ahead of a not-yet-built ML-agent consumer - as the intended design, not an
+          accident. Verified live throughout: real API confirmation of the whale-threshold rename (phase 121,
+          folded into this same push cycle), <code>_build_full_spectrum_context()</code> called directly against
+          real trade history with no exception, full suite (1,142 tests) green after every change.</p>
+        <div class="files"><code>services/market_watch/market_fetch.py</code> ·
+          <code>services/series_evaluator.py</code> · <code>services/advisory/advisory_engine.py</code> ·
+          <code>services/analytics/market_analyst_orchestrator.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>CLAUDE.md</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
