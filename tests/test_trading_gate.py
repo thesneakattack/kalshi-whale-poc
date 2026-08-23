@@ -1444,21 +1444,16 @@ def test_fetch_live_status_does_not_surface_game_state_for_empty_details():
 # actually selected, before returning it.
 
 class _FakeHydrationClient(_FakeLiveClient):
-    """Extends the live-status fake with the two calls the hydration pass
-    itself makes - get_markets (the batch, per-series path) and
-    get_markets_by_tickers (the batched fallback for whatever the
-    per-series batch didn't return, 2026-08-16 - replaces the old
-    per-ticker get_market gather)."""
+    """Extends the live-status fake with the one call the hydration pass
+    itself makes - a single batched get_markets_by_tickers (2026-08-23:
+    replaced the old per-series get_markets gather + per-ticker fallback
+    with one call, since get_markets_by_tickers already batches and
+    carries no status filter to fall back around)."""
 
     def __init__(self, hydrated_markets, **kwargs):
         super().__init__(**kwargs)
         self.hydrated_markets = hydrated_markets  # ticker -> full market dict
-        self.get_markets_calls = []
         self.get_markets_by_tickers_calls = []
-
-    async def get_markets(self, limit, status, series_ticker=None):
-        self.get_markets_calls.append(series_ticker)
-        return [m for t, m in self.hydrated_markets.items() if t.startswith(series_ticker)]
 
     async def get_markets_by_tickers(self, tickers):
         self.get_markets_by_tickers_calls.extend(tickers)
@@ -1492,15 +1487,13 @@ def test_fetch_markets_live_only_hydrates_catalog_rows_with_real_prices():
     markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
     assert len(markets) == 1
     assert markets[0]["yes_bid_dollars"] == "0.73"  # real price, not a catalog row missing the field
-    assert fake.get_markets_calls == ["SERA"]  # hydrated via the batched per-series path
+    assert fake.get_markets_by_tickers_calls == ["SERA-EVT1-YES"]  # hydrated via one batched call
 
 
-def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misses_it():
-    # The batch fetch filters status="open" - a market that settled between
-    # the catalog scan and now won't come back from it. Confirmed live:
-    # this was silently falling back to the unpriced catalog row (the same
-    # 0.5-fallback bug, just for a smaller residual set) before the
-    # per-ticker fallback existed.
+def test_fetch_markets_live_only_hydrates_an_already_settled_market_too():
+    # get_markets_by_tickers carries no status filter (unlike the old
+    # status="open" per-series batch this replaced), so an already-settled
+    # market hydrates on the same single call - no separate fallback needed.
     main.state["live_status_cache"].clear()
     mc_module.clear_all()
     mc_module.upsert_markets("SERA", "Sports", [{
@@ -1509,23 +1502,40 @@ def test_fetch_markets_live_only_falls_back_to_per_ticker_fetch_when_batch_misse
     }])
     fake = _FakeHydrationClient(
         hydrated_markets={
-            # Deliberately NOT returned by get_markets (simulates status="open"
-            # excluding an already-finalized market) - only reachable via the
-            # batched get_markets_by_tickers fallback.
+            "SERA-EVT1-YES": {"ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1",
+                               "yes_bid_dollars": "0.00", "status": "finalized"},
         },
         widget_status="live",
     )
-
-    async def fake_get_markets_by_tickers(tickers):
-        fake.get_markets_by_tickers_calls.extend(tickers)
-        return {t: {"ticker": t, "event_ticker": "SERA-EVT1", "yes_bid_dollars": "0.00", "status": "finalized"} for t in tickers}
-    fake.get_markets_by_tickers = fake_get_markets_by_tickers
-
     markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
     assert len(markets) == 1
     assert markets[0]["yes_bid_dollars"] == "0.00"
     assert markets[0]["status"] == "finalized"
     assert fake.get_markets_by_tickers_calls == ["SERA-EVT1-YES"]
+
+
+def test_fetch_markets_live_only_falls_back_to_catalog_row_when_fetch_fails():
+    # A genuine fetch failure (network error, real API error) must not lose
+    # the whole tick's watchlist - falls back to the unpriced catalog row,
+    # same "degrade honestly, never silently drop" idiom the discovery
+    # path's own confirmation fallback uses (see
+    # test_refresh_discovery_cache_keeps_a_market_the_confirm_call_could_not_return).
+    main.state["live_status_cache"].clear()
+    mc_module.clear_all()
+    mc_module.upsert_markets("SERA", "Sports", [{
+        "ticker": "SERA-EVT1-YES", "event_ticker": "SERA-EVT1", "volume_24h_fp": "1000",
+        "occurrence_datetime": _iso(datetime.now(timezone.utc) + timedelta(minutes=-5)), "status": "active",
+    }])
+    fake = _FakeHydrationClient(hydrated_markets={}, widget_status="live")
+
+    async def failing_get_markets_by_tickers(tickers):
+        raise RuntimeError("simulated network failure")
+    fake.get_markets_by_tickers = failing_get_markets_by_tickers
+
+    markets = asyncio.run(main._fetch_markets(fake, _cfg_live_only()))
+    assert len(markets) == 1
+    assert markets[0]["ticker"] == "SERA-EVT1-YES"
+    assert "yes_bid_dollars" not in markets[0]  # the original, price-less catalog row
 
 
 # --- _refresh_discovery_cache: real-time terminal-status confirmation

@@ -8,7 +8,6 @@ market fetch, the background discovery cache) and live_status.py
 file in this split with real cross-sibling imports, since it's the
 top-level orchestrator the other pieces feed into.
 """
-import asyncio
 import time
 
 from services import series_evaluator, signal_log
@@ -154,44 +153,35 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # fallback below - every card showed 50c/50c YES/NO and never
         # moved, for as long as live_markets_only has been on, direct
         # report: "showing 50c in green and red for all sets of yes/no
-        # values all across the app. its not updating either." Final
-        # selection is already bounded (watchlist_size parent series,
-        # whatever max_children_per_parent allows), so re-fetching by
-        # *series* here (one real get_markets(series_ticker=...) call
-        # per distinct selected series, full priced market objects) is
-        # the same per-series cost the non-live-only branch below
-        # already pays - just deferred until after selection instead of
-        # spent on the whole broad candidate pool.
-        selected_tickers = {m["ticker"] for m in markets if m.get("ticker")}
-        selected_series = sorted({signal_log.series_of(t) for t in selected_tickers})
-        hydration_results = await asyncio.gather(
-            *(client.get_markets(limit=100, status="open", series_ticker=s) for s in selected_series),
-            return_exceptions=True,
-        )
-        hydrated_by_ticker = {}
-        for r in hydration_results:
-            if isinstance(r, list):
-                for hm in r:
-                    if hm.get("ticker") in selected_tickers:
-                        hydrated_by_ticker[hm["ticker"]] = hm
-        # A ticker that settled between the catalog scan and now won't
-        # come back from the status="open" batch fetch above (confirmed
-        # live: a handful of already-finalized markets were still
-        # falling back to the 0.5 placeholder for exactly this reason) -
-        # one batched fetch (no status filter, whatever its real current
-        # state is - 2026-08-16 batching pass) for just what's still
-        # missing, same "always the real current price, never a
-        # placeholder" goal, cheap since this is normally a small
-        # residual set.
-        still_missing = [t for t in selected_tickers if t not in hydrated_by_ticker]
-        if still_missing:
-            fallback_results = await client.get_markets_by_tickers(still_missing)
-            hydrated_by_ticker.update(fallback_results)
-        # Still falls back to the original catalog row (schedule/title
-        # info, just no live price) rather than dropping a ticker
-        # outright if even the per-ticker fetch failed (a real API
-        # error) - same "degrade honestly, never silently drop" pattern
-        # as the rest of this app.
+        # values all across the app. its not updating either."
+        #
+        # Hydrated via ONE batched get_markets_by_tickers call (2026-08-23
+        # rewrite - ROADMAP.md's "per-module data-consumption audit" gap-
+        # check). The original fix here fanned out client.get_markets(
+        # limit=100, series_ticker=s) per distinct selected series via
+        # asyncio.gather with no cap - at today's live watchlist_size (150)
+        # that's up to ~50 markets' worth of series firing concurrently,
+        # each one alone (limit=100 markets * 10 tokens/market, see
+        # KalshiClient._MARKETS_BY_TICKERS_BATCH_SIZE's own comment)
+        # already able to exceed Kalshi's entire 600-token read-burst
+        # budget by itself - the exact "uncapped burst stalls every OTHER
+        # call sharing the same limiter" failure live_status._fetch_live_
+        # status already hit and fixed once (see _LIVE_STATUS_MAX_POLL_
+        # PER_TICK's comment), just not yet applied here. get_markets_by_
+        # tickers already chunks to 50/request, sequentially (never
+        # concurrent), and - a genuine correctness fix riding along, not
+        # just efficiency - carries no status filter, so it no longer
+        # needs the separate per-ticker fallback the old status="open"
+        # batch required for an already-settled market.
+        selected_tickers = sorted(m["ticker"] for m in markets if m.get("ticker"))
+        try:
+            hydrated_by_ticker = await client.get_markets_by_tickers(selected_tickers)
+        except Exception:
+            # Degrade to the original catalog rows (schedule/title info,
+            # just no live price) rather than losing the whole tick's
+            # watchlist to one failed fetch - same "degrade honestly,
+            # never silently drop" pattern as the rest of this app.
+            hydrated_by_ticker = {}
         markets = [hydrated_by_ticker.get(m["ticker"], m) for m in markets]
     else:
         # Discovery caching (2026-08-15, direct incident: "you made the
