@@ -69,6 +69,33 @@ since there's no event loop to protect.
 via `_maybe_run_backup(cfg)` — a live edit takes effect on the next check,
 no restart, same as every other live-reloadable knob in this app.
 
+## Known-fixed bug: `--reload` (or any restart) used to re-trigger an immediate backup
+
+`_maybe_run_backup`'s "due" check compared `now` against
+`state["backup"]["last_started_at"]` — pure in-memory state, reset to its
+`app_state.py` default (`0.0`) on every process start. That's not just a
+real reboot: this dev environment's `uvicorn --reload` restarts the whole
+process (and its in-memory `state`) on any `.py` edit, including files
+under `tests/`. Every one of those resets made the next tick's "due" check
+read "never backed up," firing an immediate full snapshot of every
+`data/*.db` file regardless of how recently one had actually completed.
+
+Found and fixed live 2026-08-23, same "module quality" pass as the rest of
+this session: 37 backup runs recorded in a 4.4h window against a configured
+6h `interval_sec` — median gap ~94s, 28 of 36 gaps under 200s, only 1 over
+an hour. Each run's real disk I/O (9.4GB, ~40-50s) measurably contended
+with the live trading loop's own SQLite reads/writes on the same disk —
+`tick_phase_timings.market_fetch` (which does its own real, if cached, REST
++ SQLite work) was observed at 6-8s against a 6s `poll_interval_sec` during
+this window, dropping to ~1-3s immediately after the fix. Fixed by seeding
+`last_started_at` from the already-persisted `backup_runs` history
+(`backup.latest()`) the first time `_maybe_run_backup` runs in a given
+process, instead of trusting in-memory state alone on a cold start — a
+restart now means "go check what actually happened," not "assume the
+worst and re-backup immediately." `tests/test_backup.py` covers this
+directly (recent persisted history → no refire; old/missing history →
+still fires promptly).
+
 ## Handoff
 
 - **Downstream (reads run history):** `routes.py`'s

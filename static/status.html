@@ -5310,6 +5310,36 @@
           <code>tests/test_winner_propagation.py</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 135 · backup's cold-start restart bug</div>
+        <h4>every uvicorn --reload cycle was re-triggering a full 9.4GB backup</h4>
+        <p>Per-module efficiency finding, fixed: live <code>tick_phase_timings</code> showed
+          <code>market_fetch</code> consistently at 6-8s against a 6s <code>poll_interval_sec</code> - the tick
+          loop couldn't keep up with its own configured cadence. Root-caused to
+          <code>services/backup/backup.py</code>'s <code>_maybe_run_backup</code>: its "due" check compared
+          <code>now</code> against <code>state["backup"]["last_started_at"]</code>, pure in-memory state that
+          resets to its <code>app_state.py</code> default (<code>0.0</code>) on every process start - not just a
+          real reboot, but every single <code>uvicorn --reload</code> cycle this dev environment does routinely on
+          any <code>.py</code> edit, including files under <code>tests/</code>. Each reset made the very next tick
+          read "never backed up" and fire an immediate full snapshot of every <code>data/*.db</code> file (9.4GB
+          across 29 files, ~40-50s in a background thread via <code>asyncio.to_thread</code>), regardless of how
+          recently one had actually finished. Confirmed directly against <code>data/backup_log.db</code>'s own run
+          history, not just inferred: 37 runs in a 4.4h window against a configured 6h <code>interval_sec</code> -
+          median gap ~94s, 28 of 36 gaps under 200s, only one over an hour - each one's real disk I/O contending
+          with the live trading loop's own SQLite reads/writes on the same disk. Fixed by seeding
+          <code>last_started_at</code> from the already-persisted <code>backup_runs</code> history
+          (<code>backup.latest()</code>) the first time <code>_maybe_run_backup</code> runs in a given process,
+          instead of trusting in-memory state alone on a cold start - a restart now means "go check what actually
+          happened," not "assume the worst and re-backup immediately." Verified live: after the fix landed (itself
+          via three more real reload cycles), no spurious run appeared and <code>last_tick_duration_sec</code>
+          dropped from a sustained 12-15s to ~2-3s within seconds. <code>tests/test_backup.py</code> is new -
+          this module had zero test coverage before this session - covering both the regression (recent
+          persisted history &rarr; no refire) and the cases it must not break (old/missing history &rarr; still
+          fires promptly, disabled &rarr; never fires).</p>
+        <div class="files"><code>services/backup/backup.py</code> · <code>services/backup/CHEATSHEET.md</code> ·
+          <code>tests/test_backup.py</code></div>
+      </div>
+
     </div>
   </section>
 

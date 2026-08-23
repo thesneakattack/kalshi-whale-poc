@@ -217,14 +217,37 @@ def _maybe_run_backup(cfg: dict) -> None:
     """Kicks off _run_backup_background as an independent background task
     if a backup is due and none is already running - never awaited by the
     calling tick, same fire-and-forget shape as _maybe_scan_catalog_batch/
-    _maybe_refresh_discovery_cache. Synchronous on purpose: this only ever
-    schedules work, it never does any I/O of its own."""
+    _maybe_refresh_discovery_cache. Synchronous save for one lazy, one-time-
+    per-process-lifetime DB read below - this doesn't otherwise do I/O of
+    its own.
+
+    Real bug found and fixed live 2026-08-23, same "module quality" pass as
+    the rest of this session: state["backup"]["last_started_at"] is pure
+    in-memory state (services/app_state.py's default, 0.0), so it resets to
+    "never" on every process restart - not just a real reboot, but every
+    single `uvicorn --reload` reload this dev environment does routinely on
+    any .py edit (including test files, per CLAUDE.md's dev-workflow notes).
+    Each reset made the "due" check below fire an immediate full backup
+    (every data/*.db file, ~9.4GB, ~40-50s in a background thread) regardless
+    of how recently one had actually completed - confirmed live: 37 runs in
+    4.4h against a configured 6h interval_sec, 28 of 36 gaps under 200s. Each
+    one's real disk I/O measurably contended with the live trading loop's own
+    SQLite reads/writes on the same disk - tick_phase_timings.market_fetch
+    was observed at 6-8s (vs. a 6s configured poll_interval_sec) during this
+    window. Fixed by seeding from the already-persisted backup_runs history
+    (this function's own record of every run, via backup_log.db) on cold
+    start instead of trusting in-memory state alone - a restart no longer
+    means immediately overdue - just unknown, so go check what actually
+    happened before deciding."""
     backup_cfg = cfg.get("backup") or {}
     if not backup_cfg.get("enabled", True):
         return
     backup_state = state["backup"]
     interval = backup_cfg.get("interval_sec", _DEFAULT_INTERVAL_SEC)
     now_ts = time.time()
+    if backup_state["last_started_at"] == 0.0:
+        last = latest()
+        backup_state["last_started_at"] = last["started_at"] if last else 0.0
     due = now_ts - backup_state["last_started_at"] > interval
     if due and not backup_state["running"]:
         backup_state["running"] = True
