@@ -367,7 +367,7 @@ questions.
       by omission. Verified live against the real running app (~7 minutes,
       2 real settlement windows, `record_errors` stayed 0) before
       committing. Commit `8ebd36f`.
-- [ ] **Every live `/api/config` write silently strips every comment out of
+- [x] **Every live `/api/config` write silently strips every comment out of
       `config/settings.yaml`, not just the field it touched.** Found
       2026-08-23 verifying the settlement-edge item above live: toggling
       one field via `POST /api/config` rewrote the entire file via
@@ -375,20 +375,43 @@ questions.
       `safe_load`/`safe_dump` round-trip cannot preserve comments — every
       hand-written explanation in the file (the whale-threshold reasoning,
       the backup retention rationale, the alerting webhook pointer, ...)
-      was gone after one toggle. Confirmed this isn't new: `git log -p --
-      config/settings.yaml` shows the same comments being re-added and
+      was gone after one toggle. Confirmed this wasn't new: `git log -p --
+      config/settings.yaml` showed the same comments being re-added and
       re-stripped repeatedly across this file's history, i.e. every
       dashboard Controls-panel save and every advisory/confidence-
-      calibration auto-apply has likely been doing this the whole time,
+      calibration auto-apply had likely been doing this the whole time,
       unnoticed because whoever next hand-edited the file usually restored
-      the comments without realizing why they'd vanished. Recovered this
-      session by resetting to git and reapplying just the intended change
-      (config-field-edit skill's own reset/reapply pattern) rather than
-      fixed at the root — a real fix means either switching
-      `config_store.py` to a comment-preserving YAML round-trip (e.g.
-      `ruamel.yaml`) or a merge-patch write that only touches the changed
-      keys, and either needs its own careful pass across every existing
-      `/api/config` call site and test, not a change made in passing.
+      the comments without realizing why they'd vanished.
+      **Fixed same day**: `config_store.py` now loads/writes
+      `config/settings.yaml` through `ruamel.yaml`'s round-trip mode
+      instead of PyYAML's `safe_load`/`safe_dump`, which attaches comment
+      metadata to the loaded structure and preserves it through mutation
+      and re-dump. Checked directly before landing, not assumed compatible:
+      `CommentedMap` is a genuine `dict` subclass (isinstance/equality/JSON
+      serialization all behave like a plain dict — verified against the
+      real config, including scalar-wrapper types like `ScalarFloat`/
+      `ScalarInt`, which still pass `isinstance(x, float)` and behave
+      normally in arithmetic); a configured indent
+      (`sequence=2, offset=0`) plus a custom `None` representer reproduce
+      the real file's existing formatting byte-for-byte except one
+      harmless `null`-vs-blank cosmetic difference on a single
+      pre-existing line; and exception-raising behavior for a truncated/
+      malformed read was sampled at 179 truncation points of the real file
+      and found identical between PyYAML and ruamel.yaml — the existing
+      torn-read guard in `get()` needed no logic change. That same check
+      surfaced a separate, previously-latent gap: `get()` never caught a
+      YAML parse error at all (only `OSError`), so a torn read landing on
+      genuinely malformed syntax (rather than the "empty/wrong-type" shapes
+      fault_log had actually captured) would have raised straight out of
+      `get()` uncaught — fixed by also catching `YAMLError`. Verified live
+      against the real running app, not just tests: the exact original
+      incident (`POST /api/config` toggling `settlement_edge_entry.enabled`)
+      now touches only that one line — every other comment in the ~200-line
+      file, including ones in sections nowhere near the patched key,
+      survived untouched. New dependency `ruamel.yaml==0.18.17`
+      (`requirements.txt`), checked against `pip-audit` clean before
+      pinning. 3 new tests plus 4 existing tests updated to target the new
+      engine; full suite (1,191 tests) green.
 ## P4 — Nice-to-haves
 
 - [ ] **Move analytics/advisory computation out of the live tick loop —

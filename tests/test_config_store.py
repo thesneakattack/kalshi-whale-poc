@@ -18,20 +18,43 @@ wasn't enough: this project runs under ddev/Docker Desktop on WSL2, and a
 bind-mounted filesystem doesn't necessarily give a reader in a different
 process/container the same torn-read immunity a same-host POSIX rename
 would. get()'s mtime-triggered re-read had no validation that a "successful"
-read actually parsed to a well-formed dict - a torn read that yaml.safe_load
+read actually parsed to a well-formed dict - a torn read that the parser
 turns into None or a partial structure got accepted outright as the new
 config, corrupting every field until the next real file change gave get()
 another chance.
+
+Third real live incident (2026-08-23, same day): verifying an unrelated
+feature live, POST /api/config's update() round-tripped the whole file
+through PyYAML's safe_load/safe_dump pair, which cannot preserve comments -
+every hand-written comment in settings.yaml disappeared after ONE toggle,
+not just near the touched field. Confirmed via git history that this had
+been happening on every dashboard save and every advisory/confidence-
+calibration auto-apply all along. Switched to ruamel.yaml's round-trip
+mode, which attaches comment metadata to the loaded structure and
+preserves it through mutation and re-dump - see config_store.py's own
+module docstring for the verification this switch was checked against
+before landing (CommentedMap's dict-ness, formatting fidelity against the
+real file, and identical exception behavior on truncated reads).
 """
 import yaml
 import pytest
 
+from services import config_store as config_store_module
 from services.config_store import ConfigStore
 
 
 def _write_yaml(path, data):
+    # Seeding test fixtures only - plain PyYAML is fine here since this
+    # just produces valid YAML content for ConfigStore's own ruamel.yaml
+    # engine to load; the two are format-compatible (verified directly,
+    # see config_store.py's module docstring).
     with open(path, "w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
+
+
+def _write_text(path, text):
+    with open(path, "w") as f:
+        f.write(text)
 
 
 def test_update_persists_the_merged_config_correctly(tmp_path):
@@ -65,7 +88,7 @@ def test_update_failure_mid_write_does_not_corrupt_the_real_file(tmp_path, monke
     def _boom(*args, **kwargs):
         raise RuntimeError("simulated write failure")
 
-    monkeypatch.setattr(yaml, "safe_dump", _boom)
+    monkeypatch.setattr(config_store_module._yaml, "dump", _boom)
 
     with pytest.raises(RuntimeError):
         store.update({"mode": "live"})
@@ -82,10 +105,10 @@ def test_get_rejects_a_torn_read_and_keeps_serving_last_good_config(tmp_path, mo
     assert store.get() == good
 
     # Force the next get() to treat the file as changed, then simulate a
-    # torn read on that specific re-read the way a real yaml.safe_load()
-    # would surface one - returning None for a truncated/empty parse.
+    # torn read on that specific re-read the way a real parse of a
+    # truncated/empty file would surface one - returning None.
     store._mtime = None
-    monkeypatch.setattr(yaml, "safe_load", lambda f: None)
+    monkeypatch.setattr(config_store_module._yaml, "load", lambda f: None)
 
     assert store.get() == good  # rejected the bad read, kept serving the last good copy
 
@@ -98,9 +121,34 @@ def test_get_rejects_a_non_dict_read(tmp_path, monkeypatch):
     store.get()
 
     store._mtime = None
-    monkeypatch.setattr(yaml, "safe_load", lambda f: ["not", "a", "dict"])
+    monkeypatch.setattr(config_store_module._yaml, "load", lambda f: ["not", "a", "dict"])
 
     assert store.get() == good
+
+
+def test_get_rejects_a_read_the_parser_raises_on(tmp_path):
+    """Real gap found 2026-08-23 switching to ruamel.yaml: a torn read
+    isn't guaranteed to come back as None or the wrong type - depending on
+    where the cut lands, the parser can raise instead. Checked directly
+    against this project's real settings.yaml (179 sampled truncation
+    points) that PyYAML and ruamel.yaml raise on identically the same
+    ones - this was a latent, previously-uncaught gap in the pre-ruamel
+    code too, not something the library switch introduced."""
+    path = tmp_path / "settings.yaml"
+    good = {"kalshi": {"base_url": "https://example.com"}}
+    _write_yaml(path, good)
+    store = ConfigStore(path=path)
+    store.get()
+
+    # A genuinely malformed rewrite - unterminated flow mapping - that
+    # raises a YAMLError on parse rather than returning a wrong-typed value.
+    # Forcing _mtime to None (rather than relying on the filesystem's mtime
+    # resolution to have ticked over) is what the other tests in this file
+    # already do for the same reason.
+    _write_text(path, "kalshi: {base_url: [unterminated\n")
+    store._mtime = None
+
+    assert store.get() == good  # rejected the raise, kept serving the last good copy
 
 
 def test_get_retries_after_rejecting_a_torn_read(tmp_path, monkeypatch):
@@ -114,16 +162,66 @@ def test_get_retries_after_rejecting_a_torn_read(tmp_path, monkeypatch):
     store = ConfigStore(path=path)
     store.get()
 
-    real_safe_load = yaml.safe_load
+    real_load = config_store_module._yaml.load
     calls = {"n": 0}
 
     def _flaky(f):
         calls["n"] += 1
-        return None if calls["n"] == 1 else real_safe_load(f)
+        return None if calls["n"] == 1 else real_load(f)
 
     store._mtime = None
-    monkeypatch.setattr(yaml, "safe_load", _flaky)
+    monkeypatch.setattr(config_store_module._yaml, "load", _flaky)
 
     assert store.get() == good  # first attempt: torn read, rejected
     assert store.get() == good  # second attempt: real retry succeeds
     assert calls["n"] == 2
+
+
+# ---- comment preservation (2026-08-23) - the actual bug this session found -
+
+def test_update_preserves_existing_comments(tmp_path):
+    """The real, previously-undiagnosed bug: PyYAML's safe_load/safe_dump
+    pair cannot round-trip comments, so ONE update() call used to strip
+    every hand-written comment out of the whole file, not just near the
+    touched field. This is the regression test for the ruamel.yaml switch."""
+    path = tmp_path / "settings.yaml"
+    _write_text(path, (
+        "mode: paper\n"
+        "kalshi:\n"
+        "  # explains the base_url choice\n"
+        "  base_url: https://example.com\n"
+        "settlement_edge_entry:\n"
+        "  enabled: false  # inline note about this field\n"
+    ))
+    store = ConfigStore(path=path)
+
+    store.update({"settlement_edge_entry": {"enabled": True}})
+
+    on_disk = path.read_text()
+    assert "# explains the base_url choice" in on_disk
+    assert "# inline note about this field" in on_disk
+    # The actual patched value really did change, not just the comments
+    # surviving alongside a no-op write.
+    assert store.get()["settlement_edge_entry"]["enabled"] is True
+    with open(path) as f:
+        assert yaml.safe_load(f)["settlement_edge_entry"]["enabled"] is True
+
+
+def test_update_preserves_comments_on_an_untouched_section(tmp_path):
+    """The specific shape of the bug (2026-08-23 live incident): editing
+    ONE field used to strip comments from EVERY section, not just the one
+    touched. A patch to settlement_edge_entry must leave kalshi's own
+    comment completely untouched."""
+    path = tmp_path / "settings.yaml"
+    _write_text(path, (
+        "kalshi:\n"
+        "  # a completely unrelated section\n"
+        "  base_url: https://example.com\n"
+        "settlement_edge_entry:\n"
+        "  enabled: false\n"
+    ))
+    store = ConfigStore(path=path)
+
+    store.update({"settlement_edge_entry": {"enabled": True}})
+
+    assert "# a completely unrelated section" in path.read_text()

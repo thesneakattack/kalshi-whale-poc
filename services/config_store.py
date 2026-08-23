@@ -2,15 +2,55 @@
 Loads settings.yaml into memory and lets the API mutate + persist it.
 Every other service reads config through this singleton so a change
 made from the dashboard takes effect on the next loop tick, with no restart.
+
+ruamel.yaml, not PyYAML (2026-08-23 fix - real live incident): every write
+through update() used to round-trip the whole file through
+yaml.safe_dump(), and PyYAML's safe_load/safe_dump pair cannot preserve
+comments - a load-mutate-dump cycle silently deleted every hand-written
+comment in settings.yaml, not just near the touched field. Confirmed via
+git history (`git log -p -- config/settings.yaml`) that this has been
+happening on every dashboard Controls-panel save and every advisory/
+confidence-calibration auto-apply since those features shipped, not
+something new - see ROADMAP.md. ruamel.yaml's round-trip mode (`YAML()`,
+the default typ) attaches comment metadata to the loaded structure itself
+and preserves it through mutation and re-dump. Verified directly against
+this project's real settings.yaml before switching, not assumed safe:
+CommentedMap is a genuine dict subclass (isinstance/equality/JSON
+serialization all behave like a plain dict), the configured indent below
+reproduces this file's existing formatting byte-for-byte except one
+harmless null-vs-blank cosmetic difference on a single pre-existing line,
+and exception-raising behavior for a truncated/malformed read was checked
+identical to PyYAML's across 179 sampled truncation points of the real
+file - the torn-read guard in get() below needed no logic change.
 """
 import logging
 import threading
 from pathlib import Path
-import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+
+_yaml = YAML()
+_yaml.preserve_quotes = True
+# Matches PyYAML safe_dump's default block-sequence style (this file's
+# existing lists), where a "- item" dash sits at the SAME column as its
+# parent key, not indented a further level under it.
+_yaml.indent(mapping=2, sequence=2, offset=0)
+
+
+def _represent_none(representer, _):
+    # ruamel's default for Python None is a blank value (`key:` with
+    # nothing after it) - valid YAML, but a needless diff against this
+    # file's existing explicit `key: null` fields (take_profit_pct et al.)
+    # on every future write. Cosmetic only; either form parses back to
+    # None identically.
+    return representer.represent_scalar("tag:yaml.org,2002:null", "null")
+
+
+_yaml.representer.add_representer(type(None), _represent_none)
 
 
 class ConfigStore:
@@ -24,7 +64,7 @@ class ConfigStore:
     def reload(self):
         with self._lock:
             with open(self._path, "r") as f:
-                self._data = yaml.safe_load(f)
+                self._data = _yaml.load(f)
             try:
                 self._mtime = self._path.stat().st_mtime
             except OSError:
@@ -64,7 +104,7 @@ class ConfigStore:
         necessarily give a concurrent reader in a different process/
         container the same torn-read immunity a same-host POSIX rename
         would. A reader opening the file mid-rename could see a truncated
-        or otherwise malformed parse. yaml.safe_load() would then hand back
+        or otherwise malformed parse. Parsing it would then hand back
         None (empty file) or a non-dict, and the old code accepted that
         outright as the new self._data - corrupting every config field, not
         just the one a caller happened to touch, until the next real file
@@ -74,13 +114,24 @@ class ConfigStore:
         parses to something too malformed to trust. Deliberately does NOT
         update self._mtime on a bad read, so the very next get() retries
         rather than getting stuck silently serving stale-but-good data
-        forever."""
+        forever.
+
+        YAMLError also guarded (2026-08-23, found verifying the ruamel.yaml
+        switch above): a torn read isn't guaranteed to parse into "None or
+        the wrong type" - depending on exactly where the cut lands, the
+        parser can raise instead. Checked directly, not assumed: sampling
+        179 truncation points across this project's real settings.yaml,
+        both PyYAML and ruamel.yaml raised on identically the same 70 of
+        them. Every one of those was previously an uncaught exception
+        straight out of get() - this had been a latent gap in the
+        pre-ruamel code too, just never triggered by the specific torn
+        reads fault_log had actually captured."""
         with self._lock:
             try:
                 mtime = self._path.stat().st_mtime
                 if mtime != self._mtime:
                     with open(self._path, "r") as f:
-                        new_data = yaml.safe_load(f)
+                        new_data = _yaml.load(f)
                     if isinstance(new_data, dict) and new_data:
                         self._data = new_data
                         self._mtime = mtime
@@ -93,9 +144,10 @@ class ConfigStore:
                             "settings.yaml read as %s at mtime %s - rejecting, still serving last known-good config",
                             type(new_data).__name__, mtime,
                         )
-            except OSError:
-                # Unreadable or mid-write - keep serving the last good copy
-                # rather than failing a caller that just wants config.
+            except (OSError, YAMLError):
+                # Unreadable, mid-write, or a torn read the parser rejected
+                # outright - keep serving the last good copy rather than
+                # failing a caller that just wants config.
                 pass
             return dict(self._data)
 
@@ -121,7 +173,7 @@ class ConfigStore:
             # write in between.
             tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
             with open(tmp_path, "w") as f:
-                yaml.safe_dump(self._data, f, sort_keys=False)
+                _yaml.dump(self._data, f)
             tmp_path.replace(self._path)
             # Own write - record the new mtime so get()'s change detection
             # doesn't immediately re-read the file we just produced.

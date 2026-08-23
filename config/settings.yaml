@@ -190,7 +190,7 @@ backup:
   # module's CHEATSHEET/status.html phase 126 for the full incident).
 alerting:
   enabled: true
-  webhook_url:  # unset by default - see services/alerting/CHEATSHEET.md for
+  webhook_url: null # unset by default - see services/alerting/CHEATSHEET.md for
   # payload shape / which destinations it's compatible with as-is
 event_lifecycle:
   tournament_min_siblings: 4
