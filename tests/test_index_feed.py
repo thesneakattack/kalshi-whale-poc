@@ -1,10 +1,17 @@
-"""services/index_feed.py - the settlement algebra and the guards that stop
-it being applied to markets it doesn't describe.
+"""services/index_feed/ - the settlement algebra and the guards that stop
+it being applied to markets it doesn't describe, plus the tick-capture
+layer underneath it.
 
 Every fixture value here comes from a real market read live from the API on
 2026-08-17, not invented - the whole point of these guards is that the eight
 crypto series genuinely disagree with each other about strike_type, index
 naming, and whether a 60-second average is involved at all.
+
+Monkeypatches services.index_feed.ingestion directly, not the
+services.index_feed package's own re-exported copies of DB_PATH/_latest/
+_tick_buffer/_dropped_rows - see services/index_feed/__init__.py's
+docstring for why the package-level names aren't the ones ingestion.py's
+own functions actually read/write.
 """
 import json
 import sqlite3
@@ -12,14 +19,15 @@ import sqlite3
 import pytest
 
 from services import index_feed as ifd
+from services.index_feed import ingestion as _ingestion
 
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
-    monkeypatch.setattr(ifd, "DB_PATH", tmp_path / "index_feed.db")
-    monkeypatch.setattr(ifd, "_latest", {})
-    monkeypatch.setattr(ifd, "_tick_buffer", [])
-    monkeypatch.setattr(ifd, "_dropped_rows", 0)
+    monkeypatch.setattr(_ingestion, "DB_PATH", tmp_path / "index_feed.db")
+    monkeypatch.setattr(_ingestion, "_latest", {})
+    monkeypatch.setattr(_ingestion, "_tick_buffer", [])
+    monkeypatch.setattr(_ingestion, "_dropped_rows", 0)
     yield
 
 
@@ -111,7 +119,7 @@ def test_cfbenchmarks_tick_parses_the_nested_raw_frame():
     assert latest["avg_60s_value"] == pytest.approx(63498.0)
     assert latest["q15_value"] is None      # absence preserved, not defaulted
     ifd.flush()
-    with sqlite3.connect(ifd.DB_PATH) as conn:
+    with sqlite3.connect(_ingestion.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM index_ticks").fetchone()
     assert row["index_id"] == "BRTI" and row["source"] == "cfbenchmarks"

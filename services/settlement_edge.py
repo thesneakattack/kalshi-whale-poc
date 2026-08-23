@@ -1,7 +1,7 @@
 """
 Does knowing part of the settlement average beat the market's own price?
 
-services/index_feed.py established that for the crypto series the final
+services/index_feed/ established that for the crypto series the final
 sixty one-second index observations ARE the settlement, and that Kalshi
 streams them as they accumulate. That is a fact about the data. Whether it
 is an *edge* is a separate, empirical question, and this module exists to

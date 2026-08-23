@@ -192,7 +192,7 @@ async def get_faults(limit: int = 50, component: str | None = None, hours: float
 
 @router.get("/api/index")
 async def get_index_feed():
-    """Live CF Benchmarks / Pyth index values (services/index_feed.py)."""
+    """Live CF Benchmarks / Pyth index values (services/index_feed/)."""
     return index_feed.snapshot()
 
 

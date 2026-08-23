@@ -130,7 +130,7 @@ trade_stream = KalshiTradeWebSocketClient(
     account_base_url,
     exchange_wide_trades=bool(cfg["kalshi"].get("trade_stream_exchange_wide", False)),
     # The indices the crypto series settle against - see
-    # services/index_feed.py. Empty list disables the subscription.
+    # services/index_feed/. Empty list disables the subscription.
     # market_lifecycle_v2 (2026-08-17, docs/next-session-pickup-2026-08-17.md
     # item #2) - unconditionally exchange-wide push notifications for
     # market open/close/settlement, replacing part of the 6-second REST

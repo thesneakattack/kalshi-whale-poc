@@ -10,13 +10,18 @@ from services import settlement_edge as se
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
-    from services import index_feed
+    # Monkeypatches services.index_feed.ingestion directly, not the
+    # services.index_feed package's own re-exported copies - see
+    # services/index_feed/__init__.py's docstring for why the
+    # package-level names aren't the ones ingestion.py's own functions
+    # actually read/write.
+    from services.index_feed import ingestion as index_feed_ingestion
 
     monkeypatch.setattr(se, "DB_PATH", tmp_path / "settlement_edge.db")
     monkeypatch.setattr(se, "_buffer", [])
-    monkeypatch.setattr(index_feed, "DB_PATH", tmp_path / "index_feed.db")
-    monkeypatch.setattr(index_feed, "_latest", {})
-    monkeypatch.setattr(index_feed, "_tick_buffer", [])
+    monkeypatch.setattr(index_feed_ingestion, "DB_PATH", tmp_path / "index_feed.db")
+    monkeypatch.setattr(index_feed_ingestion, "_latest", {})
+    monkeypatch.setattr(index_feed_ingestion, "_tick_buffer", [])
     yield
 
 

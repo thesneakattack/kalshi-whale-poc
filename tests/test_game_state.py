@@ -140,7 +140,7 @@ def test_timeline_and_stats_are_readable():
 # reading one back, because each write re-stores the array's full history,
 # not just the delta, and the array only grows over a market's life. The
 # underlying price data is already captured with far better fidelity by the
-# WS-based services/index_feed.py. See game_state.record's own docstring
+# WS-based services/index_feed/. See game_state.record's own docstring
 # for the full incident. Sport/commodity payloads are unaffected.
 
 _CRYPTO = {

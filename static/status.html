@@ -5485,6 +5485,48 @@
           <code>static/js/dashboard.bundle.js</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 140 · index_feed/ split into ingestion vs. settlement algebra</div>
+        <h4>second of three planned modularization passes - a package this time, not two flat files</h4>
+        <p>Continuation of the services/ modularization survey (phase 138's whale_simulator split was the
+          first). <code>services/index_feed.py</code> (551 lines) already self-marked its own boundary with a
+          <code># --- settlement algebra</code> section comment: tick ingestion (<code>record_cfbenchmarks</code>/
+          <code>record_pyth</code>/the buffered-write DB layer) vs. the settlement-projection math built on top
+          of it (<code>required_remaining_average</code>/<code>settlement_projection</code>/<code>settlement_
+          spec</code>/<code>resolve_index_id</code>/<code>window_matches_close</code>/<code>recent_volatility</code>).
+          Unlike whale_simulator's split, ~10 files import <code>index_feed</code> as a whole module and call
+          both halves interleaved in the same file (<code>whale_stream/index_stream_handlers.py</code>,
+          <code>settlement_edge.py</code>) - rewriting every call site to pick a new module per function would
+          have been large and error-prone for no real benefit. Followed this project's own
+          <code>services/market_watch/</code> precedent instead: a real package
+          (<code>services/index_feed/ingestion.py</code> + <code>settlement_algebra.py</code>), with
+          <code>__init__.py</code> re-exporting every name external callers need so
+          <code>from services import index_feed</code> / <code>index_feed.settlement_projection(...)</code> etc.
+          keep working with zero call-site changes outside the package itself.
+          <code>DB_PATH</code>'s own <code>.parent</code> chain gained a third <code>.parent</code> (the
+          "DB_PATH relative-move gotcha" this project has hit before, moving one directory deeper).
+          <b>A real, non-hypothetical monkeypatch trap found and fixed while writing this split</b>: re-exporting
+          <code>DB_PATH</code>/<code>_latest</code>/<code>_tick_buffer</code>/<code>_dropped_rows</code> at the
+          package level creates a *separate* name binding from ingestion.py's own module globals - a function
+          defined in <code>ingestion.py</code> always resolves those names against <code>ingestion.py</code>'s
+          own namespace regardless of which import path called it, so <code>monkeypatch.setattr(index_feed,
+          "DB_PATH", tmp_path)</code> silently patches a binding nothing reads, leaving the real
+          <code>data/index_feed.db</code> exposed. <code>tests/test_index_feed.py</code> and <code>tests/
+          test_settlement_edge.py</code> both did exactly this - fixed to monkeypatch
+          <code>services.index_feed.ingestion</code> directly, the same "test isolation must target where the
+          code actually reads/writes, not wherever it happens to be re-exported" lesson phase 137's
+          <code>tests/conftest.py</code> fix was about, now confirmed to generalize beyond that one incident.
+          Function-level monkeypatches (<code>index_feed.recent_volatility</code> in two other test files) needed
+          no change - real callers also do a fresh whole-module attribute lookup at call time, so those stay
+          correctly patchable through the re-export. Verified: full suite (1,207 tests) green, the 42
+          index_feed/settlement_edge/settlement_edge_entry tests specifically re-run and confirmed passing
+          post-fix, live app ticking with zero errors post-restart, <code>GET /api/diagnostics/settlement-edge</code>
+          confirmed working end to end through the new package.</p>
+        <div class="files"><code>services/index_feed/__init__.py</code> ·
+          <code>services/index_feed/ingestion.py</code> · <code>services/index_feed/settlement_algebra.py</code> ·
+          <code>tests/test_index_feed.py</code> · <code>tests/test_settlement_edge.py</code></div>
+      </div>
+
     </div>
   </section>
 

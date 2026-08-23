@@ -39,7 +39,7 @@ async def _handle_index_stream_status(status: dict) -> None:
 
 
 async def _process_stream_index(msg_type: str, msg: dict) -> None:
-    """CF Benchmarks / Pyth index ticks (services/index_feed.py).
+    """CF Benchmarks / Pyth index ticks (services/index_feed/).
 
     For the crypto series this is the settlement quantity itself, not a
     proxy for it - KXBTC15M settles on "the simple average of the sixty

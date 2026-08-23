@@ -245,7 +245,7 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
         # to confirm, not assumed), i.e. nothing has ever read a single one
         # of these rows back. The underlying price data this would capture
         # is already recorded with far better fidelity by the WS-based
-        # services/index_feed.py (~1 msg/sec vs this REST path's 60s-rate-
+        # services/index_feed/ (~1 msg/sec vs this REST path's 60s-rate-
         # limited snapshots) - this table's own schema (home_score/period/
         # clock/winner/...) is sports-shaped anyway, so a crypto payload
         # never populated any of it. Not a data-retention question (nothing
