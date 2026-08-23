@@ -5272,6 +5272,44 @@
           <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="phase">
+        <div class="tag">phase 134 · resolve on finalized, not determined</div>
+        <h4>closes the disputed-and-reversed-result gap named by services/exits/CHEATSHEET.md's own audit</h4>
+        <p>Per-module audit finding, fixed: Kalshi sets a market's <code>result</code> the instant it's
+          <code>determined</code>, but <code>docs/kalshi/market_lifecycle.md</code> is explicit the result "may be
+          disputed" during the settlement-timer window that follows, and can flip via
+          <code>determined</code> &rarr; <code>disputed</code> &rarr; <code>amended</code> before
+          <code>finalized</code> ("Settlement complete... Terminal state"). <code>exit_engine.close_if_settled</code>
+          closed positions and locked in P&amp;L at <code>determined</code>, with no correction path if a dispute
+          later reversed the result - and <code>services/whale_stream/whale_stream_handlers.py</code>'s
+          <code>_process_stream_lifecycle</code> had grown the identical bug independently the same day (an earlier
+          phase 125 pass wired <code>determined</code>, not <code>settled</code>, as the trigger for
+          <code>market_history</code>/<code>settlement_edge</code>/<code>market_analyst_agent</code>/
+          <code>candidate_log</code> outcome resolution, reasoning purely from data availability - "only determined
+          carries a result field" - not from what's actually terminal). Fixed at the source:
+          <code>propagate_milestone_winners</code> (<code>services/market_watch/catalog_scan.py</code>) now only
+          includes a market's <code>result</code> in <code>market_results</code> once
+          <code>status == "finalized"</code> - free for open positions, since their ticker already keeps flowing
+          through every tick via <code>main.py</code>'s <code>extra_tickers</code> regardless of watchlist
+          rotation, so it simply stays open through the dispute window instead of needing a separate correction
+          mechanism. The same gate was added to <code>main.py</code>'s own REST-tick
+          <code>record_outcome</code>/<code>resolve_window</code> loop. <code>_process_stream_lifecycle</code> now
+          resolves on <code>settled</code> instead of <code>determined</code>: since the <code>settled</code>
+          WebSocket payload itself carries no <code>result</code> field, and Kalshi's lifecycle channel emits no
+          distinct event for a dispute/amendment at all, the only way to get a truly final, dispute-corrected
+          result is one fresh single-ticker <code>client.get_market(ticker)</code> REST read at that moment,
+          gated on that read confirming <code>finalized</code> - one extra call at the ~0.06/s measured live
+          <code>settled</code> rate, negligible against Kalshi's rate budget. Verified live post-ship, not just in
+          tests: <code>/api/state</code>'s <code>lifecycle_stream_stats</code> showed
+          <code>outcomes_resolved_via_lifecycle</code> incrementing off real <code>settled</code> traffic within
+          minutes, zero exceptions in <code>ddev logs</code>.</p>
+        <div class="files"><code>services/market_watch/catalog_scan.py</code> · <code>main.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> ·
+          <code>services/exits/CHEATSHEET.md</code> · <code>services/market_catalog/CHEATSHEET.md</code> ·
+          <code>services/whale_stream/CHEATSHEET.md</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>tests/test_winner_propagation.py</code></div>
+      </div>
+
     </div>
   </section>
 
