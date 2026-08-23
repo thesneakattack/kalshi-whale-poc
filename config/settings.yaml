@@ -33,8 +33,8 @@ strategy:
   entry_threshold: 0.401
   max_position_pct: 0.05
   cooldown_sec: 120
-  close_window_sec: 11659.56
-  special_market_min_seconds_to_close: 196.83
+  close_window_sec: 12825.516
+  special_market_min_seconds_to_close: 177.147
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
   min_unit_cost: 0.65
@@ -43,8 +43,8 @@ strategy:
   min_resolved_for_whale_filter: 20
   live_markets_only: false
   excluded_series: []
-  take_profit_pct: 0.459
-  stop_loss_pct: 0.403
+  take_profit_pct: null
+  stop_loss_pct: null
   exit_on_sentiment_reversal: false
   longshot_close_window_sec: 900
   exit_sentiment_min_signals: 15
@@ -85,13 +85,13 @@ whale_watcher_kalshi:
     KXTRUMPMENTION: 500
     KXMAMDANIMENTION: 500
 whale_confidence_weights:
-  depth_factor: 0.05
-  unusualness_factor: 0.05
-  proximity_factor: 0.12
-  context_factor: 0.11
-  agreement_factor: 0.17
-  cluster_factor: 0.07
-  trend_factor: 0.43
+  depth_factor: 0.0495
+  unusualness_factor: 0.0495
+  proximity_factor: 0.0495
+  context_factor: 0.1386
+  agreement_factor: 0.1881
+  cluster_factor: 0.1485
+  trend_factor: 0.3762
   analyst_factor: 0.0
   block_trade_factor: 0.0
 advisory:
