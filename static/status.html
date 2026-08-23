@@ -5199,6 +5199,40 @@
           <code>tests/test_config_store.py</code> · <code>config/settings.yaml</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 132 · dependency audit</div>
+        <h4>Closed the pip-audit gap the CI job had been carrying red on purpose</h4>
+        <p>The <code>dependency-audit</code> CI job (<code>.github/workflows/tests.yml</code>) had been
+          deliberately red since it was added: 20 known vulnerabilities across 5 pinned dependencies
+          (<code>python-dotenv</code>, <code>cryptography</code> &times;6, <code>pytest</code>, <code>requests</code>
+          &times;2, <code>starlette</code> &times;9), left unfixed on purpose rather than bumped blind, given how
+          central <code>cryptography</code> (signs every Kalshi request) and <code>starlette</code> (via
+          <code>fastapi</code>) are. Verified before touching either requirements file, not assumed compatible: a
+          scratch venv's <code>pip install --dry-run --report</code> resolved the full target set cleanly, then a
+          second <code>pip-audit</code> pass against that exact resolved set confirmed zero known vulnerabilities
+          before it landed. <code>fastapi</code> 0.115.0&rarr;0.134.0 - the lowest release that pulls in
+          <code>starlette</code>&gt;=1.x, found by dry-run resolving every intervening minor version
+          (0.132.0 still resolved <code>starlette</code> 0.52.1); three of the seven <code>starlette</code> CVEs
+          were never backported to its 0.x line, only fixed starting at 1.x. That bump forces <code>pydantic</code>
+          2.9.2&rarr;2.13.4 as a side effect of fastapi's own floor, not a CVE on pydantic's own account.
+          <code>cryptography</code> 43.0.3&rarr;50.0.0 - one release past the 49.0.0 pip-audit's own findings
+          required, after landing exactly on <code>PYSEC-2026-3552</code>, a PKCS7/S-MIME Bleichenbacher timing
+          oracle introduced in 44.0.0 that only became reachable by clearing the other six CVEs; not applicable to
+          this app's actual usage (RSA-PSS request signing in <code>services/kalshi_account_client.py</code>, not
+          PKCS7/S-MIME) but fixed for free rather than landing one CVE short. <code>python-dotenv</code>
+          1.0.1&rarr;1.2.2. Dev-only: <code>pytest</code> 8.3.3&rarr;9.0.3 (no plugins pinned in this repo to check
+          compatibility against - no <code>conftest.py</code>, no <code>pytest-asyncio</code>) and
+          <code>requests</code> 2.32.3&rarr;2.33.0 (used only for two plain <code>.get()</code> calls in
+          <code>tests/test_e2e_terminal_static_and_api.py</code>). Verified after landing: a plain <code>pip
+          install</code> alone doesn't reload packages already imported into the live <code>uvicorn --reload</code>
+          process, so a full <code>ddev restart</code> was required to actually exercise the new versions - the app
+          came back up clean and kept processing real live Kalshi market data with no import or runtime errors; full
+          suite (1,191 tests) green. One new, non-blocking observation: <code>starlette.testclient</code>'s
+          <code>httpx</code> integration now emits a <code>StarletteDeprecationWarning</code> about a future
+          <code>httpx2</code> package - left alone, a warning rather than a failure.</p>
+        <div class="files"><code>requirements.txt</code> · <code>requirements-dev.txt</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
