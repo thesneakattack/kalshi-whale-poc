@@ -327,10 +327,12 @@ async def trading_loop():
                 state["exchange_status"] = exchange_status
 
             # Straight from Kalshi's market.result field ("yes"/"no"/"" -
-            # empty until the market settles) - used unconditionally by
-            # check_exits to close out any open position on a market that's
-            # actually resolved, regardless of exit config. Built from the
-            # full (pre-_slim_market) markets list since result isn't one of
+            # empty until the market settles), gated to status=="finalized"
+            # (2026-08-23 fix - see propagate_milestone_winners' own
+            # docstring) - used unconditionally by check_exits to close out
+            # any open position on a market that's actually resolved,
+            # regardless of exit config. Built from the full
+            # (pre-_slim_market) markets list since result isn't one of
             # _MARKET_FIELDS (that trimming is only for the /api/state
             # payload, not internal use).
             market_results = await propagate_milestone_winners(client, markets)
@@ -369,7 +371,11 @@ async def trading_loop():
             )
             for m in markets:
                 result = (m.get("result") or "").strip().lower()
-                if result in ("yes", "no") and m.get("ticker"):
+                # status=="finalized" gate: 2026-08-23 fix, same reasoning as
+                # propagate_milestone_winners' own docstring - result is set
+                # at "determined" but can still flip (disputed -> amended)
+                # before "finalized" is truly terminal.
+                if result in ("yes", "no") and m.get("ticker") and m.get("status") == "finalized":
                     market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
                     # Close the loop on any settlement-window observations
                     # taken for this market (services/settlement_edge.py) -

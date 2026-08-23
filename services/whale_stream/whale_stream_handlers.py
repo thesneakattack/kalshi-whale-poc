@@ -277,9 +277,7 @@ async def _process_stream_lifecycle(msg: dict) -> None:
     2026-08-22 traffic - 2,256+ `determined` and 2,372+ `settled` events by
     the time this was written) - `determined` really does carry
     `result`/`determination_ts`/`settlement_value` exactly as documented;
-    `settled` carries only `settled_ts`, no `result` field, so `determined`
-    is the only trigger this needs. Two things were still REST-only despite
-    the in-memory overlay already existing for close_date_updated:
+    `settled` carries only `settled_ts`, no `result` field.
     1. `services/market_catalog/market_catalog.py`'s persisted `markets`
        table only ever got a fresh close_ts/status on that series' next
        incremental scan (potentially hours away) - `apply_lifecycle_update`
@@ -293,14 +291,39 @@ async def _process_stream_lifecycle(msg: dict) -> None:
        `markets` list - structurally blind to any ticker that rotates off
        the live watchlist/discovery scope before it settles (routine for
        short-lived series like KXBTC15M), regardless of poll frequency.
-       market_lifecycle_v2 is exchange-wide, so a `determined` event
-       reaches every ticker this app ever touched, watchlisted or not.
-       Firing these now (in addition to, not instead of - the REST poll
-       keeps calling the same functions every tick as a fallback) is safe:
-       all four are idempotent (INSERT OR IGNORE / `WHERE resolved = 0` /
-       `WHERE settled_yes IS NULL`), and the real observed event rate
-       (~0.06/s, measured live) is well under poll_interval_sec's own
-       tick rate, so this isn't a meaningful extra DB-load axis either.
+       market_lifecycle_v2 is exchange-wide, so a lifecycle event reaches
+       every ticker this app ever touched, watchlisted or not.
+
+    Corrected 2026-08-23, same day, later pass (services/exits/CHEATSHEET.md's
+    audit finding, cross-referenced against market_lifecycle.md lines 21-24/
+    36-38/68-72): the first version of this fix fired the four resolvers on
+    `determined`, reasoning "settled carries no result field, so determined
+    is the only trigger this needs" - true for data availability, but wrong
+    for correctness. `determined` is not terminal: the docs are explicit
+    that "the result may be disputed" during the settlement-timer window
+    that follows, and can flip via `determined` -> `disputed` -> `amended`
+    before `finalized` ("Settlement complete... Terminal state"). Resolving
+    at `determined` meant a disputed-and-reversed market would already have
+    graded a whale signal, an analyst call, and a rejected-candidate row
+    against the wrong outcome, with no correction path - the exact gap
+    services/exits/CHEATSHEET.md flagged for close_if_settled (fixed the
+    same pass, see propagate_milestone_winners' docstring), just for these
+    four resolvers instead of paper P&L. `determined` now only updates the
+    persisted catalog status and stats, same as close_date_updated. `settled`
+    now does the resolving: since its own WS payload has no `result` field
+    (confirmed above) and Kalshi's lifecycle channel emits no distinct event
+    for a dispute/amendment at all (not in market_lifecycle.md's own
+    WebSocket event-type table), the only way to get a truly final,
+    dispute-corrected result is a fresh single-ticker REST read at the
+    moment `settled` arrives - `client.get_market(ticker)`, re-checked for
+    `status == "finalized"` before trusting its `result`. One extra REST
+    call per settlement, at the same ~0.06/s measured live rate as the
+    `settled` event itself - negligible against Kalshi's rate budget, and
+    still additive to (not a replacement for) the REST-tick fallback path,
+    which now carries the identical finalized-only gate (see main.py and
+    propagate_milestone_winners). All four resolvers stay idempotent
+    (INSERT OR IGNORE / `WHERE resolved = 0` / `WHERE settled_yes IS NULL`),
+    so firing from both paths remains safe.
 
     Every event_type still counts toward lifecycle_stream_stats
     (services/app_state.py) so real volume/shape is visible on
@@ -337,13 +360,30 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         return
 
     if event_type == "determined":
-        result = (msg.get("result") or "").strip().lower()
+        # Catalog status only - NOT terminal, so no outcome resolution here
+        # (2026-08-23 correction, see this function's own docstring). result
+        # is set at this transition but can still be disputed/amended before
+        # settled/finalized.
         if market_catalog.apply_lifecycle_update(ticker, status="determined"):
             stats["catalog_updates_applied"] += 1
-        # "scalar" (or anything else non-binary) has no yes/no outcome for
-        # this app's own resolution pipeline to record against - same
-        # result in ("yes", "no") gate main.py's REST-tick path already
-        # applies to the same market_results mapping.
+        return
+
+    if event_type == "settled":
+        if market_catalog.apply_lifecycle_update(ticker, status="finalized"):
+            stats["catalog_updates_applied"] += 1
+        # settled carries no result field, and there is no distinct
+        # dispute/amendment event to watch for either - a fresh REST read is
+        # the only way to get a result that's actually final. Best-effort:
+        # a failed/degraded fetch just leaves this ticker for the REST-tick
+        # fallback path to catch if it ever resurfaces on the watchlist.
+        try:
+            client = _stream_market_client(config_store.get())
+            market = await client.get_market(ticker)
+        except Exception:
+            return
+        if (market.get("status") or "") != "finalized":
+            return
+        result = (market.get("result") or "").strip().lower()
         if result not in ("yes", "no"):
             return
         now = time.time()
@@ -352,11 +392,6 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         resolved += market_analyst_agent.resolve_from_market_results({ticker: result})
         resolved += candidate_log.resolve_from_market_results({ticker: result})
         stats["outcomes_resolved_via_lifecycle"] += resolved
-        return
-
-    if event_type == "settled":
-        if market_catalog.apply_lifecycle_update(ticker, status="finalized"):
-            stats["catalog_updates_applied"] += 1
         return
 
 

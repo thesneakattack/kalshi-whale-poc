@@ -19,9 +19,25 @@ stay where they are.
   "Which `ticker`-channel fields does the app keep" entry for what's
   dropped and why that was a real bug once.
 - `docs/kalshi/market-and-event-lifecycle.md` — `market_lifecycle_v2`,
-  consumed in `_process_stream_lifecycle` (only `close_date_updated` is
-  wired to mutate state; `determined`/`settled` are deliberately
-  observation-only — REST stays authoritative for real outcomes).
+  consumed in `_process_stream_lifecycle`. `close_date_updated` mutates
+  `state["markets"]` + the persisted `market_catalog` row directly.
+  `determined` only updates the persisted catalog status
+  (`services/market_catalog/market_catalog.py`'s `apply_lifecycle_update`)
+  — it is **not** terminal (`docs/kalshi/market_lifecycle.md`: result "may
+  be disputed" until `finalized`), so it does not resolve any outcome.
+  `settled` does the real outcome resolution
+  (`market_history`/`settlement_edge`/`market_analyst_agent`/
+  `candidate_log`), but since the `settled` WS payload itself carries no
+  `result` field, it does one fresh single-ticker `client.get_market(ticker)`
+  REST read first and only resolves once that read confirms
+  `status == "finalized"` — the only way to get a truly final,
+  dispute-corrected result on this path (2026-08-23 fix, see
+  `_process_stream_lifecycle`'s own docstring and
+  `services/exits/CHEATSHEET.md`'s audit finding for the full history: an
+  earlier same-day pass resolved on `determined` instead, which this
+  corrected). The REST-tick path (`main.py`) applies the identical
+  finalized-only gate and keeps running as an independent, idempotent
+  fallback.
 - `docs/kalshi/websocket-connection.md` — `user-fills`/`user-orders`/
   `market-positions` channels, consumed in `_process_stream_fill`/
   `_process_stream_position` (best-effort parsing, never verified against a

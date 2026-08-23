@@ -32,6 +32,28 @@ class FakeClient:
         return {t: self._markets[t] for t in tickers if t in self._markets}
 
 
+def test_propagate_milestone_winners_only_includes_a_markets_own_result_once_finalized(monkeypatch):
+    # 2026-08-23 fix (services/exits/CHEATSHEET.md's audit finding,
+    # docs/kalshi/market_lifecycle.md): Kalshi sets `result` the instant a
+    # market is "determined", well before "finalized" - the result "may be
+    # disputed" during the settlement-timer window in between. A market
+    # still at "determined" (or any non-finalized status) must not appear in
+    # market_results at all, even though its `result` field is already set.
+    markets = [
+        {"ticker": "DETERMINED-ONLY", "event_ticker": "EVT9", "result": "yes", "status": "determined"},
+        {"ticker": "ALREADY-FINAL", "event_ticker": "EVT9", "result": "no", "status": "finalized"},
+        {"ticker": "STILL-OPEN", "event_ticker": "EVT9", "result": "", "status": "active"},
+    ]
+    fake = FakeClient({}, {}, {})
+
+    main.state["milestone_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    assert "DETERMINED-ONLY" not in market_results
+    assert market_results.get("ALREADY-FINAL") == "no"
+    assert "STILL-OPEN" not in market_results
+
+
 def test_propagate_milestone_winner(monkeypatch):
     # Setup markets: two related event tickers A and B mapping to two markets
     markets = [
@@ -163,7 +185,9 @@ def test_propagate_milestone_winners_does_not_repoll_a_no_winner_event_within_wi
     fake = FakeClient(milestones_map={}, live_map={}, market_map={})  # EVT2 has no milestone at all
 
     first = asyncio.run(main.propagate_milestone_winners(fake, markets))
-    assert first.get("EVT2-OUTCOME1") == ""
+    # Not yet resolved (no status: not finalized) and no milestone winner
+    # either - correctly absent from market_results, not present with "".
+    assert "EVT2-OUTCOME1" not in first
     assert fake.milestone_calls == ["EVT2"]
 
     second = asyncio.run(main.propagate_milestone_winners(fake, markets))

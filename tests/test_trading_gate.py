@@ -32,6 +32,7 @@ from services import risk_manager as rm_module
 from services import series_evaluator as se_module
 from services import series_watcher as sw_module
 from services import settlement_edge as sedge_module
+from services.whale_stream import whale_stream_handlers as wsh_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="trading_gate_test_"))
 pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
@@ -1943,7 +1944,11 @@ def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
     assert main.state["generation"] == gen_before
 
 
-def test_lifecycle_determined_resolves_outcome_and_catalog_status():
+def test_lifecycle_determined_updates_catalog_status_but_does_not_resolve_outcome():
+    # 2026-08-23 correction (services/exits/CHEATSHEET.md's audit finding):
+    # determined is not terminal - result can still flip via disputed ->
+    # amended before finalized, so no outcome resolution happens here
+    # anymore, only the persisted catalog status.
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
     cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
@@ -1956,16 +1961,16 @@ def test_lifecycle_determined_resolves_outcome_and_catalog_status():
     stats = main.state["lifecycle_stream_stats"]
     assert stats["events_by_type"]["determined"] == 1
     assert stats["catalog_updates_applied"] == 1  # status -> "determined"
-    assert stats["outcomes_resolved_via_lifecycle"] >= 1  # the rejected-candidate row above
+    assert stats["outcomes_resolved_via_lifecycle"] == 0
     with mc_module._connect(mc_module.DB_PATH) as conn:
         status = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
     assert status == "determined"
     summary = cl_module.gate_summary()
     matching = [g for g in summary if g["strategy"] == "whale_follow" and g["gate_name"] == "entry_threshold"]
-    assert matching and matching[0]["resolved_count"] >= 1
+    assert matching and matching[0]["resolved_count"] == 0  # not resolved yet - still just "determined"
 
 
-def test_lifecycle_determined_ignores_scalar_result_but_still_updates_catalog():
+def test_lifecycle_determined_still_updates_catalog_for_a_scalar_result():
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
 
@@ -1975,12 +1980,32 @@ def test_lifecycle_determined_ignores_scalar_result_but_still_updates_catalog():
 
     stats = main.state["lifecycle_stream_stats"]
     assert stats["catalog_updates_applied"] == 1  # status still recorded
-    assert stats["outcomes_resolved_via_lifecycle"] == 0  # no yes/no outcome to resolve
+    assert stats["outcomes_resolved_via_lifecycle"] == 0
 
 
-def test_lifecycle_settled_updates_catalog_status_to_finalized():
+class _FakeLifecycleSettleClient:
+    """get_market() fake for the settled handler's fresh REST verification
+    (2026-08-23) - settled carries no result field of its own, so this is
+    the only source of the truly-final, dispute-corrected result."""
+
+    def __init__(self, market_detail=None, raises=False):
+        self._market_detail = market_detail
+        self._raises = raises
+        self.get_market_calls = []
+
+    async def get_market(self, ticker):
+        self.get_market_calls.append(ticker)
+        if self._raises:
+            raise RuntimeError("network error")
+        return self._market_detail
+
+
+def test_lifecycle_settled_resolves_outcome_via_a_fresh_rest_read(monkeypatch):
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
+    cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
+    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
 
     asyncio.run(main._process_stream_lifecycle(
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
@@ -1989,10 +2014,47 @@ def test_lifecycle_settled_updates_catalog_status_to_finalized():
     stats = main.state["lifecycle_stream_stats"]
     assert stats["events_by_type"]["settled"] == 1
     assert stats["catalog_updates_applied"] == 1
-    assert stats["outcomes_resolved_via_lifecycle"] == 0  # settled never carries a result
+    assert stats["outcomes_resolved_via_lifecycle"] >= 1
+    assert fake_client.get_market_calls == ["TICK-A"]
     with mc_module._connect(mc_module.DB_PATH) as conn:
         status = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
     assert status == "finalized"
+    summary = cl_module.gate_summary()
+    matching = [g for g in summary if g["strategy"] == "whale_follow" and g["gate_name"] == "entry_threshold"]
+    assert matching and matching[0]["resolved_count"] >= 1
+
+
+def test_lifecycle_settled_does_not_resolve_when_the_fresh_read_disagrees_it_is_finalized(monkeypatch):
+    # A settled event whose own just-fetched market object doesn't actually
+    # show status=="finalized" (a race, an inconsistent read) must not
+    # resolve on that - same conservative gate as the REST-tick path.
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "determined", "result": "yes"})
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+
+    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] == 0
+
+
+def test_lifecycle_settled_degrades_cleanly_when_the_rest_read_fails(monkeypatch):
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+    fake_client = _FakeLifecycleSettleClient(raises=True)
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+
+    asyncio.run(main._process_stream_lifecycle(
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+
+    stats = main.state["lifecycle_stream_stats"]
+    # Catalog status is still marked finalized from the event itself - only
+    # sourcing the *result* needs the REST round-trip.
+    assert stats["catalog_updates_applied"] == 1
+    assert stats["outcomes_resolved_via_lifecycle"] == 0
 
 
 def test_lifecycle_ignores_message_missing_event_type_or_ticker():

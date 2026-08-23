@@ -39,8 +39,31 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
     zero API calls but still reapplies any already-known winner into this
     tick's market_results below, so callers see identical per-tick
     completeness to the pre-caching behavior - only the network cost was cut.
+
+    Only includes a market's own `result` once `status` is `finalized`
+    (2026-08-23 fix, services/exits/CHEATSHEET.md's audit finding). Kalshi
+    sets `result` the instant a market is `determined`, but the docs
+    (docs/kalshi/market_lifecycle.md lines 21-24, 36-38, 68-72) are explicit
+    that the result "may be disputed" during the settlement-timer window
+    that follows, and can flip via `determined` -> `disputed` -> `amended`
+    before finally reaching `finalized` ("Settlement complete... Terminal
+    state"). Gating here means check_exits/close_if_settled (which consumes
+    this dict) never closes a position - and market_analyst_agent/
+    candidate_log's resolve_from_market_results (main.py, called with this
+    same dict) never grade a call - on a result that could still reverse.
+    An open position's own ticker keeps flowing through this function every
+    tick regardless (main.py's extra_tickers), so it simply stays open
+    through determined/disputed/amended and closes once finalized - slower
+    to realize P&L, immune to the reversal this app previously had no
+    correction path for. Milestone-winner results below are a separate,
+    deliberately-earlier signal (a live-data winner declaration, not
+    Kalshi's own market state machine) and are unaffected by this gate.
     """
-    market_results = {m["ticker"]: m.get("result") for m in markets if m.get("ticker")}
+    market_results = {
+        m["ticker"]: m.get("result")
+        for m in markets
+        if m.get("ticker") and m.get("status") == "finalized"
+    }
     try:
         event_tickers = list(dict.fromkeys(m.get("event_ticker") for m in markets if m.get("event_ticker")))
         cache = state["milestone_cache"]

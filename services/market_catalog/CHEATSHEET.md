@@ -62,15 +62,32 @@ horizon-bounded by design, not an error. Verified live before shipping:
 real captured message shapes from `ddev logs` (`kalshi_trade_ws.py`'s own
 "first real shape" log) cross-checked against
 `docs/kalshi/market-and-event-lifecycle.md`'s schema first - `determined`
-really does carry `result`, `settled` does not, so `determined` (not
-`settled`) is the only trigger that also resolves this app's own
+really does carry `result`, `settled` does not.
+
+**Correction, later the same day**: the first version of this fix used
+`determined` as the trigger that also resolves this app's own
 market_history/settlement_edge/market_analyst_agent/candidate_log outcome
-tables, closing a second, related gap: those were previously fed
-exclusively from that tick's REST-fetched `markets` list, structurally
-blind to any ticker that rotates off the live watchlist/discovery scope
-before it settles (routine for short-lived series like KXBTC15M) -
-`market_lifecycle_v2` is exchange-wide, so this reaches every ticker the
-app ever touched, watchlisted or not.
+tables, reasoning purely from data availability ("only `determined` carries
+`result`"). That was wrong on correctness grounds -
+`docs/kalshi/market_lifecycle.md` is explicit that `determined` is not
+terminal (the result "may be disputed" during the settlement-timer window,
+and can flip via `determined` -> `disputed` -> `amended` before
+`finalized`) - see `services/exits/CHEATSHEET.md`'s audit finding, which
+named the identical bug shape for `close_if_settled` and got fixed the same
+pass. `determined` now only updates this module's persisted `status`
+column; `settled` does the actual resolving, via a fresh single-ticker
+`client.get_market(ticker)` REST read (since the `settled` payload itself
+has no `result` field) gated on that read confirming
+`status == "finalized"` - see `services/whale_stream/whale_stream_handlers.py`'s
+`_process_stream_lifecycle` docstring for the full detail. Closing the
+off-watchlist-ticker gap (below) is unaffected by this correction - it was
+always about *which tickers* get resolved via this channel, not *when* is
+safe to trust the result: those were previously fed exclusively from that
+tick's REST-fetched `markets` list, structurally blind to any ticker that
+rotates off the live watchlist/discovery scope before it settles (routine
+for short-lived series like KXBTC15M) - `market_lifecycle_v2` is
+exchange-wide, so this reaches every ticker the app ever touched,
+watchlisted or not.
 
 ## Handoff — who calls this module, who it calls
 

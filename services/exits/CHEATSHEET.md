@@ -22,17 +22,18 @@ persistence (see `services/position/CHEATSHEET.md`).
   whole module is built against. **Read this before touching
   `close_if_settled` or `market_results`'s source.**
 
-## Audit finding: `close_if_settled` fires at `determined`, not `finalized`
+## Audit finding, fixed 2026-08-23: `close_if_settled` fired at `determined`,
+not `finalized`
 
 Checked directly against `docs/kalshi/market_lifecycle.md` while writing
 this cheat sheet (lines 21–23, 51–52, 68–72), not assumed:
 
 - `closed` → `determined`: "Result is known. Settlement timer is running."
   `market.result` is set to `yes`/`no` **at this transition** — this is
-  also exactly where `services/market_watch/market_watch.py`'s
-  `propagate_milestone_winners` reads it (`m.get("result")`, line 57) to
-  build the `market_results` dict this module's `check_exits`/
-  `close_if_settled` consume.
+  also exactly where `services/market_watch/catalog_scan.py`'s
+  `propagate_milestone_winners` reads it (`m.get("result")`) to build the
+  `market_results` dict this module's `check_exits`/`close_if_settled`
+  consume.
 - `determined` → `disputed` (possible) → `amended`: "Result has been
   challenged. May be re-determined... Settlement timer restarts." The
   result can still flip during the settlement-timer window.
@@ -40,20 +41,34 @@ this cheat sheet (lines 21–23, 51–52, 68–72), not assumed:
   actual, no-longer-reversible settlement (`settled` WS event / `finalized`
   REST status).
 
-**Current behavior**: `close_if_settled` closes the paper position and
-locks in P&L the instant `result` is set (`determined`), not once the
-market reaches `finalized`. **What the docs describe as truly final** is
-`finalized`, after the dispute window closes. This means a disputed-and-
-reversed result during the settlement-timer window would leave this app's
-paper P&L wrong with no correction path — the position is already gone
-from `broker.positions` and converted into a closed trade by the time any
-dispute could occur. Not fixed as part of this modularization pass (a
-behavior change, not a refactor), but worth a real decision: either wait
-for `finalized` before calling `close_if_settled` (slower to realize P&L,
-immune to reversal) or keep firing at `determined` and accept the
-(believed rare) dispute-reversal risk explicitly rather than by omission.
-Flagging here is the deliverable for now, per this module's own audit
-mandate.
+**Previous behavior**: `close_if_settled` closed the paper position and
+locked in P&L the instant `result` was set (`determined`), not once the
+market reached `finalized`. This meant a disputed-and-reversed result
+during the settlement-timer window would leave this app's paper P&L wrong
+with no correction path — the position was already gone from
+`broker.positions` and converted into a closed trade by the time any
+dispute could occur.
+
+**Fix**: took the "wait for `finalized`, immune to reversal" option this
+cheat sheet named as one of the two real choices (over "accept the risk
+explicitly"), since it was resolvable for free — an open position's ticker
+already stays fetched every tick via `main.py`'s `extra_tickers` regardless
+of watchlist rotation (`services/market_watch/market_fetch.py`), so waiting
+just means it keeps flowing through `determined`/`disputed`/`amended` and
+closes once `finalized` shows up on a real, fresh REST read, rather than
+needing a separate correction mechanism. `propagate_milestone_winners` now
+only includes a market's own `result` in `market_results` once
+`status == "finalized"` — `check_exits`/`close_if_settled` never see a
+still-reversible result at all. The same gate was applied to `main.py`'s
+own `record_outcome`/`resolve_window` REST-tick loop and to
+`services/whale_stream/whale_stream_handlers.py`'s `_process_stream_lifecycle`
+(that file's `determined`/`settled` handling had grown the identical bug
+independently the same day, for `market_history`/`settlement_edge`/
+`market_analyst_agent`/`candidate_log`'s outcome resolution — see that
+module's own docstring for the fix there, which needed a fresh single-ticker
+REST read at `settled` since that event carries no `result` field of its
+own). Milestone-winner results (the rest of `propagate_milestone_winners`)
+are a separate, deliberately-earlier signal and untouched by this gate.
 
 ## Config keys this module reads (all resolved per-position via
 `config_overrides.resolve`, category/series-aware — see `check_exits`'s own
