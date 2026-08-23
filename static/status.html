@@ -4951,6 +4951,46 @@
           <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 126 · silent infrastructure failures</div>
+        <h4>A 16-hour-broken discovery cache and a 5+ hour resource leak, both found by actually reading ddev logs</h4>
+        <p>Direct correction, same day as phase 125: a summary calling the remaining roadmap work "mostly
+          operational decisions" got pushed back on - "its not just that. there are crucial infrastructure items
+          that need to be fixed." Re-examined <code>ddev logs</code>/<code>fault_log</code> instead of assuming,
+          and found two real, currently-active bugs neither the roadmap nor status.html had ever named. First:
+          <code>discovery_cache.refresh</code> throwing <code>KeyError: 'base_url'</code> 198 times over ~16
+          hours - almost exactly one failure per <code>_DISCOVERY_REFRESH_SEC</code> (300s) cycle, meaning
+          <em>every single discovery refresh had been failing</em>, not an occasional blip, until a coincidental
+          restart happened to land on a clean read. <code>services/config_store.py</code>'s 2026-08-17 fix made
+          <code>update()</code>'s own writes atomic (tmp file + rename), but this project runs under ddev/Docker
+          Desktop on WSL2, and a bind-mounted filesystem doesn't necessarily give a reader in a different
+          process/container the same torn-read immunity a same-host POSIX rename would - <code>get()</code>'s
+          mtime-triggered re-read had no validation that a "successful" read actually parsed to a well-formed
+          dict, so a torn/empty read got accepted outright as the new config, silently corrupting every field
+          until the next real file change gave it another chance. <code>get()</code> now rejects a read that
+          parses to <code>None</code> or a non-dict, keeps serving the last known-good config, logs a warning,
+          and deliberately leaves <code>self._mtime</code> unset so the very next call retries instead of getting
+          stuck. Second: "Unclosed connector"/"Unclosed client session" warnings firing on a clean ~15-minute
+          cadence for 5+ hours straight with zero process restarts in between - ruled out as a dev-reload
+          artifact by checking the restart timestamps directly, not assumed. Root-caused to
+          <code>index_stream_handlers.py</code>'s <code>_spec_for</code>: a fresh <code>KalshiClient</code> on
+          every settlement-spec cache miss, never closed on any path. Its own docstring already knew the cadence
+          - "the 15-minute series rotates its ticker every quarter hour" - independently for each of
+          BTC/ETH/SOL/DOGE/HYPE, which matches the observed pattern exactly. Fixed with <code>try/finally</code>.
+          Audited every other <code>KalshiClient()</code> call site in the codebase for the same shape rather
+          than stopping at one fix: found one more real instance in <code>diagnostics/routes.py</code>'s
+          <code>GET /api/index/settlement/{ticker}</code> (zero current callers anywhere, confirmed by grep, so
+          not the source of this incident, but the same bug ready to fire on any real hit) and fixed it too;
+          every other of the dozen-plus call sites already had a correct <code>try/finally</code>. Neither
+          leaking module had any test coverage before this - both incidents shipped with dedicated regression
+          tests (a fake client recording whether <code>close()</code> was actually called, across success/
+          exception/cache-hit paths). Full suite (1,154 tests, up from 1,146) green.</p>
+        <div class="files"><code>services/config_store.py</code> · <code>tests/test_config_store.py</code> ·
+          <code>services/whale_stream/index_stream_handlers.py</code> ·
+          <code>services/diagnostics/routes.py</code> · <code>tests/test_index_stream_handlers.py</code> ·
+          <code>tests/test_diagnostics_routes.py</code></div>
+      </div>
+
     </div>
   </section>
 
