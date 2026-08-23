@@ -8,65 +8,38 @@ phrase. All P0 code-level safety gates are done; what's still open before
 real capital should depend on this is operational — see ROADMAP.md's "Path
 to production" section.
 
-## HARD COMMANDMENT — the target is 70% whale accuracy AND 70% own win rate
+## Current objective — per-module quality, not a P&L target
 
-Direct standing instruction (2026-08-17): "try and reproduce the 70%
-winrate for whales, and matching 70% winrate of my own trades. things were
-buggy but viable, and my goal is to get there again." **This is the
-objective function.** Every tuning decision, every new gate, every config
-change gets judged against it. Both numbers, together — not one at the
-expense of the other, and not a proxy for either.
+Direct standing instruction (2026-08-23), superseding the prior
+"HARD COMMANDMENT — 70% whale accuracy AND 70% own win rate" objective
+in full: **"forget the 70% thing. now that things are modular the goal is
+to make sure each module works at peak effectiveness, efficiency, and
+informativeness."** Do not chase, cite, or judge changes against the old
+70%/70% target going forward — retired, not paused. (Its measured
+data — the 593-signal unit-cost/breakeven table, the KXBTC15M
+selection-vs-exit gap — is still real and still sitting in git history
+`git log -S 'HARD COMMANDMENT' CLAUDE.md` / `docs/next-session-pickup-
+2026-08-17.md` if a future session ever needs it again, but it is no
+longer what work gets judged against.)
 
-**The one thing that makes this target real instead of hollow: a win rate
-is meaningless unless you state the entry price it was achieved at.** For a
-binary contract at unit cost `c`, expected value per contract is exactly
-`p - c`, so **breakeven accuracy IS the entry price**. A 70% win rate at
-`c = 0.95` loses 25c per contract; the same 70% at `c = 0.65` makes 5c.
-Both are "70%." Never report, target, or celebrate a win rate without the
-mean unit cost beside it — `services/series_watcher.reconcile()` already
-returns them as a pair (`realised_win_rate_pct` alongside
-`breakeven_accuracy_pct` and `edge_pts`) precisely so they can't drift
-apart.
+New objective: with the codebase now split into cohesive
+`services/<name>/` packages (modularization phases 115-119, see
+`static/status.html`), audit and improve each module against three axes:
 
-Measured 2026-08-17 across 593 real resolved signals, this target is
-achievable and there is exactly one place it lives:
+- **Effectiveness** — does it actually do what it claims? Latent bugs,
+  dead code paths, gaps between documented and real behavior.
+- **Efficiency** — wasteful computation, redundant DB round-trips,
+  blocking calls on a hot path, N+1 patterns, unnecessary API calls.
+- **Informativeness** — does it surface enough of its own behavior
+  (logging, diagnostics, historical capture, UI display) for a human to
+  trust and reason about it, not just run it blind?
 
-| unit cost | n | whale accuracy | breakeven | per $ risked |
-|---|---|---|---|---|
-| 0.50–0.65 | 42 | 38.1% | 58.8% | **−35.2%** |
-| **0.65–0.80** | **65** | **73.8%** | **72.3%** | **+2.2%** |
-| 0.80–0.95 | 132 | 84.8% | 90.1% | −5.9% |
-| ≥0.95 | 375 | 96.3% | 98.6% | −2.4% |
-
-The 0.65–0.80 band is the target: ~74% whale accuracy at a ~72% breakeven.
-That is simultaneously "70% whale win rate," "70% own win rate," and
-positive expectancy — the three are the same point, not a compromise
-between them. `min_unit_cost` was set to 0.65 for this reason (commit
-cf842b7); moving it back down re-admits the −35% bucket.
-
-Two things that look like progress toward this target but aren't:
-
-- **Chasing win rate upward past ~85%.** It works, and it loses money —
-  the ≥0.95 bucket wins 96.3% of the time and bleeds 2.4% per dollar
-  forever. High win rate is the easiest number in this system to
-  manufacture and the least informative on its own.
-- **Reproducing the original period's *accounting*.** That era's gains
-  were inflated by the no-side dollar math bug (`size * price` instead of
-  `size * (1 - price)`), which on the real distribution understated cost
-  by a **median 49x**. The ~70% *win rate* from that period was real and
-  is the thing to reproduce; the P&L attached to it was not, and must not
-  become the yardstick. See CLAUDE.md's "Bug pattern to watch for" below —
-  this is that same bug class, and it is why the pairing rule above is
-  written as a commandment rather than a suggestion.
-
-Whale accuracy currently sits well above target on some series (88.8% on
-KXBTC15M over 24h) while realised win rate lags badly (47.1%). Per
-`series_watcher.reconcile()` the gap decomposes into selection (−30.6pts)
-and exits (−11.2pts), so closing it is a gates-and-exits problem, not a
-signal-quality one. **Check `GET /api/diagnostics/series/{series}` before
-concluding anything about progress toward this target** — it reports both
-numbers, their gap, and the decomposition, so the objective can be
-measured rather than argued about.
+Each `services/<name>/` package's own `CHEATSHEET.md` (where one exists —
+several were written "to an audit-oriented standard... how the module
+currently behaves, what the API docs say it should do, and any gap already
+visible while writing it," per `static/status.html` phase 119) is real,
+pre-existing raw material for this — read it before assuming a module
+needs a fresh audit from scratch.
 
 ## Git history + supplementary docs
 

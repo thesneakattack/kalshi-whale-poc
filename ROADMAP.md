@@ -341,7 +341,7 @@ questions.
       levers, widgets, need to be flattened a bit because there's too much
       variability to track the usefulness of these instruments." The
       3-day config-drift incident earlier this session (reverted, see
-      CLAUDE.md's HARD COMMANDMENT section) is direct proof this is a real
+      `docs/next-session-pickup-2026-08-22.md`) is direct proof this is a real
       problem, not a hypothetical one: dozens of independently-tunable
       `strategy.*` fields drifted into a combination nobody would have
       chosen deliberately, and it went unnoticed for days precisely
