@@ -1,4 +1,10 @@
 -r requirements.txt
-pytest==8.3.3
-requests==2.32.3
+# 2026-08-23 pip-audit fix: 8.3.3 had PYSEC-2026-1845, fixed in 9.0.3. Test-
+# runner only, no plugins pinned in this repo (no conftest.py, no
+# pytest-asyncio) to check compatibility against - full suite re-run green.
+pytest==9.0.3
+# 2026-08-23 pip-audit fix: 2.32.3 had 2 known CVEs (PYSEC-2026-1872 fixed
+# at 2.32.4, PYSEC-2026-2275 only at 2.33.0). Dev-only usage
+# (tests/test_e2e_terminal_static_and_api.py, two plain requests.get calls).
+requests==2.33.0
 selenium==4.47.0

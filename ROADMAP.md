@@ -222,7 +222,7 @@ questions.
       personally is - a league employee, a campaign staffer, an MNPI
       holder), not a state-of-residence restriction, and not a blocker for
       today's single-operator design unless this ever becomes multi-user.
-- [ ] `pip-audit` (CI job, `.github/workflows/tests.yml`) found 20 known
+- [x] `pip-audit` (CI job, `.github/workflows/tests.yml`) found 20 known
       vulnerabilities across 5 pinned dependencies. Most relevant to real
       trading: `cryptography` (signs every Kalshi API request via the RSA
       private key) is several versions behind fix availability; `starlette`
@@ -231,6 +231,31 @@ questions.
       changeset given how central they are, not a version bump made in
       passing. The `dependency-audit` CI job stays red until this is
       resolved — that's accurate signal, not broken CI.
+      **Shipped 2026-08-23**: `fastapi` 0.115.0→0.134.0 (the lowest release
+      pulling `starlette`>=1.x — verified by dry-run resolving every
+      intervening minor: 0.132.0 still resolves `starlette` 0.52.1, three
+      of the seven starlette CVEs were never backported to the 0.x line),
+      which forces `pydantic` 2.9.2→2.13.4 as a side effect (fastapi's own
+      floor, not a CVE fix on pydantic's own account); `cryptography`
+      43.0.3→50.0.0 (one version past the 49.0.0 that pip-audit's own
+      findings required, after landing exactly on PYSEC-2026-3552, a
+      PKCS7/S-MIME timing oracle introduced in 44.0.0 — not applicable to
+      this app's actual usage, RSA-PSS request signing, but fixed for free
+      rather than shipping one CVE short); `python-dotenv` 1.0.1→1.2.2;
+      dev-only `pytest` 8.3.3→9.0.3 and `requests` 2.32.3→2.33.0. Verified
+      before touching real `requirements*.txt`: a scratch venv dry-run
+      resolution of the full target set (`pip install --dry-run --report`)
+      confirmed no conflicts, then a second `pip-audit` pass against that
+      exact target set confirmed zero known vulnerabilities. Verified after:
+      full suite green (1191 passed) against the newly-installed versions
+      post-`ddev restart` (a plain `pip install` alone doesn't reload an
+      already-imported package into the live `uvicorn --reload` process),
+      plus a live smoke check that the app still boots and processes real
+      Kalshi market data end-to-end. One new, non-blocking observation:
+      `starlette.testclient`'s `httpx` integration now emits a
+      `StarletteDeprecationWarning` suggesting a future `httpx2` package —
+      left alone since it's a warning, not a failure, and `httpx2` isn't
+      something to chase pre-emptively.
 - [ ] **The entry gates select a worse subset than the pool they draw
       from.** Measured 2026-08-17 on KXBTC15M over 24h by
       `services/series_watcher.py` (`GET /api/diagnostics/series/KXBTC15M`):
