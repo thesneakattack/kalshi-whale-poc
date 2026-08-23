@@ -5398,9 +5398,16 @@
           run. Verified directly: constructing <code>main.broker</code> via a bare <code>import conftest; import
           main</code> (no other test file involved) now resolves to the tmp dir, not
           <code>data/paper_broker.db</code>; full suite (1,207 tests) still green; the real file's row count was
-          unchanged (still 8) after a full run post-fix. The two contaminating rows themselves are a separate,
-          deliberately-not-yet-decided cleanup - a live financial-record edit, even in paper mode, not something
-          to do silently.</p>
+          unchanged (still 8) after a full run post-fix. The 2 contaminating open/close pairs themselves were a
+          separate, deliberately-not-silent cleanup: confirmed with the user before touching live financial
+          records, then removed by reconstructing the exact bankroll delta they caused (-$0.3502, computed from
+          <code>open_position</code>/<code>close_position</code>'s own cost/fee/cash-back formulas applied to the
+          rows' stored values, not eyeballed from the rounded "realized" string) in one atomic transaction, followed
+          by a real <code>ddev restart</code> - required because <code>PaperBroker</code>'s <code>bankroll</code>/
+          <code>trade_log</code> are loaded into memory once at construction, so a DB-only edit wouldn't have
+          reached the already-running process. Verified post-restart: <code>/api/state</code>'s <code>recent_
+          trades</code> shows only real tickers, bankroll reflects only genuine trades, and the backup fix
+          (phase 135) held through the real restart with no spurious re-trigger.</p>
         <div class="files"><code>tests/conftest.py</code> · <code>.claude/hooks/run_tests.py</code></div>
       </div>
 
