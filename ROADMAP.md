@@ -240,12 +240,42 @@ questions.
       of it, against −11.2pts from exits). Adverse selection, not a bad
       signal source: something in `entry_threshold` / the price band /
       cooldowns / the runway gates is systematically preferring the wrong
-      end of the distribution. Not yet root-caused to a specific gate —
-      the next step is per-gate accuracy of what each one admits versus
-      rejects, which `candidate_log` cannot answer as-is (its
-      `rejected_candidates` table is upsert-deduplicated per
-      `(ticker, strategy, gate_name)`, so it is unusable for population
-      statistics).
+      end of the distribution. Not yet root-caused to a specific gate.
+      **Data-gap half fixed 2026-08-23**: `candidate_log`'s population-
+      statistics blocker (`rejected_candidates` was upsert-deduplicated per
+      `(ticker, strategy, gate_name)`, unusable for population statistics)
+      is closed — new `rejection_events` table (undeduped, one row per
+      rejection) plus `candidate_log.population_gate_summary()`, exposed
+      via `GET /api/candidate-log/summary`'s new `population_gates` key.
+      **Root-cause itself still not done** — the new table starts
+      collecting from 2026-08-23 forward, so it needs time to accumulate
+      before a real per-gate verdict is trustworthy (already showing real
+      signal live: `whale_watcher_kalshi.min_contracts` rejects sit near a
+      coin-flip 49.9% hypothetical win rate after ~5,300 resolved samples
+      in the first few minutes, consistent with a well-calibrated gate).
+      Advisory already has an existing, separate mechanism
+      (`advisory_engine._rejected_candidate_recommendations`, statistically
+      rigorous with a real margin-of-error/z-score check) answering a
+      closely related question off the OLD deduped table today — it
+      currently shows 4 live unapplied suggestions to loosen
+      `entry_threshold`/`min_whale_winrate_pct`/`close_window_sec`/
+      `special_market_min_seconds_to_close` (`GET /api/advisory/
+      recommendations`), surfaced but deliberately not applied this
+      session (a live strategy-tuning decision, not a data-gap fix).
+      **Important caveat on all of the above, from
+      `services/advisory/CHEATSHEET.md`'s own existing audit finding**:
+      every one of these compares win rate alone, with no cost_basis/
+      realized_pnl term — CLAUDE.md's HARD COMMANDMENT table already shows
+      the >=0.95 unit-cost band winning 96.3% of the time while *losing*
+      money, forever, so a high hypothetical win rate is not by itself
+      proof a gate should loosen. `population_gate_summary()` cannot even
+      be extended to check this today — `record_rejection()` never
+      captured the rejected candidate's price/unit_cost, only
+      `observed_value` (which means something different per gate:
+      confidence for `entry_threshold`, contract count for
+      `min_contracts`). Capturing price at rejection time would be the
+      real next step before trusting any loosen-this-gate recommendation
+      built on win rate alone.
 
 - [x] **Switch the whale threshold from dollars to contract count (or add
       one alongside).** Measured 2026-08-17 across 145,785 real captured

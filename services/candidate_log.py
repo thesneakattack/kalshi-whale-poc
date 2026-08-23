@@ -27,6 +27,21 @@ file, CREATE TABLE IF NOT EXISTS, resolved via the already-fetched
 market_results dict each tick - see market_analyst_agent.
 resolve_from_market_results for the precedent this mirrors, zero new API
 calls needed).
+
+POPULATION STATISTICS (rejection_events, added 2026-08-23)
+
+ROADMAP.md named the gap directly: rejected_candidates' own dedup key
+means a ticker rejected fifty times by the same gate over its life counts
+as ONE data point, not fifty - "unusable for population statistics." Fixed
+additively, not by changing the existing table's behavior (every current
+consumer of gate_summary()/rejected_candidates keeps working unchanged):
+record_rejection() now also inserts one row per call into a second table,
+rejection_events, with no dedup key at all - the true population.
+population_gate_summary() answers the same "what would a gate's rejected
+candidates have done" question gate_summary() does, from that real
+population, with the same honest "insufficient" gating
+services/settlement_edge.py's edge_report() uses rather than reporting a
+number earned from too few samples.
 """
 import sqlite3
 import time
@@ -62,6 +77,37 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # No PRIMARY KEY / dedup on (ticker, strategy, gate_name) - deliberately
+    # the opposite of rejected_candidates above, so this is the true
+    # population every individual rejection, not one row per key. See this
+    # module's own "POPULATION STATISTICS" docstring section.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rejection_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            gate_name TEXT NOT NULL,
+            observed_value REAL,
+            threshold_value REAL,
+            side TEXT,
+            rejected_at REAL NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            result TEXT,
+            resolved_at REAL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
+    )
+    # Resolution below is driven by ticker, once per market_results entry -
+    # this index is what keeps that an indexed UPDATE instead of a full
+    # table scan once the table grows past a trivial size.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
+        "WHERE resolved = 0"
+    )
     return conn
 
 
@@ -91,14 +137,32 @@ def record_rejection(
             """,
             (ticker, strategy, gate_name, observed_value, threshold_value, side, now),
         )
+        # Population copy - one row per call, no dedup. See this module's
+        # "POPULATION STATISTICS" docstring section.
+        conn.execute(
+            """
+            INSERT INTO rejection_events
+                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            """,
+            (ticker, strategy, gate_name, observed_value, threshold_value, side, now),
+        )
 
 
 def resolve_from_market_results(market_results: dict) -> int:
     """Same shape as market_analyst_agent.resolve_from_market_results -
     market_results is the {ticker: "yes"/"no"/""/None} mapping main.py's
     trading loop already builds from that tick's fetched markets, so this
-    costs zero new API calls. Returns how many rows were resolved this
-    call."""
+    costs zero new API calls. Returns how many rejected_candidates rows
+    were resolved this call - unchanged contract, existing callers already
+    use this count (e.g. whale_stream_handlers.py's
+    outcomes_resolved_via_lifecycle stat).
+
+    Also resolves rejection_events (the population table) as a side
+    effect, not counted in the return value - by ticker rather than by
+    row, since a busy ticker can carry far more event rows than the
+    deduped table ever would; one indexed UPDATE per resolved ticker
+    resolves all of that ticker's pending rows at once."""
     with _connect() as conn:
         rows = conn.execute(
             "SELECT rowid, ticker FROM rejected_candidates WHERE resolved = 0",
@@ -114,6 +178,15 @@ def resolve_from_market_results(market_results: dict) -> int:
                 (result, now, rowid),
             )
             resolved_count += 1
+        for ticker, result in market_results.items():
+            result = (result or "").strip().lower()
+            if result not in ("yes", "no"):
+                continue
+            conn.execute(
+                "UPDATE rejection_events SET resolved = 1, result = ?, resolved_at = ? "
+                "WHERE ticker = ? AND resolved = 0",
+                (result, now, ticker),
+            )
         return resolved_count
 
 
@@ -158,12 +231,81 @@ def gate_summary() -> list[dict]:
     return out
 
 
+def population_gate_summary(min_samples: int = 30) -> list[dict]:
+    """The same question gate_summary() answers - what would a gate's
+    rejected candidates have done - from rejection_events, the true
+    population (see this module's "POPULATION STATISTICS" docstring
+    section), instead of one deduped row per (ticker, strategy, gate_name).
+
+    Reports "insufficient" per gate rather than a hypothetical_win_rate
+    computed from too few samples - same honesty convention
+    services/settlement_edge.py's edge_report() uses. min_samples counts
+    SIDED resolved events (a rejection whose side is known and whose
+    market has settled), the same denominator gate_summary's
+    hypothetical_win_rate_n already uses, not raw rejected_count.
+
+    STILL COST-BLIND, same as gate_summary() - flagged, not fixed, here.
+    services/advisory/CHEATSHEET.md's own audit finding already names the
+    general trap: comparing win rate alone, with no cost_basis/
+    realized_pnl term, can't tell "this bucket wins more because the
+    signal is better" from "this bucket wins more because it's
+    mechanically priced into the near-certainty band" (CLAUDE.md's HARD
+    COMMANDMENT table: the >=0.95 unit-cost band wins 96.3% of the time
+    and *loses* money, forever). This function inherits that exact gap and
+    then some - record_rejection() never captured the rejected candidate's
+    price/unit_cost at all (only observed_value, which means something
+    different per gate: confidence for entry_threshold, contract count for
+    min_contracts, spread for max_spread), so there is no way to compute a
+    cost-aware version of this from the data that exists today. A high
+    hypothetical_win_rate here is a real, useful counterfactual signal but
+    not by itself proof a gate should be loosened - see ROADMAP.md."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT strategy, gate_name, side, result, resolved FROM rejection_events",
+        ).fetchall()
+    grouped: dict[tuple, dict] = {}
+    for strategy, gate_name, side, result, resolved in rows:
+        key = (strategy, gate_name)
+        g = grouped.setdefault(key, {
+            "strategy": strategy, "gate_name": gate_name,
+            "rejected_count": 0, "resolved_count": 0,
+            "_sided_total": 0, "_sided_wins": 0,
+        })
+        g["rejected_count"] += 1
+        if resolved:
+            g["resolved_count"] += 1
+            if side in ("yes", "no"):
+                g["_sided_total"] += 1
+                if result == side:
+                    g["_sided_wins"] += 1
+    out = []
+    for g in grouped.values():
+        sided_total = g.pop("_sided_total")
+        sided_wins = g.pop("_sided_wins")
+        if sided_total == 0 or sided_total < min_samples:
+            g["status"] = "insufficient"
+            g["hypothetical_win_rate"] = None
+        else:
+            g["status"] = "ready"
+            g["hypothetical_win_rate"] = round(100 * sided_wins / sided_total, 1)
+        g["hypothetical_win_rate_n"] = sided_total
+        g["min_samples"] = min_samples
+        out.append(g)
+    out.sort(key=lambda g: (-g["rejected_count"], g["strategy"], g["gate_name"]))
+    return out
+
+
 def clear_all() -> None:
     """Danger-zone reset support, same convention as market_catalog.
     clear_all()/market_history.clear_all() - drops accumulated rows, not
-    the table itself."""
+    the table itself. Clears rejection_events too - it's the same logical
+    dataset (see this module's "POPULATION STATISTICS" docstring section),
+    and leaving it behind would silently defeat a user's "wipe candidate
+    log" intent for anything reading the population table instead of the
+    deduped one."""
     with _connect() as conn:
         conn.execute("DELETE FROM rejected_candidates")
+        conn.execute("DELETE FROM rejection_events")
 
 
 def count_range(before: float | None = None, after: float | None = None) -> int:
@@ -172,21 +314,29 @@ def count_range(before: float | None = None, after: float | None = None) -> int:
     candidates is an upsert-per-(ticker,strategy,gate_name) table (only
     the most recent rejection survives per key, see record_rejection's own
     docstring) - a range here scopes by that latest rejected_at, not a
-    full rejection history, same caveat that applies to clear_range."""
+    full rejection history, same caveat that applies to clear_range.
+    Sums in rejection_events (the population table, uncapped by that same
+    dedup) so this preview matches what clear_range would actually delete,
+    not just the deduped table's half of it."""
     where, params = _range_where(before, after)
     with _connect() as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM rejected_candidates {where}", params).fetchone()[0]
+        deduped = conn.execute(f"SELECT COUNT(*) FROM rejected_candidates {where}", params).fetchone()[0]
+        population = conn.execute(f"SELECT COUNT(*) FROM rejection_events {where}", params).fetchone()[0]
+        return deduped + population
 
 
 def clear_range(before: float | None = None, after: float | None = None) -> int:
     """Deletes only rows whose rejected_at falls in (after, before],
     instead of the whole table - same "purge a noisy stretch without
     losing what's on either side of it" reasoning as signal_log.
-    clear_range."""
+    clear_range. Deletes from rejection_events too, same reasoning as
+    clear_all - returns the combined row count so this matches what
+    count_range previews."""
     where, params = _range_where(before, after)
     with _connect() as conn:
         cur = conn.execute(f"DELETE FROM rejected_candidates {where}", params)
-        return cur.rowcount
+        cur2 = conn.execute(f"DELETE FROM rejection_events {where}", params)
+        return cur.rowcount + cur2.rowcount
 
 
 def _range_where(before: float | None, after: float | None) -> tuple[str, list]:

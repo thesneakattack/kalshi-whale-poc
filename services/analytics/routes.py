@@ -76,12 +76,23 @@ async def get_declined_suggestions(limit: int = 50):
 
 
 @router.get("/api/candidate-log/summary")
-async def get_candidate_log_summary():
+async def get_candidate_log_summary(min_population_samples: int = 30):
     # services/candidate_log.py - Gap 1 of docs/config-tuning-data-gaps-
     # 2026-08-10.md. Always safe to call, no enable flag: this data
     # collects passively from every gate check regardless of any config
     # toggle, same as signal_log itself.
-    return {"gates": candidate_log.gate_summary()}
+    #
+    # population_gates (2026-08-23, ROADMAP.md's "unusable for population
+    # statistics" gap) - gates is the existing deduped-per-(ticker,
+    # strategy,gate) view every current consumer (advisory_engine, the
+    # dashboard) already reads and keeps reading unchanged; population_
+    # gates is the same question answered from rejection_events, the true
+    # undeduped population, with an honest "insufficient" status per gate
+    # rather than a number earned from too few samples.
+    return {
+        "gates": candidate_log.gate_summary(),
+        "population_gates": candidate_log.population_gate_summary(min_population_samples),
+    }
 
 
 @router.get("/api/regime/by-hour")

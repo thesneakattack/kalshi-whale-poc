@@ -104,3 +104,79 @@ def test_gate_summary_sorted_by_resolved_count_descending():
     gates = cl.gate_summary()
     assert gates[0]["gate_name"] == "gate_b"  # 1 resolved, sorts first
     assert gates[1]["gate_name"] == "gate_a"  # 0 resolved
+
+
+# ---- population statistics (rejection_events) - 2026-08-23 ---------------
+# ROADMAP.md's own "unusable for population statistics" gap: rejected_
+# candidates dedups on (ticker, strategy, gate_name), so a ticker rejected
+# repeatedly by the same gate only ever counts once. rejection_events fixes
+# that additively - these tests lock in that it's a true, undeduped
+# population, and that every existing danger-zone/reset operation stays in
+# sync between the two tables.
+
+def test_repeated_rejection_grows_the_population_table_not_deduped():
+    """The exact gap gate_summary() can't answer - three rejections of the
+    same ticker/gate must be three population rows, not one."""
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.09, 0.05, now=2000.0)
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.10, 0.05, now=3000.0)
+    pop = cl.population_gate_summary(min_samples=0)
+    assert len(pop) == 1
+    assert pop[0]["rejected_count"] == 3  # not 1, unlike gate_summary()'s dedup
+
+
+def test_population_gate_summary_reports_insufficient_below_min_samples():
+    cl.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.5, 0.6, side="yes")
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    pop = cl.population_gate_summary(min_samples=5)
+    assert pop[0]["status"] == "insufficient"
+    assert pop[0]["hypothetical_win_rate"] is None
+    assert pop[0]["hypothetical_win_rate_n"] == 1
+
+
+def test_population_gate_summary_ready_once_min_samples_met():
+    for i in range(5):
+        side = "yes" if i < 4 else "no"
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "entry_threshold", 0.5, 0.6, side=side)
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    pop = cl.population_gate_summary(min_samples=5)
+    assert pop[0]["status"] == "ready"
+    assert pop[0]["hypothetical_win_rate_n"] == 5
+    assert pop[0]["hypothetical_win_rate"] == pytest.approx(80.0)  # 4/5 sided-matched
+
+
+def test_population_resolution_is_batched_by_ticker_not_row():
+    """A ticker rejected many times by the same gate must all resolve
+    together from one market_results entry - not just the most recent row,
+    the way rejected_candidates' single row would suggest."""
+    for i in range(4):
+        cl.record_rejection("TICK-A", "market_native", "max_spread", 0.05 + i * 0.01, 0.05, now=1000.0 + i)
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    pop = cl.population_gate_summary(min_samples=0)
+    assert pop[0]["rejected_count"] == 4
+    assert pop[0]["resolved_count"] == 4
+
+
+def test_clear_all_wipes_the_population_table_too():
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05)
+    cl.clear_all()
+    assert cl.population_gate_summary(min_samples=0) == []
+
+
+def test_count_range_and_clear_range_include_population_rows():
+    # One rejection lands in both tables per call - a fresh ticker/gate, so
+    # rejected_candidates gets exactly one row too (no dedup collapse to
+    # worry about here).
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    cl.record_rejection("TICK-B", "whale_follow", "entry_threshold", 0.5, 0.6, now=2000.0)
+    # 2 rows in rejected_candidates + 2 in rejection_events = 4.
+    assert cl.count_range(before=1500.0) == 2
+    assert cl.count_range() == 4
+    deleted = cl.clear_range(before=1500.0)
+    assert deleted == 2  # one from each table for TICK-A only
+    remaining_gates = cl.gate_summary()
+    assert len(remaining_gates) == 1
+    assert remaining_gates[0]["gate_name"] == "entry_threshold"
+    remaining_population = cl.population_gate_summary(min_samples=0)
+    assert len(remaining_population) == 1
+    assert remaining_population[0]["gate_name"] == "entry_threshold"
