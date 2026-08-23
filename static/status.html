@@ -4991,6 +4991,51 @@
           <code>tests/test_diagnostics_routes.py</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 127 · backup, and a 5.7GB bug found while sizing it</div>
+        <h4>data/*.db backup/retention ships; sizing it against real data finds and fixes a real bug</h4>
+        <p>ROADMAP.md's "Path to production" section named backup/retention as a real gap - "single-file
+          SQLite with no backup/retention policy... not once a lost file means lost real financial state." New
+          <code>services/backup/</code> package: <code>sqlite3.Connection.backup()</code> (the stdlib's own
+          online-backup API, safe against a torn/inconsistent snapshot regardless of journal mode - the same
+          failure class phase 126's <code>config_store</code> fix just closed for a different file) snapshots
+          every <code>data/*.db</code> file into a timestamped directory under <code>data/backups/</code>, prunes
+          old snapshots by retention count, and records every run in a new <code>data/backup_log.db</code> (same
+          audit-trail idiom as <code>reset_log.py</code>/<code>fault_log.py</code>). Runs two ways: a config-gated
+          background task in the trading loop (same <code>_maybe_*</code> idiom as
+          <code>catalog_scan.py</code>/<code>discovery_cache.py</code>, zero setup under <code>ddev</code>) and a
+          standalone CLI (<code>python -m services.backup.backup</code>) for a real deployment's own cron/
+          systemd timer, since this app has no real host/process supervisor yet. <code>GET /api/backup/status</code>/
+          <code>history</code> and a synchronous manual <code>POST /api/backup/run</code> round out the
+          informativeness half - verified live, a real run against the full <code>data/</code> directory
+          completed in 25s via <code>asyncio.to_thread</code> with zero trading-loop stall.
+          Sizing the retention default against real file sizes (rather than assuming) found something worth
+          finding: <code>data/game_state.db</code> was 5.5GB, with 14,204 of its 37,801 rows
+          (<code>event_type='crypto'</code>) averaging 403KB each - 99.4% of the table. Root cause: a crypto
+          live-data payload carries OHLC candlesticks plus a price timeseries that only grow over a market's
+          life, and every write re-stored the array's FULL history, not just the delta -
+          <code>_MIN_INTERVAL_SEC</code> (added the same day this was first wired, 2026-08-17) rate-limits write
+          frequency but does nothing about per-write payload redundancy. Confirmed via grep this was pure waste,
+          not disclosed forward capture: zero callers of this module's own <code>timeline()</code> exist anywhere
+          in the codebase - nothing has ever read one of these rows back - and the underlying price data is
+          already captured with far better fidelity by the WS-based <code>services/index_feed.py</code>.
+          <code>record()</code> now refuses <code>event_type='crypto'</code> outright; sports/commodity payloads
+          are unaffected (commodity's own footprint measured negligible - 576 rows, 30MB). The existing 7-day
+          <code>prune()</code> was independently confirmed already working correctly throughout (oldest crypto
+          row was 6.31 days old, right at that window's edge) - this was write-side redundancy within an
+          already-compliant retention window, never a "retention broken" bug. New
+          <code>prune_crypto_backlog()</code>, a one-time cleanup companion (not wired into any recurring loop),
+          ran live against the real database with direct user approval - <code>data/game_state.db</code>: 5.81GB
+          -&gt; 0.07GB, 14,205 rows deleted, recorded in <code>reset_log.db</code> for the audit trail.
+          <code>data/</code>'s total footprint: 34GB (with stray backup-testing snapshots) -&gt; 8.3GB.
+          Full suite (1,155 tests) green throughout.</p>
+        <div class="files"><code>services/backup/backup.py</code> · <code>services/backup/routes.py</code> ·
+          <code>services/backup/__init__.py</code> · <code>services/backup/CHEATSHEET.md</code> ·
+          <code>services/app_state.py</code> · <code>main.py</code> · <code>.gitignore</code> ·
+          <code>config/settings.yaml</code> · <code>services/game_state.py</code> ·
+          <code>tests/test_game_state.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 

@@ -161,9 +161,23 @@ questions.
       TLS domain, process supervisor, or uptime guarantee beyond ddev's dev
       containers. Decide and build a real deployment target before real
       capital depends on this process staying up.
-- [ ] `data/*.db` (bankroll, positions, kill-switch state, signal log) is
+- [x] `data/*.db` (bankroll, positions, kill-switch state, signal log) is
       single-file SQLite with no backup/retention policy — fine for a local
       paper POC, not once a lost file means lost real financial state.
+      Shipped 2026-08-23: new `services/backup/` package snapshots every
+      `data/*.db` file via `sqlite3.Connection.backup()` (safe against a
+      torn snapshot regardless of journal mode) into timestamped
+      directories under `data/backups/`, prunes by retention count
+      (default 14, ~3.5 days at the default 6h interval), and records
+      every run for audit. Runs both as a config-gated background task in
+      the trading loop (zero setup under `ddev`) and as a standalone CLI
+      (`python -m services.backup.backup`) for a real deployment's own
+      cron/systemd timer. `GET /api/backup/status`/`history` +
+      `POST /api/backup/run` for visibility/manual control. Sizing this
+      against real data also surfaced and fixed a real, unrelated 5.7GB
+      `game_state.db` bug (crypto candlestick payloads re-stored in full
+      on every write, zero consumers ever read them back) — see that
+      module's own CHEATSHEET/`status.html` phase 126.
 - [ ] No monitoring/alerting beyond watching the dashboard or `ddev logs` —
       a kill-switch trip, crash, or connectivity loss currently notifies no
       one. Worth promoting ahead of the P4 notifications item below,
