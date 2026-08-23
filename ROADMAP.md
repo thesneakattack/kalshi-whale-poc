@@ -48,7 +48,7 @@ is **fully shipped**. That's necessary, not sufficient: going from "the
 gate works" to "flip it for real" still has these open operational
 questions.
 
-- [ ] **#1 priority, direct instruction (2026-08-16, live KXBTC15M stress
+- [x] **#1 priority, direct instruction (2026-08-16, live KXBTC15M stress
       test — "otherwise I can't trust any insights whatsoever"):** a
       position can open with almost no runway left before its market's
       close and then just ride to settlement completely unmanaged.
