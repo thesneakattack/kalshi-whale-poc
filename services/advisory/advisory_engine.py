@@ -932,16 +932,24 @@ def generate_recommendations(
     current_summary = summaries.get(current_fp)
     resolved_count = current_summary["total_closed"] if current_summary else 0
 
+    # Computed once, not once per caller-gated block below (2026-08-23,
+    # ROADMAP.md's "per-module data-consumption audit" gap-check) - a real
+    # O(n) pass over the full trade history (compute_summary), and every
+    # real caller (routes.py, market_analyst_orchestrator's context
+    # builders) passes both gate_summaries and category_rows together, so
+    # the two blocks below were computing the identical result twice on
+    # every call in the normal case, not just a rare overlap.
+    overall_summary = trade_analytics.compute_summary(rows)
+
     recs = _within_variant_recommendations(rows, cfg["strategy"])
     recs += _cross_variant_recommendations(current_fp, summaries, variants, min_resolved_trades)
     if gate_summaries:
         recs += _rejected_candidate_recommendations(
-            gate_summaries, cfg["strategy"], trade_analytics.compute_summary(rows),
+            gate_summaries, cfg["strategy"], overall_summary,
         )
     if series_evaluator_rows:
         recs += _series_evaluator_recommendations(series_evaluator_rows, cfg["strategy"])
     if category_rows:
-        overall_summary = trade_analytics.compute_summary(rows)
         recs += _category_conditional_recommendations(
             category_rows, cfg["strategy"], overall_summary.get("win_rate_pct"),
             cfg.get("strategy_overrides"), overall_n=overall_summary.get("total_closed", 0),

@@ -268,12 +268,16 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     adv_cfg = cfg.get("advisory") or {}
     gate_summaries = candidate_log.gate_summary()
+    # Computed once, reused below for the return dict's own "regime_by_
+    # category" - previously called twice on the identical all_rows input
+    # (2026-08-23, ROADMAP.md's "per-module data-consumption audit" gap-check).
+    category_rows = regime_analytics.by_category(all_rows)
     recommendations = advisory_engine.generate_recommendations(
         all_rows, cfg, current_fp, variants, adv_cfg.get("min_resolved_trades_per_variant", 30),
         gate_summaries=gate_summaries,
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
-        category_rows=regime_analytics.by_category(all_rows),
+        category_rows=category_rows,
     )
     # Busiest 10 series by observed trade volume - a real, disclosed bound
     # (not exhaustive) so this section can't grow unbounded as more series
@@ -305,7 +309,7 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
         # the same segmentation the History tab's Regime panel already
         # shows a human, now available to the model too.
         "rejected_candidate_gates": gate_summaries,
-        "regime_by_category": regime_analytics.by_category(all_rows),
+        "regime_by_category": category_rows,
         "regime_by_hour": regime_analytics.by_hour_of_day(all_rows),
     }
 

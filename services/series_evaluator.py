@@ -198,29 +198,42 @@ def evaluate_pending(cfg: dict, now: float | None = None) -> list[dict]:
     backoff_multiplier = se_cfg.get("backoff_multiplier", 2.0)
     backoff_max_sec = se_cfg.get("backoff_max_sec", 86400)
 
+    # One connection for the whole call, not one per ready series - same
+    # fix record_trades_observed_bulk already applied to this file's own
+    # per-trade write path (2026-08-11 incident: a fresh _connect(), which
+    # is a real sqlite3.connect() plus a CREATE TABLE IF NOT EXISTS check
+    # every time, is real overhead to pay per row rather than once).
+    # evaluate_pending runs every tick when series_evaluator.enabled
+    # (ROADMAP.md's "per-module data-consumption audit" gap-check,
+    # 2026-08-22), so a tick where several series become ready at once -
+    # e.g. after a backfill, or several series admitted around the same
+    # time - would otherwise reopen the connection once per verdict.
+    # conn.commit() after each UPDATE keeps this call's original per-
+    # verdict durability (a crash mid-loop still keeps every verdict
+    # already written), rather than trading that away for one commit at
+    # the end.
     with _connect() as conn:
         rows = conn.execute(
             "SELECT series, first_seen_at, trades_observed, strike_count FROM series_status WHERE status = ?",
             (_STATUS_OBSERVING,),
         ).fetchall()
 
-    verdicts = []
-    for series, first_seen_at, trades_observed, strike_count in rows:
-        elapsed = now - first_seen_at
-        ready = (elapsed >= min_observation_sec and trades_observed >= min_trades_observed) \
-            or elapsed >= max_observation_sec
-        if not ready:
-            continue
+        verdicts = []
+        for series, first_seen_at, trades_observed, strike_count in rows:
+            elapsed = now - first_seen_at
+            ready = (elapsed >= min_observation_sec and trades_observed >= min_trades_observed) \
+                or elapsed >= max_observation_sec
+            if not ready:
+                continue
 
-        if trades_observed == 0:
-            approved = False
-            rate = 0.0
-        else:
-            qualified = signal_log.signal_count_for_series_since(series, first_seen_at)
-            rate = qualified / trades_observed
-            approved = rate >= min_qualify_rate
+            if trades_observed == 0:
+                approved = False
+                rate = 0.0
+            else:
+                qualified = signal_log.signal_count_for_series_since(series, first_seen_at)
+                rate = qualified / trades_observed
+                approved = rate >= min_qualify_rate
 
-        with _connect() as conn:
             if approved:
                 conn.execute(
                     "UPDATE series_status SET status = ?, last_evaluated_at = ?, next_eligible_at = NULL "
@@ -235,10 +248,11 @@ def evaluate_pending(cfg: dict, now: float | None = None) -> list[dict]:
                     "next_eligible_at = ? WHERE series = ?",
                     (_STATUS_REJECTED, new_strike_count, now, now + backoff_sec, series),
                 )
-        verdicts.append({
-            "series": series, "approved": approved, "rate": rate,
-            "trades_observed": trades_observed,
-        })
+            conn.commit()
+            verdicts.append({
+                "series": series, "approved": approved, "rate": rate,
+                "trades_observed": trades_observed,
+            })
     return verdicts
 
 
