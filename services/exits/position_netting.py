@@ -145,8 +145,8 @@ def _scenario_probabilities(members: list[tuple[str, object]], latest_prices: di
     check_exits already uses) - "ticker T wins" has probability
     current_price(T) regardless of which side this app holds on it. The
     market's own real-time read, not a fitted model - same "trust the
-    market's live read" precedent as market_analyst_agent.analyst_lean()
-    and the market-native momentum strategy. Deliberately NOT
+    market's live read" precedent as market_analyst_agent.analyst_lean().
+    Deliberately NOT
     renormalized to sum to exactly 1: per this module's own docstring,
     Kalshi's CLOB doesn't guarantee that in the first place, and forcing
     it to sum to 1 would erase exactly the mispricing signal this module

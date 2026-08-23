@@ -16,23 +16,20 @@ didn't visually match, and separately, this engine's per-field suggestions
 were scoped to trades placed under the *exact* current config
 (config_fingerprint == current_fp), so changing any one strategy field
 invalidated every prior trade's eligibility for suggesting a value for any
-*other* field. Per-field suggestions below (_within_variant_recommendations,
-_market_strategy_recommendations - the naming is legacy, they no longer
-filter by variant) now read the FULL trade history, matching
+*other* field. Per-field suggestions below (_within_variant_recommendations - the naming
+is legacy, kept for continuity with _cross_variant_recommendations, it no
+longer filters by variant) now read the FULL trade history, matching
 compute_insights()'s old broad scope, while gaining this module's concrete-
 suggestion/apply shape it never had. Only _cross_variant_recommendations
 still needs real per-variant scoping - "did a fully different past config
 perform better as a whole" is a different question that can't mean
 anything without it.
 
-Two brokers feed this: services/paper_broker.py (strategy.* fields -
-entry_threshold, longshot bonus, exit_* fields) and the separate
-market-native strategy's own broker (market_strategy.* fields -
-currently just min_momentum_delta), since momentum_reversal closes are only
-ever produced by services/market_strategy.py against ITS OWN trade log, never
-the whale-follow broker's. Passed as two separate row lists rather than one
-merged list so each suggestion function only ever reasons about the broker
-it actually came from.
+Fed by services/paper_broker.py's trade log (strategy.* fields -
+entry_threshold, longshot bonus, exit_* fields). Used to also take a
+second `market_rows` list for the now-removed Market-Native strategy's own
+broker (2026-08-22 removal) - every suggestion function here reasons about
+the one remaining broker only.
 
 Deterministic and explainable throughout. Still never writes config on its
 own initiative - generate_recommendations() only ever returns data;
@@ -114,8 +111,8 @@ def change_effect(fingerprint_before: str, fingerprint_after: str, summaries: di
     cross-variant comparisons already read, real trade-attribution rather
     than a fabricated number. Only ever meaningful for a change that
     actually altered the fingerprinted strategy.* subset
-    (config_performance.fingerprint/strategy_subset) - a market_strategy.*
-    or risk.*/etc. change always logs fingerprint_before == fingerprint_
+    (config_performance.fingerprint/strategy_subset) - a risk.*/advisory.*/
+    etc. change always logs fingerprint_before == fingerprint_
     after (see main.py's log_applied_change call sites), which this
     correctly reports as "nothing to compare" rather than pretending a
     delta exists. Also None before either side has any resolved trades yet
@@ -155,8 +152,8 @@ def change_effect_windowed(config_path: str, applied_at: float, rows: list[dict]
     the same window) - meant to be read alongside change_effect(), which
     stays the stricter of the two. Unlike change_effect(), this needs no
     fingerprint transition at all, so it's the only effect measurement a
-    market_strategy.*/risk.*/etc. change can ever get - change_effect()'s
-    own fingerprinting only ever covers strategy.*.
+    risk.*/advisory.*/etc. change can ever get - change_effect()'s own
+    fingerprinting only ever covers strategy.*.
 
     None (not a zeroed-out dict) when either side of the window has no
     resolved trades yet - same "don't show a number you can't honestly
@@ -428,42 +425,6 @@ def _sentiment_exit_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     return out
 
 
-def _momentum_exit_recommendation(rows: list[dict], market_cfg: dict) -> dict | None:
-    """market_strategy.py's whale-independent analog to sentiment-reversal
-    exits - closes market_broker positions, never the whale-follow broker's,
-    so this must be called with market_broker's own rows (see
-    _market_strategy_recommendations), not the strategy.* rows every other
-    function here reads. Ported from trade_analytics.compute_insights,
-    fixing the second real bug found there: the old renderer hardcoded a
-    `strategy.` prefix on this topic, but min_momentum_delta actually lives
-    under market_strategy.* - config_path here is correct from the start."""
-    group = [r for r in rows if r["close_type"] == "momentum_reversal"]
-    if len(group) < 3:
-        return None
-    n = len(group)
-    pnls = [r["realized_pnl"] for r in group if r["realized_pnl"] is not None]
-    avg_pnl = sum(pnls) / n
-    current_value = market_cfg.get("min_momentum_delta", 0.03)
-    if avg_pnl <= 0:
-        suggested = round(current_value + 0.01, 3)
-        tail = "reversed out on noise before a real trend formed, on average losing money - raising the required delta asks for a stronger move before reacting."
-    else:
-        suggested = round(max(0.005, current_value - 0.01), 3)
-        tail = "paid off on average - lowering the required delta may react faster to similar moves."
-    if suggested == current_value:
-        return None
-    return {
-        "id": rec_id("market_strategy.min_momentum_delta", suggested, n),
-        "config_path": "market_strategy.min_momentum_delta",
-        "current_value": current_value,
-        "suggested_value": suggested,
-        "rationale": f"momentum_reversal closed {n} position(s) under Market-Native Strategy, averaging {avg_pnl:+.2f} realized - {tail}",
-        "n": n,
-        "confidence_label": trade_analytics.confidence_label(n),
-        "significance_t": stats_power.one_sample_t_score(pnls),
-    }
-
-
 def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[dict]:
     """Despite the name (kept for continuity with _cross_variant_
     recommendations below), this no longer filters to one config variant -
@@ -486,17 +447,6 @@ def _within_variant_recommendations(rows: list[dict], strat_cfg: dict) -> list[d
     if rec:
         out.append(rec)
     out += _sentiment_exit_recommendations(rows, strat_cfg)
-    return out
-
-
-def _market_strategy_recommendations(market_rows: list[dict], market_cfg: dict) -> list[dict]:
-    """market_strategy.* suggestions, scored against market_broker's own
-    trade history - see _momentum_exit_recommendation's docstring for why
-    this can't just be folded into _within_variant_recommendations."""
-    out = []
-    rec = _momentum_exit_recommendation(market_rows, market_cfg)
-    if rec:
-        out.append(rec)
     return out
 
 
@@ -582,24 +532,15 @@ _GATE_CONFIG_PATH_AND_DIRECTION = {
     # rejects when seconds_to_close is *outside* the window (usually too
     # far out) so loosening means raising the ceiling ("max"); special_
     # market_gate rejects when seconds_to_close is *below* its grace
-    # period, same "min" shape as market_native's min_seconds_to_close
-    # below. whale_watcher_kalshi's own min_notional_usd gate
+    # period ("min"). whale_watcher_kalshi's own min_notional_usd gate
     # (kalshi_trade_tape.py) also logs rejections under a third strategy
     # key, "whale_watcher" - deliberately NOT added here yet, since
-    # _rejected_candidate_recommendations' accepted_summary/current_value
-    # lookups below only branch on "whale_follow" vs. everything-else, and
-    # whale_watcher_kalshi is a third config section market_cfg doesn't
-    # cover - needs its own comparison-baseline + cfg-section wiring, not
-    # just a map entry (see ROADMAP.md).
+    # _rejected_candidate_recommendations' current_value lookup below reads
+    # straight off strat_cfg and whale_watcher_kalshi is a different config
+    # section entirely - needs its own comparison-baseline + cfg-section
+    # wiring, not just a map entry (see ROADMAP.md).
     ("whale_follow", "close_window"): ("strategy.close_window_sec", "max"),
     ("whale_follow", "special_market_gate"): ("strategy.special_market_min_seconds_to_close", "min"),
-    ("market_native", "min_price"): ("market_strategy.min_price", "min"),
-    ("market_native", "max_price"): ("market_strategy.max_price", "max"),
-    ("market_native", "max_spread"): ("market_strategy.max_spread", "max"),
-    ("market_native", "min_volume_24h"): ("market_strategy.min_volume_24h", "min"),
-    ("market_native", "min_seconds_to_close"): ("market_strategy.min_seconds_to_close", "min"),
-    ("market_native", "min_momentum_delta"): ("market_strategy.min_momentum_delta", "min"),
-    ("market_native", "entry_confidence_threshold"): ("market_strategy.entry_confidence_threshold", "min"),
 }
 _REJECTED_CANDIDATE_MIN_N = 5  # matches trade_analytics.confidence_label's own low/moderate boundary
 _REJECTED_CANDIDATE_NUDGE_PCT = 0.10  # a 10% step toward "admit more"/"restrict more", same
@@ -607,8 +548,7 @@ _REJECTED_CANDIDATE_NUDGE_PCT = 0.10  # a 10% step toward "admit more"/"restrict
 
 
 def _rejected_candidate_recommendations(
-    gate_summaries: list[dict], strat_cfg: dict, market_cfg: dict,
-    whale_summary: dict | None, market_summary: dict | None,
+    gate_summaries: list[dict], strat_cfg: dict, whale_summary: dict | None,
 ) -> list[dict]:
     """One suggestion per mapped gate where candidate_log has enough
     resolved rejections to judge - compares what accepted trades actually
@@ -626,19 +566,18 @@ def _rejected_candidate_recommendations(
         rejected_n = row["hypothetical_win_rate_n"]
         if rejected_n < _REJECTED_CANDIDATE_MIN_N:
             continue
-        accepted_summary = whale_summary if strategy_key == "whale_follow" else market_summary
-        if not accepted_summary:
+        if not whale_summary:
             continue
-        accepted_wr = accepted_summary.get("win_rate_pct")
-        accepted_n = accepted_summary.get("total_closed", 0)
+        accepted_wr = whale_summary.get("win_rate_pct")
+        accepted_n = whale_summary.get("total_closed", 0)
         if accepted_wr is None or accepted_n < _REJECTED_CANDIDATE_MIN_N:
             continue
         rejected_wr = row["hypothetical_win_rate"]
         margin = _comparability_margin_pts(rejected_n, rejected_wr, accepted_n, accepted_wr)
         if rejected_wr < accepted_wr - margin:
             continue  # rejected candidates did meaningfully worse - the gate is working, nothing to suggest
-        section, _, field = config_path.partition(".")
-        current_value = (strat_cfg if section == "strategy" else market_cfg).get(field)
+        _, _, field = config_path.partition(".")
+        current_value = strat_cfg.get(field)
         if current_value is None or isinstance(current_value, bool):
             continue  # field not present in this config section, or not a plain number - nothing safe to nudge
         step = abs(current_value) * _REJECTED_CANDIDATE_NUDGE_PCT if current_value else _REJECTED_CANDIDATE_NUDGE_PCT
@@ -910,7 +849,7 @@ def _series_conditional_recommendations(
 
 
 def _drop_stale_recommendations(
-    recs: list[dict], rows: list[dict], market_rows: list[dict], last_applied_by_path: dict[str, float],
+    recs: list[dict], rows: list[dict], last_applied_by_path: dict[str, float],
 ) -> list[dict]:
     """Direct, confirmed-live bug report (2026-08-11): "if i click apply it
     just gives me the same evaluation and same potential increase value
@@ -955,9 +894,8 @@ def _drop_stale_recommendations(
             rec["fresh_samples_since_change"] = None
             out.append(rec)
             continue
-        relevant = market_rows if rec["config_path"].startswith("market_strategy.") else rows
         fresh_count = sum(
-            1 for r in relevant
+            1 for r in rows
             if r.get("entry_timestamp") is not None and r["entry_timestamp"] > last_applied
         )
         if fresh_count > 0:
@@ -968,7 +906,7 @@ def _drop_stale_recommendations(
 
 def generate_recommendations(
     rows: list[dict], cfg: dict, current_fp: str, variants: dict[str, dict], min_resolved_trades: int,
-    market_rows: list[dict] | None = None, gate_summaries: list[dict] | None = None,
+    gate_summaries: list[dict] | None = None,
     last_applied_by_path: dict[str, float] | None = None, series_evaluator_rows: list[dict] | None = None,
     category_rows: list[dict] | None = None, declined_ids: set[str] | None = None,
 ) -> dict:
@@ -976,9 +914,9 @@ def generate_recommendations(
     2026-08-10. Returns {"recommendations": [...], "resolved_count": int,
     "min_resolved_trades_per_variant": int}. No blanket gate on the whole
     return value anymore: per-field suggestions (_within_variant_
-    recommendations, _market_strategy_recommendations) read the full
-    history and hedge on their own per-field sample size, same as
-    compute_insights() always did. resolved_count/min_resolved_trades_per_
+    recommendations) read the full history and hedge on their own
+    per-field sample size, same as compute_insights() always did.
+    resolved_count/min_resolved_trades_per_
     variant are still reported so a caller can show progress toward
     unlocking _cross_variant_recommendations specifically, the one thing
     here that still needs the current variant to clear a floor.
@@ -995,12 +933,10 @@ def generate_recommendations(
     resolved_count = current_summary["total_closed"] if current_summary else 0
 
     recs = _within_variant_recommendations(rows, cfg["strategy"])
-    recs += _market_strategy_recommendations(market_rows or [], cfg.get("market_strategy") or {})
     recs += _cross_variant_recommendations(current_fp, summaries, variants, min_resolved_trades)
     if gate_summaries:
         recs += _rejected_candidate_recommendations(
-            gate_summaries, cfg["strategy"], cfg.get("market_strategy") or {},
-            trade_analytics.compute_summary(rows), trade_analytics.compute_summary(market_rows or []),
+            gate_summaries, cfg["strategy"], trade_analytics.compute_summary(rows),
         )
     if series_evaluator_rows:
         recs += _series_evaluator_recommendations(series_evaluator_rows, cfg["strategy"])
@@ -1022,7 +958,7 @@ def generate_recommendations(
             rows, cfg["strategy"], overall_summary.get("win_rate_pct"),
             cfg.get("strategy_overrides"), overall_n=overall_summary.get("total_closed", 0),
         )
-    recs = _drop_stale_recommendations(recs, rows, market_rows or [], last_applied_by_path or {})
+    recs = _drop_stale_recommendations(recs, rows, last_applied_by_path or {})
     if declined_ids:
         recs = [r for r in recs if r["id"] not in declined_ids]
     return {

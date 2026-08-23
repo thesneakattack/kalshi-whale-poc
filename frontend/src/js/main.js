@@ -1,4 +1,4 @@
-import { loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadCrossStrategyComparison, loadMarketAnalyst, loadMarketNativeState, loadRegimeSegmentation, loadSeriesEvaluator } from './advisory-calibration.js';
+import { loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadMarketAnalyst, loadRegimeSegmentation, loadSeriesEvaluator } from './advisory-calibration.js';
 import { loadConfig, loadSession } from './config-panel.js';
 import { loadDeclinedSuggestions, loadTradingHistory } from './history-core.js';
 import { connectWebSocket, refresh } from './polling-and-websocket.js';
@@ -15,7 +15,7 @@ import { loadSignalClusters, loadSignalHistory } from './whale-watch.js';
 // dispatchers, the first-run walkthrough, and the actual bootstrap calls
 // (loadConfig/loadSession/refresh/connectWebSocket/scheduleRefreshTimer)
 // that kick off everything the other 11 files define.
-const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'market-native', 'history', 'config'];
+const VIEWS = ['portfolio', 'markets', 'whale', 'terminal', 'history', 'config'];
 let currentView = 'portfolio';
 
 function showView(name) {
@@ -44,7 +44,6 @@ function showView(name) {
   // under someone actively browsing it.
   if (name === 'whale') { loadSignalHistory(); loadSignalClusters(); }
   if (name === 'history') { loadTradingHistory(); }
-  if (name === 'market-native') { loadMarketNativeState(); }
 }
 showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorage.getItem('whale-signal-view') : 'portfolio');
 
@@ -60,7 +59,6 @@ function refreshHistoryInsightsIfActive() {
   loadChangeHistory();
   loadCalibrationReport();
   loadCalibrationHistory();
-  loadCrossStrategyComparison();
   loadRegimeSegmentation();
   loadCandidateLogSummary();
   loadBacktestSweeps();

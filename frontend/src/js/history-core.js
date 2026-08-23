@@ -1,4 +1,4 @@
-import { loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadCrossStrategyComparison, loadMarketAnalyst, loadRegimeSegmentation, loadSeriesEvaluator } from './advisory-calibration.js';
+import { loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadMarketAnalyst, loadRegimeSegmentation, loadSeriesEvaluator } from './advisory-calibration.js';
 import { renderEquityChart, renderHistoryTrades } from './equity-and-cards.js';
 import { $, esc, fetchJSON, fmt, formatConfigValue, marketTitles } from './shared-utils.js';
 
@@ -33,7 +33,6 @@ async function loadTradingHistory() {
     loadChangeHistory();
     loadCalibrationReport();
     loadCalibrationHistory();
-    loadCrossStrategyComparison();
     loadRegimeSegmentation();
     loadCandidateLogSummary();
     loadBacktestSweeps();
@@ -164,13 +163,9 @@ const PLAIN_CONFIG_PATH_PHRASES = {
   'strategy.excluded_series': 'the list of market types the strategy is told to skip entirely',
   'strategy.exit_sentiment_min_signals': "how many recent whale trades are needed before “whale sentiment reversed” is trusted enough to close a position",
   'strategy.exit_sentiment_lean_pct': 'how one-sided recent whale activity has to be before treated as a real reversal',
-  'market_strategy.min_momentum_delta': 'how big a recent price move has to be before the market-native strategy treats it as real momentum',
-  'market_strategy.entry_confidence_threshold': 'how confident the market-native strategy needs to be before entering a trade',
-  'market_strategy.stop_loss_pct': 'how much of a loss the market-native strategy will tolerate before automatically closing a position',
-  'market_strategy.take_profit_pct': 'how much of a gain the market-native strategy locks in early',
 };
 const PLAIN_SECTION_PHRASES = {
-  strategy: 'the whale-follow strategy', market_strategy: 'the market-native strategy',
+  strategy: 'the whale-follow strategy',
   risk: 'risk controls', whale_watcher_kalshi: 'whale-print detection',
   confidence_calibration: 'whale-signal calibration', advisory: 'the suggestion engine itself',
   kalshi_account: 'your real-money account settings',

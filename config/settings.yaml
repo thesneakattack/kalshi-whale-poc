@@ -73,26 +73,6 @@ risk:
   kill_switch_enabled: true
 kalshi_account:
   trading_enabled: false
-market_strategy:
-  enabled: false
-  starting_bankroll: 1000000
-  max_position_pct: 0.05
-  cooldown_sec: 300
-  max_open_positions_per_series: null
-  kelly_fraction_of_cap: 0
-  min_price: 0.15
-  max_price: 0.85
-  max_spread: 0.05
-  min_volume_24h: 500
-  momentum_lookback_sec: 1800
-  min_momentum_delta: 0.094
-  min_seconds_to_close: 3600
-  entry_confidence_threshold: 0.405
-  take_profit_pct: null
-  stop_loss_pct: 0.2
-  exit_on_momentum_reversal: true
-  max_daily_loss_pct: 1
-  kill_switch_enabled: true
 whale_watcher_kalshi:
   min_notional_usd: 5000
   min_notional_usd_by_series:
@@ -127,9 +107,6 @@ confidence_calibration:
   snapshot_interval_sec: 21600
   auto_apply_enabled: false
   auto_apply_cooldown_sec: 86400
-market_strategy_calibration:
-  enabled: true
-  min_resolved_trades: 20
 market_analyst:
   enabled: true
   model: claude-sonnet-5

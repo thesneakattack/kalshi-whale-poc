@@ -2,8 +2,6 @@
 Rejected-candidate logging - closes Gap 1 of docs/config-tuning-data-gaps-
 2026-08-10.md (the "counterfactual gap"). Every entry/discovery gate in this
 app (strategy.entry_threshold, strategy.min_whale_winrate_pct,
-market_strategy.min_price/max_price/max_spread/min_volume_24h/
-min_momentum_delta/min_seconds_to_close/entry_confidence_threshold,
 whale_watcher_kalshi.min_notional_usd) only ever produces a boolean "did
 this candidate pass" - nothing previously recorded what happened to a
 candidate that failed. advisory_engine's own entry-threshold/longshot
@@ -15,13 +13,12 @@ from.
 This does NOT act on rejected candidates (no trade is ever placed from
 this module) - it only observes. Dedup key is (ticker, strategy,
 gate_name): a candidate that keeps failing the same gate on repeated
-evaluation (e.g. market_strategy.py re-scans every real market every
-tick) updates its one row in place rather than growing a new row per
+evaluation updates its one row in place rather than growing a new row per
 tick - the meaningful data point is "what did this gate's most recent
 observed value look like, and how did the market eventually resolve," not
 a full tick-by-tick history of a value that mostly drifts slowly. Once a
-ticker resolves, both strategies already skip it before reaching any gate
-(the market_results check runs first in both evaluate()/_evaluate_one()),
+ticker resolves, the strategy already skips it before reaching any gate
+(the market_results check runs first in evaluate()),
 so a resolved row is never overwritten by a later rejection - no extra
 guard needed for that race.
 
@@ -74,10 +71,8 @@ def record_rejection(
     side: str | None = None, now: float | None = None,
 ) -> None:
     """side, when known, is the direction a trade would have taken had this
-    gate not rejected the candidate (e.g. the whale print's own side, or
-    market_strategy's momentum-implied side) - not every gate can supply
-    this (market_strategy's price/spread/volume filters run before a side
-    is ever chosen), and that's fine: gate_summary() only computes a
+    gate not rejected the candidate (e.g. the whale print's own side) - not
+    every gate can supply this, and that's fine: gate_summary() only computes a
     hypothetical win rate for rows where side is present, and reports the
     plain yes/no resolution split otherwise."""
     now = now if now is not None else time.time()

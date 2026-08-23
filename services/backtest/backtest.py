@@ -13,10 +13,10 @@ assumed up front: services/signal_log.py's `signals` table stores
 gates whose comparison is a pure function of what's actually stored.
 That covers `strategy.entry_threshold` and `strategy.min_whale_winrate_pct`
 cleanly. It does NOT cover `strategy.longshot_price_threshold`/
-`longshot_entry_threshold_bonus` (needs price), any of
-`market_strategy.py`'s price-band/spread/volume/momentum gates (needs
-market_history data joined at the exact signal timestamp, which isn't
-retained), or `whale_watcher_kalshi.min_notional_usd` (needs raw notional,
+`longshot_entry_threshold_bonus` (needs price), any price-band/spread/
+volume/momentum-style gate (needs market_history data joined at the exact
+signal timestamp, which isn't retained), or
+`whale_watcher_kalshi.min_notional_usd` (needs raw notional,
 never logged - see services/candidate_log.py's own Gap 1 for how a NEW
 signal's notional now gets captured going forward, which doesn't help
 replay the ~16k signals that already predate it). A stateful replay

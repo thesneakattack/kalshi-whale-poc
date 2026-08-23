@@ -41,10 +41,6 @@ se_module.DB_PATH = _tmp_dir / "series_evaluator.db"
 # stream + tick paths - redirect it like every other store so a test run
 # can never write into the real data/series_watcher.db (CLAUDE.md).
 sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
-# main.py derives market_broker/market_risk's db_path from broker.db_path/
-# risk.db_path (both already redirected above) rather than a fresh path of
-# their own - see main.py's own comment on this - so no separate redirect
-# is needed for those two.
 
 _tmp_config_path = _tmp_dir / "settings.yaml"
 shutil.copy(config_store_module.CONFIG_PATH, _tmp_config_path)
@@ -953,7 +949,7 @@ def test_applied_changes_effect_reports_a_real_before_after_win_rate_delta():
 
 
 def test_applied_changes_effect_is_none_for_non_strategy_changes():
-    # market_strategy.*/risk.*/etc. changes never alter the fingerprinted
+    # risk.*/advisory.*/etc. changes never alter the fingerprinted
     # strategy.* subset, so fingerprint_before always equals
     # fingerprint_after for them - correctly no effect to report, not a
     # bug in the logging.
@@ -963,45 +959,6 @@ def test_applied_changes_effect_is_none_for_non_strategy_changes():
     changes = client.get("/api/advisory/applied-changes").json()["changes"]
     match = next(c for c in changes if c["config_path"] == "risk.max_daily_loss_pct" and c["new_value"] == 0.33)
     assert match["effect"] is None
-
-
-def test_advisory_apply_end_to_end_handles_a_market_strategy_recommendation():
-    # 2026-08-10 unified-engine merge: recommendations can now carry a
-    # market_strategy.* config_path (min_momentum_delta), not just
-    # strategy.* - this exercises the apply route's generalized
-    # `section, _, field = config_path.partition(".")` against a real,
-    # non-"strategy" section end to end, seeded via market_broker (the
-    # separate MarketNativeStrategy broker momentum_reversal closes
-    # actually come from), not the whale-follow broker.
-    _reset_advisory_state()
-    main.config_store.update({
-        "advisory": {"enabled": True, "min_resolved_trades_per_variant": 5},
-        "market_strategy": {"min_momentum_delta": 0.03},
-    })
-    main.market_broker.reset(starting_bankroll=10000.0)
-    for i in range(3):
-        main.market_broker.open_position(
-            f"MTICK-{i}", "yes", size=10, price=0.5, reason="momentum entry",
-        )
-        main.market_broker.close_position(
-            f"MTICK-{i}", exit_price=0.4,
-            reason="momentum reversed: price moved 4% against this yes position over 30m",
-        )
-
-    resp = client.get("/api/advisory/recommendations")
-    assert resp.status_code == 200
-    recs = resp.json()["recommendations"]
-    mom_rec = next(r for r in recs if r["config_path"] == "market_strategy.min_momentum_delta")
-    assert mom_rec["current_value"] == 0.03
-    assert mom_rec["suggested_value"] == 0.04
-
-    apply_resp = client.post("/api/advisory/recommendations/apply", json={"id": mom_rec["id"]})
-    assert apply_resp.status_code == 200
-    assert main.config_store.get()["market_strategy"]["min_momentum_delta"] == 0.04
-
-    changes = client.get("/api/advisory/applied-changes").json()["changes"]
-    assert changes[0]["config_path"] == "market_strategy.min_momentum_delta"
-    assert changes[0]["new_value"] == 0.04
 
 
 # --- Whale-signal calibration manual apply -----------------------------------
@@ -1135,39 +1092,10 @@ def test_calibration_apply_twice_against_unchanged_data_does_not_crash(tmp_path,
         assert "nothing to apply" in second.json()["detail"]
 
 
-# --- MarketNativeStrategy / market_history debug endpoints -------------------
+# --- market_history debug endpoint --------------------------------------
 # Backend-only for now (docs/advisory-engine-plan.md §9-adjacent, direct
-# request 2026-08-08) - no UI panel yet, but real endpoints, so smoke-test
-# them the same as everything else rather than leaving them unverified.
-
-def test_market_strategy_state_endpoint_reports_disabled_by_default():
-    # Explicitly set, not assumed from whatever config/settings.yaml
-    # contained at the moment this test module happened to import (the
-    # one-time copy above) - the real file is live-tunable and a prior
-    # real session enabling market_strategy for actual use shouldn't make
-    # this test flaky. main.config_store is already redirected to the temp
-    # copy at this point, so this can't touch the real file.
-    main.config_store.update({"market_strategy": {"enabled": False}})
-    main.market_broker.reset(starting_bankroll=10000.0)
-    resp = client.get("/api/market-strategy/state")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["enabled"] is False
-    assert body["broker"]["bankroll"] == 10000.0
-    assert body["broker"]["positions"] == []
-    assert body["summary"]["total_closed"] == 0
-
-
-def test_market_strategy_state_endpoint_uses_its_own_broker_not_the_whale_ones():
-    main.broker.reset(starting_bankroll=7777.0)
-    main.market_broker.reset(starting_bankroll=8888.0)
-    main.bump_generation()  # direct .reset() calls above bypass the route that normally does this - see get_state()'s ETag cache
-    resp = client.get("/api/market-strategy/state")
-    assert resp.json()["broker"]["bankroll"] == 8888.0
-    # And the whale-follow broker's own state endpoint is unaffected.
-    state_resp = client.get("/api/state")
-    assert state_resp.json()["broker"]["bankroll"] == 7777.0
-
+# request 2026-08-08) - no UI panel yet, but a real endpoint, so smoke-test
+# it the same as everything else rather than leaving it unverified.
 
 def test_market_history_summary_endpoint_reports_counts():
     resp = client.get("/api/market-history/summary")
@@ -2772,24 +2700,10 @@ def test_enrich_recent_trades_pairs_correctly_even_when_entry_is_outside_the_tai
     assert close_row["won"] is True
 
 
-# --- market-native / shadow un-halt routes (2026-08-10) --------------------
-# Real bug found live investigating a direct report ("market-native strategy
-# seems to have stalled"): market_strategy.py's own risk manager had tripped
-# its kill switch with no route to ever clear it - and services/shadow_mode.py
-# had the identical gap (confirmed live, dormant only because mode was
-# "paper" at the time).
-
-def test_market_risk_halt_and_resume_routes():
-    resp = client.post("/api/market-risk/halt")
-    assert resp.status_code == 200
-    assert resp.json()["halted"] is True
-    assert main.market_risk.halted is True
-
-    resp = client.post("/api/market-risk/resume")
-    assert resp.status_code == 200
-    assert resp.json()["halted"] is False
-    assert main.market_risk.halted is False
-
+# --- shadow un-halt route (2026-08-10) --------------------------------------
+# Real bug found live: services/shadow_mode.py's own risk manager had no
+# route to ever clear a tripped kill switch (confirmed live, dormant only
+# because mode was "paper" at the time).
 
 def test_shadow_risk_resume_route():
     main.shadow.halted = True
@@ -2798,13 +2712,3 @@ def test_shadow_risk_resume_route():
     assert resp.status_code == 200
     assert resp.json()["halted"] is False
     assert main.shadow.halted is False
-
-
-def test_reset_endpoint_market_native_flag_resets_broker_and_risk():
-    main.market_broker.open_position(ticker="TICK-A", side="yes", size=10, price=0.5, reason="test")
-    main.market_risk.manual_halt("test halt")
-    resp = client.post("/api/reset", json={"paper": False, "market_native": True})
-    assert resp.status_code == 200
-    assert "market_native" in resp.json()["cleared"]
-    assert main.market_broker.positions == {}
-    assert main.market_risk.halted is False

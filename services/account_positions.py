@@ -3,7 +3,7 @@ The real (not paper) connected Kalshi account's snapshot fetch + field
 trimming - shared by the whale-stream fill/position handlers
 (_process_stream_fill/_process_stream_position), the REST poll
 (trading_loop's market_fetch phase), and the position routes
-(GET /api/account/orders, GET /api/market-strategy/state). Extracted
+(GET /api/account/orders). Extracted
 2026-08-21 as part of main.py's modularization pass - previously this
 lived directly in main.py and both the stream handlers and the routes
 reached into it there.

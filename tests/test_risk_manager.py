@@ -169,11 +169,11 @@ def test_persistence_across_restart_without_halt(tmp_path, monkeypatch):
     assert resumed.day_start_bankroll == 1000.0
 
 
-# --- per-instance db_path (services/market_strategy.py's own kill switch) ---
+# --- per-instance db_path (supports more than one independent kill switch) --
 
 def test_explicit_db_path_overrides_module_default(tmp_path, monkeypatch):
     monkeypatch.setattr(rm, "DB_PATH", tmp_path / "should-not-be-used" / "risk_state.db")
-    explicit_path = tmp_path / "explicit" / "market_risk_state.db"
+    explicit_path = tmp_path / "explicit" / "other_risk_state.db"
     risk = rm.RiskManager(starting_bankroll=500.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, db_path=explicit_path)
     risk.manual_halt("test")
     assert explicit_path.exists()

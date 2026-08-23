@@ -130,7 +130,7 @@ def test_log_applied_change_records_explicit_source(tmp_path, monkeypatch):
     # in the same shared change-history table.
     monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
     cp.log_applied_change(
-        config_path="market_strategy.min_momentum_delta", old_value=0.03, new_value=0.04,
+        config_path="risk.max_daily_loss_pct", old_value=0.03, new_value=0.04,
         rationale="r", trade_count=20, fingerprint_before="fp1", fingerprint_after="fp1",
         source="unified-advisory",
     )
@@ -199,11 +199,11 @@ def test_all_last_applied_by_path_one_entry_per_distinct_path(tmp_path, monkeypa
         rationale="r", trade_count=10, fingerprint_before="a", fingerprint_after="b", source="manual",
     )
     cp.log_applied_change(
-        config_path="market_strategy.min_momentum_delta", old_value=0.03, new_value=0.04,
+        config_path="risk.max_daily_loss_pct", old_value=0.03, new_value=0.04,
         rationale="r", trade_count=3, fingerprint_before="a", fingerprint_after="a", source="manual",
     )
     result = cp.all_last_applied_by_path()
-    assert set(result.keys()) == {"strategy.entry_threshold", "market_strategy.min_momentum_delta"}
+    assert set(result.keys()) == {"strategy.entry_threshold", "risk.max_daily_loss_pct"}
 
 
 def test_all_last_applied_by_path_returns_the_most_recent_timestamp_per_path(tmp_path, monkeypatch):
@@ -245,12 +245,12 @@ def test_diff_patch_skips_fields_where_the_value_is_unchanged():
 
 
 def test_diff_patch_handles_multiple_sections_and_fields_in_one_patch():
-    old_cfg = {"strategy": {"entry_threshold": 0.5}, "market_strategy": {"min_momentum_delta": 0.03}}
-    patch = {"strategy": {"entry_threshold": 0.6}, "market_strategy": {"min_momentum_delta": 0.04}}
+    old_cfg = {"strategy": {"entry_threshold": 0.5}, "risk": {"max_daily_loss_pct": 0.03}}
+    patch = {"strategy": {"entry_threshold": 0.6}, "risk": {"max_daily_loss_pct": 0.04}}
     changes = cp.diff_patch(old_cfg, patch)
     assert set(changes) == {
         ("strategy.entry_threshold", 0.5, 0.6),
-        ("market_strategy.min_momentum_delta", 0.03, 0.04),
+        ("risk.max_daily_loss_pct", 0.03, 0.04),
     }
 
 

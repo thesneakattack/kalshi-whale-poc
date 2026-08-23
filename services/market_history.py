@@ -9,8 +9,9 @@ Two jobs:
 1. A rolling per-market snapshot log (price/spread/volume/time-to-close),
    populated once per trading-loop tick from the same real market fetch
    main.py already does for the whale-follow strategy - zero extra API
-   cost. This is what services/market_strategy.py's momentum() reads to
-   decide entries, and the raw substrate for #2 below.
+   cost. This module's own momentum() reads it (used until 2026-08-22 by
+   the now-removed Market-Native strategy to decide entries), and it's the
+   raw substrate for #2 below.
 2. Settlement outcomes (real, from Kalshi's market.result field, same
    source main.py's check_exits/evaluate already use) plus
    compute_hypothetical_trades(), a retrospective "what would a simple
@@ -93,8 +94,8 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def seconds_to_close(close_time: str | None, now: float) -> float | None:
     """Same close_time parsing idiom as whale_simulator._score_confidence -
     no close_time (or an unparseable one) returns None rather than
-    guessing. Shared here (not duplicated) since both main.py's snapshot
-    logging and services/market_strategy.py's entry gate need it."""
+    guessing. Shared here (not duplicated) since main.py's snapshot
+    logging needs it too."""
     if not close_time:
         return None
     try:

@@ -27,7 +27,7 @@ def _cfg(**overrides):
         auto_exit_threshold=0.6, exit_sentiment_lean_pct=65, exit_sentiment_min_signals=3,
     )
     strategy.update(overrides)
-    return {"strategy": strategy, "market_strategy": {"min_momentum_delta": 0.03}}
+    return {"strategy": strategy}
 
 
 # --- variant_summaries -------------------------------------------------------
@@ -273,28 +273,6 @@ def test_sentiment_exit_recommendations_none_below_minimum_sample():
     assert ae._sentiment_exit_recommendations(rows, _cfg()["strategy"]) == []
 
 
-def test_momentum_exit_recommendation_uses_market_strategy_prefix_not_strategy():
-    # Real bug fixed by the merge: the old compute_insights-based renderer
-    # hardcoded a "strategy." prefix on this topic, but min_momentum_delta
-    # actually lives under market_strategy.*.
-    rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(3)]
-    rec = ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"])
-    assert rec is not None
-    assert rec["config_path"] == "market_strategy.min_momentum_delta"
-    assert rec["suggested_value"] == 0.04
-
-
-def test_momentum_exit_recommendation_lowers_when_net_positive():
-    rows = [_row(close_type="momentum_reversal", realized_pnl=3.0) for _ in range(3)]
-    rec = ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"])
-    assert rec["suggested_value"] == 0.02
-
-
-def test_momentum_exit_recommendation_none_below_minimum_sample():
-    rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(2)]
-    assert ae._momentum_exit_recommendation(rows, _cfg()["market_strategy"]) is None
-
-
 # --- generate_recommendations (the unified entrypoint) -----------------------
 # No blanket gate anymore (2026-08-10) - per-field suggestions read the full
 # trade history and hedge on their own per-field sample size, same as
@@ -370,14 +348,6 @@ def test_generate_recommendations_now_blends_other_variants_trades_for_within_va
     assert "strategy.entry_threshold" in paths
 
 
-def test_generate_recommendations_includes_market_strategy_suggestions_from_market_rows():
-    rows = [_row(config_fingerprint="fp1") for _ in range(5)]
-    market_rows = [_row(close_type="momentum_reversal", realized_pnl=-3.0) for _ in range(3)]
-    result = ae.generate_recommendations(rows, _cfg(), "fp1", {}, min_resolved_trades=5, market_rows=market_rows)
-    paths = [r["config_path"] for r in result["recommendations"]]
-    assert "market_strategy.min_momentum_delta" in paths
-
-
 # --- stale-suggestion filter (direct bug report, 2026-08-11: "if i click ----
 # apply it just gives me the same evaluation and same potential increase
 # value... suggesting a massive bug") ----------------------------------------
@@ -419,21 +389,6 @@ def test_generate_recommendations_never_stale_when_path_was_never_applied_before
     )
     paths = [r["config_path"] for r in result["recommendations"]]
     assert "strategy.entry_threshold" in paths
-
-
-def test_generate_recommendations_staleness_check_is_per_config_path_not_global():
-    # A market_strategy.* suggestion must be checked against market_rows'
-    # own entry_timestamps, not the whale-follow rows'.
-    rows = [_row(config_fingerprint="fp1", entry_timestamp=1000.0) for _ in range(5)]
-    market_rows = [
-        _row(close_type="momentum_reversal", realized_pnl=-3.0, entry_timestamp=3000.0) for _ in range(3)
-    ]
-    result = ae.generate_recommendations(
-        rows, _cfg(), "fp1", {}, min_resolved_trades=5, market_rows=market_rows,
-        last_applied_by_path={"market_strategy.min_momentum_delta": 2000.0},  # before market_rows' own timestamps
-    )
-    paths = [r["config_path"] for r in result["recommendations"]]
-    assert "market_strategy.min_momentum_delta" in paths  # fresh market_rows evidence exists
 
 
 def test_generate_recommendations_with_no_last_applied_by_path_is_unaffected():
@@ -523,7 +478,7 @@ def test_rejected_candidate_recommendation_skips_a_small_but_real_gap_at_large_n
     }]
     whale_summary = {"win_rate_pct": 68.0, "total_closed": 5000}
     recs = ae._rejected_candidate_recommendations(
-        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], whale_summary,
     )
     assert recs == []
 
@@ -542,7 +497,7 @@ def test_rejected_candidate_recommendation_still_fires_at_small_n_when_uncertain
     }]
     whale_summary = {"win_rate_pct": 60.0, "total_closed": 10}
     recs = ae._rejected_candidate_recommendations(
-        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], whale_summary,
     )
     assert len(recs) == 1
 
@@ -567,7 +522,7 @@ def test_rejected_candidate_recommendation_matches_the_real_2026_08_15_incident(
     }]
     whale_summary = {"win_rate_pct": 68.4, "total_closed": 607}
     recs = ae._rejected_candidate_recommendations(
-        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], {}, whale_summary, None,
+        gate_summaries, _cfg(min_whale_winrate_pct=85)["strategy"], whale_summary,
     )
     assert len(recs) == 1  # borderline, not a clean skip - see comment above
 
@@ -792,7 +747,7 @@ def test_generate_recommendations_includes_series_conditional_suggestions():
 # --- change_effect (Item 3D, 2026-08-10) --------------------------------------
 
 def test_change_effect_none_when_fingerprint_unchanged():
-    # market_strategy.*/risk.*/etc. changes always log the same fingerprint
+    # risk.*/advisory.*/etc. changes always log the same fingerprint
     # on both sides - nothing to compare, not a bug.
     summaries = {"fp1": {"total_closed": 10, "win_rate_pct": 50.0, "total_realized_pnl": 5.0}}
     assert ae.change_effect("fp1", "fp1", summaries) is None
@@ -834,14 +789,14 @@ def test_change_effect_windowed_none_with_no_trades_after_the_change():
 def test_change_effect_windowed_splits_on_entry_timestamp_not_fingerprint():
     # Deliberately all one fingerprint - unlike change_effect(), this must
     # not require a fingerprint transition at all, since it's the only
-    # effect measurement market_strategy.*/risk.*/etc. changes can ever get.
+    # effect measurement risk.*/advisory.*/etc. changes can ever get.
     rows = [
         _ts_row(100.0, config_fingerprint="fp1", won=False, realized_pnl=-10.0, close_type="stop_loss"),
         _ts_row(200.0, config_fingerprint="fp1", won=False, realized_pnl=-8.0, close_type="stop_loss"),
         _ts_row(1500.0, config_fingerprint="fp1", won=True, realized_pnl=12.0, close_type="settled_win"),
         _ts_row(1600.0, config_fingerprint="fp1", won=True, realized_pnl=9.0, close_type="settled_win"),
     ]
-    effect = ae.change_effect_windowed("market_strategy.stop_loss_pct", 1000.0, rows)
+    effect = ae.change_effect_windowed("risk.max_daily_loss_pct", 1000.0, rows)
     assert effect == {
         "before_win_rate_pct": 0.0, "before_n": 2, "before_realized_pnl": -18.0,
         "after_win_rate_pct": 100.0, "after_n": 2, "after_realized_pnl": 21.0,

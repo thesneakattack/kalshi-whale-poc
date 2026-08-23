@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from services import candidate_log, config_performance, regime_analytics, suggestion_decisions, trade_analytics
 from services.advisory import advisory_engine
 from services.analytics.market_analyst_orchestrator import _series_evaluator_overview_with_crosscheck
-from services.app_state import broker, bump_generation, market_broker
+from services.app_state import broker, bump_generation
 from services.config_store import config_store
 
 router = APIRouter()
@@ -137,10 +137,9 @@ async def get_advisory_recommendations():
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
-        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
         gate_summaries=candidate_log.gate_summary(),
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
@@ -164,10 +163,9 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     result = advisory_engine.generate_recommendations(
-        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+        all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
         gate_summaries=candidate_log.gate_summary(),
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
@@ -182,9 +180,7 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
         )
 
     # config_path is always exactly "<top-level section>.<field>" (see every
-    # suggestion function in advisory_engine.py) - strategy.* and, since
-    # 2026-08-10's unified engine, market_strategy.* too, so this can no
-    # longer assume "strategy." is the only prefix a recommendation carries.
+    # suggestion function in advisory_engine.py).
     section, _, field = match["config_path"].partition(".")
     config_store.update({section: {field: match["suggested_value"]}})
     new_fp = config_performance.fingerprint(config_store.get())
@@ -214,7 +210,6 @@ async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
     offset = max(offset, 0)
     changes = config_performance.recent_applied_changes(limit=limit, offset=offset)
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     summaries = advisory_engine.variant_summaries(all_rows)
     for c in changes:
         c["effect"] = (
@@ -226,12 +221,8 @@ async def get_advisory_applied_changes(limit: int = 50, offset: int = 0):
         # for any config_path (not just strategy.*, and with no fingerprint-
         # transition requirement), and isn't starved by fingerprint
         # fragmentation since it counts every trade before/after applied_at
-        # regardless of which exact config variant produced it. Picks
-        # market_broker's own trade history for market_strategy.* changes -
-        # that strategy's trades never appear in the whale-follow broker's
-        # own log at all.
-        rows_for_path = market_rows if c["config_path"].startswith("market_strategy.") else all_rows
-        c["effect_windowed"] = advisory_engine.change_effect_windowed(c["config_path"], c["applied_at"], rows_for_path)
+        # regardless of which exact config variant produced it.
+        c["effect_windowed"] = advisory_engine.change_effect_windowed(c["config_path"], c["applied_at"], all_rows)
     return {
         "changes": changes,
         "total": config_performance.applied_changes_count(),

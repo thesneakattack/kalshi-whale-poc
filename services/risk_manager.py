@@ -16,11 +16,12 @@ rollover below, a genuinely new calendar day.
 Real bug found live (2026-08-10): "daily loss limit" had never actually
 been daily - reset_day() was only ever called manually (POST /api/reset,
 or the two /api/risk/halt|resume-style routes), with nothing rolling the
-baseline over at a real day boundary. services/market_strategy.py's own
-kill switch tripped once, then stayed permanently halted for 55+ hours
-with zero automatic recovery path - the strategy looked "stalled" from
-the outside, but it was actually just correctly, silently obeying a kill
-switch nothing had ever cleared. check_daily_loss() now rolls the day over
+baseline over at a real day boundary. A second independent kill switch
+(the now-removed Market-Native strategy's own, 2026-08-22) tripped once,
+then stayed permanently halted for 55+ hours with zero automatic recovery
+path - the strategy looked "stalled" from the outside, but it was
+actually just correctly, silently obeying a kill switch nothing had ever
+cleared. check_daily_loss() now rolls the day over
 automatically (once per real UTC calendar day, not once per tick) before
 doing its own check - every existing call site gets this for free with no
 new call needed.
@@ -83,8 +84,8 @@ class RiskManager:
         # PaperBroker - defaults to the module-level DB_PATH (resolved at
         # call time, so existing tests' monkeypatch.setattr(rm, "DB_PATH",
         # ...) keeps working), or pass an explicit path to run a second,
-        # independent risk tracker (e.g. services/market_strategy.py's own
-        # kill switch) without colliding with another instance's risk_meta row.
+        # independent risk tracker without colliding with another instance's
+        # risk_meta row.
         self.db_path = db_path or DB_PATH
         self.starting_bankroll = starting_bankroll
         self.max_daily_loss_pct = max_daily_loss_pct
@@ -146,10 +147,9 @@ class RiskManager:
     def _maybe_rollover_day(self, current_bankroll: float, now: float | None = None) -> bool:
         """Rolls the baseline (and any halt) over exactly once per real UTC
         calendar-date change, not once per tick - direct fix for a real bug
-        found live (2026-08-10): market_strategy.py's kill switch tripped
-        once and then stayed permanently halted for 55+ hours, since
-        nothing had ever called reset_day() automatically. Returns True if
-        a rollover happened."""
+        found live (2026-08-10): a kill switch tripped once and then stayed
+        permanently halted for 55+ hours, since nothing had ever called
+        reset_day() automatically. Returns True if a rollover happened."""
         if _today(now) != self.day_start_date:
             self.reset_day(current_bankroll, now)
             return True

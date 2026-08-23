@@ -23,10 +23,8 @@ from services.whale_simulator import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
 _DEFAULT_MIN_NOTIONAL_USD = 2500.0
-# Trend-consistency window - matches market_strategy's own default
-# momentum_lookback_sec, since both are asking the same underlying question
-# (what has this market's price actually been doing lately) over a
-# comparable timeframe.
+# Trend-consistency window - how far back to look when asking "what has
+# this market's price actually been doing lately."
 _TREND_LOOKBACK_SEC = 1800
 # How large a real price move (in dollars, e.g. 0.05 = 5 cents) counts as
 # a "fully" trend-consistent or trend-fighting move - beyond this, trend_
@@ -586,8 +584,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # are watchlist-scoped and rotate, so they can't reliably answer
             # "what was this market's spread/volume at the exact moment
             # this signal fired" after the fact). yes_ask_dollars falls
-            # back to price itself, same "no ask data = assume no spread"
-            # idiom market_strategy.py's own spread calc already uses.
+            # back to price itself ("no ask data = assume no spread").
             yes_ask = float(market.get("yes_ask_dollars") or price)
             raw_context = {
                 "notional_usd": round(notional, 2),

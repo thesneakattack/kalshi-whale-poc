@@ -15,7 +15,7 @@ from services import (
     regime_analytics, series_evaluator, signal_log, stats_power, suggestion_decisions, trade_analytics,
 )
 from services.advisory import advisory_engine
-from services.app_state import broker, bump_generation, market_broker, state
+from services.app_state import broker, bump_generation, state
 from services.config.config_paths import _types_compatible
 from services.kalshi_client import KalshiClient
 
@@ -90,9 +90,8 @@ async def _analyze_market_uncached(
     if adv_cfg["enabled"]:
         current_fp = config_performance.fingerprint(cfg)
         variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
-        market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
         recommendations = advisory_engine.generate_recommendations(
-            all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"], market_rows=market_rows,
+            all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
             gate_summaries=candidate_log.gate_summary(),
             last_applied_by_path=config_performance.all_last_applied_by_path(),
             series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
@@ -265,14 +264,13 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
     how much history has accumulated (per the plan's own explicit
     "aggregated/summarized data, not raw per-trade rows" requirement)."""
     all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
     current_fp = config_performance.fingerprint(cfg)
     variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
     adv_cfg = cfg.get("advisory") or {}
     gate_summaries = candidate_log.gate_summary()
     recommendations = advisory_engine.generate_recommendations(
         all_rows, cfg, current_fp, variants, adv_cfg.get("min_resolved_trades_per_variant", 30),
-        market_rows=market_rows, gate_summaries=gate_summaries,
+        gate_summaries=gate_summaries,
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
         category_rows=regime_analytics.by_category(all_rows),
@@ -290,7 +288,6 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
     return {
         "config": cfg,
         "trade_summary": trade_analytics.compute_summary(all_rows),
-        "market_strategy_summary": trade_analytics.compute_summary(market_rows),
         "whale_track_record": signal_log.stats(days=30),
         "advisory_recommendations": recommendations["recommendations"],
         "variant_summaries": advisory_engine.variant_summaries(all_rows),

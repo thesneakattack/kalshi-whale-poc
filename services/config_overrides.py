@@ -1,11 +1,13 @@
 """
-Generic per-category/per-series config override resolver, shared by
-FollowTheWhaleStrategy and MarketNativeStrategy. Direct request
-(2026-08-15): "these strategies need to be able to be tweaked for
-individual series (pga tour, basketball championship, bitcoin price every
-15 minutes, what trump will say on tv, etc)."
+Generic per-category/per-series config override resolver, used by
+FollowTheWhaleStrategy (and, until its 2026-08-22 removal, the
+now-deleted Market-Native strategy too - a field-agnostic dict-merge, not
+tied to either strategy specifically). Direct request (2026-08-15): "these
+strategies need to be able to be tweaked for individual series (pga tour,
+basketball championship, bitcoin price every 15 minutes, what trump will
+say on tv, etc)."
 
-Before this, every strategy.*/market_strategy.* tuning field was a single
+Before this, every strategy.* tuning field was a single
 flat scalar applied identically to every series and category - a fast
 15-minute crypto market and a multi-day tournament shared the same
 cooldown/stop-loss/entry-threshold, with no general way to say otherwise.
@@ -33,8 +35,8 @@ def resolve(strat_cfg: dict, overrides: dict | None, category: str | None = None
     overrides layered on top (series wins over category, matching "most
     specific wins"). Never mutates strat_cfg or overrides. Missing/None
     overrides, or no matching category/series entry, is a complete no-op -
-    every existing caller with no strategy_overrides/market_strategy_overrides
-    populated yet sees identical behavior to today."""
+    every existing caller with no strategy_overrides populated yet sees
+    identical behavior to today."""
     resolved = dict(strat_cfg)
     overrides = overrides or {}
     if category:

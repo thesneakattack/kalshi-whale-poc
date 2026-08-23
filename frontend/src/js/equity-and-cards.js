@@ -96,8 +96,8 @@ function renderHistoryTrades() {
 // just changes the caption underneath.
 function renderEquityChart(history, baseline, valueKey, baselineLabel, elId, opts) {
   // opts (2026-08-10, direct request: "useful graph views") - optional so
-  // every existing call site (Portfolio/Market-Native equity charts) is
-  // unaffected: {emptyMessage, valueFormatter}. valueFormatter defaults to
+  // every existing call site is unaffected: {emptyMessage, valueFormatter}.
+  // valueFormatter defaults to
   // fmt() (dollar formatting) since that's what every pre-existing caller
   // actually wants; the new History-tab charts below pass a percent
   // formatter instead - this is a threshold-sweep/win-rate curve, not a

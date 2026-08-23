@@ -71,10 +71,9 @@ def test_subcategory_excluded_from_bulk_lookup_when_null():
 
 
 def test_re_recording_category_without_subcategory_does_not_clear_a_known_one():
-    # A later call that only knows the category (e.g. the market-native
-    # strategy's own record_category call site, which has no subcategory
-    # concept) shouldn't blow away a subcategory a whale-follow entry
-    # already recorded for the same ticker.
+    # A later call that only knows the category shouldn't blow away a
+    # subcategory a whale-follow entry already recorded for the same
+    # ticker.
     tc.record_category("TICK-A", "Sports", now=1000.0, subcategory="Baseball")
     tc.record_category("TICK-A", "Sports", now=2000.0)
     assert tc.subcategories_for_tickers(["TICK-A"]) == {"TICK-A": "Baseball"}

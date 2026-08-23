@@ -7,9 +7,10 @@ stay on the class as thin public methods (call sites in main.py/tests are
 unaffected); check_exits's real implementation lives here as a free function
 taking `broker` explicitly instead of `self`.
 
-close_if_settled is also imported directly by services/market_strategy.py's
-own MarketNativeStrategy.check_exits - kept here as the one shared
-settlement-close primitive both strategies use, not duplicated.
+close_if_settled was also imported directly by the now-removed
+Market-Native strategy's own check_exits (2026-08-22) - kept here as a
+free function specifically so a future second strategy can reuse this same
+settlement-close primitive without duplicating it.
 """
 import time
 
@@ -17,11 +18,11 @@ from services import kalshi_fees, market_analyst_agent, market_history, signal_l
 from services import config_overrides
 from services.paper_broker import PaperBroker, Position
 
-# Same freshness window services/market_strategy.py and services/
-# whalewatchers/kalshi_trade_tape.py already use for analyst_lean() on the
-# entry side - the event being estimated is far more stable than a
-# market's own price, so this doesn't need to be tight, just not stale
-# enough to be estimating a different market state entirely.
+# Same freshness window services/whalewatchers/kalshi_trade_tape.py already
+# uses for analyst_lean() on the entry side - the event being estimated is
+# far more stable than a market's own price, so this doesn't need to be
+# tight, just not stale enough to be estimating a different market state
+# entirely.
 _ANALYST_FRESHNESS_SEC = 24 * 3600
 
 # Stop-loss/take-profit price corroboration (2026-08-17, direct instruction
@@ -51,9 +52,9 @@ _PRICE_CORROBORATION_MAX_DEVIATION = 0.30
 
 
 def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
-    """Shared by every strategy's check_exits (FollowTheWhaleStrategy below,
-    and services/market_strategy.py's MarketNativeStrategy) - closes a
-    position at the terminal price the instant its market has actually
+    """Shared by every strategy's check_exits (FollowTheWhaleStrategy below;
+    also used by the now-removed Market-Native strategy, 2026-08-22) -
+    closes a position at the terminal price the instant its market has actually
     settled, regardless of any other exit config. Extracted here rather
     than left inline/duplicated so this stays the single place this math
     lives: terminal_price = 1.0 if result == "yes" else 0.0, NOT "1.0 if
@@ -379,11 +380,10 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     - analyst_divergence: how far the market analyst agent's own most
       recent probability estimate (market_analyst_agent.analyst_lean(),
       the same cheap indexed-read helper already feeding entry confidence
-      in services/market_strategy.py and services/whalewatchers/
-      kalshi_trade_tape.py - never a fresh LLM call) has moved away from
-      the side actually held. Deep-scan finding 2026-08-10: analyst_lean()
-      was already informing whether to get IN to a position on both
-      strategies, but nothing ever consulted it on whether to get OUT -
+      in services/whalewatchers/kalshi_trade_tape.py - never a fresh LLM
+      call) has moved away from the side actually held. Deep-scan finding
+      2026-08-10: analyst_lean() was already informing whether to get IN to
+      a position, but nothing ever consulted it on whether to get OUT -
       a real asymmetry given the same cheap read was sitting right there.
       50/50 (lean == 0.5) = no pressure, fully opposite = full pressure,
       same "50/50 = no pressure" language as the sentiment factor above -

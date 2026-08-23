@@ -47,10 +47,11 @@ _CLOSE_TYPE_PATTERNS = [
     # found while auditing every close_position() call site for this same
     # bug shape after the runway_exhausted one above turned out to be real.
     ("position_netting", re.compile(r"^closed: position netting")),
-    # market_strategy.py's whale-independent analog to sentiment_reversal -
-    # same "close if the signal this position was entered on has flipped
-    # against the held side" idea, using real price momentum instead of
-    # whale prints.
+    # A whale-independent analog to sentiment_reversal, from the now-removed
+    # Market-Native strategy (2026-08-22) - same "close if the signal this
+    # position was entered on has flipped against the held side" idea, using
+    # real price momentum instead of whale prints. Kept for classifying
+    # already-closed historical trades with this reason string.
     ("momentum_reversal", re.compile(r"^closed: momentum reversed")),
 ]
 

@@ -55,7 +55,6 @@ from services.kalshi_account_client import KalshiAccountClient
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
 from services.whale_simulator import WhaleSignal, WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
-from services.market_strategy import MarketNativeStrategy
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.shadow_mode import ShadowTrader
@@ -108,8 +107,8 @@ from services.market_watch import (  # noqa: E402
     _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
 from services.app_state import (  # noqa: E402
-    account, account_base_url, broker, bump_generation, cfg, index_stream, market_broker,
-    market_risk, market_strategy, risk, shadow, state, strategy, trade_stream, whale_provider,
+    account, account_base_url, broker, bump_generation, cfg, index_stream,
+    risk, shadow, state, strategy, trade_stream, whale_provider,
     whale_sim,
 )
 from services.account_positions import (  # noqa: E402
@@ -307,9 +306,7 @@ async def trading_loop():
             # accumulation - they just don't belong in the *live* watchlist
             # fetch.
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
-            open_position_tickers = list(
-                set(broker.positions.keys()) | set(market_broker.positions.keys()) | real_position_tickers
-            )
+            open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
             _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
@@ -483,11 +480,10 @@ async def trading_loop():
                 if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
                     adv_current_fp = config_performance.fingerprint(cfg)
                     adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-                    adv_market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
                     adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
                     adv_result = advisory_engine.generate_recommendations(
                         adv_all_rows, cfg, adv_current_fp, adv_variants,
-                        adv_cfg["min_resolved_trades_per_variant"], market_rows=adv_market_rows,
+                        adv_cfg["min_resolved_trades_per_variant"],
                         gate_summaries=candidate_log.gate_summary(),
                         # Staleness filter (2026-08-11, direct bug report) matters most
                         # right here - unlike a manual click, auto-apply has no human
@@ -527,45 +523,9 @@ async def trading_loop():
             phase_timings["calibration_advisory"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
-            # MarketNativeStrategy (services/market_strategy.py) - runs every
-            # tick alongside the whale-follow strategy below, entirely off
-            # its own real-market-data heuristic. No-op (returns []) when
-            # market_strategy.enabled is false, same disabled-by-default
-            # precedent as the rest of this app's opt-in automation.
-            # Appended to its own state["market_decision_feed"], NOT
-            # state["decision_feed"] - that feed is the whale-follow
-            # strategy's own record; blending the two would defeat the
-            # point of each strategy's performance being cleanly,
-            # independently measurable (see the plan doc). Was computed and
-            # discarded every tick until the Market-Native tab (2026-08-10,
-            # direct request) needed a real feed to show.
-            for decision in market_strategy.evaluate_all(
-                markets, tick_now, cfg, market_results, state.get("me_pairs"), category_by_ticker=_category_by_ticker(),
-            ):
-                state["market_decision_feed"].insert(0, decision)
-                if decision["action"] == "trade":
-                    # Same category-at-entry-time capture as the whale-follow
-                    # side above - one shared table across both strategies,
-                    # since Gap 9's segmentation reads either strategy's own
-                    # trade history the same way.
-                    m_ticker = decision["ticker"]
-                    m_event_ticker = (state["market_titles"].get(m_ticker) or {}).get("event_ticker")
-                    m_event_info = state["event_titles"].get(m_event_ticker) or {}
-                    trade_category.record_category(
-                        m_ticker, m_event_info.get("category"), tick_now,
-                        subcategory=_sport_for_event(m_event_info),
-                    )
-            markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
-            for decision in market_strategy.check_exits(
-                markets_by_ticker, tick_now, cfg, market_results, category_by_ticker=_category_by_ticker(),
-            ):
-                state["market_decision_feed"].insert(0, decision)
-            state["market_decision_feed"] = state["market_decision_feed"][:50]
             state["market_results"] = market_results
             if _streaming_trade_tape_enabled():
                 await trade_stream.set_market_tickers([m["ticker"] for m in markets if m.get("ticker")])
-            phase_timings["market_strategy"] = round(time.time() - _phase_t, 3)
-            _phase_t = time.time()
             # All three depend on this tick's markets list but not on each
             # other - fetch concurrently rather than one after the other.
             trade_tape_since = state.get("trade_tape_last_fetch_ts")
@@ -1260,12 +1220,6 @@ class ResetBody(BaseModel):
     series_evaluator: bool = False
     candidate_log: bool = False
     calibration_history: bool = False
-    # market_strategy.py's own capital pool/risk state previously had no
-    # reset path at all (real gap found live 2026-08-10 investigating why
-    # it "stalled" - its kill switch had tripped with no way to recover
-    # short of editing data/market_risk_state.db by hand). Off by default,
-    # same convention as everything except paper itself.
-    market_native: bool = False
     trade_category: bool = False
     # Range scoping (2026-08-16 direct request, after a real incident this
     # session spent well over an hour reconstructing from git history and
@@ -1315,11 +1269,6 @@ def _reset_domain_counts(body: ResetBody) -> dict[str, int | None]:
         counts["candidate_log"] = candidate_log.count_range(body.range_end, body.range_start)
     if body.calibration_history:
         counts["calibration_history"] = None
-    if body.market_native:
-        counts["market_native"] = (
-            market_broker.count_trade_range(body.range_end, body.range_start)
-            if (body.range_start or body.range_end) else len(market_broker.trade_log)
-        )
     if body.trade_category:
         counts["trade_category"] = trade_category.count_range(body.range_end, body.range_start)
     return counts
@@ -1329,7 +1278,7 @@ def _reset_domain_counts(body: ResetBody) -> dict[str, int | None]:
 async def reset_preview(
     paper: bool = False, shadow: bool = False, signal_log: bool = False, market_analyst: bool = False,
     market_catalog: bool = False, market_history: bool = False, series_evaluator: bool = False,
-    candidate_log: bool = False, calibration_history: bool = False, market_native: bool = False,
+    candidate_log: bool = False, calibration_history: bool = False,
     trade_category: bool = False, range_start: float | None = None, range_end: float | None = None,
 ):
     # Dry-run counterpart to POST /api/reset - same domain/range selection,
@@ -1339,7 +1288,7 @@ async def reset_preview(
     body = ResetBody(
         paper=paper, shadow=shadow, signal_log=signal_log, market_analyst=market_analyst,
         market_catalog=market_catalog, market_history=market_history, series_evaluator=series_evaluator,
-        candidate_log=candidate_log, calibration_history=calibration_history, market_native=market_native,
+        candidate_log=candidate_log, calibration_history=calibration_history,
         trade_category=trade_category, range_start=range_start, range_end=range_end,
     )
     return {"counts": _reset_domain_counts(body), "scope": "all" if not (range_start or range_end) else "range"}
@@ -1437,16 +1386,6 @@ async def reset_broker(body: ResetBody = ResetBody()):
         calibration_history.clear_all()
         _log("calibration_history", None)
         cleared.append("calibration_history")
-    if body.market_native:
-        if ranged:
-            deleted = market_broker.clear_trade_range(body.range_end, body.range_start)
-        else:
-            market_broker.reset(cfg["market_strategy"]["starting_bankroll"])
-            market_risk.reset_day(cfg["market_strategy"]["starting_bankroll"])
-            state["market_decision_feed"] = []
-            deleted = counts_before.get("market_native")
-        _log("market_native", deleted)
-        cleared.append("market_native")
     if body.trade_category:
         deleted = trade_category.clear_range(body.range_end, body.range_start)
         _log("trade_category", deleted)

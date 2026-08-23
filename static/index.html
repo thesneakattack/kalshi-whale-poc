@@ -43,7 +43,6 @@
   <button class="tab-btn" id="tab-btn-markets" onclick="showView('markets'); refresh();">Markets</button>
   <button class="tab-btn" id="tab-btn-whale" onclick="showView('whale'); refresh();">Whale Watch</button>
   <button class="tab-btn" id="tab-btn-terminal" onclick="showView('terminal'); refresh();">Terminal</button>
-  <button class="tab-btn" id="tab-btn-market-native" onclick="showView('market-native'); refresh();">Market-Native</button>
   <button class="tab-btn" id="tab-btn-history" onclick="showView('history'); refresh();">History</button>
   <button class="tab-btn" id="tab-btn-config" onclick="showView('config'); refresh();">Config</button>
 </div>
@@ -279,46 +278,6 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
 </div>
 </div>
 
-<!-- Market-Native: MarketNativeStrategy's own dedicated view (direct
-     request 2026-08-10: "the market-native strategy seems to have
-     stalled, and i think itd be good to have its own tab now") - its own
-     capital pool/risk state, entirely separate from the whale-follow
-     Portfolio tab above (services/market_strategy.py, own data/*.db
-     files). Deliberately single-density, no Simple/Advanced toggle -
-     this strategy's volume is much lower than whale-follow's, a
-     disclosed, smaller scope than Portfolio's own depth. -->
-<div class="view" id="view-market-native">
-  <div class="wrap">
-    <div id="market-native-halt-banner"></div>
-
-    <div class="stat-cards" id="market-native-stats">
-      <div class="cell"><div class="lbl">Status</div><div class="val">—</div></div>
-      <div class="cell"><div class="lbl">Bankroll</div><div class="val">—</div></div>
-      <div class="cell"><div class="lbl">Equity</div><div class="val">—</div></div>
-      <div class="cell"><div class="lbl">Unrealized P&amp;L</div><div class="val">—</div></div>
-    </div>
-
-    <p style="font-size:12px; color:var(--muted); margin:0 0 20px;">
-      Momentum-following on real market price data — no whale signal input at all, its own gates
-      (<span class="config-path" style="margin:0;">market_strategy.*</span>), its own kill switch. Configure it
-      from Config → Market-Native Strategy.
-    </p>
-
-    <div class="panel-title" style="margin-top:0;">Open Positions <span id="market-native-position-count"></span></div>
-    <div id="market-native-positions" class="scroll-panel"><div class="empty">Loading…</div></div>
-
-    <div class="panel-title" style="margin-top:24px;">Trade Log</div>
-    <div id="market-native-trades" class="scroll-panel"><div class="empty">Loading…</div></div>
-
-    <div class="panel-title" style="margin-top:24px;">Decisions</div>
-    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Only real trade/close decisions are logged here, not every market this strategy scans and passes on — same
-      "don't flood the feed for zero benefit" reasoning the whale-follow Decision Feed already follows.
-    </p>
-    <div id="market-native-decisions" class="scroll-panel"><div class="empty">Loading…</div></div>
-  </div>
-</div>
-
 <!-- History: closed-trade record + win/loss breakdown by what closed each
      position, so a position that was actively managed (take-profit/
      stop-loss/sentiment-reversal/auto-exit) or settled at resolution can be
@@ -422,7 +381,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
          win-rate + realized-P&L delta once both variants have real trades
          (services/advisory_engine.py's change_effect(), same mechanism
          cross-variant recommendations already use) - other sections
-         (market_strategy.*, risk.*, ...) get a plain logged entry with no
+         (risk.*, advisory.*, ...) get a plain logged entry with no
          fabricated delta, since this app's fingerprinting only ever covers
          strategy.*. -->
     <div class="panel-title">Change History</div>
@@ -441,9 +400,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
          predicts real outcomes, and what config/settings.yaml's
          whale_confidence_weights currently weights each one at. Editing the
          weights themselves is config-file/API only for now (no editable
-         fields here yet) - same "backend ships first, dashboard panel is a
-         disclosed follow-up" precedent as market_strategy's own dashboard
-         gap. Disabled by default; needs enough real resolved signals with a
+         fields here yet). Disabled by default; needs enough real resolved signals with a
          factor breakdown to activate (see the gate below). -->
     <div class="panel-title">Whale-Signal Calibration <span class="data-badge new">🆕 new</span> <span id="calibration-status-badge"></span></div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
@@ -459,22 +416,6 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
     <div id="calibration-history"></div>
     <div id="calibration-history-chart"></div>
 
-    <!-- Cross-Strategy Comparison (services/cross_strategy.py, Gap 7 of
-         docs/config-tuning-data-gaps-2026-08-10.md, and the user's own
-         direct question this session) - whale-follow and market-native
-         write to fully separate storage; nothing had ever joined them
-         before this. Aggregate side-by-side is always available; the
-         ticker-overlap table (did both strategies independently trade the
-         same market, and did they agree) only has rows once real overlap
-         exists. -->
-    <div class="panel-title">Cross-Strategy Comparison <span class="data-badge new">🆕 new</span></div>
-    <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-      Whale-follow (order-flow signal) and market-native (real price momentum) are two fully independent
-      strategies with their own capital and their own gates. Side-by-side track record, plus every ticker
-      both strategies have independently traded — a real natural experiment when it happens.
-    </p>
-    <div id="cross-strategy-comparison"><div class="empty">Loading…</div></div>
-
     <!-- Regime Segmentation (services/regime_analytics.py, Gap 9 of
          docs/config-tuning-data-gaps-2026-08-10.md) - hour-of-day/day-of-
          week/category. Category (2026-08-10, direct follow-up request)
@@ -482,8 +423,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
          persistence layer first - market_catalog.category is watchlist-
          scoped and rotates, so it couldn't be reconstructed after the
          fact. Naturally empty until trades placed since that module
-         shipped accumulate. Whale-follow only (135 closed positions vs.
-         market-native's 22 - too thin to segment further right now). -->
+         shipped accumulate. -->
     <div class="panel-title">Regime Segmentation <span class="data-badge new">🆕 new</span></div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
       Whale-follow win rate by hour-of-day (UTC), day-of-week, and category — every global threshold in Config
@@ -650,7 +590,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
         <div class="field"><label>...unfilled limit order expires after (seconds) <span class="config-path">strategy.limit_order_timeout_sec</span> <span class="data-badge new">🆕 new</span>
           <span class="info-icon" title="How long a resting limit order (see above) waits for the market to trade back to its price before giving up - the signal is simply skipped, never falls back to a market order. Higher = more patient, more fills, but a stale signal by the time it fills. Lower = expires faster, fewer fills but each one still reflects a fresh signal.">ⓘ</span></label><input id="cfg-limit-order-timeout" type="number" step="any" min="1"></div>
         <div class="field"><label>Min price to consider trading (0–1) <span class="config-path">strategy.min_unit_cost</span>
-          <span class="info-icon" title="Only trade signals priced between this and the maximum below (inclusive) - narrows the field to a specific probability band, same reasoning as the market-native strategy's own min/max price. Below this is treated as too close to a sure loss to bother with.">ⓘ</span></label><input id="cfg-min-unit-cost" type="number" step="any" min="0" max="1"></div>
+          <span class="info-icon" title="Only trade signals priced between this and the maximum below (inclusive) - narrows the field to a specific probability band. Below this is treated as too close to a sure loss to bother with.">ⓘ</span></label><input id="cfg-min-unit-cost" type="number" step="any" min="0" max="1"></div>
         <div class="field"><label>Max price to consider trading (0–1) <span class="config-path">strategy.max_unit_cost</span>
           <span class="info-icon" title="Above this is treated as too close to a sure thing to bother with - little room left for the price to move your way even if the whale is right.">ⓘ</span></label><input id="cfg-max-unit-cost" type="number" step="any" min="0" max="1"></div>
         <div class="field"><label>Entry cutoff before scheduled close (seconds) <span class="config-path">strategy.close_window_sec</span>
@@ -784,52 +724,6 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           <span class="info-icon" title="Higher = waits for more resolved real (non-simulated) signals before showing a calibration report at all - fewer, more reliable findings. Lower = reports sooner, on thinner evidence.">ⓘ</span></label><input id="cfg-calibration-min-resolved" type="number" step="1" min="1"></div>
         <div class="field"><label>Auto-apply: minimum resolved signals before an automatic reweight fires <span class="config-path">confidence_calibration.auto_apply_min_resolved_signals</span> <span class="data-badge new">🆕 new</span>
           <span class="info-icon" title="A separate, stricter floor than the one above - that one only gates showing a read-only report to a human; this one gates the unsupervised auto-apply path writing new weights with nobody reviewing first. Higher = waits for a materially bigger dataset before acting automatically. Lower = auto-applies sooner.">ⓘ</span></label><input id="cfg-calibration-auto-apply-min-resolved" type="number" step="1" min="1"></div>
-      </div>
-    </details>
-
-    <details class="config-section" id="cfg-section-market-strategy">
-      <summary>Market-Native Strategy <span class="data-badge new">🆕 new</span> <span class="section-desc">— a second, whale-independent paper strategy</span></summary>
-      <div class="section-body config-group">
-        <p style="font-size:12px; color:var(--muted); margin:0 0 12px;">
-          A second, fully independent automated paper-trading strategy, off by default - trades
-          purely on real Kalshi market data (price, spread, volume, momentum), no whale signal
-          input at all. Its own bankroll and trade log (see GET /api/market-strategy/state), so it
-          never mixes with the whale-follow account above. Exists to start building a real,
-          whale-independent trade-history dataset now, while the whale feed is still simulated -
-          see docs/advisory-engine-plan.md. No dashboard panel yet (backend-only for now); this
-          is the only place to configure or enable it.
-        </p>
-        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-enabled"> Enable market-native strategy <span class="config-path">market_strategy.enabled</span></label></div>
-        <div class="field"><label>Starting bankroll ($, its own capital pool) <span class="config-path">market_strategy.starting_bankroll</span></label><input id="cfg-market-strategy-bankroll" type="number" step="any" min="0"></div>
-        <div class="field"><label>Max position size (% of bankroll) <span class="config-path">market_strategy.max_position_pct</span>
-          <span class="info-icon" title="Higher = bigger bets per trade from this strategy's own bankroll. Lower = smaller, steadier bets. Same tradeoff as the whale-follow strategy's equivalent setting, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-position-pct" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Cooldown per market (seconds) <span class="config-path">market_strategy.cooldown_sec</span></label><input id="cfg-market-strategy-cooldown" type="number" step="any" min="0"></div>
-        <div class="field"><label>Max simultaneously-open positions per series <span class="config-path">market_strategy.max_open_positions_per_series</span> <span class="data-badge new">🆕 new</span>
-          <span class="info-icon" title="Same concentration-risk cap as the whale-follow strategy's equivalent setting, scoped to this strategy's own separate bankroll/positions. Blank/0 = unlimited.">ⓘ</span></label><input id="cfg-market-strategy-max-open-per-series" type="number" step="1" min="0" placeholder="unlimited"></div>
-        <div class="field"><label>Confidence-scaled position sizing (0–1) <span class="config-path">market_strategy.kelly_fraction_of_cap</span> <span class="data-badge new">🆕 new</span>
-          <span class="info-icon" title="Same fractional-Kelly-style sizing dial as the whale-follow strategy's equivalent setting, scoped to this strategy's own separate bankroll/positions. 0 (default) = today's flat-cap behavior, unchanged.">ⓘ</span></label><input id="cfg-market-strategy-kelly-fraction" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Minimum price to consider trading (0–1) <span class="config-path">market_strategy.min_price</span>
-          <span class="info-icon" title="Only trade markets priced between this and the maximum below (inclusive) - narrows the field to markets in a specific probability band, e.g. avoiding near-certain or near-impossible outcomes where movement is small.">ⓘ</span></label><input id="cfg-market-strategy-min-price" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Maximum price to consider trading (0–1) <span class="config-path">market_strategy.max_price</span></label><input id="cfg-market-strategy-max-price" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Max bid/ask spread to trade <span class="config-path">market_strategy.max_spread</span>
-          <span class="info-icon" title="Higher = tolerates wider, less liquid markets. Lower = only trades tight, well-quoted markets, where the entry price is more trustworthy.">ⓘ</span></label><input id="cfg-market-strategy-max-spread" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Minimum 24h volume (contracts) <span class="config-path">market_strategy.min_volume_24h</span>
-          <span class="info-icon" title="Higher = only trades busier markets, where momentum readings are based on more real activity. Lower = includes quieter markets too.">ⓘ</span></label><input id="cfg-market-strategy-min-volume" type="number" step="any" min="0"></div>
-        <div class="field"><label>Momentum lookback window (seconds) <span class="config-path">market_strategy.momentum_lookback_sec</span>
-          <span class="info-icon" title="Longer = momentum is measured over a wider time window, smoother but slower to react to a recent real move. Shorter = reacts faster, noisier.">ⓘ</span></label><input id="cfg-market-strategy-momentum-lookback" type="number" step="any" min="60"></div>
-        <div class="field"><label>Minimum price movement over that window to count as momentum <span class="config-path">market_strategy.min_momentum_delta</span>
-          <span class="info-icon" title="Higher = requires a bigger real price move before treating it as genuine momentum worth trading. Lower = smaller moves qualify, more entries but more of them may just be noise.">ⓘ</span></label><input id="cfg-market-strategy-min-momentum" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Minimum time-to-close required to enter (seconds) <span class="config-path">market_strategy.min_seconds_to_close</span>
-          <span class="info-icon" title="Higher = only enters markets with plenty of time left before they close, avoiding a position that has no room to develop. Lower = will enter markets closer to settlement.">ⓘ</span></label><input id="cfg-market-strategy-min-seconds-to-close" type="number" step="any" min="0"></div>
-        <div class="field"><label>Entry confidence threshold (0–1) <span class="config-path">market_strategy.entry_confidence_threshold</span>
-          <span class="info-icon" title="Higher = fewer, more selective entries. Lower = more entries, including weaker momentum signals. Same tradeoff as the whale-follow strategy's entry threshold.">ⓘ</span></label><input id="cfg-market-strategy-confidence" type="number" step="any" min="0" max="1"></div>
-        <div class="field"><label>Take-profit: close once unrealized gain reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">market_strategy.take_profit_pct</span>
-          <span class="info-icon" title="Higher = holds out for a bigger gain before locking in profit. Lower = locks in smaller gains sooner. Blank = never takes profit early, only settlement closes a winning position. Same mechanic as the whale-follow strategy's take-profit, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-take-profit" type="number" step="any" min="0" placeholder="off"></div>
-        <div class="field"><label>Stop-loss: close once unrealized loss reaches this fraction of cost basis (0–1, blank = off) <span class="config-path">market_strategy.stop_loss_pct</span>
-          <span class="info-icon" title="Higher = tolerates a bigger loss before cutting the position. Lower = cuts losses sooner. Blank = never stops out early, only settlement closes a losing position. Same mechanic as the whale-follow strategy's stop-loss, separate capital pool.">ⓘ</span></label><input id="cfg-market-strategy-stop-loss" type="number" step="any" min="0" placeholder="off"></div>
-        <div class="field"><label><input type="checkbox" id="cfg-market-strategy-momentum-reversal"> Close if momentum reverses against the held side <span class="config-path">market_strategy.exit_on_momentum_reversal</span></label></div>
-        <div class="field"><label>Max daily loss (% of its own bankroll) <span class="config-path">market_strategy.max_daily_loss_pct</span>
-          <span class="info-icon" title="This strategy's own kill switch - once today's realized+unrealized loss on its own bankroll crosses this fraction, it halts for the day. Independent of the whale-follow strategy's kill switch below.">ⓘ</span></label><input id="cfg-market-strategy-max-loss" type="number" step="any" min="0" max="1"></div>
       </div>
     </details>
 

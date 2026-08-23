@@ -205,10 +205,9 @@ class PaperBroker:
         # db_path defaults to the module-level DB_PATH, resolved at call
         # time (not import time) so existing tests' `monkeypatch.setattr(pb,
         # "DB_PATH", ...)` pattern keeps working unchanged. Pass an explicit
-        # db_path to run a second, fully independent paper account (e.g.
-        # services/market_strategy.py's own capital pool) - each instance
-        # gets its own file, so two brokers never share (and can't corrupt)
-        # each other's broker_meta/positions/trades tables.
+        # db_path to run a second, fully independent paper account - each
+        # instance gets its own file, so two brokers never share (and can't
+        # corrupt) each other's broker_meta/positions/trades tables.
         self.db_path = db_path or DB_PATH
         self.positions: dict[str, Position] = {}   # keyed by ticker
         self.trade_log: list[Trade] = []

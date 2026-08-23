@@ -60,25 +60,6 @@ async function loadConfig() {
   $('cfg-calibration-enabled').checked = !!ccCfg.enabled;
   $('cfg-calibration-min-resolved').value = ccCfg.min_resolved_signals ?? 50;
   $('cfg-calibration-auto-apply-min-resolved').value = ccCfg.auto_apply_min_resolved_signals ?? 150;
-  const ms = cfg.market_strategy || {};
-  $('cfg-market-strategy-enabled').checked = !!ms.enabled;
-  $('cfg-market-strategy-bankroll').value = ms.starting_bankroll ?? 10000;
-  $('cfg-market-strategy-position-pct').value = ms.max_position_pct ?? 0.05;
-  $('cfg-market-strategy-cooldown').value = ms.cooldown_sec ?? 300;
-  $('cfg-market-strategy-max-open-per-series').value = ms.max_open_positions_per_series ?? '';
-  $('cfg-market-strategy-kelly-fraction').value = ms.kelly_fraction_of_cap ?? 0;
-  $('cfg-market-strategy-min-price').value = ms.min_price ?? 0.15;
-  $('cfg-market-strategy-max-price').value = ms.max_price ?? 0.85;
-  $('cfg-market-strategy-max-spread').value = ms.max_spread ?? 0.05;
-  $('cfg-market-strategy-min-volume').value = ms.min_volume_24h ?? 500;
-  $('cfg-market-strategy-momentum-lookback').value = ms.momentum_lookback_sec ?? 1800;
-  $('cfg-market-strategy-min-momentum').value = ms.min_momentum_delta ?? 0.03;
-  $('cfg-market-strategy-min-seconds-to-close').value = ms.min_seconds_to_close ?? 3600;
-  $('cfg-market-strategy-confidence').value = ms.entry_confidence_threshold ?? 0.5;
-  $('cfg-market-strategy-take-profit').value = ms.take_profit_pct ?? '';
-  $('cfg-market-strategy-stop-loss').value = ms.stop_loss_pct ?? '';
-  $('cfg-market-strategy-momentum-reversal').checked = !!ms.exit_on_momentum_reversal;
-  $('cfg-market-strategy-max-loss').value = ms.max_daily_loss_pct ?? 1;
   const marketAnalystCfg = cfg.market_analyst || {};
   $('cfg-market-analyst-enabled').checked = !!marketAnalystCfg.enabled;
   $('cfg-market-analyst-model').value = marketAnalystCfg.model ?? 'claude-sonnet-5';
@@ -195,26 +176,6 @@ $('save-config-btn').addEventListener('click', async () => {
       enabled: $('cfg-calibration-enabled').checked,
       min_resolved_signals: parseInt($('cfg-calibration-min-resolved').value),
       auto_apply_min_resolved_signals: parseInt($('cfg-calibration-auto-apply-min-resolved').value),
-    },
-    market_strategy: {
-      enabled: $('cfg-market-strategy-enabled').checked,
-      starting_bankroll: parseFloat($('cfg-market-strategy-bankroll').value),
-      max_position_pct: parseFloat($('cfg-market-strategy-position-pct').value),
-      cooldown_sec: parseInt($('cfg-market-strategy-cooldown').value),
-      max_open_positions_per_series: $('cfg-market-strategy-max-open-per-series').value === '' ? null : parseInt($('cfg-market-strategy-max-open-per-series').value),
-      kelly_fraction_of_cap: parseFloat($('cfg-market-strategy-kelly-fraction').value),
-      min_price: parseFloat($('cfg-market-strategy-min-price').value),
-      max_price: parseFloat($('cfg-market-strategy-max-price').value),
-      max_spread: parseFloat($('cfg-market-strategy-max-spread').value),
-      min_volume_24h: parseFloat($('cfg-market-strategy-min-volume').value),
-      momentum_lookback_sec: parseInt($('cfg-market-strategy-momentum-lookback').value),
-      min_momentum_delta: parseFloat($('cfg-market-strategy-min-momentum').value),
-      min_seconds_to_close: parseInt($('cfg-market-strategy-min-seconds-to-close').value),
-      entry_confidence_threshold: parseFloat($('cfg-market-strategy-confidence').value),
-      take_profit_pct: $('cfg-market-strategy-take-profit').value === '' ? null : parseFloat($('cfg-market-strategy-take-profit').value),
-      stop_loss_pct: $('cfg-market-strategy-stop-loss').value === '' ? null : parseFloat($('cfg-market-strategy-stop-loss').value),
-      exit_on_momentum_reversal: $('cfg-market-strategy-momentum-reversal').checked,
-      max_daily_loss_pct: parseFloat($('cfg-market-strategy-max-loss').value),
     },
     market_analyst: {
       enabled: $('cfg-market-analyst-enabled').checked,
@@ -444,10 +405,7 @@ function renderPinnedWatchlist(tickers) {
 
 // Per-series/category strategy_overrides editor (2026-08-15 direct
 // request: "these strategies need to be able to be tweaked for individual
-// series"). Only strategy.* fields - market_strategy_overrides is
-// deliberately never populated (services/market_strategy.py's own
-// evaluate_all docstring: market-native stays a whale-independent control
-// group), so there's nothing for a market_strategy editor to do yet.
+// series"). Only strategy.* fields.
 // Curated field list rather than a free-text field name: config_overrides.
 // resolve() would silently accept any field name and just never have
 // anything read it back out - a typo here would create a dead, invisible

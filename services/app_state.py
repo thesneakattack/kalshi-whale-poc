@@ -48,14 +48,12 @@ from services import auth as auth_service
 from services.backtest import backtest
 from services.whale_calibration import calibration_history
 from services import candidate_log
-from services import cross_strategy
 from services.diagnostics import diagnostics
 from services import regime_analytics
 from services import stats_power
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
 from services.market_events import event_schedule
-from services import market_strategy_calibration
 from services import config_performance
 from services import market_analyst_agent
 from services.market_catalog import market_catalog
@@ -82,7 +80,6 @@ from services.kalshi_account_client import KalshiAccountClient
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
-from services.market_strategy import MarketNativeStrategy
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.shadow_mode import ShadowTrader
@@ -99,30 +96,6 @@ risk = RiskManager(
 )
 strategy = FollowTheWhaleStrategy(broker, risk)
 shadow = ShadowTrader(default_bankroll=cfg["risk"]["starting_bankroll"])
-
-# MarketNativeStrategy (docs/advisory-engine-plan.md §9-adjacent, direct
-# request 2026-08-08: "start storing and analyzing market data now") - a
-# second, independent automated paper strategy with its own capital pool
-# and its own data/*.db files, so its performance is cleanly measurable on
-# its own and never contaminates the whale-follow broker/risk state above.
-# Off by default (market_strategy.enabled) - see services/market_strategy.py.
-# db_path is derived from broker.db_path/risk.db_path (not a fresh
-# Path(__file__) lookup) specifically so tests that redirect those two
-# instances' DB_PATH before importing main (see tests/test_trading_gate.py)
-# transparently redirect these two as well - constructing a real
-# PaperBroker/RiskManager at import time must never be able to reach the
-# live data/*.db files no matter what a test does.
-market_broker = PaperBroker(
-    starting_bankroll=cfg["market_strategy"]["starting_bankroll"],
-    db_path=broker.db_path.parent / "market_broker.db",
-)
-market_risk = RiskManager(
-    starting_bankroll=cfg["market_strategy"]["starting_bankroll"],
-    max_daily_loss_pct=cfg["market_strategy"]["max_daily_loss_pct"],
-    kill_switch_enabled=cfg["market_strategy"]["kill_switch_enabled"],
-    db_path=risk.db_path.parent / "market_risk_state.db",
-)
-market_strategy = MarketNativeStrategy(market_broker, market_risk)
 whale_sim = WhaleSimulator(
     size_range=tuple(cfg["whale_signal"]["whale_size_range"]),
     bias=cfg["whale_signal"]["bias"],
@@ -265,14 +238,6 @@ state = {
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],
-    # market_strategy.py's own decision feed - deliberately separate from
-    # decision_feed above (not merged), same "each strategy's performance
-    # cleanly, independently measurable" principle already documented at
-    # the trading-loop call site. Existed as a real gap until the
-    # Market-Native tab (2026-08-10, direct request) needed somewhere to
-    # show it - evaluate_all()/check_exits()'s return values were
-    # previously computed then discarded every tick.
-    "market_decision_feed": [],
     "stats": {"signals_seen": 0, "trades_placed": 0, "skipped": 0, "limit_orders_placed": 0},
     "equity_history": [],  # [{"t": unix_ts, "equity": float}, ...], capped, for the Portfolio view's chart
     "real_balance_history": [],  # same shape, for the real-account toggle — only grows if a real account is connected

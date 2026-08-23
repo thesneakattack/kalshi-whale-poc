@@ -474,14 +474,14 @@ def test_migration_adds_config_fingerprint_column_to_pre_existing_db(tmp_path, m
     assert broker.positions["TICK-B"].config_fingerprint == "fp2"
 
 
-# --- per-instance db_path (services/market_strategy.py's own capital pool) --
+# --- per-instance db_path (supports more than one independent capital pool) -
 
 def test_explicit_db_path_overrides_module_default(tmp_path, monkeypatch):
     # Module DB_PATH deliberately left pointed at something that would
     # error if ever touched, to prove the explicit db_path argument is what
     # actually gets used - not a fallback that silently still reads it.
     monkeypatch.setattr(pb, "DB_PATH", tmp_path / "should-not-be-used" / "paper_broker.db")
-    explicit_path = tmp_path / "explicit" / "market_broker.db"
+    explicit_path = tmp_path / "explicit" / "other_broker.db"
     broker = pb.PaperBroker(starting_bankroll=500.0, db_path=explicit_path)
     broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
     assert explicit_path.exists()

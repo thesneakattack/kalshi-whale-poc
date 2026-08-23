@@ -1,4 +1,3 @@
-import { loadMarketNativeState } from './advisory-calibration.js';
 import { VIEWS, currentView, refreshActiveViewPanels, refreshHistoryInsightsIfActive } from './main.js';
 import { marketDetailTicker, refreshMarketDetail, renderAccount, renderHeaderStrip, renderRealMoneyBanner, renderScreenerTable } from './screener-and-header.js';
 import { $, advToggleHTML, eventLiveData, eventTitles, isAdvanced, marketPanelState, marketTitles, renderMarketCategorySuggestions, renderMarkets, rerenderMarketPanel } from './shared-utils.js';
@@ -132,7 +131,6 @@ async function refresh() {
 
     refreshHistoryInsightsIfActive();
     refreshActiveViewPanels();
-    if (currentView === 'market-native') loadMarketNativeState();
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;

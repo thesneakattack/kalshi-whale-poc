@@ -521,7 +521,6 @@ def test_build_full_spectrum_prompt_includes_all_context_sections():
     ctx = {
         "config": {"strategy": {"entry_threshold": 0.5}},
         "trade_summary": {"total_closed": 10, "win_rate_pct": 55.0},
-        "market_strategy_summary": {"total_closed": 3, "win_rate_pct": 33.0},
         "whale_track_record": {"total_signals": 100},
         "advisory_recommendations": [{"config_path": "strategy.entry_threshold"}],
         "variant_summaries": {"fp1": {"total_closed": 5}},

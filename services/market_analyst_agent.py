@@ -2,9 +2,9 @@
 An LLM-based "doctorate-level prediction market trader" agent - direct
 request (2026-08-09), following the research and design laid out in
 docs/prediction-market-strategy-alignment-plan.md Part 3. Distinct in kind
-from every other strategy in this app: services/whale_simulator.py and
-services/market_strategy.py both score a candidate with fixed arithmetic
-formulas; this one reads a market's actual title/rules/category and this
+from every other strategy in this app: services/whale_simulator.py scores
+a candidate with fixed arithmetic formulas; this one reads a market's
+actual title/rules/category and this
 app's own accumulated real track record, and asks an LLM to form an
 independent probability estimate the way a human analyst would - not
 trained on this app's historical data (there isn't enough of it yet, see
@@ -531,10 +531,6 @@ def build_full_spectrum_prompt(context: dict) -> str:
 ## Whale-follow strategy performance (all-time, aggregated)
 
 {json.dumps(context.get("trade_summary"))}
-
-## Market-native strategy performance (all-time, aggregated)
-
-{json.dumps(context.get("market_strategy_summary"))}
 
 ## Performance by config variant (each distinct strategy.* config ever run)
 

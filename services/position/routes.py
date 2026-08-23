@@ -1,9 +1,10 @@
 """
 Position routes - the paper broker's real-account mirror (order history),
-the Market-Native strategy's own state endpoint, manual risk-halt controls
-for all three independent risk trackers, position-netting diagnostics, and
-the erroneous-close correction admin route. Extracted 2026-08-22 as part
-of main.py's modularization pass, following the services/diagnostics/routes.py
+manual risk-halt controls for the two independent risk trackers still left
+(whale-follow, shadow mode - the Market-Native strategy's own was removed
+2026-08-22), position-netting diagnostics, and the erroneous-close
+correction admin route. Extracted 2026-08-22 as part of main.py's
+modularization pass, following the services/diagnostics/routes.py
 convention: an APIRouter, shared state from services.app_state only,
 main.py does app.include_router(...) at the same paths as before.
 
@@ -14,11 +15,8 @@ line ranges in main.py.
 """
 from fastapi import APIRouter, HTTPException
 
-from services import trade_analytics
 from services.account_positions import _slim_order
-from services.app_state import account, broker, bump_generation, market_broker, market_risk, risk, shadow, state
-from services.config_store import config_store
-from services.state_view import _enrich_recent_trades, _relevant_tickers, _scoped_market_titles
+from services.app_state import account, broker, bump_generation, risk, shadow
 
 router = APIRouter()
 
@@ -52,29 +50,6 @@ async def get_account_orders(limit: int = 25, cursor: str | None = None, status:
         return {"connected": True, "orders": [], "cursor": None, "error": str(e)}
 
 
-@router.get("/api/market-strategy/state")
-async def get_market_strategy_state():
-    # Backend-only at first (docs/advisory-engine-plan.md §9-adjacent,
-    # direct request 2026-08-08) - now the real data source for the
-    # dedicated Market-Native tab (2026-08-10, direct request: "the
-    # market-native strategy seems to have stalled, and i think itd be
-    # good to have its own tab now"). Reuses trade_analytics as-is
-    # (strategy-agnostic - it only ever reads Trade dicts) rather than
-    # reimplementing summary stats for a second broker.
-    market_cfg = config_store.get()["market_strategy"]
-    all_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
-    scoped_market_titles = _scoped_market_titles(_relevant_tickers())
-    return {
-        "enabled": market_cfg["enabled"],
-        "broker": {**market_broker.state(state["latest_prices"]), "recent_trades": _enrich_recent_trades(market_broker)},
-        "summary": trade_analytics.compute_summary(all_rows),
-        "risk": {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason},
-        "decision_feed": state["market_decision_feed"],
-        "market_titles": scoped_market_titles,
-        "latest_prices": state["latest_prices"],
-    }
-
-
 @router.post("/api/risk/halt")
 async def halt_trading():
     risk.manual_halt("Manually halted from dashboard")
@@ -87,25 +62,6 @@ async def resume_trading():
     risk.resume()
     bump_generation()
     return {"halted": risk.halted, "halt_reason": risk.halt_reason}
-
-
-@router.post("/api/market-risk/halt")
-async def halt_market_native():
-    # Same manual halt as /api/risk/halt above, for market_strategy.py's
-    # own independent risk manager - previously had no route at all (real
-    # gap found live 2026-08-10: market-native's kill switch had tripped
-    # and had no way to be manually managed, only services/risk_manager.py's
-    # automatic daily rollover fix - see reset_day - could ever clear it).
-    market_risk.manual_halt("Manually halted from dashboard")
-    bump_generation()
-    return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
-
-
-@router.post("/api/market-risk/resume")
-async def resume_market_native():
-    market_risk.resume()
-    bump_generation()
-    return {"halted": market_risk.halted, "halt_reason": market_risk.halt_reason}
 
 
 @router.post("/api/shadow-risk/resume")

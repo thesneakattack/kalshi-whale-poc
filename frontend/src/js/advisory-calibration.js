@@ -8,7 +8,7 @@ import { sourceLabel } from './trading-gate-and-connectivity.js';
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
 // This file: History tab's advisory engine, suggestion cards, calibration
-// report/history, cross-strategy comparison, regime segmentation,
+// report/history, regime segmentation,
 // candidate-log summary, and backtest-sweep panels.
 let advisoryApplyInFlight = false;
 
@@ -318,54 +318,6 @@ async function loadCalibrationHistory() {
   }
 }
 
-// Cross-Strategy Comparison (services/cross_strategy.py) - read-only,
-// always safe to call.
-async function loadCrossStrategyComparison() {
-  const el = $('cross-strategy-comparison');
-  try {
-    const resp = await fetchJSON('/api/cross-strategy/comparison');
-    const wf = resp.aggregate.whale_follow, mn = resp.aggregate.market_native;
-    const cell = (label, wfVal, mnVal) => `
-      <tr><td>${esc(label)}</td><td>${wfVal}</td><td>${mnVal}</td></tr>`;
-    const wrColor = v => v === null ? 'inherit' : (v >= 50 ? 'var(--yes)' : 'var(--no)');
-    let html = `
-      <table class="positions-table" style="margin-bottom:14px;">
-        <thead><tr><th></th><th>Whale-Follow</th><th>Market-Native</th></tr></thead>
-        <tbody>
-          ${cell('Closed positions', wf.total_closed, mn.total_closed)}
-          <tr><td>Win rate</td>
-            <td style="color:${wrColor(wf.win_rate_pct)};">${wf.win_rate_pct !== null ? wf.win_rate_pct.toFixed(1) + '%' : '—'}</td>
-            <td style="color:${wrColor(mn.win_rate_pct)};">${mn.win_rate_pct !== null ? mn.win_rate_pct.toFixed(1) + '%' : '—'}</td>
-          </tr>
-          ${cell('Total realized P&L', fmt(wf.total_realized_pnl ?? 0), fmt(mn.total_realized_pnl ?? 0))}
-          ${cell('Avg hold time', historyDurationHTML(wf.avg_hold_sec), historyDurationHTML(mn.avg_hold_sec))}
-        </tbody>
-      </table>
-    `;
-    const overlap = resp.ticker_overlap || [];
-    if (overlap.length) {
-      const rows = overlap.map(o => `<tr>
-        <td>${esc(seriesLabel(o.ticker))}</td>
-        <td>${esc(o.whale_side)} ${o.whale_won ? '✅' : '❌'} (${fmt(o.whale_realized_pnl ?? 0)})</td>
-        <td>${esc(o.market_side)} ${o.market_won ? '✅' : '❌'} (${fmt(o.market_realized_pnl ?? 0)})</td>
-        <td style="color:${o.agreed ? 'var(--yes)' : 'var(--no)'};">${o.agreed ? 'agreed' : 'disagreed'}</td>
-      </tr>`).join('');
-      html += `
-        <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Same-ticker overlap — both strategies traded this market independently</div>
-        <table class="positions-table">
-          <thead><tr><th>Ticker</th><th>Whale-Follow</th><th>Market-Native</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
-    } else {
-      html += '<div class="empty">No ticker overlap yet — the two strategies haven\'t independently traded the same market.</div>';
-    }
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div class="empty">Failed to load cross-strategy comparison.</div>';
-  }
-}
-
 const DAY_OF_WEEK_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 // Regime Segmentation (services/regime_analytics.py) - read-only, always
@@ -374,11 +326,11 @@ async function loadRegimeSegmentation() {
   const el = $('regime-segmentation');
   try {
     const [byHour, byDow, bySeries, bySubcategory, byCategory] = await Promise.all([
-      fetchJSON('/api/regime/by-hour?strategy=whale_follow'),
-      fetchJSON('/api/regime/by-day-of-week?strategy=whale_follow'),
-      fetchJSON('/api/regime/by-series?strategy=whale_follow'),
-      fetchJSON('/api/regime/by-subcategory?strategy=whale_follow'),
-      fetchJSON('/api/regime/by-category?strategy=whale_follow'),
+      fetchJSON('/api/regime/by-hour'),
+      fetchJSON('/api/regime/by-day-of-week'),
+      fetchJSON('/api/regime/by-series'),
+      fetchJSON('/api/regime/by-subcategory'),
+      fetchJSON('/api/regime/by-category'),
     ]);
     const wrColor = v => v === null || v === undefined ? 'var(--muted)' : (v >= 50 ? 'var(--yes)' : 'var(--no)');
     // Win rate alone can't distinguish a real edge from the "high win
@@ -555,111 +507,6 @@ async function loadBacktestSweeps() {
     );
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed to load backtest sweeps.</div>';
-  }
-}
-
-// Market-Native tab (direct request 2026-08-10: "the market-native strategy
-// seems to have stalled, and i think itd be good to have its own tab now") -
-// GET /api/market-strategy/state is the single source for everything on this
-// tab: enabled/halt status, bankroll/equity, positions, trade log (real
-// close outcomes via the same _enrich_recent_trades() backend fix the
-// Portfolio Trade Log got), and its own decision feed (previously computed
-// every tick and discarded - see main.py's trading loop).
-async function loadMarketNativeState() {
-  try {
-    const resp = await fetchJSON('/api/market-strategy/state');
-    Object.assign(marketTitles, resp.market_titles || {});
-
-    const banner = $('market-native-halt-banner');
-    if (resp.risk && resp.risk.halted) {
-      banner.innerHTML = `<div class="panel" style="border:1px solid var(--no); border-radius:8px; padding:12px 16px; margin-bottom:16px;">
-        <b style="color:var(--no);">🛑 Kill switch tripped:</b> ${esc(resp.risk.halt_reason || '')}
-        <button style="margin-left:12px;" onclick="resumeMarketNative(this)">Resume trading</button>
-      </div>`;
-    } else {
-      banner.innerHTML = '';
-    }
-
-    const b = resp.broker;
-    const cards = $('market-native-stats').children;
-    let statusHtml;
-    if (!resp.enabled) statusHtml = '<span style="color:var(--muted);">Disabled</span>';
-    else if (resp.risk && resp.risk.halted) statusHtml = '<span style="color:var(--no);">Halted</span>';
-    else statusHtml = '<span style="color:var(--yes);">Active</span>';
-    cards[0].querySelector('.val').innerHTML = statusHtml;
-    cards[1].querySelector('.val').textContent = fmt(b.bankroll);
-    cards[2].querySelector('.val').textContent = fmt(b.equity);
-    const unrealizedColor = b.unrealized_pnl >= 0 ? 'var(--yes)' : 'var(--no)';
-    cards[3].querySelector('.val').innerHTML = `<span style="color:${unrealizedColor};">${fmt(b.unrealized_pnl)}</span>`;
-
-    const posEl = $('market-native-positions');
-    $('market-native-position-count').textContent = b.positions.length ? `(${b.positions.length})` : '';
-    posEl.innerHTML = !b.positions.length ? '<div class="empty">No open positions</div>' : b.positions.map(p => {
-      const label = marketLabel(p.ticker);
-      const current = (resp.latest_prices || {})[p.ticker] ?? p.entry_price;
-      const direction = p.side === 'yes' ? 1 : -1;
-      const pnl = direction * (current - p.entry_price) * p.size;
-      return `<div class="position-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(p.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span class="side-tag ${p.side}">${p.side}</span>
-          ${contextLineHTML(p.ticker, p.side)}
-        </div>
-        <div class="nums">
-          <span>${p.size.toLocaleString()} @ ${(sideAdjustedPrice(p.side, p.entry_price)*100).toFixed(0)}¢</span>
-          <span style="color:${pnl >= 0 ? 'var(--yes)' : 'var(--no)'};">${fmt(pnl)}</span>
-        </div>
-      </div>`;
-    }).join('');
-
-    const tradesEl = $('market-native-trades');
-    const trades = b.recent_trades || [];
-    tradesEl.innerHTML = !trades.length ? '<div class="empty">No trades placed yet</div>' : trades.map(t => {
-      const label = marketLabel(t.ticker);
-      const when = new Date(t.timestamp * 1000).toLocaleString();
-      const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
-      const resultHtml = isClose
-        ? `<span style="color:${t.won ? 'var(--yes)' : 'var(--no)'}; font-weight:600;">${t.won ? '✅ Won' : '❌ Lost'} ${fmt(t.realized_pnl ?? 0)}</span>
-           <span style="color:var(--muted); font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
-        : '<span style="color:var(--muted);">open</span>';
-      return `<div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
-          ${contextLineHTML(t.ticker, t.side)}
-        </div>
-        <div class="nums">
-          <span>${t.size.toLocaleString()} @ ${(sideAdjustedPrice(t.side, t.price)*100).toFixed(0)}¢</span>
-          <span style="color:var(--muted);">${when}</span>
-          ${resultHtml}
-        </div>
-      </div>`;
-    }).join('');
-
-    const decEl = $('market-native-decisions');
-    const decisions = resp.decision_feed || [];
-    decEl.innerHTML = !decisions.length ? '<div class="empty">No decisions yet</div>' : decisions.map(d => {
-      const label = marketLabel(d.ticker);
-      const trade = d.trade || {};
-      const when = trade.timestamp ? new Date(trade.timestamp * 1000).toLocaleString() : '';
-      return `<div class="decision-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(d.ticker)}', '')">
-        <div class="name">${esc(label.short)} <span style="color:var(--muted); font-size:11px; text-transform:uppercase;">${esc(d.action)}</span>
-          ${trade.side ? contextLineHTML(d.ticker, trade.side) : ''}
-        </div>
-        <div class="nums"><span style="color:var(--muted); font-size:12px;">${esc(trade.reason || d.reason || '')}</span> <span style="color:var(--muted);">${esc(when)}</span></div>
-      </div>`;
-    }).join('');
-  } catch (e) {
-    console.error('loadMarketNativeState failed', e);
-  }
-}
-
-async function resumeMarketNative(btn) {
-  btn.disabled = true;
-  const original = btn.textContent;
-  btn.textContent = 'Resuming…';
-  try {
-    await fetchJSON('/api/market-risk/resume', {method: 'POST'});
-    loadMarketNativeState();
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = original;
   }
 }
 
@@ -939,7 +786,7 @@ async function reEvaluateSeries(series, btn) {
   }
 }
 
-export { CHANGE_SOURCE_LABEL, DAY_OF_WEEK_LABELS, _sweepTableHTML, advisoryApplyInFlight, analyzeSeries, applyAdvisoryRecommendation, applyBacktestValue, applyCalibrationSuggestion, applyFullSpectrumSuggestion, applySeriesSuggestion, calibrationApplyInFlight, feedTheAnalyst, jumpToConfigSetting, loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadCrossStrategyComparison, loadMarketAnalyst, loadMarketNativeState, loadRegimeSegmentation, loadSeriesEvaluator, reEvaluateSeries, resumeMarketNative };
+export { CHANGE_SOURCE_LABEL, DAY_OF_WEEK_LABELS, _sweepTableHTML, advisoryApplyInFlight, analyzeSeries, applyAdvisoryRecommendation, applyBacktestValue, applyCalibrationSuggestion, applyFullSpectrumSuggestion, applySeriesSuggestion, calibrationApplyInFlight, feedTheAnalyst, jumpToConfigSetting, loadAdvisory, loadBacktestSweeps, loadCalibrationHistory, loadCalibrationReport, loadCandidateLogSummary, loadChangeHistory, loadMarketAnalyst, loadRegimeSegmentation, loadSeriesEvaluator, reEvaluateSeries };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
@@ -961,10 +808,7 @@ window.loadCalibrationHistory = loadCalibrationHistory;
 window.loadCalibrationReport = loadCalibrationReport;
 window.loadCandidateLogSummary = loadCandidateLogSummary;
 window.loadChangeHistory = loadChangeHistory;
-window.loadCrossStrategyComparison = loadCrossStrategyComparison;
 window.loadMarketAnalyst = loadMarketAnalyst;
-window.loadMarketNativeState = loadMarketNativeState;
 window.loadRegimeSegmentation = loadRegimeSegmentation;
 window.loadSeriesEvaluator = loadSeriesEvaluator;
 window.reEvaluateSeries = reEvaluateSeries;
-window.resumeMarketNative = resumeMarketNative;

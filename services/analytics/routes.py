@@ -2,10 +2,9 @@
 Analytics routes - the residual "what happened, and did a gate filter it
 correctly" surface left after advisory (services/advisory/) and whale
 calibration (services/whale_calibration/) were split out 2026-08-22 (see
-ROADMAP.md's queued split item): market-strategy calibration (the separate
-Market-Native strategy's own tuning), candidate-log/cross-strategy/regime
-segmentation, backtesting, and the market-analyst LLM agent. Extracted
-2026-08-22 as part of main.py's modularization pass, following the
+ROADMAP.md's queued split item): candidate-log/regime segmentation,
+backtesting, and the market-analyst LLM agent. Extracted 2026-08-22 as
+part of main.py's modularization pass, following the
 services/diagnostics/routes.py convention: an APIRouter, shared state from
 services.app_state only, main.py does app.include_router(...) at the same
 paths as before. /api/suggestions/* stays here too - shared infrastructure
@@ -22,14 +21,14 @@ from pydantic import BaseModel
 
 from services import (
     candidate_log,
-    config_performance, cross_strategy, market_analyst_agent, market_strategy_calibration,
+    config_performance, market_analyst_agent,
     regime_analytics, series_evaluator, signal_log, suggestion_decisions, trade_analytics,
 )
 from services.analytics.market_analyst_orchestrator import (
     _run_full_spectrum_analysis, _run_market_analyst_for_ticker, _run_series_analysis,
     _series_evaluator_overview_with_crosscheck,
 )
-from services.app_state import broker, bump_generation, market_broker
+from services.app_state import broker, bump_generation
 from services.config.config_paths import _config_value_at_path
 from services.config_store import config_store
 from services.kalshi_client import KalshiClient
@@ -76,29 +75,6 @@ async def get_declined_suggestions(limit: int = 50):
 
 
 
-@router.get("/api/market-strategy-calibration/status")
-async def get_market_strategy_calibration_status():
-    # "Web of expertise" audit (2026-08-11) gap #5 - same status-route shape
-    # as the whale-side /api/confidence-calibration/status above.
-    msc_cfg = config_store.get()["market_strategy_calibration"]
-    resolved_count = len(trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log]))
-    return {
-        "enabled": msc_cfg["enabled"],
-        "min_resolved_trades": msc_cfg["min_resolved_trades"],
-        "resolved_count": resolved_count,
-        "ready": resolved_count >= msc_cfg["min_resolved_trades"],
-    }
-
-
-@router.get("/api/market-strategy-calibration/report")
-async def get_market_strategy_calibration_report():
-    msc_cfg = config_store.get()["market_strategy_calibration"]
-    if not msc_cfg["enabled"]:
-        return {"report": None, "gated_reason": "market-native calibration is disabled", "resolved_count": None}
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
-    return market_strategy_calibration.generate_calibration_report(rows, msc_cfg["min_resolved_trades"])
-
-
 @router.get("/api/candidate-log/summary")
 async def get_candidate_log_summary():
     # services/candidate_log.py - Gap 1 of docs/config-tuning-data-gaps-
@@ -108,69 +84,50 @@ async def get_candidate_log_summary():
     return {"gates": candidate_log.gate_summary()}
 
 
-@router.get("/api/cross-strategy/comparison")
-async def get_cross_strategy_comparison():
-    # services/cross_strategy.py - Gap 7 of docs/config-tuning-data-gaps-
-    # 2026-08-10.md, and the user's own direct question this session.
-    # Always safe to call, no enable flag - a pure read over trades both
-    # strategies have already placed.
-    whale_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-    market_rows = trade_analytics.build_trade_history([t.to_dict() for t in market_broker.trade_log])
-    return {
-        "aggregate": cross_strategy.aggregate_comparison(whale_rows, market_rows),
-        "ticker_overlap": cross_strategy.ticker_overlap(whale_rows, market_rows),
-    }
-
-
 @router.get("/api/regime/by-hour")
-async def get_regime_by_hour(strategy: str = "whale_follow"):
+async def get_regime_by_hour():
     # services/regime_analytics.py - Gap 9 of docs/config-tuning-data-gaps-
     # 2026-08-10.md. Always safe to call, no enable flag.
-    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
-    return {"strategy": strategy, "buckets": regime_analytics.by_hour_of_day(rows)}
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    return {"buckets": regime_analytics.by_hour_of_day(rows)}
 
 
 @router.get("/api/regime/by-day-of-week")
-async def get_regime_by_day_of_week(strategy: str = "whale_follow"):
-    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
-    return {"strategy": strategy, "buckets": regime_analytics.by_day_of_week(rows)}
+async def get_regime_by_day_of_week():
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    return {"buckets": regime_analytics.by_day_of_week(rows)}
 
 
 @router.get("/api/regime/by-category")
-async def get_regime_by_category(strategy: str = "whale_follow"):
+async def get_regime_by_category():
     # services/trade_category.py - the deferred category half of Gap 9,
     # docs/config-tuning-data-gaps-2026-08-10.md. Always safe to call -
     # naturally empty until enough trades placed after this shipped have a
     # recorded category, same "auto-enables once there's real data"
     # pattern every other gate in this app already uses.
-    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
-    return {"strategy": strategy, "buckets": regime_analytics.by_category(rows)}
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    return {"buckets": regime_analytics.by_category(rows)}
 
 
 @router.get("/api/regime/by-series")
-async def get_regime_by_series(strategy: str = "whale_follow"):
+async def get_regime_by_series():
     # services/regime_analytics.py's by_series() - 2026-08-16 direct
     # request, the finest of the three segmentation tiers. Always safe to
     # call, no enable flag, no trade_category.py dependency (series is a
     # pure function of the ticker).
-    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
-    return {"strategy": strategy, "buckets": regime_analytics.by_series(rows)}
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    return {"buckets": regime_analytics.by_series(rows)}
 
 
 @router.get("/api/regime/by-subcategory")
-async def get_regime_by_subcategory(strategy: str = "whale_follow"):
+async def get_regime_by_subcategory():
     # services/regime_analytics.py's by_subcategory() - 2026-08-16 direct
     # follow-up, the middle tier between by_series and by_category. Same
     # "auto-enables once there's real data" pattern as by_category - empty
     # until trades placed after this shipped have a recorded subcategory
     # (sports events only; see services/trade_category.py).
-    trade_log = market_broker.trade_log if strategy == "market_native" else broker.trade_log
-    rows = trade_analytics.build_trade_history([t.to_dict() for t in trade_log])
-    return {"strategy": strategy, "buckets": regime_analytics.by_subcategory(rows)}
+    rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+    return {"buckets": regime_analytics.by_subcategory(rows)}
 
 
 @router.get("/api/market-analyst/status")
