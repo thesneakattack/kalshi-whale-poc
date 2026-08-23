@@ -5233,6 +5233,45 @@
         <div class="files"><code>requirements.txt</code> · <code>requirements-dev.txt</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 133 · candidate-log cost capture</div>
+        <h4>record_rejection() finally captures the price a gate rejected at</h4>
+        <p>ROADMAP.md's "entry gates select a worse subset than the pool they draw from" item named its own
+          real next step directly: <code>services/candidate_log.py</code>'s <code>record_rejection()</code>
+          never captured a rejected candidate's price/unit_cost at all - only <code>observed_value</code>,
+          which means something different per gate (confidence for <code>entry_threshold</code>, contract count
+          for <code>min_contracts</code>) - so there was no way to tell "this gate's rejects would have won more
+          because the signal was better" from "...because it's mechanically priced into the near-certainty band"
+          (CLAUDE.md's HARD COMMANDMENT table: the &ge;0.95 unit-cost band wins 96.3% of the time and *loses*
+          money, forever). Fixed: a new nullable <code>unit_cost</code> column on both <code>rejected_candidates</code>
+          and <code>rejection_events</code> (guarded <code>ALTER TABLE</code>, same idiom as
+          <code>risk_manager.py</code>/<code>paper_broker.py</code>), threaded through all 12
+          <code>record_rejection()</code> call sites across <code>services/strategy_engine.py</code> (unit_cost
+          computed once near the top of <code>evaluate()</code> from <code>signal.price</code>/side, reused by
+          every rejection call and the existing sizing step, replacing a duplicate computation) and
+          <code>services/whalewatchers/kalshi_trade_tape.py</code>. The <code>min_contracts</code> gate - the one
+          the parent ROADMAP item already named as showing live signal (49.9% hypothetical win rate, near a
+          coin flip) - needed a reorder to get it: <code>yes_price_dollars</code> now parses before the
+          <code>min_contracts</code> gate instead of after, a second free field-read on a trade dict already in
+          hand, not a new API/DB call, so it costs nothing on the hot path. <code>gate_summary()</code>/
+          <code>population_gate_summary()</code> both now report <code>avg_unit_cost</code>/<code>avg_unit_cost_n</code>
+          per gate, wired all the way to the dashboard: a new "Avg Unit Cost" column in
+          <code>frontend/src/js/advisory-calibration.js</code>'s Rejected Candidates table. Verified live, not just
+          in tests: <code>uvicorn --reload</code> picked the change up with no restart needed, and
+          <code>GET /api/candidate-log/summary</code> showed real non-null <code>avg_unit_cost</code> for
+          <code>whale_watcher.min_contracts</code> (0.41 over 58 samples) and five other gates within minutes.
+          Deliberately not further than this: still only a per-gate mean, not a banded, sample-size-gated
+          cost-aware hypothetical win rate the way <code>confidence_calibration.py</code>'s
+          <code>_confidence_calibration_bands</code> buckets confidence - the column is brand new, so there's no
+          accumulated history yet to bucket and trust. That's the next step once it has had time to build up.</p>
+        <div class="files"><code>services/candidate_log.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/whalewatchers/kalshi_trade_tape.py</code> ·
+          <code>frontend/src/js/advisory-calibration.js</code> · <code>static/index.html</code> ·
+          <code>static/js/dashboard.bundle.js</code> · <code>tests/test_candidate_log.py</code> ·
+          <code>tests/test_strategy_engine.py</code> · <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -5291,7 +5330,7 @@
           <tr><td class="mod">services/regime_analytics.py</td><td class="note">time-of-day/day-of-week/category performance segmentation (phase 85, <code>docs/config-tuning-data-gaps-2026-08-10.md</code> Gap 9, deep-scan Finding 7) — <code>by_hour_of_day()</code>/<code>by_day_of_week()</code>, both derived from <code>entry_timestamp</code>, and (phase 92) <code>by_category()</code>, joining onto <code>trade_category.py</code>'s new persistence layer - all three reuse <code>trade_analytics.compute_summary()</code> per bucket. No persistence of its own</td><td class="loc">77</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/cross_strategy.py</td><td class="note">cross-strategy comparison (phase 84, <code>docs/config-tuning-data-gaps-2026-08-10.md</code> Gap 7, and the user's own direct request this session) — <code>aggregate_comparison()</code> (both strategies' <code>trade_analytics.compute_summary()</code> side by side, reused as-is) and <code>ticker_overlap()</code> (every ticker where whale-follow and market-native independently opened a position, with agreement/win-loss per side). No persistence of its own - pure functions over each broker's own trade history</td><td class="loc">56</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/calibration_history.py</td><td class="note">calibration-history tracking (phase 83, <code>docs/config-tuning-data-gaps-2026-08-10.md</code> Gap 6) — <code>due()</code>/<code>record_snapshot()</code>, split so the per-tick hot-path check stays a single cheap <code>MAX()</code> query; the actual report computation only runs when a snapshot is due (default every <code>confidence_calibration.snapshot_interval_sec</code> = 6h). Persists overall win rate, per-factor discrimination gaps, and the live weights at that moment — a trend line the live report can't show on its own. <code>data/calibration_history.db</code></td><td class="loc">101</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">services/candidate_log.py</td><td class="note">rejected-candidate/counterfactual logging (phase 78, <code>docs/config-tuning-data-gaps-2026-08-10.md</code> Gap 1) — <code>record_rejection()</code> called from every entry/discovery gate in <code>strategy_engine.py</code>/<code>market_strategy.py</code>/<code>kalshi_trade_tape.py</code> that previously only produced a boolean, dedup-keyed upsert on <code>(ticker, strategy, gate_name)</code> so a candidate re-failing the same gate every tick updates one row rather than growing unboundedly, resolved passively off the same <code>market_results</code> dict the tick loop already builds (zero new API calls), <code>gate_summary()</code>'s <code>hypothetical_win_rate</code> only populated where a side was knowable at rejection time. Not gated behind any enabled flag — collects passively like <code>signal_log</code> itself. <code>data/candidate_log.db</code></td><td class="loc">164</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/candidate_log.py</td><td class="note">rejected-candidate/counterfactual logging (phase 78, <code>docs/config-tuning-data-gaps-2026-08-10.md</code> Gap 1) — <code>record_rejection()</code> called from every entry/discovery gate in <code>strategy_engine.py</code>/<code>market_strategy.py</code>/<code>kalshi_trade_tape.py</code> that previously only produced a boolean, dedup-keyed upsert on <code>(ticker, strategy, gate_name)</code> so a candidate re-failing the same gate every tick updates one row rather than growing unboundedly, resolved passively off the same <code>market_results</code> dict the tick loop already builds (zero new API calls), <code>gate_summary()</code>'s <code>hypothetical_win_rate</code> only populated where a side was knowable at rejection time. Not gated behind any enabled flag — collects passively like <code>signal_log</code> itself. Since grown well past this original count with the <code>rejection_events</code> population table (phase 130) and <code>unit_cost</code> capture (phase 133). <code>data/candidate_log.db</code></td><td class="loc">410</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_account_client.py</td><td class="note">real-account client, now on Kalshi's official SDK — order schema, request signing, and response parsing all owned by the SDK; this file just wires credentials in and keeps the same dict-shaped return values; <code>get_orders</code> now threads through real cursor-based pagination (limit/cursor/status)</td><td class="loc">179</td><td><span class="pill good">reads done, verified</span> <span class="pill gated">writes gated</span></td></tr>
           <tr><td class="mod">services/whale_simulator.py</td><td class="note">fake whale-print generator, priced off real market data — volume-weighted market selection, log-normal size relative to each market's own volume, optional live-markets-only generation gate. Confidence scoring is now eight factors (depth/unusualness/proximity/context/agreement/cluster/trend/analyst) via <code>composite_confidence_breakdown()</code> — exponential-saturation depth (no hard cap), percentile-rank context (robust to one outlier market), same-market signal-agreement factor, two from Barclay &amp; Warner's stealth-trading literature (<code>cluster_factor</code>, defaults 0.0 — isolated is itself informative; <code>trend_factor</code>, defaults neutral 0.5), and <code>analyst_factor</code> (phase 56, direct request — agreement with <code>market_analyst_agent</code>'s own independent estimate when a fresh one exists, defaults neutral 0.5, a cheap DB read never a new API call) — weights are now config-editable (phase 77 — new <code>DEFAULT_WEIGHTS</code> dict + <code>weights</code> param, real-data-retuned to depth .25/unusualness .03/proximity .20/context .13/agreement .03/cluster .13/trend .08/analyst .15) — plus a noise-free <code>composite_confidence()</code> wrapper and a thin noise-adding wrapper for the simulator. Phase 81: new <code>WhaleSignal.raw_context</code> field (notional/spread/volume, kept separate from <code>factors</code> since those are all 0-1 scores) — only real providers populate it, simulator leaves it <code>None</code></td><td class="loc">410</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/whalewatchers/base.py</td><td class="note">provider interface every whale-watcher implements — <code>fetch_signals()</code> takes an optional <code>market_context</code> (this tick's already-fetched markets/trade tape/config) so a provider can classify data this app already has instead of always fetching its own</td><td class="loc">30</td><td><span class="pill good">done</span></td></tr>

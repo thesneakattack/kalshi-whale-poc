@@ -122,6 +122,35 @@ def test_fetch_signals_below_contract_threshold_logs_a_rejected_candidate():
     assert gates[0]["rejected_count"] == 1
 
 
+def test_fetch_signals_below_contract_threshold_logs_unit_cost_too():
+    """2026-08-23, ROADMAP.md's "entry gates select a worse subset" item:
+    record_rejection() used to capture nothing but the gate's own
+    observed/threshold values - no price - which blocked ever telling apart
+    "this gate's rejects would have won more because the signal is better"
+    from "...because it's mechanically priced into the near-certainty
+    band." price is parsed before the min_contracts gate now specifically
+    so this rejection - the one under live root-cause investigation - can
+    carry it."""
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    asyncio.run(provider.fetch_signals(market_context=ctx))
+    gates = candidate_log.gate_summary()
+    assert gates[0]["avg_unit_cost"] == pytest.approx(0.6)
+    assert gates[0]["avg_unit_cost_n"] == 1
+
+
+def test_fetch_signals_min_contracts_unit_cost_is_side_adjusted_for_no():
+    provider = KalshiTradeTapeProvider()
+    # yes_price_dollars is always the YES price by convention - a "no"
+    # taker's real unit cost is 1 - price, not price itself.
+    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", no_price_dollars="0.40", taker_side="no")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    asyncio.run(provider.fetch_signals(market_context=ctx))
+    gates = candidate_log.gate_summary()
+    assert gates[0]["avg_unit_cost"] == pytest.approx(0.4)
+
+
 def test_fetch_signals_emits_signal_above_threshold():
     provider = KalshiTradeTapeProvider()
     # count 10000, clears the 5,000-contract default

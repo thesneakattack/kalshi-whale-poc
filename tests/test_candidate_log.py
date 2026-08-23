@@ -90,6 +90,24 @@ def test_hypothetical_win_rate_computed_when_side_known():
     assert gates[0]["hypothetical_win_rate"] == pytest.approx(66.7, abs=0.1)
 
 
+def test_unit_cost_none_when_not_supplied():
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05)
+    gates = cl.gate_summary()
+    assert gates[0]["avg_unit_cost"] is None
+    assert gates[0]["avg_unit_cost_n"] == 0
+
+
+def test_unit_cost_averaged_across_rows_with_a_known_value():
+    cl.record_rejection("TICK-A", "whale_follow", "min_contracts", 10, 20, side="yes", unit_cost=0.9)
+    cl.record_rejection("TICK-B", "whale_follow", "min_contracts", 10, 20, side="yes", unit_cost=0.7)
+    # A rejection that couldn't supply unit_cost (e.g. price itself was
+    # unparseable) shouldn't drag the average down or inflate the count.
+    cl.record_rejection("TICK-C", "whale_follow", "min_contracts", 10, 20, side="yes")
+    gates = cl.gate_summary()
+    assert gates[0]["avg_unit_cost"] == pytest.approx(0.8)
+    assert gates[0]["avg_unit_cost_n"] == 2
+
+
 def test_clear_all_wipes_every_row():
     cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05)
     cl.record_rejection("TICK-B", "whale_follow", "entry_threshold", 0.5, 0.6)
@@ -143,6 +161,18 @@ def test_population_gate_summary_ready_once_min_samples_met():
     assert pop[0]["status"] == "ready"
     assert pop[0]["hypothetical_win_rate_n"] == 5
     assert pop[0]["hypothetical_win_rate"] == pytest.approx(80.0)  # 4/5 sided-matched
+
+
+def test_population_gate_summary_averages_unit_cost_across_the_undeduped_population():
+    """Unlike gate_summary()'s dedup, every repeated rejection of the same
+    ticker/gate is its own row in rejection_events - avg_unit_cost here
+    must average across all of them, not just the most recent."""
+    cl.record_rejection("TICK-A", "whale_watcher", "min_contracts", 10, 20, side="yes", unit_cost=0.9, now=1000.0)
+    cl.record_rejection("TICK-A", "whale_watcher", "min_contracts", 12, 20, side="yes", unit_cost=0.5, now=2000.0)
+    pop = cl.population_gate_summary(min_samples=0)
+    assert pop[0]["rejected_count"] == 2
+    assert pop[0]["avg_unit_cost"] == pytest.approx(0.7)
+    assert pop[0]["avg_unit_cost_n"] == 2
 
 
 def test_population_resolution_is_batched_by_ticker_not_row():

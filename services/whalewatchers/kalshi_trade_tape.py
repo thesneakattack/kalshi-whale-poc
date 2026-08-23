@@ -463,9 +463,18 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 if _prescan_count(trade) is not None and ticker:
                     side_n = _prescan_count(trade)
                     if side_n[1] >= min_contracts_for(ticker, wwk_cfg):
+                        # Cheap dict-field read on data already in hand (no
+                        # new DB/API call) so this rejection carries
+                        # unit_cost too - see record_rejection's own
+                        # docstring / ROADMAP.md on why that matters.
+                        unresolved_price = _price_dollars(trade, "yes_price_dollars")
+                        unresolved_unit_cost = (
+                            (unresolved_price if side_n[0] == "yes" else (1.0 - unresolved_price))
+                            if unresolved_price is not None else None
+                        )
                         candidate_log.record_rejection(
                             ticker, "whale_watcher", "market_unresolved", side_n[1],
-                            min_contracts_for(ticker, wwk_cfg), side=side_n[0],
+                            min_contracts_for(ticker, wwk_cfg), side=side_n[0], unit_cost=unresolved_unit_cost,
                         )
                 continue
 
@@ -488,30 +497,18 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                     ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side,
                 )
                 continue
-            # A single global threshold can't be right for both a
-            # low-liquidity niche market and a high-volume political one
-            # (ROADMAP.md) - series_of() reuses the same series definition
-            # excluded_series/series_stats already key off, with the global
-            # min_contracts as the fallback for any series with no override
-            # set. Contract count, not dollar notional, is the gate - see
-            # this module's own docstring for why.
-            min_contracts = min_contracts_for(ticker, wwk_cfg)
-            if count < min_contracts:
-                candidate_log.record_rejection(ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side)
-                continue
-
-            # Real dollar notional is no longer gated on, but is still
-            # captured for diagnostics/raw_context below (a whale-sized
-            # print's actual dollar cost is genuinely useful context, just
-            # not the selection criterion anymore).
-            try:
-                notional = _notional_usd(trade, side)
-            except (TypeError, ValueError):
-                notional = None
 
             # price is always the yes-side price by convention, same as
             # every other WhaleSignal in this app (whale_simulator.py,
             # confirmed in ROADMAP.md) - side carries direction separately.
+            # Parsed here, before the min_contracts gate below (moved up
+            # from after it, 2026-08-23), so a min_contracts rejection - the
+            # gate currently under live root-cause investigation,
+            # ROADMAP.md's "entry gates select a worse subset" item - can
+            # carry unit_cost too. This is a second field read on the same
+            # trade dict already in hand, not a new DB/API call, so it's
+            # free on the hot path (same "cheap and side-effect free"
+            # reasoning as _prescan_count above).
             #
             # Parsed strictly (_price_dollars, no `or 0` default): a missing
             # price used to become 0.0, which is not a missing value but a
@@ -525,6 +522,32 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                     ticker, "whale_watcher", "unparseable_price", 0.0, 0.0, side=side,
                 )
                 continue
+            unit_cost = price if side == "yes" else (1.0 - price)
+
+            # A single global threshold can't be right for both a
+            # low-liquidity niche market and a high-volume political one
+            # (ROADMAP.md) - series_of() reuses the same series definition
+            # excluded_series/series_stats already key off, with the global
+            # min_contracts as the fallback for any series with no override
+            # set. Contract count, not dollar notional, is the gate - see
+            # this module's own docstring for why.
+            min_contracts = min_contracts_for(ticker, wwk_cfg)
+            if count < min_contracts:
+                candidate_log.record_rejection(
+                    ticker, "whale_watcher", "min_contracts", count, min_contracts,
+                    side=side, unit_cost=unit_cost,
+                )
+                continue
+
+            # Real dollar notional is no longer gated on, but is still
+            # captured for diagnostics/raw_context below (a whale-sized
+            # print's actual dollar cost is genuinely useful context, just
+            # not the selection criterion anymore).
+            try:
+                notional = _notional_usd(trade, side)
+            except (TypeError, ValueError):
+                notional = None
+
             size = int(round(count))
             if size <= 0:
                 continue
@@ -543,11 +566,10 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # logging them inflates the headline whale win rate with trades
             # that could never have been taken, which is worse than useless
             # - it is a number that looks like evidence.
-            unit_cost = price if side == "yes" else (1.0 - price)
             if not config_bounds.is_tradeable_unit_cost(unit_cost):
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "tradeable_price_range",
-                    unit_cost, config_bounds.MIN_TRADEABLE_UNIT_COST, side=side,
+                    unit_cost, config_bounds.MIN_TRADEABLE_UNIT_COST, side=side, unit_cost=unit_cost,
                 )
                 continue
 

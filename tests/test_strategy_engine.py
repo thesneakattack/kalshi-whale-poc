@@ -71,12 +71,16 @@ def test_skip_below_confidence_threshold(tmp_path, monkeypatch):
 
 def test_skip_below_confidence_threshold_logs_a_rejected_candidate(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
-    strategy.evaluate(_signal(ticker="TICK-Z", side="yes", confidence=0.5), _cfg(entry_threshold=0.65))
+    strategy.evaluate(_signal(ticker="TICK-Z", side="yes", price=0.5, confidence=0.5), _cfg(entry_threshold=0.65))
     gates = cl_module.gate_summary()
     assert len(gates) == 1
     assert gates[0]["strategy"] == "whale_follow"
     assert gates[0]["gate_name"] == "entry_threshold"
     assert gates[0]["rejected_count"] == 1
+    # 2026-08-23, ROADMAP.md's "entry gates select a worse subset" item -
+    # every candidate_log rejection in evaluate() now carries unit_cost
+    # (signal.price, side-adjusted), not just observed_value/threshold_value.
+    assert gates[0]["avg_unit_cost"] == pytest.approx(0.5)
 
 
 def test_skip_below_min_whale_winrate_logs_a_rejected_candidate(tmp_path, monkeypatch):
@@ -85,11 +89,12 @@ def test_skip_below_min_whale_winrate_logs_a_rejected_candidate(tmp_path, monkey
         "series": ticker.split("-")[0], "window_days": days, "total_signals": 10,
         "resolved": 10, "correct": 3, "win_rate": 30.0,
     })
-    decision = strategy.evaluate(_signal(confidence=0.9), _cfg(entry_threshold=0.65, min_whale_winrate_pct=40, min_resolved_for_whale_filter=5))
+    decision = strategy.evaluate(_signal(confidence=0.9, price=0.7), _cfg(entry_threshold=0.65, min_whale_winrate_pct=40, min_resolved_for_whale_filter=5))
     assert decision["action"] == "skip"
     gates = cl_module.gate_summary()
     assert len(gates) == 1
     assert gates[0]["gate_name"] == "min_whale_winrate_pct"
+    assert gates[0]["avg_unit_cost"] == pytest.approx(0.7)
 
 
 def test_skip_when_close_time_is_more_than_two_hours_away(tmp_path, monkeypatch):
@@ -1369,6 +1374,7 @@ def test_validate_pending_fill_records_a_rejection_in_candidate_log(tmp_path, mo
     assert "maximum unit cost" in reason
     gates = {g["gate_name"]: g for g in cl_module.gate_summary()}
     assert gates["max_unit_cost"]["rejected_count"] == 1
+    assert gates["max_unit_cost"]["avg_unit_cost"] == pytest.approx(0.9)
 
 
 def test_check_pending_fills_end_to_end_rejects_a_fill_that_moved_outside_the_band(tmp_path, monkeypatch):

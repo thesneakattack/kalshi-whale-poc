@@ -418,17 +418,26 @@ async function loadCandidateLogSummary() {
       const wr = g.hypothetical_win_rate;
       const wrText = wr === null ? '—' : `${wr.toFixed(1)}% (n=${g.hypothetical_win_rate_n})`;
       const wrColor = wr === null ? 'var(--muted)' : (wr >= 50 ? 'var(--yes)' : 'var(--no)');
+      // avg_unit_cost (2026-08-23) - closes the cost-blindness gap this
+      // table's own hypothetical_win_rate had: a high win rate at a
+      // near-certainty unit cost (see CLAUDE.md's HARD COMMANDMENT table)
+      // tells a different story than the same win rate at 0.5-0.8. Null
+      // when no rejection for this gate could capture a price (e.g. it
+      // rejected before price was even parsed).
+      const ucText = g.avg_unit_cost === null || g.avg_unit_cost === undefined
+        ? '—' : `${g.avg_unit_cost.toFixed(2)} (n=${g.avg_unit_cost_n})`;
       return `<tr>
         <td>${esc(g.strategy)}</td>
         <td><span class="config-path" style="margin:0;">${esc(g.gate_name)}</span></td>
         <td>${g.rejected_count}</td>
         <td>${g.resolved_count}</td>
         <td style="color:${wrColor};">${wrText}</td>
+        <td>${ucText}</td>
       </tr>`;
     }).join('');
     el.innerHTML = `
       <table class="positions-table">
-        <thead><tr><th>Strategy</th><th>Gate</th><th>Rejected</th><th>Resolved</th><th>Hypothetical Win Rate</th></tr></thead>
+        <thead><tr><th>Strategy</th><th>Gate</th><th>Rejected</th><th>Resolved</th><th>Hypothetical Win Rate</th><th>Avg Unit Cost</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     `;

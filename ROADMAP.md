@@ -293,14 +293,33 @@ questions.
       realized_pnl term — CLAUDE.md's HARD COMMANDMENT table already shows
       the >=0.95 unit-cost band winning 96.3% of the time while *losing*
       money, forever, so a high hypothetical win rate is not by itself
-      proof a gate should loosen. `population_gate_summary()` cannot even
-      be extended to check this today — `record_rejection()` never
-      captured the rejected candidate's price/unit_cost, only
-      `observed_value` (which means something different per gate:
-      confidence for `entry_threshold`, contract count for
-      `min_contracts`). Capturing price at rejection time would be the
-      real next step before trusting any loosen-this-gate recommendation
-      built on win rate alone.
+      proof a gate should loosen.
+      **Cost-blindness half fixed 2026-08-23** (the "real next step"
+      named above): `record_rejection()` now accepts and persists
+      `unit_cost` (new nullable column on both `rejected_candidates` and
+      `rejection_events`), threaded through every one of its 12 call
+      sites in `services/strategy_engine.py`/
+      `services/whalewatchers/kalshi_trade_tape.py` that can supply it —
+      `signal.price`/`price`, side-adjusted, in the strategy-engine gates;
+      a reorder in `kalshi_trade_tape.py` so `yes_price_dollars` is parsed
+      *before* the `min_contracts` gate (a second free field-read on data
+      already in hand, not a new API/DB call) so that gate specifically —
+      the one already showing live signal above — can carry it too.
+      `gate_summary()`/`population_gate_summary()` both now report
+      `avg_unit_cost`/`avg_unit_cost_n` per gate, exposed via
+      `GET /api/candidate-log/summary` and a new "Avg Unit Cost" dashboard
+      column (`frontend/src/js/advisory-calibration.js`). Verified live:
+      real rejections since this landed already carry it (e.g.
+      `whale_watcher.min_contracts` avg_unit_cost 0.41 over 58 samples,
+      `whale_follow.close_window` 0.44 over 73, minutes after deploy).
+      **Still not a fix for the win-rate-alone trap itself** — this is
+      only a per-gate *mean* unit_cost, not a banded, sample-size-gated
+      cost-aware hypothetical win rate (the way
+      `_confidence_calibration_bands` buckets confidence) — the column is
+      brand new, so there's no accumulated history yet to bucket by band
+      and trust. That banding is the real next step now, once real
+      `unit_cost` data has had time to accumulate the same way
+      `rejection_events` itself did.
 
 - [x] **Switch the whale threshold from dollars to contract count (or add
       one alongside).** Measured 2026-08-17 across 145,785 real captured

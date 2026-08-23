@@ -240,6 +240,17 @@ class FollowTheWhaleStrategy:
         series = signal_log.series_of(signal.ticker)
         strat_cfg = config_overrides.resolve(cfg["strategy"], cfg.get("strategy_overrides"), category=category, series=series)
 
+        # Hoisted up from just before sizing (below) so every
+        # candidate_log.record_rejection() call in this method can pass
+        # unit_cost too, not just the final sizing step - ROADMAP.md's
+        # "entry gates select a worse subset" item: record_rejection()
+        # never captured price/unit_cost at all, which blocks any
+        # cost-aware version of population_gate_summary()'s hypothetical
+        # win rate. signal.price is always the YES price (see
+        # whale_simulator.py) - a NO print's real per-contract cost is
+        # (1 - price), not price itself.
+        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+
         # Audit finding (2026-08-09): this used to be self.broker.equity({})
         # - an empty prices dict makes every open position's mark_to_market
         # fall back to its own entry_price (see PaperBroker.equity's
@@ -277,7 +288,7 @@ class FollowTheWhaleStrategy:
         if not is_live and seconds_to_close is not None and not (0 < seconds_to_close <= close_window_sec):
             candidate_log.record_rejection(
                 signal.ticker, "whale_follow", "close_window",
-                seconds_to_close, close_window_sec, side=signal.side,
+                seconds_to_close, close_window_sec, side=signal.side, unit_cost=unit_cost,
             )
             return self._skip(signal, "close time is not within the trade window")
 
@@ -309,7 +320,7 @@ class FollowTheWhaleStrategy:
         ):
             candidate_log.record_rejection(
                 signal.ticker, "whale_follow", "min_seconds_to_close",
-                seconds_to_close, min_seconds_to_close, side=signal.side,
+                seconds_to_close, min_seconds_to_close, side=signal.side, unit_cost=unit_cost,
             )
             return self._skip(
                 signal,
@@ -342,7 +353,8 @@ class FollowTheWhaleStrategy:
                 grace = strat_cfg.get("special_market_min_seconds_to_close", 300)
                 if seconds_to_close is not None and seconds_to_close < grace:
                     candidate_log.record_rejection(
-                        signal.ticker, "whale_follow", "special_market_gate", seconds_to_close, grace, side=signal.side
+                        signal.ticker, "whale_follow", "special_market_gate", seconds_to_close, grace,
+                        side=signal.side, unit_cost=unit_cost,
                     )
                     return self._skip(signal, "market has special settlement/early-close — skipping close-in-time")
         except Exception:
@@ -376,7 +388,7 @@ class FollowTheWhaleStrategy:
         if record["resolved"] >= min_resolved and record["win_rate"] is not None and record["win_rate"] < min_winrate:
             candidate_log.record_rejection(
                 signal.ticker, "whale_follow", "min_whale_winrate_pct",
-                record["win_rate"], min_winrate, side=signal.side,
+                record["win_rate"], min_winrate, side=signal.side, unit_cost=unit_cost,
             )
             return self._skip(
                 signal,
@@ -401,7 +413,8 @@ class FollowTheWhaleStrategy:
         # bet instead of one ticker held twice.
         if me_complement and me_complement in self.broker.positions:
             candidate_log.record_rejection(
-                signal.ticker, "whale_follow", "mutually_exclusive_duplicate", 1.0, 0.0, side=signal.side,
+                signal.ticker, "whale_follow", "mutually_exclusive_duplicate", 1.0, 0.0,
+                side=signal.side, unit_cost=unit_cost,
             )
             return self._skip(
                 signal, f'already holding a position on "{me_complement}", this market\'s mutually-exclusive complement',
@@ -430,7 +443,7 @@ class FollowTheWhaleStrategy:
         if not validation.ok:
             candidate_log.record_rejection(
                 signal.ticker, "whale_follow", validation.gate_name,
-                validation.observed, validation.threshold, side=signal.side,
+                validation.observed, validation.threshold, side=signal.side, unit_cost=unit_cost,
             )
             return self._skip(signal, validation.reason)
 
@@ -464,14 +477,12 @@ class FollowTheWhaleStrategy:
         # suspenders, not the only fix).
         kelly_fraction = strat_cfg.get("kelly_fraction_of_cap") or 0.0
         max_size = kelly_scaled_max_size(max_size, signal.confidence, effective_threshold, kelly_fraction)
-        # signal.price is always the YES price (see whale_simulator.py) - a NO
-        # print's real per-contract cost is (1 - price), not price itself.
-        # Sizing off the wrong unit cost here doesn't just mis-price a NO
-        # trade, it also breaks the max_position_pct risk cap: open_position
-        # caps spend at whatever bankroll remains, so an inflated `contracts`
-        # request for a NO side would silently blow past the intended
-        # position-size limit instead of being capped by it.
-        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+        # unit_cost computed once, up top - sizing off the wrong unit cost
+        # here doesn't just mis-price a NO trade, it also breaks the
+        # max_position_pct risk cap: open_position caps spend at whatever
+        # bankroll remains, so an inflated `contracts` request for a NO
+        # side would silently blow past the intended position-size limit
+        # instead of being capped by it.
         contracts = int(max_size / unit_cost) if unit_cost > 0 else 0
         if contracts <= 0:
             return self._skip(signal, "position size rounds to zero")
@@ -554,8 +565,10 @@ class FollowTheWhaleStrategy:
         effective_threshold, is_longshot = _effective_entry_threshold(strat_cfg, price, is_live, seconds_to_close)
         validation = _validate_entry_price(side, price, confidence or 0.0, effective_threshold, strat_cfg, is_longshot=is_longshot)
         if not validation.ok:
+            unit_cost = price if side == "yes" else (1 - price)
             candidate_log.record_rejection(
-                ticker, "whale_follow", validation.gate_name, validation.observed, validation.threshold, side=side,
+                ticker, "whale_follow", validation.gate_name, validation.observed, validation.threshold,
+                side=side, unit_cost=unit_cost,
             )
         return validation.ok, validation.reason
 

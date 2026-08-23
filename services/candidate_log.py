@@ -50,6 +50,15 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # Same idiom as services/risk_manager.py/paper_broker.py - CREATE TABLE
+    # IF NOT EXISTS alone doesn't add a column to an existing table with
+    # existing rows.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -108,44 +117,66 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
         "WHERE resolved = 0"
     )
+    # 2026-08-23: closes the cost-blindness gap population_gate_summary()'s
+    # own docstring flags - the rejected candidate's unit_cost (0-1, YES-
+    # side-adjusted per side, same convention as PaperBroker's own trades)
+    # at the moment it was rejected, so a future pass can bucket hypothetical
+    # win rate by unit_cost band instead of averaging across all of them (the
+    # same trap CLAUDE.md's HARD COMMANDMENT table already proved: the
+    # >=0.95 band wins 96.3% of the time and *loses* money, forever).
+    # Nullable - not every rejection can supply this (e.g. unparseable_price
+    # itself, by definition).
+    _add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
+    _add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
     return conn
 
 
 def record_rejection(
     ticker: str, strategy: str, gate_name: str,
     observed_value: float | None, threshold_value: float | None,
-    side: str | None = None, now: float | None = None,
+    side: str | None = None, now: float | None = None, unit_cost: float | None = None,
 ) -> None:
     """side, when known, is the direction a trade would have taken had this
     gate not rejected the candidate (e.g. the whale print's own side) - not
     every gate can supply this, and that's fine: gate_summary() only computes a
     hypothetical win rate for rows where side is present, and reports the
-    plain yes/no resolution split otherwise."""
+    plain yes/no resolution split otherwise.
+
+    unit_cost, when known (2026-08-23), is the real per-contract cost
+    (0-1, side-adjusted - see every call site's own "signal.price is always
+    the YES price" comment) at rejection time - closes the cost-blindness
+    gap population_gate_summary()'s own docstring names: without this, a
+    high hypothetical win rate can't be told apart from a near-certainty-
+    band gate that would have won often while losing money on every
+    settlement (CLAUDE.md's HARD COMMANDMENT table). Not every gate can
+    supply this either (a gate that rejects before price is even parsed
+    genuinely has none) - None here means "unknown," not 0."""
     now = now if now is not None else time.time()
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO rejected_candidates
-                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved, unit_cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(ticker, strategy, gate_name) DO UPDATE SET
                 observed_value = excluded.observed_value,
                 threshold_value = excluded.threshold_value,
                 side = excluded.side,
-                rejected_at = excluded.rejected_at
+                rejected_at = excluded.rejected_at,
+                unit_cost = excluded.unit_cost
             WHERE rejected_candidates.resolved = 0
             """,
-            (ticker, strategy, gate_name, observed_value, threshold_value, side, now),
+            (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
         )
         # Population copy - one row per call, no dedup. See this module's
         # "POPULATION STATISTICS" docstring section.
         conn.execute(
             """
             INSERT INTO rejection_events
-                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved, unit_cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
-            (ticker, strategy, gate_name, observed_value, threshold_value, side, now),
+            (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
         )
 
 
@@ -195,21 +226,30 @@ def gate_summary() -> list[dict]:
     have happened to the candidates this gate rejected." hypothetical_win_rate
     is only populated when at least one resolved row for this gate carries a
     known side (see record_rejection's docstring) - None otherwise, not 0,
-    since a missing side means "can't be computed," not "0% win rate.\""""
+    since a missing side means "can't be computed," not "0% win rate."
+
+    avg_unit_cost (2026-08-23), when known, is the mean unit_cost across
+    this gate's rows that captured one - see population_gate_summary's own
+    docstring for why this matters (a high win rate at a near-certainty
+    unit_cost tells a different story than the same win rate at 0.5-0.8)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT strategy, gate_name, side, result, resolved FROM rejected_candidates",
+            "SELECT strategy, gate_name, side, result, resolved, unit_cost FROM rejected_candidates",
         ).fetchall()
     grouped: dict[tuple, dict] = {}
-    for strategy, gate_name, side, result, resolved in rows:
+    for strategy, gate_name, side, result, resolved, unit_cost in rows:
         key = (strategy, gate_name)
         g = grouped.setdefault(key, {
             "strategy": strategy, "gate_name": gate_name,
             "rejected_count": 0, "resolved_count": 0,
             "yes_count": 0, "no_count": 0,
             "_sided_total": 0, "_sided_wins": 0,
+            "_unit_cost_total": 0.0, "_unit_cost_n": 0,
         })
         g["rejected_count"] += 1
+        if unit_cost is not None:
+            g["_unit_cost_total"] += unit_cost
+            g["_unit_cost_n"] += 1
         if resolved:
             g["resolved_count"] += 1
             if result == "yes":
@@ -224,8 +264,12 @@ def gate_summary() -> list[dict]:
     for g in grouped.values():
         sided_total = g.pop("_sided_total")
         sided_wins = g.pop("_sided_wins")
+        unit_cost_n = g.pop("_unit_cost_n")
+        unit_cost_total = g.pop("_unit_cost_total")
         g["hypothetical_win_rate"] = round(100 * sided_wins / sided_total, 1) if sided_total > 0 else None
         g["hypothetical_win_rate_n"] = sided_total
+        g["avg_unit_cost"] = round(unit_cost_total / unit_cost_n, 3) if unit_cost_n > 0 else None
+        g["avg_unit_cost_n"] = unit_cost_n
         out.append(g)
     out.sort(key=lambda g: (-g["resolved_count"], g["strategy"], g["gate_name"]))
     return out
@@ -244,34 +288,45 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     market has settled), the same denominator gate_summary's
     hypothetical_win_rate_n already uses, not raw rejected_count.
 
-    STILL COST-BLIND, same as gate_summary() - flagged, not fixed, here.
-    services/advisory/CHEATSHEET.md's own audit finding already names the
-    general trap: comparing win rate alone, with no cost_basis/
-    realized_pnl term, can't tell "this bucket wins more because the
-    signal is better" from "this bucket wins more because it's
-    mechanically priced into the near-certainty band" (CLAUDE.md's HARD
-    COMMANDMENT table: the >=0.95 unit-cost band wins 96.3% of the time
-    and *loses* money, forever). This function inherits that exact gap and
-    then some - record_rejection() never captured the rejected candidate's
-    price/unit_cost at all (only observed_value, which means something
-    different per gate: confidence for entry_threshold, contract count for
-    min_contracts, spread for max_spread), so there is no way to compute a
-    cost-aware version of this from the data that exists today. A high
-    hypothetical_win_rate here is a real, useful counterfactual signal but
-    not by itself proof a gate should be loosened - see ROADMAP.md."""
+    PARTIALLY COST-BLIND, same root gap gate_summary() has - services/
+    advisory/CHEATSHEET.md's own audit finding names the general trap:
+    comparing win rate alone, with no cost_basis/realized_pnl term, can't
+    tell "this bucket wins more because the signal is better" from "this
+    bucket wins more because it's mechanically priced into the near-
+    certainty band" (CLAUDE.md's HARD COMMANDMENT table: the >=0.95
+    unit-cost band wins 96.3% of the time and *loses* money, forever).
+    record_rejection() now captures unit_cost where the calling gate can
+    supply it (2026-08-23 - previously it captured nothing but
+    observed_value, which means something different per gate: confidence
+    for entry_threshold, contract count for min_contracts, spread for
+    max_spread) - avg_unit_cost/avg_unit_cost_n below are that data,
+    exposed. This is still only a per-gate MEAN, not a banded cost-aware
+    hypothetical_win_rate - the column is brand new as of this date, so
+    there isn't yet enough accumulated history to bucket by unit_cost band
+    and sample-size-gate each band the way _confidence_calibration_bands
+    (services/whale_calibration/confidence_calibration.py) does for
+    confidence; that's the real next step once this has had time to
+    accumulate, same pattern this table's own rejection_events history
+    followed. A high hypothetical_win_rate here is a real, useful
+    counterfactual signal but not by itself proof a gate should be
+    loosened - see ROADMAP.md."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT strategy, gate_name, side, result, resolved FROM rejection_events",
+            "SELECT strategy, gate_name, side, result, resolved, unit_cost FROM rejection_events",
         ).fetchall()
     grouped: dict[tuple, dict] = {}
-    for strategy, gate_name, side, result, resolved in rows:
+    for strategy, gate_name, side, result, resolved, unit_cost in rows:
         key = (strategy, gate_name)
         g = grouped.setdefault(key, {
             "strategy": strategy, "gate_name": gate_name,
             "rejected_count": 0, "resolved_count": 0,
             "_sided_total": 0, "_sided_wins": 0,
+            "_unit_cost_total": 0.0, "_unit_cost_n": 0,
         })
         g["rejected_count"] += 1
+        if unit_cost is not None:
+            g["_unit_cost_total"] += unit_cost
+            g["_unit_cost_n"] += 1
         if resolved:
             g["resolved_count"] += 1
             if side in ("yes", "no"):
@@ -282,6 +337,8 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     for g in grouped.values():
         sided_total = g.pop("_sided_total")
         sided_wins = g.pop("_sided_wins")
+        unit_cost_n = g.pop("_unit_cost_n")
+        unit_cost_total = g.pop("_unit_cost_total")
         if sided_total == 0 or sided_total < min_samples:
             g["status"] = "insufficient"
             g["hypothetical_win_rate"] = None
@@ -290,6 +347,8 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
             g["hypothetical_win_rate"] = round(100 * sided_wins / sided_total, 1)
         g["hypothetical_win_rate_n"] = sided_total
         g["min_samples"] = min_samples
+        g["avg_unit_cost"] = round(unit_cost_total / unit_cost_n, 3) if unit_cost_n > 0 else None
+        g["avg_unit_cost_n"] = unit_cost_n
         out.append(g)
     out.sort(key=lambda g: (-g["rejected_count"], g["strategy"], g["gate_name"]))
     return out

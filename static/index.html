@@ -445,6 +445,9 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       the data Advisory's own entry-threshold recommendation needs but doesn't have today.
       <span class="config-path" style="margin:0;">hypothetical_win_rate</span> assumes a position was opened
       on the implied side and held to settlement; only populated when that side was knowable at rejection time.
+      <span class="config-path" style="margin:0;">Avg Unit Cost</span> is the mean per-contract cost (0-1) across
+      rejections that captured a price — a high win rate at a near-certainty unit cost is a different story than
+      the same win rate at 0.5-0.8 (see CLAUDE.md's HARD COMMANDMENT table).
     </p>
     <div id="candidate-log-summary"><div class="empty">Loading…</div></div>
 
