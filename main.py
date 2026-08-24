@@ -114,6 +114,7 @@ from services.alerting import routes as alerting_routes  # noqa: E402
 from services.observability import maybe_capture as _maybe_capture_observability  # noqa: E402
 from services.observability import observability  # noqa: E402
 from services.observability import routes as observability_routes  # noqa: E402
+from services.quality import routes as quality_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream,
     risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -976,6 +977,7 @@ app.include_router(analytics_routes.router)
 app.include_router(backup_routes.router)
 app.include_router(alerting_routes.router)
 app.include_router(observability_routes.router)
+app.include_router(quality_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.

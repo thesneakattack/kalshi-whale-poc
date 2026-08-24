@@ -24,10 +24,14 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services.quality.models import QualityFinding
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
 
 _DEFAULT_SAMPLE_INTERVAL_SEC = 60
 _DEFAULT_RETENTION_HOURS = 336  # 14 days
+_RATE_LIMIT_WINDOW_HOURS = 1.0  # QCP Task 10 anomaly rule - see runtime_findings
+_RATE_LIMIT_MIN_OCCURRENCES = 3  # "repeated," not one isolated hit
 
 
 def _connect() -> sqlite3.Connection:
@@ -176,3 +180,104 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     metrics = capture_from_runtime(cfg, state, trade_stream, index_stream)
     record_samples_bulk(metrics, observed_at=now)
     obs_state["last_sample_at"] = now
+
+
+# --- runtime anomaly rules (QCP Task 10) ----------------------------------
+#
+# Each rule is a small, separately-testable pure function (no DB writes -
+# the rate-limit-hits rule below is the one read, via history()). A rule
+# that lacks enough evidence to judge - no sample yet, a feature that was
+# never enabled, a single isolated blip - omits a finding rather than
+# asserting health or failure, the same "unknown is better than fabricated"
+# discipline services/diagnostics/diagnostics.py's Check.status already
+# applies, just expressed as omission since QualityFinding has no fourth
+# "unknown" severity of its own.
+
+
+def _tick_duration_finding(cfg: dict, state: dict) -> QualityFinding | None:
+    poll_interval = (cfg.get("kalshi") or {}).get("poll_interval_sec")
+    duration = state.get("last_tick_duration_sec")
+    if duration is None or not poll_interval or duration <= poll_interval:
+        return None
+    return QualityFinding(
+        finding_id="observability:tick-duration-exceeded:trading_loop",
+        check="tick-duration", severity="warning", confidence="high", source="runtime",
+        scope="trading_loop",
+        summary=f"last tick took {duration}s, exceeding the configured {poll_interval}s poll interval",
+        evidence={"last_tick_duration_sec": duration, "poll_interval_sec": poll_interval},
+    )
+
+
+def _dropped_messages_findings(trade_stream, index_stream) -> list[QualityFinding]:
+    findings = []
+    for stream, scope in ((trade_stream, "trade_stream"), (index_stream, "index_stream")):
+        if stream is None:
+            continue
+        dropped = getattr(stream, "dropped_messages", 0)
+        if not dropped:
+            continue
+        findings.append(QualityFinding(
+            finding_id=f"observability:ws-dropped-messages:{scope}",
+            check="ws-dropped-messages", severity="error", confidence="high", source="runtime",
+            scope=scope,
+            summary=f"{scope} has dropped {dropped} message(s) since last reset",
+            evidence={"dropped_messages": dropped},
+        ))
+    return findings
+
+
+def _stream_disconnected_findings(state: dict) -> list[QualityFinding]:
+    findings = []
+    for key, scope in (("trade_stream_status", "trade_stream"), ("index_stream_status", "index_stream")):
+        status = state.get(key)
+        if not status or not status.get("enabled") or status.get("connected"):
+            continue  # not enabled, no evidence yet, or actually connected - no anomaly
+        findings.append(QualityFinding(
+            finding_id=f"observability:stream-disconnected:{scope}",
+            check="stream-connection", severity="warning", confidence="high", source="runtime",
+            scope=scope,
+            summary=f"{scope} is enabled but not currently connected",
+            evidence={"status": status},
+        ))
+    return findings
+
+
+def _repeated_rate_limit_hits_finding(now: float | None = None) -> QualityFinding | None:
+    now = now if now is not None else time.time()
+    since_ts = now - _RATE_LIMIT_WINDOW_HOURS * 3600
+    samples = history("tick.rate_limit_hits", since_ts=since_ts, limit=1000)
+    if not samples:
+        return None
+    nonzero_count = sum(1 for s in samples if (s["value"] or 0) > 0)
+    if nonzero_count < _RATE_LIMIT_MIN_OCCURRENCES:
+        return None
+    return QualityFinding(
+        finding_id="observability:repeated-rate-limit-hits:kalshi_client",
+        check="rate-limit-hits", severity="warning", confidence="high", source="runtime",
+        scope="kalshi_client",
+        summary=(
+            f"{nonzero_count} of {len(samples)} samples in the last "
+            f"{_RATE_LIMIT_WINDOW_HOURS}h had nonzero rate-limit hits"
+        ),
+        evidence={
+            "nonzero_count": nonzero_count, "sample_count": len(samples),
+            "window_hours": _RATE_LIMIT_WINDOW_HOURS,
+        },
+    )
+
+
+def runtime_findings(
+    cfg: dict, state: dict, trade_stream, index_stream, now: float | None = None,
+) -> list[QualityFinding]:
+    """Composes every observability anomaly rule into one findings list -
+    read-only, informational; this never remediates anything itself."""
+    findings: list[QualityFinding] = []
+    tick_finding = _tick_duration_finding(cfg, state)
+    if tick_finding is not None:
+        findings.append(tick_finding)
+    findings.extend(_dropped_messages_findings(trade_stream, index_stream))
+    findings.extend(_stream_disconnected_findings(state))
+    rate_limit_finding = _repeated_rate_limit_hits_finding(now=now)
+    if rate_limit_finding is not None:
+        findings.append(rate_limit_finding)
+    return findings

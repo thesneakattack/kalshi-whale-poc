@@ -16,6 +16,14 @@ every uvicorn --reload cycle fire an immediate, unnecessary re-run. Task 9's
 own plan explicitly calls out the same restart-safety requirement for
 observability sampling, so it gets the same regression coverage up front
 instead of waiting to rediscover the bug live.
+
+Task 10 (docs/superpowers/plans/2026-08-24-quality-control-plane.md) adds
+runtime_findings() below - the same "unknown/insufficient evidence is
+better than a fabricated verdict" discipline as everywhere else in this
+app, applied to the QCP's shared QualityFinding model instead of
+diagnostics.py's own Check: a rule that can't judge (no data yet, feature
+not enabled, one isolated blip) omits a finding rather than asserting
+health OR failure.
 """
 import time
 import types
@@ -200,3 +208,158 @@ def test_summary_aggregates_per_metric_within_the_window():
     assert result["tick.duration_sec"]["min"] == 1.0
     assert result["tick.duration_sec"]["max"] == 3.0
     assert result["tick.duration_sec"]["avg"] == 2.0
+
+
+# --- runtime_findings: anomaly rules (QCP Task 10) -----------------------
+
+_POLL_CFG = {"kalshi": {"poll_interval_sec": 6}}
+
+
+def _finding_ids(findings):
+    return {f.finding_id for f in findings}
+
+
+# tick duration vs. configured poll interval
+
+def test_tick_duration_finding_warns_when_it_exceeds_the_poll_interval():
+    state = {"last_tick_duration_sec": 9.5}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    matches = [f for f in findings if f.check == "tick-duration"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert matches[0].confidence == "high"
+    assert matches[0].evidence == {"last_tick_duration_sec": 9.5, "poll_interval_sec": 6}
+
+
+def test_tick_duration_finding_absent_when_within_the_poll_interval():
+    state = {"last_tick_duration_sec": 3.0}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    assert not [f for f in findings if f.check == "tick-duration"]
+
+
+def test_tick_duration_finding_absent_when_no_duration_recorded_yet():
+    state = {"last_tick_duration_sec": None}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    assert not [f for f in findings if f.check == "tick-duration"]
+
+
+# non-zero dropped WS messages
+
+def test_dropped_messages_finding_is_an_error_when_nonzero():
+    trade_stream = _fake_stream(dropped_messages=5)
+    findings = observability.runtime_findings(_POLL_CFG, {}, trade_stream, None)
+
+    matches = [f for f in findings if f.check == "ws-dropped-messages"]
+    assert len(matches) == 1
+    assert matches[0].severity == "error"
+    assert matches[0].confidence == "high"
+    assert matches[0].scope == "trade_stream"
+
+
+def test_dropped_messages_finding_covers_index_stream_independently():
+    index_stream = _fake_stream(dropped_messages=2)
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, index_stream)
+
+    matches = [f for f in findings if f.check == "ws-dropped-messages"]
+    assert len(matches) == 1
+    assert matches[0].scope == "index_stream"
+
+
+def test_dropped_messages_finding_absent_when_zero_or_stream_missing():
+    findings = observability.runtime_findings(
+        _POLL_CFG, {}, _fake_stream(dropped_messages=0), None,
+    )
+    assert not [f for f in findings if f.check == "ws-dropped-messages"]
+
+
+# stream disconnected while the app is otherwise running
+
+def test_stream_disconnected_finding_warns_when_enabled_but_not_connected():
+    state = {"trade_stream_status": {"enabled": True, "connected": False}}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    matches = [f for f in findings if f.check == "stream-connection"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert matches[0].scope == "trade_stream"
+
+
+def test_stream_disconnected_finding_absent_when_connected():
+    state = {"trade_stream_status": {"enabled": True, "connected": True}}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    assert not [f for f in findings if f.check == "stream-connection"]
+
+
+def test_stream_disconnected_finding_absent_when_feature_not_enabled():
+    """A stream nobody turned on is expected to be disconnected - not an
+    anomaly, per the same "insufficient evidence" discipline as everywhere
+    else here."""
+    state = {"trade_stream_status": {"enabled": False, "connected": False}}
+    findings = observability.runtime_findings(_POLL_CFG, state, None, None)
+
+    assert not [f for f in findings if f.check == "stream-connection"]
+
+
+def test_stream_disconnected_finding_absent_with_no_status_evidence_yet():
+    """index_stream_status has no app_state.py default - it's simply absent
+    until the stream's on_status callback fires at least once. Absence must
+    read as "no evidence yet," never as "disconnected.\""""
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    assert not [f for f in findings if f.check == "stream-connection"]
+
+
+# repeated recent rate-limit hits, not one isolated hit
+
+def test_repeated_rate_limit_hits_finding_absent_with_no_persisted_history():
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    assert not [f for f in findings if f.check == "rate-limit-hits"]
+
+
+def test_repeated_rate_limit_hits_finding_absent_for_one_isolated_hit():
+    now = time.time()
+    for i, value in enumerate([0, 0, 3, 0, 0]):
+        observability.record_sample("tick.rate_limit_hits", float(value), observed_at=now - i * 60)
+
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None, now=now)
+
+    assert not [f for f in findings if f.check == "rate-limit-hits"]
+
+
+def test_repeated_rate_limit_hits_finding_warns_when_hits_recur():
+    now = time.time()
+    for i, value in enumerate([2, 0, 1, 0, 4]):
+        observability.record_sample("tick.rate_limit_hits", float(value), observed_at=now - i * 60)
+
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None, now=now)
+
+    matches = [f for f in findings if f.check == "rate-limit-hits"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert matches[0].evidence["nonzero_count"] == 3
+
+
+def test_runtime_findings_composes_every_applicable_rule():
+    now = time.time()
+    observability.record_sample("tick.rate_limit_hits", 1.0, observed_at=now - 60)
+    observability.record_sample("tick.rate_limit_hits", 1.0, observed_at=now - 120)
+    observability.record_sample("tick.rate_limit_hits", 1.0, observed_at=now - 180)
+    state = {
+        "last_tick_duration_sec": 9.5,
+        "trade_stream_status": {"enabled": True, "connected": False},
+    }
+    trade_stream = _fake_stream(dropped_messages=1)
+
+    findings = observability.runtime_findings(_POLL_CFG, state, trade_stream, None, now=now)
+
+    assert _finding_ids(findings) == {
+        "observability:tick-duration-exceeded:trading_loop",
+        "observability:ws-dropped-messages:trade_stream",
+        "observability:stream-disconnected:trade_stream",
+        "observability:repeated-rate-limit-hits:kalshi_client",
+    }
