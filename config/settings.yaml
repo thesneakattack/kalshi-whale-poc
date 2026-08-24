@@ -189,6 +189,10 @@ alerting:
   enabled: true
   webhook_url: null # unset by default - see services/alerting/CHEATSHEET.md for
   # payload shape / which destinations it's compatible with as-is
+  crash_auto_resolve_after_sec: 1800 # 30min - a "crash" alert with no repeat
+  # in this window auto-resolves (services/alerting/alerting.py's
+  # expire_old_alerts). 0/null disables auto-expiry - manual-only via
+  # POST /api/alerts/{id}/resolve.
 observability:
   enabled: true
   sample_interval_sec: 60
