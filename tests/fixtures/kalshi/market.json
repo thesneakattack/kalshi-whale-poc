@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-market.md, docs/kalshi/CHEATSHEET.md",
+    "note": "REST GetMarketResponse.market fields, per get-market.md's own curated field-name list. get-market.md predates expected_expiration_time's discovery (added 2026-08-24 per services/market_watch/market_fetch.py's own comment) - that field is added here from docs/kalshi/CHEATSHEET.md's 'Is expected_expiration_time the same field name on REST and the WS lifecycle stream?' entry (sourced from market_lifecycle.md, a verbatim-mirrored page) instead, since get-market.md's own curated list is confirmed stale on this one field. Values are illustrative, not copied from a live response - get-market.md's own page has no worked example, only a field-name list."
+  },
+  "payload": {
+    "ticker": "HIGHNY-22DEC23-B53.5",
+    "event_ticker": "HIGHNY-22DEC23",
+    "market_type": "binary",
+    "yes_sub_title": "53.5° or above",
+    "no_sub_title": "Below 53.5°",
+    "created_time": "2022-11-01T00:00:00Z",
+    "updated_time": "2022-12-20T00:00:00Z",
+    "open_time": "2022-11-01T00:00:00Z",
+    "close_time": "2022-12-23T00:00:00Z",
+    "expected_expiration_time": "2022-12-23T12:00:00Z",
+    "status": "open",
+    "yes_bid_dollars": "0.450",
+    "yes_ask_dollars": "0.530",
+    "no_bid_dollars": "0.470",
+    "no_ask_dollars": "0.550",
+    "yes_bid_size_fp": "300.00",
+    "yes_ask_size_fp": "150.00",
+    "last_price_dollars": "0.480",
+    "volume_fp": "33896.00",
+    "volume_24h_fp": "1200.00",
+    "open_interest_fp": "20422.00",
+    "result": "",
+    "can_close_early": false,
+    "occurrence_datetime": "2022-12-23T12:00:00Z",
+    "strike_type": "greater",
+    "floor_strike": 53.5,
+    "rules_primary": "If the high temperature is 53.5F or above, this market resolves Yes.",
+    "price_level_structure": "linear_cent",
+    "is_provisional": false,
+    "exchange_index": 0
+  }
+}

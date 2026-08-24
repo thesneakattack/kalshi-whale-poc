@@ -8,6 +8,16 @@
 # docs/kalshi/CHEATSHEET.md and the kalshi-contract-review skill); a live
 # public API canary is a separate, deliberately scheduled/manual concern
 # (not yet built - Quality Control Plane Task 14).
+#
+# tests/test_kalshi_contracts.py (QCP Task 13, 2026-08-24) added: fixture-
+# JSON-driven tests (tests/fixtures/kalshi/*.json, each with a _meta.
+# source_doc pointer) that feed canonical Kalshi message/object shapes
+# into the same handlers/normalizers production uses. Building it found
+# and fixed three real, previously-undetectable bugs (WS fill identity
+# keyed on a field the real message doesn't have; WS position dispatch
+# checking the plural channel name instead of the real singular
+# per-message type; WS position ticker extraction reading the wrong field
+# name) - see that test file's own module docstring for the full story.
 when:
   - event: [push, pull_request]
 
@@ -23,3 +33,4 @@ steps:
         tests/test_kalshi_trade_ws.py
         tests/test_kalshi_fees.py
         tests/test_whalewatchers_kalshi_trade_tape.py
+        tests/test_kalshi_contracts.py

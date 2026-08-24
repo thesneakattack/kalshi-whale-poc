@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/market-and-event-lifecycle.md",
+    "note": "settled event msg shape per the doc's own field table - carries ONLY event_type/market_ticker/settled_ts, deliberately no result field (confirmed: 'result' is documented as present only on 'determined'). This is why _process_stream_lifecycle's settled branch does a fresh client.get_market() REST read rather than trusting this event's own payload for the outcome."
+  },
+  "payload": {
+    "event_type": "settled",
+    "market_ticker": "HIGHNY-22DEC23-B53.5",
+    "settled_ts": 1700000100
+  }
+}

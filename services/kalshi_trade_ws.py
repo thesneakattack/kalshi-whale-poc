@@ -381,10 +381,20 @@ class KalshiTradeWebSocketClient:
             if on_fill is not None:
                 await on_fill(data.get("msg") or {})
             return
-        if msg_type == "market_positions":
+        if msg_type == "market_position":
+            # Real per-message `type` is "market_position" (SINGULAR) per
+            # docs/kalshi/market-positions.md's own schema
+            # (`const: market_position`) - confirmed 2026-08-24 building
+            # tests/test_kalshi_contracts.py (QCP Task 13). The
+            # *subscription channel* name is "market_positions" (plural,
+            # see run()'s subscribe params a few lines up) - easy to
+            # confuse the two, and this dispatch previously checked the
+            # plural channel name here by mistake, so a real position
+            # update's `type` field never matched and on_position was
+            # never invoked at all, for any real account.
             if not self._logged_position_shape:
                 self._logged_position_shape = True
-                logger.info("first real 'market_positions' message shape (verify parsing against this): %r", data)
+                logger.info("first real 'market_position' message shape (verify parsing against this): %r", data)
             if on_position is not None:
                 await on_position(data.get("msg") or {})
 

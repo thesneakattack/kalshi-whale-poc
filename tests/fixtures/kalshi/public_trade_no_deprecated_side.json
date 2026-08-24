@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/public-trades.md, docs/kalshi/CHEATSHEET.md",
+    "note": "Same trade as public_trade.json but with the deprecated taker_side field removed entirely, simulating Kalshi actually dropping it (the docs' own 'will not be removed before May 14, 2026' guarantee has already expired). Proves the normalizer resolves direction from taker_outcome_side alone rather than defaulting to 'no' when the legacy field is absent - the exact historical bug class this fixture set exists to catch."
+  },
+  "payload": {
+    "trade_id": "a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c",
+    "market_ticker": "HIGHNY-22DEC23-B53.5",
+    "yes_price_dollars": "0.360",
+    "no_price_dollars": "0.640",
+    "count_fp": "136.00",
+    "taker_outcome_side": "yes",
+    "taker_book_side": "bid",
+    "is_block_trade": false,
+    "ts": 1669149841,
+    "ts_ms": 1669149841000
+  }
+}

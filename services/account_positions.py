@@ -23,6 +23,15 @@ _POSITION_FIELDS = (
     # without what it cost to get there was an incomplete picture on a
     # panel that's specifically about real money.
     "fees_paid_dollars", "total_traded_dollars", "last_updated_ts",
+    # market_ticker (2026-08-24, QCP Task 13 contract-fixture finding): the
+    # WS market_position message (docs/kalshi/market-positions.md) carries
+    # market_ticker, not ticker - the REST GetPositions MarketPosition
+    # schema (docs/kalshi/get-positions.md) is the one that uses ticker.
+    # Without this, _slim_position discarded a real WS position update's
+    # only identifier - see services/whale_stream/whale_stream_handlers.py's
+    # _process_stream_position, which now normalizes it back onto "ticker"
+    # for downstream consumers that only ever expect that key.
+    "market_ticker",
 )
 # Kalshi's own EventPosition has no price field either (same as
 # MarketPosition - confirmed against the SDK's models), so this doesn't need
@@ -42,6 +51,17 @@ _FILL_FIELDS = (
     # Trade Log had no timestamp at all before this, so real fills couldn't
     # be read in time order or checked for recency.
     "created_time", "fee_cost", "is_taker", "fill_id", "order_id",
+    # trade_id (2026-08-24, QCP Task 13 contract-fixture finding): the WS
+    # fill message (docs/kalshi/user-fills.md) has NO fill_id field at all -
+    # its own identity field is trade_id ("Unique identifier for fills.
+    # This is what you use to differentiate fills"). fill_id only exists on
+    # the REST GetFills Fill schema (docs/kalshi/get-fills.md), which
+    # documents trade_id there too ("same as fill_id"), so trade_id is
+    # present and equal-valued on both sources - the correct shared
+    # identity key. Without this, _slim_fill discarded a real WS fill's
+    # only identifier, so services/whale_stream/whale_stream_handlers.py's
+    # _process_stream_fill silently no-opped on every real fill.
+    "trade_id",
 )
 # Same trim idea as _slim_market: keep only what renderRealPositions/
 # renderRealFills actually read (field names confirmed against a real

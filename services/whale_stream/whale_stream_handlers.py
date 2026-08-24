@@ -266,17 +266,27 @@ async def _process_stream_fill(fill_msg: dict) -> None:
     management." Best-effort parsing, deliberately defensive throughout
     (dict.get() via the existing _slim_fill/_FILL_FIELDS, never assumes a
     field exists) - see services/kalshi_trade_ws.py's own comment on why
-    this can't be verified against a real message yet (fill events need a
-    real order fill; kalshi_account.trading_enabled is off, the standing
-    P0 safety gate). If the real shape turns out to use different field
-    names, _slim_fill just returns Nones and the fill_id check below skips
-    it - a safe no-op, not a crash or corrupted state, while the raw shape
+    this couldn't be verified against a real message for a long time (fill
+    events need a real order fill; kalshi_account.trading_enabled is off,
+    the standing P0 safety gate). If the real shape ever changes again,
+    _slim_fill just returns Nones and the trade_id check below skips it -
+    a safe no-op, not a crash or corrupted state, while the raw shape
     (logged once by kalshi_trade_ws.py) stays available to fix the field
     mapping once verified.
 
+    Identity field is trade_id, not fill_id (2026-08-24 fix, QCP Task 13
+    contract-fixture finding against docs/kalshi/user-fills.md - the real
+    WS fill message has no fill_id field at all, only trade_id; fill_id is
+    REST-Fill-schema-only naming for the same value). Before this fix,
+    every real WS fill was silently discarded here - fill.get("fill_id")
+    was always None, so this function no-opped on every single message,
+    never observed because trading_enabled has always been off in
+    practice. See services/account_positions.py's _FILL_FIELDS for the
+    matching field-allowlist fix.
+
     Prepends to the existing state["account"]["fills"] list (same shape/
     cap the REST path already produces, so nothing downstream needs to
-    know which source a given fill came from) - deduped by fill_id since
+    know which source a given fill came from) - deduped by trade_id since
     _fetch_account_snapshot's own periodic REST poll (still running, now
     on a 20s cache - see that function's own comment) will naturally
     reconcile/overwrite this with verified data regardless, so a
@@ -286,10 +296,10 @@ async def _process_stream_fill(fill_msg: dict) -> None:
     if not state["account"].get("connected"):
         return
     fill = _slim_fill(fill_msg)
-    if not fill.get("fill_id"):
+    if not fill.get("trade_id"):
         return  # doesn't look like a real fill message - never guess into real account state
     fills = (state["account"].get("fills") or {}).get("fills") or []
-    if any(f.get("fill_id") == fill["fill_id"] for f in fills):
+    if any(f.get("trade_id") == fill["trade_id"] for f in fills):
         return  # already have it - the REST reconciliation poll likely beat this message here
     state["account"]["fills"] = {"fills": ([fill] + fills)[:50]}
     bump_generation()
@@ -298,15 +308,29 @@ async def _process_stream_fill(fill_msg: dict) -> None:
 async def _process_stream_position(position_msg: dict) -> None:
     """Same best-effort/defensive shape as _process_stream_fill above -
     same "safe no-op if the real shape doesn't match, never corrupt real
-    account state on a guess" reasoning."""
+    account state on a guess" reasoning.
+
+    ticker fallback to market_ticker (2026-08-24 fix, QCP Task 13
+    contract-fixture finding against docs/kalshi/market-positions.md - the
+    real WS market_position message carries market_ticker, not ticker; the
+    REST GetPositions MarketPosition schema is the one that uses ticker).
+    Before this fix, position.get("ticker") was always None for a real WS
+    position update, so this function no-opped on every single message.
+    Normalizes the resolved value back onto position["ticker"] so every
+    downstream consumer (frontend, _join_real_position_prices,
+    _real_account_position_tickers) keeps reading the one key they already
+    expect, regardless of which source populated it. See
+    services/account_positions.py's _POSITION_FIELDS for the matching
+    field-allowlist fix."""
     from services.account_positions import _slim_position
 
     if not state["account"].get("connected"):
         return
     position = _slim_position(position_msg)
-    ticker = position.get("ticker")
+    ticker = position.get("ticker") or position.get("market_ticker")
     if not ticker:
         return
+    position["ticker"] = ticker
     positions = state["account"].get("positions") or {"market_positions": [], "event_positions": []}
     market_positions = list(positions.get("market_positions") or [])
     for i, p in enumerate(market_positions):

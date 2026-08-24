@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/user-fills.md",
+    "note": "Verbatim example message payload (the 'msg' object) from the doc's own AsyncAPI 'example' block. Deliberately has NO fill_id field - the WS fill message's real identity field is trade_id ('Unique identifier for fills. This is what you use to differentiate fills'); fill_id only exists on the REST GetFills Fill schema (docs/kalshi/get-fills.md), which documents trade_id as 'same as fill_id' there. A handler keyed on fill_id alone silently discards every real WS fill - this fixture is what proves it."
+  },
+  "payload": {
+    "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
+    "order_id": "ee587a1c-8b87-4dcf-b721-9f6f790619fa",
+    "market_ticker": "HIGHNY-22DEC23-B53.5",
+    "is_taker": true,
+    "side": "yes",
+    "yes_price_dollars": "0.750",
+    "count_fp": "278.00",
+    "fee_cost": "0.0500",
+    "action": "buy",
+    "outcome_side": "yes",
+    "book_side": "bid",
+    "ts": 1671899397,
+    "ts_ms": 1671899397000,
+    "post_position_fp": "500.00",
+    "purchased_side": "yes"
+  }
+}

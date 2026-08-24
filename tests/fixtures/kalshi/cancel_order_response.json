@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/cancel-order-v2.md",
+    "note": "CancelOrderV2Response's own worked 'example' block. Confirms cancel_order_v2 returns {order_id, client_order_id, reduced_by, ts_ms} - NOT a full order object - matching services/kalshi_account_client.py::cancel_order's own docstring."
+  },
+  "payload": {
+    "order_id": "3b23c1c7-f4ef-4f0d-8b9a-9e53c61f1a0d",
+    "client_order_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+    "reduced_by": "10.00",
+    "ts_ms": 1715793660456
+  }
+}

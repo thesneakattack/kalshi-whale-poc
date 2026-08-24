@@ -1,0 +1,20 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-event.md",
+    "note": "REST GetEventResponse.event (EventData) fields, per get-event.md's own curated field-name list. sub_title (not subtitle) is deliberate - services/market_watch/event_metadata.py's own docstring documents a real historical bug where event.get('subtitle') silently returned None for every event. Values are illustrative - get-event.md's own page has no worked example, only a field-name list."
+  },
+  "payload": {
+    "event_ticker": "HIGHNY-22DEC23",
+    "series_ticker": "HIGHNY",
+    "sub_title": "SD vs AZ (Dec 23)",
+    "title": "Highest temperature in NY on Dec 23",
+    "mutually_exclusive": true,
+    "category": "Weather",
+    "strike_date": "2022-12-23T00:00:00Z",
+    "available_on_brokers": true,
+    "product_metadata": {"competition": "NWS Forecast", "competition_scope": "regional"},
+    "settlement_sources": [{"name": "NWS", "url": "https://weather.gov"}],
+    "last_updated_ts": 1671753600,
+    "exchange_index": 0
+  }
+}

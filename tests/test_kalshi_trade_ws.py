@@ -35,7 +35,30 @@ def test_fill_message_dispatches_to_on_fill_callback():
     assert received == [{"ticker": "TICK-A", "count_fp": "10"}]
 
 
-def test_market_positions_message_dispatches_to_on_position_callback():
+def test_market_position_message_dispatches_to_on_position_callback():
+    # 2026-08-24 correction (QCP Task 13): the real per-message `type` is
+    # "market_position" SINGULAR (docs/kalshi/market-positions.md's own
+    # schema - `const: market_position`), not the plural channel name this
+    # test used to assert against. That old fixture matched a real bug in
+    # _handle_message's own dispatch (fixed the same day) rather than the
+    # real wire format - see test_kalshi_contracts.py for the fixture-file
+    # version of this same coverage.
+    client = _client()
+    received = []
+
+    async def on_position(msg):
+        received.append(msg)
+
+    raw = json.dumps({"type": "market_position", "msg": {"ticker": "TICK-A", "position_fp": "5"}})
+    asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
+
+    assert received == [{"ticker": "TICK-A", "position_fp": "5"}]
+
+
+def test_market_positions_plural_type_no_longer_dispatches():
+    # Regression guard for the bug test_market_position_message_dispatches_
+    # to_on_position_callback's fix corrected - the plural channel name is
+    # never a real per-message `type` value, so it must not match.
     client = _client()
     received = []
 
@@ -45,7 +68,7 @@ def test_market_positions_message_dispatches_to_on_position_callback():
     raw = json.dumps({"type": "market_positions", "msg": {"ticker": "TICK-A", "position_fp": "5"}})
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
 
-    assert received == [{"ticker": "TICK-A", "position_fp": "5"}]
+    assert received == []
 
 
 def test_fill_message_is_a_noop_when_no_callback_given():
@@ -55,9 +78,9 @@ def test_fill_message_is_a_noop_when_no_callback_given():
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None))
 
 
-def test_market_positions_message_is_a_noop_when_no_callback_given():
+def test_market_position_message_is_a_noop_when_no_callback_given():
     client = _client()
-    raw = json.dumps({"type": "market_positions", "msg": {"ticker": "TICK-A"}})
+    raw = json.dumps({"type": "market_position", "msg": {"ticker": "TICK-A"}})
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None))
 
 
@@ -82,11 +105,11 @@ def test_position_shape_is_logged_only_once(caplog):
     async def on_position(msg):
         pass
 
-    raw = json.dumps({"type": "market_positions", "msg": {"ticker": "TICK-A"}})
+    raw = json.dumps({"type": "market_position", "msg": {"ticker": "TICK-A"}})
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
     asyncio.run(client._handle_message(raw, on_trade=None, on_ticker=None, on_status=None, on_position=on_position))
 
-    assert caplog.text.count("first real 'market_positions' message shape") == 1
+    assert caplog.text.count("first real 'market_position' message shape") == 1
 
 
 def test_existing_trade_and_ticker_dispatch_still_work_with_new_optional_params():

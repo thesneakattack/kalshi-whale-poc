@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/public-trades.md",
+    "note": "Verbatim example message shape from the doc's own 'Message Shape' section. Carries all three direction fields (deprecated taker_side plus canonical taker_outcome_side/taker_book_side) so a normalizer regression toward the deprecated field is caught. See docs/kalshi/CHEATSHEET.md's 'Which field gives a trade's direction?' entry."
+  },
+  "payload": {
+    "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
+    "market_ticker": "HIGHNY-22DEC23-B53.5",
+    "yes_price_dollars": "0.360",
+    "no_price_dollars": "0.640",
+    "count_fp": "136.00",
+    "taker_side": "no",
+    "taker_outcome_side": "no",
+    "taker_book_side": "ask",
+    "is_block_trade": false,
+    "ts": 1669149841,
+    "ts_ms": 1669149841000
+  }
+}

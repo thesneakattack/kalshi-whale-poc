@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/create-order-v2.md",
+    "note": "CreateOrderV2Request's own documented required field list plus its worked 'example' block. services/kalshi_account_client.py::create_order is a thin wrapper around the installed SDK's create_order_v2 method (which does its own Pydantic validation) - this fixture documents what THIS APP must supply, for tests/test_kalshi_contracts.py to assert against the real kwargs it builds. Already has strong existing coverage in tests/test_kalshi_account_client.py::test_create_order_uses_v2_shape; this fixture adds source-doc traceability."
+  },
+  "required_fields": ["ticker", "side", "count", "price", "time_in_force", "self_trade_prevention_type"],
+  "payload": {
+    "ticker": "HIGHNY-24JAN01-T60",
+    "client_order_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+    "side": "bid",
+    "count": "10.00",
+    "price": "0.5600",
+    "time_in_force": "good_till_canceled",
+    "self_trade_prevention_type": "taker_at_cross",
+    "post_only": false,
+    "cancel_order_on_pause": false,
+    "reduce_only": false
+  }
+}
