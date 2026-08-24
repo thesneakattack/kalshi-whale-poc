@@ -8,7 +8,7 @@ to the current task and load/use the relevant skill before acting.
 ## Available quality/reliability capabilities
 
 - **quality-plan-task** — implementing or resuming a numbered task from the
-  Quality Control Plane plan; re-ground against current HEAD, work one task
+  Quality Control Plane work; re-ground against current HEAD, work one task
   at a time, TDD, verify, commit, stop.
 - **root-cause-debugging** — unexpected bug, failing test, live incident,
   contradictory metrics, strange behavior, performance anomaly, or anything
@@ -23,9 +23,12 @@ to the current task and load/use the relevant skill before acting.
   Measure first; reuse existing instrumentation.
 - **frontend-verification** — frontend JS, API consumption, generated bundle,
   browser behavior, user-visible error handling, or frontend CI.
-- **integration-audit** — after several cross-cutting changes, after
-  modularization, or before a checkpoint/release when wiring across routes,
-  background tasks, persistence, frontend, config, and CI should be checked.
+- **ci-cd-guardrails** — creating or extending deterministic recurring checks.
+  If a failure can be safely and reliably detected in a clean checkout, CI/CD
+  is the default permanent owner; manual Claude execution is supplementary.
+- **integration-audit** — after several cross-cutting changes, modularization,
+  or before a checkpoint/release when wiring across routes, background tasks,
+  persistence, frontend, config, runtime diagnostics, and CI should be checked.
 - **session-handoff** — ending a substantial working session or preparing for
   `/compact`, `/clear`, or a fresh session. Leave exact HEAD, verification
   state, and next work reconstructable from git.
@@ -54,6 +57,31 @@ caught in the future:
 
 If 1–3 is appropriate and reasonably scoped, ship or explicitly plan the
 guard with the fix.
+
+### CI ownership rule
+
+A deterministic guard is **not permanently integrated** merely because Claude
+knows how to run it manually.
+
+If a check:
+- does not require live application state,
+- is deterministic enough for automation,
+- can run safely in a clean checkout,
+- and protects against a recurring failure class,
+
+the default permanent owner is CI/CD.
+
+When implementing or extending such a checker, wire it into the appropriate
+GitHub Actions workflow in the same logical task unless there is a documented
+reason not to. The task is not complete at "the checker works locally."
+
+Network-dependent, slow, or upstream-canary checks should normally be
+scheduled/manual workflows. Checks that require actual running-system state
+belong in runtime diagnostics/observability. Some failure classes warrant
+both, preferably sharing pure checking logic.
+
+Claude/manual invocation is supplementary verification, not the permanent
+owner of deterministic checks.
 
 ## Global boundaries
 

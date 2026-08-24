@@ -1,0 +1,44 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-build:
+    name: frontend-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend source
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify committed bundle matches source
+        run: git diff --exit-code -- static/js/dashboard.bundle.js
+
+  # Add deterministic Quality Control Plane jobs here as their checker code
+  # lands. Keep jobs separate enough that a red check identifies the failure
+  # class (architecture wiring, frontend/backend contract, browser E2E,
+  # project manifest, etc.) instead of hiding everything behind one script.

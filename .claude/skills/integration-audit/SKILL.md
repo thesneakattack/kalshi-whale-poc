@@ -1,13 +1,13 @@
 ---
 name: integration-audit
-description: Use after several cross-cutting changes, modularization, new services, route extraction, new background jobs, or before a major checkpoint/release when the system needs an integration sweep. Checks implemented-vs-wired behavior across routes, schedulers, persistence, config, frontend, CI, and hot-path impact.
+description: Use after several cross-cutting changes, modularization, new services, route extraction, new background jobs, or before a major checkpoint/release. Checks implemented-vs-wired behavior across routes, schedulers, persistence, config, frontend, runtime diagnostics, and CI/CD ownership.
 ---
 
 # Integration Audit
 
-This complements the existing `/checkpoint` skill. `/checkpoint` verifies,
-commits, pushes, and reads CI; this skill asks whether the pieces are actually
-integrated.
+This complements `/checkpoint`. `/checkpoint` verifies/commits/pushes/reads CI;
+this skill asks whether each capability is actually integrated and permanently
+owned at the correct layer.
 
 1. Run the relevant current full-suite/static/frontend checks.
 2. Inspect changes since the last integration boundary.
@@ -21,9 +21,14 @@ integrated.
    - frontend modules are imported and bundle is synced,
    - frontend API calls have matching backend routes,
    - new services are not zero-caller/dead unintentionally,
-   - CI jobs genuinely run rather than skip,
    - diagnostic/research work is off the hot path.
-4. Check for duplicate capability added alongside an existing diagnostics,
-   alerting, analytics, or task-supervisor mechanism.
-5. Apply the investigation-to-guard rule to any integration gap discovered.
-6. Fix confirmed integration defects in focused commits before moving on.
+4. For every new recurring check, verify ownership:
+   - deterministic clean-checkout check -> GitHub Actions;
+   - runtime-state check -> application diagnostics/observability;
+   - network/slow upstream check -> scheduled/manual workflow;
+   - mixed failure class -> both where useful.
+5. Verify CI jobs genuinely invoke their checker and do not silently skip.
+6. Check for duplicate capability beside existing diagnostics, alerting,
+   analytics, task-supervisor, test, or workflow mechanisms.
+7. Apply the investigation-to-guard rule to any integration gap discovered.
+8. Fix confirmed defects in focused commits before moving on.
