@@ -290,3 +290,81 @@ the same wire field.
 market_events/event_schedule.py`'s background resolver) — noticed live in
 `fastapi` logs while verifying the resolver was running, not assumed from
 the REST docs alone.
+
+## What's the real identity field on a WS fill message — `fill_id` or `trade_id`?
+**Answer:** `trade_id` — the WS `user-fills.md` message has **no `fill_id`
+field at all**, only `trade_id` ("Unique identifier for fills. This is
+what you use to differentiate fills"). `fill_id` only exists on the REST
+`GetFills` `Fill` schema (`get-fills.md`), which documents `trade_id`
+there too as "same as fill_id" — so `trade_id` is present and
+equal-valued on both surfaces, making it the correct shared identity key,
+not `fill_id`.
+**Gotcha:** `services/whale_stream/whale_stream_handlers.py`'s
+`_process_stream_fill` was keyed on `fill_id` (and
+`services/account_positions.py`'s `_FILL_FIELDS` didn't even keep
+`trade_id` through the slim step) — `fill.get("fill_id")` was always
+`None` for a real WS message, so every real fill silently no-opped, never
+observed because `kalshi_account.trading_enabled` has always been `false`
+(CLAUDE.md's P0 safety gate), so no real fill has ever occurred to reveal
+this live. Same root shape as the already-known `taker_side`/
+`market_position(s)` classes below.
+**Source:** `get-fills.md` (REST `Fill` schema, both `fill_id` and
+`trade_id` required, description text quoted above), `user-fills.md` (WS
+schema's own required-field list — `trade_id`/`order_id`/... — has no
+`fill_id`).
+**Fix:** `trade_id` added to `_FILL_FIELDS`; `_process_stream_fill`'s
+identity/dedup checks switched from `fill_id` to `trade_id`.
+**Found:** 2026-08-24, building `tests/test_kalshi_contracts.py` (QCP
+Task 13) — reading `user-fills.md` before writing the fixture, per this
+file's own standing rule, rather than trusting the existing code's field
+choice.
+
+## Is the real per-message `type` for a position update `market_position` or `market_positions`?
+**Answer:** `market_position` — **singular**. The WS `market-positions.md`
+schema's own `type` field is `const: market_position`. The *subscription
+channel name* (what you pass to `channels` when subscribing, and the key
+`_subscription_sids` is keyed by) is `market_positions`, **plural** — a
+different string for a different purpose, easy to conflate.
+**Gotcha:** `services/kalshi_trade_ws.py`'s `_handle_message` dispatched
+on `msg_type == "market_positions"` (the plural channel name) instead of
+the real singular per-message type — so `on_position`
+(`_process_stream_position`) was **never invoked at all** for any real
+position update, not even a no-op reach-and-skip like the fill bug above.
+The pre-existing test in `tests/test_kalshi_trade_ws.py` had encoded this
+same wrong assumption as its own fixture input, so it passed for the
+wrong reason rather than catching the bug.
+**Source:** `market-positions.md` (WS schema `type: {const:
+market_position}`, and the doc's own worked `example` block:
+`"type": "market_position"`).
+**Fix:** dispatch check corrected to `"market_position"`; the pre-existing
+test's fixture corrected to match, plus a new regression test proving the
+plural string no longer dispatches.
+**Found:** 2026-08-24, same session as the `fill_id`/`trade_id` finding
+above — the plan document for this task's own initiative
+(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`) named
+`type: "market_position" singular` as a required fixture-encoding target,
+which is what prompted re-checking this dispatch against the real docs
+instead of assuming the existing code already had it right.
+
+## Does a WS `market_position` message use `ticker` or `market_ticker`?
+**Answer:** `market_ticker` — the WS `market-positions.md` schema has no
+`ticker` field at all. The REST `GetPositions` `MarketPosition` schema
+(`get-positions.md`) is the one that uses `ticker` — a genuine REST-vs-WS
+naming split, same shape as `expected_expiration_time`/
+`expected_expiration_ts` above.
+**Gotcha:** `services/account_positions.py`'s `_POSITION_FIELDS` only
+listed `ticker`, so `_slim_position` discarded a real WS position
+update's only identifier before `_process_stream_position` ever saw it —
+`position.get("ticker")` was always `None`, so the handler no-opped on
+every message (compounding the dispatch bug above, which meant it was
+never even reached in the first place).
+**Source:** `market-positions.md` (WS schema, `market_ticker` required,
+no `ticker` property), `get-positions.md` (REST schema, `ticker`
+required, no `market_ticker` property).
+**Fix:** `market_ticker` added to `_POSITION_FIELDS`;
+`_process_stream_position` now reads `ticker` with a `market_ticker`
+fallback, then normalizes the resolved value back onto `position["ticker"]`
+so every downstream consumer (frontend, `_join_real_position_prices`,
+`_real_account_position_tickers`) keeps reading the one key it already
+expects regardless of source.
+**Found:** 2026-08-24, same session as the two findings above.
