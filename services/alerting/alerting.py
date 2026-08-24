@@ -108,6 +108,47 @@ def resolve_category(category: str, now: float | None = None) -> int:
         return cur.rowcount
 
 
+def expire_old_alerts(category: str, max_age_sec: float, now: float | None = None) -> list[int]:
+    """Resolves every unresolved alert in this category whose triggered_at is
+    older than max_age_sec - each row ages out independently, unlike
+    resolve_category's whole-category clear. This is the right primitive for
+    a category like "crash" that record_alert inserts as a discrete
+    per-occurrence event (no ongoing condition to poll back to OK, unlike
+    kill_switch/connectivity's _check_transition) - a component that keeps
+    crash-looping still shows a live alert from its most recent crash while
+    older, non-repeating rows fall away on their own. Returns the ids
+    resolved so a caller can dispatch a per-alert notification."""
+    now = now if now is not None else time.time()
+    cutoff = now - max_age_sec
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM alerts WHERE category = ? AND resolved_at IS NULL AND triggered_at <= ?",
+            (category, cutoff),
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            conn.executemany(
+                "UPDATE alerts SET resolved_at = ? WHERE id = ?", [(now, alert_id) for alert_id in ids],
+            )
+    return ids
+
+
+def resolve_alert(alert_id: int, now: float | None = None) -> bool:
+    """Manually resolves one specific alert by id, regardless of category -
+    generic rather than crash-specific since the underlying operation
+    doesn't need to know why a human is clearing it. Returns whether this
+    call actually transitioned it from unresolved to resolved (False for an
+    already-resolved or unknown id, matching resolve_category's own
+    idempotent-by-rowcount style rather than a separate existence check)."""
+    now = now if now is not None else time.time()
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL",
+            (now, alert_id),
+        )
+        return cur.rowcount > 0
+
+
 def active_alerts() -> list[dict]:
     cols = ["id", "category", "severity", "message", "context", "triggered_at", "resolved_at"]
     with _connect() as conn:
@@ -148,13 +189,16 @@ async def _dispatch_notification(category: str, severity: str, message: str, tri
 
 async def check_and_alert(cfg: dict) -> None:
     """Polls the two edge-detected conditions once per tick - kill switch
-    and WS connectivity. Crash detection lives in task_supervisor.py
-    itself (see this module's own docstring for why). Cheap: a handful of
-    dict/attribute reads plus, at most, one DB write on an actual state
-    transition - the overwhelmingly common case (nothing changed) costs a
-    few comparisons and returns."""
+    and WS connectivity - plus expires stale "crash" alerts (see
+    _expire_stale_crash_alerts). Crash *detection* still lives in
+    task_supervisor.py itself (see this module's own docstring for why);
+    only its resolution is handled here, at the same per-tick cadence.
+    Cheap: a handful of dict/attribute reads plus, at most, a couple of DB
+    writes on an actual state transition - the overwhelmingly common case
+    (nothing changed) costs a few comparisons and returns."""
     if not (cfg.get("alerting") or {}).get("enabled", True):
         return
+    _expire_stale_crash_alerts(cfg)
     from services.app_state import risk, state
 
     halted = bool(risk.halted)
@@ -195,5 +239,32 @@ def _check_transition(category: str, is_bad: bool, severity: str, bad_message, r
         resolve_category(category)
         task_supervisor.supervise(
             lambda: _dispatch_notification(category, "info", resolved_message, time.time()),
+            component="alerting", operation="dispatch_notification",
+        )
+
+
+def _expire_stale_crash_alerts(cfg: dict, now: float | None = None) -> None:
+    """"crash" alerts (task_supervisor.py's exception handler) are discrete
+    per-occurrence events, not an edge-detected level like kill_switch/
+    connectivity above - there's no ongoing condition to poll back to OK, so
+    they'd otherwise stay resolved_at: None forever. alerting.
+    crash_auto_resolve_after_sec (default 1800s/30min - long enough to not
+    flap on a normal restart_delay_sec=5s bounce-back, short enough not to
+    leave a dashboard stuck red for hours unattended) ages each row out
+    independently via expire_old_alerts; a component that keeps crash-looping
+    still shows a live alert from its most recent crash. Set to 0/null to
+    disable (manual-only via POST /api/alerts/{id}/resolve). Only takes
+    effect once alerting is enabled at all - see this function's sole
+    caller, check_and_alert's own "enabled" gate."""
+    max_age_sec = (cfg.get("alerting") or {}).get("crash_auto_resolve_after_sec", 1800)
+    if not max_age_sec:
+        return
+    now = now if now is not None else time.time()
+    for alert_id in expire_old_alerts("crash", max_age_sec, now=now):
+        task_supervisor.supervise(
+            lambda alert_id=alert_id: _dispatch_notification(
+                "crash", "info",
+                f"Crash alert #{alert_id} auto-resolved after {max_age_sec}s with no recurrence", now,
+            ),
             component="alerting", operation="dispatch_notification",
         )

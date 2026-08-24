@@ -80,22 +80,53 @@ even if notification delivery itself is broken.
 
 ## Handoff
 
-- **Downstream:** `routes.py`'s two GET routes; no dashboard panel wired
-  up as of this writing.
-- Restoring/acting on an alert is manual — this module only detects and
-  notifies, it never takes any corrective action itself (no auto-resume,
-  no auto-restart beyond what `task_supervisor.supervise(restart=True)`
-  already does independently of this module).
-- **Known gap, found live 2026-08-24 building QCP Task 18's System Health
-  UI, not yet fixed (see `ROADMAP.md`):** the `"crash"` category (recorded
-  by `task_supervisor.py`'s own crash handler, not this module's
-  `_check_transition`) has no resolution path anywhere in this codebase —
-  `resolve_category` is only ever called for the two continuously-
-  monitored transition-based conditions above. A single crash alert stays
-  `resolved_at: None` forever, which pins `GET /api/quality/summary`'s
-  overall `status` to `"error"` permanently even after the underlying
-  issue is long since fixed. Live-observed: 5 real but already-self-
-  corrected `trading_loop` crashes from mid-session development left
-  status red 105 minutes later. The right fix (auto-expire after N clean
-  ticks? require human acknowledgment? both?) is an open design decision,
-  not a quick patch — see `ROADMAP.md`'s P4 section for the full writeup.
+- **Downstream:** `routes.py`'s two GET routes plus the manual-resolve POST
+  below; no dashboard panel wired up as of this writing.
+- Restoring/acting on `kill_switch`/connectivity alerts is automatic
+  (`_check_transition` resolves the moment the polled condition clears);
+  `crash` alerts resolve via the mechanism below. This module still never
+  takes any corrective action itself (no auto-resume, no auto-restart
+  beyond what `task_supervisor.supervise(restart=True)` already does
+  independently of this module).
+
+## Crash-alert resolution (`crash` category)
+
+`"crash"` alerts (recorded by `task_supervisor.py`'s own exception handler,
+not this module's `_check_transition`) are discrete per-occurrence events —
+one row per crash, no ongoing condition to poll back to "OK" the way
+`kill_switch`/connectivity have. Two independent resolution paths, added
+2026-08-24 after a gap found live while building QCP Task 18's System
+Health UI (`resolve_category` was never called for `"crash"`, so every
+crash alert stayed `resolved_at: None` forever):
+
+- **Auto-expire (default):** `check_and_alert`'s per-tick call to
+  `_expire_stale_crash_alerts` ages each unresolved `"crash"` row out
+  independently via `expire_old_alerts(category, max_age_sec, now)` once
+  it's older than `alerting.crash_auto_resolve_after_sec` (default 1800s/
+  30min — long enough not to flap on a normal `restart_delay_sec=5s`
+  bounce-back, short enough not to leave a dashboard stuck red for hours
+  unattended). A component that keeps crash-looping still shows a live
+  alert from its most recent occurrence while older, non-repeating rows
+  fall away on their own. Set to `0`/`null` to disable entirely (manual-
+  only). Each auto-expiry fires the same fire-and-forget "resolved" webhook
+  notification `kill_switch`/connectivity clears already use.
+- **Manual acknowledge:** `resolve_alert(alert_id, now=None) -> bool` +
+  `POST /api/alerts/{alert_id}/resolve` → `{"resolved": bool}` — generic by
+  id rather than crash-specific (simpler than category-branching, and
+  incidentally usable on any alert row), idempotent-by-rowcount like
+  `resolve_category` (no 404 branch). No notification dispatch on this
+  path — the human resolving it already knows.
+
+**Correction to an earlier claim:** the original gap writeup (still in
+`docs/roadmap-archive-2026-08-23.md`/git history) asserted a stuck crash
+alert "pins `GET /api/quality/summary`'s overall `status` to `error`
+permanently." That's incorrect — `services/quality/routes.py` composes
+`status`/`counts` only from `observability.runtime_findings()` +
+`storage_health.storage_findings()` (see `services/quality/CHEATSHEET.md`'s
+own field table); `alerting.active_alerts()` is exposed as a separate,
+uncombined `alerts` field that never feeds into `status`. The real,
+narrower effect of the gap was `GET /api/alerts/active`/the dashboard's
+"Alerts: N active" line staying wrong forever, which is what this fix
+actually corrects. Whether a critical active alert *should* be able to
+drive `overall_status()` to `"error"` is a separate, still-open question —
+see `ROADMAP.md`.

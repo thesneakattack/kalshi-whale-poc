@@ -135,9 +135,118 @@ def test_dispatch_notification_swallows_a_delivery_failure(monkeypatch):
     asyncio.run(alerting._dispatch_notification("kill_switch", "critical", "tripped", 1000.0))
 
 
+# --- crash-alert resolution: expire_old_alerts / resolve_alert -------------
+#
+# "crash" alerts are recorded as discrete per-occurrence events (task_supervisor's
+# exception handler, one row per crash - see alerting.py's own docstring), not as
+# an edge-detected level like kill_switch/connectivity, so they need their own
+# per-row aging rule rather than reusing resolve_category's whole-category clear.
+
+def test_expire_old_alerts_resolves_rows_older_than_max_age():
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    expired = alerting.expire_old_alerts("crash", 1800, now=1000.0 + 1800.1)
+    assert len(expired) == 1
+    assert alerting.active_alerts() == []
+
+
+def test_expire_old_alerts_leaves_fresh_rows_active():
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    expired = alerting.expire_old_alerts("crash", 1800, now=1000.0 + 1000.0)
+    assert expired == []
+    assert len(alerting.active_alerts()) == 1
+
+
+def test_expire_old_alerts_ages_each_row_independently():
+    asyncio.run(_record("crash", "critical", "first crash", now=1000.0))
+    asyncio.run(_record("crash", "critical", "second crash", now=2500.0))
+    # at t=2900: first is 1900s old (past the 1800s cutoff), second is 400s old (not)
+    expired = alerting.expire_old_alerts("crash", 1800, now=2900.0)
+    assert len(expired) == 1
+    remaining = alerting.active_alerts()
+    assert len(remaining) == 1
+    assert remaining[0]["message"] == "second crash"
+
+
+def test_expire_old_alerts_is_a_noop_when_nothing_qualifies():
+    assert alerting.expire_old_alerts("crash", 1800) == []
+
+
+def test_resolve_alert_resolves_an_unresolved_row():
+    alert_id = asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    assert alerting.resolve_alert(alert_id, now=1010.0) is True
+    assert alerting.active_alerts() == []
+    assert alerting.recent(limit=1)[0]["resolved_at"] == 1010.0
+
+
+def test_resolve_alert_is_a_noop_on_already_resolved():
+    alert_id = asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    alerting.resolve_alert(alert_id, now=1010.0)
+    assert alerting.resolve_alert(alert_id, now=1020.0) is False
+
+
+def test_resolve_alert_is_a_noop_on_unknown_id():
+    assert alerting.resolve_alert(999999) is False
+
+
+# --- crash-alert resolution: check_and_alert wiring (_expire_stale_crash_alerts) --
+
+def test_expire_stale_crash_alerts_resolves_and_notifies(monkeypatch):
+    from services.config_store import config_store
+    monkeypatch.setattr(config_store, "get", lambda: {"alerting": {"webhook_url": "https://example.invalid/hook"}})
+    fake = _FakeHttpClient()
+    monkeypatch.setattr(alerting, "get_client", lambda: fake)
+
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    asyncio.run(_expire_stale({"alerting": {"crash_auto_resolve_after_sec": 1800}}, now=1000.0 + 1800.1))
+
+    assert alerting.active_alerts() == []
+    # 2 posts total: record_alert's own "crash happened" notification, then
+    # the auto-resolve notification - only the second is this test's subject.
+    assert len(fake.posted) == 2
+    resolved_post = fake.posted[-1]["json"]
+    assert resolved_post["category"] == "crash"
+    assert resolved_post["severity"] == "info"
+    assert "auto-resolved" in resolved_post["message"]
+
+
+def test_expire_stale_crash_alerts_leaves_fresh_alerts_alone(monkeypatch):
+    fake = _FakeHttpClient()
+    monkeypatch.setattr(alerting, "get_client", lambda: fake)
+
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    asyncio.run(_expire_stale({"alerting": {"crash_auto_resolve_after_sec": 1800}}, now=1000.0 + 5.0))
+
+    assert len(alerting.active_alerts()) == 1
+    assert fake.posted == []
+
+
+def test_expire_stale_crash_alerts_defaults_to_1800s_when_unconfigured(monkeypatch):
+    fake = _FakeHttpClient()
+    monkeypatch.setattr(alerting, "get_client", lambda: fake)
+
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    asyncio.run(_expire_stale({}, now=1000.0 + 1800.1))
+
+    assert alerting.active_alerts() == []
+
+
+def test_expire_stale_crash_alerts_disabled_via_zero_never_expires(monkeypatch):
+    fake = _FakeHttpClient()
+    monkeypatch.setattr(alerting, "get_client", lambda: fake)
+
+    asyncio.run(_record("crash", "critical", "trading_loop crashed", now=1000.0))
+    asyncio.run(_expire_stale({"alerting": {"crash_auto_resolve_after_sec": 0}}, now=1000.0 + 999_999))
+
+    assert len(alerting.active_alerts()) == 1
+
+
 async def _record(*args, **kwargs):
     return alerting.record_alert(*args, **kwargs)
 
 
 async def _transition(*args, **kwargs):
     return alerting._check_transition(*args, **kwargs)
+
+
+async def _expire_stale(*args, **kwargs):
+    return alerting._expire_stale_crash_alerts(*args, **kwargs)

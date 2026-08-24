@@ -300,29 +300,61 @@ questions.
       existing REST-tick path) — closing the gap where a ticker rotating
       off the live watchlist before settling (routine for KXBTC15M-shaped
       series) never got resolved at all.
-- [ ] **`services/alerting/alerting.py`'s "crash" category has no
-      resolution path at all — a single crash keeps `/api/quality/summary`
-      pinned to `status: "error"` forever.** Found live 2026-08-24 while
-      building QCP Task 18's System Health UI: `_check_transition` (the
-      only caller of `resolve_category`) only covers the two
-      continuously-monitored conditions (`kill_switch`,
-      `trade_stream_connectivity`/`index_stream_connectivity`) — a real
-      "the bad condition cleared" edge to detect. `task_supervisor.py`'s
-      own `record_alert("crash", "critical", ...)` has no matching
-      resolution trigger anywhere in the codebase (confirmed via
-      `grep -rn "resolve_category"`), and `services/alerting/routes.py`
-      exposes no manual acknowledge/resolve route either — so once a
-      crash alert fires, `active_alerts()` includes it permanently. Live-
-      observed: 5 real (but already self-corrected, minutes-old at the
-      time) `trading_loop` crashes from mid-Task-15 development left
-      `/api/quality/summary`'s `status` at `"error"` a full 105 minutes
-      later with the app otherwise completely healthy. Not fixed as part
-      of Task 18 (out of that task's file scope, and the right fix -
-      auto-expire after N clean ticks? require human acknowledgment? both?
-      - deserves its own design decision, not a bolt-on). Task 18's own UI
-      is built to display this honestly (a real "1 active alert" is not a
-      UI bug) rather than mask it, per this file's own real-vs-fabricated
-      status discipline.
+- [x] **`services/alerting/alerting.py`'s "crash" category had no
+      resolution path at all.** Found live 2026-08-24 while building QCP
+      Task 18's System Health UI (`_check_transition`, the only caller of
+      `resolve_category`, only covers the two continuously-monitored
+      conditions - `kill_switch`, `trade_stream_connectivity`/
+      `index_stream_connectivity`; `task_supervisor.py`'s
+      `record_alert("crash", ...)` had no matching resolution trigger
+      anywhere, and `routes.py` exposed no manual route either - so
+      `active_alerts()` included every crash forever). Fixed same day: two
+      independent mechanisms, both in `alerting.py` - `expire_old_alerts()`
+      ages each unresolved "crash" row out on its own once older than
+      `alerting.crash_auto_resolve_after_sec` (default 1800s, wired into
+      `check_and_alert`'s existing per-tick cadence via
+      `_expire_stale_crash_alerts`), plus `resolve_alert(alert_id)` +
+      `POST /api/alerts/{id}/resolve` for manual acknowledgment. See
+      `services/alerting/CHEATSHEET.md`'s "Crash-alert resolution" section.
+      **Correction to the original write-up:** it claimed this pinned
+      `/api/quality/summary`'s overall `status` to `"error"` - checked
+      against the actual code while designing the fix, and that's false:
+      `status`/`counts` are composed only from `observability.
+      runtime_findings()` + `storage_health.storage_findings()`,
+      `alerting.active_alerts()` is exposed as a separate field that never
+      feeds into `status`. The real effect was `GET /api/alerts/active`/the
+      dashboard's "Alerts: N active" line staying wrong forever, which is
+      what this fix actually corrects. Surfaced two new, still-open
+      findings while investigating the mistaken claim - filed as their own
+      items directly below rather than fixed here (out of this item's
+      approved scope).
+- [ ] Whether a critical active alert (`kill_switch`, `crash`) should be
+      able to drive `/api/quality/summary`'s `overall_status()` to
+      `"error"` at all — today it can't: `status`/`counts` are computed
+      only from `observability.runtime_findings()` +
+      `storage_health.storage_findings()`; `alerting.active_alerts()` is
+      exposed as a separate, uncombined `alerts` field. Surfaced
+      2026-08-24 while fixing the crash-alert resolution item above; not
+      decided — needs its own pass on severity-mapping semantics before
+      changing a field other code/tests may already read as "ok".
+- [ ] **`services/kalshi_trade_ws.py`'s `dropped_messages` counter is set
+      once (`__init__`) and only ever incremented (one call site) — nothing
+      in the codebase ever resets it.** Found live 2026-08-24 investigating
+      the item above: `/api/quality/summary` was observed returning
+      `status: "error"` with zero active alerts, traced to this counter
+      (5,985 dropped messages on `trade_stream`) via `observability.
+      _dropped_messages_findings` (severity `"error"`, no expiry/decay).
+      Once a single message ever drops for the lifetime of a
+      `trade_stream`/`index_stream` object, `overall_status()` stays
+      `"error"` until the next full process restart — almost certainly the
+      real mechanism behind the "105 minutes stuck red" observation the
+      original crash-alert item above mis-attributed to alerting. This
+      directly undermines CLAUDE.md's own "start every investigation at
+      `/api/quality/summary`" guidance once a session has been up long
+      enough for a single drop to occur. Not investigated further or
+      fixed — needs its own root-cause pass (does a reconnect recreate the
+      underlying stream object or just resume it? should the finding decay/
+      window instead of being permanent?).
 
 ## Shipped
 
