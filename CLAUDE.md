@@ -250,8 +250,14 @@ is exactly where both of these bug classes happened.
   syntax check, `data/*.db` write guard, session orientation, pre-compact
   and checkpoint reminders) and project skills (`skills/` — `run`,
   `sync-status-docs`, `checkpoint`, `config-field-edit`).
-- `.github/workflows/tests.yml` — CI: full pytest suite on push to `main`,
-  every PR, and on demand (`workflow_dispatch`).
+- `.woodpecker/*.yml` — the authoritative CI pipelines (one file per named
+  check), run by a shared Woodpecker instance defined outside this repo at
+  `portfolio/ci-cd/`. See `docs/woodpecker-ci.md` for the full operational
+  reference and `.claude/skills/ci-cd-guardrails/SKILL.md` for the local-
+  vs-CI verification policy.
+- `.github/workflows/` — `workflow_dispatch`-only manual fallbacks for the
+  same checks (`tests.yml`, `quality.yml`), plus the still-automatic
+  scheduled `docs-drift-check.yml`.
 
 ## Kalshi API documentation — treat `docs/kalshi/` as ground truth
 
@@ -332,24 +338,27 @@ checkpoint proactively rather than batching everything to the end. Use
 verified, commit it and push to `origin` rather than letting it sit
 uncommitted.
 
-**Default to offloading full-suite verification to GitHub rather than
-re-running it locally before every commit** (direct instruction,
-2026-08-16 — "very worthwhile to offload routine operations to github like
-full suite testing"). The per-edit local hook
+**Default to offloading full-suite verification to Woodpecker CI rather
+than re-running it locally before every commit** (direct instruction,
+2026-08-16, updated 2026-08-24 when Woodpecker replaced GitHub Actions as
+the authoritative executor — see `.claude/skills/ci-cd-guardrails/SKILL.md`'s
+"Local vs CI verification policy" section for the full procedure; this is
+a pointer, not a duplicate). The per-edit local hook
 (`.claude/hooks/run_tests.py`, which fires `pytest` inside `ddev` after
 every `main.py`/`services/*.py` edit — keep that as-is, it's the fast
 in-the-loop feedback layer) already exercised every real code change as it
 happened; a second full local run right before committing is usually just
-repeating work `.github/workflows/tests.yml` is about to do anyway, in a
-clean environment, on push. Commit → push → `gh run watch --exit-status` →
-interpret the result is the default path now. Still run locally first
-when there's a concrete reason to want faster/richer feedback than a ~40s
-CI round-trip — actively debugging a specific failure, a large/risky
-change, or CI/`gh` itself being unavailable — that's a per-occasion
-judgment call, not a rule against it. Use `workflow_dispatch` (`gh
-workflow run tests.yml`) to trigger CI on demand without waiting for a
-push, and `gh run view --log-failed` to pull failing output back into the
-session when CI is red.
+repeating work Woodpecker (`.woodpecker/*.yml`, a shared instance defined
+outside this repo at `portfolio/ci-cd/`) is about to do anyway, in a clean
+environment, on push. Commit → push → check Woodpecker's result → interpret
+it is the default path now. Still run locally first when there's a
+concrete reason to want faster/richer feedback — actively debugging a
+specific failure, a large/risky change, CI itself being unavailable, or a
+change to CI configuration itself — that's a per-occasion judgment call,
+not a rule against it. `.github/workflows/tests.yml`/`quality.yml` remain
+as `workflow_dispatch`-only manual fallbacks (`gh workflow run tests.yml`,
+`gh run view --log-failed`) for when Woodpecker is down or a GitHub-native
+run is specifically wanted.
 
 The `/checkpoint` skill runs this sequence end to end (verify tests green →
 review diff scope → commit → push → report CI status → flag whether a

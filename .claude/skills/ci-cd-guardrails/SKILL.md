@@ -74,3 +74,99 @@ CI must:
 - never mutate repository historical `data/*.db`;
 - avoid depending on DDEV-only hostnames unless the workflow deliberately
   provisions DDEV.
+
+## Local vs CI verification policy (2026-08-24)
+
+Direct instruction, implemented in full: Woodpecker CI is the authoritative
+executor of expensive, exhaustive, repeatable repository validation.
+Claude does not routinely run the complete test/build/audit suite on the
+interactive development machine before every push.
+
+```text
+Claude / local dev            Woodpecker CI                  Merge/release
+  targeted verification   ->    exhaustive validation    ->    branch protection
+```
+
+**Where it runs.** A shared Woodpecker server + one Docker-backed agent
+already run for the whole `portfolio/` workspace, defined at
+`portfolio/ci-cd/docker-compose.yml` (two directories up from this repo,
+outside its own tree - not duplicated per-project). GitHub integration
+(OAuth app, webhook creation on repo activation) is configured at that
+shared instance, not per-repo. This repository's own pipeline definitions
+live in `.woodpecker/*.yml` here (see that directory's files - one per
+named check: `tests-pytest`, `tests-dependency-audit`,
+`quality-frontend-build`, `quality-architecture-audit`,
+`kalshi-contract-fixtures`). Each file is an independent Woodpecker
+workflow, so independent checks run in parallel rather than one serialized
+script (bounded today by the shared agent's configured concurrency, not by
+anything in these pipeline files - see that skill's own repo for how to
+raise it).
+
+### During implementation - Claude owns targeted verification
+
+Run:
+- a failing targeted test first for TDD, then the smallest fix, then the
+  targeted test green;
+- the directly affected test(s) after any change;
+- cheap, relevant regression tests when useful;
+- syntax/lint checks on changed files;
+- inexpensive integration/wiring checks (router mounted, scheduler called,
+  persistence registered, config consumed) during implementation.
+
+### Before an ordinary commit/push - do not reflexively run the full suite
+
+Skip re-running every exhaustive repository-wide check before a push when:
+- targeted verification for this change is clean, and
+- nothing suggests a broader regression, and
+- Woodpecker is available and configured to run the broader suite on push.
+
+Still inspect the diff and repository safety state (`git status --short`,
+`git diff --check`, no live `data/*.db`/`.env`/credentials staged) before
+every push - that is unrelated to which system runs the test suite.
+
+### After push - Woodpecker owns exhaustive validation
+
+Inspect Woodpecker's result before treating a change as fully verified.
+`scripts/woodpecker-status` shows recent pipeline runs for this repo (needs
+a personal `WOODPECKER_TOKEN` - see that script's own header). If a
+pipeline fails:
+1. inspect the failing workflow/step and its log output;
+2. identify the actual failure - do not guess;
+3. reproduce locally only as narrowly as necessary for that failure;
+4. fix it;
+5. run targeted verification locally;
+6. commit, push;
+7. let Woodpecker rerun exhaustive validation - do not respond to a full-
+   suite CI failure by reflexively running the entire suite locally first
+   unless that is genuinely necessary to diagnose it.
+
+### Exceptions - exhaustive local verification is still appropriate when
+
+- Woodpecker is unavailable;
+- debugging requires reproducing a CI-only failure;
+- the change touches CI itself (`.woodpecker/*.yml`,
+  `.github/workflows/*.yml`, this skill);
+- performing a deliberate integration checkpoint or final initiative/
+  release verification (see the `final-verification` skill - its
+  requirements are unchanged by this policy);
+- the user explicitly asks for it;
+- repository safety demands verification before any push regardless of
+  what CI will do afterward.
+
+### GitHub Actions' remaining role
+
+`.github/workflows/tests.yml` and `quality.yml` are `workflow_dispatch`-
+only now (manual fallback if Woodpecker is down, or a GitHub-native run is
+specifically wanted) - kept, not deleted, since they are working,
+independently-verified equivalents of the Woodpecker pipelines and cost
+nothing while idle. `docs-drift-check.yml` is unchanged: it is a scheduled,
+network-dependent check with no live-repository-state dependency, exactly
+what stays on GitHub Actions rather than moving to Woodpecker (see "CI
+topology" above - "Use scheduled/manual workflows for... Kalshi
+documentation content drift"). No GitHub branch protection currently
+requires any check by name (`gh api repos/.../branches/main/protection`
+returns 404) - if that changes, point required checks at the Woodpecker-
+reported context names, not the now-manual-only GitHub Actions ones, and
+do not mark a path-filtered Woodpecker workflow (`quality-frontend-build`)
+as required, since a skipped workflow posts no status at all and would
+block merges on unrelated changes forever.
