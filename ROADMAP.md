@@ -832,6 +832,27 @@ questions.
       assumed. Not started - planning item only, and worth doing after (or
       alongside) the data-consumption audit above since they'll cover a lot
       of the same ground from two different angles.
+
+      **Fresh evidence this is overdue, direct observation (2026-08-24):
+      "there are clearly lots of gaps still in the application."** A single
+      session of ad hoc, direct-report-driven investigation (not a
+      systematic sweep) turned up a real, confirmed bug or dead-code gap in
+      nearly every area poked at: the Portfolio page's "no"-side position
+      label (a Kalshi data quirk, `no_sub_title` literally "TBD" for a
+      whole series), `series_evaluator.enabled` not actually gating three
+      of its own advisory/auto-apply call sites, two silent parsing bugs
+      that made the real-account WS fill/position path 100% dead
+      (`"market_positions"` vs. the real `"market_position"` type string;
+      a `fill_id` field that doesn't exist on the real WS message),
+      close-time/live-status guesswork (this file's own item above),
+      confidence calibration computed as one flat global number despite
+      the `series` column already sitting unused on every signal row, and
+      a fully-built event-schedule resolver never called from anywhere.
+      None of these needed deep digging to find - each surfaced within one
+      focused investigation once someone looked. That hit rate is itself
+      the signal this sweep (and the data-consumption audit above) are
+      worth doing for real, not just leaving as perpetually-queued planning
+      items.
 - [ ] **Consider a dedicated charts/graphs module, possibly server-rendered
       via Plotly or Matplotlib.** Direct instruction (2026-08-22): "should
       histographs be their own module as well? i think they should... also
