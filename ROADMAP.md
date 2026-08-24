@@ -355,6 +355,49 @@ questions.
       fixed — needs its own root-cause pass (does a reconnect recreate the
       underlying stream object or just resume it? should the finding decay/
       window instead of being permanent?).
+- [x] **`min_seconds_to_close`/`exit_min_seconds_to_close` were configurable
+      only by hand-editing `config/settings.yaml` — never wired into the
+      dashboard Controls panel**, unlike their immediate siblings
+      (`close_window_sec`/`special_market_min_seconds_to_close`/
+      `take_profit_pct`/`stop_loss_pct`). Found live 2026-08-24 (direct
+      report: "most of my trade log says 'runway exhausted' i dont seem to
+      be able to configure that runway") — confirmed empirically first:
+      73.5% (83/113) of closed trades in the live `paper_broker.db` close
+      via `runway_exhausted`, real not exaggerated, and a structural
+      consequence of `take_profit_pct`/`stop_loss_pct` both being `null`
+      plus `auto_exit` firing only twice. Fixed same day: both fields added
+      to `frontend/src/js/config-panel.js` + `static/index.html`'s Strategy/
+      Position-Management sections, mirroring the exact existing pattern;
+      live-verified via the selenium-chrome grid (correct values render, a
+      direct `POST /api/config` round-trip confirmed the save path, zero
+      console errors) — the backend already fully supported both fields,
+      only the UI was missing.
+- [ ] **Whether the runway-exhausted-dominant exit mix is actually costing
+      real wins.** Direct follow-up report, same session: "many of these
+      exit managed positions ended up winning if i had just held to
+      settlement." Investigation in progress - not yet quantified against
+      real settlement outcomes.
+- [ ] **`.woodpecker/quality-frontend-build.yml`'s bundle-sync check
+      (`git diff --exit-code -- static/js/dashboard.bundle.js`) is
+      currently a silent no-op — it can never fail.** Found live 2026-08-24
+      investigating the item above (this is what triggered that workflow to
+      run for the first time this session, since it's path-filtered to
+      `frontend/**`). `static/js/dashboard.bundle.js` is gitignored and has
+      never been tracked (`git log --all` on the path: zero commits) —
+      confirmed by deliberately corrupting the built file and running the
+      exact same `git diff --exit-code` command: exit 0, no diff detected,
+      despite real, non-trivial corruption. The check's own inline comments
+      describe careful debugging to make it correctly catch "a genuinely
+      out-of-sync bundle" (a `git: not found` fix, a `safe.directory` fix)
+      — strongly suggesting it worked as intended at some point before the
+      bundle was gitignored, silently neutering it after the fact. Not
+      fixed here (a real design decision: commit the bundle again despite
+      the "ddev/CI both rebuild it automatically" rationale for excluding
+      it, compare a hash/checksum instead of the file itself, or conclude
+      the check is redundant now that `quality-browser-e2e`'s own
+      `build-frontend` step always produces a fresh bundle anyway and
+      remove it) — reverted the deliberate corruption immediately after
+      confirming the finding; no functional change made.
 
 ## Shipped
 

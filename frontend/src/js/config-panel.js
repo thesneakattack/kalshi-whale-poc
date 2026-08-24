@@ -24,6 +24,7 @@ async function loadConfig() {
   $('cfg-min-unit-cost').value = cfg.strategy.min_unit_cost ?? 0;
   $('cfg-max-unit-cost').value = cfg.strategy.max_unit_cost ?? 1;
   $('cfg-close-window').value = cfg.strategy.close_window_sec ?? '';
+  $('cfg-min-seconds-to-close').value = cfg.strategy.min_seconds_to_close ?? '';
   $('cfg-special-market-min-sec').value = cfg.strategy.special_market_min_seconds_to_close ?? 300;
   $('cfg-longshot-close-window').value = cfg.strategy.longshot_close_window_sec ?? 900;
   $('cfg-min-winrate').value = cfg.strategy.min_whale_winrate_pct;
@@ -32,6 +33,7 @@ async function loadConfig() {
   $('cfg-excluded-series').value = (cfg.strategy.excluded_series || []).join(', ');
   $('cfg-take-profit').value = cfg.strategy.take_profit_pct ?? '';
   $('cfg-stop-loss').value = cfg.strategy.stop_loss_pct ?? '';
+  $('cfg-exit-min-seconds-to-close').value = cfg.strategy.exit_min_seconds_to_close ?? '';
   $('cfg-exit-sentiment-reversal').checked = !!cfg.strategy.exit_on_sentiment_reversal;
   $('cfg-exit-sentiment-min-signals').value = cfg.strategy.exit_sentiment_min_signals ?? 3;
   $('cfg-exit-sentiment-lean-pct').value = cfg.strategy.exit_sentiment_lean_pct ?? 65;
@@ -136,6 +138,7 @@ $('save-config-btn').addEventListener('click', async () => {
       min_unit_cost: parseFloat($('cfg-min-unit-cost').value),
       max_unit_cost: parseFloat($('cfg-max-unit-cost').value),
       close_window_sec: $('cfg-close-window').value === '' ? null : parseFloat($('cfg-close-window').value),
+      min_seconds_to_close: $('cfg-min-seconds-to-close').value === '' ? null : parseFloat($('cfg-min-seconds-to-close').value),
       special_market_min_seconds_to_close: parseFloat($('cfg-special-market-min-sec').value),
       longshot_close_window_sec: parseInt($('cfg-longshot-close-window').value),
       min_whale_winrate_pct: parseFloat($('cfg-min-winrate').value),
@@ -144,6 +147,7 @@ $('save-config-btn').addEventListener('click', async () => {
       excluded_series: $('cfg-excluded-series').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
       take_profit_pct: $('cfg-take-profit').value === '' ? null : parseFloat($('cfg-take-profit').value),
       stop_loss_pct: $('cfg-stop-loss').value === '' ? null : parseFloat($('cfg-stop-loss').value),
+      exit_min_seconds_to_close: $('cfg-exit-min-seconds-to-close').value === '' ? null : parseFloat($('cfg-exit-min-seconds-to-close').value),
       exit_on_sentiment_reversal: $('cfg-exit-sentiment-reversal').checked,
       exit_sentiment_min_signals: parseInt($('cfg-exit-sentiment-min-signals').value),
       exit_sentiment_lean_pct: parseFloat($('cfg-exit-sentiment-lean-pct').value),
