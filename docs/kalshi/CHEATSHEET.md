@@ -233,3 +233,29 @@ call) instead of `self._client.get_series_list`, so an unrecognised
 (same 3-value enum documented).
 **Found:** 2026-08-21, `fastapi` logs spamming `[market_catalog] background
 scan batch failed entirely` every cycle.
+
+---
+
+## Is a market's `no_sub_title` always a real, informative label?
+**Answer:** No — for the entire `KXBTC15M` series, live `no_sub_title` is
+the literal placeholder string `"Target price: TBD"` while `yes_sub_title`
+on the same market carries the real number (`"Target Price: $77,220.13"`).
+Confirmed directly against a real running app's `/api/state` `market_titles`
+cache, not assumed: 11/45 cached tickers had a `"tbd"`-containing
+`no_sub_title`, every single one a `KXBTC15M-*` ticker. `docs/kalshi/
+get-market.md` only lists `yes_sub_title`/`no_sub_title` as field names with
+no semantic guidance — this is a live data quirk on Kalshi's side for this
+market type, not a mirror gap.
+**Gotcha:** this is a *different* shape from the already-known duplicate-
+title quirk (`no_sub_title === yes_sub_title`, "subcategory" entry's
+sibling case in `frontend/src/js/shared-utils.js`'s `marketContext()`) —
+the two values here are different strings, just one of them is
+uninformative. A `degenerate` check that only compares the two strings for
+equality misses this case.
+**Fix:** `marketContext()`'s `degenerate` check widened to also match
+`/\btbd\b/i` against `no_sub_title`, reusing the same `"not {yes_sub_title}"`
+fallback already used for the duplicate-title case.
+**Found:** 2026-08-24, direct report ("no positions" section "very buggy" -
+meant side=no positions specifically) after the dollar math itself
+(cost_basis/mark_to_market/sideAdjustedPrice) was traced end to end against
+live data and confirmed correct.
