@@ -70,6 +70,24 @@ def test_seconds_to_close_none_for_missing_or_bad_input():
     assert mh.seconds_to_close("not-a-date", time.time()) is None
 
 
+def test_seconds_to_close_accepts_a_raw_unix_epoch_float():
+    # services/market_lookup.py's effective_close_time can return a raw
+    # float (services/market_events/event_schedule.py persists start_ts/
+    # end_ts as floats, not ISO strings) - 2026-08-24. Before this, a float
+    # hit close_time.replace() and silently raised/returned None.
+    now = time.time()
+    result = mh.seconds_to_close(now + 3600.0, now)
+    assert result is not None
+    assert 3590 <= result <= 3610
+
+
+def test_seconds_to_close_accepts_a_raw_unix_epoch_int():
+    now = time.time()
+    result = mh.seconds_to_close(int(now) + 3600, now)
+    assert result is not None
+    assert 3590 <= result <= 3610
+
+
 def test_momentum_none_with_fewer_than_two_snapshots(tmp_path, monkeypatch):
     _mh(tmp_path, monkeypatch)
     now = time.time()

@@ -29,6 +29,18 @@ from services.market_watch.live_status import _fetch_live_status, _LIVE_STATUS_L
 _MARKET_FIELDS = (
     "ticker", "volume_24h_fp", "event_ticker", "close_time", "strike_type",
     "occurrence_datetime", "status", "yes_ask_dollars", "can_close_early",
+    # expected_expiration_time added 2026-08-24 (direct report: "trading
+    # windows... too much guesswork on the open/close bounds... will close
+    # at the conclusion of that event vs. the scheduled market close
+    # time"). docs/kalshi/market_lifecycle.md documents this precisely:
+    # "the time the event is likely to resolve... close_time may be set
+    # well into the future to allow for rescheduling" - exactly the gap
+    # reported live (KXVOTEPRIMARY-FLPRIMARY06R26ABAK-9's close_time was
+    # 359.5 days out while its real primary was 5.5 days in the past).
+    # Zero extra API cost - already present on every market object this
+    # app already fetches, just previously discarded at this slim step.
+    # See services/market_lookup.py's effective_close_time().
+    "expected_expiration_time",
 )
 
 

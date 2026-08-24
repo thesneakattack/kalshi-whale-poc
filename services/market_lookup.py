@@ -10,20 +10,85 @@ those, since all three already depended on it.
 from services.app_state import state
 
 
+def effective_close_time(m: dict | None) -> str | float | None:
+    """The real time THIS market's own outcome should be treated as
+    resolved/closing - not Kalshi's raw administrative close_time alone.
+    2026-08-24 fix for a direct bug report: "trading windows... will close
+    at the conclusion of that event vs. the scheduled market close time."
+    Every gate that reasoned about "time until this market closes" used
+    raw close_time only - for an event-style market Kalshi leaves open a
+    month or more past when the real-world event (and its outcome) is
+    already known, that gate was computing against a number with no
+    relationship to when the position actually needs managing. Confirmed
+    live, 2026-08-23: KXVOTEPRIMARY-FLPRIMARY06R26ABAK-9's close_time was
+    359.5 days out; its real primary-election date (occurrence_datetime)
+    was 5.5 days in the PAST.
+
+    Precedence, most authoritative first:
+      1. expected_expiration_time - Kalshi's own per-market forecast of
+         when the outcome will be known (docs/kalshi/market_lifecycle.md:
+         "the time the event is likely to resolve... close_time may be set
+         well into the future to allow for rescheduling"). See
+         services/market_watch/market_fetch.py's _MARKET_FIELDS.
+      2. state["event_schedules"][event_ticker]["end_ts"] - the real-world
+         event-schedule resolver (services/market_events/event_schedule.py's
+         4-source waterfall), when resolved AND it actually found an
+         end_ts (its own docstring: milestone end_date is "almost always
+         null," so this tier is often skipped even when start_ts IS known
+         - that's fine, the next tier decides).
+      3. occurrence_datetime - already fetched, already used for
+         is_live/event-phase classification. event_schedule.py's own
+         docstring: "occurrence_datetime already does a reasonable job of
+         [the end of an event's window]."
+      4. close_time - Kalshi's raw administrative field, current/original
+         behavior, final fallback.
+
+    Returns whatever the winning tier's own native type is - an ISO-8601
+    string for tiers 1/3/4, a float unix timestamp for tier 2 (event_
+    schedule.py persists start_ts/end_ts as floats) -
+    market_history.seconds_to_close accepts either. None when every tier
+    is empty, exactly like close_time alone did before this existed -
+    never guessed."""
+    if not m:
+        return None
+    expected = m.get("expected_expiration_time")
+    if expected:
+        return expected
+    event_ticker = m.get("event_ticker")
+    if event_ticker:
+        schedule = (state.get("event_schedules") or {}).get(event_ticker)
+        if schedule and schedule.get("end_ts"):
+            return schedule["end_ts"]
+    occurrence = m.get("occurrence_datetime")
+    if occurrence:
+        return occurrence
+    return m.get("close_time")
+
+
 def _close_time_by_ticker() -> dict:
-    # ticker -> close_time, for check_exits' runway-exhausted gate
-    # (strategy.exit_min_seconds_to_close, ROADMAP #1). Same
+    # ticker -> effective close/resolution time (see effective_close_time
+    # above), for check_exits' runway-exhausted gate
+    # (strategy.exit_min_seconds_to_close, ROADMAP #1) and main.py's
+    # _validate_fill fill-time re-check - both already treat this as an
+    # opaque "close time" value fed straight into
+    # market_history.seconds_to_close, so fixing the SOURCE here fixes
+    # both call sites with zero changes needed at either one. Same
     # already-in-memory, zero-new-API-calls construction as
     # _category_by_ticker below, but sourced from state["markets"] rather
-    # than market_titles: close_time is mutable upstream
-    # (docs/kalshi/market_lifecycle.md's close_date_updated event), so this
-    # deliberately reads the freshest per-tick markets list every call
-    # instead of anything cached at entry time.
-    return {
-        m["ticker"]: m.get("close_time")
-        for m in (state.get("markets") or [])
-        if m.get("ticker") and m.get("close_time")
-    }
+    # than market_titles: close_time/expected_expiration_time are mutable
+    # upstream (docs/kalshi/market_lifecycle.md's close_date_updated
+    # event; event_schedules updates via _maybe_resolve_event_schedules),
+    # so this deliberately reads the freshest per-tick markets list every
+    # call instead of anything cached at entry time.
+    result = {}
+    for m in (state.get("markets") or []):
+        ticker = m.get("ticker")
+        if not ticker:
+            continue
+        ect = effective_close_time(m)
+        if ect:
+            result[ticker] = ect
+    return result
 
 
 def _category_by_ticker() -> dict:

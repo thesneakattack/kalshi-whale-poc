@@ -91,13 +91,20 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def seconds_to_close(close_time: str | None, now: float) -> float | None:
+def seconds_to_close(close_time: str | float | int | None, now: float) -> float | None:
     """Same close_time parsing idiom as whale_simulator._score_confidence -
     no close_time (or an unparseable one) returns None rather than
     guessing. Shared here (not duplicated) since main.py's snapshot
-    logging needs it too."""
-    if not close_time:
+    logging needs it too. Accepts either an ISO-8601 string (Kalshi's own
+    close_time/expected_expiration_time/occurrence_datetime shape) or a
+    raw unix-epoch float/int (services/market_events/event_schedule.py's
+    persisted start_ts/end_ts shape) - 2026-08-24, see
+    services/market_lookup.py's effective_close_time, whose precedence
+    tiers mix both native types."""
+    if close_time is None:
         return None
+    if isinstance(close_time, (int, float)):
+        return close_time - now
     try:
         close_ts = datetime.fromisoformat(close_time.replace("Z", "+00:00")).timestamp()
     except (ValueError, AttributeError):
