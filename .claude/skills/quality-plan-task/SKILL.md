@@ -5,8 +5,17 @@ description: Use when implementing, resuming, or reviewing a Quality Control Pla
 
 # Quality Control Plane Task Execution
 
-1. Read `CLAUDE.md`, the Quality Control Plane design/plan files if present,
-   and the exact current task.
+The canonical initiative documents are:
+
+- `docs/superpowers/specs/2026-08-24-quality-control-plane-design.md`
+- `docs/superpowers/plans/2026-08-24-quality-control-plane.md`
+
+These files are required project context for Quality Control Plane work.
+If either is missing, stop and report the missing file rather than inventing
+or reconstructing the plan from memory/chat context.
+
+1. Read `CLAUDE.md`, the design spec above, the implementation plan above,
+   and the exact current numbered task.
 2. Re-ground the task against current HEAD:
    - `git status --short`
    - `git rev-parse HEAD`
