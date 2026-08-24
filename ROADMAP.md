@@ -751,8 +751,20 @@ questions.
       `services/`, a second, separate pass should identify what's left
       that's actually never going to be useful and cut it (matches
       CLAUDE.md's "accumulated history is a first-class asset" rule -
-      trim deliberately, with evidence, not by default). Not started -
-      planning item only.
+      trim deliberately, with evidence, not by default).
+      **Guardrail, direct instruction (2026-08-24): trimming must not
+      close this app off from new markets or otherwise-useful data** -
+      "an exchange-wide layer might still be usefull" even where a
+      narrower scope looks like the efficient choice on paper, because
+      discovery of a not-yet-watchlisted market depends on seeing it at
+      all first. Same reasoning as the exchange-wide trade-channel
+      subscription this app already fixed once (2026-08-17, `docs/kalshi/
+      CHEATSHEET.md`'s "whole exchange" entry - a watchlist-only scope
+      measured ~98% real coverage loss) - applies equally to any future
+      trim-the-fat pass over stored data, not just to that one live WS
+      question. Before cutting anything in either pass, check whether it
+      is (or could become) a discovery input, not just whether a current
+      known consumer reads it. Not started - planning item only.
 - [x] **Real REST rate limiting, direct report (2026-08-23): "happening in
       the history and especially position sections... I've insisted
       multiple times on streams to inform those sections and using REST
