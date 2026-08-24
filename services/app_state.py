@@ -247,6 +247,13 @@ state = {
     # sample on first check in a process rather than trusted at its 0.0
     # in-memory default.
     "observability": {"last_sample_at": 0.0},
+    # services/storage_health/storage_health.py's own periodic size sampler
+    # (maybe_capture_sizes) plus the deep-scan overlap guard for
+    # POST /api/health/storage/scan - same background-task decoupling shape
+    # as catalog_scan/backup above. Deliberately no cold-start reseed of
+    # last_sampled_at (unlike backup/observability) - see storage_health's
+    # own CHEATSHEET.md for why a plain in-memory gate is fine here.
+    "storage_health": {"last_sampled_at": 0.0, "scanning": False, "last_started_at": 0.0, "task": None, "last_scan": None},
     # Seeded from data/event_schedule.db (services/market_events/event_schedule.py,
     # 2026-08-15) - event_ticker -> {"start_ts", "end_ts", "source",
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's

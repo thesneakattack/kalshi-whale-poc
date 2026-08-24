@@ -1,15 +1,17 @@
 """
 Unified, local-only "is the system healthy" endpoint - composes existing
 read-only surfaces (services/diagnostics, services/observability,
-services/alerting, services/fault_log) into one response instead of a
-human needing to know which of four separate routes to check. Quality
-Control Plane Task 10 (docs/superpowers/plans/2026-08-24-quality-control-
-plane.md); see this package's CHEATSHEET.md.
+services/alerting, services/fault_log, services/storage_health) into one
+response instead of a human needing to know which of five separate routes
+to check. Quality Control Plane Tasks 10-11 (docs/superpowers/plans/
+2026-08-24-quality-control-plane.md); see this package's CHEATSHEET.md.
 
 Deliberately composes only sources that are already local/read-only -
 diagnostics.run_offline() itself explicitly excludes the one diagnostic
-that makes a real Kalshi call (check_coverage). No source here does any
-network I/O; tests/test_quality_routes.py proves that by monkeypatching
+that makes a real Kalshi call (check_coverage), and storage_health's own
+inventory is the fast-tier (no COUNT(*), no PRAGMA quick_check) path, never
+the explicit deep scan/integrity check. No source here does any network
+I/O; tests/test_quality_routes.py proves that by monkeypatching
 KalshiClient construction to raise and confirming the route still
 succeeds.
 """
@@ -20,10 +22,12 @@ from fastapi import APIRouter
 from services import fault_log
 from services.alerting import alerting
 from services.app_state import index_stream, state, trade_stream
+from services.backup import backup
 from services.config_store import config_store
 from services.diagnostics import diagnostics
 from services.observability import observability
 from services.quality.models import QualityReport
+from services.storage_health import storage_health
 
 router = APIRouter()
 
@@ -32,6 +36,13 @@ router = APIRouter()
 async def get_quality_summary():
     cfg = config_store.get()
     findings = observability.runtime_findings(cfg, state, trade_stream, index_stream)
+    storage_entries = storage_health.inventory_data_dir(storage_health.DATA_DIR)
+    backup_cfg = cfg.get("backup") or {}
+    findings += storage_health.storage_findings(
+        storage_entries,
+        last_backup_run=backup.latest(),
+        backup_interval_sec=backup_cfg.get("interval_sec", backup._DEFAULT_INTERVAL_SEC),
+    )
     report = QualityReport(findings=findings)
     return {
         "generated_at": time.time(),
@@ -41,4 +52,5 @@ async def get_quality_summary():
         "diagnostics": diagnostics.run_offline(cfg),
         "alerts": {"active": alerting.active_alerts()},
         "faults": fault_log.summary(),
+        "storage": {"databases": storage_entries},
     }

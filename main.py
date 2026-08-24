@@ -115,6 +115,8 @@ from services.observability import maybe_capture as _maybe_capture_observability
 from services.observability import observability  # noqa: E402
 from services.observability import routes as observability_routes  # noqa: E402
 from services.quality import routes as quality_routes  # noqa: E402
+from services.storage_health import storage_health  # noqa: E402
+from services.storage_health import routes as storage_health_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream,
     risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -888,6 +890,7 @@ async def trading_loop():
         state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
         state["tick_phase_timings"] = phase_timings
         _maybe_capture_observability(cfg, state, trade_stream, index_stream)
+        storage_health.maybe_capture_sizes(state, storage_health.DATA_DIR)
         bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
@@ -977,6 +980,7 @@ app.include_router(analytics_routes.router)
 app.include_router(backup_routes.router)
 app.include_router(alerting_routes.router)
 app.include_router(observability_routes.router)
+app.include_router(storage_health_routes.router)
 app.include_router(quality_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
