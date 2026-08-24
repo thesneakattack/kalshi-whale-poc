@@ -63,7 +63,7 @@ if [ "${1:-}" = "--pipeline" ] && [ -n "$PIPELINE" ]; then
   if [ "${3:-}" = "--log" ] && [ -n "$LOG_STEP" ]; then
     echo
     echo "== $REPO_OWNER/$REPO_NAME pipeline #$PIPELINE, step '$LOG_STEP' log =="
-    run_cli pipeline log "$REPO_OWNER/$REPO_NAME" "$PIPELINE" "$LOG_STEP"
+    run_cli pipeline log show "$REPO_OWNER/$REPO_NAME" "$PIPELINE" "$LOG_STEP"
   else
     echo
     echo "== $REPO_OWNER/$REPO_NAME pipeline #$PIPELINE steps =="
