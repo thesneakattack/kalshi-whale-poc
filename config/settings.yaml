@@ -189,6 +189,10 @@ alerting:
   enabled: true
   webhook_url: null # unset by default - see services/alerting/CHEATSHEET.md for
   # payload shape / which destinations it's compatible with as-is
+observability:
+  enabled: true
+  sample_interval_sec: 60
+  retention_hours: 336  # 14 days - see services/observability/CHEATSHEET.md
 event_lifecycle:
   tournament_min_siblings: 4
   tournament_pretail_days: 5.0

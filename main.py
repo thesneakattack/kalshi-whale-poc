@@ -111,6 +111,9 @@ from services.backup import _maybe_run_backup  # noqa: E402
 from services.backup import routes as backup_routes  # noqa: E402
 from services.alerting import check_and_alert  # noqa: E402
 from services.alerting import routes as alerting_routes  # noqa: E402
+from services.observability import maybe_capture as _maybe_capture_observability  # noqa: E402
+from services.observability import observability  # noqa: E402
+from services.observability import routes as observability_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
     account, account_base_url, broker, bump_generation, cfg, index_stream,
     risk, shadow, state, strategy, trade_stream, whale_provider,
@@ -145,6 +148,8 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     series_watcher.prune(retention_hours=hours, now=now)
     index_feed.prune(retention_hours=hours, now=now)
     game_state.prune(retention_hours=hours, now=now)
+    obs_hours = float((cfg.get("observability") or {}).get("retention_hours", 336))
+    observability.prune(retention_hours=obs_hours, now=now)
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -881,6 +886,7 @@ async def trading_loop():
         state["last_tick_duration_sec"] = round(time.time() - tick_start_wall, 2)
         state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
         state["tick_phase_timings"] = phase_timings
+        _maybe_capture_observability(cfg, state, trade_stream, index_stream)
         bump_generation()
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
@@ -969,6 +975,7 @@ app.include_router(history_routes.router)
 app.include_router(analytics_routes.router)
 app.include_router(backup_routes.router)
 app.include_router(alerting_routes.router)
+app.include_router(observability_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.

@@ -241,6 +241,12 @@ state = {
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.
     "backup": {"running": False, "last_started_at": 0.0, "task": None},
+    # services/observability/observability.py's maybe_capture() interval
+    # gate - restart-safe the same way backup's own last_started_at is (see
+    # that module's CHEATSHEET.md): seeded from the most recently persisted
+    # sample on first check in a process rather than trusted at its 0.0
+    # in-memory default.
+    "observability": {"last_sample_at": 0.0},
     # Seeded from data/event_schedule.db (services/market_events/event_schedule.py,
     # 2026-08-15) - event_ticker -> {"start_ts", "end_ts", "source",
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's

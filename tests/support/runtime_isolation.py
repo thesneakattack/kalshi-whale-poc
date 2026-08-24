@@ -56,6 +56,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.market_catalog.market_catalog",
     "services.market_events.event_schedule",
     "services.market_history",
+    "services.observability.observability",
     "services.paper_broker",
     "services.reset_log",
     "services.risk_manager",
