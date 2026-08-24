@@ -1,0 +1,21 @@
+# Full backend pytest suite - Woodpecker's authoritative equivalent of the
+# GitHub Actions tests.yml `pytest` job (now workflow_dispatch-only there,
+# see .github/workflows/tests.yml's own header comment). Runs on every push
+# and PR: no path filter, since a change anywhere in services/ or main.py
+# can regress any other module (cross-module regressions are exactly what
+# the full suite exists to catch - see CLAUDE.md's "Long-session workflow"
+# section and .claude/skills/ci-cd-guardrails/SKILL.md).
+#
+# tests/conftest.py (Task 2 of the Quality Control Plane) redirects every
+# persistence module's DB_PATH into a temp dir and hard-blocks sqlite3.connect
+# against the real data/ directory before any test can run, so this container
+# never touches (and does not even receive) this repo's live data/*.db files.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: pytest
+    image: python:3.13-slim
+    commands:
+      - pip install -r requirements-dev.txt
+      - python -m pytest -v

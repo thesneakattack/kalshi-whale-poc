@@ -1,0 +1,25 @@
+# Kalshi-facing contract/fixture tests, isolated into their own named check
+# for clearer failure attribution (a red "kalshi-contract" check means a
+# Kalshi request/response schema assumption broke, not an unrelated
+# regression elsewhere) - these are already exercised by tests-pytest.yml's
+# full suite too; running them again here is deliberate duplication for
+# failure-isolation value, not a replacement for the full suite. No
+# real network access - fixture/contract-shape tests only (see
+# docs/kalshi/CHEATSHEET.md and the kalshi-contract-review skill); a live
+# public API canary is a separate, deliberately scheduled/manual concern
+# (not yet built - Quality Control Plane Task 14).
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: kalshi-fixture-contracts
+    image: python:3.13-slim
+    commands:
+      - pip install -r requirements-dev.txt
+      - >
+        python -m pytest -v
+        tests/test_kalshi_client.py
+        tests/test_kalshi_account_client.py
+        tests/test_kalshi_trade_ws.py
+        tests/test_kalshi_fees.py
+        tests/test_whalewatchers_kalshi_trade_tape.py

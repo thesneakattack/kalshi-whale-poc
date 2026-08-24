@@ -1,0 +1,38 @@
+# Frontend lint/build/bundle-sync - mirrors the former quality.yml
+# `frontend-build` job (now workflow_dispatch-only there). Path-filtered:
+# this check only depends on frontend/ source and its own generated
+# output, so it's safe to skip on a change that touches neither (the
+# user's own "frontend-only validation should not require unrelated
+# backend work" example, applied in the direction that actually is safe -
+# unlike quality-architecture-audit.yml, which reads frontend/src/js/*.js
+# too and must NOT be path-filtered away from backend-only changes).
+when:
+  - event: [push, pull_request]
+    path:
+      include:
+        - "frontend/**"
+        - "static/js/dashboard.bundle.js"
+
+steps:
+  - name: frontend-build
+    image: node:22-slim
+    commands:
+      # node:22-slim has no git - the final bundle-sync check needs it.
+      # Found live testing this pipeline via `woodpecker-cli exec`: the
+      # check silently failed with "git: not found" (exit 127) rather than
+      # a real diff failure, which would have misreported a real
+      # out-of-sync bundle as a tooling error instead of the actual finding.
+      - apt-get update -qq && apt-get install -y --no-install-recommends git > /dev/null
+      - cd frontend
+      - npm ci
+      - npm run lint
+      - npm run build
+      - cd ..
+      # git refuses to operate on a workspace it considers dubiously owned
+      # (the clone step and this image's default `node` user don't match) -
+      # found live testing this pipeline via `woodpecker-cli exec`: without
+      # this, `git diff` silently fell back to its --no-index usage text
+      # ("warning: Not a git repository") instead of doing a real diff, so
+      # a genuinely out-of-sync bundle would never have been caught.
+      - git config --global --add safe.directory "$(pwd)"
+      - git diff --exit-code -- static/js/dashboard.bundle.js

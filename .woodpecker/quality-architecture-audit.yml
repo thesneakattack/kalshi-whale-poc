@@ -1,0 +1,31 @@
+# Static architecture/quality audit - mirrors the former quality.yml
+# `architecture-audit` job (now workflow_dispatch-only there). Runs the
+# full tools.quality_audit CLI (Quality Control Plane Tasks 3-7): router/
+# background wiring, persistence isolation, resource lifecycle,
+# config-usage, API-usage inventory, and the frontend<->backend API
+# contract scanner. No path filter - the frontend-api-contract scanner
+# reads both services/*/routes.py and frontend/src/js/*.js, so a
+# backend-only OR frontend-only change can each independently break it.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: architecture-audit
+    image: python:3.13-slim
+    commands:
+      - pip install -r requirements-dev.txt
+      - >
+        python -m tools.quality_audit --repo-root .
+        --baseline tools/quality_audit/baseline.json
+        --json-out build/quality-audit.json
+
+  # Woodpecker has no first-class "upload artifact" step; the JSON report
+  # is exposed as build log output instead so a failing run's evidence
+  # stays inspectable without needing separate artifact storage.
+  - name: print-report
+    image: python:3.13-slim
+    when:
+      - event: [push, pull_request]
+        status: [failure, success]
+    commands:
+      - cat build/quality-audit.json

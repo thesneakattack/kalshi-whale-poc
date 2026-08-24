@@ -1,0 +1,14 @@
+# Dependency vulnerability audit - separate workflow from tests-pytest.yml
+# on purpose (mirrors the former tests.yml's job split): a dependency CVE
+# isn't a code regression and its red/green shouldn't be conflated with
+# "did the tests pass." Reads pinned versions straight from the
+# requirements files - doesn't need the packages installed first.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: pip-audit
+    image: python:3.13-slim
+    commands:
+      - pip install pip-audit
+      - pip-audit -r requirements.txt -r requirements-dev.txt
