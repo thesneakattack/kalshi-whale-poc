@@ -59,6 +59,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.observability.observability",
     "services.paper_broker",
     "services.reset_log",
+    "services.research.research",
     "services.risk_manager",
     "services.series_cache",
     "services.series_evaluator",

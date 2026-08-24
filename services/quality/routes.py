@@ -27,6 +27,7 @@ from services.config_store import config_store
 from services.diagnostics import diagnostics
 from services.observability import observability
 from services.quality.models import QualityReport
+from services.research import research
 from services.storage_health import storage_health
 
 router = APIRouter()
@@ -44,6 +45,15 @@ async def get_quality_summary():
         backup_interval_sec=backup_cfg.get("interval_sec", backup._DEFAULT_INTERVAL_SEC),
     )
     report = QualityReport(findings=findings)
+    # Deliberately just the timestamp/running flag, never the full report
+    # (services/research/research.py's own build_report composes seven other
+    # modules' worth of analytics into one JSON blob - repeating that here on
+    # every /api/quality/summary poll would be exactly the kind of "recompute
+    # something expensive on every read" this route otherwise avoids
+    # everywhere else). GET /api/research/latest is the place for the real
+    # report.
+    research_state = state.setdefault("research", {"running": False, "task": None, "checkpoints": None})
+    last_research = research.latest()
     return {
         "generated_at": time.time(),
         "status": report.overall_status(),
@@ -53,4 +63,8 @@ async def get_quality_summary():
         "alerts": {"active": alerting.active_alerts()},
         "faults": fault_log.summary(),
         "storage": {"databases": storage_entries},
+        "research": {
+            "running": research_state["running"],
+            "last_report_at": last_research["generated_at"] if last_research is not None else None,
+        },
     }

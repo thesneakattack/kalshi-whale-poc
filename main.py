@@ -115,6 +115,8 @@ from services.observability import maybe_capture as _maybe_capture_observability
 from services.observability import observability  # noqa: E402
 from services.observability import routes as observability_routes  # noqa: E402
 from services.quality import routes as quality_routes  # noqa: E402
+from services.research import _maybe_run_research  # noqa: E402
+from services.research import routes as research_routes  # noqa: E402
 from services.storage_health import storage_health  # noqa: E402
 from services.storage_health import routes as storage_health_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
@@ -341,6 +343,7 @@ async def trading_loop():
             _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
             _maybe_run_backup(cfg)
+            _maybe_run_research(cfg)
             event_schedule._maybe_resolve_event_schedules(cfg)
             await check_and_alert(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
@@ -991,6 +994,7 @@ app.include_router(alerting_routes.router)
 app.include_router(observability_routes.router)
 app.include_router(storage_health_routes.router)
 app.include_router(quality_routes.router)
+app.include_router(research_routes.router)
 
 # AuthMiddleware added first (inner) so SessionMiddleware — added second, thus
 # outermost — populates request.session before AuthMiddleware ever reads it.

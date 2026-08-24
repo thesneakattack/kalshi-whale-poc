@@ -247,6 +247,13 @@ state = {
     # sample on first check in a process rather than trusted at its 0.0
     # in-memory default.
     "observability": {"last_sample_at": 0.0},
+    # services/research/research.py's evidence-triggered scheduler
+    # (_maybe_run_research) - same background-task decoupling as backup
+    # above, plus a cold-start-safe checkpoints seed (None means "go check
+    # the last persisted report," not "assume zero," same fix as backup's
+    # own last_started_at). Disabled by default (config/settings.yaml's
+    # research.enabled: false).
+    "research": {"running": False, "task": None, "checkpoints": None},
     # services/storage_health/storage_health.py's own periodic size sampler
     # (maybe_capture_sizes) plus the deep-scan overlap guard for
     # POST /api/health/storage/scan - same background-task decoupling shape

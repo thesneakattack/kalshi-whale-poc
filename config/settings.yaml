@@ -193,6 +193,10 @@ observability:
   enabled: true
   sample_interval_sec: 60
   retention_hours: 336  # 14 days - see services/observability/CHEATSHEET.md
+research:
+  enabled: false  # off until manually reviewed - see services/research/CHEATSHEET.md
+  min_new_resolved_signals: 100
+  min_new_closed_trades: 50
 event_lifecycle:
   tournament_min_siblings: 4
   tournament_pretail_days: 5.0
