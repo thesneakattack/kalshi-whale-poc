@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Manually triggers a Woodpecker pipeline run for this repo, without
+# waiting for a push - the Woodpecker equivalent of
+# `gh workflow run tests.yml`. Requires WOODPECKER_TOKEN (see
+# scripts/woodpecker-status's header comment for how to get one).
+#
+# Usage:
+#   scripts/woodpecker-trigger              # trigger for the current branch's latest commit
+#   scripts/woodpecker-trigger some-branch   # trigger for a specific branch
+set -euo pipefail
+
+REPO_OWNER="thesneakattack"
+REPO_NAME="kalshi-whale-poc"
+WOODPECKER_SERVER="${WOODPECKER_SERVER:-http://woodpecker-server:8000}"
+NETWORK="${WOODPECKER_DOCKER_NETWORK:-traefik_proxy}"
+CLI_IMAGE="woodpeckerci/woodpecker-cli:v3"
+
+if [ -z "${WOODPECKER_TOKEN:-}" ]; then
+  echo "WOODPECKER_TOKEN not set - see scripts/woodpecker-status's header comment." >&2
+  exit 1
+fi
+
+BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
+
+docker run --rm --network "$NETWORK" \
+  -e "WOODPECKER_SERVER=$WOODPECKER_SERVER" \
+  -e "WOODPECKER_TOKEN=$WOODPECKER_TOKEN" \
+  "$CLI_IMAGE" pipeline create "$REPO_OWNER/$REPO_NAME" --branch "$BRANCH"

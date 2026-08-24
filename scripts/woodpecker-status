@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Checks the shared Woodpecker CI instance's health, and (with a token set)
+# lists this repo's recent pipeline runs or shows one pipeline's step logs.
+#
+# The Woodpecker server/agent are shared portfolio-wide infrastructure
+# defined outside this repo at portfolio/ci-cd/docker-compose.yml (two
+# directories up) - this script only ever talks to it as a client, never
+# starts/stops/restarts it. See docs/woodpecker-ci.md for the full
+# operational reference, including the shared instance's own commands.
+#
+# Usage:
+#   scripts/woodpecker-status                    # server health + repo's recent pipelines
+#   scripts/woodpecker-status --pipeline N        # steps for pipeline N
+#   scripts/woodpecker-status --pipeline N --log STEP   # tail one step's log
+#
+# Requires a personal WOODPECKER_TOKEN in the environment for anything
+# beyond the health check (never hardcode one here or anywhere in this
+# repo). Get one from the Woodpecker web UI once logged in via GitHub
+# OAuth: Settings -> CLI/API Access Token. Export it in your own shell
+# profile, not a repo file:
+#   export WOODPECKER_TOKEN=...
+set -euo pipefail
+
+REPO_OWNER="thesneakattack"
+REPO_NAME="kalshi-whale-poc"
+WOODPECKER_SERVER="${WOODPECKER_SERVER:-http://woodpecker-server:8000}"
+NETWORK="${WOODPECKER_DOCKER_NETWORK:-traefik_proxy}"
+CLI_IMAGE="woodpeckerci/woodpecker-cli:v3"
+
+run_cli() {
+  docker run --rm --network "$NETWORK" \
+    -e "WOODPECKER_SERVER=$WOODPECKER_SERVER" \
+    -e "WOODPECKER_TOKEN=${WOODPECKER_TOKEN:-}" \
+    "$CLI_IMAGE" "$@"
+}
+
+echo "== Woodpecker server health ($WOODPECKER_SERVER) =="
+if docker run --rm --network "$NETWORK" curlimages/curl:latest -s "$WOODPECKER_SERVER/version"; then
+  echo
+else
+  echo "unreachable - is the shared instance up? (portfolio/ci-cd/, see docs/woodpecker-ci.md)" >&2
+  exit 1
+fi
+
+if [ -z "${WOODPECKER_TOKEN:-}" ]; then
+  echo
+  echo "WOODPECKER_TOKEN not set - skipping repo/pipeline status (health check above only)." >&2
+  echo "See this script's own header comment for how to get a token." >&2
+  exit 0
+fi
+
+PIPELINE="${2:-}"
+if [ "${1:-}" = "--pipeline" ] && [ -n "$PIPELINE" ]; then
+  LOG_STEP="${4:-}"
+  if [ "${3:-}" = "--log" ] && [ -n "$LOG_STEP" ]; then
+    echo
+    echo "== $REPO_OWNER/$REPO_NAME pipeline #$PIPELINE, step '$LOG_STEP' log =="
+    run_cli pipeline log "$REPO_OWNER/$REPO_NAME" "$PIPELINE" "$LOG_STEP"
+  else
+    echo
+    echo "== $REPO_OWNER/$REPO_NAME pipeline #$PIPELINE steps =="
+    run_cli pipeline ps "$REPO_OWNER/$REPO_NAME" "$PIPELINE"
+  fi
+else
+  echo
+  echo "== $REPO_OWNER/$REPO_NAME recent pipelines =="
+  run_cli pipeline ls "$REPO_OWNER/$REPO_NAME"
+fi
