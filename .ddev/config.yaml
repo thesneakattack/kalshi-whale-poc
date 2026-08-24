@@ -34,3 +34,14 @@ hooks:
   post-start:
     - exec: "cd frontend && npm install"
       service: web
+    # Regenerates .ddev/nginx/.htpasswd (gitignored) from .env's
+    # SITE_BASIC_AUTH_USER/SITE_BASIC_AUTH_PASSWORD - see that file's own
+    # comment and CLAUDE.md. Makes .env the single durable source of truth
+    # for the public-tunnel password gate (kalshi-proxy.conf), instead of
+    # .htpasswd being a hand-run, easy-to-lose one-off. Reads only those two
+    # specific keys (grep, not a full `source .env`) - safer against
+    # anything else in .env containing shell metacharacters. A no-op,
+    # harmless to leave in .env unset - no .htpasswd is created/touched, and
+    # kalshi-proxy.conf's auth_basic simply never activates for local access.
+    - exec: 'PASS=$(grep -m1 "^SITE_BASIC_AUTH_PASSWORD=" .env 2>/dev/null | cut -d= -f2-); USER=$(grep -m1 "^SITE_BASIC_AUTH_USER=" .env 2>/dev/null | cut -d= -f2-); if [ -n "$PASS" ]; then htpasswd -bc .ddev/nginx/.htpasswd "${USER:-operator}" "$PASS"; fi'
+      service: web

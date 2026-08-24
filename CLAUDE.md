@@ -111,12 +111,15 @@ the existing phases' tone and structure.
 - A separate Cloudflare Tunnel (outside this repo) exposes this app
   publicly at `autotrade.webfoundry.dev`, via a shared `traefik` container
   also fronting other projects. `.ddev/nginx/kalshi-proxy.conf` gates only
-  that hostname behind HTTP Basic Auth (`$host`-conditional, credentials in
-  gitignored `.ddev/nginx/.htpasswd`) — local access via
-  `kalshi-whale-poc.ddev.site` (loopback-only per `ddev-router`'s own port
-  bindings) is deliberately unaffected, so this never blocks local
-  dev/verification. Regenerate credentials with `htpasswd -bc
-  .ddev/nginx/.htpasswd <user> <pass>` then `ddev restart`.
+  that hostname behind HTTP Basic Auth (`$host`-conditional) — local access
+  via `kalshi-whale-poc.ddev.site` (loopback-only per `ddev-router`'s own
+  port bindings) is deliberately unaffected, so this never blocks local
+  dev/verification. `.env`'s `SITE_BASIC_AUTH_USER`/`SITE_BASIC_AUTH_PASSWORD`
+  are the durable source of truth for the password — a `ddev` post-start
+  hook (`.ddev/config.yaml`) regenerates the gitignored
+  `.ddev/nginx/.htpasswd` (nginx's actual `auth_basic_user_file`) from them
+  on every `ddev start`/`restart`. To change the password: edit `.env`,
+  `ddev restart`.
 - To test something that depends on a **real process restart** (not just
   `--reload`'s in-process reimport) — e.g. verifying persistence survives a
   restart — use a full `ddev restart`. A file save alone won't exercise that
