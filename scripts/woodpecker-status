@@ -28,9 +28,17 @@ NETWORK="${WOODPECKER_DOCKER_NETWORK:-traefik_proxy}"
 CLI_IMAGE="woodpeckerci/woodpecker-cli:v3"
 
 run_cli() {
-  docker run --rm --network "$NETWORK" \
+  # --user root + HOME=/tmp: the image's default user can't create its own
+  # config dir (/home/woodpecker/.config/woodpecker) under a plain `docker
+  # run` - found live verifying this script against the real activated
+  # repo ("could not create any of the following paths"). lint/exec (used
+  # during this repo's own pipeline verification) don't hit this because
+  # they don't touch the persisted CLI config the way pipeline/repo
+  # subcommands do.
+  docker run --rm --user root --network "$NETWORK" \
     -e "WOODPECKER_SERVER=$WOODPECKER_SERVER" \
     -e "WOODPECKER_TOKEN=${WOODPECKER_TOKEN:-}" \
+    -e HOME=/tmp \
     "$CLI_IMAGE" "$@"
 }
 

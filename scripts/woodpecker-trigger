@@ -22,7 +22,10 @@ fi
 
 BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 
-docker run --rm --network "$NETWORK" \
+# --user root + HOME=/tmp: see scripts/woodpecker-status's run_cli comment
+# for why the image's default user can't write its own config dir.
+docker run --rm --user root --network "$NETWORK" \
   -e "WOODPECKER_SERVER=$WOODPECKER_SERVER" \
   -e "WOODPECKER_TOKEN=$WOODPECKER_TOKEN" \
+  -e HOME=/tmp \
   "$CLI_IMAGE" pipeline create "$REPO_OWNER/$REPO_NAME" --branch "$BRANCH"

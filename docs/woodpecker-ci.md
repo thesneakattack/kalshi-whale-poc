@@ -67,6 +67,16 @@ all when skipped** — if branch protection ever marks it "required," a
 backend-only PR would block on a check that never runs. Don't mark it
 required; the other four aren't path-filtered and are safe to require.
 
+**A manually triggered pipeline (`scripts/woodpecker-trigger`, the "Run
+pipeline" UI button, or a raw `POST /api/repos/{id}/pipelines`) carries
+`event: manual`, which none of these workflows' `when: event: [push,
+pull_request]` filters match** — confirmed live: the API call itself
+succeeds (`204`), but the response carries a `pipeline-filtered: true`
+header and no workflow actually runs. This is the filters working as
+designed, not a bug - manual verification of these specific checks means
+either a real push, or temporarily broadening a workflow's `when:` to
+include `event: manual` while testing.
+
 ## Known limitations (observed, not assumed)
 
 - The agent's startup log reports `"parallel workflows":1` — only one
