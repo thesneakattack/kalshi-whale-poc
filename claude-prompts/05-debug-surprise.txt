@@ -1,0 +1,26 @@
+Treat the newly observed issue as a debugging task inside the Quality Control Plane initiative.
+
+Do not patch the symptom first.
+
+Establish:
+1. observed failure,
+2. reliable reproduction,
+3. competing plausible hypotheses,
+4. least-invasive measurement that distinguishes them,
+5. measurement result,
+6. confirmed root cause,
+7. why existing tests/diagnostics/CI did not detect it,
+8. smallest correct fix,
+9. regression test,
+10. permanent detection disposition:
+   - runtime diagnostic,
+   - CI guard,
+   - both/shared logic,
+   - existing guard,
+   - genuinely one-off with explanation.
+
+Measure before optimizing or changing behavior.
+
+Keep unrelated cleanup out of the bugfix commit.
+
+After fixing, rerun the affected task's verification and report the evidence.

@@ -1,0 +1,19 @@
+This task touches frontend code, API consumption, UI state, generated JS, or browser E2E.
+
+Rules:
+1. frontend/src/js is source of truth.
+2. Never hand-edit static/js/dashboard.bundle.js as the primary change.
+3. After source changes run:
+   cd frontend
+   npm run lint
+   npm run build
+   cd ..
+4. Verify rebuilding leaves the committed bundle synchronized.
+5. Use existing DOM/view conventions; do not create test-only UI behavior.
+6. Browser E2E must use isolated temp DB/config state.
+7. Browser E2E must not require real Kalshi credentials.
+8. Browser E2E must not depend on DDEV-only "web" DNS in GitHub Actions.
+9. Capture severe browser console errors.
+10. Backend pytest passing is not sufficient verification for user-visible changes.
+
+Proceed with the current numbered task.

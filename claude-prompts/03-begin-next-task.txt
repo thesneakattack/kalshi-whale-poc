@@ -1,0 +1,45 @@
+Continue the Quality Control Plane implementation from the first genuinely incomplete numbered task in:
+docs/superpowers/plans/2026-08-24-quality-control-plane.md
+
+Before editing:
+1. Re-read that whole task.
+2. Re-ground it against current HEAD.
+3. Inspect every existing file it proposes changing.
+4. Inspect relevant recent commits and the module CHEATSHEET.md where useful.
+5. Determine what is already implemented.
+6. State the smallest remaining implementation delta.
+
+Then execute exactly that task using TDD:
+- failing targeted test first where meaningful,
+- confirm expected failure,
+- minimal complete implementation,
+- targeted tests,
+- relevant broader tests/quality checks,
+- inspect git diff,
+- git diff --check,
+- ensure no data/*.db, .env, credential, temp, browser-profile, or unrelated generated files are staged,
+- commit the independently testable task.
+
+If current HEAD already fully satisfies the task, prove the acceptance criteria and mark/report it as satisfied without creating duplicate code.
+
+Standing rule: any new real bug or failure class found during the task must receive an explicit disposition before the task closes:
+A. permanent runtime diagnostic,
+B. CI/CD guard,
+C. both/shared logic,
+D. existing guard already covers it,
+E. genuinely one-off, with reason.
+
+After the task, report:
+- task number/name,
+- implementation delta,
+- files changed,
+- tests added/changed,
+- targeted result,
+- broader result,
+- quality/CI checks run,
+- live verification performed,
+- new findings and their guard disposition,
+- commit SHA,
+- next incomplete task.
+
+Stop after the task is verified and committed. Do not silently start the next numbered task.
