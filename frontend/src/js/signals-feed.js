@@ -535,6 +535,15 @@ function reasonDetailsHTML(ticker, recentTrades) {
 // in the header.
 function renderPositions(positions, prices, recentTrades, signals) {
   const el = $('positions-list');
+  // Real bug found live (2026-08-24): renderRealPositions (the "real
+  // account" sibling of this function) sets positions-toggle in every
+  // branch (a Simple/Advanced control), but this paper-mode renderer never
+  // touched it at all - so switching Real -> Paper left that toggle
+  // dangling over the (possibly empty) Open Positions header, doing
+  // nothing when clicked since paper mode has no isAdvanced('positions')
+  // branch to toggle. Paper mode never shows this control, so clear it
+  // explicitly rather than leaving whatever the last mode rendered.
+  $('positions-toggle').innerHTML = '';
   $('position-count').textContent = positions.length ? `(${positions.length})` : '';
   if (!positions.length) {
     el.innerHTML = '<div class="empty">No open positions — nothing has been bought yet</div>';

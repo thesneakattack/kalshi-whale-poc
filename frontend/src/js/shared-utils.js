@@ -308,7 +308,24 @@ function marketContext(ticker, side) {
   // read as "NO also means Baltimore." When detected, falls back to an
   // honest "not {yes label}" instead of asserting a specific opposing
   // name Kalshi never actually gave this app.
-  const degenerate = info.no_sub_title && info.no_sub_title === info.yes_sub_title;
+  //
+  // Second real Kalshi quirk found live (2026-08-24, direct report: "no
+  // positions" section "very buggy" - meant side=no positions, not zero
+  // positions): confirmed directly against /api/state's real market_titles
+  // cache, not assumed - the entire KXBTC15M series (11/45 cached tickers
+  // at the time of checking, every one a BTC15M ticker) returns a literal
+  // "Target price: TBD" no_sub_title while yes_sub_title carries the real
+  // number ("Target Price: $77,220.13"). Not a caching bug in this app,
+  // and not the same shape as the duplicate-title case above (the two
+  // values differ, so the `degenerate` check alone doesn't catch it) - but
+  // just as uninformative/misleading to show a "no" holder verbatim, since
+  // the real number is sitting right there in yes_sub_title. Same fallback
+  // applies for the same reason: "not {yes label}" is always true and
+  // informative, regardless of which specific placeholder string Kalshi
+  // sends for a given series.
+  const degenerate = info.no_sub_title && (
+    info.no_sub_title === info.yes_sub_title || /\btbd\b/i.test(info.no_sub_title)
+  );
   const positionMeans = side === 'no'
     ? (degenerate ? (info.yes_sub_title ? `not ${info.yes_sub_title}` : null) : info.no_sub_title)
     : info.yes_sub_title;
