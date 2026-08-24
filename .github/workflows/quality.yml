@@ -74,6 +74,50 @@ jobs:
           name: quality-audit-report
           path: build/quality-audit.json
 
+  browser-e2e:
+    name: browser-e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+        with:
+          chrome-version: stable
+
+      - name: Start isolated ASGI server
+        run: |
+          CHROME_BIN=${{ steps.setup-chrome.outputs.chrome-path }} \
+            python3 -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 \
+            > /tmp/e2e-uvicorn.log 2>&1 &
+
+      - name: Wait for server health
+        run: python3 -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+
+      - name: Run browser smoke tests
+        env:
+          RUN_BROWSER_E2E: "1"
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          CHROMEDRIVER_PATH: ${{ steps.setup-chrome.outputs.chromedriver-path }}
+        run: python3 -m pytest tests/test_browser_e2e.py -v
+
+      - name: Upload server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-uvicorn-log
+          path: /tmp/e2e-uvicorn.log
+
   # Add further deterministic Quality Control Plane jobs here as their
   # checker code lands. Keep jobs separate enough that a red check
   # identifies the failure class (frontend/backend contract, browser E2E,

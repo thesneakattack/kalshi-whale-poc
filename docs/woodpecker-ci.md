@@ -51,16 +51,16 @@ shared agent's configured concurrency — see "Known limitations" below).
 | `quality-frontend-build.yml` | `quality.yml` / `frontend-build` | yes — `frontend/**` only |
 | `quality-architecture-audit.yml` | `quality.yml` / `architecture-audit` (now also covers `frontend-api-contract`, bundled into the same `tools.quality_audit` CLI call) | no — the frontend-contract scanner reads both sides |
 | `kalshi-contract-fixtures.yml` | new — `services/kalshi_client.py` etc.'s existing tests, isolated for clearer failure attribution | no |
+| `quality-browser-e2e.yml` | `quality.yml` / `browser-e2e` (QCP Task 8) — real headless-Chrome smoke against `tests/support/e2e_server.py`'s isolated ASGI harness | no — exercises served `static/` through the real backend routes |
 
 Not built (the underlying capability doesn't exist in the repo yet, so
 there is nothing real for a Woodpecker job to run — see
-`docs/superpowers/plans/2026-08-24-quality-control-plane.md`'s Tasks 8,
-12, 14, 19): `quality/browser-e2e`, `kalshi-docs/content-drift` (beyond
-the existing URL-availability `docs-drift-check.yml`),
-`kalshi-contract/public-api-canary`, `performance/synthetic-regressions`.
-Add the matching `.woodpecker/*.yml` file once each QCP task actually
-ships the checker it would run — don't wire a pipeline stage ahead of the
-capability it's supposed to gate.
+`docs/superpowers/plans/2026-08-24-quality-control-plane.md`'s Tasks 12,
+14, 19): `kalshi-docs/content-drift` (beyond the existing URL-availability
+`docs-drift-check.yml`), `kalshi-contract/public-api-canary`,
+`performance/synthetic-regressions`. Add the matching `.woodpecker/*.yml`
+file once each QCP task actually ships the checker it would run — don't
+wire a pipeline stage ahead of the capability it's supposed to gate.
 
 **A path-filtered workflow (`quality-frontend-build`) posts no status at
 all when skipped** — if branch protection ever marks it "required," a

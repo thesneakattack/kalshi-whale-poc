@@ -1,0 +1,46 @@
+# Real headless-Chrome browser smoke test (Quality Control Plane Task 8) -
+# tests/support/e2e_server.py serves the actual FastAPI app + built static
+# frontend from one process, isolated from live data/*.db the same way
+# every other test is (tests/support/runtime_isolation.py) and with
+# state["running"] forced off so nothing here ever makes a real Kalshi
+# network call - see that module's own comment. No path filter: the browser
+# test exercises the served static/ HTML/CSS/JS through the real backend
+# routes, so a change on either side can break it.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: browser-e2e
+    image: python:3.13-slim
+    environment:
+      RUN_BROWSER_E2E: "1"
+      CHROME_BIN: /usr/bin/chromium
+      CHROMEDRIVER_PATH: /usr/bin/chromedriver
+    commands:
+      # Same major version for both packages (verified live: apt offers a
+      # single matched 151.x candidate for each) avoids the classic
+      # chromedriver/Chrome version-skew failure - deliberately not using
+      # Selenium Manager's own network-fetched driver.
+      - apt-get update -qq
+      - apt-get install -y --no-install-recommends chromium chromium-driver > /dev/null
+      - pip install -q -r requirements-dev.txt
+      - mkdir -p build
+      # build/, not /tmp - each Woodpecker step is its own container, and
+      # only the workspace directory (build/ included) is shared across
+      # them; the print-server-log step below couldn't see anything written
+      # under /tmp here.
+      - python3 -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 > build/e2e-uvicorn.log 2>&1 &
+      - python3 -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+      - python3 -m pytest tests/test_browser_e2e.py -v
+
+  # Woodpecker has no first-class "upload artifact" step (see
+  # quality-architecture-audit.yml's own comment on the same pattern) - the
+  # server's own log is what a browser-side failure needs to diagnose
+  # (a 4xx/5xx or startup error the test surfaced only indirectly).
+  - name: print-server-log
+    image: python:3.13-slim
+    when:
+      - event: [push, pull_request]
+        status: [failure, success]
+    commands:
+      - cat build/e2e-uvicorn.log || echo "no server log captured"
