@@ -58,6 +58,60 @@ def _streaming_trade_tape_enabled() -> bool:
 
 _stream_client_cache: dict[str, KalshiClient] = {}
 
+# Trade-channel CPU quantification (2026-08-24, direct instruction: "the
+# websocket stream is spiking CPU usage... just quantify it first" - not a
+# resource-ceiling problem (Docker Desktop already has every host core
+# allocated, no per-container limit), and more cores wouldn't help a
+# single-threaded asyncio event loop's own per-message work anyway. Same
+# reasoning as lifecycle_stream_stats (services/app_state.py) / kalshi_
+# trade_tape.py's own self.stats: expose real, continuously-updating
+# numbers on /api/state instead of guessing at a fix. _process_stream_trade
+# runs on an EXCHANGE-WIDE trade subscription (docs/kalshi/CHEATSHEET.md's
+# "whole exchange" entry) - live-sampled at ~180 msg/sec while the tick
+# loop itself stays under a second (tick_phase_timings) - so this handler
+# is the leading CPU-spike suspect, not the tick loop. Deliberately does
+# NOT change any behavior - pure timing/counting around the existing code
+# path, so this can land safely ahead of (and inform) whatever the actual
+# fix turns out to be.
+_perf_window_start = time.time()
+_perf_counts = {"messages": 0, "fetch_signals_calls": 0}
+_perf_seconds = {"handler_total": 0.0, "fetch_signals": 0.0}
+
+
+def _record_trade_perf(handler_elapsed: float, fetch_signals_elapsed: float | None) -> None:
+    """Accumulates one message's timing into the current 1-second window,
+    then rolls the window into state["trade_stream_perf"] once it's been at
+    least a second - a fixed reporting cadence regardless of message rate,
+    so avg_handler_ms/messages_per_sec are directly comparable across
+    windows instead of being skewed by how many messages happened to land
+    in an arbitrarily-sized bucket."""
+    global _perf_window_start
+    _perf_counts["messages"] += 1
+    _perf_seconds["handler_total"] += handler_elapsed
+    if fetch_signals_elapsed is not None:
+        _perf_counts["fetch_signals_calls"] += 1
+        _perf_seconds["fetch_signals"] += fetch_signals_elapsed
+
+    now = time.time()
+    window_sec = now - _perf_window_start
+    if window_sec < 1.0:
+        return
+    messages = _perf_counts["messages"]
+    fetch_calls = _perf_counts["fetch_signals_calls"]
+    state["trade_stream_perf"] = {
+        "window_sec": round(window_sec, 2),
+        "messages_per_sec": round(messages / window_sec, 1),
+        "avg_handler_ms": round(_perf_seconds["handler_total"] / messages * 1000, 3) if messages else 0.0,
+        "fetch_signals_calls_per_sec": round(fetch_calls / window_sec, 1),
+        "avg_fetch_signals_ms": round(_perf_seconds["fetch_signals"] / fetch_calls * 1000, 3) if fetch_calls else 0.0,
+        "updated_at": now,
+    }
+    _perf_window_start = now
+    _perf_counts["messages"] = 0
+    _perf_counts["fetch_signals_calls"] = 0
+    _perf_seconds["handler_total"] = 0.0
+    _perf_seconds["fetch_signals"] = 0.0
+
 
 def _stream_market_client(cfg: dict) -> KalshiClient:
     """One reused KalshiClient for the websocket trade path.
@@ -82,47 +136,58 @@ def _stream_market_client(cfg: dict) -> KalshiClient:
 async def _process_stream_trade(trade: dict) -> None:
     if not trade.get("trade_id"):
         return
-    state["trade_tape"].insert(0, trade)
-    state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
-    state["trade_tape_last_fetch_ts"] = time.time()
-    # Same reasoning as _process_stream_ticker's record_book: persist the
-    # full print for watched series before the provider reduces it to a
-    # side and a notional. state["trade_tape"] is a 200-entry in-memory ring
-    # that dies with the process, so without this there is no record of what
-    # the exchange actually printed - only of what survived the filters.
-    series_watcher.record_trade(trade, config_store.get())
-    if not state["running"] or not _streaming_trade_tape_enabled():
-        bump_generation()
-        return
+    # See _record_trade_perf's docstring - this handler runs on an
+    # exchange-wide subscription, so its own per-message cost is measured
+    # (not guessed) via a real timer around every real invocation, cheap
+    # trade_id discards above excluded since those never do any real work.
+    _handler_started_at = time.monotonic()
+    _fetch_signals_elapsed: float | None = None
+    try:
+        state["trade_tape"].insert(0, trade)
+        state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
+        state["trade_tape_last_fetch_ts"] = time.time()
+        # Same reasoning as _process_stream_ticker's record_book: persist the
+        # full print for watched series before the provider reduces it to a
+        # side and a notional. state["trade_tape"] is a 200-entry in-memory ring
+        # that dies with the process, so without this there is no record of what
+        # the exchange actually printed - only of what survived the filters.
+        series_watcher.record_trade(trade, config_store.get())
+        if not state["running"] or not _streaming_trade_tape_enabled():
+            bump_generation()
+            return
 
-    cfg_now = config_store.get()
-    config_fp = config_performance.fingerprint(cfg_now)
-    signals = await whale_provider.fetch_signals(
-        market_context={
-            "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
-            # Lets the provider resolve a market that isn't on the watchlist
-            # when an off-list print clears the notional gate - required for
-            # exchange-wide trades to produce signals at all, since scoring
-            # needs the market's own volume/close_time and this app skips
-            # rather than fabricates one. Gated behind the notional check
-            # inside the provider, so it costs nothing on the ~99.9% of
-            # prints that never qualify.
-            "client": _stream_market_client(cfg_now),
-        },
-    )
-    if not signals:
-        bump_generation()
-        return
+        cfg_now = config_store.get()
+        config_fp = config_performance.fingerprint(cfg_now)
+        _fetch_signals_started_at = time.monotonic()
+        signals = await whale_provider.fetch_signals(
+            market_context={
+                "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
+                # Lets the provider resolve a market that isn't on the watchlist
+                # when an off-list print clears the notional gate - required for
+                # exchange-wide trades to produce signals at all, since scoring
+                # needs the market's own volume/close_time and this app skips
+                # rather than fabricates one. Gated behind the notional check
+                # inside the provider, so it costs nothing on the ~99.9% of
+                # prints that never qualify.
+                "client": _stream_market_client(cfg_now),
+            },
+        )
+        _fetch_signals_elapsed = time.monotonic() - _fetch_signals_started_at
+        if not signals:
+            bump_generation()
+            return
 
-    now = time.time()
-    for signal in signals:
-        await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
-    for close_decision in strategy.check_exits(
-        state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
-        category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-    ):
-        await _handle_close_decision(close_decision)
-    bump_generation()
+        now = time.time()
+        for signal in signals:
+            await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
+        for close_decision in strategy.check_exits(
+            state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
+            category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+        ):
+            await _handle_close_decision(close_decision)
+        bump_generation()
+    finally:
+        _record_trade_perf(time.monotonic() - _handler_started_at, _fetch_signals_elapsed)
 
 
 async def _process_stream_ticker(ticker_msg: dict) -> None:

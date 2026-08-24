@@ -271,6 +271,11 @@ state = {
         "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
         "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
     },
+    # Trade-channel CPU quantification (2026-08-24) - see whale_stream_
+    # handlers.py's _record_trade_perf docstring. None until the first
+    # 1-second reporting window rolls over after the exchange-wide trade
+    # stream starts flowing.
+    "trade_stream_perf": None,
     "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
     "account": {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,
