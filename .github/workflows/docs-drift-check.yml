@@ -34,6 +34,13 @@ on:
     - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
   workflow_dispatch:
 
+# QCP Task 20: same tests.yml/quality.yml convention - a manual re-trigger
+# fired while a previous run of this same workflow is still in flight
+# cancels the stale one rather than letting both run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-kalshi-docs-drift:
     runs-on: ubuntu-latest

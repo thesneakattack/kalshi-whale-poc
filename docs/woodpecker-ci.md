@@ -87,10 +87,49 @@ designed, not a bug - manual verification of these specific checks means
 either a real push, or temporarily broadening a workflow's `when:` to
 include `event: manual` while testing.
 
+## Final job taxonomy (QCP Task 20)
+
+Every deterministic check this initiative built or touched, in one place —
+the target list `docs/superpowers/plans/2026-08-24-quality-control-plane.md`
+Task 20 names, mapped to where each one actually lives (not always a literal
+"GitHub Actions job name," since Woodpecker owns push/PR here — see
+"Architecture" above):
+
+| Conceptual check | Where it actually runs |
+|---|---|
+| `tests / pytest` | `.woodpecker/tests-pytest.yml` (push/PR) · `tests.yml` (manual fallback) |
+| `tests / dependency-audit` | `.woodpecker/tests-dependency-audit.yml` (push/PR) · `tests.yml` (manual fallback) |
+| `quality / architecture-audit` | `.woodpecker/quality-architecture-audit.yml` (push/PR) · `quality.yml` (manual fallback) |
+| `quality / frontend-build` | `.woodpecker/quality-frontend-build.yml` (push/PR, `frontend/**` path-filtered) · `quality.yml` (manual fallback) |
+| `quality / frontend-api-contract` | bundled into `quality-architecture-audit.yml`'s single `tools.quality_audit` step, not a separately-named check — deliberate (QCP Tasks 3-7), not a taxonomy gap; the CLI's own output names which scanner found what |
+| `quality / browser-e2e` | `.woodpecker/quality-browser-e2e.yml` (push/PR) · `quality.yml` (manual fallback) |
+| `quality / project-manifest` | also bundled into `quality-architecture-audit.yml`'s same step (QCP Task 17), same reasoning as frontend-api-contract above |
+| `kalshi-contract / fixture-contracts` | `.woodpecker/kalshi-contract-fixtures.yml` (push/PR) |
+| `kalshi-contract / public-api-canary` | `.github/workflows/kalshi-contract.yml` (scheduled weekly + manual) |
+| `kalshi-docs / content-drift` | `.github/workflows/docs-drift-check.yml` (scheduled weekly + manual) |
+| `performance / synthetic-regressions` | `.github/workflows/performance.yml` (scheduled weekly + manual) |
+
+All 11 conceptual checks exist and are wired in. The two bundled pairs
+(frontend-api-contract/project-manifest into architecture-audit) were a
+deliberate efficiency choice each landed with, not something this
+finalization pass split apart — doing so would mean either duplicating the
+`tools.quality_audit`/`tools.project_manifest` CLI invocations (real extra
+runtime cost per push/PR) or teaching those CLIs a `--only` filter neither
+currently has, which is out of scope for a finalization pass. Revisit only
+if failure-attribution ambiguity between the bundled checks actually causes
+real confusion in practice.
+
+No workflow — Woodpecker or GitHub Actions — references `secrets.*`
+anywhere in this repo (confirmed via `grep -rn "secrets\." .github/workflows/
+*.yml`); the public API canary in particular is fixture-proven to only ever
+call `GET /exchange/status` and `GET /markets`, never an account/order
+endpoint (`tests/test_kalshi_public_canary.py::
+test_main_never_touches_account_or_order_endpoints`).
+
 ## Known limitations (observed, not assumed)
 
 - The agent's startup log reports `"parallel workflows":1` — only one
-  workflow runs at a time today despite five independent files existing.
+  workflow runs at a time today despite six independent files existing.
   True parallelism needs `WOODPECKER_MAX_WORKFLOWS` raised on the shared
   agent (`portfolio/ci-cd/docker-compose.yml`) or a second agent added —
   either affects the whole portfolio, so raise it deliberately, not as a
