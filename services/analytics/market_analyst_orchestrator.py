@@ -431,3 +431,31 @@ def _series_evaluator_overview_with_crosscheck(cfg: dict) -> list[dict]:
             if stat["win_rate"] is not None else None
         )
     return series_rows
+
+
+def _series_evaluator_rows_for_advisory(cfg: dict) -> list[dict] | None:
+    """Real bug found live (2026-08-24, direct report: "market evaluator is
+    disabled but it still feeds things to the advisory module"): the three
+    call sites that pass _series_evaluator_overview_with_crosscheck's
+    output into advisory_engine.generate_recommendations() as
+    series_evaluator_rows= (GET/POST /api/advisory/recommendations[/apply]
+    in services/advisory/routes.py, and the trading loop's auto-apply call
+    in main.py) never checked series_evaluator.enabled first - series_
+    evaluator.overview() reads accumulated verdicts straight from
+    data/series_evaluator.db regardless of the config flag, so a disabled
+    evaluator's stale verdicts kept turning into real, actionable
+    strategy.excluded_series suggestions - including through the AUTO-APPLY
+    path, meaning a disabled feature could still cause a real automatic
+    config change. This is a different case from GET /api/series-evaluator/
+    status's own deliberate "always visible regardless of enabled" history
+    view (that route shows the past, this one *acts* on it) - so the fix
+    belongs at these three suggestion-generating call sites, not inside
+    _series_evaluator_overview_with_crosscheck itself, which the status
+    route and the market-analyst LLM context builders both still want
+    unconditional. generate_recommendations' own series_evaluator_rows
+    parameter already defaults to None and no-ops correctly on it
+    (`if series_evaluator_rows:` at its call site) - this just makes sure
+    None is what a disabled evaluator actually produces."""
+    if not cfg.get("series_evaluator", {}).get("enabled"):
+        return None
+    return _series_evaluator_overview_with_crosscheck(cfg)

@@ -81,7 +81,7 @@ from services.analytics import routes as analytics_routes  # noqa: E402
 from services.analytics.market_analyst_orchestrator import (  # noqa: E402
     _analyzing_series, _analyzing_tickers, _build_full_spectrum_context, _build_series_context,
     _CONFIDENCE_RANK, _full_spectrum_suggestions_from_raw, _run_full_spectrum_analysis,
-    _run_market_analyst_for_ticker, _run_series_analysis, _series_evaluator_overview_with_crosscheck,
+    _run_market_analyst_for_ticker, _run_series_analysis, _series_evaluator_rows_for_advisory,
     _series_suggestions_from_raw,
 )
 from services.config.config_paths import _config_value_at_path, _types_compatible  # noqa: E402
@@ -521,7 +521,7 @@ async def trading_loop():
                         # to notice it's repeatedly nudging the same field off the
                         # exact same stale evidence every cooldown window.
                         last_applied_by_path=config_performance.all_last_applied_by_path(),
-                        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+                        series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
                         category_rows=regime_analytics.by_category(adv_all_rows),
                     )
                     min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)

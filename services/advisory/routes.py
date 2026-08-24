@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from services import candidate_log, config_performance, regime_analytics, suggestion_decisions, trade_analytics
 from services.advisory import advisory_engine
-from services.analytics.market_analyst_orchestrator import _series_evaluator_overview_with_crosscheck
+from services.analytics.market_analyst_orchestrator import _series_evaluator_rows_for_advisory
 from services.app_state import broker, bump_generation
 from services.config_store import config_store
 
@@ -142,7 +142,7 @@ async def get_advisory_recommendations():
         all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
         gate_summaries=candidate_log.gate_summary(),
         last_applied_by_path=config_performance.all_last_applied_by_path(),
-        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+        series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
         category_rows=regime_analytics.by_category(all_rows),
         declined_ids=suggestion_decisions.declined_ids(),
     )
@@ -168,7 +168,7 @@ async def apply_advisory_recommendation(body: ApplyRecommendationBody):
         all_rows, cfg, current_fp, variants, adv_cfg["min_resolved_trades_per_variant"],
         gate_summaries=candidate_log.gate_summary(),
         last_applied_by_path=config_performance.all_last_applied_by_path(),
-        series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
+        series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
         category_rows=regime_analytics.by_category(all_rows),
         declined_ids=suggestion_decisions.declined_ids(),
     )
