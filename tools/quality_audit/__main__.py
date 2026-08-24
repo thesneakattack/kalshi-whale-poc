@@ -23,6 +23,7 @@ from tools.quality_audit.api_usage import scan_api_usage
 from tools.quality_audit.background import scan_background_wiring
 from tools.quality_audit.baseline import BaselineComparison, compare_to_baseline, load_baseline
 from tools.quality_audit.config_usage import scan_config_usage
+from tools.quality_audit.frontend_contract import scan_frontend_contract
 from tools.quality_audit.persistence import scan_persistence_isolation
 from tools.quality_audit.resources import scan_resource_lifecycle
 from tools.quality_audit.routers import scan_router_registration
@@ -36,6 +37,7 @@ _SCANNERS: list[Scanner] = [
     scan_resource_lifecycle,
     scan_config_usage,
     scan_api_usage,
+    scan_frontend_contract,
 ]
 
 _DEFAULT_BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
