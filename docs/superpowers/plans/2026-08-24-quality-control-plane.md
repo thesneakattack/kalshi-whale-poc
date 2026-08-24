@@ -1,6 +1,19 @@
 # Kalshi Autotrader Quality Control Plane Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution-method override:** The technical tasks, ordering, architecture,
+> acceptance criteria, safety constraints, and verification requirements in
+> this plan remain authoritative. The original recommendation to use
+> `superpowers:subagent-driven-development`, `superpowers:executing-plans`,
+> isolated worktrees, per-task implementer/reviewer subagents, or a separate
+> progress ledger is superseded by the repository's current Claude workflow.
+> `.claude/skills/quality-plan-task/SKILL.md` is the execution orchestrator for
+> this initiative. Superpowers skills remain available selectively as supporting
+> engineering capabilities—especially TDD, systematic debugging,
+> verification-before-completion, brainstorming, and code review—but they do
+> not replace the repository-specific task/commit/checkpoint/CI workflow unless
+> the user explicitly requests a different execution model. Steps use checkbox
+> (`- [ ]`) syntax for task acceptance tracking, not as a separate progress
+> ledger.
 
 **Goal:** Convert the repository’s recurring manual audits, diagnostics, live investigations, and verification rituals into durable runtime services and CI/CD guardrails without changing trading strategy behavior or risking live historical data.
 
@@ -60,12 +73,15 @@ Then read, in this order:
 
 **Re-grounding rule:** if a task’s proposed file/function already exists at current HEAD, do not create a duplicate. Verify the task’s acceptance criteria against the existing implementation, add only what is missing, and document that the task was partially/fully pre-shipped.
 
-**Investigation-to-guard rule:** every bug discovered while implementing this plan must receive an explicit final disposition in the commit message or status update:
+**Investigation-to-guard rule:** every bug or recurring failure class discovered while implementing this plan must receive an explicit final disposition in the commit message or status update:
 
-- permanent runtime diagnostic added
-- permanent CI guard added
-- existing guard already covers it
+- permanent runtime diagnostic/observability added
+- permanent CI/CD guard added
+- shared runtime + CI checking logic added
+- existing permanent guard already covers it
 - intentionally one-off; reason documented
+
+**CI ownership rule:** a deterministic recurring checker is not considered permanently integrated merely because Claude can run it manually. If a check does not require live application state, is deterministic enough for automation, can run safely in a clean checkout, and protects against a recurring failure class, CI/CD is the default permanent owner. Wire the checker into the appropriate GitHub Actions workflow in the same logical task unless there is a documented reason not to. Runtime-only conditions belong in application diagnostics/observability; network-dependent, upstream, or expensive checks normally belong in scheduled/manual CI.
 
 ---
 
@@ -164,23 +180,37 @@ If current HEAD has already reorganized any of these concerns, adapt paths to th
 
 ---
 
-## Task 0: Create an isolated implementation branch/worktree and capture the baseline
+## Task 0: Capture the current implementation baseline
 
 **Files:** No product files yet.
 
 **Interfaces:**
-- Consumes: current repo and DDEV environment.
-- Produces: clean isolated branch/worktree, recorded baseline test/build/audit counts.
+- Consumes: current repository, current branch/HEAD, DDEV environment, and current CI definitions.
+- Produces: recorded baseline test/build/audit counts and a confirmed clean starting state.
 
-- [ ] **Step 1: Create/enter an isolated worktree using the repo’s normal feature-work convention**
+- [ ] **Step 1: Confirm the repository's current execution state**
 
-Use the `superpowers:using-git-worktrees` skill at execution time. Name the branch something explicit such as:
+Do not create an isolated worktree solely because the older version of this
+plan required one. The repository's current `quality-plan-task` workflow is
+the execution authority.
+
+Run:
 
 ```bash
-quality-control-plane
+git status --short
+git branch --show-current
+git rev-parse HEAD
+git log -12 --oneline
+ddev describe
 ```
 
-Do not implement this initiative directly on `main`.
+If `CLAUDE.md` or the user's current instructions establish direct work on
+`main`, continue on `main`. Do not introduce a feature worktree, per-task
+subagent branch, or separate progress ledger for this initiative unless the
+user explicitly changes the execution model.
+
+If the working tree contains unrelated uncommitted changes, stop and resolve
+that ambiguity before implementing Task 1.
 
 - [ ] **Step 2: Capture current test collection and full-suite result**
 
@@ -191,7 +221,8 @@ ddev exec -s fastapi python3 -m pytest --collect-only -q
 ddev exec -s fastapi python3 -m pytest -q
 ```
 
-Record the collected/passing counts in the session notes. Do not hardcode 1,265; current HEAD may be newer.
+Record the collected/passing counts in the working session. Do not hardcode
+1,265; current HEAD may be newer.
 
 - [ ] **Step 3: Capture frontend baseline**
 
@@ -206,15 +237,25 @@ cd ..
 git status --short
 ```
 
-If `npm run build` changes `static/js/dashboard.bundle.js` on a clean checkout, stop and treat that as a pre-existing source/bundle drift finding before continuing.
+If `npm run build` changes `static/js/dashboard.bundle.js` on a clean checkout,
+stop and treat that as a pre-existing source/bundle drift finding before
+continuing.
 
 - [ ] **Step 4: Capture current CI/workflow baseline**
 
-Read both current workflow files and note each job/trigger. Do not modify them in this task.
+Read all current workflow files under `.github/workflows/`, including
+`tests.yml`, `docs-drift-check.yml`, and `quality.yml` when present.
+
+Record each workflow's jobs/triggers and identify which Quality Control Plane
+checks are already permanently owned by CI. Do not duplicate an existing
+check merely because this plan originally described it as future work.
 
 - [ ] **Step 5: Commit nothing**
 
-Task 0 is a baseline checkpoint, not a code change.
+Task 0 is a baseline checkpoint, not a product-code change. If Task 0 exposes
+a genuine pre-existing defect that must be fixed before Task 1, handle that
+defect as a focused prerequisite using the repository's normal
+investigation-to-guard and commit workflow.
 
 ---
 
