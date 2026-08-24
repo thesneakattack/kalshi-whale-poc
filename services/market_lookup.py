@@ -29,7 +29,17 @@ def effective_close_time(m: dict | None) -> str | float | None:
          when the outcome will be known (docs/kalshi/market_lifecycle.md:
          "the time the event is likely to resolve... close_time may be set
          well into the future to allow for rescheduling"). See
-         services/market_watch/market_fetch.py's _MARKET_FIELDS.
+         services/market_watch/market_fetch.py's _MARKET_FIELDS. SKIPPED
+         when it's identical to close_time - live-confirmed 2026-08-24 on
+         a real runoff-eligible race (KXMAYORLA-26): Kalshi sets both
+         fields to the exact same far-out placeholder (2027-06-02, ~7
+         months past the real Nov 2026 election) rather than a real
+         per-market forecast, presumably because a possible runoff means
+         Kalshi itself doesn't know the real date either. Trusting it
+         unconditionally in that case would silently shadow tier 2 below,
+         which (via the milestone API) resolves this exact event
+         correctly. A genuinely-differing expected_expiration_time is
+         unaffected by this check and still wins outright.
       2. state["event_schedules"][event_ticker]["end_ts"] - the real-world
          event-schedule resolver (services/market_events/event_schedule.py's
          4-source waterfall), when resolved AND it actually found an
@@ -52,7 +62,7 @@ def effective_close_time(m: dict | None) -> str | float | None:
     if not m:
         return None
     expected = m.get("expected_expiration_time")
-    if expected:
+    if expected and expected != m.get("close_time"):
         return expected
     event_ticker = m.get("event_ticker")
     if event_ticker:

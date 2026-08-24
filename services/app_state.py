@@ -246,6 +246,11 @@ state = {
     # "resolved_at"} | None. See _resolve_event_schedules and _handle_signal's
     # is_live computation.
     "event_schedules": event_schedule.load_all(),
+    # Same background-task decoupling as catalog_scan/backup above, for
+    # event_schedule.py's own batch resolver - see
+    # event_schedule._maybe_resolve_event_schedules (2026-08-24, second
+    # sub-unit of the close-time fix).
+    "event_schedule_scan": {"running": False, "last_started_at": 0.0, "task": None},
     "series_track_record": {},
     "signal_feed": [],   # most recent first
     "decision_feed": [],

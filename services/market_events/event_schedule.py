@@ -85,6 +85,7 @@ from pathlib import Path
 
 from dateutil import parser as _dateutil_parser
 
+from services import task_supervisor
 from services.http_client import get_client
 from services.kalshi_client import KalshiClient
 
@@ -333,3 +334,167 @@ def trade_window_is_open(
     if start_ts is None or end_ts is None:
         return None
     return (start_ts - pre_event_hours * 3600) <= now <= end_ts
+
+
+# ---- background resolution loop (2026-08-24) --------------------------
+#
+# Wires the waterfall above into main.py's trading loop. Previously this
+# whole module was built but never called from anywhere except load_all()
+# at app_state.py import time - resolve_one/needs_resolution had no caller,
+# so state["event_schedules"] never grew past whatever was already on disk.
+# Second sub-unit of the close-time fix (see market_lookup.effective_close_
+# time, first sub-unit): that resolver's tier 2 reads state["event_schedules"]
+# but nothing was ever populating fresh entries for events that don't
+# already have one.
+
+_LONG_WINDOW_THRESHOLD_SEC = 48 * 3600  # a market closing within 48h already has a
+# close_time accurate enough to trust for practical purposes - resolving a schedule
+# for it is pure waste. A judgment call (order of magnitude borrowed from
+# confidence_scoring.py's _CLOSE_PROXIMITY_WINDOW_SEC), not a measured number -
+# fine to tune later via config if the batch pool turns out too wide/narrow.
+
+_RESOLVE_MIN_INTERVAL_SEC = 30  # how often a new background batch may be KICKED OFF,
+# same role as catalog_scan.py's _CATALOG_SCAN_MIN_INTERVAL_SEC - just avoids spawning
+# overlapping tasks. Wider than that module's 15s since a batch here can include up to
+# max_resolutions_per_tick sequential web-search legs (each up to _web_search_schedule's
+# own 5s timeout), so one batch's own worst-case wall time is meaningfully longer.
+#
+# Deliberately NOT seeded from persisted history the way backup.py's
+# _maybe_run_backup had to be fixed to do (2026-08-23 cold-start reload bug -
+# see that module's docstring): last_started_at resetting to 0.0 on every
+# uvicorn --reload only makes THIS gate think a batch is immediately due
+# again, it doesn't affect which events get resolved - each event's own
+# due-ness is decided independently by needs_resolution() against
+# event_schedules' disk-persisted resolved_at/source, not by this tracker.
+# A spurious post-reload kick-off is therefore cheap: it re-checks up to
+# max_resolutions_per_tick events and finds most (usually all) not actually
+# due, unlike backup's unconditional whole-database-every-time re-run.
+
+
+def _events_needing_resolution(markets: list[dict], event_schedules: dict, now: float) -> list[str]:
+    """Long-window events (module docstring: Kalshi's raw close_time can't be
+    trusted as the real resolution time once it's this far out) whose cached
+    schedule, if any, is due for a resolve/re-check per needs_resolution's own
+    TTL. An event qualifies if ANY of its markets has a far-out close_time,
+    not just the first one seen, since sibling markets under the same event
+    can differ. Deduped, first-seen order (state["markets"]' own order)."""
+    long_window_events: dict[str, None] = {}
+    for m in markets:
+        et = m.get("event_ticker")
+        if not et or et in long_window_events:
+            continue
+        close_time = m.get("close_time")
+        ct_ts = close_time if isinstance(close_time, (int, float)) else _parse_ts(close_time)
+        if ct_ts is not None and (ct_ts - now) >= _LONG_WINDOW_THRESHOLD_SEC:
+            long_window_events[et] = None
+    return [et for et in long_window_events if needs_resolution(event_schedules.get(et), now)]
+
+
+async def _resolve_event_schedules(
+    client: KalshiClient,
+    cfg: dict,
+    markets: list[dict],
+    event_titles: dict,
+    event_schedules: dict,
+    market_object_cache: dict,
+) -> None:
+    """Resolves one batch of due, long-window events (see
+    _events_needing_resolution) and applies each result to event_schedules
+    IN PLACE - so state["event_schedules"] is warm for the very next
+    effective_close_time call, no restart needed - plus persists each one via
+    save(). Sequential, not gathered: resolve_one's 4th tier hits an external
+    host (DuckDuckGo), and staying sequential keeps one batch's worst-case
+    wall time predictable (bounded by batch size * one request's own timeout)
+    instead of however many concurrent external requests happen to be slow at
+    once. Open positions need no special-case priority in the batch: main.py's
+    existing extra_tickers plumbing already guarantees an open position's
+    market stays in state["markets"] every tick regardless of watchlist
+    rotation, so scanning markets here already covers them.
+
+    event_strike_date comes from event_titles (state["event_titles"],
+    already fetched, zero extra cost - see module docstring source 1).
+    texts are pulled opportunistically from market_object_cache
+    (state["market_object_cache"], already-fetched un-slimmed market
+    objects other paths already populate) for every market under this
+    event plus the event's own sub_title - zero extra network call when
+    already cached, source 3's rules_primary/rules_secondary/sub_title."""
+    event_schedule_cfg = cfg.get("event_schedule") or {}
+    max_per_tick = event_schedule_cfg.get("max_resolutions_per_tick", 5)
+    web_search_enabled = event_schedule_cfg.get("web_search_enabled", True)
+    now = time.time()
+    due = _events_needing_resolution(markets, event_schedules, now)[:max_per_tick]
+    if not due:
+        return
+    due_set = set(due)
+    tickers_by_event: dict[str, list[str]] = {}
+    for m in markets:
+        et = m.get("event_ticker")
+        if et in due_set and m.get("ticker"):
+            tickers_by_event.setdefault(et, []).append(m["ticker"])
+    ref_year = datetime.now(timezone.utc).year
+    for event_ticker in due:
+        et_info = event_titles.get(event_ticker) or {}
+        texts = []
+        for ticker in tickers_by_event.get(event_ticker, []):
+            obj = market_object_cache.get(ticker)
+            if obj:
+                texts.append(obj.get("rules_primary"))
+                texts.append(obj.get("rules_secondary"))
+        texts.append(et_info.get("sub_title"))
+        texts = [t for t in texts if t]
+        title = et_info.get("title") or event_ticker
+        start_ts, end_ts, source = await resolve_one(
+            client, event_ticker,
+            event_strike_date=et_info.get("strike_date"), texts=texts,
+            search_query=f"{title} schedule dates", ref_year=ref_year,
+            web_search_enabled=web_search_enabled,
+        )
+        event_schedules[event_ticker] = save(event_ticker, start_ts, end_ts, source)
+
+
+async def _resolve_event_schedules_background(cfg: dict) -> None:
+    """Background-task wrapper, same split as catalog_scan._scan_catalog_
+    batch_background/backup._run_backup_background - owns releasing the
+    "running" flag and closing its own client regardless of outcome via
+    finally. Local `state` import - app_state.py imports this module at
+    top level (for load_all()), so a top-level `from services.app_state
+    import state` here would be circular, the same trap strategy_engine.py's
+    evaluate() works around for its own market_lookup import (see that
+    module's comment)."""
+    from services.app_state import state
+
+    schedule_state = state["event_schedule_scan"]
+    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        await _resolve_event_schedules(
+            client, cfg,
+            state.get("markets") or [], state.get("event_titles") or {},
+            state["event_schedules"], state.get("market_object_cache") or {},
+        )
+    finally:
+        schedule_state["running"] = False
+        await client.close()
+
+
+def _maybe_resolve_event_schedules(cfg: dict) -> None:
+    """Triggers _resolve_event_schedules_background as an independent
+    background task on its own steady interval, decoupled from the main
+    tick entirely - same pattern as catalog_scan._maybe_scan_catalog_batch/
+    backup._maybe_run_backup. Synchronous/non-blocking on purpose, exactly
+    like those siblings. Same local-import trap as the background function
+    above."""
+    from services.app_state import state
+
+    event_schedule_cfg = cfg.get("event_schedule") or {}
+    if not event_schedule_cfg.get("enabled", True):
+        return
+    schedule_state = state["event_schedule_scan"]
+    now_ts = time.time()
+    due = now_ts - schedule_state["last_started_at"] > _RESOLVE_MIN_INTERVAL_SEC
+    if due and not schedule_state["running"]:
+        schedule_state["running"] = True
+        schedule_state["last_started_at"] = now_ts
+        schedule_state["task"] = task_supervisor.supervise(
+            lambda: _resolve_event_schedules_background(cfg),
+            component="event_schedule", operation="resolve_batch",
+        )

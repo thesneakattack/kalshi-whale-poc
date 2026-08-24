@@ -333,6 +333,7 @@ async def trading_loop():
             _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
             _maybe_run_backup(cfg)
+            event_schedule._maybe_resolve_event_schedules(cfg)
             await check_and_alert(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),

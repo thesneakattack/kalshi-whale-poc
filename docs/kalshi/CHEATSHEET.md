@@ -259,3 +259,34 @@ fallback already used for the duplicate-title case.
 meant side=no positions specifically) after the dollar math itself
 (cost_basis/mark_to_market/sideAdjustedPrice) was traced end to end against
 live data and confirmed correct.
+
+## Is `expected_expiration_time` the same field name on REST and the WS lifecycle stream?
+**Answer:** No — two different names for the same concept in two different
+places. The REST market object (`get-markets.md`/`get-market.md`/
+`get-historical-market(s).md`) uses `expected_expiration_time`, an ISO-8601
+string. The `market_lifecycle_v2` WS channel's `created`/`updated` event
+payloads (`market-and-event-lifecycle.md`, `multivariate-market-and-event-
+lifecycle.md`) use `expected_expiration_ts`, a unix-epoch integer — plus, on
+`close_date_updated` events specifically, a live-updated `close_ts` (also
+epoch integer) when Kalshi actually changes a market's close time.
+**Source:** `docs/kalshi/market_lifecycle.md:62` (REST field, prose table);
+`docs/kalshi/market-and-event-lifecycle.md:288,540,584` (WS field, schema +
+example payload, `"expected_expiration_ts": 1694721600`); confirmed live
+2026-08-24 in `ddev logs -s fastapi` — a real `market_lifecycle_v2` `created`
+event for `KXATPGSPREAD-26AUG24NARCIN-CIN6` carried
+`'expected_expiration_ts': 1787680800` inside `additional_metadata`.
+**Gotcha:** `services/market_lookup.py`'s `effective_close_time()` (2026-08-24
+close-time fix) reads the REST field only (`services/market_watch/
+market_fetch.py`'s `_MARKET_FIELDS`) — this app does not currently consume
+`kalshi_trade_ws.py`'s `market_lifecycle_v2` stream for this purpose at all
+(that handler only logs "first real shape" samples for now, see
+`services/kalshi_trade_ws.py`). If a future session wires the WS stream in as
+a live-updating trigger (e.g. to invalidate `state["event_schedules"]`/
+`market_object_cache` the instant `close_date_updated`/`expected_expiration_ts`
+changes, instead of waiting for the next REST poll), use `expected_expiration_ts`
+there, not `expected_expiration_time` — they are not interchangeable names for
+the same wire field.
+**Found:** 2026-08-24, second sub-unit of the close-time fix (`services/
+market_events/event_schedule.py`'s background resolver) — noticed live in
+`fastapi` logs while verifying the resolver was running, not assumed from
+the REST docs alone.

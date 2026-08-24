@@ -37,6 +37,23 @@ def test_expected_expiration_time_wins_over_everything(monkeypatch):
     assert market_lookup.effective_close_time(m) == "2026-09-01T00:00:00Z"
 
 
+def test_expected_expiration_time_identical_to_close_time_is_skipped(monkeypatch):
+    # Live-confirmed 2026-08-24 on a real runoff-eligible race
+    # (KXMAYORLA-26): Kalshi sets expected_expiration_time equal to the raw
+    # close_time (same far-out placeholder, ~7 months past the real
+    # election) rather than a genuine per-market forecast - trusting it
+    # unconditionally would shadow tier 2's correct, milestone-resolved
+    # answer. This is the one case tier 1 must NOT win outright.
+    _isolated(monkeypatch)
+    monkeypatch.setitem(state, "event_schedules", {"EVT": {"end_ts": 333.0}})
+    m = {
+        "expected_expiration_time": "2027-06-02T14:00:00Z",
+        "event_ticker": "EVT",
+        "close_time": "2027-06-02T14:00:00Z",
+    }
+    assert market_lookup.effective_close_time(m) == 333.0
+
+
 def test_event_schedule_end_ts_wins_when_no_expected_expiration(monkeypatch):
     _isolated(monkeypatch)
     monkeypatch.setitem(state, "event_schedules", {"EVT": {"end_ts": 222.0}})

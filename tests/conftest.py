@@ -53,6 +53,7 @@ from services import config_performance as _cp_module
 from services import config_store as _config_store_module
 from services.market_catalog import market_catalog as _mc_module
 from services.market_analyst_agent import _db as _maa_module
+from services.market_events import event_schedule as _es_module
 from services import market_history as _mh_module
 from services import paper_broker as _pb_module
 from services import risk_manager as _rm_module
@@ -71,6 +72,15 @@ _sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
 _cl_module.DB_PATH = _tmp_dir / "candidate_log.db"
 _sedge_module.DB_PATH = _tmp_dir / "settlement_edge.db"
 _maa_module.DB_PATH = _tmp_dir / "market_analyst.db"
+# 2026-08-24: app_state.py's module-scope state dict calls
+# event_schedule.load_all() at import time (for state["event_schedules"]),
+# the exact same "singleton constructed once, first-import-wins" shape this
+# file's own docstring already describes for PaperBroker/RiskManager -
+# added now because this session just gave event_schedule.py its first real
+# write path (_resolve_event_schedules' save() calls, wired into main.py's
+# tick loop), where the collection-order gap would mean a real write into
+# data/event_schedule.db, not just a read.
+_es_module.DB_PATH = _tmp_dir / "event_schedule.db"
 
 _tmp_config_path = _tmp_dir / "settings.yaml"
 shutil.copy(_config_store_module.CONFIG_PATH, _tmp_config_path)

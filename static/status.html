@@ -5272,7 +5272,7 @@
           <code>ROADMAP.md</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 134 · resolve on finalized, not determined</div>
         <h4>closes the disputed-and-reversed-result gap named by services/exits/CHEATSHEET.md's own audit</h4>
         <p>Per-module audit finding, fixed: Kalshi sets a market's <code>result</code> the instant it's
@@ -5310,7 +5310,7 @@
           <code>tests/test_winner_propagation.py</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 135 · backup's cold-start restart bug</div>
         <h4>every uvicorn --reload cycle was re-triggering a full 9.4GB backup</h4>
         <p>Per-module efficiency finding, fixed: live <code>tick_phase_timings</code> showed
@@ -5340,7 +5340,7 @@
           <code>tests/test_backup.py</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 136 · whale accuracy's own finalized-vs-determined gap</div>
         <h4>the third occurrence of phase 134's bug, this time on the accuracy metric itself</h4>
         <p>Per-module audit finding, fixed: <code>services/whale_calibration/CHEATSHEET.md</code> had already
@@ -5368,7 +5368,7 @@
           <code>tests/test_signal_resolution.py</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 137 · a test run wrote real trades into the live paper account</div>
         <h4>tests/conftest.py closes a collection-order gap in the test-isolation convention itself</h4>
         <p>Found while pulling up <code>/api/diagnostics</code> to look for other live anomalies after phases
@@ -5411,7 +5411,7 @@
         <div class="files"><code>tests/conftest.py</code> · <code>.claude/hooks/run_tests.py</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 138 · confidence_scoring.py split out of whale_simulator.py</div>
         <h4>the live confidence-scoring formula shouldn't live in a file named "simulator"</h4>
         <p>Direct instruction (2026-08-23): "there are several things that need to be modularized still in the
@@ -5448,7 +5448,7 @@
           <code>services/whalewatchers/</code> · <code>services/whale_calibration/</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 139 · a redundant per-poll refresh was resetting scroll position</div>
         <h4>refreshActiveViewPanels() duplicated refreshHistoryInsightsIfActive() and contradicted its own neighboring comments</h4>
         <p>Direct report (2026-08-23): scrollbar position resetting on the History tab, and any Apply button
@@ -5485,7 +5485,7 @@
           <code>static/js/dashboard.bundle.js</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 140 · index_feed/ split into ingestion vs. settlement algebra</div>
         <h4>second of three planned modularization passes - a package this time, not two flat files</h4>
         <p>Continuation of the services/ modularization survey (phase 138's whale_simulator split was the
@@ -5527,7 +5527,7 @@
           <code>tests/test_index_feed.py</code> · <code>tests/test_settlement_edge.py</code></div>
       </div>
 
-      <div class="phase">
+      <div class="t-phase">
         <div class="tag">phase 141 · market_analyst_agent/ split into per-market/per-series/full-spectrum</div>
         <h4>third and last of three approved modularization passes - same package shape, three independent
           modes instead of two</h4>
@@ -5593,6 +5593,71 @@
           <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> · <code>tests/test_strategy_engine.py</code> ·
           <code>services/analytics/market_analyst_orchestrator.py</code> ·
           <code>services/analytics/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 142 · effective close time, second sub-unit + a live-found gap</div>
+        <h4>event_schedule.py's 4-source resolver finally gets called, and a live sanity check catches
+          expected_expiration_time lying for one real market class</h4>
+        <p>Second and third sub-units of the close-time fix (first sub-unit: phase 138's sibling commit,
+          <code>services/market_lookup.py</code>'s <code>effective_close_time()</code> - not yet its own phase
+          entry when this was written, folded in here). Direct "MAJOR MAJOR" bug report: entry/exit gates that
+          reason about "time until this market closes" used Kalshi's raw <code>close_time</code> only, which can
+          sit a month+ out for an event-style market whose real outcome is already known.
+          <code>services/strategy_engine.py</code>'s <code>FollowTheWhaleStrategy.evaluate()</code> - the
+          entry-side <code>close_window_sec</code>/<code>min_seconds_to_close</code> gates - now looks up this
+          tick's market dict once and calls <code>effective_close_time()</code> on it, falling back to
+          <code>signal.close_time</code> when the market isn't found (load-bearing for
+          <code>test_strategy_gate.py</code>'s existing fixtures); reused the same lookup for the adjacent
+          <code>can_close_early</code> check, removing a duplicate loop. Local import inside <code>evaluate()</code>,
+          not module top level - <code>app_state.py</code> imports <code>strategy_engine</code> before its own
+          <code>state</code> dict exists.</p>
+        <p><code>services/market_events/event_schedule.py</code>'s 4-source event-schedule waterfall
+          (<code>strike_date</code> → milestone → rules text → web search) existed fully built but had zero
+          callers - flagged the same day in ROADMAP.md's "use relevant data before trimming" item. Built the
+          missing <code>_maybe_resolve_event_schedules</code>/<code>_resolve_event_schedules_background</code>/
+          <code>_resolve_event_schedules</code> trio, same <code>_maybe_*</code>-background-task shape as
+          <code>catalog_scan.py</code>/<code>backup.py</code>, wired into <code>main.py</code>'s tick loop. Scoped
+          to long-window events (<code>_LONG_WINDOW_THRESHOLD_SEC</code>, 48h) that are also due per
+          <code>needs_resolution</code>'s own TTL, capped at <code>event_schedule.max_resolutions_per_tick</code>
+          (config default 5), resolved sequentially since the web-search leg hits an external host. Texts sourced
+          opportunistically from <code>state["market_object_cache"]</code>'s already-cached
+          <code>rules_primary</code>/<code>rules_secondary</code> at zero extra network cost. Second, independent
+          circular-import trap alongside <code>strategy_engine</code>'s: <code>app_state.py</code> imports
+          <code>event_schedule</code> at top level too (for <code>load_all()</code>), so <code>state</code> is
+          imported locally inside the two new trigger/background functions only. New
+          <code>state["event_schedule_scan"]</code> tracker in <code>app_state.py</code>.</p>
+        <p>Live-verified, not just tested: the resolver actually ran and populated <code>data/event_schedule.db</code>
+          with 5 real events within minutes of deploy, correctly resolving <code>KXMAYORLA-26</code>'s real election
+          night (2026-11-03/04) via the milestone API. A second live check - the plan's own flagged follow-up,
+          "no independent live-verification of <code>expected_expiration_time</code> values yet" - found a real
+          gap: for that same <code>KXMAYORLA-26</code> (a runoff-eligible race), Kalshi sets
+          <code>expected_expiration_time</code> identical to raw <code>close_time</code> (the same far placeholder,
+          ~7 months past the real election) rather than a genuine forecast, which would have silently shadowed the
+          correct milestone-resolved answer since tier 1 was trusted unconditionally. Fixed:
+          <code>effective_close_time()</code> now skips tier 1 when it equals <code>close_time</code> exactly,
+          falling through to tier 2. <code>services/market_events/CHEATSHEET.md</code>'s "Handoff" section
+          corrected - it previously falsely claimed <code>resolve_one</code>/<code>needs_resolution</code> were
+          already called from <code>main.py</code>; <code>trade_window_is_open</code> remains deliberately
+          unwired, noted as a separate open gap. <code>docs/kalshi/CHEATSHEET.md</code> gained an entry on
+          <code>expected_expiration_time</code> (REST) vs. <code>expected_expiration_ts</code>
+          (<code>market_lifecycle_v2</code> WS, a different field entirely) after spotting the WS one live in
+          <code>ddev logs</code> while verifying this.</p>
+        <p>New <code>tests/test_event_schedule.py</code> (38 tests, zero coverage existed before), plus new tests
+          in <code>test_market_lookup.py</code> and <code>test_strategy_engine.py</code>. Found and fixed a real
+          test-isolation gap along the way: <code>event_schedule.py</code>'s <code>DB_PATH</code> was missing
+          from <code>conftest.py</code>'s protected-singleton list - the same collection-order bug class as the
+          2026-08-23 <code>paper_broker.db</code> incident (phase 137), added now because this session gave the
+          module its first real write path. Also fixed, unrelated but found in the same file: 8 phase entries
+          (134-141) used <code>class="phase"</code> instead of <code>class="t-phase"</code> - only the latter has
+          any CSS rule, so all 8 were rendering completely unstyled on this very page. Full suite: 1,265 passed
+          (up from 1,222 at session start).</p>
+        <div class="files"><code>services/market_lookup.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/market_events/event_schedule.py</code> · <code>services/app_state.py</code> ·
+          <code>main.py</code> · <code>services/market_events/CHEATSHEET.md</code> ·
+          <code>docs/kalshi/CHEATSHEET.md</code> · <code>tests/test_event_schedule.py</code> ·
+          <code>tests/test_market_lookup.py</code> · <code>tests/test_strategy_engine.py</code> ·
+          <code>tests/conftest.py</code> · <code>static/status.html</code></div>
       </div>
 
     </div>

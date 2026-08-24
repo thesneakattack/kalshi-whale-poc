@@ -60,11 +60,20 @@ integration. Re-confirmed still accurate as of this pass, not stale.
   markets — multi-day tournaments — Kalshi's milestone API doesn't track
   at all).
 - **`event_schedule`**: `load_all()` hydrates `state["event_schedules"]`
-  at `app_state.py` import time; `resolve_one`/`needs_resolution` are
-  called from `main.py`'s trading loop (per-event, rate-limited via each
-  entry's own TTL — see `needs_resolution`'s docstring) to keep the cache
-  warm; `trade_window_is_open` is consulted by `main.py`'s `is_live`
-  computation, only trusted when it doesn't return `None`.
+  at `app_state.py` import time. `resolve_one`/`needs_resolution` — true as
+  of 2026-08-24, previously false on this page — are now called from
+  `main.py`'s trading loop via `_maybe_resolve_event_schedules(cfg)`
+  (wired in alongside `_maybe_scan_catalog_batch`/`_maybe_run_backup`), a
+  background batch resolver scoped to long-window events
+  (`_events_needing_resolution`, `_LONG_WINDOW_THRESHOLD_SEC`) and capped
+  at `config/settings.yaml`'s `event_schedule.max_resolutions_per_tick`;
+  each result is applied to `state["event_schedules"]` in place and
+  persisted via `save()`. Its real consumer is `services/market_lookup.py`'s
+  `effective_close_time()` (tier 2 of that resolver's precedence — see that
+  module's docstring), not a direct `main.py` call site. **Deliberately
+  still NOT wired**, a separate and intentionally out-of-scope gap:
+  `trade_window_is_open` has no caller anywhere in the app — the
+  is_live/trade-window gates it was designed for don't consult it yet.
 - **`event_inspector.inspect_market_event`**: no programmatic caller —
   invoked manually via a `python -c` one-liner inside the `fastapi`
   container (see the module's own docstring) for ad-hoc debugging of one

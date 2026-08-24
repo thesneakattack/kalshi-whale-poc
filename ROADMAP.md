@@ -737,7 +737,12 @@ questions.
       event-schedule resolver, persisted to `data/event_schedule.db`,
       never called from anywhere - found investigating a direct "'live'
       status and trading windows... too much guesswork" report the same
-      day, itself queued as its own fix; and `services/signal_log.py`'s
+      day. **Resolved 2026-08-24**: `_maybe_resolve_event_schedules(cfg)`
+      now wires `resolve_one`/`needs_resolution` into `main.py`'s tick loop
+      as the second sub-unit of the close-time fix (first sub-unit:
+      `services/market_lookup.py`'s `effective_close_time()`, `status.html`
+      phase 138) - see phase 139 for the full detail. The other instance
+      below, `services/signal_log.py`'s
       `resolved_signals_with_factors()` silently dropping the
       already-stored `series` column before confidence-calibration ever
       sees it - found investigating a direct report that
