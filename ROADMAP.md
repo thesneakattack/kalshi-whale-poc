@@ -719,6 +719,40 @@ questions.
       asset" rule. The real gap is that no consumer was ever built - worth
       a future item in its own right (a diagnostic or ml_feed.py extension
       that actually reads this data), not a deletion.
+- [ ] **Use all available *relevant* data before trimming the rest.** Direct
+      instruction (2026-08-24), two-phase, and deliberately not "use every
+      collected field no matter what" - direct clarification the same day:
+      "what i meant is using all available *relevant* data." First make
+      sure this app is actually reading back everything it's already
+      paying to collect that's genuinely useful to a real consumer, *then*
+      cut whatever's left over that isn't - not the other way around,
+      since deleting first risks losing something a future consumer
+      needed, but "unread" alone isn't the bar either; irrelevant data
+      being fed to a consumer just to say it's "used" would be its own
+      kind of waste, arguably worse than leaving it unread. Two concrete,
+      already-found instances of real, relevant, currently-unread data
+      this session alone (not hypothetical, and not just "any unread
+      field qualifies"):
+      `services/market_events/event_schedule.py`'s fully-built 4-source
+      event-schedule resolver, persisted to `data/event_schedule.db`,
+      never called from anywhere - found investigating a direct "'live'
+      status and trading windows... too much guesswork" report the same
+      day, itself queued as its own fix; and `services/signal_log.py`'s
+      `resolved_signals_with_factors()` silently dropping the
+      already-stored `series` column before confidence-calibration ever
+      sees it - found investigating a direct report that
+      advisory/calibration/history "arent scoping things accurately,"
+      also queued as its own fix the same day. `market_history.snapshots`' own
+      `spread`/`volume_24h`/`time_to_close_sec` columns (audited just
+      above) are the one already-checked counterexample - disclosed,
+      deliberate forward capture per direct instruction, not dead-code
+      waste, so not every "collected, unread" finding is automatically
+      fat to trim. Once the "use it" pass is genuinely done across
+      `services/`, a second, separate pass should identify what's left
+      that's actually never going to be useful and cut it (matches
+      CLAUDE.md's "accumulated history is a first-class asset" rule -
+      trim deliberately, with evidence, not by default). Not started -
+      planning item only.
 - [x] **Real REST rate limiting, direct report (2026-08-23): "happening in
       the history and especially position sections... I've insisted
       multiple times on streams to inform those sections and using REST
