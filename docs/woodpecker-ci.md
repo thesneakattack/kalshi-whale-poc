@@ -55,21 +55,25 @@ shared agent's configured concurrency — see "Known limitations" below).
 
 Not built (the underlying capability doesn't exist in the repo yet, so
 there is nothing real for a Woodpecker job to run — see
-`docs/superpowers/plans/2026-08-24-quality-control-plane.md`'s Tasks 14,
-19): `kalshi-contract/public-api-canary`, `performance/synthetic-
-regressions`. Add the matching `.woodpecker/*.yml` file once each QCP task
-actually ships the checker it would run — don't wire a pipeline stage
-ahead of the capability it's supposed to gate.
+`docs/superpowers/plans/2026-08-24-quality-control-plane.md`'s Task 19):
+`performance/synthetic-regressions`. Add the matching `.woodpecker/*.yml`
+file once that QCP task actually ships the checker it would run — don't
+wire a pipeline stage ahead of the capability it's supposed to gate.
 
 `kalshi-docs/content-drift` (QCP Task 12) shipped as an upgrade to
 `.github/workflows/docs-drift-check.yml` instead — real SHA256 content-
 drift detection via `tools/kalshi_docs_drift.py`, not just the old URL-
-availability curl loop. Deliberately stays on GitHub Actions rather than
-becoming a `.woodpecker/*.yml` file: it's schedule-triggered (weekly cron),
-and Woodpecker's cron-trigger mechanism isn't set up anywhere in this repo
-today — every `.woodpecker/*.yml` file above is push/PR/manual-triggered
-only (see "Pipeline topology" above and the manual-trigger note below).
-Revisit if Woodpecker cron scheduling is ever configured for this project.
+availability curl loop. `kalshi-contract/public-api-canary` (QCP Task 14)
+shipped the same way, as new `.github/workflows/kalshi-contract.yml` —
+a live, read-only check against Kalshi's real unauthenticated
+`/exchange/status` and `/markets` endpoints via
+`tools/kalshi_public_canary.py`. Both deliberately stay on GitHub Actions
+rather than becoming `.woodpecker/*.yml` files: they're schedule-triggered
+(weekly cron), and Woodpecker's cron-trigger mechanism isn't set up
+anywhere in this repo today — every `.woodpecker/*.yml` file above is
+push/PR/manual-triggered only (see "Pipeline topology" above and the
+manual-trigger note below). Revisit if Woodpecker cron scheduling is ever
+configured for this project.
 
 **A path-filtered workflow (`quality-frontend-build`) posts no status at
 all when skipped** — if branch protection ever marks it "required," a

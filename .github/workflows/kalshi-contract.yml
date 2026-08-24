@@ -1,0 +1,56 @@
+name: kalshi-contract
+
+# Scheduled/manual live canary against Kalshi's real, unauthenticated public
+# API (QCP Task 14, docs/superpowers/plans/2026-08-24-quality-control-
+# plane.md) - complements tests/test_kalshi_contracts.py's offline fixture
+# tests (which prove production code parses documented shapes correctly)
+# with a live check that Kalshi's real API still SENDS those shapes. Only
+# ever calls GET /exchange/status and GET /markets - both public/read-only
+# per docs/kalshi/get-exchange-status.md and get-markets.md's own
+# `security: []` OpenAPI declaration (confirmed 2026-08-24). No API key,
+# no order/position/balance/fill/portfolio call, ever - see
+# tools/kalshi_public_canary.py's module docstring and
+# tests/test_kalshi_public_canary.py's own regression guard for that.
+#
+# Stays on GitHub Actions (not Woodpecker) deliberately, same reasoning as
+# docs-drift-check.yml: this is a schedule-triggered, network-dependent,
+# upstream-canary check, and Woodpecker's cron-trigger mechanism isn't set
+# up in this repo (see docs/woodpecker-ci.md). Revisit if that ever changes.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC (staggered an hour after docs-drift-check)
+  workflow_dispatch:
+
+jobs:
+  check-kalshi-public-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Call Kalshi's public exchange-status and markets endpoints and check response shape
+        id: check
+        run: |
+          python -m tools.kalshi_public_canary --json-out canary-report.json
+        continue-on-error: true
+
+      - name: Upload canary report (always, even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalshi-public-canary-report
+          path: canary-report.json
+
+      - name: Fail the check if a documented public-read response shape broke
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::Kalshi's public exchange/status or markets endpoint no longer matches the response shape docs/kalshi/ documents (or is unreachable) - see the uploaded canary-report.json artifact. This may mean docs/kalshi/ needs a refresh, or a real upstream API change that production parsing code needs to handle."
+          exit 1
