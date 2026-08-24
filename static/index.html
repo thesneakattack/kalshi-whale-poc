@@ -273,6 +273,12 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
       Strategy, risk, whale-signal, and market-discovery settings live in the
       <a href="#" onclick="showView('config'); refresh(); return false;" style="color:var(--whale);">Config</a> tab.
     </p>
+
+    <!-- System Health (QCP Task 18) - read-only view of GET /api/quality/summary,
+         fetched only while this tab is active (polling-and-websocket.js's refresh()). -->
+    <div class="panel-title" style="margin-top:16px;">System Health</div>
+    <div id="system-health-summary"><div class="empty">Loading…</div></div>
+    <div id="system-health-findings"></div>
   </div>
 
 </div>

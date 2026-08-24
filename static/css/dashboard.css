@@ -617,6 +617,22 @@
   #trade-stream-badge.degraded { color: var(--whale); border: 1px solid rgba(245,185,66,0.35); background: rgba(245,185,66,0.12); }
   #trade-stream-badge.error { color: var(--danger); border: 1px solid rgba(229,72,77,0.35); background: rgba(229,72,77,0.12); }
   @keyframes connectivity-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  /* System Health panel (QCP Task 18) - Terminal tab's Controls column,
+     GET /api/quality/summary. Same 3-color-plus-unknown scheme as
+     #trade-stream-badge above, reused rather than reinvented. */
+  #system-health-summary { font-size: 11px; }
+  .sh-status { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .sh-status.ok { color: var(--yes); }
+  .sh-status.warning { color: var(--whale); }
+  .sh-status.error { color: var(--danger); }
+  .sh-status.unknown { color: var(--muted); }
+  .sh-line { color: var(--muted); line-height: 1.6; }
+  .sh-details-link { display: inline-block; margin-top: 4px; font-size: 10px; color: var(--whale); text-decoration: none; }
+  .sh-details-link:hover { text-decoration: underline; }
+  #system-health-findings { margin-top: 8px; }
+  .sh-finding { font-size: 10.5px; line-height: 1.5; padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; border-left: 3px solid transparent; }
+  .sh-finding.warning { color: var(--whale); background: rgba(245,185,66,0.1); border-left-color: var(--whale); }
+  .sh-finding.error { color: var(--danger); background: rgba(229,72,77,0.1); border-left-color: var(--danger); }
   /* "Live" the way Kalshi's own UI badges it - see isLive()'s comment for
      what this is actually based on (occurrence_datetime + status), not
      Kalshi's real live-sports-data integration. */

@@ -300,6 +300,29 @@ questions.
       existing REST-tick path) — closing the gap where a ticker rotating
       off the live watchlist before settling (routine for KXBTC15M-shaped
       series) never got resolved at all.
+- [ ] **`services/alerting/alerting.py`'s "crash" category has no
+      resolution path at all — a single crash keeps `/api/quality/summary`
+      pinned to `status: "error"` forever.** Found live 2026-08-24 while
+      building QCP Task 18's System Health UI: `_check_transition` (the
+      only caller of `resolve_category`) only covers the two
+      continuously-monitored conditions (`kill_switch`,
+      `trade_stream_connectivity`/`index_stream_connectivity`) — a real
+      "the bad condition cleared" edge to detect. `task_supervisor.py`'s
+      own `record_alert("crash", "critical", ...)` has no matching
+      resolution trigger anywhere in the codebase (confirmed via
+      `grep -rn "resolve_category"`), and `services/alerting/routes.py`
+      exposes no manual acknowledge/resolve route either — so once a
+      crash alert fires, `active_alerts()` includes it permanently. Live-
+      observed: 5 real (but already self-corrected, minutes-old at the
+      time) `trading_loop` crashes from mid-Task-15 development left
+      `/api/quality/summary`'s `status` at `"error"` a full 105 minutes
+      later with the app otherwise completely healthy. Not fixed as part
+      of Task 18 (out of that task's file scope, and the right fix -
+      auto-expire after N clean ticks? require human acknowledgment? both?
+      - deserves its own design decision, not a bolt-on). Task 18's own UI
+      is built to display this honestly (a real "1 active alert" is not a
+      UI bug) rather than mask it, per this file's own real-vs-fabricated
+      status discipline.
 
 ## Shipped
 

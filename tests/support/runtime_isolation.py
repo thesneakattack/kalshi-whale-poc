@@ -74,6 +74,32 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.whale_calibration.calibration_history",
 )
 
+# Real, live gap found 2026-08-24 (QCP Task 18, building the browser E2E
+# System Health test): PERSISTENCE_MODULE_PATHS only knows the DB_PATH
+# shape (one module -> one file, redirected by basename). services/backup/
+# backup.py and services/storage_health/storage_health.py each also own a
+# DATA_DIR constant (a *directory*, globbed for every data/*.db file) -
+# a different shape the registry above never covered. Both modules' own
+# test files (tests/test_backup.py, tests/test_quality_routes.py) already
+# carry a local `monkeypatch.setattr(module, "DATA_DIR", tmp_path)` fixture
+# protecting THEIR OWN tests, but tests/support/e2e_server.py (the real
+# browser-E2E harness, driven only by install_runtime_isolation() - no
+# per-file fixtures of its own) had no such protection: GET /api/quality/
+# summary's storage_health.inventory_data_dir(storage_health.DATA_DIR) call
+# still resolved to the REAL repo data/ directory, real data/accounts.db
+# included - and the sqlite3.connect guard below correctly refused to open
+# it (working as designed), which surfaced as a hard 500 on the very first
+# browser test to ever actually hit that route
+# (tests/test_browser_e2e.py::test_system_health_panel_renders_a_status_with_no_console_error).
+# Centralizing this here, the same way the DB_PATH gap was centralized
+# after the 2026-08-23 collection-order incident (see this file's own
+# docstring), closes it for every current and future test context at once
+# instead of depending on each new caller remembering its own local fixture.
+DATA_DIR_MODULE_PATHS: tuple[str, ...] = (
+    "services.backup.backup",
+    "services.storage_health.storage_health",
+)
+
 
 @dataclass(frozen=True)
 class IsolationContext:
@@ -127,6 +153,18 @@ def _redirect_persistence_modules(temp_root: Path) -> None:
         module.DB_PATH = temp_root / Path(module.DB_PATH).name
 
 
+def _redirect_data_dir_modules(temp_root: Path) -> None:
+    # One shared empty directory, not one per module - both current owners
+    # (backup.py/storage_health.py) only ever *read* (glob/enumerate) this
+    # path in the code paths runtime isolation needs to cover; nothing here
+    # needs them kept apart the way each DB_PATH does.
+    data_dir = temp_root / "isolated_data_dir"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for name in DATA_DIR_MODULE_PATHS:
+        module = importlib.import_module(name)
+        module.DATA_DIR = data_dir
+
+
 def _redirect_config_store(temp_root: Path) -> None:
     from services import config_store as config_store_module
 
@@ -173,5 +211,6 @@ def install_runtime_isolation(temp_root: Path | None = None) -> IsolationContext
         temp_root = Path(tempfile.mkdtemp(prefix="pytest_runtime_isolation_"))
     _install_sqlite_guard()
     _redirect_persistence_modules(temp_root)
+    _redirect_data_dir_modules(temp_root)
     _redirect_config_store(temp_root)
     return IsolationContext(temp_root=temp_root)

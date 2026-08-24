@@ -2,6 +2,7 @@ import { VIEWS, currentView, refreshHistoryInsightsIfActive } from './main.js';
 import { marketDetailTicker, refreshMarketDetail, renderAccount, renderHeaderStrip, renderRealMoneyBanner, renderScreenerTable } from './screener-and-header.js';
 import { $, advToggleHTML, eventLiveData, eventTitles, isAdvanced, marketPanelState, marketTitles, renderMarketCategorySuggestions, renderMarkets, rerenderMarketPanel } from './shared-utils.js';
 import { loadPositionNettingGroups, renderSignalDecisionFeed } from './signals-feed.js';
+import { loadSystemHealth } from './system-health.js';
 import { renderFunnel } from './trade-log-and-real.js';
 import { renderConnectivity, renderExchangeStatus, renderHalted, renderPortfolio, renderTickHealth, renderTradeStreamStatus, sourceLabel } from './trading-gate-and-connectivity.js';
 import { renderTradeTape, renderWhaleTrackRecord } from './whale-watch.js';
@@ -104,6 +105,7 @@ async function refresh() {
       renderFunnel(state.stats);
       renderSignalDecisionFeed(state.signal_feed, state.decision_feed);
       renderHalted(state.risk);
+      loadSystemHealth(state);
     } else if (active === 'portfolio') {
       renderPortfolio(state, broker);
       loadPositionNettingGroups();

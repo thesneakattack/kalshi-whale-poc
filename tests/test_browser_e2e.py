@@ -193,3 +193,35 @@ def test_failed_api_action_is_surfaced_as_failure_not_false_success(driver):
     assert btn_text == "Apply failed — retry", (
         f"fetchJSON's 4xx path did not surface as a failure in the UI: button read {btn_text!r}"
     )
+
+
+def test_system_health_panel_renders_a_status_with_no_console_error(driver):
+    """QCP Task 18 - the Terminal tab's System Health panel
+    (frontend/src/js/system-health.js), backed by GET /api/quality/summary.
+    This harness's state["running"] = False means the trading loop never
+    ticks, so the real content is minimal (no faults/alerts/findings
+    accumulate) - this only asserts what the plan's own Step 5 asks for: a
+    real status renders (not the "Loading…" placeholder, not the "system
+    health unavailable" fetch-failure fallback) and no severe console error
+    occurs, not any specific count."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    driver.get(E2E_BASE_URL + "/")
+    _install_console_tracker(driver)
+
+    driver.find_element(By.ID, "tab-btn-terminal").click()
+    WebDriverWait(driver, 10).until(
+        lambda d: "active" in d.find_element(By.ID, "view-terminal").get_attribute("class").split()
+    )
+    WebDriverWait(driver, 10).until(
+        lambda d: "Loading" not in d.find_element(By.ID, "system-health-summary").text
+    )
+
+    status_el = driver.find_element(By.CSS_SELECTOR, "#system-health-summary .sh-status")
+    assert status_el.get_attribute("class").split()[-1] in ("ok", "warning", "error", "unknown")
+    assert status_el.text.strip() != ""
+    assert "unavailable" not in driver.find_element(By.ID, "system-health-summary").text
+
+    errors = _console_errors(driver)
+    assert not errors, f"unexpected browser console errors: {errors}"
