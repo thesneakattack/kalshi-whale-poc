@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": 1787598065.9163861,
+  "generated_from_head": "af08efa606c7739ceb8aee6332da922daa006aa4",
+  "files": {
+    "python": 222,
+    "javascript": 13,
+    "html": 4
+  },
+  "lines": {
+    "python": 49485,
+    "javascript": 6118,
+    "html": 7296
+  },
+  "services": 67,
+  "api_routes": 93,
+  "frontend_modules": 12,
+  "workflow_files": 10,
+  "workflow_jobs": 16,
+  "tests": {
+    "files": 78,
+    "count": 1487
+  }
+}

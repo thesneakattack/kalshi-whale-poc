@@ -67,6 +67,9 @@ jobs:
           --baseline tools/quality_audit/baseline.json
           --json-out build/quality-audit.json
 
+      - name: Check project manifest is current (QCP Task 17)
+        run: python -m tools.project_manifest --check static/project-manifest.json --repo-root .
+
       - name: Upload quality audit report
         if: always()
         uses: actions/upload-artifact@v4

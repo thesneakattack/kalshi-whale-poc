@@ -49,7 +49,7 @@ shared agent's configured concurrency — see "Known limitations" below).
 | `tests-pytest.yml` | `tests.yml` / `pytest` | no — full suite, cross-module regressions |
 | `tests-dependency-audit.yml` | `tests.yml` / `dependency-audit` | no |
 | `quality-frontend-build.yml` | `quality.yml` / `frontend-build` | yes — `frontend/**` only |
-| `quality-architecture-audit.yml` | `quality.yml` / `architecture-audit` (now also covers `frontend-api-contract`, bundled into the same `tools.quality_audit` CLI call) | no — the frontend-contract scanner reads both sides |
+| `quality-architecture-audit.yml` | `quality.yml` / `architecture-audit` (now also covers `frontend-api-contract` and `tools.project_manifest --check`, QCP Task 17, bundled into the same step) | no — the frontend-contract scanner reads both sides |
 | `kalshi-contract-fixtures.yml` | new — `services/kalshi_client.py` etc.'s existing tests plus `tests/test_kalshi_contracts.py` (QCP Task 13's fixture-JSON-driven contract tests), isolated for clearer failure attribution | no |
 | `quality-browser-e2e.yml` | `quality.yml` / `browser-e2e` (QCP Task 8) — real headless-Chrome smoke against `tests/support/e2e_server.py`'s isolated ASGI harness | no — exercises served `static/` through the real backend routes |
 

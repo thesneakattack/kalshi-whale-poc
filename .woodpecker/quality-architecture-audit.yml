@@ -6,6 +6,18 @@
 # contract scanner. No path filter - the frontend-api-contract scanner
 # reads both services/*/routes.py and frontend/src/js/*.js, so a
 # backend-only OR frontend-only change can each independently break it.
+#
+# Also runs tools.project_manifest --check (QCP Task 17) in the same step,
+# bundled rather than a separate step - same "one tools.* static check
+# already paid for the pip install, just add another command" pattern this
+# step already used to fold frontend-api-contract in alongside
+# quality_audit itself. static/project-manifest.json's committed
+# generated_from_head/generated_at are deliberately excluded from this
+# comparison (see project_manifest.py's own _CHURN_FIELDS) so this only
+# fails on a real structural drift (file/line/route/service counts), never
+# merely because HEAD moved - a `python:3.13-slim` image has no git
+# binary anyway, so generated_from_head always builds as null here
+# regardless, which the exclusion makes harmless.
 when:
   - event: [push, pull_request]
 
@@ -18,6 +30,7 @@ steps:
         python -m tools.quality_audit --repo-root .
         --baseline tools/quality_audit/baseline.json
         --json-out build/quality-audit.json
+      - python -m tools.project_manifest --check static/project-manifest.json --repo-root .
 
   # Woodpecker has no first-class "upload artifact" step; the JSON report
   # is exposed as build log output instead so a failing run's evidence
