@@ -3,8 +3,31 @@ name: docs-drift-check
 # Kalshi's API docs don't change often, but docs/kalshi/ is treated as
 # ground truth (see CLAUDE.md's "Kalshi API documentation" section) - this
 # periodically re-verifies that ground truth instead of trusting it
-# indefinitely. Separate from tests.yml on purpose: a broken doc URL isn't
-# a code regression and shouldn't be read as one.
+# indefinitely. Separate from tests.yml on purpose: a broken doc URL or a
+# changed page isn't a code regression and shouldn't be read as one.
+#
+# Upgraded (QCP Task 12, docs/superpowers/plans/2026-08-24-quality-control-
+# plane.md) from a bare "does each URL still return 200" curl loop to real
+# content-drift detection via tools/kalshi_docs_drift.py: every mirrored
+# page's freshly-fetched body is hashed (line-endings normalized only) and
+# compared against docs/kalshi/upstream-manifest.json, which was built
+# from the CURRENT local mirror the last time someone deliberately
+# refreshed it. A page returning non-200 is still reported the same way
+# the old check did. 17 of 214 entries (2 hand-merged from multiple source
+# URLs, 16 hand-written summaries rather than verbatim copies, and the
+# llms.txt index itself) get availability-only checking instead of
+# content-hash comparison - see that tool's own module docstring for the
+# live-verified reasoning.
+#
+# First real --check run against the internet (2026-08-24, building this
+# workflow) found 111 of the 197 content-checked pages had genuinely
+# drifted since the 2026-08-16 mirror - see ROADMAP.md for that one-time
+# backlog; this scheduled check is what catches drift going forward.
+#
+# Stays on GitHub Actions (not Woodpecker) deliberately - this is a
+# schedule-triggered check, and Woodpecker's cron-trigger mechanism isn't
+# set up in this repo (see docs/woodpecker-ci.md, which only documents
+# push/PR/manual triggers). Revisit if that ever changes.
 
 on:
   schedule:
@@ -12,33 +35,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  check-kalshi-doc-urls:
+  check-kalshi-docs-drift:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check every URL in docs/kalshi/llms.txt still resolves
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Check every mirrored Kalshi doc page for availability + content drift
+        id: check
         run: |
-          set -uo pipefail
-          urls=$(grep -oE 'https://docs\.kalshi\.com/[^)]+\.(md|yaml)' docs/kalshi/llms.txt | sort -u)
-          total=0
-          failed=0
-          fail_list=""
-          for url in $urls; do
-            total=$((total + 1))
-            code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 15 "$url")
-            if [ "$code" != "200" ]; then
-              failed=$((failed + 1))
-              fail_list="$fail_list
-            [$code] $url"
-              echo "::warning::Non-200 ($code) for $url"
-            fi
-            sleep 0.2
-          done
-          echo "Checked $total URLs from docs/kalshi/llms.txt - $failed returned non-200."
-          if [ "$failed" -gt 0 ]; then
-            echo "Failing URLs:$fail_list"
-            echo ""
-            echo "docs/kalshi/ may be out of date - see CLAUDE.md's 'Kalshi API documentation' section for the refresh process."
-            exit 1
-          fi
+          python -m tools.kalshi_docs_drift --check --json-out drift-report.json
+        continue-on-error: true
+
+      - name: Upload drift report (always, even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalshi-docs-drift-report
+          path: drift-report.json
+
+      - name: Fail the check if drift or unavailability was found
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::docs/kalshi/ may be out of date - see the uploaded drift-report.json artifact and CLAUDE.md's 'Kalshi API documentation' section for the refresh process. Do not auto-commit a fix; review the actual diff first."
+          exit 1
