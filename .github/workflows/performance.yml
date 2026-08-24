@@ -1,0 +1,56 @@
+name: performance
+
+# Synthetic performance regression checks for historically problematic code
+# paths (QCP Task 19, docs/superpowers/plans/2026-08-24-quality-control-
+# plane.md) - tests/test_performance_regressions.py, opt-in via
+# RUN_PERFORMANCE_REGRESSIONS=1 so an ordinary `pytest` run (Woodpecker's
+# tests-pytest.yml, on every push/PR) never pays for these 10k/50k/100k-row
+# synthetic datasets. Scheduled + manual only, deliberately - per this
+# task's own Step 5: "the owner may choose to move specific high-signal
+# checks into PR CI [later]; do not make that decision automatically in
+# this task." Same reasoning as docs-drift-check.yml/kalshi-contract.yml
+# for staying on GitHub Actions rather than becoming a .woodpecker/*.yml
+# file: schedule-triggered, and Woodpecker's cron-trigger mechanism isn't
+# set up in this repo.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1' # weekly, Monday 08:00 UTC (staggered after docs-drift-check/kalshi-contract)
+  workflow_dispatch:
+
+jobs:
+  synthetic-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Run synthetic performance regression checks
+        id: check
+        env:
+          RUN_PERFORMANCE_REGRESSIONS: "1"
+        run: python -m pytest tests/test_performance_regressions.py -v
+        continue-on-error: true
+
+      - name: Upload measured baseline (always, even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-baseline
+          path: build/performance-baseline.json
+          if-no-files-found: ignore
+
+      - name: Fail the check if a synthetic regression was detected
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::A synthetic performance regression check failed - either an operation-count invariant regressed (a historical N+1/duplicate-computation bug came back) or a scaling-ratio/absolute-ceiling check tripped. See the job log above and the uploaded performance-baseline artifact."
+          exit 1

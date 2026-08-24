@@ -53,13 +53,6 @@ shared agent's configured concurrency — see "Known limitations" below).
 | `kalshi-contract-fixtures.yml` | new — `services/kalshi_client.py` etc.'s existing tests plus `tests/test_kalshi_contracts.py` (QCP Task 13's fixture-JSON-driven contract tests), isolated for clearer failure attribution | no |
 | `quality-browser-e2e.yml` | `quality.yml` / `browser-e2e` (QCP Task 8) — real headless-Chrome smoke against `tests/support/e2e_server.py`'s isolated ASGI harness | no — exercises served `static/` through the real backend routes |
 
-Not built (the underlying capability doesn't exist in the repo yet, so
-there is nothing real for a Woodpecker job to run — see
-`docs/superpowers/plans/2026-08-24-quality-control-plane.md`'s Task 19):
-`performance/synthetic-regressions`. Add the matching `.woodpecker/*.yml`
-file once that QCP task actually ships the checker it would run — don't
-wire a pipeline stage ahead of the capability it's supposed to gate.
-
 `kalshi-docs/content-drift` (QCP Task 12) shipped as an upgrade to
 `.github/workflows/docs-drift-check.yml` instead — real SHA256 content-
 drift detection via `tools/kalshi_docs_drift.py`, not just the old URL-
@@ -67,13 +60,17 @@ availability curl loop. `kalshi-contract/public-api-canary` (QCP Task 14)
 shipped the same way, as new `.github/workflows/kalshi-contract.yml` —
 a live, read-only check against Kalshi's real unauthenticated
 `/exchange/status` and `/markets` endpoints via
-`tools/kalshi_public_canary.py`. Both deliberately stay on GitHub Actions
-rather than becoming `.woodpecker/*.yml` files: they're schedule-triggered
-(weekly cron), and Woodpecker's cron-trigger mechanism isn't set up
-anywhere in this repo today — every `.woodpecker/*.yml` file above is
-push/PR/manual-triggered only (see "Pipeline topology" above and the
-manual-trigger note below). Revisit if Woodpecker cron scheduling is ever
-configured for this project.
+`tools/kalshi_public_canary.py`. `performance/synthetic-regressions`
+(QCP Task 19) shipped the same way too, as new
+`.github/workflows/performance.yml` — `tests/test_performance_regressions.py`
+(opt-in via `RUN_PERFORMANCE_REGRESSIONS=1`, so the default `pytest` run
+never pays for its 10k/50k/100k-row synthetic datasets). All three
+deliberately stay on GitHub Actions rather than becoming `.woodpecker/*.yml`
+files: they're schedule-triggered (weekly cron), and Woodpecker's
+cron-trigger mechanism isn't set up anywhere in this repo today — every
+`.woodpecker/*.yml` file above is push/PR/manual-triggered only (see
+"Pipeline topology" above and the manual-trigger note below). Revisit if
+Woodpecker cron scheduling is ever configured for this project.
 
 **A path-filtered workflow (`quality-frontend-build`) posts no status at
 all when skipped** — if branch protection ever marks it "required," a
