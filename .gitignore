@@ -24,6 +24,10 @@ static/js/dashboard.bundle.js
 *.key
 kalshi_devkey_private.txt
 
+# .github/workflows/quality.yml's architecture-audit job's --json-out
+# target - generated per-run, uploaded as a CI artifact, never committed.
+build/
+
 # HTTP Basic Auth credentials gating the publicly-tunneled hostname only
 # (see .ddev/nginx/kalshi-proxy.conf) - a hashed password, never committed.
 .ddev/nginx/.htpasswd
