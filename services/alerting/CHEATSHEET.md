@@ -86,3 +86,16 @@ even if notification delivery itself is broken.
   notifies, it never takes any corrective action itself (no auto-resume,
   no auto-restart beyond what `task_supervisor.supervise(restart=True)`
   already does independently of this module).
+- **Known gap, found live 2026-08-24 building QCP Task 18's System Health
+  UI, not yet fixed (see `ROADMAP.md`):** the `"crash"` category (recorded
+  by `task_supervisor.py`'s own crash handler, not this module's
+  `_check_transition`) has no resolution path anywhere in this codebase —
+  `resolve_category` is only ever called for the two continuously-
+  monitored transition-based conditions above. A single crash alert stays
+  `resolved_at: None` forever, which pins `GET /api/quality/summary`'s
+  overall `status` to `"error"` permanently even after the underlying
+  issue is long since fixed. Live-observed: 5 real but already-self-
+  corrected `trading_loop` crashes from mid-session development left
+  status red 105 minutes later. The right fix (auto-expire after N clean
+  ticks? require human acknowledgment? both?) is an open design decision,
+  not a quick patch — see `ROADMAP.md`'s P4 section for the full writeup.

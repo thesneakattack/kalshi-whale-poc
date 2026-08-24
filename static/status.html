@@ -5687,6 +5687,186 @@
           <code>tests/conftest.py</code> · <code>static/status.html</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 143 · Quality Control Plane begins: shared finding model, hard isolation, baseline-ratcheted audit</div>
+        <h4>QCP Tasks 1-3 — the foundation every later quality/observability module builds on</h4>
+        <p>New standing initiative (2026-08-24, superseding the retired 70%-accuracy/70%-win-rate objective — see
+          this file's own top-of-page note and <code>CLAUDE.md</code>'s "Current objective"): audit each
+          <code>services/&lt;name&gt;/</code> package for effectiveness/efficiency/informativeness rather than chase
+          a single P&amp;L number. Driven end-to-end by the <code>quality-plan-task</code> Claude Code skill against
+          <code>docs/superpowers/plans/2026-08-24-quality-control-plane.md</code>'s 23 numbered tasks — one task per
+          working session turn, TDD, verify, commit, stop.</p>
+        <p>Task 1: <code>services/quality/models.py</code>'s <code>QualityFinding</code>/<code>QualityReport</code>/
+          <code>severity_rank</code> — one shared serialization/severity contract every later runtime-diagnostic and
+          CI-audit producer/consumer reuses, rather than each inventing its own finding shape. Task 2: replaced
+          <code>conftest.py</code>'s old inline, hand-maintained DB_PATH redirect list (11 of 27 real persistence
+          modules covered) with <code>tests/support/runtime_isolation.py</code> — a complete
+          <code>PERSISTENCE_MODULE_PATHS</code> registry plus a global <code>sqlite3.connect</code> guard that hard-
+          blocks any path under repo <code>data/</code> regardless of whether the caller is registered, closing the
+          exact collection-order gap phase 137's real incident exposed. Task 3: <code>tools/quality_audit</code>, a
+          registry of static scanners gated against <code>tools/quality_audit/baseline.json</code> (accepted finding
+          IDs only, not full evidence, so it stays reviewable in a PR diff) — exits nonzero only for new high-
+          confidence errors by default, <code>--strict</code> also fails on new warnings. No scanners registered
+          yet at this point; Tasks 4-5 are the producers.</p>
+        <div class="files"><code>services/quality/models.py</code> · <code>tests/support/runtime_isolation.py</code> ·
+          <code>tools/quality_audit/</code> · <code>tools/quality_audit/baseline.json</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 144 · six AST-based static scanners + CI wiring</div>
+        <h4>QCP Tasks 4-7 — router/background wiring, persistence/lifecycle/config/API-usage, frontend↔backend contract</h4>
+        <p>Six scanners registered into <code>tools/quality_audit</code>'s <code>_SCANNERS</code>, each reading
+          source via <code>ast</code> rather than regex/string-matching: unmounted <code>APIRouter</code>s, orphaned
+          <code>_maybe_*</code> background schedulers, a <code>DB_PATH</code> owner missing from
+          <code>PERSISTENCE_MODULE_PATHS</code>, a Kalshi client constructed inside a function and never closed,
+          a <code>config/settings.yaml</code> key with no matching <code>cfg[...]</code>/<code>.get(...)</code> read,
+          every <code>client.*</code>/<code>account.*</code> Kalshi call site (informational inventory), and
+          <code>scan_frontend_contract</code> — cross-checks every <code>fetchJSON(...)</code>/<code>fetch(...)</code>
+          call in <code>frontend/src/js/*.js</code> against every <code>@router.&lt;method&gt;</code>/
+          <code>@app.&lt;method&gt;</code> route decorator (a stale/typo'd frontend call is error/high; an unused
+          backend route is info-only — legitimate for OAuth navigation, <code>accounts.html</code>'s own inline
+          script, or non-fetch consumers). Found and fixed a real bug in the scanner itself before trusting its
+          output: method detection used a fixed-size lookahead window that missed a real call shape.</p>
+        <p>Task 6 wired the CLI into CI: <code>.github/workflows/quality.yml</code> gained an
+          <code>architecture-audit</code> job running the full scanner set with a baseline-gated exit code, JSON
+          report uploaded as a build artifact on every run (<code>if: always()</code>).</p>
+        <div class="files"><code>tools/quality_audit/routers.py</code> · <code>tools/quality_audit/persistence.py</code> ·
+          <code>tools/quality_audit/config_usage.py</code> · <code>tools/quality_audit/frontend_contract.py</code> ·
+          <code>.github/workflows/quality.yml</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 145 · real headless-Chrome E2E smoke + persisted runtime observability</div>
+        <h4>QCP Tasks 8-9 — the true end-to-end path, and a queryable history instead of only "whatever's in state right now"</h4>
+        <p>Task 8: <code>tests/support/e2e_server.py</code> serves the real FastAPI app plus the actual built static
+          frontend from one isolated process, so headless Chrome (Selenium, the ddev <code>selenium-chrome</code>
+          grid locally / <code>browser-actions/setup-chrome</code> in CI) exercises the true chain: HTML → built JS
+          bundle → <code>fetchJSON</code> → route — something <code>test_e2e_terminal_static_and_api.py</code>'s
+          <code>TestClient</code>-based coverage deliberately can't reach outside DDEV. Covers dashboard load, all
+          tab switches, the built bundle actually executing, and a regression guard for the historical
+          <code>fetchJSON</code> bug (a 4xx silently reading as success). <code>state["running"]</code> forced off
+          before serving — zero real Kalshi network calls, satisfying the design spec's explicit requirement.</p>
+        <p>Task 9: <code>services/observability/observability.py</code> — <code>capture_from_runtime</code> is a
+          pure mapping (no I/O) from already-computed in-memory counters (tick duration, rate-limit hits, per-phase
+          timings, trade/index-stream throughput and drop counts) to stable metric names, persisted to
+          <code>data/observability.db</code> once a minute and readable live via
+          <code>GET /api/observability/current|history|summary</code> with zero DB round-trip on the live path.
+          Restart-safe the same way <code>backup.py</code>'s own cold-start fix works: the sample-interval gate
+          seeds from the most recently <i>persisted</i> sample on first check in a process, not a trusted-at-zero
+          in-memory default.</p>
+        <div class="files"><code>tests/support/e2e_server.py</code> · <code>tests/test_browser_e2e.py</code> ·
+          <code>services/observability/observability.py</code> · <code>services/observability/routes.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 146 · runtime anomaly findings, storage/backup health, and the unified quality summary</div>
+        <h4>QCP Tasks 10-11 — turning raw metrics into judged findings, and the first "start here" endpoint</h4>
+        <p>Task 10: <code>observability.runtime_findings</code> — small, separately-testable pure rules (tick
+          duration vs. configured poll interval, WS dropped messages, stream disconnection, repeated rate-limit
+          hits over a rolling window) each emitting a <code>QualityFinding</code> or nothing at all when there isn't
+          yet enough evidence to judge — the same "unknown is better than fabricated" discipline as everywhere else
+          in this app. <code>GET /api/quality/summary</code> (<code>services/quality/routes.py</code>) composes
+          these findings plus active alerts, recent faults, and a storage summary into one response — deliberately
+          the first read a future investigating agent should reach for, per <code>CLAUDE.md</code>.</p>
+        <p>Task 11: <code>services/storage_health/storage_health.py</code> — three cost tiers for inspecting
+          <code>data/*.db</code> files (cheap file-stat inventory on every poll, an on-demand deep scan with real
+          <code>PRAGMA quick_check</code> integrity verification, and growth-rate/backup-staleness findings derived
+          from the inventory history), every connection opened strictly read-only. <code>GET /api/health/storage</code>
+          and <code>POST /api/health/storage/scan</code> expose it; folded into
+          <code>GET /api/quality/summary</code>'s own storage section.</p>
+        <div class="files"><code>services/observability/observability.py</code> · <code>services/quality/routes.py</code> ·
+          <code>services/storage_health/storage_health.py</code> · <code>services/storage_health/routes.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 147 · Kalshi docs content-drift, contract fixtures (three real bugs found), and a public-API canary</div>
+        <h4>QCP Tasks 12-14 — ground-truth checking against Kalshi's own docs and live API, not memory</h4>
+        <p>Task 12: <code>tools/kalshi_docs_drift.py</code> upgrades the old "does each URL still 200" curl loop to
+          real SHA256 content-drift detection against <code>docs/kalshi/upstream-manifest.json</code>. First real
+          <code>--check</code> run against the internet found 111 of 197 content-checked pages had genuinely
+          drifted since the 2026-08-16 mirror — logged as a one-time backlog in <code>ROADMAP.md</code>, not fixed
+          inline. Task 13: <code>tests/test_kalshi_contracts.py</code> feeds fixture JSON built directly from
+          <code>docs/kalshi/</code> pages into the real production parsers — building it found and fixed three real,
+          previously-undetectable bugs (WS fill identity keyed on a field the real message doesn't have; WS
+          position dispatch checking the plural channel name instead of the real singular per-message
+          <code>type</code>; WS position ticker extraction reading the wrong field name), all three only reachable
+          because <code>trading_enabled</code> has always been <code>false</code> so no real account message had
+          ever exercised these handlers before. Task 14: <code>tools/kalshi_public_canary.py</code> — a scheduled,
+          read-only check against Kalshi's real <code>/exchange/status</code> and <code>/markets</code> endpoints
+          (both public, no API key), validating only stable structural invariants, never volatile values.</p>
+        <div class="files"><code>tools/kalshi_docs_drift.py</code> · <code>tests/test_kalshi_contracts.py</code> ·
+          <code>services/kalshi_trade_ws.py</code> · <code>services/account_positions.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> · <code>tools/kalshi_public_canary.py</code> ·
+          <code>docs/kalshi/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 148 · Kalshi REST usage telemetry and an evidence-triggered research sweep</div>
+        <h4>QCP Tasks 15-16 — "how many REST calls is this actually making," and a persisted cross-module snapshot</h4>
+        <p>Task 15: <code>services/http_client.py</code>'s <code>call_with_backoff</code> — the one real chokepoint
+          every Kalshi REST call passes through — now records per-endpoint-family calls/errors/rate-limited/average
+          latency, instrumented inside the retry loop itself so every real HTTP attempt (including a retried 429)
+          counts once. Reset-and-stash once per tick into <code>state["last_tick_http_metrics"]</code>, flattened by
+          <code>observability.capture_from_runtime</code> into <code>kalshi_rest.&lt;endpoint&gt;.*</code> metrics —
+          live-verified showing real per-endpoint call counts and latencies within seconds of restart.</p>
+        <p>Task 16: <code>services/research/research.py</code> orchestrates seven existing read-only analyzers
+          (diagnostics, trade analytics, confidence calibration, advisory recommendations — the exact same
+          read-only assembly as <code>GET /api/advisory/recommendations</code>, never the auto-apply path —
+          candidate population gates, series-evaluator overview, settlement edge, config epoch metadata) into one
+          persisted snapshot, evidence-triggered (100 new resolved signals or 50 new closed trades since the last
+          checkpoint, OR semantics) rather than a fixed timer. Cold-start-safe the same way <code>backup.py</code>'s
+          own fix works. Never applies anything. Disabled by default until manually reviewed.</p>
+        <div class="files"><code>services/http_client.py</code> · <code>services/observability/observability.py</code> ·
+          <code>services/research/</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 149 · generated build metadata for this page, and a System Health panel in the Terminal</div>
+        <h4>QCP Tasks 17-18 — status.html stops hardcoding mechanical facts, and /api/quality/summary gets its first UI consumer</h4>
+        <p>Task 17: <code>tools/project_manifest.py</code> mechanically counts Python/JS/HTML files+lines, service
+          packages, route decorators, frontend modules, tests, and CI workflow files/jobs — this page's own
+          "headline status" header (the block right below the title) now fetches
+          <code>static/project-manifest.json</code> live rather than the "5,189 lines / 29 files / 20 routes"
+          figures hardcoded here since this page was first written, which had drifted wildly stale (real count by
+          this phase: 222 Python files, 93 routes). Also corrected two stale claims found live in that same header:
+          "no order-execution path exists" (false — real order placement is implemented and gated) and "Dashboard
+          views: 5" (actually 6 — History was added and never reflected here).</p>
+        <p>Task 18: <code>frontend/src/js/system-health.js</code> — a read-only panel in the Terminal tab's
+          Controls column, backed by <code>GET /api/quality/summary</code>, fetched only while that tab is active
+          (no second poll timer). Building its required browser test surfaced a real bug: that route 500'd in the
+          isolated E2E harness because <code>tests/support/runtime_isolation.py</code>'s central registry covered
+          <code>DB_PATH</code> constants but not <code>DATA_DIR</code> (a directory-glob constant
+          <code>backup.py</code>/<code>storage_health.py</code> each separately own) — fixed with the same
+          centralized-registry treatment, plus a direct regression test. Also found and logged, not fixed here
+          (own <code>ROADMAP.md</code> entry): <code>alerting.py</code>'s "crash" category has no resolution path
+          at all, so one crash pins the summary's status to "error" permanently.</p>
+        <div class="files"><code>tools/project_manifest.py</code> · <code>static/project-manifest.json</code> ·
+          <code>frontend/src/js/system-health.js</code> · <code>tests/support/runtime_isolation.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 150 · synthetic performance regression checks, and finalizing the whole CI topology</div>
+        <h4>QCP Tasks 19-20 — encoding two real historical performance incidents as permanent guards, then a verification pass</h4>
+        <p>Task 19: <code>tests/test_performance_regressions.py</code> (opt-in, never in the default
+          <code>pytest</code> run) — deliberately narrow to the two candidates with real documented historical
+          evidence at the time: <code>series_evaluator.evaluate_pending</code> gets a hard operation-count
+          assertion (exactly one <code>sqlite3.connect()</code> for 2,000 ready series, encoding a real 2026-08-11
+          fix), <code>advisory_engine.generate_recommendations</code> gets a hard assertion that the full-dataset
+          <code>trade_analytics.compute_summary</code> call happens exactly once (encoding a real 2026-08-23
+          duplicate-computation fix — the first draft of this test counted every call and had to be corrected once
+          it found <code>variant_summaries</code>' own legitimate per-fingerprint-group calls weren't the same
+          thing). Two more candidates get scaling-ratio checks instead, since neither has a natural operation-count
+          invariant. Every measured wall time is recorded to a gitignored JSON artifact rather than asserted
+          against a hardcoded number.</p>
+        <p>Task 20: a verification pass across every CI check this initiative built — added the missing
+          concurrency-cancellation blocks to the three newer scheduled workflows, corrected a stale "five
+          independent files" reference in <code>docs/woodpecker-ci.md</code>, and added a consolidated job-taxonomy
+          table confirming all 11 conceptual checks from the plan's own target list exist and that no workflow
+          anywhere references a secret.</p>
+        <div class="files"><code>tests/test_performance_regressions.py</code> ·
+          <code>.github/workflows/performance.yml</code> · <code>docs/woodpecker-ci.md</code></div>
+      </div>
+
     </div>
   </section>
 
@@ -5783,9 +5963,13 @@
           <tr><td class="mod">static/accounts.html</td><td class="note">Connected Accounts management page</td><td class="loc">220</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">static/status.html</td><td class="note">this page</td><td class="loc">~1800</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">tests/*.py</td><td class="note">464 tests across 23 files: paper_broker (incl. no-side cost basis, close_position, settlement, config_fingerprint, per-instance db_path isolation, entry/close fee deduction, equity() cost-basis-inclusion regression, equity-continuity-across-close regression, unrealized_pnl state field), risk_manager (incl. per-instance db_path isolation), strategy_engine (incl. excluded-series, check_exits' five exit triggers with fee-inclusive pnl_pct, already-open/already-resolved guards, config_fingerprint threading, longshot-zone threshold bonus, equity-based kill-switch regression), trade_analytics (close-type classification incl. momentum_reversal, dollar math, insights, fees_paid), signal_log (incl. paginated history, flow clustering, cluster_factor), shadow_mode (incl. excluded-series, no-side sizing, already-resolved guard), trading_gate (incl. advisory routes/config guard, market-strategy/market-history debug endpoints, real-account order history endpoint, widened position/fill/order slimming, event mutually_exclusive/competition extraction, on-demand <code>_run_market_analyst_for_ticker</code>/<code>POST /api/market-analyst/analyze</code> gating, a real interleaved-asyncio concurrency regression, <code>_relevant_tickers()</code> trade_log and real-account title-resolution regressions, <code>_real_account_position_tickers()</code> fills-vs-positions watchlist-pinning regression), title_cache (event/market title persistence incl. mutually_exclusive/competition columns), http_client (SDK backoff), kalshi_account_client (SDK credential loading + request shape), kalshi_client (round-robin parent-series watchlist selection), market_catalog (near-term scan, rotation), whale_simulator (relative sizing, weighted market selection, eight-factor composite confidence incl. cluster/trend/analyst, live-only generation gate), whalewatchers_kalshi_trade_tape (trend_factor momentum lookback, analyst_factor freshness/agreement, per-series min_notional_usd overrides), confidence_calibration (tertile bands + fixed-width confidence bands), config_performance (fingerprint stability, variant/applied-change persistence), advisory_engine (within/cross-variant recommendations, the data-threshold gate, longshot-bonus bucket comparison), ml_feed (snapshot shape), market_history (snapshots, outcomes, momentum window-coverage guard, hypothetical trades), market_strategy (entry gating, exits with fee-inclusive pnl_pct, momentum reversal, conditional analyst-factor inclusion, equity-based kill-switch regression), kalshi_fees (taker-fee formula, symmetric pricing, edge cases), market_analyst_agent (record/resolve/stats incl. Brier score, build_prompt incl. self-track-record and liquidity/open-interest/last-price, analyze_market gating + tool-call parsing, analyst_lean freshness), title_cache (market_title_fields shared builder, phase 65), trading_gate (event-position slimming/price-join, catalog-scan-honesty regression, market_catalog/market_history reset-flag wiring, series-evaluator routes/discovery-filtering regressions, phase 65/66/67/69), market_history (clear_all, phase 67), series_evaluator (new, phase 69 — record_trade_observed state transitions, ineligible_series filtering, evaluate_pending verdict/backoff-escalation math incl. the zero-trades edge case, reset, clear_all) — each isolates its own SQLite file (or mocks the SDK client directly), never touches real <code>data/*.db</code> (phase 66 fixed one pre-existing test in this suite that had been touching real data; phase 69 found and fixed a second, newly-introduced instance of the identical gap in the same session)</td><td class="loc">6275</td><td><span class="pill good">done</span></td></tr>
-          <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">CI: runs the test suite on every push/PR</td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">.github/workflows/tests.yml</td><td class="note">workflow_dispatch-only manual fallback (QCP session, 2026-08-24) — Woodpecker (<code>.woodpecker/tests-pytest.yml</code>/<code>tests-dependency-audit.yml</code>) is now the authoritative executor on every real push/PR; see <code>docs/woodpecker-ci.md</code></td><td class="loc">18</td><td><span class="pill good">done</span></td></tr>
           <tr><td class="mod">services/kalshi_order_client (create/cancel methods)</td><td class="note">authenticated, signed order placement</td><td class="loc">— (inside kalshi_account_client.py)</td><td><span class="pill gated">implemented, gated</span></td></tr>
           <tr><td class="mod">services/shadow_mode.py</td><td class="note">logs intended real trades sized against a real bankroll (side-aware sizing), executes none, mirrors the live-markets-only gate, excluded-series denylist, and already-resolved-market guard, self-serve <code>clear()</code> — <code>data/shadow_mode.db</code>. Phase 87: same automatic daily rollover fix as <code>risk_manager.py</code> (independently confirmed live at -99.7%, dormant only because <code>mode</code> was <code>paper</code>), new <code>resume()</code> method</td><td class="loc">254</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/observability/</td><td class="note">Quality Control Plane Task 9 (phase 145) — persists bounded, low-frequency runtime-metric samples (tick timing/phases, rate-limit hits, trade/index-stream throughput and drops) the app already computes in memory, to <code>data/observability.db</code>, plus Task 10's (phase 146) small pure anomaly rules turning those into <code>QualityFinding</code>s. <code>GET /api/observability/current|history|summary</code>. <code>capture_from_runtime</code> deliberately takes <code>state</code>/stream objects as plain arguments rather than importing <code>services.app_state</code>, keeping it import-side-effect-free and trivially unit-testable. See its own <code>CHEATSHEET.md</code></td><td class="loc">351</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/storage_health/</td><td class="note">Quality Control Plane Task 11 (phase 146) — three cost tiers for <code>data/*.db</code> inspection: a cheap per-poll file-stat inventory, an on-demand deep scan with real <code>PRAGMA quick_check</code> integrity verification, and growth-rate/backup-staleness findings derived from the inventory's own history. Every connection opened strictly read-only. <code>GET /api/health/storage</code>, <code>POST /api/health/storage/scan</code>. See its own <code>CHEATSHEET.md</code></td><td class="loc">411</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/quality/</td><td class="note">Quality Control Plane Tasks 1 + 10 (phases 143/146) — <code>models.py</code>'s <code>QualityFinding</code>/<code>QualityReport</code>/<code>severity_rank</code> shared contract every runtime-diagnostic and CI-audit producer/consumer reuses, plus <code>routes.py</code>'s <code>GET /api/quality/summary</code> — composes observability findings, active alerts, recent faults, storage summary, and (since Task 16, phase 148) research-run status into one response, deliberately the first read a future investigating agent should reach for. Never calls a live Kalshi API. See its own <code>CHEATSHEET.md</code></td><td class="loc">126</td><td><span class="pill good">done</span></td></tr>
+          <tr><td class="mod">services/research/</td><td class="note">Quality Control Plane Task 16 (phase 148) — orchestrates seven existing read-only analyzers (diagnostics, trade analytics, confidence calibration, advisory recommendations, candidate population gates, series-evaluator overview, settlement edge, config epoch metadata) into one persisted snapshot in <code>data/research_reports.db</code>, evidence-triggered (100 new resolved signals or 50 new closed trades since the last checkpoint, OR semantics) rather than a fixed timer. Never applies anything. <code>GET /api/research/status|latest|history</code>, <code>POST /api/research/run</code>. Disabled by default (<code>research.enabled: false</code>) until manually reviewed. See its own <code>CHEATSHEET.md</code></td><td class="loc">345</td><td><span class="pill gated">built, off by default</span></td></tr>
         </tbody>
       </table>
     </div>

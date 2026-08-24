@@ -124,6 +124,40 @@ anything with a path separator, anything not ending in `.db`, and (via
 resolve outside `data_dir` even through a `..` component — tested directly
 in `tests/test_storage_health.py`, not just indirectly through the route.
 
+## Hot-path impact
+
+`maybe_capture_sizes(state, storage_health.DATA_DIR)` runs synchronously
+in `main.py`'s `trading_loop`, once per tick, but gated to fire at most
+once per `_SIZE_SAMPLE_INTERVAL_SEC` (15 min) - a non-firing tick costs
+one time comparison. On a firing tick, cost is one `os.stat()` per
+`data/*.db` file (cheap, no file content read) — the genuinely expensive
+tier (`PRAGMA quick_check`, `SELECT COUNT(*)` table row counts) is never
+reached from the tick loop at all; it only runs from
+`POST /api/health/storage/scan`, itself offloaded via
+`task_supervisor.supervise` + `asyncio.to_thread` so a deep scan of
+several GB of `data/*.db` files can't stall the trading loop.
+
+## Failure behavior
+
+Every connection here is opened read-only (`_ro_connect`, see "Why every
+connection here is read-only" below) — a failure to open or read one
+`.db` file (locked, corrupt, mid-write) is caught per-file in
+`database_health`/`inventory_data_dir` and recorded as that one entry's
+own `error` field, never raised up to abort the whole inventory. The deep
+scan's own overlap guard (`state["storage_health"]["scanning"]`) prevents
+two scans running concurrently against the same files.
+
+## What is deliberately not automated
+
+No automatic remediation — a growth or integrity finding is reported, not
+acted on (no automatic prune/vacuum/backup-trigger from this module
+itself; `backup.py` is the separate, already-scheduled mechanism for
+actually protecting the data). The deep integrity scan is on-demand only,
+never scheduled — same reasoning `docs/kalshi/CHEATSHEET.md`'s canary
+entries use for staying manual/scheduled rather than push/PR: real disk
+I/O across potentially several GB is not something to pay for on every
+tick or every push.
+
 ## Handoff
 
 - No dashboard panel consumes any of the three routes yet — Task 18's

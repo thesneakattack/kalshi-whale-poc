@@ -59,6 +59,39 @@ rather than fabricate a verdict" discipline every rule in both sets
 follows when evidence is insufficient (no sample yet, a feature never
 enabled, a single isolated blip).
 
+## Hot-path impact
+
+None. `GET /api/quality/summary` is an on-demand HTTP handler only — it is
+never called from `main.py`'s `trading_loop`, so hitting it (however
+often) has zero effect on tick timing. Its own cost is bounded by what it
+composes: `observability.runtime_findings` (pure, reads already-computed
+`state`), `storage_health.inventory_data_dir` (the cheap file-stat tier,
+never the deep scan), `alerting.active_alerts()`/`fault_log.summary()`
+(small indexed queries), `diagnostics.run_offline` (explicitly excludes
+the one live-network check, `check_coverage`) — no source here does any
+network I/O, proven directly by `tests/test_quality_routes.py::
+test_quality_summary_makes_no_kalshi_network_calls`.
+
+## Failure behavior
+
+A source this route composes raising would surface as a 500 for the whole
+summary rather than a partial response — there is currently no
+per-section try/except isolating one composed source's failure from the
+rest. Acceptable today because every current source is a pure/read-only
+local computation with no external dependency to fail on; revisit if a
+future source here ever depends on something that can genuinely fail
+independently (e.g. a network call).
+
+## What is deliberately not automated
+
+No automatic remediation of anything this route surfaces — it is strictly
+read-only reporting, by design (the design spec's own framing: "the first
+read for a future coding agent beginning an investigation," not an
+actuator). No scheduled polling of this route exists anywhere in this
+app; it's pulled on-demand by a human or an investigating session, and
+(since QCP Task 18) by `frontend/src/js/system-health.js` while the
+Terminal tab is open.
+
 ## Handoff
 
 - No dashboard panel consumes this yet — Task 18's "minimal System Health

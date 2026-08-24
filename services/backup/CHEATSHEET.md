@@ -107,3 +107,12 @@ still fires promptly).
   while the app is stopped) — no automated restore path exists or is
   planned; this module's whole job is making sure the data to restore
   from actually exists, not automating disaster recovery end to end.
+- **Test isolation (QCP Task 18, 2026-08-24):** this module's `DATA_DIR`
+  constant (globbed for every `data/*.db` file) is now centrally
+  redirected by `tests/support/runtime_isolation.py`'s
+  `DATA_DIR_MODULE_PATHS` registry, not just this file's own local
+  `tests/test_backup.py` fixture — closes a real gap where the browser-E2E
+  harness (`tests/support/e2e_server.py`, no per-file fixtures of its own)
+  had no protection and `GET /api/quality/summary` 500'd trying to open a
+  real `data/*.db` file read-only. See that registry's own comment for the
+  full incident.

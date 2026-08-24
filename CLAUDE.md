@@ -41,6 +41,64 @@ visible while writing it," per `static/status.html` phase 119) is real,
 pre-existing raw material for this — read it before assuming a module
 needs a fresh audit from scratch.
 
+## Start investigations here
+
+Before writing an ad hoc script to check "is everything okay" or chase an
+unexplained symptom, check these — in order — first. Together they're the
+accumulated output of the Quality Control Plane initiative
+(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`, Tasks 1-20):
+purpose-built so a session doesn't have to reconstruct "what does this app
+already know about itself" from scratch every time.
+
+1. `GET /api/quality/summary` — the single composite health read: overall
+   status, active findings, alerts, faults, storage summary, latest
+   research-run status. Start here for "is something wrong."
+2. `GET /api/health/pipeline` — background-task/scheduler state (which
+   `_maybe_*` schedulers are running, when each last fired).
+3. `GET /api/health/faults` — accumulated exception history by
+   component/operation (`services/fault_log.py`).
+4. `GET /api/observability/summary` — historical metric trends
+   (`data/observability.db`) for a specific metric name over a window,
+   once `/api/quality/summary` has pointed at one worth digging into.
+5. `GET /api/health/storage` — per-database file inventory (size, table
+   row counts, last-modified) and, on demand,
+   `POST /api/health/storage/scan` for a real integrity check.
+6. `python -m tools.quality_audit` — static findings (router/persistence/
+   config-usage/API-contract wiring gaps), baseline-ratcheted against
+   `tools/quality_audit/baseline.json`.
+
+An ad hoc script or a fresh `grep`/`sqlite3` session should be the
+exception once these have been checked, not the default first move — they
+already answer "is X wired up," "has X been failing," "is X growing
+unexpectedly" for most of what this app does.
+
+**Investigation-to-guard rule:** when a debugging/audit pass finds a real
+bug class, decide before closing the work whether the measurement that
+exposed it belongs in runtime diagnostics, CI, or an existing guard, and
+record that disposition in the commit message or the relevant status
+entry. The full decision tree (permanent runtime diagnostic / permanent
+CI guard / shared logic / already covered / genuinely one-off) lives in
+`.claude/rules/quality-capabilities.md`'s "Standing investigation-to-guard
+rule" section — this is a pointer to that rule, not a second copy of it.
+
+**Baseline-ratchet semantics (`tools/quality_audit/baseline.json`):**
+`accepted_finding_ids` is a reviewed record of findings already judged to
+be either a known, accepted scanner limitation (documented in that file's
+own `notes` block — e.g. the config-usage scanner's inability to follow
+reads through an intermediate variable) or a genuinely intentional state
+(a route with no frontend caller yet, by design). **Adding an ID here is
+a reviewed decision, not a mechanical "make the check green" move** — do
+not silently add a new real error to the baseline just to clear a red CI
+run. On a new finding: investigate whether it's real → fix it if so (or
+explicitly accept it with a dated, reasoned note appended to `notes`,
+matching the running "+N 2026-MM-DD: ..." addendum style already used
+there) → only then add the finding_id to `accepted_finding_ids`. When a
+baselined finding later resolves for real (e.g. a previously-unused route
+gains a real caller), remove its ID and say why in the same commit rather
+than leaving it as stale cruft — see QCP Task 18's removal of
+`backend-route-unused:GET:/api/quality/summary` once
+`frontend/src/js/system-health.js` became its first real consumer.
+
 ## Git history + supplementary docs
 
 This became a git repository partway through the project's life (see the

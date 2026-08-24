@@ -120,3 +120,36 @@ than at module level purely so `tests/test_research.py` can import
 `services.research.research` and monkeypatch its analyzer functions
 without triggering `services.app_state`'s full singleton construction at
 collection time, for any test that never calls those two functions.
+
+## Hot-path impact
+
+Two very different costs, deliberately kept apart. `_maybe_run_research`
+runs synchronously in `main.py`'s `trading_loop`, once per tick, but its
+own cost is just `current_counts()` — one indexed `signal_log.total_count`
+query plus an in-memory scan of `broker.trade_log` (already loaded, no DB
+read). The real work (`build_report`, which composes seven other
+analyzers and took ~39s against real accumulated history in live
+verification) only ever runs inside `_run_research_background`, off the
+event loop via `asyncio.to_thread`, kicked off as an independent
+`task_supervisor.supervise`d task the tick never awaits.
+
+## Failure behavior
+
+A crash inside `_run_research_background` is caught by
+`task_supervisor.supervise`'s own wrapper (logged, recorded to
+`fault_log`, a "crash" alert fired) — the `finally: research_state
+["running"] = False` guard means a crash still releases the run lock, so
+a single bad run can't wedge every future check into "always running,
+never fires again." `build_report` itself has no internal try/except of
+its own; a genuinely broken analyzer (not something observed live) would
+fail the whole report rather than a partial one.
+
+## What is deliberately not automated
+
+Disabled by default (`research.enabled: false`) until manually reviewed —
+a direct plan requirement, not an oversight. No automatic consumption of
+a report's contents either: nothing in this app reads a stored report and
+acts on it (that would cross into the same territory `build_report`'s own
+"never applies anything" rule exists to keep separate) — a human or a
+future analysis pass is the only intended reader of `GET /api/research/
+latest`.

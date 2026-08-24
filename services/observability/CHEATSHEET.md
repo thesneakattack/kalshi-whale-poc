@@ -174,6 +174,39 @@ territory). All three read fresh from `cfg` each tick via
 `maybe_capture(cfg, ...)`, same live-reload-with-no-restart convention as
 every other config-gated `_maybe_*`.
 
+## Hot-path impact
+
+Small but real, on purpose. `maybe_capture(cfg, state, trade_stream,
+index_stream)` runs synchronously inside `main.py`'s `trading_loop`, once
+per tick — not offloaded, unlike `backup.py`'s multi-GB snapshot pass —
+but it's gated to fire at most once per `sample_interval_sec` (default
+60s), and the actual work on a firing tick is a handful of `INSERT`s via
+`record_samples_bulk`'s single connection/commit, not a table scan. On a
+non-firing tick (the overwhelming majority) it's one dict-default-lookup
+and one time comparison. `capture_from_runtime` itself is pure and cheap
+regardless of call frequency, which is also why `GET /api/observability/
+current` can call it live with no DB round-trip.
+
+## Failure behavior
+
+`record_samples_bulk` propagates a real SQLite error rather than
+swallowing it — an observability write failure is not caught anywhere in
+`maybe_capture`'s own call chain today, so it would surface the same way
+any other uncaught trading_loop tick exception does (`fault_log`, the
+"crash" alert category). Never intentionally degrades silently; a missing
+metric source is omitted from `capture_from_runtime`'s own returned dict
+(see "unknown is better than fabricated" above), which is a different,
+deliberate thing from an actual write failure.
+
+## What is deliberately not automated
+
+No automatic remediation - `runtime_findings` only ever reports, never
+acts (e.g. it does not restart a disconnected stream or clear rate-limit
+pressure itself). No alerting integration of its own; a finding here only
+becomes visible via `GET /api/quality/summary`/`/api/observability/*` or
+a human/agent explicitly polling those routes - there is no push
+notification path from this module.
+
 ## Handoff
 
 - **Downstream**: nothing yet — no dashboard panel wired up as of this
