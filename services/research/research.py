@@ -36,6 +36,15 @@ _DEFAULT_MIN_NEW_CLOSED_TRADES = 50
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # WAL mode (2026-08-11, real live incident - see services/candidate_log.py's
+    # own comment on this exact line): rollback-journal mode serializes ALL
+    # writers and readers against each other for the whole transaction; WAL
+    # lets readers proceed concurrently with a writer. Same standard
+    # hardening every other writable persistence module in this repo
+    # applies - found missing here during QCP Task 22's final-verification
+    # review, not something this module needed a live incident of its own
+    # to justify.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_reports (

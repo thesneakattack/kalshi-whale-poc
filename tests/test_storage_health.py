@@ -40,6 +40,39 @@ def _make_db(path: Path, rows: dict[str, int]) -> None:
         conn.close()
 
 
+# --- _ro_connect: the actual read-only guarantee (QCP Task 22 final-
+# verification - "storage health never repairs/mutates automatically" was
+# an asserted property with no test proving it before this) -------------
+
+
+def test_ro_connect_genuinely_cannot_write_to_the_database(tmp_path):
+    """Not just a naming convention - `mode=ro` is a real SQLite URI flag
+    enforced by SQLite itself, independent of anything this module's own
+    code does right or wrong. Proves the guarantee at the level it
+    actually holds: even a deliberate INSERT through this connection
+    fails, not just that this module's own functions happen not to call
+    one."""
+    path = tmp_path / "sample.db"
+    _make_db(path, {"widgets": 1})
+
+    conn = storage_health._ro_connect(path)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+            conn.execute("INSERT INTO widgets (value) VALUES ('should never land')")
+            conn.commit()
+    finally:
+        conn.close()
+
+    # Confirm independently, through a normal read-write connection, that
+    # nothing actually landed.
+    verify_conn = sqlite3.connect(path)
+    try:
+        count = verify_conn.execute("SELECT COUNT(*) FROM widgets").fetchone()[0]
+    finally:
+        verify_conn.close()
+    assert count == 1  # still just the one row _make_db inserted
+
+
 # --- database_health --------------------------------------------------
 
 
