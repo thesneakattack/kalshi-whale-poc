@@ -5839,7 +5839,9 @@
           <code>backup.py</code>/<code>storage_health.py</code> each separately own) — fixed with the same
           centralized-registry treatment, plus a direct regression test. Also found and logged, not fixed here
           (own <code>ROADMAP.md</code> entry): <code>alerting.py</code>'s "crash" category has no resolution path
-          at all, so one crash pins the summary's status to "error" permanently.</p>
+          at all, so <code>GET /api/alerts/active</code> included every historical crash forever — see phase 151
+          for the fix, and a correction to this entry's own original claim that it pinned the summary's overall
+          status to "error" (it doesn't; that field never reads alerts at all).</p>
         <div class="files"><code>tools/project_manifest.py</code> · <code>static/project-manifest.json</code> ·
           <code>frontend/src/js/system-health.js</code> · <code>tests/support/runtime_isolation.py</code></div>
       </div>
@@ -5865,6 +5867,41 @@
           anywhere references a secret.</p>
         <div class="files"><code>tests/test_performance_regressions.py</code> ·
           <code>.github/workflows/performance.yml</code> · <code>docs/woodpecker-ci.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 151 · crash-alert resolution, and a correction</div>
+        <h4>"crash" alerts can finally resolve — and a stale claim about why they mattered gets fixed</h4>
+        <p>Phase 149 logged, but didn't fix, a real gap: <code>services/alerting/alerting.py</code>'s "crash"
+          category (recorded by <code>task_supervisor.py</code>'s exception handler) had no resolution path
+          anywhere — <code>resolve_category</code> was only ever called for the two continuously-monitored
+          transition-based conditions (<code>kill_switch</code>, stream connectivity), so <code>active_alerts()</code>
+          included every historical crash forever. Fixed with two independent, TDD'd mechanisms:
+          <code>expire_old_alerts(category, max_age_sec, now)</code> ages each unresolved "crash" row out on its
+          own once older than the new <code>alerting.crash_auto_resolve_after_sec</code> config field (default
+          1800s), wired into <code>check_and_alert</code>'s existing per-tick cadence via
+          <code>_expire_stale_crash_alerts</code> — a crash-looping component still shows a live alert from its
+          most recent occurrence while older rows fall away on their own — plus
+          <code>resolve_alert(alert_id)</code> / <code>POST /api/alerts/{id}/resolve</code> for manual
+          acknowledgment, generic by id rather than crash-specific.</p>
+        <p>While designing the fix, checked phase 149's own claim against the actual code rather than taking it
+          at face value: it said a stuck crash alert "pins the summary's status to error permanently." False —
+          <code>services/quality/routes.py</code> composes <code>status</code>/<code>counts</code> only from
+          <code>observability.runtime_findings()</code> + <code>storage_health.storage_findings()</code>;
+          <code>alerting.active_alerts()</code> is a separate field that never feeds into <code>status</code> at
+          all. The real effect was <code>GET /api/alerts/active</code> and the Terminal's "Alerts: N active" line
+          staying wrong forever, which is what this fix actually corrects. Live-verified against the dev server:
+          <code>/api/quality/summary</code> was observed reporting <code>status: "error"</code> with zero active
+          alerts at the time, confirming the two are genuinely decoupled — and traced that live "error" to a
+          second, separate, previously-undiscovered bug (<code>kalshi_trade_ws.py</code>'s
+          <code>dropped_messages</code> counter is set once and only ever incremented, never reset, so a single
+          dropped message pins <code>overall_status()</code> to "error" until the next process restart — almost
+          certainly the real mechanism behind phase 149's "105 minutes stuck red" observation). Filed as a new
+          <code>ROADMAP.md</code> item rather than fixed here, along with a second new item on whether critical
+          alerts should be able to drive <code>overall_status()</code> at all.</p>
+        <div class="files"><code>services/alerting/alerting.py</code> · <code>services/alerting/routes.py</code> ·
+          <code>services/alerting/__init__.py</code> · <code>services/alerting/CHEATSHEET.md</code> ·
+          <code>config/settings.yaml</code> · <code>tests/test_alerting.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
     </div>
