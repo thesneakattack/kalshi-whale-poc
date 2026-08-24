@@ -132,6 +132,58 @@ def test_close_window_is_configurable_not_hardcoded(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
 
 
+# ---- effective_close_time fix (2026-08-24) - the close-window/runway gates
+# must use the market's real resolution time, not signal.close_time's raw
+# administrative close_time alone, when a fresher value is available on the
+# market dict passed via markets=. See services/market_lookup.py's
+# effective_close_time docstring for the live repro this closes.
+
+def test_uses_market_expected_expiration_time_over_a_far_signal_close_time(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    far_close = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 30 * 86400))
+    near_expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 60 * 60))
+    sig = _signal(confidence=0.9, close_time=far_close, ticker="TICK-A")
+    markets = [{"ticker": "TICK-A", "close_time": far_close, "expected_expiration_time": near_expected}]
+    decision = strategy.evaluate(sig, _cfg(entry_threshold=0.65), markets=markets)
+    assert decision["action"] == "trade"
+
+
+def test_uses_market_occurrence_datetime_over_a_far_signal_close_time(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    far_close = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 30 * 86400))
+    near_occurrence = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 60 * 60))
+    sig = _signal(confidence=0.9, close_time=far_close, ticker="TICK-A")
+    markets = [{"ticker": "TICK-A", "close_time": far_close, "occurrence_datetime": near_occurrence}]
+    decision = strategy.evaluate(sig, _cfg(entry_threshold=0.65), markets=markets)
+    assert decision["action"] == "trade"
+
+
+def test_falls_back_to_signal_close_time_when_markets_is_none(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3 * 3600))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time, ticker="TICK-A"),
+        _cfg(entry_threshold=0.65), markets=None,
+    )
+    assert decision["action"] == "skip"
+    assert "close time is not within the trade window" in decision["reason"]
+
+
+def test_falls_back_to_signal_close_time_when_ticker_not_in_markets(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 60 * 60))
+    decision = strategy.evaluate(
+        _signal(confidence=0.9, close_time=close_time, ticker="TICK-A"),
+        _cfg(entry_threshold=0.65),
+        markets=[{"ticker": "TICK-OTHER", "close_time": close_time}],
+    )
+    assert decision["action"] == "trade"
+
+
 # ---- favorite-longshot-bias-aware entry threshold (docs/prediction-market-strategy-alignment-plan.md Part 2.3) ----
 
 def test_longshot_price_requires_a_higher_confidence_bar(tmp_path, monkeypatch):

@@ -281,7 +281,20 @@ class FollowTheWhaleStrategy:
         # scheduled close time protections — live status implies the
         # scheduled close may not be authoritative.
         close_window_sec = strat_cfg.get("close_window_sec", _MAX_CLOSE_WINDOW_SEC)
-        seconds_to_close = market_history.seconds_to_close(signal.close_time, time.time())
+        # Local import - services/app_state.py imports strategy_engine before
+        # its own state dict exists, so a top-level `from services import
+        # market_lookup` here would crash the whole process at startup (same
+        # shape as task_supervisor.py's alerting import above). 2026-08-24
+        # close-time fix: signal.close_time alone is Kalshi's raw
+        # administrative close_time, which can be a month+ out for an
+        # event-style market whose real outcome is already known (see
+        # market_lookup.effective_close_time's docstring for the live
+        # repro). Look up this tick's market dict once and reuse it below
+        # for can_close_early too, instead of a second loop over markets.
+        from services import market_lookup
+        this_market = next((m for m in (markets or []) if m.get("ticker") == signal.ticker), None)
+        effective_close = market_lookup.effective_close_time(this_market) or signal.close_time
+        seconds_to_close = market_history.seconds_to_close(effective_close, time.time())
         # allow signals with no close_time to proceed; only reject when a close_time
         # is present and it's outside the permitted window — but skip this rule
         # when the market is currently live (is_live truthy).
@@ -338,11 +351,10 @@ class FollowTheWhaleStrategy:
                 "collateral_return_type": None,
                 "mutually_exclusive": False,
             }
-            # market-level can_close_early is exposed in state["markets"] slim maps
-            for m in (markets or []):
-                if m.get("ticker") == signal.ticker:
-                    special_flags["can_close_early"] = bool(m.get("can_close_early"))
-                    break
+            # market-level can_close_early is exposed in state["markets"] slim
+            # maps - reuse this_market (looked up above for effective_close),
+            # no need for a second loop over the same list.
+            special_flags["can_close_early"] = bool((this_market or {}).get("can_close_early"))
             special_flags["collateral_return_type"] = ev.get("collateral_return_type")
             special_flags["mutually_exclusive"] = bool(ev.get("mutually_exclusive"))
             # Only apply the special-market conservative gate when the market
