@@ -9,8 +9,6 @@ the gate. That's what keeps this a CI ratchet instead of an all-or-nothing
 gate: `--strict` additionally fails on new warnings for a stricter local
 check.
 
-Task 5 adds persistence-isolation, resource-lifecycle, config-usage, and
-API-usage scanners to _SCANNERS below.
 """
 from __future__ import annotations
 
@@ -21,15 +19,24 @@ from pathlib import Path
 from typing import Callable
 
 from services.quality.models import QualityFinding, QualityReport
+from tools.quality_audit.api_usage import scan_api_usage
 from tools.quality_audit.background import scan_background_wiring
 from tools.quality_audit.baseline import BaselineComparison, compare_to_baseline, load_baseline
+from tools.quality_audit.config_usage import scan_config_usage
+from tools.quality_audit.persistence import scan_persistence_isolation
+from tools.quality_audit.resources import scan_resource_lifecycle
 from tools.quality_audit.routers import scan_router_registration
 
 Scanner = Callable[[Path], list[QualityFinding]]
 
-# Task 5 appends its scanner functions here and imports its modules above -
-# this is the only file that task modifies to wire in a new scanner.
-_SCANNERS: list[Scanner] = [scan_router_registration, scan_background_wiring]
+_SCANNERS: list[Scanner] = [
+    scan_router_registration,
+    scan_background_wiring,
+    scan_persistence_isolation,
+    scan_resource_lifecycle,
+    scan_config_usage,
+    scan_api_usage,
+]
 
 _DEFAULT_BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 

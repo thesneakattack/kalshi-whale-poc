@@ -1,14 +1,13 @@
 """Tests for the Quality Control Plane's static audit framework: baseline-
 ratchet comparison, the CLI's exit-code gate, the source-file walking
-helpers, and the router-registration/background-wiring scanners
-(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Tasks 3-4).
-Task 5 adds persistence, resource-lifecycle, config-usage, and API-usage
-scanners on top of these. Baseline-gate and CLI-plumbing tests use synthetic
-QualityFindings and temporary fixture trees rather than depending on real
-repo content triggering (or not triggering) a finding; the router/
-background scanner tests use small synthetic fixture repos for the same
-reason (real repo content shouldn't need to change to keep a unit test
-green).
+helpers, the router-registration/background-wiring scanners, and the
+persistence/resource-lifecycle/config-usage/API-usage scanners
+(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Tasks 3-5).
+Baseline-gate and CLI-plumbing tests use synthetic QualityFindings and
+temporary fixture trees rather than depending on real repo content
+triggering (or not triggering) a finding; the scanner tests use small
+synthetic fixture repos for the same reason (real repo content shouldn't
+need to change to keep a unit test green).
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 from tools.quality_audit import __main__ as audit_cli
-from tools.quality_audit import background, routers, source
+from tools.quality_audit import api_usage, background, config_usage, persistence, resources, routers, source
 from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -225,6 +224,157 @@ def test_non_scheduler_maybe_function_is_ignored(tmp_path):
     _write(tmp_path / "main.py", "x = 1\n")
 
     assert background.scan_background_wiring(tmp_path) == []
+
+
+# --- persistence.py: persistence-isolation scanner --------------------------
+
+
+def test_registered_db_path_owner_produces_no_finding(tmp_path, monkeypatch):
+    _write(tmp_path / "services" / "known_store.py", 'DB_PATH = "known_store.db"\n')
+    monkeypatch.setattr(persistence, "PERSISTENCE_MODULE_PATHS", ("services.known_store",))
+
+    assert persistence.scan_persistence_isolation(tmp_path) == []
+
+
+def test_unregistered_db_path_owner_fails_high_confidence(tmp_path, monkeypatch):
+    _write(tmp_path / "services" / "new_store.py", 'DB_PATH = "new_store.db"\n')
+    monkeypatch.setattr(persistence, "PERSISTENCE_MODULE_PATHS", ())
+
+    findings = persistence.scan_persistence_isolation(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "persistence-unisolated:services.new_store"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+# --- resources.py: resource-lifecycle scanner --------------------------------
+
+_KALSHI_CLIENT_STUB = "class KalshiClient:\n    async def close(self):\n        pass\n"
+
+
+def test_unclosed_client_fails_high_confidence(tmp_path):
+    _write(
+        tmp_path / "services" / "leaky.py",
+        _KALSHI_CLIENT_STUB + '\n\nasync def leak():\n    client = KalshiClient()\n    return await client.get_market("X")\n',
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky:leak:client"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_client_closed_in_finally_produces_no_finding(tmp_path):
+    _write(
+        tmp_path / "services" / "clean.py",
+        _KALSHI_CLIENT_STUB
+        + '\n\nasync def fetch():\n    client = KalshiClient()\n    try:\n'
+        '        return await client.get_market("X")\n'
+        "    finally:\n"
+        "        await client.close()\n",
+    )
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
+def test_client_returned_bare_produces_no_finding(tmp_path):
+    """Ownership transfer: services/whale_stream/whale_stream_handlers.py's
+    real _stream_market_client returns a cached client instead of closing
+    it - a deliberate, documented long-lived-instance pattern."""
+    _write(
+        tmp_path / "services" / "factory.py",
+        _KALSHI_CLIENT_STUB + "\n\ndef make():\n    client = KalshiClient()\n    return client\n",
+    )
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
+def test_client_stored_in_cache_produces_no_finding(tmp_path):
+    _write(
+        tmp_path / "services" / "cache.py",
+        _KALSHI_CLIENT_STUB
+        + "\n\n_cache = {}\n\n\ndef make(key):\n    client = KalshiClient()\n    _cache[key] = client\n    return _cache[key]\n",
+    )
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
+def test_module_level_client_construction_is_not_scanned(tmp_path):
+    """services/app_state.py's real eager singletons (account =
+    KalshiAccountClient(...), trade_stream = KalshiTradeWebSocketClient(...))
+    are a deliberate process-lifetime pattern, not a per-call resource -
+    module-scope constructions are out of scope entirely."""
+    _write(tmp_path / "services" / "singleton.py", _KALSHI_CLIENT_STUB + "\n\nclient = KalshiClient()\n")
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
+# --- config_usage.py: config-usage scanner -----------------------------------
+
+
+def test_read_leaf_via_subscript_chain_produces_no_finding(tmp_path):
+    _write(tmp_path / "config" / "settings.yaml", "strategy:\n  entry_threshold: 0.6\n")
+    _write(tmp_path / "app.py", 'value = cfg["strategy"]["entry_threshold"]\n')
+
+    assert config_usage.scan_config_usage(tmp_path) == []
+
+
+def test_read_leaf_via_get_chain_produces_no_finding(tmp_path):
+    _write(tmp_path / "config" / "settings.yaml", "strategy:\n  take_profit_pct: 0.2\n")
+    _write(tmp_path / "app.py", 'value = cfg.get("strategy", {}).get("take_profit_pct")\n')
+
+    assert config_usage.scan_config_usage(tmp_path) == []
+
+
+def test_unread_leaf_produces_medium_confidence_warning(tmp_path):
+    _write(tmp_path / "config" / "settings.yaml", "strategy:\n  entry_threshold: 0.6\n")
+    _write(tmp_path / "app.py", "x = 1\n")
+
+    findings = config_usage.scan_config_usage(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "config-unread:strategy.entry_threshold"
+    assert findings[0].severity == "warning"
+    assert findings[0].confidence == "medium"
+
+
+def test_unread_leaf_warning_never_fails_default_gate(tmp_path):
+    _write(tmp_path / "config" / "settings.yaml", "strategy:\n  entry_threshold: 0.6\n")
+    _write(tmp_path / "app.py", "x = 1\n")
+
+    findings = config_usage.scan_config_usage(tmp_path)
+    comparison = compare_to_baseline(QualityReport(findings=findings), baseline_ids=set())
+
+    assert audit_cli.compute_exit_code(comparison) == 0
+
+
+# --- api_usage.py: API-usage inventory scanner -------------------------------
+
+
+def test_client_calls_produce_info_findings_grouped_by_method(tmp_path):
+    _write(
+        tmp_path / "app.py",
+        'async def fetch():\n    await client.get_market("X")\n    await client.get_market("Y")\n    await account.get_positions()\n',
+    )
+
+    findings = api_usage.scan_api_usage(tmp_path)
+    by_id = {f.finding_id: f for f in findings}
+
+    assert by_id["api-usage:client.get_market"].evidence["call_sites"] == [
+        "app.py:2",
+        "app.py:3",
+    ]
+    assert all(f.severity == "info" for f in findings)
+    assert "api-usage:account.get_positions" in by_id
+
+
+def test_untracked_receiver_is_not_inventoried(tmp_path):
+    _write(tmp_path / "app.py", 'unrelated_object.get_market("X")\n')
+
+    assert api_usage.scan_api_usage(tmp_path) == []
 
 
 # --- __main__.py: CLI plumbing ----------------------------------------------
