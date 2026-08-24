@@ -80,6 +80,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # static/js/dashboard.bundle.js is gitignored (see frontend-build
+      # job's own "Verify committed bundle matches source" step and
+      # .gitignore's comment) - a fresh checkout has no bundle at all until
+      # this job builds one itself, or the served page's real JS never runs.
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

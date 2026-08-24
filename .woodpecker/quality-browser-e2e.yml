@@ -10,6 +10,21 @@ when:
   - event: [push, pull_request]
 
 steps:
+  # static/js/dashboard.bundle.js is deliberately gitignored (ddev's own
+  # post-start hook/watch mode keeps it fresh in dev, see .gitignore's own
+  # comment) - a fresh clone here has no bundle at all until this builds
+  # one, or the served page's real JS never runs and every test below
+  # fails with e.g. `window.showView` undefined (found live: this step was
+  # missing on the first push of this pipeline). quality-frontend-build.yml
+  # is a separate Woodpecker pipeline with its own independent clone, so
+  # its build can't be reused here - this step has to do its own.
+  - name: build-frontend
+    image: node:22-slim
+    commands:
+      - cd frontend
+      - npm ci
+      - npm run build
+
   - name: browser-e2e
     image: python:3.13-slim
     environment:
