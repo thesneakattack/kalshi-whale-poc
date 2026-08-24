@@ -52,7 +52,7 @@ from services import candidate_log as _cl_module
 from services import config_performance as _cp_module
 from services import config_store as _config_store_module
 from services.market_catalog import market_catalog as _mc_module
-from services import market_analyst_agent as _maa_module
+from services.market_analyst_agent import _db as _maa_module
 from services import market_history as _mh_module
 from services import paper_broker as _pb_module
 from services import risk_manager as _rm_module

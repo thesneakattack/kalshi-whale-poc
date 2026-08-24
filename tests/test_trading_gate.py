@@ -26,6 +26,7 @@ from services import config_performance as cp_module
 from services import config_store as config_store_module
 from services.market_catalog import market_catalog as mc_module
 from services import market_analyst_agent
+from services.market_analyst_agent import _db as maa_db_module
 from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -53,7 +54,7 @@ sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
 # exercising the real "determined" path instead of just observing stats.
 cl_module.DB_PATH = _tmp_dir / "candidate_log.db"
 sedge_module.DB_PATH = _tmp_dir / "settlement_edge.db"
-market_analyst_agent.DB_PATH = _tmp_dir / "market_analyst.db"
+maa_db_module.DB_PATH = _tmp_dir / "market_analyst.db"
 
 _tmp_config_path = _tmp_dir / "settings.yaml"
 shutil.copy(config_store_module.CONFIG_PATH, _tmp_config_path)
@@ -2347,7 +2348,7 @@ def _isolate_market_analyst_dbs(tmp_path, monkeypatch):
     # nothing here can reach the real, live data/*.db files (see this
     # module's own docstring on why that matters).
     import services.signal_log as signal_log_module
-    monkeypatch.setattr(market_analyst_agent, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
 
 

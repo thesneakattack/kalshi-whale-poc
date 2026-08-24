@@ -508,11 +508,14 @@ questions.
       `services/analytics/`: regime/candidate-log/cross-strategy/
       market-analyst/series-evaluator/market-strategy-calibration - backtest
       also moved out (Phase 4/9, `services/backtest/`). See
-      `services/analytics/CHEATSHEET.md` for the residual scope and a new
-      deferred item: `market_analyst_agent.py`/`market_analyst_orchestrator.py`
-      are real split candidates too, but genuinely entangled with advisory/
-      series-evaluator (checked directly, not assumed) - queued as its own
-      future pass rather than rushed here.
+      `services/analytics/CHEATSHEET.md` for the residual scope. Update
+      2026-08-23: `market_analyst_agent.py` alone has since shipped as its
+      own `services/market_analyst_agent/` package (phase 141,
+      `static/status.html`) - narrower than the deferred item above, since
+      its own entanglement was zero, checked directly.
+      `market_analyst_orchestrator.py` remains deferred, still genuinely
+      entangled with advisory/series-evaluator - see
+      `services/analytics/CHEATSHEET.md`.
 - [ ] **Flatten the config surface - too many independent knobs to track
       which ones are actually load-bearing.** Direct instruction
       (2026-08-22): "the config settings, strategies, options, knobs,

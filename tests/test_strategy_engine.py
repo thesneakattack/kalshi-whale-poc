@@ -4,6 +4,7 @@ import pytest
 
 from services import candidate_log as cl_module
 from services import market_analyst_agent as maa_module
+from services.market_analyst_agent import _db as maa_db_module
 from services import market_history as mh_module
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
@@ -42,7 +43,7 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     # session (Item 6's audit, Item 1's trade-tape fixture gap). Without
     # this, every test in this file would read the real
     # data/market_analyst.db on every check_exits() call.
-    monkeypatch.setattr(maa_module, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(cl_module, "DB_PATH", tmp_path / "candidate_log.db")
     # _exit_confidence's new volatility-normalization (2026-08-14 auto-exit
     # deep-dive) calls market_history.volatility() whenever auto_exit_

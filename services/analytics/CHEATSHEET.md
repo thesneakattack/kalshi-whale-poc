@@ -14,15 +14,24 @@ see those modules' own `CHEATSHEET.md` for what moved and why.
 `services/diagnostics.py`/`series_watcher.py`/`settlement_edge.py`/
 `config_performance.py` are already clean and stay flat for now.
 
-**Deferred, not done this pass**: `market_analyst_agent.py` (818 lines) +
-`market_analyst_orchestrator.py` (431 lines) are real candidates for their
-own `services/market_analyst/` module, but checked directly before
-deciding not to split them here: `market_analyst_orchestrator.py` imports
-`advisory_engine.generate_recommendations` directly (to build LLM context)
-and exposes `_series_evaluator_overview_with_crosscheck`, which `main.py`'s
-`trading_loop` also imports directly — genuine entanglement with
-advisory/series-evaluator territory that a same-pass split would touch
-twice. New `ROADMAP.md` item, not started.
+**Update, 2026-08-23**: `market_analyst_agent.py` alone has since shipped
+as its own `services/market_analyst_agent/` package (per-market/per-series/
+full-spectrum modes split into cohesion-based siblings, shared DB layer in
+`_db.py` — see that package's own `__init__.py` docstring). This was
+narrower than the combined split originally deferred below: checked
+directly before doing it, `market_analyst_agent.py` itself has zero import
+relationship with `advisory_engine`/`series_evaluator` — the entanglement
+that motivated the deferral lives entirely in `market_analyst_orchestrator.py`,
+which is untouched by this split and remains deferred for the reason
+below.
+
+**Still deferred**: `market_analyst_orchestrator.py` (431 lines) is a real
+split candidate too, but checked directly before deciding not to split it:
+it imports `advisory_engine.generate_recommendations` directly (to build
+LLM context) and exposes `_series_evaluator_overview_with_crosscheck`,
+which `main.py`'s `trading_loop` also imports directly — genuine
+entanglement with advisory/series-evaluator territory that would touch
+both concerns in one pass.
 
 ## No direct Kalshi API surface — except one real cost center
 

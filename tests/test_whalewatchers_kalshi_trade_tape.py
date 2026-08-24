@@ -4,6 +4,7 @@ import time
 import pytest
 
 from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
+from services.market_analyst_agent import _db as maa_db_module
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd, _taker_side
 
 
@@ -20,7 +21,7 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     monkeypatch.setattr(market_history, "DB_PATH", tmp_path / "market_history.db")
     # fetch_signals() also now queries market_analyst_agent.analyst_lean()
     # for analyst_factor - same real-db-isolation reasoning.
-    monkeypatch.setattr(market_analyst_agent, "DB_PATH", tmp_path / "market_analyst.db")
+    monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     # fetch_signals() now also calls series_evaluator.record_trade_observed()
     # for every newly-seen real trade - same real-db-isolation reasoning.
     # Found and fixed live during Item 1's own implementation (2026-08-10):
@@ -475,10 +476,17 @@ def test_prints_at_the_price_extremes_never_become_signals(monkeypatch, tmp_path
     range, they resolved 'correct' 99.2% of the time, and they inflated the
     headline whale accuracy from a true 77.5% to 86.3%."""
     from services import candidate_log, signal_log as sl
-    from services import market_analyst_agent, market_history, series_evaluator
+    from services import market_history, series_evaluator
 
-    for mod in (candidate_log, sl, market_history, series_evaluator, market_analyst_agent):
+    for mod in (candidate_log, sl, market_history, series_evaluator):
         monkeypatch.setattr(mod, "DB_PATH", tmp_path / f"{mod.__name__.split('.')[-1]}.db", raising=False)
+    # market_analyst_agent's DB_PATH lives in its own _db submodule (package
+    # split, 2026-08-23) - a package-level monkeypatch wouldn't reach
+    # _connect(), and looping it through mod.__name__ here would also
+    # produce a wrong filename ("_db.db"). Same fixture-level import as
+    # this file's own module-scope maa_db_module, kept local/explicit here
+    # since this test builds its own isolation set from scratch.
+    monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db", raising=False)
 
     provider = KalshiTradeTapeProvider()
     markets = [{"ticker": "TICK-A", "volume_24h_fp": 100000, "yes_ask_dollars": 0.5,

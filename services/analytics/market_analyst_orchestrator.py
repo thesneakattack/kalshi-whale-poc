@@ -23,7 +23,7 @@ _analyzing_tickers: set[str] = set()
 
 
 async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker: str) -> dict:
-    """On-demand, single-ticker orchestration for services/market_analyst_agent.py
+    """On-demand, single-ticker orchestration for services/market_analyst_agent/
     - direct request (2026-08-09): switched from an automatic per-tick
     background scan to a button-triggered "analyze this one market right
     now" flow, since this is the first thing in this app that spends real
@@ -160,7 +160,7 @@ def _series_suggestions_from_raw(cfg: dict, series: str, raw_suggestions: list[d
     {"action": "exclude"|"include", "rationale"} output into this app's
     unified suggestion shape ({config_path, current_value, suggested_value,
     id, rationale}, same as services/advisory/advisory_engine.py's rule-based
-    suggestions) - done here, not in market_analyst_agent.py, since it
+    suggestions) - done here, not in market_analyst_agent/, since it
     needs the live config to compute the actual before/after
     strategy.excluded_series list. A no-op action (e.g. the model suggests
     "exclude" on a series that's already excluded) is silently dropped -
