@@ -70,3 +70,13 @@ def parse_python(path: Path) -> ast.Module:
 
 def relative_path(repo_root: Path, path: Path) -> str:
     return str(Path(path).relative_to(Path(repo_root)))
+
+
+def module_dotted_path(repo_root: Path, path: Path) -> str:
+    """The dotted import path a file would be imported as, e.g.
+    services/foo/routes.py -> "services.foo.routes",
+    services/foo/__init__.py -> "services.foo"."""
+    rel_parts = list(Path(path).relative_to(Path(repo_root)).with_suffix("").parts)
+    if rel_parts and rel_parts[-1] == "__init__":
+        rel_parts = rel_parts[:-1]
+    return ".".join(rel_parts)

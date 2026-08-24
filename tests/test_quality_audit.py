@@ -1,11 +1,14 @@
 """Tests for the Quality Control Plane's static audit framework: baseline-
-ratchet comparison, the CLI's exit-code gate, and the source-file walking
-helpers (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task
-3). No real scanners exist yet - Tasks 4/5 add router/background-wiring,
-persistence, resource-lifecycle, config-usage, and API-usage scanners to
-tools/quality_audit/__main__.py's _SCANNERS registry - so tests here use
-synthetic QualityFindings and temporary fixture trees rather than depending
-on real repo content triggering (or not triggering) a finding.
+ratchet comparison, the CLI's exit-code gate, the source-file walking
+helpers, and the router-registration/background-wiring scanners
+(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Tasks 3-4).
+Task 5 adds persistence, resource-lifecycle, config-usage, and API-usage
+scanners on top of these. Baseline-gate and CLI-plumbing tests use synthetic
+QualityFindings and temporary fixture trees rather than depending on real
+repo content triggering (or not triggering) a finding; the router/
+background scanner tests use small synthetic fixture repos for the same
+reason (real repo content shouldn't need to change to keep a unit test
+green).
 """
 from __future__ import annotations
 
@@ -15,10 +18,15 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 from tools.quality_audit import __main__ as audit_cli
-from tools.quality_audit import source
+from tools.quality_audit import background, routers, source
 from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
 
 
 def _finding(finding_id: str, severity: str = "error", confidence: str = "high") -> QualityFinding:
@@ -126,10 +134,106 @@ def test_parse_python_and_relative_path(tmp_path):
     assert source.relative_path(tmp_path, module_path) == "example.py"
 
 
+# --- routers.py: router-registration scanner --------------------------------
+
+
+def test_mounted_router_produces_no_finding(tmp_path):
+    _write(tmp_path / "services" / "foo" / "routes.py", "from fastapi import APIRouter\n\nrouter = APIRouter()\n")
+    _write(
+        tmp_path / "main.py",
+        "from services.foo import routes as foo_routes\n\napp = None\napp.include_router(foo_routes.router)\n",
+    )
+
+    assert routers.scan_router_registration(tmp_path) == []
+
+
+def test_unmounted_router_produces_high_confidence_error(tmp_path):
+    _write(tmp_path / "services" / "foo" / "routes.py", "from fastapi import APIRouter\n\nrouter = APIRouter()\n")
+    _write(tmp_path / "main.py", "app = None\n")
+
+    findings = routers.scan_router_registration(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "router-unmounted:services.foo.routes"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_standalone_router_marker_suppresses_finding(tmp_path):
+    _write(
+        tmp_path / "services" / "foo" / "routes.py",
+        "# quality-audit: standalone-router\nfrom fastapi import APIRouter\n\nrouter = APIRouter()\n",
+    )
+    _write(tmp_path / "main.py", "app = None\n")
+
+    assert routers.scan_router_registration(tmp_path) == []
+
+
+def test_router_scan_with_no_main_py_treats_every_router_as_unmounted(tmp_path):
+    _write(tmp_path / "services" / "foo" / "routes.py", "from fastapi import APIRouter\n\nrouter = APIRouter()\n")
+
+    findings = routers.scan_router_registration(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "router-unmounted:services.foo.routes"
+
+
+# --- background.py: background-wiring scanner -------------------------------
+
+_SCHEDULER_SOURCE = (
+    "import task_supervisor\n\n\n"
+    "def _maybe_do_work(cfg):\n"
+    "    state = {}\n"
+    '    state["task"] = task_supervisor.supervise(lambda: None)\n'
+)
+
+
+def test_scheduler_function_called_from_main_produces_no_finding(tmp_path):
+    _write(tmp_path / "services" / "foo" / "scheduler.py", _SCHEDULER_SOURCE)
+    _write(tmp_path / "main.py", "from services.foo.scheduler import _maybe_do_work\n\n_maybe_do_work({})\n")
+
+    assert background.scan_background_wiring(tmp_path) == []
+
+
+def test_scheduler_function_with_zero_external_references_fails_high_confidence(tmp_path):
+    _write(tmp_path / "services" / "foo" / "scheduler.py", _SCHEDULER_SOURCE)
+    _write(tmp_path / "main.py", "x = 1\n")
+
+    findings = background.scan_background_wiring(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "background-unwired:services.foo.scheduler:_maybe_do_work"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_scheduler_function_called_from_same_file_it_is_defined_in_produces_no_finding(tmp_path):
+    """Real-repo shape: main.py's own _maybe_check_signal_resolutions is
+    defined and called both inside main.py itself - same-file wiring must
+    still count, or the scanner would flag legitimate entrypoint-local
+    schedulers."""
+    _write(
+        tmp_path / "main.py",
+        _SCHEDULER_SOURCE + "\n\n_maybe_do_work({})\n",
+    )
+
+    assert background.scan_background_wiring(tmp_path) == []
+
+
+def test_non_scheduler_maybe_function_is_ignored(tmp_path):
+    _write(tmp_path / "services" / "foo" / "scheduler.py", "def _maybe_prune(cfg):\n    return None\n")
+    _write(tmp_path / "main.py", "x = 1\n")
+
+    assert background.scan_background_wiring(tmp_path) == []
+
+
 # --- __main__.py: CLI plumbing ----------------------------------------------
 
 
-def test_run_audit_with_no_scanners_returns_empty_report(tmp_path):
+def test_run_audit_against_empty_repo_returns_empty_report(tmp_path):
+    """An empty fixture dir has no routes.py/main.py/scheduler functions for
+    the registered scanners to find anything in - distinct from Task 3's
+    now-obsolete "no scanners registered" case."""
     report = audit_cli.run_audit(tmp_path)
     assert report.findings == []
 
@@ -163,11 +267,14 @@ def test_main_exits_nonzero_for_synthetic_new_high_confidence_error(tmp_path, mo
     assert exit_code == 1
 
 
-def test_empty_scanner_framework_runs_clean_against_real_repo():
-    """Step 6: verify CLI plumbing against the real repo tree, not just a
-    tmp_path fixture. Only meaningful right now because zero scanners are
-    registered; Task 5 Step 8 adds the "no new high-confidence errors"
-    version of this once real scanners exist."""
+def test_real_repo_audit_has_no_new_high_confidence_errors():
+    """Task 4 Step 6: run the real (now non-empty) scanner set against this
+    repo and confirm no new high-confidence router/background-wiring
+    findings slipped in unbaselined - both scanners were manually verified
+    clean against current HEAD before this task was committed (all 12
+    routers are mounted in main.py, all 5 real _maybe_* schedulers have a
+    live external caller). Task 5 Step 8 extends this same shape to the
+    persistence/resource/config/API scanners it adds."""
     exit_code = audit_cli.main(
         [
             "--repo-root", str(REPO_ROOT),
