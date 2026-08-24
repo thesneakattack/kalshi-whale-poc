@@ -163,6 +163,84 @@ def get_and_reset_rate_limit_hits() -> int:
     return count
 
 
+# Per-endpoint-family REST usage telemetry (2026-08-24, QCP Task 15 -
+# docs/superpowers/plans/2026-08-24-quality-control-plane.md). Instrumented
+# INSIDE call_with_backoff's own retry loop, not by wrapping
+# call_with_backoff from the outside, so each real HTTP attempt (including
+# every retried 429) is counted once - wrapping from outside would collapse
+# N attempts into 1 "call" and undercount real request volume, exactly what
+# this module's own docstring on call_with_backoff already warns readers not
+# to double-count for the rate-limit-hits counter above.
+#
+# Bounded by construction, not by an eviction policy: keys are endpoint-
+# family names (SDK method names like "get_markets", "create_order_v2" -
+# see _default_endpoint_name below), a small fixed set (~25) determined by
+# how many distinct Kalshi endpoints this app's clients call, never by
+# per-request values like a ticker or query string.
+_http_metrics: dict[str, dict] = {}
+
+
+def _default_endpoint_name(coro_func) -> str:
+    # The overwhelming majority of call_with_backoff's real call sites pass
+    # a bound SDK method directly (self._client.get_markets, .create_order_v2,
+    # ...) - its __name__ IS already the right low-cardinality endpoint-family
+    # label, for free, with zero call-site changes. Only services/
+    # kalshi_client.py's _get_json-routed calls (which all share one local
+    # "do_get" closure name) need an explicit endpoint= override - see that
+    # method's own call sites.
+    return getattr(coro_func, "__name__", None) or "unknown"
+
+
+def _record_http_attempt(endpoint: str, *, rate_limited: bool, success: bool, latency_ms: float | None) -> None:
+    bucket = _http_metrics.setdefault(
+        endpoint, {"calls": 0, "successes": 0, "errors": 0, "rate_limited": 0, "total_latency_ms": 0.0}
+    )
+    bucket["calls"] += 1
+    if rate_limited:
+        bucket["rate_limited"] += 1
+    elif success:
+        bucket["successes"] += 1
+        bucket["total_latency_ms"] += latency_ms
+    else:
+        bucket["errors"] += 1
+
+
+def http_metrics_snapshot(reset: bool = False) -> dict:
+    """Per-endpoint-family counts/latency, keyed by endpoint (see
+    _default_endpoint_name). avg_latency_ms is computed only over
+    *successful* attempts - a 429 or a hard error still took real wall time,
+    but folding those into the average would conflate "how long does a real
+    round trip take" with "how long did we wait to get rate-limited," which
+    isn't the question this number answers. None (not 0) when an endpoint
+    has zero successes yet, matching this codebase's existing "unknown is
+    better than fabricated" convention (see services/observability/
+    observability.py's capture_from_runtime).
+
+    reset=True atomically reads-and-clears, same semantics as this module's
+    own get_and_reset_rate_limit_hits() above - main.py's trading_loop calls
+    this with reset=True exactly once per tick (right next to that existing
+    call) and stashes the result in state, so it becomes an already-computed,
+    side-effect-free value by the time services/observability/
+    observability.py's capture_from_runtime (a *pure* mapping, reused by both
+    the periodic persisted sampler and the on-demand GET /api/observability/
+    current route) reads it - capture_from_runtime itself must never call
+    this with reset=True, or an incidental /current request would silently
+    zero out the counters the periodic sampler was about to read."""
+    snapshot = {}
+    for endpoint, m in _http_metrics.items():
+        avg_latency_ms = (m["total_latency_ms"] / m["successes"]) if m["successes"] else None
+        snapshot[endpoint] = {
+            "calls": m["calls"],
+            "successes": m["successes"],
+            "errors": m["errors"],
+            "rate_limited": m["rate_limited"],
+            "avg_latency_ms": avg_latency_ms,
+        }
+    if reset:
+        _http_metrics.clear()
+    return snapshot
+
+
 def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
@@ -178,7 +256,8 @@ async def close_client():
 
 
 async def call_with_backoff(
-    coro_func, *args, max_retries: int = 4, base_delay: float = 0.5, is_write: bool = False, **kwargs
+    coro_func, *args, max_retries: int = 4, base_delay: float = 0.5, is_write: bool = False,
+    endpoint: str | None = None, **kwargs
 ):
     """Kalshi's rate limiter returns 429 with no Retry-After header — their
     own docs (docs.kalshi.com/getting_started/rate_limits) say to apply
@@ -199,16 +278,33 @@ async def call_with_backoff(
     read by default; services/kalshi_account_client.py's create_order/
     cancel_order are the only two real callers that pass is_write=True -
     grep for call_with_backoff before adding a new write-shaped call
-    elsewhere and make sure it does too."""
+    elsewhere and make sure it does too.
+
+    endpoint (2026-08-24, QCP Task 15): the low-cardinality label REST
+    telemetry (see http_metrics_snapshot above) is recorded under. Defaults
+    to coro_func's own __name__, which is already correct for the common
+    case (a bound SDK method); only overridden explicitly by services/
+    kalshi_client.py's _get_json-routed calls."""
     global _rate_limit_hits_since_reset
+    endpoint_name = endpoint or _default_endpoint_name(coro_func)
     limiter = _kalshi_write_limiter if is_write else _kalshi_read_limiter
     delay = base_delay
     for attempt in range(max_retries + 1):
         try:
             await limiter.acquire()
-            return await coro_func(*args, **kwargs)
+            started = time.monotonic()
+            result = await coro_func(*args, **kwargs)
+            _record_http_attempt(
+                endpoint_name, rate_limited=False, success=True,
+                latency_ms=(time.monotonic() - started) * 1000,
+            )
+            return result
         except Exception as e:
-            if getattr(e, "status", None) != 429 or attempt == max_retries:
+            if getattr(e, "status", None) != 429:
+                _record_http_attempt(endpoint_name, rate_limited=False, success=False, latency_ms=None)
+                raise
+            _record_http_attempt(endpoint_name, rate_limited=True, success=False, latency_ms=None)
+            if attempt == max_retries:
                 raise
             _rate_limit_hits_since_reset += 1
             await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter

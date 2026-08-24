@@ -47,13 +47,19 @@ class KalshiClient:
         config = kpa.Configuration(host=base_url.rstrip("/"))
         self._client = kpa.KalshiClient(config)
 
-    async def _get_json(self, path: str, params: dict | None = None) -> dict:
+    async def _get_json(self, path: str, endpoint: str, params: dict | None = None) -> dict:
+        # endpoint (2026-08-24, QCP Task 15): every _get_json call site shares
+        # this one local "do_get" closure, so call_with_backoff's own
+        # __name__-based endpoint-family default would collapse all of them
+        # into one misleading "do_get" telemetry bucket - callers pass their
+        # own low-cardinality label explicitly instead (see http_client.py's
+        # http_metrics_snapshot).
         async def do_get():
             resp = await get_client().get(urljoin(self.base_url + "/", path.lstrip("/")), params=params, timeout=self.timeout)
             resp.raise_for_status()
             return resp.json()
 
-        return await call_with_backoff(do_get)
+        return await call_with_backoff(do_get, endpoint=endpoint)
 
     async def close(self):
         """main.py constructs a fresh KalshiClient every poll tick (so a live
@@ -111,7 +117,7 @@ class KalshiClient:
         every call, with no way to skip just the offending item short of
         reaching into SDK internals. Raw JSON has no such enum to
         validate against and needs no SDK version to catch up."""
-        data = await self._get_json("/series", params={"include_volume": True})
+        data = await self._get_json("/series", endpoint="get_series_list", params={"include_volume": True})
         series = data.get("series", [])
         if category:
             series = [s for s in series if (s.get("category") or "").lower() == category.lower()]
@@ -454,10 +460,10 @@ class KalshiClient:
 
     async def get_event_live_data(self, event_ticker: str, range_hint: str | None = None) -> dict:
         params = {"range": range_hint} if range_hint else None
-        return await self._get_json(f"/live_data/events/{event_ticker}", params=params)
+        return await self._get_json(f"/live_data/events/{event_ticker}", endpoint="get_event_live_data", params=params)
 
     async def get_tags_for_series_categories(self) -> dict:
-        return await self._get_json("/search/tags_by_categories")
+        return await self._get_json("/search/tags_by_categories", endpoint="get_tags_for_series_categories")
 
     async def get_filters_for_sports(self) -> dict:
-        return await self._get_json("/search/filters_by_sport")
+        return await self._get_json("/search/filters_by_sport", endpoint="get_filters_for_sports")

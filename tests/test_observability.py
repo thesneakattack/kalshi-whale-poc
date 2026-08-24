@@ -122,6 +122,56 @@ def test_capture_from_runtime_omits_missing_sources_instead_of_fabricating_zero(
     assert metrics == {}
 
 
+# --- kalshi_rest.* (QCP Task 15) -----------------------------------------
+#
+# capture_from_runtime reads state["last_tick_http_metrics"], an already-
+# computed since-last-tick snapshot main.py's trading_loop stashes via
+# http_client.http_metrics_snapshot(reset=True) - capture_from_runtime
+# itself must stay a pure read (see its own updated docstring) since it's
+# reused as-is by both the periodic persisted sampler and the on-demand
+# GET /api/observability/current route.
+
+
+def test_capture_from_runtime_flattens_kalshi_rest_metrics_per_endpoint():
+    state = {
+        "last_tick_http_metrics": {
+            "get_markets": {"calls": 12, "successes": 11, "errors": 0, "rate_limited": 1, "avg_latency_ms": 83.2},
+            "create_order_v2": {"calls": 1, "successes": 1, "errors": 0, "rate_limited": 0, "avg_latency_ms": 210.5},
+        },
+    }
+
+    metrics = observability.capture_from_runtime({}, state, None, None)
+
+    assert metrics["kalshi_rest.get_markets.calls"] == 12.0
+    assert metrics["kalshi_rest.get_markets.errors"] == 0.0
+    assert metrics["kalshi_rest.get_markets.rate_limited"] == 1.0
+    assert metrics["kalshi_rest.get_markets.avg_latency_ms"] == 83.2
+    assert metrics["kalshi_rest.create_order_v2.calls"] == 1.0
+    assert metrics["kalshi_rest.create_order_v2.avg_latency_ms"] == 210.5
+
+
+def test_capture_from_runtime_omits_kalshi_rest_avg_latency_when_there_were_no_successes():
+    state = {
+        "last_tick_http_metrics": {
+            "get_markets": {"calls": 3, "successes": 0, "errors": 0, "rate_limited": 3, "avg_latency_ms": None},
+        },
+    }
+
+    metrics = observability.capture_from_runtime({}, state, None, None)
+
+    assert metrics["kalshi_rest.get_markets.calls"] == 3.0
+    assert metrics["kalshi_rest.get_markets.rate_limited"] == 3.0
+    assert "kalshi_rest.get_markets.avg_latency_ms" not in metrics
+
+
+def test_capture_from_runtime_has_no_kalshi_rest_metrics_when_nothing_called_this_tick():
+    metrics = observability.capture_from_runtime({}, {"last_tick_http_metrics": {}}, None, None)
+    assert metrics == {}
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+    assert metrics == {}
+
+
 # --- maybe_capture: interval gate + restart-safe cold-start seeding -----
 
 _CFG = {"observability": {"enabled": True, "sample_interval_sec": 60}}

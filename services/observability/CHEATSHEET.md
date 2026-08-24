@@ -49,6 +49,53 @@ whole.
 | `trade_stream.messages_per_sec` / `avg_handler_ms` | `state["trade_stream_perf"]` | yes, but `None` (and so omitted) until `whale_stream_handlers._record_trade_perf`'s first 1s window rolls over after the exchange-wide trade stream starts flowing — see `services/whale_stream/whale_stream_handlers.py` |
 | `trade_stream.dropped_messages` / `messages_received` | `trade_stream.dropped_messages` / `.messages_received` (the live `KalshiTradeWebSocketClient` instance) | yes, cumulative counters, real even at 0 when the stream is disabled |
 | `index_stream.dropped_messages` / `messages_received` | same, for `index_stream` | yes |
+| `kalshi_rest.<endpoint>.calls` / `.errors` / `.rate_limited` / `.avg_latency_ms` | `state["last_tick_http_metrics"]`, one group per endpoint-family key | yes (QCP Task 15, 2026-08-24) — see below |
+
+### `kalshi_rest.*` — per-endpoint Kalshi REST telemetry (Task 15)
+
+`services/http_client.py`'s `call_with_backoff` is the one real chokepoint
+every Kalshi REST call in this app passes through (`services/kalshi_client.py`
+and `services/kalshi_account_client.py` both route every request through it),
+so it's instrumented directly rather than wrapped from outside — each retry
+attempt inside its own loop is counted as one real HTTP attempt, not
+collapsed into one "call" per logical operation (would undercount real
+request volume the same way this module's own rate-limit-hits counter
+already warns against).
+
+`endpoint` (the per-metric key, e.g. `get_markets`, `create_order_v2`)
+defaults to `coro_func.__name__` — free and correct for the ~20 call sites
+that pass a bound SDK method directly. The 4 calls routed through
+`kalshi_client.py`'s `_get_json` (which all share one local `do_get` closure
+name) pass an explicit `endpoint=` override instead — see that method's own
+call sites (`get_series_list`, `get_event_live_data`,
+`get_tags_for_series_categories`, `get_filters_for_sports`).
+
+`avg_latency_ms` is averaged only over *successful* attempts — a 429 or a
+hard error still took real wall time, but folding those in would conflate
+"how long does a real round trip take" with "how long did we wait to get
+rate-limited." Omitted (not `0`/`null`) per-endpoint when there were zero
+successes that tick, same "unknown over fabricated" rule as everything else
+here — see `tests/test_http_client.py`'s per-endpoint telemetry tests for
+the exact chosen semantics (documented in the test names themselves, per
+that task's own instruction).
+
+`http_client.http_metrics_snapshot(reset=True)` is called exactly once per
+tick, in `main.py`'s `trading_loop`, immediately next to the existing
+`get_and_reset_rate_limit_hits()` call — same reset-and-stash pattern,
+stored as `state["last_tick_http_metrics"]` before `capture_from_runtime`
+ever runs. `capture_from_runtime` itself only ever reads that already-
+computed value (`reset=False` semantics, i.e. no reset at all) — it must
+never call `http_metrics_snapshot(reset=True)` directly, since that would
+let an incidental `GET /api/observability/current` request silently zero
+out the counters the periodic 60s sampler was about to read.
+
+Live-verified 2026-08-24 (not just unit-tested): `GET
+/api/observability/current` showed real `kalshi_rest.get_markets`/
+`get_events`/`get_exchange_status`/`get_milestones` entries with nonzero
+`calls` and real `avg_latency_ms` values within seconds of restart, and
+`GET /api/observability/history?metric=kalshi_rest.get_markets.calls`
+showed 5 consecutive persisted samples (10, 10, 10, 11, 15) tracking real,
+growing per-tick call volume.
 
 A source that's `None`/missing is **omitted from the returned dict, never
 recorded as a fabricated 0** — CLAUDE.md's / the design spec's "unknown is

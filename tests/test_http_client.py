@@ -35,6 +35,17 @@ def _reset_rate_limit_counter():
 
 
 @pytest.fixture(autouse=True)
+def _reset_http_metrics():
+    # Module-level global (services/http_client.py's own single-threaded-
+    # asyncio design, no lock needed), same reasoning as
+    # _reset_rate_limit_counter above - reset around every test so one
+    # test's endpoint telemetry can't leak into the next's assertions.
+    http_client.http_metrics_snapshot(reset=True)
+    yield
+    http_client.http_metrics_snapshot(reset=True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_kalshi_rate_limiters(monkeypatch):
     # The read/write token buckets (2026-08-15) are ALSO module-level
     # globals, draining real tokens on every call_with_backoff invocation
@@ -254,3 +265,148 @@ def test_read_and_write_buckets_are_independent():
 
     elapsed = asyncio.run(asyncio.wait_for(drain_write_only(), timeout=1.0))
     assert elapsed < 0.05  # draining write didn't block read
+
+
+# ---- per-endpoint-family REST telemetry (2026-08-24, QCP Task 15 -
+# docs/superpowers/plans/2026-08-24-quality-control-plane.md). Semantics
+# chosen and encoded in these test names: `calls` increments once per real
+# HTTP attempt (including every retried 429, matching call_with_backoff's
+# own per-attempt retry loop, not once per call_with_backoff invocation);
+# avg_latency_ms is averaged only over *successful* attempts, never over
+# 429s or hard errors. ----------------------------------------------------
+
+
+def test_successful_call_increments_calls_successes_and_records_latency(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="widgets"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert snapshot["widgets"]["calls"] == 1
+    assert snapshot["widgets"]["successes"] == 1
+    assert snapshot["widgets"]["errors"] == 0
+    assert snapshot["widgets"]["rate_limited"] == 0
+    assert snapshot["widgets"]["avg_latency_ms"] is not None
+    assert snapshot["widgets"]["avg_latency_ms"] >= 0
+
+
+def test_endpoint_defaults_to_the_coro_funcs_own_name(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def get_markets():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(get_markets))
+
+    assert "get_markets" in http_client.http_metrics_snapshot()
+
+
+def test_explicit_endpoint_overrides_the_coro_funcs_own_name(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def do_get():  # the real shape of every _get_json-routed call
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(do_get, endpoint="get_series_list"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert "get_series_list" in snapshot
+    assert "do_get" not in snapshot
+
+
+def test_429_retry_then_success_counts_each_retry_as_its_own_rate_limited_attempt(monkeypatch):
+    _no_sleep(monkeypatch)
+    attempts = {"n": 0}
+
+    async def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise _FakeApiException(429)
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(flaky, base_delay=1.0, endpoint="widgets"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert snapshot["widgets"]["calls"] == 3  # 2 rate-limited attempts + 1 success, not 1
+    assert snapshot["widgets"]["rate_limited"] == 2
+    assert snapshot["widgets"]["successes"] == 1
+
+
+def test_429_exhausting_every_retry_still_counts_the_final_attempt_as_rate_limited_not_an_error(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def always_429():
+        raise _FakeApiException(429)
+
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_429, max_retries=2, endpoint="widgets"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert snapshot["widgets"]["calls"] == 3  # 1 initial + 2 retries
+    assert snapshot["widgets"]["rate_limited"] == 3
+    assert snapshot["widgets"]["errors"] == 0
+    assert snapshot["widgets"]["successes"] == 0
+    assert snapshot["widgets"]["avg_latency_ms"] is None  # nothing successful to average
+
+
+def test_non_429_exception_counts_as_an_error_not_rate_limited(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def always_500():
+        raise _FakeApiException(500)
+
+    with pytest.raises(_FakeApiException):
+        asyncio.run(http_client.call_with_backoff(always_500, endpoint="widgets"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert snapshot["widgets"]["calls"] == 1
+    assert snapshot["widgets"]["errors"] == 1
+    assert snapshot["widgets"]["rate_limited"] == 0
+    assert snapshot["widgets"]["successes"] == 0
+
+
+def test_snapshot_reset_true_clears_counters_after_reading_them(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="widgets"))
+
+    first = http_client.http_metrics_snapshot(reset=True)
+    assert first["widgets"]["calls"] == 1
+
+    second = http_client.http_metrics_snapshot(reset=True)
+    assert second == {}
+
+
+def test_snapshot_reset_false_leaves_counters_intact_for_a_later_read(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="widgets"))
+
+    first = http_client.http_metrics_snapshot(reset=False)
+    second = http_client.http_metrics_snapshot(reset=False)
+    assert first == second
+    assert second["widgets"]["calls"] == 1
+
+
+def test_two_different_endpoints_are_tracked_independently(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    async def succeeds():
+        return "ok"
+
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="widgets"))
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="gadgets"))
+    asyncio.run(http_client.call_with_backoff(succeeds, endpoint="widgets"))
+
+    snapshot = http_client.http_metrics_snapshot()
+    assert snapshot["widgets"]["calls"] == 2
+    assert snapshot["gadgets"]["calls"] == 1

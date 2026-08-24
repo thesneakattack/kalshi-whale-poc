@@ -156,6 +156,26 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
         metrics["index_stream.dropped_messages"] = float(getattr(index_stream, "dropped_messages", 0))
         metrics["index_stream.messages_received"] = float(getattr(index_stream, "messages_received", 0))
 
+    # kalshi_rest.<endpoint>.* (QCP Task 15) - reads state["last_tick_http_metrics"],
+    # an already-computed since-last-tick snapshot main.py's trading_loop
+    # stashes via http_client.http_metrics_snapshot(reset=True) right next to
+    # get_and_reset_rate_limit_hits(). Deliberately never calls
+    # http_metrics_snapshot itself here - this function must stay a pure read
+    # (no I/O, no resets) since it's shared by both the periodic persisted
+    # sampler and the on-demand GET /api/observability/current route; calling
+    # reset=True from here would let an incidental /current request zero out
+    # counters the periodic sampler was about to read. Only endpoints with at
+    # least one attempt this tick appear at all (http_metrics_snapshot's own
+    # "omit rather than fabricate" contract) and avg_latency_ms is skipped
+    # per-endpoint when there were zero successes to average, same "unknown
+    # over fabricated 0" rule as everything else in this function.
+    for endpoint, m in (state.get("last_tick_http_metrics") or {}).items():
+        metrics[f"kalshi_rest.{endpoint}.calls"] = float(m["calls"])
+        metrics[f"kalshi_rest.{endpoint}.errors"] = float(m["errors"])
+        metrics[f"kalshi_rest.{endpoint}.rate_limited"] = float(m["rate_limited"])
+        if m["avg_latency_ms"] is not None:
+            metrics[f"kalshi_rest.{endpoint}.avg_latency_ms"] = float(m["avg_latency_ms"])
+
     return metrics
 
 

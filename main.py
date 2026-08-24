@@ -49,7 +49,7 @@ from services import title_cache
 from services import trade_analytics
 from services import trade_category
 from services.config_store import config_store
-from services.http_client import close_client, get_and_reset_rate_limit_hits
+from services.http_client import close_client, get_and_reset_rate_limit_hits, http_metrics_snapshot
 from services.kalshi_client import KalshiClient
 from services.kalshi_account_client import KalshiAccountClient
 from services.kalshi_trade_ws import KalshiTradeWebSocketClient
@@ -888,6 +888,15 @@ async def trading_loop():
 
         state["last_tick_duration_sec"] = round(time.time() - tick_start_wall, 2)
         state["last_tick_rate_limit_hits"] = get_and_reset_rate_limit_hits()
+        # Per-tick since-last-tick snapshot (QCP Task 15), same reset-and-
+        # stash pattern as get_and_reset_rate_limit_hits() right above - the
+        # reset happens exactly once per tick, here, so
+        # observability.capture_from_runtime can stay a pure read of an
+        # already-computed state value rather than ever calling
+        # http_metrics_snapshot(reset=True) itself (which would make an
+        # incidental GET /api/observability/current request silently zero
+        # out the counters this tick's own sample was about to read).
+        state["last_tick_http_metrics"] = http_metrics_snapshot(reset=True)
         state["tick_phase_timings"] = phase_timings
         _maybe_capture_observability(cfg, state, trade_stream, index_stream)
         storage_health.maybe_capture_sizes(state, storage_health.DATA_DIR)
