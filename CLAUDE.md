@@ -102,10 +102,21 @@ the existing phases' tone and structure.
 - `ddev exec -s fastapi <cmd>` — run one-off commands inside the container
   (working dir `/app`, same layout as the repo root). Prefer this over raw
   `docker exec`.
-- App: `https://kalshi-whale-poc.ddev.site` (served by `web`).
+- App: `https://kalshi-whale-poc.ddev.site` (served by `web`; check
+  `ddev describe`/the last `ddev start`/`restart` output for the actual
+  port — it's not always the implicit HTTPS 443).
   `GET /api/state` is the fastest way to check live state (bankroll,
   positions, risk halt status, etc.) without opening the dashboard — same
   hostname, nginx proxies it to `fastapi` transparently.
+- A separate Cloudflare Tunnel (outside this repo) exposes this app
+  publicly at `autotrade.webfoundry.dev`, via a shared `traefik` container
+  also fronting other projects. `.ddev/nginx/kalshi-proxy.conf` gates only
+  that hostname behind HTTP Basic Auth (`$host`-conditional, credentials in
+  gitignored `.ddev/nginx/.htpasswd`) — local access via
+  `kalshi-whale-poc.ddev.site` (loopback-only per `ddev-router`'s own port
+  bindings) is deliberately unaffected, so this never blocks local
+  dev/verification. Regenerate credentials with `htpasswd -bc
+  .ddev/nginx/.htpasswd <user> <pass>` then `ddev restart`.
 - To test something that depends on a **real process restart** (not just
   `--reload`'s in-process reimport) — e.g. verifying persistence survives a
   restart — use a full `ddev restart`. A file save alone won't exercise that

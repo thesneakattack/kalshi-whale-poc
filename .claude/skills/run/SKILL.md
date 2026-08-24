@@ -24,11 +24,15 @@ Do not default to `python -m venv` / `pip install` / bare `uvicorn` — check
    modules in-process within about 1-2 seconds of a save.
 
 4. To see the app: open `https://kalshi-whale-poc.ddev.site` (or run
-   `ddev launch`). For headless verification without a browser, hit
-   `GET /api/state` directly — it returns bankroll, positions, the risk
-   kill-switch state, and the signal/decision feeds as JSON, which is
-   usually faster than screenshotting the dashboard to confirm a backend
-   change worked.
+   `ddev launch`) — check `ddev describe`/the last `ddev start`/`restart`
+   output for the actual port, it isn't always the implicit HTTPS 443. For
+   headless verification without a browser, hit `GET /api/state` directly —
+   it returns bankroll, positions, the risk kill-switch state, and the
+   signal/decision feeds as JSON, which is usually faster than
+   screenshotting the dashboard to confirm a backend change worked. No
+   credentials needed for this local hostname — a password gate exists
+   (`.ddev/nginx/kalshi-proxy.conf`) but is scoped by `Host` to only the
+   separately-tunneled public hostname, never this one.
 
 5. To watch it work: `ddev logs -s fastapi` (add `-f` to follow). Look for
    `WatchFiles detected changes in '<file>'. Reloading...` to confirm a save
@@ -82,10 +86,21 @@ options.add_argument('--headless=new')
 options.add_argument('--ignore-certificate-errors')  # ddev's cert is self-signed
 options.set_capability('acceptInsecureCerts', True)
 driver = webdriver.Remote(command_executor='http://selenium-chrome:4444', options=options)
-driver.get('https://kalshi-whale-poc.ddev.site/')
+driver.get('https://kalshi-whale-poc.ddev.site:PORT/')
 ```
 
 Known gotchas:
+- No HTTP Basic Auth credentials needed for this local hostname — a
+  password gate exists (`.ddev/nginx/kalshi-proxy.conf`) but is scoped by
+  `Host` to only the separately-tunneled public hostname
+  (`autotrade.webfoundry.dev`), which this local-network path never uses.
+- The port is not always the implicit HTTPS 443 from inside the
+  `selenium-chrome` container either — confirmed live 2026-08-24, a bare
+  `driver.get('https://kalshi-whale-poc.ddev.site/')` (no port) failed with
+  `net::ERR_CONNECTION_REFUSED` in-network even though the same host works
+  fine from a plain host-side `curl`. Check the actual port from `ddev
+  describe`/the last `ddev start`/`restart` output first, same as the CLI
+  steps above — don't assume 443.
 - The app auto-opens a first-run Help modal (`openHelp()`) unless
   `localStorage['whale-signal-seen-intro']` is already set — it intercepts
   clicks. Call `driver.execute_script("closeHelp();")` right after load.

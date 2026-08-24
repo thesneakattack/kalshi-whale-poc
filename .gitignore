@@ -23,3 +23,7 @@ static/js/dashboard.bundle.js
 *.pem
 *.key
 kalshi_devkey_private.txt
+
+# HTTP Basic Auth credentials gating the publicly-tunneled hostname only
+# (see .ddev/nginx/kalshi-proxy.conf) - a hashed password, never committed.
+.ddev/nginx/.htpasswd
