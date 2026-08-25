@@ -193,10 +193,10 @@ nothing while idle. `docs-drift-check.yml` is unchanged: it is a scheduled,
 network-dependent check with no live-repository-state dependency, exactly
 what stays on GitHub Actions rather than moving to Woodpecker (see "CI
 topology" above - "Use scheduled/manual workflows for... Kalshi
-documentation content drift"). No GitHub branch protection currently
-requires any check by name (`gh api repos/.../branches/main/protection`
-returns 404) - if that changes, point required checks at the Woodpecker-
-reported context names, not the now-manual-only GitHub Actions ones, and
-do not mark a path-filtered Woodpecker workflow (`quality-frontend-build`)
-as required, since a skipped workflow posts no status at all and would
-block merges on unrelated changes forever.
+documentation content drift"). `main` has real GitHub branch protection
+(configured 2026-08-25, see `.claude/rules/branching-and-ci.md`'s
+"Integration lifecycle" for the exact settings) requiring the five
+`ci/woodpecker/pr/*` context names, not the now-manual-only GitHub
+Actions ones and not the path-filtered `quality-frontend-build` (a
+skipped workflow posts no status at all, which would block merges on
+unrelated changes forever if it were required).

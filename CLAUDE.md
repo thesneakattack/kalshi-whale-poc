@@ -391,9 +391,12 @@ live against the real API, not by guessing from prose or memory.
 ## Branching and CI — standing policy
 
 Direct standing instruction (2026-08-25): `main` is the authoritative
-integrated branch, protected in practice by policy (not a GitHub-side
-setting yet — see `.claude/rules/branching-and-ci.md`'s note on that).
-Normal implementation work happens on a short-lived initiative branch
+integrated branch, protected both by policy and, since the same day, by
+real GitHub branch protection (`enforce_admins` on, force-push/deletion
+off, the five `ci/woodpecker/pr/*` status checks required — see
+`.claude/rules/branching-and-ci.md`'s "Integration lifecycle" for the
+exact configuration and how to change it). Normal implementation work
+happens on a short-lived initiative branch
 (`feat/`, `fix/`, `refactor/`, `chore/`, `docs/<name>`), not directly on
 `main` — no permanent `development`/`staging`-style branches. Claude owns
 targeted local verification; Woodpecker owns exhaustive verification, on

@@ -95,6 +95,27 @@ before integration; reviewable diffs; safe merge behavior. Not process
 ceremony for its own sake — a single-developer repo doesn't need a
 second approver, just these mechanical guarantees.
 
+**GitHub-side enforcement (configured 2026-08-25, not just documented
+policy):** `main` has real branch protection —
+`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection`
+to inspect current state. `enforce_admins: true` (applies even to the
+repo owner — deliberate: an admin can still push directly by disabling
+protection first, so this guards against the accidental case without
+being an unbreakable emergency lock), `allow_force_pushes: false`,
+`allow_deletions: false`, `required_pull_request_reviews: null` (no
+mandatory approval — this is the single-developer-repo exception, not
+required checks), and `required_status_checks.contexts` requiring the
+five real PR-event Woodpecker context names:
+`ci/woodpecker/pr/tests-pytest`, `.../tests-dependency-audit`,
+`.../quality-architecture-audit`, `.../quality-browser-e2e`,
+`.../kalshi-contract-fixtures` — deliberately excludes
+`ci/woodpecker/pr/quality-frontend-build`, since that pipeline is
+path-filtered to `frontend/**` and posts no status at all when skipped
+(see `docs/woodpecker-ci.md`'s own warning about this) - marking it
+required would permanently block any non-frontend PR from merging.
+Update this list with `gh api -X PUT .../protection --input <file>` if a
+new required Woodpecker pipeline is added later.
+
 ## Git history
 
 Meaningful checkpoint commits, not one giant final commit and not
@@ -119,6 +140,44 @@ implementation work — not a green light to implement there. This is
 deliberately mechanical (a hook reading repository state, not a rule that
 has to be recalled from conversation) so it holds in a session that has
 no memory of when or why this policy was adopted.
+
+## Resuming work in a fresh session
+
+Direct standing instruction (2026-08-25). When instructed to "resume",
+"continue", "pick up where we left off", or equivalent:
+
+1. Do not rely on conversational memory.
+2. Read the repository's persistent instructions (`CLAUDE.md`,
+   `.claude/rules/*.md`, the relevant `.claude/skills/*/SKILL.md`).
+3. Inspect:
+   - current branch and working tree (`git status --short`,
+     `git branch --show-current`);
+   - recent git history (`git log --oneline -20`);
+   - commits on the active branch not yet in `main`
+     (`git log main..HEAD --oneline`, or `git log origin/main..HEAD` if
+     `main` isn't checked out locally);
+   - `ROADMAP.md`;
+   - `static/status.html` where relevant;
+   - relevant module `CHEATSHEET.md` files;
+   - plans/notes tied to the active initiative (numbered task plans
+     under `docs/superpowers/plans/`, the matching orchestrator skill's
+     own "reconstruct progress, don't maintain a ledger" guidance).
+4. Determine the last completed coherent step and the next unfinished
+   step from that evidence, not from assumption.
+5. Resume an existing initiative branch when it represents that work —
+   `git checkout <branch>`, not a fresh branch off `main`.
+6. Do not create a replacement branch or reimplement completed work
+   merely because the original conversation is unavailable — current
+   code/tests/git are implementation truth, the same principle each
+   numbered-task orchestrator skill already applies per task, extended
+   here to resuming across a session boundary.
+7. Briefly state what was completed, what remains, and what's being
+   resumed, then continue the work.
+
+This is the resume-side complement to the `session-handoff` skill (which
+covers the *end* of a session so this is possible) and to each numbered-
+task orchestrator's own progress-reconstruction instruction — the same
+discipline, applied at the other end of a session boundary.
 
 ## Superseded instructions
 
