@@ -375,3 +375,107 @@ def test_every_fixture_file_documents_its_source():
         assert "_meta" in fixture, f"{path.name} has no _meta block"
         assert fixture["_meta"].get("source_doc"), f"{path.name}'s _meta has no source_doc"
         assert "payload" in fixture, f"{path.name} has no payload block"
+
+
+# --- A10: channel-specific semantic normalizers (services/kalshi/contracts/) ---
+# One implementation per WS channel's known high-risk semantics, fed by the
+# same doc-sourced fixtures as everything above. Imports are inside the
+# tests (not module-level) so a missing module fails ITS tests, not this
+# whole file's collection.
+
+
+def test_ws_client_trade_normalizer_is_the_boundary_implementation():
+    from services.kalshi.contracts import trade as trade_contract
+    # Delegation without re-implementation: the compatibility staticmethod
+    # and the boundary function must be the same object, so the two can
+    # never drift apart.
+    assert KalshiTradeWebSocketClient.normalize_trade is trade_contract.normalize_trade
+
+
+def test_trade_normalizer_leaves_direction_none_when_unreadable():
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    del msg["taker_outcome_side"], msg["taker_side"]
+    normalized = trade_contract.normalize_trade(msg)
+    # No guess: an unreadable direction stays unreadable (the old
+    # pre-2026-08-17 code turned every unreadable trade into a confident
+    # "no" - the exact bug class this fixture set exists to prevent).
+    assert normalized["taker_outcome_side"] is None
+    assert normalized["taker_side"] is None
+    assert normalized["taker_book_side"] == "ask"  # raw field still passes through
+
+
+def test_trade_normalizer_preserves_every_raw_field():
+    from services.kalshi.contracts import trade as trade_contract
+    msg = _payload("public_trade.json")
+    normalized = trade_contract.normalize_trade(msg)
+    for key, value in msg.items():
+        if key in ("taker_side", "taker_outcome_side"):
+            continue  # deliberately overlaid with canonical-first precedence
+        assert normalized[key] == value, f"raw field {key!r} was shaved off"
+
+
+def test_ticker_normalizer_aliases_market_ticker_and_preserves_raw():
+    from services.kalshi.contracts import ticker as ticker_contract
+    msg = _payload("market_ticker.json")
+    normalized = ticker_contract.normalize_ticker(msg)
+    assert normalized["ticker"] == "FED-23DEC-T3.00"
+    assert normalized["market_ticker"] == "FED-23DEC-T3.00"
+    for key, value in msg.items():
+        assert normalized[key] == value
+
+
+def test_fill_normalizer_keeps_ws_trade_id_identity_and_never_invents_fill_id():
+    from services.kalshi.contracts import fill as fill_contract
+    msg = _payload("fill.json")
+    assert "fill_id" not in msg  # the real WS wire shape has no fill_id
+    normalized = fill_contract.normalize_fill(msg)
+    assert normalized["trade_id"] == "d91bc706-ee49-470d-82d8-11418bda6fed"
+    assert "fill_id" not in normalized  # REST-only name must not be invented here
+    assert normalized["ticker"] == "HIGHNY-22DEC23-B53.5"
+    for key, value in msg.items():
+        assert normalized[key] == value
+
+
+def test_position_message_type_is_singular_and_channel_is_plural():
+    from services.kalshi.contracts import position as position_contract
+    # The exact dispatch bug QCP Task 13 caught: per-message `type` is
+    # "market_position" (singular, market-positions.md's own
+    # `const: market_position`); the *subscription channel* is
+    # "market_positions" (plural). Both spellings now live in one module.
+    assert position_contract.WS_MESSAGE_TYPE == "market_position"
+    assert position_contract.SUBSCRIPTION_CHANNEL == "market_positions"
+    assert position_contract.WS_MESSAGE_TYPE != position_contract.SUBSCRIPTION_CHANNEL
+
+
+def test_position_normalizer_aliases_market_ticker_and_preserves_raw():
+    from services.kalshi.contracts import position as position_contract
+    msg = _payload("market_position.json")
+    assert "ticker" not in msg  # real WS wire shape carries market_ticker only
+    normalized = position_contract.normalize_position(msg)
+    assert normalized["ticker"] == "FED-23DEC-T3.00"
+    for key, value in msg.items():
+        assert normalized[key] == value
+
+
+def test_lifecycle_determined_does_not_resolve_settled_does():
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    # determined is NOT terminal (market_lifecycle.md: the result may be
+    # disputed -> amended before "finalized"); only settled may trigger
+    # outcome resolution, and even then via a fresh REST read gated on
+    # status == "finalized", because the settled payload carries no result.
+    assert lifecycle_contract.resolves_outcome("determined") is False
+    assert lifecycle_contract.resolves_outcome("settled") is True
+    assert lifecycle_contract.resolves_outcome("close_date_updated") is False
+    assert lifecycle_contract.resolves_outcome(None) is False
+    assert lifecycle_contract.TERMINAL_REST_STATUS == "finalized"
+
+
+def test_lifecycle_normalizer_preserves_raw_and_aliases_ticker():
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    for fixture_name in ("market_lifecycle_determined.json", "market_lifecycle_settled.json"):
+        msg = _payload(fixture_name)
+        normalized = lifecycle_contract.normalize_lifecycle(msg)
+        assert normalized["ticker"] == msg["market_ticker"]
+        for key, value in msg.items():
+            assert normalized[key] == value

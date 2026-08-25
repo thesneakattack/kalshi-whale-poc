@@ -4,13 +4,21 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
 
 import websockets
 
 logger = logging.getLogger(__name__)
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
+
+# Channel-specific semantic normalization lives behind the integration
+# boundary (Phase A Task A10) - this transport delegates and never
+# interprets vendor fields itself.
+from services.kalshi.contracts import fill as fill_contract
+from services.kalshi.contracts import lifecycle as lifecycle_contract
+from services.kalshi.contracts import position as position_contract
+from services.kalshi.contracts import ticker as ticker_contract
+from services.kalshi.contracts import trade as trade_contract
 
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 _DEMO_WS_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
@@ -224,7 +232,7 @@ class KalshiTradeWebSocketClient:
                         await self._send({
                             "id": self._next_message_id(),
                             "cmd": "subscribe",
-                            "params": {"channels": ["fill", "market_positions"]},
+                            "params": {"channels": ["fill", position_contract.SUBSCRIPTION_CHANNEL]},
                         })
                     backoff = 1.0
                     # Ingest and processing are separate tasks (2026-08-17).
@@ -342,7 +350,7 @@ class KalshiTradeWebSocketClient:
             logger.info("%s: %r", msg_type, data.get('msg'))
             return
         if msg_type == "trade":
-            await on_trade(self.normalize_trade(data.get("msg") or {}))
+            await on_trade(trade_contract.normalize_trade(data.get("msg") or {}))
             return
         if msg_type == "market_lifecycle_v2":
             # docs/kalshi/market-and-event-lifecycle.md's msg.event_type
@@ -359,10 +367,10 @@ class KalshiTradeWebSocketClient:
                 self._logged_lifecycle_event_types.add(event_type)
                 logger.info("first real 'market_lifecycle_v2' %r shape (verify parsing against this): %r", event_type, msg)
             if on_lifecycle is not None:
-                await on_lifecycle(msg)
+                await on_lifecycle(lifecycle_contract.normalize_lifecycle(msg))
             return
         if msg_type == "ticker":
-            await on_ticker(data.get("msg") or {})
+            await on_ticker(ticker_contract.normalize_ticker(data.get("msg") or {}))
             return
         if msg_type == "fill":
             # 2026-08-15 direct request: "the open positions should feed
@@ -379,9 +387,9 @@ class KalshiTradeWebSocketClient:
                 self._logged_fill_shape = True
                 logger.info("first real 'fill' message shape (verify parsing against this): %r", data)
             if on_fill is not None:
-                await on_fill(data.get("msg") or {})
+                await on_fill(fill_contract.normalize_fill(data.get("msg") or {}))
             return
-        if msg_type == "market_position":
+        if msg_type == position_contract.WS_MESSAGE_TYPE:
             # Real per-message `type` is "market_position" (SINGULAR) per
             # docs/kalshi/market-positions.md's own schema
             # (`const: market_position`) - confirmed 2026-08-24 building
@@ -396,7 +404,7 @@ class KalshiTradeWebSocketClient:
                 self._logged_position_shape = True
                 logger.info("first real 'market_position' message shape (verify parsing against this): %r", data)
             if on_position is not None:
-                await on_position(data.get("msg") or {})
+                await on_position(position_contract.normalize_position(data.get("msg") or {}))
 
     async def _sync_subscriptions(self, force_subscribe: bool = False) -> None:
         # force_subscribe is now implied rather than read: run() resets both
@@ -538,53 +546,8 @@ class KalshiTradeWebSocketClient:
         self._message_id += 1
         return current
 
-    @staticmethod
-    def normalize_trade(msg: dict) -> dict:
-        ts_ms = msg.get("ts_ms")
-        created_time = None
-        if ts_ms is not None:
-            try:
-                created_time = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-            except (TypeError, ValueError, OSError):
-                created_time = None
-        # PASS EVERYTHING THROUGH, then overlay the normalised names
-        # (2026-08-17, direct and repeated instruction: "I keep insisting
-        # that you stop shaving off fields and values from the various
-        # shapes you get but you persist").
-        #
-        # This used to build a fixed dict of twelve keys and silently drop
-        # anything else Kalshi sent. That was worse than it looked, because
-        # it is UPSTREAM of series_watcher.record_trade: the `raw_json`
-        # column added specifically to preserve unknown fields was, for
-        # every websocket trade, storing this already-shaved dict rather
-        # than the real payload. The capture built to stop field loss was
-        # itself being fed pre-shaved data.
-        #
-        # `**msg` first means a field Kalshi adds tomorrow arrives intact,
-        # reaches the raw store, and is queryable from the day it appears.
-        # The explicit keys below still win, so every existing consumer sees
-        # exactly what it saw before - `ticker` is still the normalised
-        # alias for `market_ticker`, which itself now also survives.
-        return {
-            **msg,
-            "trade_id": msg.get("trade_id"),
-            "ticker": msg.get("market_ticker"),
-            "yes_price_dollars": msg.get("yes_price_dollars"),
-            "no_price_dollars": msg.get("no_price_dollars"),
-            "count_fp": msg.get("count_fp"),
-            # taker_outcome_side FIRST (2026-08-17 audit): docs/kalshi/
-            # get-trades.md marks taker_side deprecated - "will not be
-            # removed before May 14, 2026", a guarantee that has now
-            # expired - and names taker_outcome_side/taker_book_side the
-            # canonical way to determine trade direction. This used to
-            # prefer the deprecated field, so the day Kalshi drops it every
-            # trade would silently fall through to the "no" default
-            # downstream rather than failing loudly.
-            "taker_side": msg.get("taker_outcome_side") or msg.get("taker_side"),
-            "taker_outcome_side": msg.get("taker_outcome_side") or msg.get("taker_side"),
-            "taker_book_side": msg.get("taker_book_side"),
-            "is_block_trade": msg.get("is_block_trade", False),
-            "ts": msg.get("ts"),
-            "ts_ms": msg.get("ts_ms"),
-            "created_time": created_time,
-        }
+    # Compatibility alias: semantic normalization moved verbatim to
+    # services/kalshi/contracts/trade.py (A10). Same-object assignment (not
+    # a wrapper) so the boundary implementation and this legacy access path
+    # can never drift apart - asserted by tests/test_kalshi_contracts.py.
+    normalize_trade = staticmethod(trade_contract.normalize_trade)
