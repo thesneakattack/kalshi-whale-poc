@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generated_at": 1787636377.544296,
-  "generated_from_head": "2db733f40bf93fa53765f6e1b515e436ecb7c0ff",
+  "generated_at": 1787637257.798731,
+  "generated_from_head": "2495e9af7745a0efd8b390c986d0e3429ce3604e",
   "files": {
     "python": 238,
     "javascript": 14,
     "html": 4
   },
   "lines": {
-    "python": 52483,
+    "python": 52518,
     "javascript": 6228,
     "html": 7561
   },
@@ -19,6 +19,6 @@
   "workflow_jobs": 17,
   "tests": {
     "files": 85,
-    "count": 1590
+    "count": 1591
   }
 }
