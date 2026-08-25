@@ -17,7 +17,12 @@ importable:
   declarations at runtime/test time, including cross-module duplicates the
   per-module static scan can't see.
 
-As of A4 this is the boundary skeleton only: no transport, gateway, or
-normalizer code has migrated yet (that starts at A5), so nothing here is
-imported by production code paths yet.
+Migrated so far: transport/SDK-client construction (A5, transport.py),
+the public read gateway (A6, public.py — selection policy moved out to
+services/market_watch/ at A7), and the authenticated account split (A8):
+account.py owns balance/positions/fills/orders READS, orders.py owns the
+create/cancel WRITE primitives plus the trading_enabled and risk kill-
+switch gates. services/kalshi_client.py and
+services/kalshi_account_client.py remain the compatibility facades
+production wiring imports.
 """

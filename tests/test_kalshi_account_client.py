@@ -327,3 +327,92 @@ def test_credential_construction_delegates_to_the_boundary_transport(tmp_path, m
 
     assert c._client is sentinel
     assert seen == [("https://example.test/trade-api/v2", "test-key-id", pem)]
+
+
+# ---- A8 capability split: account reads vs order writes --------------------
+# (Kalshi Integration Phase A Task A8 - services/kalshi/account.py +
+# services/kalshi/orders.py behind this same compatibility facade.)
+
+def _order_gateway(trading_enabled=True, timeout=5, risk=None):
+    from services.kalshi.orders import KalshiOrderGateway
+    fake = _FakeSDKClient()
+    gw = KalshiOrderGateway(
+        fake, trading_enabled=trading_enabled, request_timeout_sec=timeout, risk=risk,
+    )
+    return gw, fake
+
+
+def test_account_read_gateway_exposes_no_write_methods():
+    """The design spec's capability boundary: an authenticated *read*
+    object must not be able to place or cancel orders, structurally -
+    not merely by convention."""
+    from services.kalshi.account import KalshiAccountGateway
+    for write_name in ("create_order", "cancel_order", "amend_order", "flatten_all",
+                       "create_order_v2", "cancel_order_v2"):
+        assert not hasattr(KalshiAccountGateway, write_name)
+
+
+def test_public_gateway_exposes_no_write_methods():
+    from services.kalshi.public import KalshiPublicGateway
+    for write_name in ("create_order", "cancel_order", "amend_order", "flatten_all",
+                       "create_order_v2", "cancel_order_v2"):
+        assert not hasattr(KalshiPublicGateway, write_name)
+
+
+def test_order_gateway_refuses_create_when_trading_disabled():
+    gw, fake = _order_gateway(trading_enabled=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(gw.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert fake.calls == []
+
+
+def test_order_gateway_refuses_cancel_when_trading_disabled():
+    gw, fake = _order_gateway(trading_enabled=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(gw.cancel_order("order-123"))
+    assert fake.calls == []
+
+
+def test_order_gateway_risk_halt_blocks_opening_but_not_closing(tmp_path, monkeypatch):
+    risk = _risk(tmp_path, monkeypatch)
+    risk.manual_halt("test halt")
+    gw, fake = _order_gateway(trading_enabled=True, risk=risk)
+    with pytest.raises(PermissionError):
+        asyncio.run(gw.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert fake.calls == []
+    result = asyncio.run(gw.create_order(
+        ticker="TICK-A", side="ask", count="1.00", price="0.0100", is_closing_order=True,
+    ))
+    assert result == {"ok": True}
+    assert len(fake.calls) == 1
+
+
+def test_facade_trading_enabled_mutation_reaches_the_write_gate():
+    """main.py's enable/disable routes and account_positions' config
+    re-sync all assign account.trading_enabled at runtime - the gate that
+    actually blocks the SDK call must read that live value, not a
+    construction-time snapshot. This is the one behavior the A8 split
+    could silently regress."""
+    c, fake = _client_with_fake_sdk(trading_enabled=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(c.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+
+    c.trading_enabled = True  # what POST /api/trading/enable does
+    result = asyncio.run(c.create_order(ticker="TICK-A", side="bid", count="1.00", price="0.5000"))
+    assert result == {"ok": True}
+
+    c.trading_enabled = False  # what POST /api/trading/disable does
+    with pytest.raises(PermissionError):
+        asyncio.run(c.create_order(ticker="TICK-B", side="bid", count="1.00", price="0.5000"))
+    assert len(fake.calls) == 1
+
+
+def test_facade_client_injection_reaches_both_gateways():
+    """Existing tests (this file + test_trading_gate.py) simulate a
+    connected account by assigning account._client - after the split that
+    one assignment must reach the read gateway and the write gateway
+    alike, or half the facade would silently keep using a stale client."""
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+    assert c._reads._client is fake
+    assert c._writes._client is fake
+    assert c._client is fake
