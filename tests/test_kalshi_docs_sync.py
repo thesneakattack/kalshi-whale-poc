@@ -81,7 +81,7 @@ def test_parse_index_total_matches_real_llms_txt_bullet_count():
 
     entries = sync.parse_index(real_text)
 
-    assert len(entries) == 220
+    assert len(entries) == 231  # +11 2026-08-25: upstream added weather-index, target-balance-allocation x2, margin exit-triggers x8
 
 
 # --- resource_kind ---------------------------------------------------------

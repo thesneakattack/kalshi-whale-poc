@@ -17,7 +17,16 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 from tools.quality_audit import __main__ as audit_cli
-from tools.quality_audit import api_usage, background, config_usage, persistence, resources, routers, source
+from tools.quality_audit import (
+    api_usage,
+    background,
+    config_usage,
+    kalshi_contract_docs,
+    persistence,
+    resources,
+    routers,
+    source,
+)
 from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -302,6 +311,54 @@ def test_client_stored_in_cache_produces_no_finding(tmp_path):
     assert resources.scan_resource_lifecycle(tmp_path) == []
 
 
+def test_unclosed_transport_builder_call_fails_high_confidence(tmp_path):
+    """A5: services/kalshi/transport.py's build_*_client factories return
+    SDK clients that own an aiohttp session - a bare-name builder call
+    constructed in a function body and never closed is the same leak class
+    as a direct KalshiClient() construction."""
+    _write(
+        tmp_path / "services" / "leaky_builder.py",
+        "def build_public_client(base_url):\n    pass\n"
+        '\n\nasync def leak():\n    client = build_public_client("https://x")\n'
+        '    return await client.get_markets()\n',
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_builder:leak:client"
+    assert findings[0].severity == "error"
+
+
+def test_unclosed_attribute_form_transport_builder_call_fails(tmp_path):
+    """`transport.build_public_client(...)` (the attribute form real
+    callers use) must be caught too - the original bare-Name-only matching
+    predates the boundary's builder functions."""
+    _write(
+        tmp_path / "services" / "leaky_attr.py",
+        "from services.kalshi import transport\n"
+        '\n\nasync def leak():\n    client = transport.build_public_client("https://x")\n'
+        '    return await client.get_markets()\n',
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_attr:leak:client"
+
+
+def test_closed_transport_builder_call_produces_no_finding(tmp_path):
+    _write(
+        tmp_path / "services" / "clean_builder.py",
+        "from services.kalshi import transport\n"
+        '\n\nasync def fetch():\n    client = transport.build_public_client("https://x")\n'
+        "    try:\n        return await client.get_markets()\n"
+        "    finally:\n        await client.close()\n",
+    )
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
 def test_module_level_client_construction_is_not_scanned(tmp_path):
     """services/app_state.py's real eager singletons (account =
     KalshiAccountClient(...), trade_stream = KalshiTradeWebSocketClient(...))
@@ -417,6 +474,161 @@ def test_main_exits_nonzero_for_synthetic_new_high_confidence_error(tmp_path, mo
     assert exit_code == 1
 
 
+# --- kalshi_contract_docs.py: Kalshi CONTRACT_DOCS scanner -------------------
+
+
+def test_no_services_kalshi_package_produces_no_findings(tmp_path):
+    """A3 ships before A4 creates services/kalshi/ - the scanner must be
+    inert against every pre-A4 repo state, not error or warn on a package
+    that doesn't exist yet."""
+    _write(tmp_path / "services" / "kalshi_client.py", "def get_markets():\n    pass\n")
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_documented_operation_produces_no_finding(tmp_path):
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_markets": ("docs/kalshi/get-markets.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_operation_missing_contract_docs_entry_fails_high_confidence(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "kalshi-contract-docs-missing:services.kalshi.public:get_markets"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_private_operation_is_not_required_to_have_contract_docs(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\ndef _internal_helper():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_contract_docs_entry_pointing_at_nonexistent_file_fails_high_confidence(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_markets": ("docs/kalshi/does-not-exist.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == (
+        "kalshi-contract-docs-missing-file:services.kalshi.public:get_markets:docs/kalshi/does-not-exist.md"
+    )
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_stale_contract_docs_key_reports_medium_confidence_warning(tmp_path):
+    """A key with no matching public def (e.g. a renamed/removed operation
+    left behind in CONTRACT_DOCS) is reported, not gated - a static AST
+    scan can't rule out every legitimate reason a key doesn't literally
+    match a def name, per A3's "report according to provable context"."""
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_market": ("docs/kalshi/get-markets.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    stale = [f for f in findings if f.check == "kalshi-contract-docs" and "stale" in f.finding_id]
+    assert len(stale) == 1
+    assert stale[0].finding_id == "kalshi-contract-docs-stale:services.kalshi.public:get_market"
+    assert stale[0].severity == "warning"
+    assert stale[0].confidence == "medium"
+
+
+def test_close_lifecycle_method_needs_no_contract_docs(tmp_path):
+    """close() releases the SDK session - a lifecycle method, not a wire
+    operation; there's no Kalshi doc page it could honestly map to (A6)."""
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\nclass Gateway:\n    async def close(self):\n        pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_annotated_contract_docs_assignment_is_recognized(tmp_path):
+    """`CONTRACT_DOCS: dict[str, ContractDocs] = {...}` (AnnAssign) is how
+    real boundary modules declare the mapping - the scanner's original
+    plain-Assign-only matching flagged transport.py's documented operations
+    as undocumented, caught live at A5."""
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS: dict = {\n"
+        '    "get_markets": ("docs/kalshi/get-markets.md",),\n'
+        "}\n"
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_infrastructure_marker_exempts_module_from_missing_mapping(tmp_path):
+    """services/kalshi/provenance.py (A4) is metadata infrastructure, not a
+    vendor adapter - its public functions have no Kalshi doc to map. The
+    explicit `# quality-audit: kalshi-infrastructure` marker exempts a
+    module from the missing-mapping requirement (same reviewable-marker
+    pattern as routers.py's standalone-router), while file-existence checks
+    on any CONTRACT_DOCS it does declare still apply."""
+    _write(
+        tmp_path / "services" / "kalshi" / "provenance.py",
+        "# quality-audit: kalshi-infrastructure\n"
+        "\n\ndef collect_operations():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_infrastructure_marker_does_not_exempt_bad_doc_paths(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "infra.py",
+        "# quality-audit: kalshi-infrastructure\n"
+        'CONTRACT_DOCS = {\n    "helper": ("docs/kalshi/missing.md",),\n}\n'
+        "\n\ndef helper():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert "missing-file" in findings[0].finding_id
+    assert findings[0].severity == "error"
+
+
+def test_documented_method_on_class_produces_no_finding(tmp_path):
+    _write(tmp_path / "docs" / "kalshi" / "get-market.md", "# Get Market\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "account.py",
+        'CONTRACT_DOCS = {\n    "get_balance": ("docs/kalshi/get-market.md",),\n}\n'
+        "\n\nclass AccountGateway:\n    async def get_balance(self):\n        pass\n"
+        "\n    async def _internal(self):\n        pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
 def test_real_repo_audit_has_no_new_high_confidence_errors():
     """Task 4 Step 6: run the real (now non-empty) scanner set against this
     repo and confirm no new high-confidence router/background-wiring
@@ -432,3 +644,117 @@ def test_real_repo_audit_has_no_new_high_confidence_errors():
         ]
     )
     assert exit_code == 0
+
+
+def test_unclosed_stream_gateway_construction_fails(tmp_path):
+    """A11: the websocket transport class moved behind the boundary as
+    KalshiStreamGateway - the new name must not silently escape the leak
+    scanner the old KalshiTradeWebSocketClient name is tracked under."""
+    _write(
+        tmp_path / "services" / "leaky_stream.py",
+        "from services.kalshi.websocket import KalshiStreamGateway\n"
+        '\n\nasync def leak():\n    stream = KalshiStreamGateway("https://x")\n'
+        "    return await stream.run(None, None)\n",
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_stream:leak:stream"
+
+
+# ---- A15: Kalshi integration-boundary ratchet ------------------------------
+
+
+def test_boundary_sdk_import_outside_the_package_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "rogue_sdk.py", "import kalshi_python_async as kpa\n")
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    ids = [f.finding_id for f in findings]
+    assert any(i.startswith("kalshi-boundary-sdk-import:services/rogue_sdk.py") for i in ids)
+
+
+def test_boundary_sdk_import_inside_the_package_passes(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi" / "adapter.py", "import kalshi_python_async as kpa\n")
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_raw_host_string_outside_the_boundary_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "rogue_host.py",
+        'URL = "https://external-api.kalshi.com/trade-api/v2"\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert any(f.finding_id.startswith("kalshi-boundary-host:services/rogue_host.py") for f in findings)
+
+
+def test_boundary_host_mention_in_a_docstring_is_not_usage(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "prose_only.py",
+        '"""Verified against docs.kalshi.com by hand."""\n\n\ndef f():\n    """See api.elections.kalshi.com."""\n    return 1\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_new_facade_import_beyond_baseline_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi_client.py", "class KalshiClient:\n    pass\n")
+    _write(
+        tmp_path / "services" / "new_consumer.py",
+        "from services.kalshi_client import KalshiClient\n",
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(
+        tmp_path, facade_baseline={"services.kalshi_client": 0},
+    )
+    ratchet = [f for f in findings if f.finding_id == "kalshi-boundary-facade-ratchet:services.kalshi_client"]
+    assert len(ratchet) == 1
+    assert ratchet[0].severity == "error"
+
+
+def test_boundary_facade_imports_at_baseline_pass_and_below_baseline_informs(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi_client.py", "class KalshiClient:\n    pass\n")
+    _write(
+        tmp_path / "services" / "consumer.py",
+        "from services.kalshi_client import KalshiClient\n",
+    )
+    at_baseline = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={"services.kalshi_client": 1})
+    assert [f for f in at_baseline if f.severity == "error"] == []
+    below = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={"services.kalshi_client": 5})
+    lowered = [f for f in below if f.finding_id == "kalshi-boundary-facade-ratchet-lower:services.kalshi_client"]
+    assert len(lowered) == 1
+    assert lowered[0].severity == "info"
+
+
+def test_boundary_deprecated_direction_read_outside_boundary_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "rogue_alias.py",
+        'def side(t):\n    return t.get("taker_side") or t["taker_outcome_side"]\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    ids = [f.finding_id for f in findings]
+    assert any(i.startswith("kalshi-boundary-deprecated-read:services/rogue_alias.py") for i in ids)
+
+
+def test_boundary_deprecated_read_in_the_archival_allowlist_passes(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "series_watcher.py",
+        'def row(t):\n    return (t.get("taker_outcome_side"), t.get("taker_book_side"), t.get("taker_side"))\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_scanner_is_registered_and_real_tree_is_clean():
+    from tools.quality_audit import kalshi_boundary
+    from tools.quality_audit import __main__ as audit_main
+    assert kalshi_boundary.scan_kalshi_boundary in audit_main._SCANNERS
+    real_findings = kalshi_boundary.scan_kalshi_boundary(Path(__file__).resolve().parent.parent)
+    assert [f for f in real_findings if f.severity == "error"] == []

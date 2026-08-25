@@ -18,6 +18,7 @@ from services.kalshi_client import KalshiClient
 from services.market_catalog import market_catalog
 from services.market_watch import (
     _fetch_live_status, _get_series_cache, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC, _slim_market,
+    selection,
 )
 
 router = APIRouter()
@@ -237,20 +238,20 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
                 # 30 series.
                 matched_series = {s["ticker"] for s in candidates}
                 catalog_candidates = [m for m in catalog_candidates if m.get("series_ticker") in matched_series]
-            market_candidates = catalog_candidates or await client.get_candidate_markets(
-                min_volume=min_volume, series_tickers=candidate_tickers,
+            market_candidates = catalog_candidates or await selection.candidate_markets(
+                client, min_volume=min_volume, series_tickers=candidate_tickers,
             )
             live_status = await _fetch_live_status(client, market_candidates)
             live_candidates = [
                 m for m in market_candidates
                 if live_status.get(m.get("event_ticker")) == "live"
             ]
-            markets = KalshiClient.round_robin_select(
+            markets = selection.round_robin_select(
                 live_candidates, limit, max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
             )
         else:
-            markets = await client.get_top_volume_markets(
-                limit, min_volume=min_volume, series_tickers=candidate_tickers,
+            markets = await selection.top_volume_markets(
+                client, limit, min_volume=min_volume, series_tickers=candidate_tickers,
                 max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
             )
         results = markets

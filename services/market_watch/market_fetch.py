@@ -14,6 +14,7 @@ from services import series_evaluator, signal_log
 from services.app_state import state
 from services.kalshi_client import KalshiClient
 from services.market_catalog import market_catalog
+from services.market_watch import selection
 from services.market_watch.discovery_cache import _cached_market_fetch, _maybe_refresh_discovery_cache
 from services.market_watch.live_status import _fetch_live_status, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC
 
@@ -153,7 +154,7 @@ async def _fetch_markets(client: KalshiClient, cfg: dict, extra_tickers: list[st
         # direct choice: the watchlist shrinks (down to zero, if nothing
         # real is live right now) rather than quietly padding it with
         # markets that don't meet the filter someone deliberately turned on.
-        markets = KalshiClient.round_robin_select(
+        markets = selection.round_robin_select(
             live_candidates, cfg["kalshi"]["watchlist_size"],
             max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
         )

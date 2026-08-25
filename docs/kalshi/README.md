@@ -26,6 +26,12 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/orders/batch-create-orders-v2.md`
 - `batch-get-market-candlesticks.md`
   Source: `https://docs.kalshi.com/api-reference/market/batch-get-market-candlesticks.md`
+- `cancel-cross-exit-trigger-by-id.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-trigger-by-id.md`
+- `cancel-cross-exit-triggers.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-triggers.md`
+- `cancel-isolated-exit-trigger.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/cancel-isolated-exit-trigger.md`
 - `cancel-order-v2.md`
   Source: `https://docs.kalshi.com/api-reference/orders/cancel-order-v2.md`
 - `cancel-order.md`
@@ -124,6 +130,8 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/communications/get-block-trade-proposals.md`
 - `get-communications-id.md`
   Source: `https://docs.kalshi.com/api-reference/communications/get-communications-id.md`
+- `get-cross-exit-triggers.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/get-cross-exit-triggers.md`
 - `get-deposits.md`
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-deposits.md`
 - `get-enabled-status.md`
@@ -188,6 +196,8 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-intra-account-transfer.md`
 - `get-intra-account-transfers.md`
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-intra-account-transfers.md`
+- `get-isolated-exit-triggers.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/get-isolated-exit-triggers.md`
 - `get-live-data-with-type.md`
   Source: `https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md`
 - `get-market-candlesticks.md`
@@ -262,12 +272,16 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-subaccount-transfers.md`
 - `get-tags-for-series-categories.md`
   Source: `https://docs.kalshi.com/api-reference/search/get-tags-for-series-categories.md`
+- `get-target-balance-allocation.md`
+  Source: `https://docs.kalshi.com/api-reference/portfolio/get-target-balance-allocation.md`
 - `get-total-resting-order-value.md`
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-total-resting-order-value.md`
 - `get-trades.md`
   Source: `https://docs.kalshi.com/api-reference/market/get-trades.md`
 - `get-user-data-timestamp.md`
   Source: `https://docs.kalshi.com/api-reference/exchange/get-user-data-timestamp.md`
+- `get-weather-index.md`
+  Source: `https://docs.kalshi.com/api-reference/live-data/get-weather-index.md`
 - `get-withdrawals.md`
   Source: `https://docs.kalshi.com/api-reference/portfolio/get-withdrawals.md`
 - `historical_data.md`
@@ -406,6 +420,12 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/fix/rfq-messages.md`
 - `rfqs.md`
   Source: `https://docs.kalshi.com/getting_started/rfqs.md`
+- `set-cross-exit-trigger.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/set-cross-exit-trigger.md`
+- `set-isolated-exit-trigger.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/set-isolated-exit-trigger.md`
+- `set-target-balance-allocation.md`
+  Source: `https://docs.kalshi.com/api-reference/portfolio/set-target-balance-allocation.md`
 - `subaccounts.md`
   Source: `https://docs.kalshi.com/getting_started/subaccounts.md`
 - `subpenny-pricing.md`
@@ -418,6 +438,8 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/portfolio/transfer-between-subaccounts.md`
 - `trigger-order-group.md`
   Source: `https://docs.kalshi.com/api-reference/order-groups/trigger-order-group.md`
+- `update-cross-exit-trigger.md`
+  Source: `https://docs.kalshi.com/margin-rest/exit-triggers/update-cross-exit-trigger.md`
 - `update-fcm-subtrader-risk-controls.md`
   Source: `https://docs.kalshi.com/margin-rest/fcm/update-fcm-subtrader-risk-controls.md`
 - `update-order-group-limit.md`

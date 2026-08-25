@@ -286,8 +286,12 @@ questions.
       the refresh. The weekly scheduled check will now catch future drift
       automatically; this item is the one-time backlog of what it already
       found on day one.
-- [ ] **`docs/kalshi/llms.txt`'s mirrored index is stale relative to the
-      real upstream index — 11 pages exist upstream with no local mirror**,
+- [x] **`docs/kalshi/llms.txt`'s mirrored index is stale relative to the
+      real upstream index — 11 pages exist upstream with no local mirror**
+      — resolved 2026-08-25 during the Phase A completion gate (A17): all
+      11 fetched from their exact upstream URLs, llms.txt refetched
+      (220 → 231 entries), manifest/README regenerated, `--check` clean
+      (commit 72622c7 on the initiative branch). Original finding:
       found live the moment Kalshi Integration Phase A Task A2's new index-
       drift checker (`tools/kalshi_docs_sync.py --check`) was pointed at
       the real internet for the first time (2026-08-24): `Get Weather

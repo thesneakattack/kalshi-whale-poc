@@ -79,6 +79,27 @@
       "sha256": "b1c0f8b4de3671d237c81411099e44e7b0d09cdacd67cc1db1465121209ea6fa"
     },
     {
+      "local_path": "docs/kalshi/cancel-cross-exit-trigger-by-id.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-trigger-by-id.md"
+      ],
+      "sha256": "a0121dd43ef25620b7bc017b36d351b0f17e402d41e45fd60a9cecd62f9e77b6"
+    },
+    {
+      "local_path": "docs/kalshi/cancel-cross-exit-triggers.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-triggers.md"
+      ],
+      "sha256": "1328cedecfe4bf7d1f85efe4a640239624c671fbdf7f1c4f6c687b8dffa1c3c9"
+    },
+    {
+      "local_path": "docs/kalshi/cancel-isolated-exit-trigger.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/cancel-isolated-exit-trigger.md"
+      ],
+      "sha256": "eed691a50de8a125fc7a27886dd8f90691d0cc34a4890e59d4ecf3ce1f0049f8"
+    },
+    {
       "local_path": "docs/kalshi/cancel-order-v2.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/orders/cancel-order-v2.md"
@@ -422,6 +443,13 @@
       "sha256": "8168bf4f612cc82f435ad8956ccded8f0cd45075daafaffd4bb53b0b6d5207e5"
     },
     {
+      "local_path": "docs/kalshi/get-cross-exit-triggers.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/get-cross-exit-triggers.md"
+      ],
+      "sha256": "7f5677398757e39767dfb26be3eea1c3995328ff6dd54c755e635e3f678aef79"
+    },
+    {
       "local_path": "docs/kalshi/get-deposits.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/portfolio/get-deposits.md"
@@ -644,6 +672,13 @@
         "https://docs.kalshi.com/api-reference/portfolio/get-intra-account-transfers.md"
       ],
       "sha256": "d972da185e247c940fdd7fa5a7c76fad59045a0170a3d452de4e92cf5dd3b3a0"
+    },
+    {
+      "local_path": "docs/kalshi/get-isolated-exit-triggers.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/get-isolated-exit-triggers.md"
+      ],
+      "sha256": "c52c9622551d1ca89c72bc53114fcc078b5f1da7558b01e13e535fa644c094f2"
     },
     {
       "local_path": "docs/kalshi/get-live-data-with-type.md",
@@ -905,6 +940,13 @@
       "sha256": "326e3f71548f8ad8249891c15e23d2856aee6dc334aab05eb5ab8fd5e9946803"
     },
     {
+      "local_path": "docs/kalshi/get-target-balance-allocation.md",
+      "source_urls": [
+        "https://docs.kalshi.com/api-reference/portfolio/get-target-balance-allocation.md"
+      ],
+      "sha256": "96127b669c68f210971a323e78b51ff7203620501b68d787fc711648348ef4e5"
+    },
+    {
       "local_path": "docs/kalshi/get-total-resting-order-value.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/portfolio/get-total-resting-order-value.md"
@@ -924,6 +966,13 @@
         "https://docs.kalshi.com/api-reference/exchange/get-user-data-timestamp.md"
       ],
       "sha256": "ab82c5b1d26128e91c5a43979d18c851e20ebf6d7e5eb00687310eae0cacfa93"
+    },
+    {
+      "local_path": "docs/kalshi/get-weather-index.md",
+      "source_urls": [
+        "https://docs.kalshi.com/api-reference/live-data/get-weather-index.md"
+      ],
+      "sha256": "64ce8f7de7911eb6edb2cf842c266421a68971fdf9be1ec1a1c86734959f1ce3"
     },
     {
       "local_path": "docs/kalshi/get-withdrawals.md",
@@ -972,7 +1021,7 @@
       "source_urls": [
         "https://docs.kalshi.com/llms.txt"
       ],
-      "sha256": null
+      "sha256": "54fc7b186d1d80b943e842571b331d20cd7fa04b03708c5cc898fb49738ccd1b"
     },
     {
       "local_path": "docs/kalshi/maintenance_and_pauses.md",
@@ -1409,6 +1458,27 @@
       "sha256": "04761f6424ca3a06c8309f889419161bd093564282a627cca6ae85faa968aca8"
     },
     {
+      "local_path": "docs/kalshi/set-cross-exit-trigger.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/set-cross-exit-trigger.md"
+      ],
+      "sha256": "9cd751284bb18813c04d08cccf7cfadc81a4f1d1afca75c1f5e99e7176c0f3b9"
+    },
+    {
+      "local_path": "docs/kalshi/set-isolated-exit-trigger.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/set-isolated-exit-trigger.md"
+      ],
+      "sha256": "b8dd0a94701b106c6da932ae8e4f2eb158d0dd6e74c3eee03996de98866db6d0"
+    },
+    {
+      "local_path": "docs/kalshi/set-target-balance-allocation.md",
+      "source_urls": [
+        "https://docs.kalshi.com/api-reference/portfolio/set-target-balance-allocation.md"
+      ],
+      "sha256": "36c7a302c32d31d07e059a590c4f082c71b37a5b793faca9fc06eb0c09002db7"
+    },
+    {
       "local_path": "docs/kalshi/subaccounts.md",
       "source_urls": [
         "https://docs.kalshi.com/getting_started/subaccounts.md"
@@ -1449,6 +1519,13 @@
         "https://docs.kalshi.com/api-reference/order-groups/trigger-order-group.md"
       ],
       "sha256": "fb0bdee73b82cde3f1b48f41ba29a64e4b5833a8a004c33ba6dfe12fa31ba94b"
+    },
+    {
+      "local_path": "docs/kalshi/update-cross-exit-trigger.md",
+      "source_urls": [
+        "https://docs.kalshi.com/margin-rest/exit-triggers/update-cross-exit-trigger.md"
+      ],
+      "sha256": "80c02231cff2ebf755ef70cd1761a67ce83e74941f6a42390f87325e63aa98e4"
     },
     {
       "local_path": "docs/kalshi/update-fcm-subtrader-risk-controls.md",

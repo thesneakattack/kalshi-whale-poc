@@ -1,5 +1,3 @@
-Source: https://docs.kalshi.com/llms.txt
-
 # API Documentation
 
 ## Docs
@@ -67,8 +65,8 @@ Source: https://docs.kalshi.com/llms.txt
 - [Reset Order Group](https://docs.kalshi.com/api-reference/order-groups/reset-order-group.md): Resets the order group's matched contracts counter to zero, allowing new orders to be placed again after the limit was hit.
 - [Trigger Order Group](https://docs.kalshi.com/api-reference/order-groups/trigger-order-group.md): Triggers the order group, canceling all orders in the group and preventing new orders until the group is reset.
 - [Update Order Group Limit](https://docs.kalshi.com/api-reference/order-groups/update-order-group-limit.md): Updates the order group contracts limit (rolling 15-second window). If the updated limit would immediately trigger the group, all orders in the group are canceled and the group is triggered.
-- [Get Balance](https://docs.kalshi.com/api-reference/portfolio/get-balance.md): Endpoint for getting the balance and portfolio value of a member. `portfolio_value` is always scoped to the requested `exchange_index` (defaulting to 0). When `subaccount` is omitted, `balance` is the primary account's aggregate available balance; pass `subaccount` explicitly (0 for primary, 1-63 fo…
-- [Intra Account Transfer](https://docs.kalshi.com/api-reference/portfolio/intra-account-transfer.md): Endpoint for transferring funds within the same account.
+- [Get Balance](https://docs.kalshi.com/api-reference/portfolio/get-balance.md): Returns the balance and portfolio value for a member. Both values include all exchange indexes unless `exchange_index` is provided. Pass `subaccount` to use a subaccount instead of the primary account. This endpoint also accepts API keys with the 'read::portfolio_balance' scope.
+- [Intra Account Transfer](https://docs.kalshi.com/api-reference/portfolio/intra-account-transfer.md): Transfers funds within the same account.
 - [Get Intra Account Transfers](https://docs.kalshi.com/api-reference/portfolio/get-intra-account-transfers.md): Endpoint for fetching intra-exchange account transfer history.
 - [Get Intra Account Transfer](https://docs.kalshi.com/api-reference/portfolio/get-intra-account-transfer.md): Endpoint for getting a single intra-account transfer by id.
 - [Create Subaccount](https://docs.kalshi.com/api-reference/portfolio/create-subaccount.md): Creates a new subaccount for the authenticated user. This endpoint is available to all users on the Advanced API tier and above. Subaccounts are numbered sequentially starting from 1. Maximum 63 numbered subaccounts per user (64 including the primary account).
@@ -83,6 +81,8 @@ Source: https://docs.kalshi.com/llms.txt
 - [Get Withdrawals](https://docs.kalshi.com/api-reference/portfolio/get-withdrawals.md): Endpoint for getting the member's withdrawal history.
 - [Get Total Resting Order Value](https://docs.kalshi.com/api-reference/portfolio/get-total-resting-order-value.md): Endpoint for getting the total value, in cents, of resting orders. This endpoint is only intended for use by FCM members (rare). Note: If you're uncertain about this endpoint, it likely does not apply to you.
 - [Get Fills](https://docs.kalshi.com/api-reference/portfolio/get-fills.md): Endpoint for getting all fills for the member. A fill is when a trade you have is matched. Fills that occurred before the historical cutoff are only available via `GET /historical/fills`. See [Historical Data](https://docs.kalshi.com/getting_started/historical_data) for details.
+- [Get Target Balance Allocation](https://docs.kalshi.com/api-reference/portfolio/get-target-balance-allocation.md): Retrieves the caller's target balance allocation across exchange indexes.
+- [Set Target Balance Allocation](https://docs.kalshi.com/api-reference/portfolio/set-target-balance-allocation.md): Replaces the caller's target balance allocation across exchange indexes. Percentages must total 100. Passing an empty allocations array disables automatic rebalancing.
 - [Get Communications ID](https://docs.kalshi.com/api-reference/communications/get-communications-id.md): Endpoint for getting the communications ID of the logged-in user.
 - [Get Block Trade Proposals](https://docs.kalshi.com/api-reference/communications/get-block-trade-proposals.md): Endpoint for getting block trade proposals visible to the authenticated user.
 - [Propose Block Trade](https://docs.kalshi.com/api-reference/communications/propose-block-trade.md): Endpoint for creating a block trade proposal.
@@ -116,6 +116,7 @@ Source: https://docs.kalshi.com/llms.txt
 - [Get Multiple Live Data](https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md): Get live data for multiple milestones
 - [Get Game Stats](https://docs.kalshi.com/api-reference/live-data/get-game-stats.md): Get play-by-play game statistics for a specific milestone. Supported sports: Pro Football, College Football, Pro Basketball, College Men's Basketball, College Women's Basketball, WNBA, Soccer, Pro Hockey, and Pro Baseball. Returns null for unsupported milestone types or milestones without a Sportrad…
 - [Get Event Live Data](https://docs.kalshi.com/api-reference/live-data/get-event-live-data.md): Get live data for an event by its event ticker. Serves event-keyed live data such as crypto price charts, commodity price timeseries, and weather observations. The `type` field in the response names the schema of the `details` object.
+- [Get Weather Index](https://docs.kalshi.com/api-reference/live-data/get-weather-index.md): Get the Kalshi-computed city temperature index: the canonical minute-resolution series behind hourly temperature markets. City-keyed and independent of any event — the series exists whenever the city's index is configured. Values are Fahrenheit rounded to 0.01. Minutes where the index quorum failed…
 - [Get Structured Targets](https://docs.kalshi.com/api-reference/structured-targets/get-structured-targets.md): Page size (min: 1, max: 2000)
 - [Get Structured Target](https://docs.kalshi.com/api-reference/structured-targets/get-structured-target.md): Endpoint for getting data about a specific structured target by its ID.
 - [Get Milestone](https://docs.kalshi.com/api-reference/milestone/get-milestone.md): Endpoint for getting data about a specific milestone by its ID.
@@ -165,7 +166,7 @@ Source: https://docs.kalshi.com/llms.txt
 - [Perps API](https://docs.kalshi.com/margin.md): Getting started with Kalshi's perpetual-futures (perps) trading API
 - [Price Banding](https://docs.kalshi.com/margin/price-banding.md): How price banding works for Kalshi margin markets
 - [Create Margin FCM Subtrader](https://docs.kalshi.com/margin-rest/fcm/create-margin-fcm-subtrader.md): Endpoint for FCM members to create a margin subtrader.
-- [Get FCM Subtrader Risk Controls](https://docs.kalshi.com/margin-rest/fcm/get-fcm-subtrader-risk-controls.md): Returns the initial margin caps configured for an FCM member's subtrader on the margined exchange. A cap with no market_ticker applies across all markets; the remaining caps are scoped to a single market each. Markets without a cap are omitted.
+- [Get FCM Subtrader Risk Controls](https://docs.kalshi.com/margin-rest/fcm/get-fcm-subtrader-risk-controls.md): Returns the initial margin caps configured for an FCM member's subtrader on the margined exchange. A cap with neither market_ticker nor asset_class applies across all markets; the remaining caps are scoped to a single market or a single asset class each. Every cap in scope for an order is enforced i…
 - [Update FCM Subtrader Risk Controls](https://docs.kalshi.com/margin-rest/fcm/update-fcm-subtrader-risk-controls.md): Sets the initial margin cap for an FCM member's subtrader on the margined exchange.
 - [Delete FCM Subtrader Risk Controls](https://docs.kalshi.com/margin-rest/fcm/delete-fcm-subtrader-risk-controls.md): Removes the initial margin cap for an FCM member's subtrader on the margined exchange.
 - [Get Perps Account API Limits](https://docs.kalshi.com/margin-rest/account/get-perps-account-api-limits.md): Endpoint to retrieve the Perps (margin) API tier limits associated with the authenticated user.
@@ -202,6 +203,14 @@ Source: https://docs.kalshi.com/llms.txt
 - [Reset Order Group](https://docs.kalshi.com/margin-rest/order-groups/reset-order-group.md): Resets the order group matched contracts counter to zero on the margin exchange, allowing new orders to be placed again after the limit was hit.
 - [Trigger Order Group](https://docs.kalshi.com/margin-rest/order-groups/trigger-order-group.md): Triggers the order group on the margin exchange, canceling all orders in the group and preventing new orders until the group is reset.
 - [Update Order Group Limit](https://docs.kalshi.com/margin-rest/order-groups/update-order-group-limit.md): Updates the order group contracts limit on the margin exchange. If the updated limit would immediately trigger the group, all orders in the group are canceled and the group is triggered.
+- [Get Isolated Exit Triggers](https://docs.kalshi.com/margin-rest/exit-triggers/get-isolated-exit-triggers.md): Endpoint for retrieving the live exit triggers on the isolated margin position for a market.
+- [Set Isolated Exit Trigger](https://docs.kalshi.com/margin-rest/exit-triggers/set-isolated-exit-trigger.md): Endpoint for setting a stop-loss / take-profit bracket or a trailing stop on the isolated margin position for a market. Requires an open position, closes it in full, and fires reduce-only orders.
+- [Cancel Isolated Exit Trigger](https://docs.kalshi.com/margin-rest/exit-triggers/cancel-isolated-exit-trigger.md): Endpoint for cancelling exit triggers on the isolated margin position for a market. Succeeds even when nothing is live. The position itself is unaffected.
+- [Get Cross Exit Triggers](https://docs.kalshi.com/margin-rest/exit-triggers/get-cross-exit-triggers.md): Endpoint for retrieving the live exit triggers on a non-isolated margin position.
+- [Set Cross Exit Trigger](https://docs.kalshi.com/margin-rest/exit-triggers/set-cross-exit-trigger.md): Endpoint for setting a stop-loss / take-profit bracket or a trailing stop on a non-isolated margin position. A position holds one trailing stop and up to 20 brackets, so long as their counts fit the position. Requires an open position unless `anchor_order_id` is supplied, and fires reduce-only order…
+- [Cancel Cross Exit Triggers](https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-triggers.md): Endpoint for cancelling exit triggers on a non-isolated margin position, including partial and order-anchored brackets. Succeeds even when nothing is live; use the `{trigger_id}` route to cancel a single bracket.
+- [Update Cross Exit Trigger](https://docs.kalshi.com/margin-rest/exit-triggers/update-cross-exit-trigger.md): Endpoint for updating one bracket's leg prices, leaving any others on the position untouched. At least one leg is required; cancel with `DELETE`. Trailing stops are not addressed by id — use the collection route with `kind=trailing`.
+- [Cancel Cross Exit Trigger by ID](https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-trigger-by-id.md): Endpoint for cancelling one bracket, leaving any others on the position live. Trailing stops are not addressed by id — use the collection route with `kind=trailing`.
 - [WebSocket Connection](https://docs.kalshi.com/margin-ws/websockets/websocket-connection.md): Main WebSocket connection endpoint. Authentication is required during the WebSocket handshake.
 - [Connection Keep-Alive](https://docs.kalshi.com/margin-ws/websockets/connection-keep-alive.md): Kalshi sends Ping frames every 10 seconds with body `heartbeat`. Clients should respond with Pong frames.
 - [Orderbook Updates](https://docs.kalshi.com/margin-ws/websockets/orderbook-updates.md): Real-time margin orderbook price-level changes.
@@ -230,47 +239,3 @@ Source: https://docs.kalshi.com/llms.txt
 
 - [asyncapi](https://docs.kalshi.com/asyncapi.yaml)
 - [perps_asyncapi](https://docs.kalshi.com/perps_asyncapi.yaml)
-
-## Notes
-
-This is a local copy of the real, current `llms.txt` index, fetched verbatim
-from `https://docs.kalshi.com/llms.txt` on 2026-08-16. It replaces the
-previous version of this file, which was a deliberately curated subset
-(only the entries relevant to this app's real call sites, noted here since
-2026-08-15). Per direct instruction to mirror literally every API
-documentation page, every one of the 215 unique `.md` pages listed above now
-has a corresponding local file in `docs/kalshi/` (18 were already mirrored
-before this pass; the other 197 were fetched on 2026-08-16 - see
-`README.md`'s "2026-08-16 - full-index gap-fill" section for the complete
-list with sources).
-
-The 3 `## OpenAPI Specs` and 2 `## AsyncAPI Specs` entries above point to
-`.yaml` files, not `.md` pages, and are intentionally not mirrored here -
-this snapshot covers markdown documentation only.
-
-Two pairs of distinct URLs collapse to the same last-path-segment basename
-and needed disambiguation to avoid overwriting each other locally:
-- `welcome/index.md` and `changelog/index.md` -> `welcome-index.md` and
-  `changelog-index.md`.
-- `api-reference/live-data/get-live-data.md` (new in this pass) collides
-  with the pre-existing local `get-live-data.md`, whose content actually
-  comes from `get-live-data-with-type.md` + `get-multiple-live-data.md` (see
-  README) -> the new page is `live-data-get-live-data.md`.
-
-More broadly, the exchange now exposes a second, parallel API surface for
-margin/perpetual-futures trading (`margin-rest/`, `margin-ws/websockets/`,
-`fix-margin/`) whose endpoint names mirror the standard trading API
-(`api-reference/`, `websockets/`, `fix/`) almost 1:1 - e.g. both have a
-`get-market`, `get-balance`, `get-order-groups`, `authentication`, etc. Every
-such collision was resolved by keeping the standard/primary API's page at
-the plain endpoint name and prefixing the margin counterpart with
-`margin-rest-` / `margin-ws-` / `fix-margin-` (e.g. `get-market.md` is the
-standard market endpoint, `margin-rest-get-market.md` is its margin
-equivalent). All 197 new filenames and their exact source URLs are listed in
-`README.md`.
-
-No fetch failures: all 197 new pages returned real markdown content (one,
-`changelog/index.md`, was initially flagged by an automated 404-string
-sanity check because its changelog prose legitimately discusses `404 Not
-Found` API responses - inspected manually and confirmed to be genuine,
-complete changelog content, not an error page).

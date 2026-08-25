@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/pyth-value.md",
+    "note": "pyth_value msg payload: underlying_ticker (qualified Pyth ticker), value_usd ('USD value formatted to 8 decimal places' - a string), source_ts_ms, received_at. Pyth carries no windowed averages - a straight price for an underlying."
+  },
+  "payload": {
+    "underlying_ticker": "Crypto.BTC/USD",
+    "value_usd": "65002.41000000",
+    "source_ts_ms": 1755990000100,
+    "received_at": 1755990000123
+  }
+}

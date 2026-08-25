@@ -9,19 +9,14 @@
       "services/kalshi_account_client.py",
       "services/kalshi_client.py",
       "services/kalshi_trade_ws.py",
+      "tools/kalshi_docs_sync.py",
       "tools/kalshi_public_canary.py"
     ]
   },
   "sdk_imports": [
     {
-      "file": "services/kalshi_account_client.py",
-      "line": 43,
-      "imported": "kalshi_python_async",
-      "inside_approved_integration_file": true
-    },
-    {
-      "file": "services/kalshi_client.py",
-      "line": 24,
+      "file": "services/kalshi/transport.py",
+      "line": 20,
       "imported": "kalshi_python_async",
       "inside_approved_integration_file": true
     }
@@ -34,9 +29,21 @@
       "inside_approved_integration_file": true
     },
     {
+      "file": "services/kalshi/websocket.py",
+      "line": 57,
+      "snippet": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "services/kalshi/websocket.py",
+      "line": 58,
+      "snippet": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
+      "inside_approved_integration_file": true
+    },
+    {
       "file": "services/kalshi_account_client.py",
       "line": 1,
-      "snippet": "\nAuthenticated Kalshi client \u2014 YOUR real account. Separate from kalshi_client.py\n(public, unauthenticated market data) o",
+      "snippet": "\nAuthenticated Kalshi client \u2014 YOUR real account. Compatibility facade over\nthe integration boundary's split account gat",
       "inside_approved_integration_file": true
     },
     {
@@ -46,47 +53,89 @@
       "inside_approved_integration_file": false
     },
     {
-      "file": "services/kalshi_trade_ws.py",
-      "line": 15,
-      "snippet": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
-      "inside_approved_integration_file": true
-    },
-    {
-      "file": "services/kalshi_trade_ws.py",
-      "line": 16,
-      "snippet": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
-      "inside_approved_integration_file": true
-    },
-    {
       "file": "services/market_events/event_inspector.py",
       "line": 1,
       "snippet": "Utilities to inspect a market's event/series context and live/settlement state.\n\nPrimary entrypoint:\n    async def inspe",
       "inside_approved_integration_file": false
     },
     {
+      "file": "tools/kalshi_census.py",
+      "line": 304,
+      "snippet": "services.kalshi.contracts.trade",
+      "inside_approved_integration_file": false
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 65,
+      "snippet": "https://docs.kalshi.com/llms.txt",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 81,
+      "snippet": "https://docs.kalshi.com/openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 87,
+      "snippet": "https://docs.kalshi.com/perps_openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 91,
+      "snippet": "https://docs.kalshi.com/perps_scm_openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 95,
+      "snippet": "https://docs.kalshi.com/asyncapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 101,
+      "snippet": "https://docs.kalshi.com/perps_asyncapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 152,
+      "snippet": "docs.kalshi.com/",
+      "inside_approved_integration_file": true
+    },
+    {
       "file": "tools/kalshi_public_canary.py",
       "line": 40,
       "snippet": "https://external-api.kalshi.com/trade-api/v2",
       "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/quality_audit/kalshi_boundary.py",
+      "line": 1,
+      "snippet": "Kalshi integration-boundary CI ratchet \u2014 Phase A Task A15.\n\nTurns the boundary the A4-A14 migration built into an enforc",
+      "inside_approved_integration_file": false
     }
   ],
   "legacy_wrapper": {
     "imports": [
       {
         "file": "main.py",
-        "line": 53,
+        "line": 54,
         "module": "services.kalshi_client",
         "symbol": "KalshiClient"
       },
       {
         "file": "main.py",
-        "line": 54,
+        "line": 55,
         "module": "services.kalshi_account_client",
         "symbol": "KalshiAccountClient"
       },
       {
         "file": "main.py",
-        "line": 55,
+        "line": 56,
         "module": "services.kalshi_trade_ws",
         "symbol": "KalshiTradeWebSocketClient"
       },
@@ -122,7 +171,7 @@
       },
       {
         "file": "services/diagnostics/diagnostics.py",
-        "line": 514,
+        "line": 515,
         "module": "services.kalshi_client",
         "symbol": "KalshiClient"
       },
@@ -196,12 +245,12 @@
     "constructions": [
       {
         "file": "main.py",
-        "line": 199,
+        "line": 200,
         "symbol": "KalshiClient"
       },
       {
         "file": "main.py",
-        "line": 304,
+        "line": 305,
         "symbol": "KalshiClient"
       },
       {
@@ -226,7 +275,7 @@
       },
       {
         "file": "services/diagnostics/diagnostics.py",
-        "line": 518,
+        "line": 519,
         "symbol": "KalshiClient"
       },
       {
@@ -236,27 +285,27 @@
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 34,
+        "line": 35,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 58,
+        "line": 59,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 83,
+        "line": 84,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 129,
+        "line": 130,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 196,
+        "line": 197,
         "symbol": "KalshiClient"
       },
       {
@@ -271,7 +320,7 @@
       },
       {
         "file": "services/market_watch/discovery_cache.py",
-        "line": 312,
+        "line": 313,
         "symbol": "KalshiClient"
       },
       {
@@ -288,14 +337,14 @@
   },
   "wrapper_method_calls": {
     "account.close": [
-      "main.py:955"
+      "main.py:956"
     ],
-    "account.flatten_all": [
-      "main.py:1278"
+    "account.create_order": [
+      "services/execution.py:77"
     ],
     "account.get": [
       "services/account_positions.py:132",
-      "services/state_view.py:167"
+      "services/state_view.py:170"
     ],
     "account.get_balance": [
       "services/account_positions.py:168"
@@ -307,37 +356,35 @@
       "services/position/routes.py:42"
     ],
     "account.get_positions": [
-      "services/account_positions.py:168"
+      "services/account_positions.py:168",
+      "services/execution.py:66"
     ],
     "client.close": [
-      "main.py:204",
-      "main.py:890",
+      "main.py:205",
+      "main.py:891",
       "services/analytics/routes.py:175",
-      "services/diagnostics/diagnostics.py:538",
+      "services/diagnostics/diagnostics.py:539",
       "services/diagnostics/routes.py:220",
-      "services/market_catalog/routes.py:40",
-      "services/market_catalog/routes.py:72",
-      "services/market_catalog/routes.py:89",
-      "services/market_catalog/routes.py:146",
-      "services/market_catalog/routes.py:277",
+      "services/market_catalog/routes.py:41",
+      "services/market_catalog/routes.py:73",
+      "services/market_catalog/routes.py:90",
+      "services/market_catalog/routes.py:147",
+      "services/market_catalog/routes.py:278",
       "services/market_events/event_schedule.py:476",
       "services/market_watch/catalog_scan.py:374",
-      "services/market_watch/discovery_cache.py:317",
+      "services/market_watch/discovery_cache.py:318",
       "services/whale_stream/index_stream_handlers.py:83"
     ],
     "client.get": [
       "services/market_events/event_schedule.py:264"
     ],
-    "client.get_candidate_markets": [
-      "services/market_catalog/routes.py:240"
-    ],
     "client.get_candlesticks": [
-      "services/market_catalog/routes.py:66"
+      "services/market_catalog/routes.py:67"
     ],
     "client.get_event": [
       "services/analytics/market_analyst_orchestrator.py:78",
-      "services/market_catalog/routes.py:60",
-      "services/market_catalog/routes.py:140",
+      "services/market_catalog/routes.py:61",
+      "services/market_catalog/routes.py:141",
       "services/market_events/event_inspector.py:65"
     ],
     "client.get_event_live_data": [
@@ -350,7 +397,7 @@
       "services/market_watch/live_status.py:228"
     ],
     "client.get_filters_for_sports": [
-      "services/market_watch/discovery_cache.py:60"
+      "services/market_watch/discovery_cache.py:61"
     ],
     "client.get_live_data": [
       "services/market_events/event_inspector.py:90"
@@ -362,22 +409,23 @@
     "client.get_market": [
       "services/analytics/market_analyst_orchestrator.py:72",
       "services/diagnostics/routes.py:210",
-      "services/market_catalog/routes.py:132",
+      "services/market_catalog/routes.py:133",
       "services/market_events/event_inspector.py:49",
       "services/whale_stream/index_stream_handlers.py:66",
-      "services/whale_stream/whale_stream_handlers.py:470"
+      "services/whale_stream/whale_stream_handlers.py:476"
     ],
     "client.get_markets": [
       "services/market_events/event_inspector.py:102",
-      "services/market_watch/catalog_scan.py:306"
+      "services/market_watch/catalog_scan.py:306",
+      "services/market_watch/selection.py:61"
     ],
     "client.get_markets_by_tickers": [
-      "main.py:253",
+      "main.py:254",
       "services/market_watch/catalog_scan.py:132",
-      "services/market_watch/discovery_cache.py:122",
-      "services/market_watch/discovery_cache.py:277",
+      "services/market_watch/discovery_cache.py:123",
+      "services/market_watch/discovery_cache.py:278",
       "services/whale_stream/index_stream_handlers.py:108",
-      "services/whalewatchers/kalshi_trade_tape.py:393"
+      "services/whalewatchers/kalshi_trade_tape.py:344"
     ],
     "client.get_milestones_for_event": [
       "services/market_events/event_inspector.py:84",
@@ -386,84 +434,90 @@
       "services/market_watch/live_status.py:144"
     ],
     "client.get_orderbook": [
-      "services/market_catalog/routes.py:36"
+      "services/market_catalog/routes.py:37"
     ],
     "client.get_series_list": [
       "services/market_watch/catalog_scan.py:202"
     ],
     "client.get_tags_for_series_categories": [
-      "services/market_watch/discovery_cache.py:59"
-    ],
-    "client.get_top_volume_markets": [
-      "services/market_catalog/routes.py:252"
+      "services/market_watch/discovery_cache.py:60"
     ],
     "client.get_trades": [
-      "services/diagnostics/diagnostics.py:529",
-      "services/market_catalog/routes.py:85",
-      "services/whale_stream/whale_stream_handlers.py:524",
-      "services/whale_stream/whale_stream_handlers.py:529"
+      "services/diagnostics/diagnostics.py:530",
+      "services/market_catalog/routes.py:86",
+      "services/whale_stream/whale_stream_handlers.py:530",
+      "services/whale_stream/whale_stream_handlers.py:535"
     ],
     "client.post": [
       "services/alerting/alerting.py:182"
     ],
     "index_stream.close": [
-      "main.py:947"
+      "main.py:948"
     ],
     "index_stream.run": [
-      "main.py:935"
+      "main.py:936"
     ],
     "trade_stream.close": [
-      "main.py:944"
+      "main.py:945"
     ],
     "trade_stream.run": [
-      "main.py:921"
+      "main.py:922"
     ],
     "trade_stream.set_market_tickers": [
-      "main.py:571"
+      "main.py:572"
     ]
   },
   "known_field_reads": {
     "count_fp": [
-      "services/diagnostics/diagnostics.py:544",
-      "services/kalshi_trade_ws.py:574",
-      "services/series_watcher.py:255"
+      "services/diagnostics/diagnostics.py:545",
+      "services/kalshi/contracts/fill.py:89",
+      "services/kalshi/contracts/trade.py:82",
+      "services/kalshi/contracts/trade.py:186",
+      "services/kalshi/contracts/trade.py:164",
+      "services/series_watcher.py:247"
     ],
     "market_ticker": [
-      "services/kalshi_trade_ws.py:571",
-      "services/series_watcher.py:236",
-      "services/series_watcher.py:278",
-      "services/state_view.py:166",
-      "services/state_view.py:168",
-      "services/whale_stream/whale_stream_handlers.py:194",
-      "services/whale_stream/whale_stream_handlers.py:423",
-      "services/whale_stream/whale_stream_handlers.py:330"
+      "services/kalshi/contracts/fill.py:45",
+      "services/kalshi/contracts/fill.py:86",
+      "services/kalshi/contracts/lifecycle.py:62",
+      "services/kalshi/contracts/lifecycle.py:85",
+      "services/kalshi/contracts/position.py:44",
+      "services/kalshi/contracts/position.py:65",
+      "services/kalshi/contracts/ticker.py:31",
+      "services/kalshi/contracts/ticker.py:53",
+      "services/kalshi/contracts/trade.py:79",
+      "services/kalshi/contracts/trade.py:162",
+      "services/series_watcher.py:225",
+      "services/series_watcher.py:270"
     ],
     "taker_book_side": [
-      "services/kalshi_trade_ws.py:585",
-      "services/series_watcher.py:254",
-      "services/whalewatchers/kalshi_trade_tape.py:121"
+      "services/kalshi/contracts/trade.py:88",
+      "services/kalshi/contracts/trade.py:112",
+      "services/series_watcher.py:246"
     ],
     "taker_outcome_side": [
-      "services/kalshi_trade_ws.py:583",
-      "services/kalshi_trade_ws.py:584",
-      "services/series_watcher.py:254",
-      "services/whalewatchers/kalshi_trade_tape.py:118"
+      "services/kalshi/contracts/trade.py:86",
+      "services/kalshi/contracts/trade.py:87",
+      "services/kalshi/contracts/trade.py:109",
+      "services/series_watcher.py:246"
     ],
     "taker_side": [
-      "services/kalshi_trade_ws.py:583",
-      "services/kalshi_trade_ws.py:584",
-      "services/series_watcher.py:255",
-      "services/whalewatchers/kalshi_trade_tape.py:126"
+      "services/kalshi/contracts/trade.py:86",
+      "services/kalshi/contracts/trade.py:87",
+      "services/kalshi/contracts/trade.py:115",
+      "services/series_watcher.py:247"
     ],
     "trade_id": [
-      "services/kalshi_trade_ws.py:570",
-      "services/series_watcher.py:237",
+      "services/kalshi/contracts/fill.py:85",
+      "services/kalshi/contracts/trade.py:78",
+      "services/kalshi/contracts/trade.py:161",
+      "services/series_watcher.py:226",
       "services/whale_stream/whale_stream_handlers.py:137",
-      "services/whale_stream/whale_stream_handlers.py:299",
       "services/whale_stream/whale_stream_handlers.py:302",
-      "services/whale_stream/whale_stream_handlers.py:302",
-      "services/whalewatchers/kalshi_trade_tape.py:366",
-      "services/whalewatchers/kalshi_trade_tape.py:442"
+      "services/whale_stream/whale_stream_handlers.py:305",
+      "services/whale_stream/whale_stream_handlers.py:305",
+      "services/whalewatchers/kalshi_trade_tape.py:317",
+      "services/whalewatchers/kalshi_trade_tape.py:393"
     ]
   },
   "fixtures": [
@@ -472,6 +526,14 @@
       "source_doc": "docs/kalshi/cancel-order-v2.md",
       "source_docs": [
         "docs/kalshi/cancel-order-v2.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/cfbenchmarks_value.json",
+      "source_doc": "docs/kalshi/cfbenchmarks-value.md",
+      "source_docs": [
+        "docs/kalshi/cfbenchmarks-value.md"
       ],
       "source_doc_exists": true
     },
@@ -564,12 +626,36 @@
         "docs/kalshi/CHEATSHEET.md"
       ],
       "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/pyth_value.json",
+      "source_doc": "docs/kalshi/pyth-value.md",
+      "source_docs": [
+        "docs/kalshi/pyth-value.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/rest_fill.json",
+      "source_doc": "docs/kalshi/get-fills.md",
+      "source_docs": [
+        "docs/kalshi/get-fills.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/rest_market_position.json",
+      "source_doc": "docs/kalshi/get-positions.md",
+      "source_docs": [
+        "docs/kalshi/get-positions.md"
+      ],
+      "source_doc_exists": true
     }
   ],
   "hot_cold_classification": [
     {
-      "module": "services.kalshi_trade_ws",
-      "symbol": "KalshiTradeWebSocketClient._handle_message",
+      "module": "services.kalshi.websocket",
+      "symbol": "KalshiStreamGateway._handle_message",
       "classification": "hot",
       "reason": "Dispatches every message on the exchange-wide WS connection (trade_stream_exchange_wide: true).",
       "verified": true
@@ -624,8 +710,8 @@
       "verified": true
     },
     {
-      "module": "services.whalewatchers.kalshi_trade_tape",
-      "symbol": "_taker_side",
+      "module": "services.kalshi.contracts.trade",
+      "symbol": "resolve_taker_outcome_side",
       "classification": "hot",
       "reason": "Called per trade to classify direction on the whale-detection path.",
       "verified": true
@@ -646,15 +732,15 @@
     }
   ],
   "counts": {
-    "sdk_import_sites": 2,
-    "direct_host_usage_sites": 7,
+    "sdk_import_sites": 1,
+    "direct_host_usage_sites": 16,
     "legacy_wrapper_import_sites": 20,
     "legacy_wrapper_construction_sites": 18,
     "wrapper_method_call_sites": 68,
-    "known_field_read_sites": 30,
-    "fixtures_total": 12,
+    "known_field_read_sites": 39,
+    "fixtures_total": 16,
     "fixtures_missing_source_doc": 0,
-    "direct_access_count": 2,
+    "direct_access_count": 4,
     "legacy_caller_count": 16
   }
 }

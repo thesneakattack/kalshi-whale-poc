@@ -8,6 +8,7 @@ touched by a test run).
 """
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
@@ -287,6 +288,38 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
         # nobody's question about a specific one).
         "series_funnel:KXBTC15M",
     }
+
+
+def test_read_paths_close_their_sqlite_connections(dbs):
+    """Regression guard for a real flake root-caused 2026-08-25 (CI-only at
+    first, then reproducible): every read helper in diagnostics.py/
+    series_watcher.py used `with sqlite3.connect(...)`, which COMMITS on
+    exit but never CLOSES. On a WAL database (signal_log/paper_broker) the
+    connection then lingered until garbage collection, and its close-time
+    WAL checkpoint rewrote the main .db file - bumping mtime at a
+    nondeterministic moment and making
+    test_run_offline_never_writes_to_any_db pass or fail purely on GC
+    timing (adding unrelated modules to the import graph was enough to
+    flip it).
+
+    Asserting on the source rather than on timing: a timing-based test for
+    this would be exactly as flaky as the bug it guards. `closing(...)` is
+    the required idiom for these read paths - it also drops the pointless
+    implicit commit, which is what made a documented never-writes module
+    write at all."""
+    import re
+
+    for module_path in (
+        Path(diagnostics.__file__),
+        Path(sw_module.__file__),
+    ):
+        source = module_path.read_text()
+        bare = re.findall(r"with sqlite3\.connect\(", source)
+        assert not bare, (
+            f"{module_path.name} has {len(bare)} bare `with sqlite3.connect(...)` read site(s) - "
+            "wrap in contextlib.closing() so the connection is actually closed and no "
+            "implicit commit fires on a read path"
+        )
 
 
 def test_run_offline_never_writes_to_any_db(dbs):

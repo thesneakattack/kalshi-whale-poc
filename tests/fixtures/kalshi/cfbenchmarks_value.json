@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/cfbenchmarks-value.md",
+    "note": "cfbenchmarks_value msg payload per the channel's jsonPayloadSchema (required: index_id, received_at, data, avg_60s_data; last_60s_windowed_average_15min optional, 'present only in the final minute before quarter-hour close' - included here because it IS the settlement quantity for the KXBTC15M family). `data` is documented only as 'the raw CF Benchmarks JSON frame, as a string' - upstream CF format, of which the app reads `value` (the untouched index level)."
+  },
+  "payload": {
+    "index_id": "BRTI",
+    "received_at": 1755990000123,
+    "data": "{\"value\": \"65001.23000000\"}",
+    "avg_60s_data": {
+      "value": "64998.51000000",
+      "window_size": 59,
+      "window_start_ts_ms": 1755989940000,
+      "window_end_ts_exclusive": 1755990000000
+    },
+    "last_60s_windowed_average_15min": {
+      "value": "64999.87000000",
+      "window_size": 42,
+      "window_start_ts_ms": 1755989940000,
+      "window_end_ts_exclusive": 1755990000000
+    }
+  }
+}
