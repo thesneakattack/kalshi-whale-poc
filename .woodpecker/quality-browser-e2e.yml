@@ -59,10 +59,14 @@ steps:
       - mkdir -p build
       # Services boot alongside the pipeline, not before it, so the grid may
       # not be up yet. Poll it rather than guessing with a sleep.
+      #
+      # $i not ${i}: Woodpecker runs its own substitution pass over these
+      # command strings and consumes ${...}, so the first version of this
+      # logged "grid ready after s" with the count silently eaten.
       - |
         for i in $(seq 1 60); do
           if python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://selenium:4444/status', timeout=2).status == 200 else 1)" 2>/dev/null; then
-            echo "selenium grid ready after ${i}s"; break
+            echo "selenium grid ready after $i""s"; break
           fi
           sleep 1
         done
