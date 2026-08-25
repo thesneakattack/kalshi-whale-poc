@@ -58,6 +58,7 @@ trusted when the dashboard's numbers are already in doubt.
 """
 import json
 import sqlite3
+from contextlib import closing
 import time
 from pathlib import Path
 
@@ -418,7 +419,7 @@ def _signals_for_series(series: str, since_ts: float, before_ts: float) -> list[
     the exchange but is not evidence about the strategy (see
     signal_log.mark_excluded_range)."""
     try:
-        with sqlite3.connect(signal_log.DB_PATH) as conn:
+        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT ticker, side, size, confidence, seen_at, price, resolved, correct, "
@@ -440,7 +441,7 @@ def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[d
     before the window but closed inside it still finds its own entry;
     filtering happens on the close timestamp afterwards."""
     try:
-        with sqlite3.connect(pb_module.DB_PATH) as conn:
+        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "

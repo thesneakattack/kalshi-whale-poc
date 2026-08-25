@@ -34,6 +34,7 @@ numbers are in doubt.
 """
 import json
 import sqlite3
+from contextlib import closing
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -82,7 +83,7 @@ def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     if not unique:
         return {}
     try:
-        with sqlite3.connect(market_catalog.DB_PATH) as conn:
+        with closing(sqlite3.connect(market_catalog.DB_PATH)) as conn:
             placeholders = ",".join("?" for _ in unique)
             rows = conn.execute(
                 f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
@@ -110,7 +111,7 @@ def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
     config_path values, recorded after since_ts - the raw material
     _historical_value rewinds. One query per check (not one per row)."""
     try:
-        with sqlite3.connect(config_performance.DB_PATH) as conn:
+        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             placeholders = ",".join("?" for _ in paths)
             rows = conn.execute(
@@ -180,7 +181,7 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
     changes = _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
 
     try:
-        with sqlite3.connect(signal_log.DB_PATH) as conn:
+        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT series, ticker, size, seen_at FROM signals "
@@ -257,7 +258,7 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
     )
 
     try:
-        with sqlite3.connect(pb_module.DB_PATH) as conn:
+        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT ticker, side, price, size, reason, timestamp FROM trades "
@@ -331,7 +332,7 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
     floor = strat.get("min_seconds_to_close")
 
     try:
-        with sqlite3.connect(pb_module.DB_PATH) as conn:
+        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             opens = conn.execute(
                 "SELECT ticker, side, price, size, timestamp FROM trades "
@@ -402,7 +403,7 @@ def config_epochs(since_ts: float | None = None, now: float | None = None) -> li
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 7 * 24 * 3600
     try:
-        with sqlite3.connect(config_performance.DB_PATH) as conn:
+        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT applied_at, config_path, old_value, new_value, source "
@@ -447,7 +448,7 @@ def performance_by_epoch(since_ts: float | None = None, now: float | None = None
         return Check("performance_by_epoch", _UNKNOWN,
                      "no config changes recorded in this window — no epochs to compare")
     try:
-        with sqlite3.connect(pb_module.DB_PATH) as conn:
+        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             closes = conn.execute(
                 "SELECT ticker, reason, timestamp FROM trades "
@@ -649,7 +650,7 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 30 * 24 * 3600
     try:
-        with sqlite3.connect(signal_log.DB_PATH) as conn:
+        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
