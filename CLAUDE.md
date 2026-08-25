@@ -388,13 +388,35 @@ live against the real API, not by guessing from prose or memory.
   pattern to watch for" section already applies to code bugs, just for
   API-documentation lookups instead.
 
+## Branching and CI — standing policy
+
+Direct standing instruction (2026-08-25): `main` is the authoritative
+integrated branch, protected in practice by policy (not a GitHub-side
+setting yet — see `.claude/rules/branching-and-ci.md`'s note on that).
+Normal implementation work happens on a short-lived initiative branch
+(`feat/`, `fix/`, `refactor/`, `chore/`, `docs/<name>`), not directly on
+`main` — no permanent `development`/`staging`-style branches. Claude owns
+targeted local verification; Woodpecker owns exhaustive verification, on
+every branch push, not just `main`. Full lifecycle: `main` → initiative
+branch → implementation → targeted local checks → commit → push →
+Woodpecker → PR → merge → delete branch.
+
+`.claude/rules/branching-and-ci.md` is the single authoritative detailed
+rule for this — read it before starting implementation work, not just
+this summary. `.claude/hooks/session_orient.sh` prints the active branch
+every session start specifically so this doesn't depend on remembering
+across a session; a report of `main` there is the cue to branch before
+implementing, not a reason to proceed on it.
+
 ## Long-session workflow — commits, pushes, CI offload, compacting
 
 Direct standing instruction (2026-08-16): during a long working session,
-checkpoint proactively rather than batching everything to the end. Use
-`TodoWrite` for any multi-step task, and once a unit of work is genuinely
-verified, commit it and push to `origin` rather than letting it sit
-uncommitted.
+checkpoint proactively rather than batching everything to the end (on the
+current initiative branch, per the branching policy above — this section
+covers *when* to checkpoint within a session, not which branch it lands
+on). Use `TodoWrite` for any multi-step task, and once a unit of work is
+genuinely verified, commit it and push to `origin` rather than letting it
+sit uncommitted.
 
 **Default to offloading full-suite verification to Woodpecker CI rather
 than re-running it locally before every commit** (direct instruction,
