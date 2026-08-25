@@ -5,14 +5,13 @@ kalshi:
   - KXBTC15M
   markets_watchlist_mode: merge
   watchlist_size: 150
-  max_children_per_parent: 3
-  min_volume_24h: 5000
+  max_children_per_parent: 5
+  min_volume_24h: 10000
   min_volume_24h_by_series:
     KXBTC15M: 0
   categories:
   - Sports
-  - Crypto
-  live_markets_only: false
+  live_markets_only: true
   poll_interval_sec: 6
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
@@ -27,32 +26,32 @@ whale_signal:
   live_markets_only: false
 strategy:
   name: follow_the_whale
-  entry_threshold: 0.3609
+  entry_threshold: 0.55
   max_position_pct: 0.05
-  cooldown_sec: 120
-  close_window_sec: 12825.516
-  special_market_min_seconds_to_close: 177.147
+  cooldown_sec: 60
+  close_window_sec: 2764800
+  special_market_min_seconds_to_close: 120
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
   min_unit_cost: 0.5
   max_unit_cost: 0.9
-  min_whale_winrate_pct: 45
+  min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 20
   live_markets_only: false
   excluded_series: []
   take_profit_pct: null
   stop_loss_pct: null
   exit_on_sentiment_reversal: false
-  longshot_close_window_sec: 900
+  longshot_close_window_sec: 300
   exit_sentiment_min_signals: 15
   exit_sentiment_lean_pct: 90
   auto_exit_enabled: true
-  auto_exit_threshold: 0.9
-  auto_exit_pnl_weight: 0.2
+  auto_exit_threshold: 0.85
+  auto_exit_pnl_weight: 0.85
   auto_exit_sentiment_weight: 1.5
   auto_exit_staleness_weight: 0.5
   auto_exit_analyst_weight: 0.5
-  auto_exit_gain_reference_pct: 0.95
+  auto_exit_gain_reference_pct: 0.15
   auto_exit_loss_reference_pct: 0.85
   auto_exit_stale_after_sec: 7200
   auto_exit_normal_volatility: 0.002
@@ -62,8 +61,8 @@ strategy:
   longshot_entry_threshold_bonus: 0.05
   use_limit_orders: false
   limit_order_timeout_sec: 60
-  min_seconds_to_close: 300
-  exit_min_seconds_to_close: 120
+  min_seconds_to_close: 90
+  exit_min_seconds_to_close: null
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85
@@ -78,7 +77,7 @@ whale_watcher_kalshi:
   # and services/whalewatchers/kalshi_trade_tape.py's module docstring).
   # 5000 is the measured recommendation (mean unit cost 0.759 vs the old
   # dollar gate's 0.926).
-  min_contracts: 5000
+  min_contracts: 10000
   # Same two-tier structure the old min_notional_usd_by_series had (crypto
   # looser than the global default, mention-style markets loosest), same
   # round numbers - but re-validated against real historical signal sizes,
@@ -126,7 +125,7 @@ market_analyst:
 position_netting:
   enabled: true
   min_dwell_sec: 300
-  min_edge_improvement_usd: 1
+  min_edge_improvement_usd: 50
   normal_volatility: 0.02
   volatility_lookback_sec: 1800
 index_feed:

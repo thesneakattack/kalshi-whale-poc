@@ -386,6 +386,53 @@ def test_kelly_scaled_max_size_handles_effective_threshold_of_one():
     assert result == 500.0
 
 
+def test_kelly_scaled_max_size_never_returns_a_negative_ceiling():
+    # kelly_fraction_of_cap is live-editable from the dashboard Controls
+    # panel and documented as a 0-1 dial. Nothing bounded the upper end,
+    # and `scale = 1.0 - kelly_fraction * (1.0 - raw_scale)` goes negative
+    # as soon as kelly_fraction > 1 for any confidence short of the top of
+    # the band - a fat-fingered `3` instead of `0.3` produced a NEGATIVE
+    # position ceiling (measured: 500.0 -> -1000.0 at confidence 0.6).
+    # A size ceiling is a magnitude; it can never be below zero.
+    for kelly_fraction in (1.5, 3.0, 100.0):
+        for confidence in (0.6, 0.7, 0.8, 0.9, 1.0):
+            result = kelly_scaled_max_size(
+                500.0, confidence=confidence, effective_threshold=0.6, kelly_fraction=kelly_fraction,
+            )
+            assert result >= 0.0, f"negative ceiling at kelly_fraction={kelly_fraction}, confidence={confidence}"
+            assert result <= 500.0
+
+
+def test_kelly_scaled_max_size_clamps_fraction_above_one_to_full_strength():
+    # Out-of-domain values clamp to the strongest *documented* behavior
+    # (1.0 = "full linear scaling"), rather than being clipped at zero.
+    # Clipping at zero would silently refuse to trade every signal below a
+    # confidence cutoff while reporting only "position size rounds to
+    # zero" - the same silent-disable failure class services/config_bounds
+    # .py was written to prevent. config_bounds.check() reports the bad
+    # value separately so it gets fixed rather than just absorbed.
+    for confidence in (0.6, 0.75, 0.9, 1.0):
+        assert kelly_scaled_max_size(
+            500.0, confidence=confidence, effective_threshold=0.6, kelly_fraction=5.0,
+        ) == pytest.approx(kelly_scaled_max_size(
+            500.0, confidence=confidence, effective_threshold=0.6, kelly_fraction=1.0,
+        ))
+
+
+def test_kelly_scaled_max_size_stays_monotonic_in_confidence():
+    # Higher confidence must never buy a smaller position, at any dial
+    # setting. This held even while the ceiling was going negative (the
+    # curve stayed ordered, it just started below zero), so it is a
+    # regression guard for the clamp rather than a reproduction of the
+    # original bug - it must keep holding once the clamp is in.
+    for kelly_fraction in (0.0, 0.3, 1.0, 3.0):
+        sizes = [
+            kelly_scaled_max_size(500.0, confidence=c, effective_threshold=0.6, kelly_fraction=kelly_fraction)
+            for c in (0.6, 0.7, 0.8, 0.9, 1.0)
+        ]
+        assert sizes == sorted(sizes), f"non-monotonic at kelly_fraction={kelly_fraction}: {sizes}"
+
+
 def test_kelly_scaled_max_size_treats_none_fraction_as_off():
     # Real live bug (2026-08-15): kelly_fraction_of_cap: null (Python None)
     # used to crash `None <= 0` here - null is this app's own established

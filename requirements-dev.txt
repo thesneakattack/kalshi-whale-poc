@@ -1,10 +1,25 @@
 -r requirements.txt
-# 2026-08-23 pip-audit fix: 8.3.3 had PYSEC-2026-1845, fixed in 9.0.3. Test-
-# runner only, no plugins pinned in this repo (no conftest.py, no
-# pytest-asyncio) to check compatibility against - full suite re-run green.
+# 2026-08-23 pip-audit fix: 8.3.3 had PYSEC-2026-1845, fixed in 9.0.3.
+# (That note originally said no plugins and no conftest.py were pinned here
+# to check compatibility against - both have since changed: tests/conftest.py
+# exists, and pytest-xdist is pinned below.)
 pytest==9.0.3
+# Parallel test execution. The suite is CPU-bound and almost entirely
+# independent, so this is close to linear: measured on a 16-core host,
+# 230s serial -> 72s (-n 2) -> 46s (-n 4) -> 29s (-n 8) -> 23s (-n auto),
+# 1574 passed every time. CI runs -n 4; see .woodpecker/tests-pytest.yml for
+# why not higher. Verified non-flaky across repeated full runs before being
+# adopted, which matters in this repo specifically - test isolation here has
+# failed before (a real run once wrote into a live data/*.db), and worker
+# processes are exactly the kind of change that would resurface it.
+pytest-xdist==3.8.0
 # 2026-08-23 pip-audit fix: 2.32.3 had 2 known CVEs (PYSEC-2026-1872 fixed
 # at 2.32.4, PYSEC-2026-2275 only at 2.33.0). Dev-only usage
 # (tests/test_e2e_terminal_static_and_api.py, two plain requests.get calls).
 requests==2.33.0
-selenium==4.47.0
+# selenium moved to requirements-selenium.txt (2026-08-25). It is the single
+# largest wheel in this set at 9.1MB, it was downloaded by all four pipelines
+# that install this file, and only one of them drives a browser. Measured in
+# CI: `uv pip install` reported "Prepared 64 packages in 50.50s / Installed
+# 64 packages in 110ms" - the install is already free, the download is not,
+# so the only remaining lever is not fetching what a step never imports.

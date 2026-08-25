@@ -79,6 +79,24 @@ def kelly_scaled_max_size(max_size: float, confidence: float, effective_threshol
     cap: null was the committed config default until this same fix."""
     if kelly_fraction is None or kelly_fraction <= 0 or effective_threshold >= 1.0:
         return max_size
+    # Clamped to the documented 0-1 domain. Above 1.0 the scale below goes
+    # NEGATIVE - at kelly_fraction 3.0 and confidence at the threshold,
+    # `1.0 - 3.0 * (1.0 - 0.0)` is -2.0, i.e. a negative position ceiling
+    # (measured: max_size 500.0 -> -1000.0). That never opened a backwards
+    # position, because `contracts = int(max_size / unit_cost)` then fails
+    # evaluate()'s `contracts <= 0` gate - but it failed it reporting
+    # "position size rounds to zero", so setting this dial above 1.0
+    # silently stopped trading every signal below a confidence cutoff and
+    # blamed the size arithmetic for it. That is exactly the silent-
+    # disable failure class services/config_bounds.py exists to prevent,
+    # so it is ALSO reported there (config_bounds.check -> diagnostics ->
+    # /api/config warnings) rather than only being absorbed here: this
+    # clamp keeps sizing sane, the bound check is what gets the typo
+    # fixed. This field is live-editable from the dashboard Controls
+    # panel, and the number input's `max="1"` is presentational only -
+    # config-panel.js reads `.value` with parseFloat, so a typed `3`
+    # reaches the backend regardless.
+    kelly_fraction = min(1.0, kelly_fraction)
     raw_scale = min(1.0, max(0.0, (confidence - effective_threshold) / (1.0 - effective_threshold)))
     scale = 1.0 - kelly_fraction * (1.0 - raw_scale)
     return max_size * scale

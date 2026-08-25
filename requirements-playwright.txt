@@ -1,0 +1,15 @@
+# Playwright browser tests (tests/test_browser_playwright_e2e.py) only.
+#
+# Deliberately NOT in requirements-dev.txt: four pipelines install that file,
+# and only one of them runs these tests. Playwright's wheel is large, and the
+# whole point of the surrounding work was to stop paying install cost that a
+# step does not use. The CI step for these tests installs both files.
+#
+# The pin must stay in step with the image tag in
+# .woodpecker/quality-browser-e2e.yml's playwright-e2e step
+# (mcr.microsoft.com/playwright/python:vN-noble). That image ships browsers
+# built for its own bundled Playwright, and the Python package refuses to
+# drive a browser build it does not recognise - a version skew here fails at
+# runtime, not at install, which is the expensive way to find out.
+playwright==1.62.0
+pytest-playwright==0.9.0

@@ -149,16 +149,59 @@ was never exercised.** See `.claude/skills/ci-cd-guardrails/SKILL.md`'s
 "After push" section and `.claude/skills/checkpoint/SKILL.md` step 5 for
 where this is now the documented default.
 
+## Dependency cache (`wp-uv-cache`)
+
+Every Python step installs with `uv` rather than `pip`, and the five that do
+share one named Docker volume mounted at `/root/.cache/uv`.
+
+The split matters: `uv` makes *installing* effectively free, but not
+*downloading*. A real CI log read `Prepared 64 packages in 50.50s / Installed
+64 packages in 110ms` — so on a fresh container the whole cost was the
+network. The volume makes that download happen once per package version
+instead of once per step per push (measured locally on this requirements set:
+4.5s cold, 0.875s warm).
+
+Notes:
+
+- Safe under concurrency — `uv` locks its cache, which matters because the
+  agent runs `WOODPECKER_MAX_WORKFLOWS=4` and several of these steps install
+  simultaneously.
+- Needs no settings change: this repo is already trusted for volumes
+  (`gh`-equivalent check: `curl -s https://ci.webfoundry.dev/api/repos/1`
+  shows `trusted: {network, volumes, security}` all true).
+- To reset it: `docker volume rm wp-uv-cache`. Losing it costs exactly one
+  slow run; Docker recreates it on next use.
+- `tests-dependency-audit` deliberately stays on `pip` and has no cache
+  mount — it installs only `pip-audit`, and having the tool that audits
+  dependency provenance be installed by a different resolver, from a shared
+  cache, is not a tradeoff worth ~30s.
+
+Requirements are also split so a step downloads only what it imports:
+`requirements-dev.txt` (shared), `requirements-selenium.txt` (browser-e2e
+only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
+(playwright-e2e only).
+
 ## Known limitations (observed, not assumed)
 
-- `WOODPECKER_MAX_WORKFLOWS` was raised from Woodpecker's default of 1 to
-  2 on the shared agent (`portfolio/ci-cd/docker-compose.yml`, commit
-  `81068e2`) — confirmed live in the agent's own startup log
-  (`"parallel workflows":2`). Still less than this repo's six independent
+- `WOODPECKER_MAX_WORKFLOWS` on the shared agent
+  (`portfolio/ci-cd/docker-compose.yml`) went from Woodpecker's default of
+  1 → 2 (2026-08-24, commit `81068e2`) → **4** (2026-08-25), each time
+  confirmed live in the agent's own startup log (`"parallel workflows":N`).
+  The 2 was set while the host was genuinely memory-starved (~768MB free,
+  2.9GB already in swap); a `.wslconfig` repair left it at 16 CPU / 15.6GB
+  with ~9.8GB available and swap essentially unused, which is what changed.
+  4 was chosen from measurement, not the pipeline count: sampling every
+  workflow step container at 4s intervals across a full three-PR run (27
+  containers, including `quality-browser-e2e`, which installs and runs
+  Chromium *inside* its own step container) put the peak at 258MB, most
+  sitting at 100-250MB. Still less than this repo's six independent
   `.woodpecker/*.yml` files, so some queuing under concurrent pipelines is
-  expected; raising it further affects the whole portfolio-wide agent
-  (memory-constrained host — see that commit's own comment), so raise it
-  deliberately, not as a side effect of this repo's own pipeline count.
+  still expected — deliberately, since this agent is portfolio-wide and the
+  same host runs the live ddev stack (`ddev-kalshi-whale-poc-fastapi` alone
+  is ~4.2GB), where CI memory pressure would disturb running application
+  state rather than merely fail a build. Raise it further only with a fresh
+  measurement under real concurrent load, not as a side effect of this
+  repo's own pipeline count.
 - `WOODPECKER_GRPC_SECRET` is unset on the shared server, so a restart
   regenerates a random one (`WOODPECKER_GRPC_SECRET is not set; generated
   a temporary random secret` in `docker logs woodpecker-server`). The

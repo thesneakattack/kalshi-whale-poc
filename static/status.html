@@ -5938,6 +5938,46 @@
           <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 153 · the CI guard from phase 152 was itself the noise source</div>
+        <h4>A check that cried wolf every fifth commit is why nobody noticed it was red</h4>
+        <p>Phase 152 found <code>quality-architecture-audit</code> red across three consecutive pushes
+          (<code>d644034</code>, <code>21a303a</code>, <code>b28a380</code>) with nobody noticing, and fixed the
+          instance by regenerating <code>static/project-manifest.json</code>. It did not ask why nobody noticed.
+          This phase did, after the same failure recurred twice more in one session.</p>
+        <p>Root cause was in <code>tools/project_manifest.py</code>, and it was a gap between a documented
+          intent and its implementation rather than a bug. <code>_CHURN_FIELDS</code>' own comment states the
+          goal — "the check should gate structural facts, not require a manifest commit on every unrelated code
+          commit merely because SHA changed" — but it excluded only <code>generated_from_head</code> and
+          <code>generated_at</code>. Line and test counts churn nearly as reliably as the SHA does, and they
+          were still compared for exact equality. Measured across 25 commits of <code>origin/main</code>:
+          <code>lines.python</code> changed on 21% of them and <code>tests.count</code> on 21%, each time by a
+          fraction of a percent. So roughly one commit in five reded this pipeline over a number no reader could
+          be misled by, and the only remedy was ever to re-run <code>--write</code> and commit the result —
+          <code>git log</code> on the manifest shows those chore commits accumulating verbatim
+          ("Regenerate stale project-manifest.json (fixes red architecture-audit CI)"). The alarm fatigue was
+          not a side effect of that; it <i>was</i> phase 152's unexplained "nobody noticed".</p>
+        <p><code>--check</code> now compares against a 10% relative tolerance instead of exact equality, and
+          prints sub-threshold drift rather than suppressing it, so accumulation stays visible instead of
+          appearing only when it trips. Thresholds were chosen from the same measurement, not picked: total
+          drift over those 25 commits was 3.1% (<code>lines.python</code>) and 4.1% (<code>tests.count</code>),
+          leaving real headroom. Verified by fault injection both ways — the actual historical staleness this
+          guard exists for ("5,189 lines / 29 files / 20 API routes" against a repo an order of magnitude
+          past it) still fails loudly at +896.4%/+682.8%/+370.0%, while the phase 152 case itself (four new
+          files, 1.8% drift) now passes with the drift reported. That second half is a deliberate trade, not an
+          oversight: four files in 227 misleads nobody, and treating it as a hard failure is precisely what
+          taught everyone to stop reading this check. Key sets, <code>schema_version</code>, and any 0→nonzero
+          change stay exact — a tolerance must never absorb a schema change. Comparison logic was extracted
+          into a pure, unit-tested <code>compare()</code> rather than left inside the CLI, per the
+          CI-guardrail rule that a checker's logic shouldn't live only in its command-line plumbing; nine new
+          tests pin the behavior. The failure message now also prints the regeneration command, including the
+          non-obvious part that it must run on the host — the container image has no <code>git</code> binary,
+          so <code>ddev exec</code> silently writes <code>generated_from_head: null</code>.</p>
+        <div class="files"><code>tools/project_manifest.py</code> · <code>tests/test_project_manifest.py</code> ·
+          <code>.woodpecker/quality-architecture-audit.yml</code> ·
+          <code>static/project-manifest.json</code></div>
+      </div>
+
     </div>
   </section>
 
