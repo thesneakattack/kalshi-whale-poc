@@ -25,6 +25,11 @@ Three finding shapes:
   can't rule out every legitimate reason a key doesn't literally match a
   def name, e.g. a re-exported alias, so this is reported rather than
   gated).
+
+A module marked `# quality-audit: kalshi-infrastructure` (e.g.
+services/kalshi/provenance.py, the contract-metadata plumbing itself) is
+exempt from the missing-mapping requirement only - see
+_INFRASTRUCTURE_MARKER below.
 """
 from __future__ import annotations
 
@@ -35,6 +40,15 @@ from services.quality.models import QualityFinding
 from tools.quality_audit import source
 
 _KALSHI_PACKAGE_RELATIVE = Path("services") / "kalshi"
+
+# A module carrying this marker anywhere in its source is integration
+# *infrastructure* (provenance/validation helpers), not a vendor adapter -
+# its public functions have no Kalshi doc to map, so the missing-mapping
+# requirement is waived. Same explicit, greppable, diff-reviewable opt-out
+# pattern as routers.py's `# quality-audit: standalone-router`. The
+# file-existence and stale-key checks still apply to any CONTRACT_DOCS an
+# infrastructure module does declare.
+_INFRASTRUCTURE_MARKER = "# quality-audit: kalshi-infrastructure"
 
 
 def _iter_kalshi_modules(repo_root: Path) -> list[Path]:
@@ -94,13 +108,16 @@ def scan_kalshi_contract_docs(repo_root: Path) -> list[QualityFinding]:
     findings: list[QualityFinding] = []
 
     for path in _iter_kalshi_modules(repo_root):
+        module_text = source.read_text(path)
         tree = source.parse_python(path)
+        is_infrastructure = _INFRASTRUCTURE_MARKER in module_text
         operations = _public_operations(tree)
         contract_docs = _contract_docs(tree) or {}
         module = source.module_dotted_path(repo_root, path)
         rel_path = source.relative_path(repo_root, path)
 
-        for operation in sorted(operations - contract_docs.keys()):
+        undocumented = () if is_infrastructure else sorted(operations - contract_docs.keys())
+        for operation in undocumented:
             findings.append(
                 QualityFinding(
                     finding_id=f"kalshi-contract-docs-missing:{module}:{operation}",

@@ -510,6 +510,37 @@ def test_stale_contract_docs_key_reports_medium_confidence_warning(tmp_path):
     assert stale[0].confidence == "medium"
 
 
+def test_infrastructure_marker_exempts_module_from_missing_mapping(tmp_path):
+    """services/kalshi/provenance.py (A4) is metadata infrastructure, not a
+    vendor adapter - its public functions have no Kalshi doc to map. The
+    explicit `# quality-audit: kalshi-infrastructure` marker exempts a
+    module from the missing-mapping requirement (same reviewable-marker
+    pattern as routers.py's standalone-router), while file-existence checks
+    on any CONTRACT_DOCS it does declare still apply."""
+    _write(
+        tmp_path / "services" / "kalshi" / "provenance.py",
+        "# quality-audit: kalshi-infrastructure\n"
+        "\n\ndef collect_operations():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_infrastructure_marker_does_not_exempt_bad_doc_paths(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "infra.py",
+        "# quality-audit: kalshi-infrastructure\n"
+        'CONTRACT_DOCS = {\n    "helper": ("docs/kalshi/missing.md",),\n}\n'
+        "\n\ndef helper():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert "missing-file" in findings[0].finding_id
+    assert findings[0].severity == "error"
+
+
 def test_documented_method_on_class_produces_no_finding(tmp_path):
     _write(tmp_path / "docs" / "kalshi" / "get-market.md", "# Get Market\n")
     _write(
