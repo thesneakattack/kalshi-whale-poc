@@ -57,6 +57,53 @@ steps:
       - python3 -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
       - python3 -m pytest tests/test_browser_e2e.py -v
 
+  # Playwright covers what WebDriver structurally cannot: putting the
+  # browser's network layer under test control. See
+  # tests/test_browser_playwright_e2e.py's docstring for the full reasoning -
+  # in short, it forces API failures instead of waiting for one, which turns
+  # CLAUDE.md's "a displayed value must match its label" rule into an
+  # executable guard rather than prose two shipped bugs already slipped past.
+  #
+  # Its own step, and its own image, on purpose:
+  #   - mcr.microsoft.com/playwright/python ships the browsers prebuilt, so
+  #     this pays no download at runtime. The Selenium step above spends
+  #     ~2-3 minutes on `apt-get install chromium chromium-driver` every
+  #     run; this step deliberately does not repeat that mistake.
+  #   - a separate named step means a red check says WHICH stack broke, per
+  #     .claude/skills/ci-cd-guardrails' "a red job should tell the developer
+  #     what class of problem occurred".
+  # The image tag and requirements-playwright.txt's pin must move together.
+  #
+  # The uv venv is not optional plumbing - this image is Ubuntu 24.04 and
+  # ships Python 3.12, while requirements.txt pins kalshi-python-async, which
+  # requires >=3.13. The harness imports main, so it genuinely needs the full
+  # app dependency set; installing less is not an option. uv provisions 3.13
+  # in ~5s and installs everything in ~10s. Verified locally: the venv's
+  # playwright still uses the image's prebuilt browsers via
+  # PLAYWRIGHT_BROWSERS_PATH=/ms-playwright (chromium-1234), because the
+  # pinned package version matches the image's own - which is the entire
+  # reason for choosing this image, so keep those two in step.
+  - name: playwright-e2e
+    image: mcr.microsoft.com/playwright/python:v1.62.0-noble
+    environment:
+      RUN_PLAYWRIGHT_E2E: "1"
+    commands:
+      - pip install -q uv
+      # Absolute interpreter path rather than exporting PATH: Woodpecker
+      # does its own substitution pass over these command strings, and a
+      # bare $PATH is needless ambiguity when /venv/bin/python is exact.
+      - uv venv --python 3.13 /venv --quiet
+      - uv pip install --python /venv/bin/python -q -r requirements-dev.txt -r requirements-playwright.txt
+      - mkdir -p build
+      # Same server, started fresh: the Selenium step's uvicorn died with its
+      # own container. Bound to 127.0.0.1 like that step, since the browser
+      # here runs inside this container rather than in a service alongside it.
+      - /venv/bin/python -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 > build/playwright-uvicorn.log 2>&1 &
+      - /venv/bin/python -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+      # retain-on-failure: a trace is only useful when something broke, and
+      # writing one per passing test would cost time and disk for nothing.
+      - /venv/bin/python -m pytest tests/test_browser_playwright_e2e.py -v --tracing=retain-on-failure --output=build/playwright-artifacts
+
   # Woodpecker has no first-class "upload artifact" step (see
   # quality-architecture-audit.yml's own comment on the same pattern) - the
   # server's own log is what a browser-side failure needs to diagnose
@@ -67,4 +114,6 @@ steps:
       - event: [push, pull_request]
         status: [failure, success]
     commands:
-      - cat build/e2e-uvicorn.log || echo "no server log captured"
+      - cat build/e2e-uvicorn.log || echo "no selenium server log captured"
+      - cat build/playwright-uvicorn.log || echo "no playwright server log captured"
+      - ls -R build/playwright-artifacts 2>/dev/null || echo "no playwright traces (nothing failed)"
