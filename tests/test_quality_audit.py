@@ -661,3 +661,100 @@ def test_unclosed_stream_gateway_construction_fails(tmp_path):
 
     assert len(findings) == 1
     assert findings[0].finding_id == "resource-unclosed:services.leaky_stream:leak:stream"
+
+
+# ---- A15: Kalshi integration-boundary ratchet ------------------------------
+
+
+def test_boundary_sdk_import_outside_the_package_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "rogue_sdk.py", "import kalshi_python_async as kpa\n")
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    ids = [f.finding_id for f in findings]
+    assert any(i.startswith("kalshi-boundary-sdk-import:services/rogue_sdk.py") for i in ids)
+
+
+def test_boundary_sdk_import_inside_the_package_passes(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi" / "adapter.py", "import kalshi_python_async as kpa\n")
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_raw_host_string_outside_the_boundary_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "rogue_host.py",
+        'URL = "https://external-api.kalshi.com/trade-api/v2"\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert any(f.finding_id.startswith("kalshi-boundary-host:services/rogue_host.py") for f in findings)
+
+
+def test_boundary_host_mention_in_a_docstring_is_not_usage(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "prose_only.py",
+        '"""Verified against docs.kalshi.com by hand."""\n\n\ndef f():\n    """See api.elections.kalshi.com."""\n    return 1\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_new_facade_import_beyond_baseline_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi_client.py", "class KalshiClient:\n    pass\n")
+    _write(
+        tmp_path / "services" / "new_consumer.py",
+        "from services.kalshi_client import KalshiClient\n",
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(
+        tmp_path, facade_baseline={"services.kalshi_client": 0},
+    )
+    ratchet = [f for f in findings if f.finding_id == "kalshi-boundary-facade-ratchet:services.kalshi_client"]
+    assert len(ratchet) == 1
+    assert ratchet[0].severity == "error"
+
+
+def test_boundary_facade_imports_at_baseline_pass_and_below_baseline_informs(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(tmp_path / "services" / "kalshi_client.py", "class KalshiClient:\n    pass\n")
+    _write(
+        tmp_path / "services" / "consumer.py",
+        "from services.kalshi_client import KalshiClient\n",
+    )
+    at_baseline = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={"services.kalshi_client": 1})
+    assert [f for f in at_baseline if f.severity == "error"] == []
+    below = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={"services.kalshi_client": 5})
+    lowered = [f for f in below if f.finding_id == "kalshi-boundary-facade-ratchet-lower:services.kalshi_client"]
+    assert len(lowered) == 1
+    assert lowered[0].severity == "info"
+
+
+def test_boundary_deprecated_direction_read_outside_boundary_fails(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "rogue_alias.py",
+        'def side(t):\n    return t.get("taker_side") or t["taker_outcome_side"]\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    ids = [f.finding_id for f in findings]
+    assert any(i.startswith("kalshi-boundary-deprecated-read:services/rogue_alias.py") for i in ids)
+
+
+def test_boundary_deprecated_read_in_the_archival_allowlist_passes(tmp_path):
+    from tools.quality_audit import kalshi_boundary
+    _write(
+        tmp_path / "services" / "series_watcher.py",
+        'def row(t):\n    return (t.get("taker_outcome_side"), t.get("taker_book_side"), t.get("taker_side"))\n',
+    )
+    findings = kalshi_boundary.scan_kalshi_boundary(tmp_path, facade_baseline={})
+    assert findings == []
+
+
+def test_boundary_scanner_is_registered_and_real_tree_is_clean():
+    from tools.quality_audit import kalshi_boundary
+    from tools.quality_audit import __main__ as audit_main
+    assert kalshi_boundary.scan_kalshi_boundary in audit_main._SCANNERS
+    real_findings = kalshi_boundary.scan_kalshi_boundary(Path(__file__).resolve().parent.parent)
+    assert [f for f in real_findings if f.severity == "error"] == []
