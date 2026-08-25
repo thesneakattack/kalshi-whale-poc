@@ -64,5 +64,36 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true,
+    "dimensional-analysis@trailofbits": true,
+    "second-opinion@trailofbits": true,
+    "42crunch-api-security-testing@42crunch-marketplace": true,
+    "chrome-devtools-mcp@chrome-devtools-plugins": true
+  },
+  "extraKnownMarketplaces": {
+    "trailofbits": {
+      "source": {
+        "source": "github",
+        "repo": "trailofbits/skills"
+      }
+    },
+    "42crunch-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "42Crunch-AI/claude-plugins"
+      }
+    },
+    "chrome-devtools-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "ChromeDevTools/chrome-devtools-mcp",
+        "sparsePaths": [
+          ".claude-plugin",
+          "skills"
+        ]
+      }
+    }
   }
 }
