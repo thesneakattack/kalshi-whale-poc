@@ -30,6 +30,20 @@ name: docs-drift-check
 # drifted since the 2026-08-16 mirror - see ROADMAP.md for that one-time
 # backlog; this scheduled check is what catches drift going forward.
 #
+# Phase A Task A2 (2026-08-24) added a second, independent check:
+# tools/kalshi_docs_sync.py --check fetches llms.txt's own real index and
+# diffs its URL set against the manifest (resources + deliberately-
+# unsupported specs), catching *index* drift (a page added/removed
+# upstream) that kalshi_docs_drift.py's content-hash check can't see at
+# all, since it only ever iterates URLs the manifest already knows about.
+# First real run building this step found 11 genuinely new upstream pages
+# (margin exit-triggers, Get/Set Target Balance Allocation, Get Weather
+# Index) not yet mirrored - a real, expected finding per the design spec's
+# "global mirror completeness is an initiative goal, not a reason to block
+# unrelated migration" scope note, not a bug; deliberately not auto-
+# mirrored by this check (see kalshi_docs_sync.py's own module docstring
+# for why --check never writes and --write never fetches a page body).
+#
 # Stays on GitHub Actions (not Woodpecker) deliberately - this is a
 # schedule-triggered check, and Woodpecker's cron-trigger mechanism isn't
 # set up in this repo (see docs/woodpecker-ci.md, which only documents
@@ -67,15 +81,23 @@ jobs:
           python -m tools.kalshi_docs_drift --check --json-out drift-report.json
         continue-on-error: true
 
-      - name: Upload drift report (always, even on failure)
+      - name: Check llms.txt's real index for added/removed pages
+        id: index_check
+        run: |
+          python -m tools.kalshi_docs_sync --check --json-out index-drift-report.json
+        continue-on-error: true
+
+      - name: Upload drift reports (always, even on failure)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kalshi-docs-drift-report
-          path: drift-report.json
+          path: |
+            drift-report.json
+            index-drift-report.json
 
-      - name: Fail the check if drift or unavailability was found
-        if: steps.check.outcome == 'failure'
+      - name: Fail the check if content drift, unavailability, or index drift was found
+        if: steps.check.outcome == 'failure' || steps.index_check.outcome == 'failure'
         run: |
-          echo "::error::docs/kalshi/ may be out of date - see the uploaded drift-report.json artifact and CLAUDE.md's 'Kalshi API documentation' section for the refresh process. Do not auto-commit a fix; review the actual diff first."
+          echo "::error::docs/kalshi/ may be out of date - see the uploaded drift-report.json/index-drift-report.json artifacts and CLAUDE.md's 'Kalshi API documentation' section for the refresh process. Do not auto-commit a fix; review the actual diff first."
           exit 1

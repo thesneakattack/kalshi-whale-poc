@@ -286,6 +286,22 @@ questions.
       the refresh. The weekly scheduled check will now catch future drift
       automatically; this item is the one-time backlog of what it already
       found on day one.
+- [ ] **`docs/kalshi/llms.txt`'s mirrored index is stale relative to the
+      real upstream index — 11 pages exist upstream with no local mirror**,
+      found live the moment Kalshi Integration Phase A Task A2's new index-
+      drift checker (`tools/kalshi_docs_sync.py --check`) was pointed at
+      the real internet for the first time (2026-08-24): `Get Weather
+      Index`, `Get`/`Set Target Balance Allocation`, and 8 margin
+      isolated/cross exit-trigger endpoints
+      (`margin-rest/exit-triggers/*`). None are currently called by any
+      production code path (confirmed via `docs/kalshi/used-contracts.json`
+      before treating this as backlog rather than a blocker — Finding A's
+      own "global mirror completeness is an initiative goal, not a reason
+      to block unrelated migration" scope note applies). Mirroring them is
+      real, separate work (fetch, verify, commit) — out of Task A2's own
+      scope, which was building the *detector*. The weekly scheduled check
+      now catches future index drift automatically alongside existing
+      content drift; this item is the day-one backlog of what it found.
 - [ ] Finalize the app name — "Nessie" vs. "Operation Deepscan" still open.
 - [ ] Clicking a logged position/signal/decision should show whether that
       specific position ultimately won/lost, not just current market state —

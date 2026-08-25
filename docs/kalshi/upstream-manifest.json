@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "entries": [
+  "version": 2,
+  "resources": [
     {
       "local_path": "docs/kalshi/accept-block-trade-proposal.md",
       "source_urls": [
@@ -1512,6 +1512,48 @@
         "https://docs.kalshi.com/welcome/index.md"
       ],
       "sha256": "b71958de8f55ed8cd4981fbaf0d4392464bcb89ed310528ccb944fc223ebe9b3"
+    }
+  ],
+  "unsupported": [
+    {
+      "local_path": null,
+      "source_urls": [
+        "https://docs.kalshi.com/asyncapi.yaml"
+      ],
+      "kind": "asyncapi",
+      "reason": "Not consumed by any production code path - services/kalshi_trade_ws.py's WebSocket handling is built against the per-channel docs/kalshi/*.md pages (market-ticker.md, public-trades.md, ...), never the raw aggregate AsyncAPI spec. Confirmed 2026-08-24, Phase A Task A2."
+    },
+    {
+      "local_path": null,
+      "source_urls": [
+        "https://docs.kalshi.com/openapi.yaml"
+      ],
+      "kind": "openapi",
+      "reason": "Not consumed by any production code path - this app uses the official kalshi_python_async SDK plus per-endpoint docs/kalshi/*.md pages, never the raw aggregate OpenAPI spec (~320KB, covers many endpoints this app never calls). Confirmed 2026-08-24, Phase A Task A2."
+    },
+    {
+      "local_path": null,
+      "source_urls": [
+        "https://docs.kalshi.com/perps_asyncapi.yaml"
+      ],
+      "kind": "asyncapi",
+      "reason": "Perpetual-futures WS API surface - this app trades standard event contracts only, never perps. Confirmed 2026-08-24, Phase A Task A2."
+    },
+    {
+      "local_path": null,
+      "source_urls": [
+        "https://docs.kalshi.com/perps_openapi.yaml"
+      ],
+      "kind": "openapi",
+      "reason": "Perpetual-futures API surface - this app trades standard event contracts only, never perps. Confirmed 2026-08-24, Phase A Task A2."
+    },
+    {
+      "local_path": null,
+      "source_urls": [
+        "https://docs.kalshi.com/perps_scm_openapi.yaml"
+      ],
+      "kind": "openapi",
+      "reason": "Perpetual-futures (SCM) API surface - this app trades standard event contracts only, never perps. Confirmed 2026-08-24, Phase A Task A2."
     }
   ]
 }

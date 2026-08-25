@@ -1,10 +1,13 @@
 """
-tools/kalshi_docs_drift.py (QCP Task 12) - upgrades docs-drift-check.yml
-from "does each URL still 200" to real content-drift detection against
-docs/kalshi/. All HTTP-free: compare_remote takes an injectable fetch
-callable so these tests never touch the network, and build_manifest tests
-use small synthetic docs_root fixtures under tmp_path rather than the real
-213-page docs/kalshi/ mirror.
+tools/kalshi_docs_drift.py (QCP Task 12, restructured Kalshi Integration
+Phase A Task A2) - upgrades docs-drift-check.yml from "does each URL still
+200" to real content-drift detection against docs/kalshi/. All HTTP-free:
+compare_remote takes an injectable fetch callable so these tests never
+touch the network. As of A2, this module only *consumes* a committed
+manifest (`load_manifest`) - manifest construction from docs/kalshi/
+llms.txt's real index moved to tools/kalshi_docs_sync.py (see
+tests/test_kalshi_docs_sync.py), which is also what generates
+docs/kalshi/README.md now, instead of README being a parsed input.
 """
 import json
 
@@ -13,190 +16,14 @@ import pytest
 from tools import kalshi_docs_drift as drift
 
 
-def _write_readme(docs_root, body: str) -> None:
-    (docs_root / "README.md").write_text(body, encoding="utf-8")
+# --- load_manifest -----------------------------------------------------
 
 
-# --- _parse_readme_provenance / build_manifest -----------------------------
+def test_load_manifest_reads_committed_json(tmp_path):
+    manifest_path = tmp_path / "upstream-manifest.json"
+    manifest_path.write_text(json.dumps({"version": 2, "resources": [], "unsupported": []}), encoding="utf-8")
 
-
-def test_build_manifest_reads_single_source_entries(tmp_path):
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-## Fetched Response Snapshots
-
-- `manifest.json`
-""")
-    (tmp_path / "get-market.md").write_text("# Get Market\n\nbody text\n", encoding="utf-8")
-
-    manifest = drift.build_manifest(tmp_path)
-
-    assert len(manifest["entries"]) == 1
-    entry = manifest["entries"][0]
-    assert entry["local_path"] == "docs/kalshi/get-market.md"
-    assert entry["source_urls"] == ["https://docs.kalshi.com/api-reference/market/get-market.md"]
-    assert entry["sha256"] == drift._normalized_sha256("# Get Market\n\nbody text\n")
-
-
-def test_build_manifest_skips_content_hash_for_multi_source_entries(tmp_path):
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-live-data.md` (2026-08-15)
-  Sources: `https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md`,
-  `https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md` -
-  single + batch milestone-keyed live data.
-
-## Fetched Response Snapshots
-""")
-    (tmp_path / "get-live-data.md").write_text("merged content\n", encoding="utf-8")
-
-    manifest = drift.build_manifest(tmp_path)
-
-    entry = manifest["entries"][0]
-    assert entry["source_urls"] == [
-        "https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md",
-        "https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md",
-    ]
-    assert entry["sha256"] is None  # not a 1:1 mirror - content comparison would always false-positive
-
-
-def test_build_manifest_skips_documented_entries_with_no_actual_local_file(tmp_path):
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-## Fetched Response Snapshots
-
-- `manifest.json`
-  (a live response snapshot, not a doc page)
-""")
-    (tmp_path / "get-market.md").write_text("content\n", encoding="utf-8")
-    # deliberately no manifest.json on disk, and it's outside "## Source Pages" anyway
-
-    manifest = drift.build_manifest(tmp_path)
-
-    assert [e["local_path"] for e in manifest["entries"]] == ["docs/kalshi/get-market.md"]
-
-
-def test_build_manifest_does_not_bleed_urls_from_prose_after_a_bullet(tmp_path):
-    """Real bug, found live 2026-08-24 (Phase A Task A1): docs/kalshi/README.md's
-    real "## Source Pages" section ends its curated subset with a bullet
-    immediately followed (after a blank line) by a "### ..." subheading and
-    a prose paragraph that happens to name another doc URL in backticks
-    (the full-index gap-fill section's own explanatory text, which cites
-    `https://docs.kalshi.com/llms.txt`). The old implementation scanned for
-    URLs all the way to the *next bullet*, so that prose URL silently
-    attached itself to the unrelated preceding bullet - confirmed via
-    `git show HEAD:docs/kalshi/upstream-manifest.json`, where the real
-    rate_limits.md entry already carried a spurious third
-    https://docs.kalshi.com/llms.txt source_url before this fix. A bullet's
-    URL scan must stop at the first blank line (the end of its own
-    indented continuation block), not run to the next bullet."""
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-### An unrelated subsection
-
-This prose mentions `https://docs.kalshi.com/llms.txt` for an unrelated
-reason and must not become one of get-market.md's source_urls.
-
-- `get-event.md`
-  Source: `https://docs.kalshi.com/api-reference/events/get-event.md`
-
-## Fetched Response Snapshots
-""")
-    (tmp_path / "get-market.md").write_text("content\n", encoding="utf-8")
-    (tmp_path / "get-event.md").write_text("content\n", encoding="utf-8")
-
-    manifest = drift.build_manifest(tmp_path)
-
-    by_path = {e["local_path"]: e for e in manifest["entries"]}
-    assert by_path["docs/kalshi/get-market.md"]["source_urls"] == [
-        "https://docs.kalshi.com/api-reference/market/get-market.md",
-    ]
-    assert by_path["docs/kalshi/get-event.md"]["source_urls"] == [
-        "https://docs.kalshi.com/api-reference/events/get-event.md",
-    ]
-
-
-def test_build_manifest_skips_content_hash_for_curated_summary_pages(tmp_path):
-    """A hand-written LLM distillation (first line 'Source: <url>') is not
-    a verbatim mirror - hashing it against a fresh raw fetch would drift
-    permanently even with zero real upstream change. Live-verified while
-    building this tool: see the module docstring."""
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-## Fetched Response Snapshots
-""")
-    (tmp_path / "get-market.md").write_text(
-        "Source: https://docs.kalshi.com/api-reference/market/get-market.md\n\n"
-        "# Get Market\n\nhand-written condensed summary, not a raw mirror\n",
-        encoding="utf-8",
-    )
-
-    manifest = drift.build_manifest(tmp_path)
-
-    assert manifest["entries"][0]["sha256"] is None
-
-
-def test_build_manifest_keeps_content_hash_for_a_verbatim_mirror(tmp_path):
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-## Fetched Response Snapshots
-""")
-    (tmp_path / "get-market.md").write_text(
-        "> ## Documentation Index\n> Fetch the complete index at: https://docs.kalshi.com/llms.txt\n\n"
-        "# Get Market\n\nverbatim raw fetch content\n",
-        encoding="utf-8",
-    )
-
-    manifest = drift.build_manifest(tmp_path)
-
-    assert manifest["entries"][0]["sha256"] is not None
-
-
-def test_build_manifest_is_sorted_by_local_path(tmp_path):
-    _write_readme(tmp_path, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `zzz.md`
-  Source: `https://docs.kalshi.com/z.md`
-- `aaa.md`
-  Source: `https://docs.kalshi.com/a.md`
-
-## Fetched Response Snapshots
-""")
-    (tmp_path / "zzz.md").write_text("z\n", encoding="utf-8")
-    (tmp_path / "aaa.md").write_text("a\n", encoding="utf-8")
-
-    manifest = drift.build_manifest(tmp_path)
-
-    assert [e["local_path"] for e in manifest["entries"]] == ["docs/kalshi/aaa.md", "docs/kalshi/zzz.md"]
+    assert drift.load_manifest(manifest_path) == {"version": 2, "resources": [], "unsupported": []}
 
 
 # --- normalization -----------------------------------------------------
@@ -213,13 +40,19 @@ def test_normalized_sha256_is_identical_for_crlf_vs_lf_only_difference():
     assert drift._normalized_sha256(lf) == drift._normalized_sha256(crlf)
 
 
-# --- compare_remote (Step 2's four required cases) --------------------------
+def test_looks_like_curated_summary_detects_source_prefix():
+    assert drift._looks_like_curated_summary("Source: https://docs.kalshi.com/x.md\n\nbody\n") is True
+    assert drift._looks_like_curated_summary("> ## Documentation Index\n\nbody\n") is False
+
+
+# --- compare_remote (Step 2's four required cases, now against `resources`) -
 
 
 def _manifest_for(local_path: str, url: str, content: str) -> dict:
     return {
-        "version": 1,
-        "entries": [{"local_path": local_path, "source_urls": [url], "sha256": drift._normalized_sha256(content)}],
+        "version": 2,
+        "resources": [{"local_path": local_path, "source_urls": [url], "sha256": drift._normalized_sha256(content)}],
+        "unsupported": [],
     }
 
 
@@ -274,66 +107,63 @@ def test_compare_remote_no_drift_when_only_difference_is_line_endings():
     assert report == {"ok": True, "changed": [], "unavailable": []}
 
 
-def test_compare_remote_skips_content_comparison_for_multi_source_entries():
+def test_compare_remote_skips_content_comparison_for_null_sha256_entries():
+    """A curated-summary or index-file entry (sha256=None) is
+    availability-only by design - see this module's docstring."""
     manifest = {
-        "version": 1,
-        "entries": [{
-            "local_path": "docs/kalshi/get-live-data.md",
-            "source_urls": ["https://docs.kalshi.com/a.md", "https://docs.kalshi.com/b.md"],
+        "version": 2,
+        "resources": [{
+            "local_path": "docs/kalshi/get-game-stats.md",
+            "source_urls": ["https://docs.kalshi.com/api-reference/live-data/get-game-stats.md"],
             "sha256": None,
         }],
+        "unsupported": [],
     }
 
     def fetch(url):
-        return 200, "whatever content, unrelated to the merged local file"
+        return 200, "whatever content, unrelated to the curated local file"
 
     report = drift.compare_remote(manifest, fetch=fetch)
 
-    assert report == {"ok": True, "changed": [], "unavailable": []}  # availability-only, both 200
+    assert report == {"ok": True, "changed": [], "unavailable": []}  # availability-only, 200
 
 
-def test_compare_remote_still_flags_unavailability_for_multi_source_entries():
+def test_compare_remote_ignores_unsupported_entries_entirely():
+    """manifest["unsupported"] (OpenAPI/AsyncAPI specs, see
+    tools/kalshi_docs_sync.py) have no local mirror file - compare_remote
+    must not try to drift-check them."""
     manifest = {
-        "version": 1,
-        "entries": [{
-            "local_path": "docs/kalshi/get-live-data.md",
-            "source_urls": ["https://docs.kalshi.com/a.md", "https://docs.kalshi.com/b.md"],
-            "sha256": None,
+        "version": 2,
+        "resources": [],
+        "unsupported": [{
+            "local_path": None,
+            "source_urls": ["https://docs.kalshi.com/openapi.yaml"],
+            "kind": "openapi",
+            "reason": "not consumed by any production code path",
         }],
     }
 
     def fetch(url):
-        return (200, "ok") if url.endswith("a.md") else (404, "")
+        raise AssertionError("compare_remote must never fetch an unsupported entry's URL")
+
+    report = drift.compare_remote(manifest, fetch=fetch)
+
+    assert report == {"ok": True, "changed": [], "unavailable": []}
+
+
+def test_compare_remote_still_flags_unavailability_for_a_resource():
+    manifest = _manifest_for("docs/kalshi/x.md", "https://docs.kalshi.com/x.md", "body\n")
+
+    def fetch(url):
+        return 404, ""
 
     report = drift.compare_remote(manifest, fetch=fetch)
 
     assert report["ok"] is False
-    assert report["unavailable"] == [{"local_path": "docs/kalshi/get-live-data.md", "url": "https://docs.kalshi.com/b.md", "status": 404}]
+    assert report["unavailable"] == [{"local_path": "docs/kalshi/x.md", "url": "https://docs.kalshi.com/x.md", "status": 404}]
 
 
 # --- CLI wiring ----------------------------------------------------------
-
-
-def test_cli_write_manifest_writes_valid_json(tmp_path):
-    docs_root = tmp_path / "docs" / "kalshi"
-    docs_root.mkdir(parents=True)
-    _write_readme(docs_root, """# Kalshi Docs Snapshot
-
-## Source Pages
-
-- `get-market.md`
-  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
-
-## Fetched Response Snapshots
-""")
-    (docs_root / "get-market.md").write_text("content\n", encoding="utf-8")
-    out_path = tmp_path / "upstream-manifest.json"
-
-    exit_code = drift.main(["--docs-root", str(docs_root), "--write-manifest", str(out_path)])
-
-    assert exit_code == 0
-    written = json.loads(out_path.read_text(encoding="utf-8"))
-    assert written["entries"][0]["local_path"] == "docs/kalshi/get-market.md"
 
 
 def test_cli_check_exits_nonzero_and_writes_json_report_on_drift(tmp_path, monkeypatch):
@@ -366,8 +196,20 @@ def test_cli_check_exits_zero_when_everything_matches(tmp_path, monkeypatch):
     assert exit_code == 0
 
 
-@pytest.mark.parametrize("argv", [[], ["--manifest", "x.json"]])
-def test_cli_with_neither_check_nor_write_manifest_exits_nonzero_without_network(argv):
-    exit_code = drift.main(argv)
+def test_cli_without_check_exits_nonzero_without_network():
+    exit_code = drift.main([])
 
     assert exit_code == 2
+
+
+def test_real_manifest_loads_and_has_the_new_schema_shape():
+    """Sanity check against the real committed manifest - not a network
+    test (no fetch), just confirms the on-disk file matches the schema
+    this module now expects (resources/unsupported, not entries)."""
+    manifest = drift.load_manifest(drift._DEFAULT_MANIFEST_PATH)
+
+    assert manifest["version"] == 2
+    assert isinstance(manifest["resources"], list)
+    assert len(manifest["resources"]) > 0
+    assert isinstance(manifest["unsupported"], list)
+    assert len(manifest["unsupported"]) == 5  # the 3 OpenAPI + 2 AsyncAPI specs llms.txt lists
