@@ -60,6 +60,11 @@ If Phase A is not fully proven, do not "start C while finishing A."
    - `git rev-parse HEAD`
    - relevant recent commits
    - current implementations of every file the plan names
+   Per `.claude/rules/branching-and-ci.md`: already on this initiative's
+   branch → continue using it. On `main` → sync it and create one
+   (`refactor/kalshi-integration-boundary` or similar) before implementing
+   the task below; this whole initiative is one coherent branch across its
+   numbered tasks, not one branch per task.
 3. Determine whether current HEAD already implements or supersedes any planned step.
    Current code/tests/git are implementation truth. Implement only the missing delta.
 4. State the smallest remaining delta before editing.
@@ -97,7 +102,11 @@ If Phase A is not fully proven, do not "start C while finishing A."
     - new findings/disposition;
     - commit SHA;
     - next genuinely incomplete task.
-17. Stop before beginning the next task.
+17. Stop before beginning the next task. Push the commit on the initiative
+    branch (never `main` directly); leave the PR unopened/unmerged between
+    tasks unless this task was the phase's final gate (A17 proving the
+    Phase A completion gate, or C11 for Phase C) — only then open/merge
+    per `.claude/rules/branching-and-ci.md`'s "Integration lifecycle."
 
 ## Progress state
 

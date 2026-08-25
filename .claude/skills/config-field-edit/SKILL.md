@@ -15,6 +15,12 @@ tuning either.
 
 ## Steps
 
+0. Per `.claude/rules/branching-and-ci.md`, this is implementation work —
+   don't commit the schema change directly to `main`. Already on an
+   initiative branch → continue using it; on `main` → create a
+   `chore/<name>` (or `feat/`/`fix/` if the field is part of larger
+   work) branch first.
+
 1. `cp config/settings.yaml /tmp/settings.yaml.bak` (or the scratchpad) —
    snapshot the current live-tuned file before touching anything.
 2. `git show HEAD:config/settings.yaml > config/settings.yaml` — reset the
