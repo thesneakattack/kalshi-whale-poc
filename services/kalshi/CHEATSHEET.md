@@ -80,3 +80,27 @@ Hot dispatch path emits plain dicts: `normalize_trade` 2.92 µs/msg.
 Canonical objects are built on demand (4.38 µs) — never eagerly in the
 exchange-wide loop. Don't add per-message validation here without
 re-measuring.
+
+## Type strictness / tolerance policy (C2-C6, 2026-08-25)
+
+- **Closed Literal types** (contracts/types.py): only where an unknown
+  value is unsafe to act on — direction (`OutcomeSide`, `BookSide`).
+  One shared narrowing map; unknown → None, never a guessed member.
+- **Open strings stay strings**: fee_type (grew beyond its documented
+  enum live, 2026-08-21), lifecycle event_type, category/facet values.
+  A closed type there turns a harmless vendor addition into a crash.
+- **Typed request path**: real order writes build through
+  `CreateOrderRequest`/`create_order_kwargs` (C5) — one wire-construction
+  path, BookSide-validated before any SDK call, gates first.
+- **Public market/event/live-data results deliberately stay documented
+  mappings** (C6 verdict, evidence-ranked per the plan): they are
+  display/selection data consumed via fixture-pinned allowlists
+  (`services/market_watch/`'s `_MARKET_FIELDS`/`_slim_market`, event
+  metadata's `sub_title`/`mutually_exclusive`/`competition` extraction —
+  each pinned by a doc-sourced fixture test through the production entry
+  point, covering that surface's real historical bugs) and they flow
+  straight to JSON for the frontend. A dataclass layer here would add
+  conversion ceremony with no consumer that benefits — the plan's own
+  "more maintenance than safety" case. Revisit only if a public shape
+  gains money-path semantics (then it earns a canonical type like the
+  account/order/stream shapes did).
