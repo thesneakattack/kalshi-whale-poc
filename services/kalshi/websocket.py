@@ -549,6 +549,8 @@ class KalshiStreamGateway:
     @staticmethod
     def _message_class(data) -> str:
         msg_type = data.get("type") if isinstance(data, dict) else None
+        if not isinstance(msg_type, str):
+            return _OTHER_CLASS
         return _CLASS_BY_MESSAGE_TYPE.get(msg_type, _OTHER_CLASS)
 
     def _ingest_raw(self, raw_message, now: float | None = None) -> bool:
