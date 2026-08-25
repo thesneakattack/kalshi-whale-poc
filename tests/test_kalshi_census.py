@@ -49,6 +49,19 @@ def test_sdk_import_inside_approved_integration_file_is_flagged_approved(tmp_pat
     assert sites[0]["inside_approved_integration_file"] is True
 
 
+def test_sdk_import_inside_the_boundary_package_is_approved_by_prefix(tmp_path):
+    """services/kalshi/ (A4+) is the one place vendor access is supposed to
+    live - any module under it is approved without per-file enumeration."""
+    _write(tmp_path / "services" / "kalshi" / "transport.py", "import kalshi_python_async as kpa\n")
+
+    census = kalshi_census.build_census(tmp_path)
+
+    sites = census["sdk_imports"]
+    assert len(sites) == 1
+    assert sites[0]["file"] == "services/kalshi/transport.py"
+    assert sites[0]["inside_approved_integration_file"] is True
+
+
 def test_sdk_import_from_form_is_also_detected(tmp_path):
     _write(tmp_path / "services" / "rogue2.py", "from kalshi_python_async.exceptions import ApiException\n")
 

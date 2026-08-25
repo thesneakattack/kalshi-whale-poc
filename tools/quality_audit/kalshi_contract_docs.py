@@ -50,6 +50,11 @@ _KALSHI_PACKAGE_RELATIVE = Path("services") / "kalshi"
 # infrastructure module does declare.
 _INFRASTRUCTURE_MARKER = "# quality-audit: kalshi-infrastructure"
 
+# Lifecycle methods aren't wire operations - close() releases the SDK
+# client's aiohttp session and has no Kalshi doc page to map. Kept
+# deliberately tiny: anything that talks to the API still needs a mapping.
+_EXEMPT_OPERATION_NAMES = frozenset({"close"})
+
 
 def _iter_kalshi_modules(repo_root: Path) -> list[Path]:
     package_root = Path(repo_root) / _KALSHI_PACKAGE_RELATIVE
@@ -127,7 +132,11 @@ def scan_kalshi_contract_docs(repo_root: Path) -> list[QualityFinding]:
         module = source.module_dotted_path(repo_root, path)
         rel_path = source.relative_path(repo_root, path)
 
-        undocumented = () if is_infrastructure else sorted(operations - contract_docs.keys())
+        undocumented = (
+            ()
+            if is_infrastructure
+            else sorted(operations - contract_docs.keys() - _EXEMPT_OPERATION_NAMES)
+        )
         for operation in undocumented:
             findings.append(
                 QualityFinding(

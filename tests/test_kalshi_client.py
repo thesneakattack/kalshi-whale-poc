@@ -398,10 +398,10 @@ def test_get_markets_by_tickers_chunks_above_the_batch_size(monkeypatch):
 
 def test_construction_delegates_to_the_boundary_transport(monkeypatch):
     """A5: SDK-client construction is owned by services/kalshi/transport.py;
-    this wrapper delegates instead of building kpa.Configuration itself, so
-    there is exactly one construction implementation for later boundary
-    modules and this facade to share."""
-    from services import kalshi_client as kc_module
+    the gateway (which this facade subclasses since A6) delegates instead
+    of building kpa.Configuration itself, so there is exactly one
+    construction implementation for boundary modules and facade to share."""
+    from services.kalshi import transport
 
     sentinel = object()
     seen = []
@@ -410,7 +410,7 @@ def test_construction_delegates_to_the_boundary_transport(monkeypatch):
         seen.append(base_url)
         return sentinel
 
-    monkeypatch.setattr(kc_module.transport, "build_public_client", fake_build)
+    monkeypatch.setattr(transport, "build_public_client", fake_build)
 
     client = KalshiClient(base_url="https://example.invalid/trade-api/v2/", timeout=1.0)
 

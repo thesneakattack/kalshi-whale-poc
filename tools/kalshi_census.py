@@ -64,7 +64,17 @@ _APPROVED_INTEGRATION_FILES = frozenset({
     "services/kalshi_trade_ws.py",
     "services/http_client.py",
     "tools/kalshi_public_canary.py",
+    # docs-mirror sync tooling (A2) references docs.kalshi.com - the
+    # documentation host, not the trading API - as part of the same
+    # documentation-authority layer the canary belongs to.
+    "tools/kalshi_docs_sync.py",
 })
+
+# The integration boundary package itself (A4+) is approved by definition -
+# it's the one place SDK/vendor access is *supposed* to live, so the whole
+# services/kalshi/ prefix is approved rather than each new module needing
+# to be enumerated here as Phase A adds them.
+_APPROVED_INTEGRATION_PREFIX = "services/kalshi/"
 
 # module dotted path -> class name, for the three legacy wrapper classes
 # services/kalshi/ (A4+) is meant to replace behind a compatibility facade.
@@ -104,7 +114,8 @@ def _relpath(repo_root: Path, path: Path) -> str:
 
 
 def _is_approved(repo_root: Path, path: Path) -> bool:
-    return _relpath(repo_root, path) in _APPROVED_INTEGRATION_FILES
+    rel = _relpath(repo_root, path)
+    return rel in _APPROVED_INTEGRATION_FILES or rel.startswith(_APPROVED_INTEGRATION_PREFIX)
 
 
 def _site(repo_root: Path, path: Path, lineno: int, **extra) -> dict:

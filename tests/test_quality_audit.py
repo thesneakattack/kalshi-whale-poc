@@ -558,6 +558,17 @@ def test_stale_contract_docs_key_reports_medium_confidence_warning(tmp_path):
     assert stale[0].confidence == "medium"
 
 
+def test_close_lifecycle_method_needs_no_contract_docs(tmp_path):
+    """close() releases the SDK session - a lifecycle method, not a wire
+    operation; there's no Kalshi doc page it could honestly map to (A6)."""
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\nclass Gateway:\n    async def close(self):\n        pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
 def test_annotated_contract_docs_assignment_is_recognized(tmp_path):
     """`CONTRACT_DOCS: dict[str, ContractDocs] = {...}` (AnnAssign) is how
     real boundary modules declare the mapping - the scanner's original

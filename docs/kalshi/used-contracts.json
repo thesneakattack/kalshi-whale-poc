@@ -9,19 +9,20 @@
       "services/kalshi_account_client.py",
       "services/kalshi_client.py",
       "services/kalshi_trade_ws.py",
+      "tools/kalshi_docs_sync.py",
       "tools/kalshi_public_canary.py"
     ]
   },
   "sdk_imports": [
     {
-      "file": "services/kalshi_account_client.py",
-      "line": 43,
+      "file": "services/kalshi/transport.py",
+      "line": 20,
       "imported": "kalshi_python_async",
       "inside_approved_integration_file": true
     },
     {
-      "file": "services/kalshi_client.py",
-      "line": 24,
+      "file": "services/kalshi_account_client.py",
+      "line": 43,
       "imported": "kalshi_python_async",
       "inside_approved_integration_file": true
     }
@@ -62,6 +63,48 @@
       "line": 1,
       "snippet": "Utilities to inspect a market's event/series context and live/settlement state.\n\nPrimary entrypoint:\n    async def inspe",
       "inside_approved_integration_file": false
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 65,
+      "snippet": "https://docs.kalshi.com/llms.txt",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 81,
+      "snippet": "https://docs.kalshi.com/openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 87,
+      "snippet": "https://docs.kalshi.com/perps_openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 91,
+      "snippet": "https://docs.kalshi.com/perps_scm_openapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 95,
+      "snippet": "https://docs.kalshi.com/asyncapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 101,
+      "snippet": "https://docs.kalshi.com/perps_asyncapi.yaml",
+      "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/kalshi_docs_sync.py",
+      "line": 152,
+      "snippet": "docs.kalshi.com/",
+      "inside_approved_integration_file": true
     },
     {
       "file": "tools/kalshi_public_canary.py",
@@ -647,7 +690,7 @@
   ],
   "counts": {
     "sdk_import_sites": 2,
-    "direct_host_usage_sites": 7,
+    "direct_host_usage_sites": 14,
     "legacy_wrapper_import_sites": 20,
     "legacy_wrapper_construction_sites": 18,
     "wrapper_method_call_sites": 68,
