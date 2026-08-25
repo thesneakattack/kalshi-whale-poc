@@ -10,6 +10,11 @@ to the current task and load/use the relevant skill before acting.
 - **quality-plan-task** — implementing or resuming a numbered task from the
   Quality Control Plane work; re-ground against current HEAD, work one task
   at a time, TDD, verify, commit, stop.
+- **frontend-modularization-task** — implementing or resuming a numbered task
+  from the frontend modularization plan (Preact + signals + htm strangler-fig
+  migration, schema-driven Config tab, charts module); reconstruct progress
+  from `frontend/src/js/{panels,legacy}` and the `frontend-*` baseline
+  ratchets, one task at a time, TDD, verify, commit, stop.
 - **root-cause-debugging** — unexpected bug, failing test, live incident,
   contradictory metrics, strange behavior, performance anomaly, or anything
   tempting a speculative patch. Prove root cause before changing behavior.

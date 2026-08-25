@@ -205,6 +205,19 @@ questions.
       started**: the actual multi-page split (browser nav replacing
       `showView()`'s 7-tab toggle) and the bigger question of whether a
       real framework/separate repo is ever warranted — planning only.
+      **Planning shipped 2026-08-25:** the framework question is answered —
+      Preact + `@preact/signals` + `htm` (a micro-framework, not the SPA
+      rewrite phase 118 rejected), strangler-fig migration inside
+      `frontend/src/js/` (`core/`, `lib/`, `charts/`, `panels/<name>/`,
+      `legacy/`), a schema-driven Config tab backed by a new
+      `GET /api/config/schema` + validated `POST /api/config`, uPlot charts,
+      and CI-owned import-graph/ownership/bundle-budget guards. Research:
+      `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`;
+      spec: `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`;
+      plan (T1a–T9, five PR groups):
+      `docs/superpowers/plans/2026-08-25-frontend-modularization.md`, executed
+      via `.claude/skills/frontend-modularization-task/SKILL.md`. The
+      multi-page split stays a separate follow-up the panel contract enables.
 - [ ] **Per-module data-consumption audit + report.** Direct instruction
       (2026-08-22) — trace every module's data sources (REST/WS/SQLite/
       in-memory) and flag anywhere a cheaper/fresher source should be used.
