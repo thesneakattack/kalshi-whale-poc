@@ -16,9 +16,11 @@ services/exits/ owns per-position exit *decisions*. This module is only
 the real-account half, called by main.py's POST /api/trading/flatten-all
 route behind its typed-confirmation gate.
 """
+from services.kalshi.interfaces import FlattenCapable
 
 
-async def flatten_all_real_positions(account) -> list[dict]:
+
+async def flatten_all_real_positions(account: FlattenCapable) -> list[dict]:
     """Closes every currently-open real market position via an
     aggressive IOC order per ticker (2026-08-23 gap-check finding: no
     "get flat immediately" path existed for the real account either -

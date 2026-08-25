@@ -365,3 +365,30 @@ def test_order_gateway_wire_kwargs_are_built_by_the_canonical_contract():
     from services.kalshi import orders as orders_module
     src = inspect.getsource(orders_module.KalshiOrderGateway.create_order)
     assert "create_order_kwargs" in src
+
+
+# ---- C7: capability protocols --------------------------------------------
+
+
+def test_facade_and_gateways_satisfy_their_capability_protocols():
+    """C7: consumers depend on capabilities (services/kalshi/interfaces.py),
+    not on transitional concrete classes. The composing facade satisfies
+    all three; the read gateway satisfies READS ONLY - it must never
+    structurally satisfy the write capability."""
+    from services.kalshi.account import KalshiAccountGateway
+    from services.kalshi.interfaces import AccountReads, FlattenCapable, OrderWrites
+    from services.kalshi.orders import KalshiOrderGateway
+
+    c, _ = _client_with_fake_sdk(trading_enabled=False)
+    assert isinstance(c, AccountReads)
+    assert isinstance(c, OrderWrites)
+    assert isinstance(c, FlattenCapable)
+
+    reads = KalshiAccountGateway(None)
+    assert isinstance(reads, AccountReads)
+    assert not isinstance(reads, OrderWrites)
+    assert not isinstance(reads, FlattenCapable)
+
+    writes = KalshiOrderGateway(None, trading_enabled=False, request_timeout_sec=5)
+    assert isinstance(writes, OrderWrites)
+    assert not isinstance(writes, AccountReads)
