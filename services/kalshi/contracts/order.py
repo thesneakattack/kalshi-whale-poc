@@ -20,6 +20,8 @@ dataclasses, no runtime validation framework.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass
 
 from services.kalshi.provenance import ContractDocs
@@ -65,7 +67,7 @@ def create_order_kwargs(request: CreateOrderRequest) -> dict:
     always present, optionals only when set (the SDK treats explicit-None
     and omitted differently at the wire level; see services/kalshi/
     public.py's confirmed get_markets case)."""
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         ticker=request.ticker,
         side=request.side,
         count=request.count,

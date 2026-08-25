@@ -21,6 +21,8 @@ JSON, and main.py/the dashboard consume dict shapes.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from services.kalshi.provenance import ContractDocs
 from services.kalshi.transport import call_with_backoff
 
@@ -66,7 +68,7 @@ class KalshiAccountGateway:
         # (confirmed directly on get_markets - see services/kalshi/public.py),
         # same omit-when-unset pattern applied here defensively rather than
         # re-verifying it call by call.
-        kwargs = {"limit": limit}
+        kwargs: dict[str, Any] = {"limit": limit}
         if cursor is not None:
             kwargs["cursor"] = cursor
         if status is not None:

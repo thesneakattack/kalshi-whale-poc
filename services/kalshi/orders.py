@@ -27,6 +27,8 @@ docstrings.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import time
 
 from services.kalshi.provenance import ContractDocs
@@ -91,7 +93,10 @@ class KalshiOrderGateway:
         self._require_trading_enabled()
         if not is_closing_order:
             self._require_risk_ok()
-        kwargs = dict(
+        # Heterogeneous SDK-kwargs bag (str/int/bool) forwarded through
+        # call_with_backoff's **kwargs - Any by design, the wire shape is
+        # verified by fixture tests, not inference.
+        kwargs: dict[str, Any] = dict(
             ticker=ticker,
             side=side,
             count=count,

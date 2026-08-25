@@ -63,6 +63,11 @@ steps:
         --baseline tools/quality_audit/baseline.json
         --json-out build/quality-audit.json
       - python -m tools.project_manifest --check static/project-manifest.json --repo-root .
+      # Scoped static type check of the Kalshi integration boundary
+      # (Phase C Task C1, mypy.ini pins scope to services/kalshi/). A
+      # separately identifiable command so a type failure reads as a type
+      # failure in the log, not as a generic audit error.
+      - python -m mypy --config-file mypy.ini
 
   # Woodpecker has no first-class "upload artifact" step; the JSON report
   # is exposed as build log output instead so a failing run's evidence
