@@ -39,6 +39,10 @@ _CLOSEABLE_CLASS_NAMES = {
     "KalshiClient",
     "KalshiAccountClient",
     "KalshiTradeWebSocketClient",
+    # services/kalshi/websocket.py (Phase A Task A11) - the boundary name
+    # for the same websocket transport; the facade subclasses it, so both
+    # construction spellings must be tracked.
+    "KalshiStreamGateway",
     # services/kalshi/transport.py's builder factories (Phase A Task A5)
     # return SDK clients owning an aiohttp session - constructing one via a
     # builder is the same leak class as constructing the wrapper directly.

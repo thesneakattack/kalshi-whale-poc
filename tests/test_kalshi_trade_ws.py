@@ -402,3 +402,23 @@ def test_lifecycle_not_resubscribed_on_a_later_sync():
 
     lifecycle_subs = [m for m in client._ws.sent if m["params"]["channels"] == ["market_lifecycle_v2"]]
     assert len(lifecycle_subs) == 1
+
+
+# ---- A11: stream gateway behind the integration boundary -------------------
+
+
+def test_ws_client_is_a_compatibility_facade_over_the_boundary_gateway():
+    """A11: the transport implementation lives in
+    services/kalshi/websocket.py; services/kalshi_trade_ws.py remains the
+    import path production wiring (services/app_state.py) uses. Subclass
+    delegation without re-implementation - the facade must add no
+    behavioral overrides of its own."""
+    from services.kalshi.websocket import KalshiStreamGateway
+    assert issubclass(KalshiTradeWebSocketClient, KalshiStreamGateway)
+    # Every attribute the facade class itself defines must be inert
+    # (docstring/module metadata), never a behavior override.
+    behavioral = [
+        name for name, value in vars(KalshiTradeWebSocketClient).items()
+        if callable(value) or isinstance(value, (staticmethod, classmethod, property))
+    ]
+    assert behavioral == []

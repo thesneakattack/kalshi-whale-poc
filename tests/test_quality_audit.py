@@ -644,3 +644,20 @@ def test_real_repo_audit_has_no_new_high_confidence_errors():
         ]
     )
     assert exit_code == 0
+
+
+def test_unclosed_stream_gateway_construction_fails(tmp_path):
+    """A11: the websocket transport class moved behind the boundary as
+    KalshiStreamGateway - the new name must not silently escape the leak
+    scanner the old KalshiTradeWebSocketClient name is tracked under."""
+    _write(
+        tmp_path / "services" / "leaky_stream.py",
+        "from services.kalshi.websocket import KalshiStreamGateway\n"
+        '\n\nasync def leak():\n    stream = KalshiStreamGateway("https://x")\n'
+        "    return await stream.run(None, None)\n",
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_stream:leak:stream"

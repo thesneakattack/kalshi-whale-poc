@@ -261,7 +261,9 @@ def _scan_fixtures(repo_root: Path) -> list[dict]:
 # module/symbol pair was confirmed to exist via grep before being added here.
 DEFAULT_HOT_COLD_TABLE: tuple[dict, ...] = (
     {
-        "module": "services.kalshi_trade_ws", "symbol": "KalshiTradeWebSocketClient._handle_message",
+        # Moved behind the boundary at A11 (services/kalshi/websocket.py);
+        # services.kalshi_trade_ws remains only a subclass facade.
+        "module": "services.kalshi.websocket", "symbol": "KalshiStreamGateway._handle_message",
         "classification": "hot",
         "reason": "Dispatches every message on the exchange-wide WS connection (trade_stream_exchange_wide: true).",
     },
