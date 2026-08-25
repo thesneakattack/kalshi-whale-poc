@@ -151,14 +151,25 @@ where this is now the documented default.
 
 ## Known limitations (observed, not assumed)
 
-- `WOODPECKER_MAX_WORKFLOWS` was raised from Woodpecker's default of 1 to
-  2 on the shared agent (`portfolio/ci-cd/docker-compose.yml`, commit
-  `81068e2`) — confirmed live in the agent's own startup log
-  (`"parallel workflows":2`). Still less than this repo's six independent
+- `WOODPECKER_MAX_WORKFLOWS` on the shared agent
+  (`portfolio/ci-cd/docker-compose.yml`) went from Woodpecker's default of
+  1 → 2 (2026-08-24, commit `81068e2`) → **4** (2026-08-25), each time
+  confirmed live in the agent's own startup log (`"parallel workflows":N`).
+  The 2 was set while the host was genuinely memory-starved (~768MB free,
+  2.9GB already in swap); a `.wslconfig` repair left it at 16 CPU / 15.6GB
+  with ~9.8GB available and swap essentially unused, which is what changed.
+  4 was chosen from measurement, not the pipeline count: sampling every
+  workflow step container at 4s intervals across a full three-PR run (27
+  containers, including `quality-browser-e2e`, which installs and runs
+  Chromium *inside* its own step container) put the peak at 258MB, most
+  sitting at 100-250MB. Still less than this repo's six independent
   `.woodpecker/*.yml` files, so some queuing under concurrent pipelines is
-  expected; raising it further affects the whole portfolio-wide agent
-  (memory-constrained host — see that commit's own comment), so raise it
-  deliberately, not as a side effect of this repo's own pipeline count.
+  still expected — deliberately, since this agent is portfolio-wide and the
+  same host runs the live ddev stack (`ddev-kalshi-whale-poc-fastapi` alone
+  is ~4.2GB), where CI memory pressure would disturb running application
+  state rather than merely fail a build. Raise it further only with a fresh
+  measurement under real concurrent load, not as a side effect of this
+  repo's own pipeline count.
 - `WOODPECKER_GRPC_SECRET` is unset on the shared server, so a restart
   regenerates a random one (`WOODPECKER_GRPC_SECRET is not set; generated
   a temporary random secret` in `docker logs woodpecker-server`). The
