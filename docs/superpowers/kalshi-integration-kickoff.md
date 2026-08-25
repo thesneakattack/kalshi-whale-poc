@@ -40,6 +40,8 @@ For every Kalshi semantic assumption, use the exact mirrored official documentat
 than memory. Preserve raw payload archival, real-money safety gates, test DB isolation,
 existing rate-limit/telemetry behavior, and hot-path performance.
 
+Follow Kalshi documented suggested practices and workflows where relevant or useful, such as using the websockets python library to handle ping/ponging
+
 Use relevant repo capabilities and supporting Superpowers disciplines automatically.
 Deterministic recurring checks must be permanently owned by CI, not merely runnable by
 Claude.
