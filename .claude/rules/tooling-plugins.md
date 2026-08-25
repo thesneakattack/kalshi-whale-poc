@@ -38,6 +38,21 @@ None of them is a substitute for executable tests.
 
 **Never invoke everything for every task.** Most edits need none of these.
 
+## Actual invocations
+
+These are the real, verified entry points. No wrapper slash-commands were
+created — each plugin already ships its own skills, and duplicating them
+would just add drift.
+
+| Tool | How you actually invoke it |
+|---|---|
+| GitNexus | `gitnexus-impact-analysis`, `gitnexus-exploring`, `gitnexus-debugging`, `gitnexus-refactoring`, `gitnexus-pr-review`, `gitnexus-taint-analysis`, `gitnexus-pdg-query`, `gitnexus-cli`, `gitnexus-guide` skills + `npx gitnexus@latest <cmd>` |
+| Context7 | MCP tools only (`plugin:context7:context7`) — no skills |
+| dimensional-analysis | `dimensional-analysis` skill (+ 5 sub-agents) |
+| 42Crunch | `42crunch-audit`, `42crunch-scan`, `42crunch-setup`, `generate-oas`, `42crunch-api-security-testing` skills |
+| Chrome DevTools | MCP tools + `chrome-devtools`, `chrome-devtools-cli`, `troubleshooting`, `memory-leak-debugging`, `debug-optimize-lcp`, `a11y-debugging` skills |
+| second-opinion | `second-opinion` skill (shells out to an external LLM CLI) |
+
 ## Repository routing map
 
 Real paths in this repo, not hypothetical ones:
