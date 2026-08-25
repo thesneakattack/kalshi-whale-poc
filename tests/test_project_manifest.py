@@ -189,3 +189,105 @@ def test_check_exits_2_when_manifest_file_is_missing(mini_repo, tmp_path):
 
 def test_main_exits_2_when_neither_flag_given(mini_repo):
     assert project_manifest.main(["--repo-root", str(mini_repo)]) == 2
+
+
+# --- drift tolerance (2026-08-25) -----------------------------------------
+# Exact equality made this check fail on ~1 in 5 real commits (measured
+# across 25 commits of origin/main: lines.python moved on 21% of them),
+# every time for a sub-1% count change carrying no information. The
+# resulting alarm fatigue is not hypothetical - it let the pipeline sit red
+# across three consecutive real pushes (d644034, 21a303a, b28a380) with
+# nobody noticing. These tests pin the tolerance behavior that replaced it.
+
+def _committed(mini_repo, tmp_path, **overrides):
+    """Write a manifest, then hand-edit leaf values to simulate drift."""
+    out_path = tmp_path / "manifest.json"
+    project_manifest.main(["--write", str(out_path), "--repo-root", str(mini_repo)])
+    data = json.loads(out_path.read_text())
+    for dotted, value in overrides.items():
+        target = data
+        *parents, leaf = dotted.split(".")
+        for p in parents:
+            target = target[p]
+        target[leaf] = value
+    out_path.write_text(json.dumps(data, indent=2) + "\n")
+    return out_path
+
+
+def test_check_passes_when_a_magnitude_field_drifts_within_tolerance(mini_repo, tmp_path):
+    # A handful of added lines is what a normal commit does; it must not
+    # red CI. 5% drift on a 10% tolerance.
+    fresh = project_manifest.build_manifest(mini_repo)
+    committed_lines = int(fresh["lines"]["python"] / 1.05)
+    path = _committed(mini_repo, tmp_path, **{"lines.python": committed_lines})
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)]) == 0
+
+
+def test_check_fails_when_a_magnitude_field_drifts_beyond_tolerance(mini_repo, tmp_path):
+    # The failure this guard actually exists for: status.html displayed
+    # "5,189 lines / 29 files" against a repo that had grown an order of
+    # magnitude past it.
+    path = _committed(mini_repo, tmp_path, **{"lines.python": 2})
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)]) == 1
+
+
+def test_check_fails_when_drift_is_beyond_tolerance_in_either_direction(mini_repo, tmp_path):
+    # Shrinking counts (a big deletion or a moved package) must be caught
+    # the same as growth - relative drift is symmetric.
+    fresh = project_manifest.build_manifest(mini_repo)
+    path = _committed(mini_repo, tmp_path, **{"lines.python": fresh["lines"]["python"] * 100})
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)]) == 1
+
+
+def test_check_still_fails_when_a_field_appears_or_disappears(mini_repo, tmp_path):
+    # A missing/extra key is a schema change, not a magnitude change, and
+    # tolerance must never absorb it.
+    out_path = tmp_path / "manifest.json"
+    project_manifest.main(["--write", str(out_path), "--repo-root", str(mini_repo)])
+    data = json.loads(out_path.read_text())
+    del data["api_routes"]
+    out_path.write_text(json.dumps(data, indent=2) + "\n")
+    assert project_manifest.main(["--check", str(out_path), "--repo-root", str(mini_repo)]) == 1
+
+
+def test_check_requires_exact_schema_version(mini_repo, tmp_path):
+    # schema_version is an identity, not a measurement - tolerance must not
+    # apply to it even though it is numeric.
+    path = _committed(mini_repo, tmp_path, **{"schema_version": 2})
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)]) == 1
+
+
+def test_tolerance_is_configurable(mini_repo, tmp_path):
+    fresh = project_manifest.build_manifest(mini_repo)
+    committed_lines = int(fresh["lines"]["python"] / 1.05)
+    path = _committed(mini_repo, tmp_path, **{"lines.python": committed_lines})
+    # 5% drift passes the default 10% but not an explicit 1%.
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo), "--tolerance", "0.01"]) == 1
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo), "--tolerance", "0.20"]) == 0
+
+
+def test_zero_to_nonzero_drift_is_always_beyond_tolerance(mini_repo, tmp_path):
+    # 0 -> anything is an infinite relative change; a percentage cannot
+    # express it, so it must not silently divide-by-zero into a pass.
+    path = _committed(mini_repo, tmp_path, **{"lines.python": 0})
+    assert project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)]) == 1
+
+
+def test_within_tolerance_drift_is_still_reported(mini_repo, tmp_path, capsys):
+    # Passing silently would hide accumulating drift until it tripped the
+    # threshold. The check reports what moved even when it does not fail.
+    fresh = project_manifest.build_manifest(mini_repo)
+    path = _committed(mini_repo, tmp_path, **{"lines.python": int(fresh["lines"]["python"] / 1.05)})
+    project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)])
+    out = capsys.readouterr().out
+    assert "lines.python" in out
+
+
+def test_failure_message_says_how_to_regenerate(mini_repo, tmp_path, capsys):
+    # Every prior occurrence of this failure was resolved by the same
+    # command; the check should just say it rather than making each person
+    # rediscover it.
+    path = _committed(mini_repo, tmp_path, **{"lines.python": 2})
+    project_manifest.main(["--check", str(path), "--repo-root", str(mini_repo)])
+    out = capsys.readouterr().out
+    assert "--write" in out
