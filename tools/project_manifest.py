@@ -9,6 +9,12 @@ this generates those specific facts fresh instead, committed as
 static/project-manifest.json and re-verified in CI so they can't silently
 go stale again the same way.
 
+--check compares against a relative tolerance (see _DEFAULT_TOLERANCE)
+rather than demanding exact equality, and prints sub-threshold drift
+instead of hiding it. Exact equality made this fail on roughly one in five
+real commits for count changes nobody could be misled by, which is what let
+it sit red across three consecutive pushes unnoticed.
+
 Deliberately narrow scope, matching the design spec's own list: only facts
 that go stale *mechanically* (file/line counts, service/route/frontend-
 module/workflow inventory, git HEAD). The historical timeline and any
@@ -192,14 +198,112 @@ def build_manifest(repo_root: Path, now: float | None = None) -> dict:
 
 
 # Fields that legitimately change on every commit regardless of structural
-# drift - excluded from --check's equality comparison per this task's own
+# drift - excluded from --check's comparison entirely per this task's own
 # plan ("the check should gate structural facts, not require a manifest
 # commit on every unrelated code commit merely because SHA changed").
 _CHURN_FIELDS = ("generated_from_head", "generated_at")
 
+# Numeric leaves that are an identity rather than a measurement. A relative
+# tolerance is meaningless for these - 1 vs 2 is a different file format,
+# not a 100% drift - so they are compared exactly.
+_EXACT_LEAVES = ("schema_version",)
+
+# How far a measured count may drift from the committed one before --check
+# fails (2026-08-25).
+#
+# Excluding only generated_from_head/generated_at did not achieve the intent
+# quoted above: line and test counts churn nearly as reliably as the SHA
+# does. Measured across 25 commits of origin/main, lines.python changed on
+# 21% of them and tests.count on 21%, each time by a fraction of a percent -
+# so ~1 in 5 commits reded this pipeline for a number nobody could be
+# misled by, and the only ever remedy was to re-run --write and commit the
+# result. git log on static/project-manifest.json shows those chore commits
+# accumulating verbatim ("Regenerate stale project-manifest.json (fixes red
+# architecture-audit CI)").
+#
+# That noise had already caused real harm rather than just annoyance: the
+# pipeline sat red across three consecutive real pushes (d644034, 21a303a,
+# b28a380) with nobody noticing, because a check that cries wolf every
+# fifth commit stops being read. See .claude/skills/ci-cd-guardrails, which
+# records that incident, and its failure semantics - a high-confidence
+# deterministic regression should fail CI, a low-signal finding should be
+# reported instead.
+#
+# What this guard actually exists to prevent is status.html displaying
+# "5,189 lines / 29 files / 20 API routes" for a repo that had grown an
+# order of magnitude past it. A relative tolerance catches that instantly
+# while absorbing ordinary commit churn; measured total drift over those
+# same 25 commits was 3.1% (lines.python) and 4.1% (tests.count), so 10%
+# leaves real headroom and still trips long before any number here becomes
+# misleading. Drift under the threshold is still printed, so accumulation
+# stays visible instead of hiding until it trips.
+_DEFAULT_TOLERANCE = 0.10
+
 
 def _structural(manifest: dict) -> dict:
     return {k: v for k, v in manifest.items() if k not in _CHURN_FIELDS}
+
+
+def _flatten(manifest: dict, prefix: str = "") -> dict:
+    """{"lines": {"python": 5}} -> {"lines.python": 5}, so nested counts are
+    compared and reported leaf by leaf rather than as whole dicts (the old
+    check printed an entire {'python': ..., 'javascript': ..., 'html': ...}
+    blob when a single one of the three had moved)."""
+    flat = {}
+    for key, value in manifest.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten(value, f"{path}."))
+        else:
+            flat[path] = value
+    return flat
+
+
+def compare(committed: dict, fresh: dict, tolerance: float = _DEFAULT_TOLERANCE) -> dict:
+    """Compare two manifests' structural facts.
+
+    Returns {"ok": bool, "beyond": [...], "within": [...]}. Each entry is
+    {path, committed, current, drift} where drift is the relative change
+    against the committed value (None when it cannot be expressed as one).
+
+    Pure and side-effect free so the comparison is unit-testable
+    independently of the CLI, per this repo's CI-guardrail rule that a
+    checker's logic should not live only inside its command-line plumbing."""
+    committed_flat = _flatten(_structural(committed))
+    fresh_flat = _flatten(_structural(fresh))
+
+    beyond, within = [], []
+    for path in sorted(set(committed_flat) | set(fresh_flat)):
+        old, new = committed_flat.get(path), fresh_flat.get(path)
+        if old == new:
+            continue
+
+        # A key that appeared or vanished is a schema change, and an
+        # identity leaf is not a measurement - neither is something a
+        # percentage should be allowed to absorb.
+        missing = path not in committed_flat or path not in fresh_flat
+        exact = path in _EXACT_LEAVES
+        numeric = isinstance(old, (int, float)) and isinstance(new, (int, float))
+        if missing or exact or not numeric:
+            beyond.append({"path": path, "committed": old, "current": new, "drift": None})
+            continue
+
+        # 0 -> nonzero is an unbounded relative change; it must never
+        # divide-by-zero into a pass.
+        drift = abs(new - old) / abs(old) if old else float("inf")
+        entry = {"path": path, "committed": old, "current": new, "drift": drift}
+        (beyond if drift > tolerance else within).append(entry)
+
+    return {"ok": not beyond, "beyond": beyond, "within": within}
+
+
+def _fmt_drift(entry: dict) -> str:
+    if entry["drift"] is None:
+        return ""
+    if entry["drift"] == float("inf"):
+        return "  (was zero)"
+    direction = "+" if (entry["current"] or 0) > (entry["committed"] or 0) else "-"
+    return f"  ({direction}{entry['drift'] * 100:.1f}%)"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -207,6 +311,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--write", type=Path, default=None, help="build a fresh manifest and write it to PATH")
     parser.add_argument("--check", type=Path, default=None, help="compare PATH's structural facts against a fresh build")
+    parser.add_argument(
+        "--tolerance", type=float, default=_DEFAULT_TOLERANCE,
+        help=f"relative drift a measured count may show before --check fails (default {_DEFAULT_TOLERANCE:.2f})",
+    )
     return parser.parse_args(argv)
 
 
@@ -226,17 +334,33 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         committed = json.loads(args.check.read_text())
         fresh = build_manifest(args.repo_root)
-        committed_structural = _structural(committed)
-        fresh_structural = _structural(fresh)
-        if committed_structural == fresh_structural:
-            print("project-manifest: up to date")
+        result = compare(committed, fresh, args.tolerance)
+
+        # Printed whether or not the check passes, so drift accumulating
+        # under the threshold stays visible instead of surfacing only once
+        # it trips.
+        for entry in result["within"]:
+            print(
+                f"  drift (within {args.tolerance:.0%} tolerance) {entry['path']}: "
+                f"committed={entry['committed']!r} current={entry['current']!r}{_fmt_drift(entry)}"
+            )
+
+        if result["ok"]:
+            print(f"project-manifest: up to date (no drift beyond {args.tolerance:.0%})")
             return 0
-        print(f"project-manifest: {args.check} is stale - structural facts have drifted:")
-        for key in sorted(set(committed_structural) | set(fresh_structural)):
-            old = committed_structural.get(key)
-            new = fresh_structural.get(key)
-            if old != new:
-                print(f"  {key}: committed={old!r} current={new!r}")
+
+        print(f"project-manifest: {args.check} is stale - drifted beyond the {args.tolerance:.0%} tolerance:")
+        for entry in result["beyond"]:
+            print(
+                f"  {entry['path']}: committed={entry['committed']!r} "
+                f"current={entry['current']!r}{_fmt_drift(entry)}"
+            )
+        print(
+            "\nRegenerate with:\n"
+            f"  python3 -m tools.project_manifest --write {args.check} --repo-root .\n"
+            "Run that on the host, not through `ddev exec` - the container image has no\n"
+            "git binary, so generated_from_head would be written as null."
+        )
         return 1
 
     print("project-manifest: pass --write PATH or --check PATH")

@@ -13,11 +13,18 @@
 # step already used to fold frontend-api-contract in alongside
 # quality_audit itself. static/project-manifest.json's committed
 # generated_from_head/generated_at are deliberately excluded from this
-# comparison (see project_manifest.py's own _CHURN_FIELDS) so this only
-# fails on a real structural drift (file/line/route/service counts), never
-# merely because HEAD moved - a `python:3.13-slim` image has no git
+# comparison (see project_manifest.py's own _CHURN_FIELDS) so this never
+# fails merely because HEAD moved - a `python:3.13-slim` image has no git
 # binary anyway, so generated_from_head always builds as null here
 # regardless, which the exclusion makes harmless.
+#
+# The remaining counts are compared against a relative tolerance rather
+# than exactly (project_manifest._DEFAULT_TOLERANCE), so ordinary commit
+# churn does not red this pipeline while a genuinely stale manifest still
+# does. Sub-threshold drift is printed in this step's log rather than
+# suppressed - if those lines are creeping up toward the threshold, run
+# `python3 -m tools.project_manifest --write static/project-manifest.json
+# --repo-root .` on the host (not via ddev exec: no git binary there).
 when:
   - event: [push, pull_request]
 
