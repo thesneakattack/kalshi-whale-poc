@@ -68,7 +68,7 @@ class _TokenBucketRateLimiter:
 #
 # First fix attempted here was a global asyncio.Semaphore bounding how many
 # Kalshi calls could be in flight at once (mirroring the EARLIER, real,
-# and still-valid fix this session: services/kalshi_client.py's own
+# and still-valid fix this session: services/kalshi/public.py's own
 # Semaphore(10) on get_candidate_markets's own internal fan-out) - dropping
 # it all the way to Semaphore(5) still didn't fully stop the spikes.
 # Confirmed why by actually reading Kalshi's rate-limit docs (docs.kalshi.

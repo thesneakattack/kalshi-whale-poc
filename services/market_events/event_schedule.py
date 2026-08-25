@@ -33,7 +33,7 @@ assumed:
    there's no separate "end" - a point-in-time announcement's own moment
    is both bounds (see resolve_one).
 
-2. Kalshi's milestone API (services/kalshi_client.py's
+2. Kalshi's milestone API (services/kalshi/public.py's
    get_milestones_for_event) - a real, structured start_date field.
    Confirmed live: KXPGATOUR-FESJC26's tournament milestone reports
    start_date 2026-08-13T11:00:00Z, matching the real tournament's actual
