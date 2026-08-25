@@ -6,7 +6,7 @@ Semantics owned:
   (QCP Task 13, 2026-08-24): the per-message `type` is "market_position"
   (SINGULAR — docs/kalshi/market-positions.md's own schema,
   `const: market_position`), while the *subscription channel* name is
-  "market_positions" (plural). The dispatch in services/kalshi_trade_ws.py
+  "market_positions" (plural). The dispatch in the websocket transport
   previously matched the plural channel name against the message type, so
   on_position was never invoked for any real position update. Both
   spellings now live here, imported by the transport, so they cannot be

@@ -1,6 +1,9 @@
+# quality-audit: kalshi-infrastructure
 """
-Authenticated Kalshi client — YOUR real account. Compatibility facade over
-the integration boundary's split account gateways (Phase A Task A8):
+Authenticated Kalshi client — YOUR real account. The composing connection
+over the boundary's split account gateways (Phase A Task A8; moved into
+the boundary package at C8 when the compatibility import path
+services/kalshi_account_client.py was deleted at zero external callers):
 
 - services/kalshi/account.py  — KalshiAccountGateway: balance/positions/
   fills/order-history READS. Structurally cannot place or cancel orders.

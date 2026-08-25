@@ -83,7 +83,12 @@ _LEGACY_WRAPPER_MODULES = {
     "services.kalshi_account_client": "KalshiAccountClient",
     "services.kalshi_trade_ws": "KalshiTradeWebSocketClient",
 }
-_LEGACY_WRAPPER_CLASS_NAMES = frozenset(_LEGACY_WRAPPER_MODULES.values())
+# KalshiAccountClient is excluded from the CLASS-name set since C8: the
+# class survived as the boundary-owned composing connection
+# (services/kalshi/account_client.py), so constructing it is final
+# architecture, not legacy usage. Its old MODULE path above stays listed -
+# importing services.kalshi_account_client is still a legacy signal.
+_LEGACY_WRAPPER_CLASS_NAMES = frozenset(_LEGACY_WRAPPER_MODULES.values()) - {"KalshiAccountClient"}
 
 # The two names services/quality_audit/api_usage.py's own inventory already
 # tracks (client/account), plus the two long-lived KalshiTradeWebSocketClient

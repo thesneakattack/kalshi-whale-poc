@@ -512,11 +512,11 @@ async def check_coverage(cfg: dict, watched_tickers: set[str], client=None,
 
     Read-only and cheap: 1-2 paginated GETs, no subscription change, no
     writes."""
-    from services.kalshi_client import KalshiClient
+    from services.kalshi.public import KalshiPublicGateway
 
     owns_client = client is None
     if owns_client:
-        client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"].get("request_timeout_sec", 10))
+        client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"].get("request_timeout_sec", 10))
     wwk = cfg.get("whale_watcher_kalshi") or {}
     floor = min_contracts if min_contracts is not None else float(wwk.get("min_contracts", 5000) or 5000)
     by_series = wwk.get("min_contracts_by_series") or {}

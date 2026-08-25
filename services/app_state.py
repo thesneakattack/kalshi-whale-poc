@@ -75,9 +75,9 @@ from services import trade_analytics
 from services import trade_category
 from services.config_store import config_store
 from services.http_client import close_client, get_and_reset_rate_limit_hits
-from services.kalshi_client import KalshiClient
-from services.kalshi_account_client import KalshiAccountClient
-from services.kalshi_trade_ws import KalshiTradeWebSocketClient
+from services.kalshi.public import KalshiPublicGateway
+from services.kalshi.account_client import KalshiAccountClient
+from services.kalshi.websocket import KalshiStreamGateway
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
 from services.paper_broker import PaperBroker
@@ -126,7 +126,7 @@ account = KalshiAccountClient(
 # prints >=$2,500 invisible). Read at import time, like every other
 # constructor arg here; flipping it needs a real restart, not a live config
 # reload, because it changes what this connection subscribed to at handshake.
-trade_stream = KalshiTradeWebSocketClient(
+trade_stream = KalshiStreamGateway(
     account_base_url,
     exchange_wide_trades=bool(cfg["kalshi"].get("trade_stream_exchange_wide", False)),
     # The indices the crypto series settle against - see
@@ -136,7 +136,7 @@ trade_stream = KalshiTradeWebSocketClient(
     # market open/close/settlement, replacing part of the 6-second REST
     # poll's own job. Lives on this connection (already built for
     # exchange-wide volume via the reader/worker queue split), never on
-    # index_stream below - see KalshiTradeWebSocketClient.__init__'s own
+    # index_stream below - see KalshiStreamGateway.__init__'s own
     # comment for why that isolation matters. Same config-gated,
     # read-at-import-time rollout shape as trade_stream_exchange_wide above.
     subscribe_lifecycle=bool(cfg["kalshi"].get("market_lifecycle_stream_enabled", True)),
@@ -150,7 +150,7 @@ trade_stream = KalshiTradeWebSocketClient(
 # general case, but the index feed is the one stream whose value is
 # entirely in its timeliness - it IS the settlement quantity - so it gets
 # physical isolation rather than a fair share of a contended queue.
-index_stream = KalshiTradeWebSocketClient(
+index_stream = KalshiStreamGateway(
     account_base_url,
     index_ids=list(cfg.get("index_feed", {}).get("index_ids") or []),
     underlying_tickers=list(cfg.get("index_feed", {}).get("underlying_tickers") or []),

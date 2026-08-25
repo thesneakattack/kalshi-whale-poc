@@ -1,8 +1,8 @@
 """
 services/diagnostics/routes.py's GET /api/index/settlement/{ticker} - the
-KalshiClient it creates must always be closed.
+KalshiPublicGateway it creates must always be closed.
 
-Found 2026-08-23 auditing every KalshiClient() call site in the codebase
+Found 2026-08-23 auditing every KalshiPublicGateway() call site in the codebase
 for the same missing-close() shape that caused a real live leak in
 services/whale_stream/index_stream_handlers.py's _spec_for (see
 tests/test_index_stream_handlers.py's own docstring for that incident).
@@ -46,7 +46,7 @@ def _fake_cfg():
 
 def test_get_index_settlement_closes_its_client_on_success(monkeypatch):
     _FakeClient.instances = []
-    monkeypatch.setattr(diagnostics_routes, "KalshiClient", _FakeClient)
+    monkeypatch.setattr(diagnostics_routes, "KalshiPublicGateway", _FakeClient)
     monkeypatch.setattr(diagnostics_routes.config_store, "get", _fake_cfg)
 
     result = asyncio.run(diagnostics_routes.get_index_settlement("TICK-A"))
@@ -58,7 +58,7 @@ def test_get_index_settlement_closes_its_client_on_success(monkeypatch):
 
 def test_get_index_settlement_closes_its_client_even_when_the_fetch_fails(monkeypatch):
     _FakeClient.instances = []
-    monkeypatch.setattr(diagnostics_routes, "KalshiClient", _BoomClient)
+    monkeypatch.setattr(diagnostics_routes, "KalshiPublicGateway", _BoomClient)
     monkeypatch.setattr(diagnostics_routes.config_store, "get", _fake_cfg)
 
     with pytest.raises(HTTPException) as exc_info:

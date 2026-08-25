@@ -19,7 +19,7 @@ import asyncio
 import pytest
 
 from services import execution
-from services import kalshi_account_client as kac_module
+from services.kalshi import account_client as kac_module
 from services.risk_manager import RiskManager
 
 

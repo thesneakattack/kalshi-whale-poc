@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from services import kalshi_account_client as kac_module
+from services.kalshi import account_client as kac_module
 from services.risk_manager import RiskManager
 
 

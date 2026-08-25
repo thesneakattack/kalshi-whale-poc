@@ -31,7 +31,7 @@ from services.analytics.market_analyst_orchestrator import (
 from services.app_state import broker, bump_generation
 from services.config.config_paths import _config_value_at_path
 from services.config_store import config_store
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
 
@@ -168,7 +168,7 @@ async def post_market_analyst_analyze(body: MarketAnalystAnalyzeBody):
     # real money per call). A human clicks "Analyze" on one specific market
     # they're actually looking at; nothing runs on a schedule anymore.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         return await _run_market_analyst_for_ticker(client, cfg, body.ticker)
     finally:

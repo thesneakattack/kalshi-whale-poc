@@ -26,7 +26,7 @@ by convention" (see paper_broker.py's module docstring).
 Maker fee (confirmed 2026-08-14 against docs/kalshi/kalshi-fee-schedule.pdf
 - exactly 1/4 of the taker rate, 0.0175 vs 0.07, matching what was
 previously only secondary-sourced) is still NOT implemented here - this
-app has no maker/limit-order path yet (services/kalshi_account_client.py's
+app has no maker/limit-order path yet (services/kalshi/orders.py's
 real order path defaults to "immediate_or_cancel", a taker order). Revisit
 once that changes.
 
@@ -107,7 +107,7 @@ def maker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     instead of _TAKER_RATE. Not implemented until 2026-08-15 (docs/profit-
     maximization-assessment-2026-08-15.md, direct request) because this app
     had no maker/limit-order path at all before then - every real order
-    (services/kalshi_account_client.py) defaulted to immediate_or_cancel (a
+    (services/kalshi/orders.py) defaulted to immediate_or_cancel (a
     taker order), and the paper broker filled everything instantly at the
     quoted price, which is also inherently a taker fill. See services/
     paper_broker.py's PendingOrder/check_pending_fills for the paper-mode

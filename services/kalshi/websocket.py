@@ -9,7 +9,7 @@ Business callbacks (on_trade/on_ticker/on_fill/...) remain application
 code — this gateway never interprets vendor fields itself and never
 decides what the app should do with a message.
 
-services/kalshi_trade_ws.py remains the compatibility facade production
+services/kalshi_trade_ws.py was the compatibility facade production
 wiring imports (services/app_state.py constructs one instance for the
 trade/ticker/lifecycle connection and a second, physically isolated one
 for index feeds — that independence is constructor policy, preserved

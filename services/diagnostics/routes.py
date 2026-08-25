@@ -29,7 +29,7 @@ from services.diagnostics import diagnostics
 from services.app_state import state, trade_stream, whale_provider
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
 from services.config_store import config_store
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
 
@@ -205,13 +205,13 @@ async def get_index_settlement(ticker: str):
     market settles on the mean of sixty one-second index observations, and
     `observations_known` of them are already in hand."""
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         market = await client.get_market(ticker)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"could not fetch {ticker}: {exc}")
     finally:
-        # Real leak found 2026-08-23 auditing every KalshiClient() call site
+        # Real leak found 2026-08-23 auditing every KalshiPublicGateway() call site
         # for the same missing-close() shape that caused index_stream_
         # handlers._spec_for's live "Unclosed connector" incident - this
         # route had zero current callers (grepped, confirmed) so it wasn't

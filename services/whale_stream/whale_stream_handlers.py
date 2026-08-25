@@ -16,7 +16,7 @@ from services import candidate_log, config_performance, market_analyst_agent, ma
 from services.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
 from services.config_store import config_store
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_lookup import _category_by_ticker, _close_time_by_ticker
 from services.whale_stream.decision_bridge import _handle_close_decision, _handle_signal
@@ -56,7 +56,7 @@ def _streaming_trade_tape_enabled() -> bool:
     return whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled
 
 
-_stream_client_cache: dict[str, KalshiClient] = {}
+_stream_client_cache: dict[str, KalshiPublicGateway] = {}
 
 # Trade-channel CPU quantification (2026-08-24, direct instruction: "the
 # websocket stream is spiking CPU usage... just quantify it first" - not a
@@ -113,10 +113,10 @@ def _record_trade_perf(handler_elapsed: float, fetch_signals_elapsed: float | No
     _perf_seconds["fetch_signals"] = 0.0
 
 
-def _stream_market_client(cfg: dict) -> KalshiClient:
-    """One reused KalshiClient for the websocket trade path.
+def _stream_market_client(cfg: dict) -> KalshiPublicGateway:
+    """One reused KalshiPublicGateway for the websocket trade path.
 
-    Everywhere else in this file constructs a KalshiClient per request
+    Everywhere else in this file constructs a KalshiPublicGateway per request
     handler, which is fine at request cadence. This path runs once per
     inbound trade message - on an exchange-wide subscription that is
     thousands per minute - so it gets a cached instance keyed by base URL
@@ -127,7 +127,7 @@ def _stream_market_client(cfg: dict) -> KalshiClient:
     base_url = cfg["kalshi"]["base_url"]
     cached = _stream_client_cache.get(base_url)
     if cached is None:
-        cached = KalshiClient(base_url, cfg["kalshi"]["request_timeout_sec"])
+        cached = KalshiPublicGateway(base_url, cfg["kalshi"]["request_timeout_sec"])
         _stream_client_cache.clear()
         _stream_client_cache[base_url] = cached
     return cached
@@ -507,7 +507,7 @@ async def _handle_trade_stream_status(status: dict) -> None:
     bump_generation()
 
 
-async def _fetch_trades_for_ticker(client: KalshiClient, ticker: str, min_ts: int | None) -> list[dict]:
+async def _fetch_trades_for_ticker(client: KalshiPublicGateway, ticker: str, min_ts: int | None) -> list[dict]:
     """Pages through every real trade on this one ticker since min_ts,
     newest-first (Kalshi's real ordering, confirmed directly) - stops only
     when the API's own cursor comes back empty (its documented "no more
@@ -542,7 +542,7 @@ async def _fetch_trades_for_ticker(client: KalshiClient, ticker: str, min_ts: in
 
 
 async def _fetch_trade_tape(
-    client: KalshiClient, markets: list[dict], since_ts: float | None = None,
+    client: KalshiPublicGateway, markets: list[dict], since_ts: float | None = None,
 ) -> list[dict]:
     """Full-exchange trade tape (ROADMAP.md Phase 0.5), scoped to the current
     watchlist rather than the whole exchange - get_trades with no ticker

@@ -1,7 +1,7 @@
 """Public-trade WS channel semantics — Phase A Task A10.
 
 The one implementation of trade-message normalization, moved verbatim from
-services/kalshi_trade_ws.py (which now delegates its compatibility
+the websocket transport (which delegates its compatibility
 staticmethod here). Semantics owned:
 
 - market_ticker -> ticker alias (WS carries market_ticker; app consumers

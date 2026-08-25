@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from services import title_cache
 from services.app_state import bump_generation, state
 from services.config_store import config_store
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_watch import (
     _fetch_live_status, _get_series_cache, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC, _slim_market,
@@ -32,7 +32,7 @@ async def get_market_orderbook(ticker: str):
     # close pattern (see its `finally: await client.close()`), just fired
     # from a request instead of a timer.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         return await client.get_orderbook(ticker)
     except Exception as e:
@@ -56,7 +56,7 @@ async def get_candlesticks(ticker: str, event_ticker: str):
     # meaningful chart, short enough to stay a single fast request. Not
     # user-configurable yet.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         event = await client.get_event(event_ticker)
         series_ticker = (event.get("event") or {}).get("series_ticker")
@@ -81,7 +81,7 @@ async def get_market_trades(ticker: str):
     # market). No series_ticker complication here, unlike candlesticks -
     # get_trades takes a plain ticker filter.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         return await client.get_trades(ticker=ticker, limit=15)
     except Exception as e:
@@ -127,7 +127,7 @@ async def get_market_detail(ticker: str):
     # trip needed) so the modal can show the same kind of outcome table
     # Kalshi's own market page shows, not just this one ticker in isolation.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         try:
             market = await client.get_market(ticker)
@@ -194,7 +194,7 @@ async def search_markets(q: str = "", min_volume: float = 0, category: str = "",
     # set, then querying only the matching series directly, is what
     # actually works.
     cfg = config_store.get()
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         all_series = await _get_series_cache(client)  # already sorted by volume_fp desc
         q_lower = q.strip().lower()

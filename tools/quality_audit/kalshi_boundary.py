@@ -66,10 +66,14 @@ _HOST_ALLOWED_FILES = frozenset({
 # time A15 landed (production code only, tests excluded - same scan the
 # census uses). Lower these as C8 removes consumers; never raise them
 # without an explicit reviewed decision recorded in the commit.
+# C8 deleted the facades at zero callers - the reviewed baseline is now
+# 0 for every legacy module path. (While the facade files themselves are
+# gone the per-module existence check below skips them; C9 turns this
+# into a file-independent hard invariant.)
 FACADE_IMPORT_BASELINE: dict[str, int] = {
-    "services.kalshi_client": 16,
-    "services.kalshi_account_client": 2,
-    "services.kalshi_trade_ws": 2,
+    "services.kalshi_client": 0,
+    "services.kalshi_account_client": 0,
+    "services.kalshi_trade_ws": 0,
 }
 
 _DEPRECATED_DIRECTION_FIELDS = frozenset({"taker_side", "taker_outcome_side", "taker_book_side"})

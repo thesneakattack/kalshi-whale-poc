@@ -1832,7 +1832,7 @@ def test_refresh_discovery_cache_background_creates_and_closes_its_own_client(mo
     main.state["event_titles"].clear()
     main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": True, "task": None}
     _FakeBackgroundClient.instances = []
-    monkeypatch.setattr(discovery_cache, "KalshiClient", _FakeBackgroundClient)
+    monkeypatch.setattr(discovery_cache, "KalshiPublicGateway", _FakeBackgroundClient)
 
     asyncio.run(main._refresh_discovery_cache_background(
         _discovery_cfg(base_url="https://example.invalid", request_timeout_sec=10)
@@ -1859,7 +1859,7 @@ def test_refresh_discovery_cache_background_still_closes_client_on_failure(monke
     def _boom(*args, **kwargs):
         raise RuntimeError("Session is closed")
 
-    monkeypatch.setattr(discovery_cache, "KalshiClient", _FakeBackgroundClient)
+    monkeypatch.setattr(discovery_cache, "KalshiPublicGateway", _FakeBackgroundClient)
     monkeypatch.setattr(main.market_catalog, "open_candidates", _boom)
 
     with pytest.raises(RuntimeError, match="Session is closed"):

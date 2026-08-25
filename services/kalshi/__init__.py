@@ -22,7 +22,7 @@ the public read gateway (A6, public.py — selection policy moved out to
 services/market_watch/ at A7), and the authenticated account split (A8):
 account.py owns balance/positions/fills/orders READS, orders.py owns the
 create/cancel WRITE primitives plus the trading_enabled and risk kill-
-switch gates. services/kalshi_client.py and
-services/kalshi_account_client.py remain the compatibility facades
-production wiring imports.
+switch gates. The compatibility facades were deleted at zero callers
+(Phase C Task C8) - production imports the gateways directly, and the
+composing account connection lives at services/kalshi/account_client.py.
 """

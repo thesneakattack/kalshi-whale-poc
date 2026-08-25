@@ -351,7 +351,7 @@ def test_maybe_resolve_disabled_never_fires():
 
 
 def test_maybe_resolve_fires_when_due_and_updates_tracker(monkeypatch):
-    # Fakes both KalshiClient construction and resolve_one so this exercises
+    # Fakes both KalshiPublicGateway construction and resolve_one so this exercises
     # only the gating/tracker/task-lifecycle wiring, not real network I/O
     # (which resolve_one's own tests above already cover in isolation).
     class FakeKalshiClient:
@@ -364,7 +364,7 @@ def test_maybe_resolve_fires_when_due_and_updates_tracker(monkeypatch):
     async def _fake_resolve_one(client, event_ticker, **kwargs):
         return None, None, event_schedule.SOURCE_NONE
 
-    monkeypatch.setattr(event_schedule, "KalshiClient", FakeKalshiClient)
+    monkeypatch.setattr(event_schedule, "KalshiPublicGateway", FakeKalshiClient)
     monkeypatch.setattr(event_schedule, "resolve_one", _fake_resolve_one)
 
     now = time.time()

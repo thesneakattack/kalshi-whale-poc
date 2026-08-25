@@ -42,8 +42,8 @@ from pathlib import Path
 import pytest
 
 import main  # noqa: E402
-from services.kalshi_account_client import KalshiAccountClient  # noqa: E402
-from services.kalshi_trade_ws import KalshiTradeWebSocketClient  # noqa: E402
+from services.kalshi.account_client import KalshiAccountClient  # noqa: E402
+from services.kalshi.websocket import KalshiStreamGateway  # noqa: E402
 from services.market_watch import _MARKET_FIELDS  # noqa: E402
 from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side  # noqa: E402
 
@@ -104,7 +104,7 @@ def _reset_account_state(connected: bool = True, fills=None, positions=None) -> 
 def test_normalize_trade_keeps_all_three_direction_fields():
     trade = _payload("public_trade.json")
 
-    normalized = KalshiTradeWebSocketClient.normalize_trade(trade)
+    normalized = KalshiStreamGateway.normalize_trade(trade)
 
     assert normalized["ticker"] == "HIGHNY-22DEC23-B53.5"
     assert normalized["taker_outcome_side"] == "no"
@@ -118,7 +118,7 @@ def test_normalize_trade_prefers_canonical_field_when_legacy_taker_side_is_absen
     # unreadable to "no" - see docs/kalshi/CHEATSHEET.md's own entry.
     trade = _payload("public_trade_no_deprecated_side.json")
 
-    normalized = KalshiTradeWebSocketClient.normalize_trade(trade)
+    normalized = KalshiStreamGateway.normalize_trade(trade)
 
     assert normalized["taker_outcome_side"] == "yes"
     assert normalized["taker_side"] == "yes"  # NOT the "no" a naive default would produce
@@ -201,7 +201,7 @@ def test_process_stream_fill_is_a_noop_when_account_not_connected():
 
 
 def test_market_position_envelope_dispatches_to_on_position():
-    client = KalshiTradeWebSocketClient("https://external-api.kalshi.com/trade-api/v2")
+    client = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2")
     envelope = _fixture("market_position_envelope.json")
     received = []
 
@@ -395,7 +395,7 @@ def test_ws_client_trade_normalizer_is_the_boundary_implementation():
     # Delegation without re-implementation: the compatibility staticmethod
     # and the boundary function must be the same object, so the two can
     # never drift apart.
-    assert KalshiTradeWebSocketClient.normalize_trade is trade_contract.normalize_trade
+    assert KalshiStreamGateway.normalize_trade is trade_contract.normalize_trade
 
 
 def test_trade_normalizer_leaves_direction_none_when_unreadable():

@@ -4,7 +4,7 @@ Balance / positions / fills / order-history reads for the real connected
 account, and nothing else: per the design spec's capability boundaries, an
 authenticated read object must be structurally unable to place or cancel
 orders (that capability lives only in services/kalshi/orders.py, behind
-its own safety gates). services/kalshi_account_client.py remains the
+its own safety gates). services/kalshi/account_client.py is the
 compatibility facade composing both.
 
 The gateway borrows an already-signed kalshi_python_async client built by

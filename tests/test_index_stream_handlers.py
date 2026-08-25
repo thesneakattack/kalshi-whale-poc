@@ -1,6 +1,6 @@
 """
 services/whale_stream/index_stream_handlers.py's _spec_for - the per-ticker
-KalshiClient it creates on a cache miss must always be closed.
+KalshiPublicGateway it creates on a cache miss must always be closed.
 
 Real live incident (2026-08-23): ddev logs showed "Unclosed connector"/
 "Unclosed client session" warnings firing on a clean ~15-minute cadence
@@ -49,7 +49,7 @@ def _fake_cfg():
 def test_spec_for_closes_its_client_on_a_cache_miss(monkeypatch):
     ish._settlement_spec_cache.clear()
     _FakeClient.instances = []
-    monkeypatch.setattr(ish, "KalshiClient", _FakeClient)
+    monkeypatch.setattr(ish, "KalshiPublicGateway", _FakeClient)
     monkeypatch.setattr(ish.config_store, "get", _fake_cfg)
 
     spec = asyncio.run(ish._spec_for("TICK-A"))
@@ -63,7 +63,7 @@ def test_spec_for_closes_its_client_on_a_cache_miss(monkeypatch):
 def test_spec_for_still_closes_its_client_when_get_market_raises(monkeypatch):
     ish._settlement_spec_cache.clear()
     _FakeClient.instances = []
-    monkeypatch.setattr(ish, "KalshiClient", _BoomClient)
+    monkeypatch.setattr(ish, "KalshiPublicGateway", _BoomClient)
     monkeypatch.setattr(ish.config_store, "get", _fake_cfg)
 
     spec = asyncio.run(ish._spec_for("TICK-B"))
@@ -80,7 +80,7 @@ def test_spec_for_skips_creating_a_client_entirely_on_a_cache_hit(monkeypatch):
     ish._settlement_spec_cache.clear()
     ish._settlement_spec_cache["TICK-C"] = {"supported": True, "ticker": "TICK-C"}
     _FakeClient.instances = []
-    monkeypatch.setattr(ish, "KalshiClient", _FakeClient)
+    monkeypatch.setattr(ish, "KalshiPublicGateway", _FakeClient)
 
     spec = asyncio.run(ish._spec_for("TICK-C"))
 

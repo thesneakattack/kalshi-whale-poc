@@ -6,7 +6,8 @@ logic, and per-operation batching, all backed by Kalshi's official
 kalshi_python_async SDK (constructed via services/kalshi/transport.py) and
 the shared services/http_client.py backoff/limiter/telemetry stack.
 
-services/kalshi_client.py remains the compatibility facade: it subclasses
+services/kalshi_client.py was the compatibility facade (deleted at zero
+callers, C8): it subclassed
 this gateway (delegation without re-implementation) and adds only the
 market-selection *policy* methods, which are application concerns scheduled
 to move into services/market_watch/ at A7 — the adapter batches and fetches

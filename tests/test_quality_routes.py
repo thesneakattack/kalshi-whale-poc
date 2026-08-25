@@ -46,13 +46,13 @@ def test_quality_summary_makes_no_kalshi_network_calls(monkeypatch):
     """diagnostics.run_offline() itself deliberately excludes check_coverage
     (the one diagnostic that calls the real Kalshi API) - this proves that
     invariant holds for the whole composed route, not just run_offline in
-    isolation, by making any KalshiClient construction a hard failure."""
-    from services import kalshi_client
+    isolation, by making any KalshiPublicGateway construction a hard failure."""
+    from services.kalshi import public as kalshi_public
 
     def _raise(*args, **kwargs):
-        raise AssertionError("GET /api/quality/summary must never construct a KalshiClient")
+        raise AssertionError("GET /api/quality/summary must never construct a KalshiPublicGateway")
 
-    monkeypatch.setattr(kalshi_client.KalshiClient, "__init__", _raise)
+    monkeypatch.setattr(kalshi_public.KalshiPublicGateway, "__init__", _raise)
 
     resp = client.get("/api/quality/summary")
 

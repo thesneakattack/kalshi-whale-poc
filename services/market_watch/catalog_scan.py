@@ -10,7 +10,7 @@ import time
 
 from services import market_history, series_cache, task_supervisor
 from services.app_state import bump_generation, state
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
@@ -25,7 +25,7 @@ _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
 # reason to poll it again.
 
 
-async def propagate_milestone_winners(client: KalshiClient, markets: list[dict]) -> dict:
+async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     """Best-effort: fetch first milestone per event, inspect its live-data
     for a declared `details.winner`, map that winner to a related market
     ticker when possible and set market_results for the related tickers
@@ -186,7 +186,7 @@ _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basket
 # change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
 
 
-async def _get_series_cache(client: KalshiClient) -> list[dict]:
+async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     """All series with nonzero lifetime volume (~9,400 of Kalshi's ~12,500
     total, as of 2026-08-08), sorted by volume_fp descending, cached in
     state["series_cache"] and refreshed at most once per
@@ -208,7 +208,7 @@ async def _get_series_cache(client: KalshiClient) -> list[dict]:
     return cache["series"]
 
 
-async def _get_top_series(client: KalshiClient, categories: list[str] | None = None, top_n_per_category: int = 12) -> list[str]:
+async def _get_top_series(client: KalshiPublicGateway, categories: list[str] | None = None, top_n_per_category: int = 12) -> list[str]:
     """Per-category discovery (2026-08-15 direct fix, real live report:
     "i see absolutely no signal or trade activity related to any markets
     other than sports or crypto... mentions... politics"). A flat global
@@ -275,7 +275,7 @@ async def _get_top_series(client: KalshiClient, categories: list[str] | None = N
 _CATALOG_SCAN_BATCH_SIZE = 10
 
 
-async def _scan_catalog_batch(client: KalshiClient, cfg: dict):
+async def _scan_catalog_batch(client: KalshiPublicGateway, cfg: dict):
     """Incrementally builds market_catalog's near-term market catalog, a
     bounded batch (least-recently-scanned series first, see market_catalog.
     next_series_to_scan) per call - see market_catalog.py's own module
@@ -357,7 +357,7 @@ def _maybe_scan_catalog_batch(cfg: dict) -> None:
 
 
 async def _scan_catalog_batch_background(cfg: dict) -> None:
-    """Owns its own KalshiClient (not the calling tick's, which closes at
+    """Owns its own KalshiPublicGateway (not the calling tick's, which closes at
     the end of that same tick - see discovery_cache._refresh_discovery_cache's
     identical reasoning) and delegates the real work to _scan_catalog_batch
     unchanged, so its existing behavior/tests keep working when called
@@ -366,7 +366,7 @@ async def _scan_catalog_batch_background(cfg: dict) -> None:
     finally to release the "scanning" flag and close the client regardless
     of outcome."""
     catalog_state = state["catalog_scan"]
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _scan_catalog_batch(client, cfg)
     finally:
