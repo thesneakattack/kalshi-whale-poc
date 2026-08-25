@@ -17,7 +17,16 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 from tools.quality_audit import __main__ as audit_cli
-from tools.quality_audit import api_usage, background, config_usage, persistence, resources, routers, source
+from tools.quality_audit import (
+    api_usage,
+    background,
+    config_usage,
+    kalshi_contract_docs,
+    persistence,
+    resources,
+    routers,
+    source,
+)
 from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -415,6 +424,102 @@ def test_main_exits_nonzero_for_synthetic_new_high_confidence_error(tmp_path, mo
     exit_code = audit_cli.main(["--repo-root", str(tmp_path), "--baseline", str(baseline_path)])
 
     assert exit_code == 1
+
+
+# --- kalshi_contract_docs.py: Kalshi CONTRACT_DOCS scanner -------------------
+
+
+def test_no_services_kalshi_package_produces_no_findings(tmp_path):
+    """A3 ships before A4 creates services/kalshi/ - the scanner must be
+    inert against every pre-A4 repo state, not error or warn on a package
+    that doesn't exist yet."""
+    _write(tmp_path / "services" / "kalshi_client.py", "def get_markets():\n    pass\n")
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_documented_operation_produces_no_finding(tmp_path):
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_markets": ("docs/kalshi/get-markets.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_operation_missing_contract_docs_entry_fails_high_confidence(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "kalshi-contract-docs-missing:services.kalshi.public:get_markets"
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_private_operation_is_not_required_to_have_contract_docs(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS = {}\n\n\ndef _internal_helper():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
+
+
+def test_contract_docs_entry_pointing_at_nonexistent_file_fails_high_confidence(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_markets": ("docs/kalshi/does-not-exist.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == (
+        "kalshi-contract-docs-missing-file:services.kalshi.public:get_markets:docs/kalshi/does-not-exist.md"
+    )
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+
+
+def test_stale_contract_docs_key_reports_medium_confidence_warning(tmp_path):
+    """A key with no matching public def (e.g. a renamed/removed operation
+    left behind in CONTRACT_DOCS) is reported, not gated - a static AST
+    scan can't rule out every legitimate reason a key doesn't literally
+    match a def name, per A3's "report according to provable context"."""
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        'CONTRACT_DOCS = {\n    "get_market": ("docs/kalshi/get-markets.md",),\n}\n'
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    findings = kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path)
+
+    stale = [f for f in findings if f.check == "kalshi-contract-docs" and "stale" in f.finding_id]
+    assert len(stale) == 1
+    assert stale[0].finding_id == "kalshi-contract-docs-stale:services.kalshi.public:get_market"
+    assert stale[0].severity == "warning"
+    assert stale[0].confidence == "medium"
+
+
+def test_documented_method_on_class_produces_no_finding(tmp_path):
+    _write(tmp_path / "docs" / "kalshi" / "get-market.md", "# Get Market\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "account.py",
+        'CONTRACT_DOCS = {\n    "get_balance": ("docs/kalshi/get-market.md",),\n}\n'
+        "\n\nclass AccountGateway:\n    async def get_balance(self):\n        pass\n"
+        "\n    async def _internal(self):\n        pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
 
 
 def test_real_repo_audit_has_no_new_high_confidence_errors():
