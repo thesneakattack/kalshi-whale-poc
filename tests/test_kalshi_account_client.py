@@ -332,3 +332,36 @@ def test_facade_client_injection_reaches_both_gateways():
     assert c._reads._client is fake
     assert c._writes._client is fake
     assert c._client is fake
+
+
+# ---- C5: canonical order contract guards the production write path ---------
+
+
+def test_create_order_rejects_non_v2_side_vocabulary_before_any_sdk_call():
+    """C5: the order gateway builds its wire kwargs through the canonical
+    CreateOrderRequest, whose construction rejects any side outside
+    create-order-v2.md's BookSide vocabulary - so a legacy "yes"/"no" (or
+    "buy"/"sell") can never reach the SDK as a real-money order with a
+    guessed meaning. Trading gates still take precedence (PermissionError
+    when disabled, checked before the request is even built)."""
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+    for bad_side in ("yes", "no", "buy", "sell"):
+        with pytest.raises(ValueError):
+            asyncio.run(c.create_order(ticker="TICK-A", side=bad_side, count="1.00", price="0.5000"))
+    assert fake.calls == []
+
+    # gate precedence: disabled trading refuses before vocabulary validation
+    c2, fake2 = _client_with_fake_sdk(trading_enabled=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(c2.create_order(ticker="TICK-A", side="yes", count="1.00", price="0.5000"))
+    assert fake2.calls == []
+
+
+def test_order_gateway_wire_kwargs_are_built_by_the_canonical_contract():
+    """One construction path for order wire kwargs: the gateway must build
+    through contracts/order.py's create_order_kwargs, not a private inline
+    copy that could drift from the documented v2 shape."""
+    import inspect
+    from services.kalshi import orders as orders_module
+    src = inspect.getsource(orders_module.KalshiOrderGateway.create_order)
+    assert "create_order_kwargs" in src
