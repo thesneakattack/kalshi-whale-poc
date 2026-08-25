@@ -41,7 +41,7 @@
       "source_urls": [
         "https://docs.kalshi.com/getting_started/api_environments.md"
       ],
-      "sha256": null
+      "sha256": "73509a19902422f651f5b2d540d3e033e7c0633c082486cf364d5429bf631e48"
     },
     {
       "local_path": "docs/kalshi/api_keys.md",
@@ -461,28 +461,28 @@
       "source_urls": [
         "https://docs.kalshi.com/api-reference/live-data/get-event-live-data.md"
       ],
-      "sha256": null
+      "sha256": "31bec3a7a6fb81abc42307e4c45e2bc31e4281b46ac3b033c374375da28da3ec"
     },
     {
       "local_path": "docs/kalshi/get-event-metadata.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/events/get-event-metadata.md"
       ],
-      "sha256": null
+      "sha256": "d6e4ecc29a091d83e00def6284710ca7661baf07910e3be5ae2ae5dea5fd6371"
     },
     {
       "local_path": "docs/kalshi/get-event.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/events/get-event.md"
       ],
-      "sha256": null
+      "sha256": "554ce9997add687b064b5c931c1e5a373288d77e6fc1aec539f3ce1c494e09b6"
     },
     {
       "local_path": "docs/kalshi/get-events.md",
       "source_urls": [
         "https://docs.kalshi.com/api-reference/events/get-events.md"
       ],
-      "sha256": null
+      "sha256": "ac55d7fa7b8c980442add93986949dd547b6b792d146687461f8dfbf28800524"
     },
     {
       "local_path": "docs/kalshi/get-exchange-schedule.md",
@@ -538,7 +538,7 @@
       "source_urls": [
         "https://docs.kalshi.com/api-reference/search/get-filters-for-sports.md"
       ],
-      "sha256": null
+      "sha256": "10553e4498b7e17c48bbb7b62aa22b21e739302dfb677516532d6cce983965ef"
     },
     {
       "local_path": "docs/kalshi/get-funding-history.md",
@@ -646,12 +646,11 @@
       "sha256": "d972da185e247c940fdd7fa5a7c76fad59045a0170a3d452de4e92cf5dd3b3a0"
     },
     {
-      "local_path": "docs/kalshi/get-live-data.md",
+      "local_path": "docs/kalshi/get-live-data-with-type.md",
       "source_urls": [
-        "https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md",
-        "https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md"
+        "https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md"
       ],
-      "sha256": null
+      "sha256": "009e467618ab74154bd769dee958d7bca283a18a0a4fddf7c885183772d5f649"
     },
     {
       "local_path": "docs/kalshi/get-market-candlesticks.md",
@@ -672,7 +671,7 @@
       "source_urls": [
         "https://docs.kalshi.com/api-reference/market/get-market.md"
       ],
-      "sha256": null
+      "sha256": "715b5e5bc9c6df8247af08605c823e6d0348aea84934c662f243f82df2bc1de6"
     },
     {
       "local_path": "docs/kalshi/get-markets.md",
@@ -693,7 +692,14 @@
       "source_urls": [
         "https://docs.kalshi.com/api-reference/milestone/get-milestones.md"
       ],
-      "sha256": null
+      "sha256": "aaef826f1013c4c05a47ace233b7d2094e67bdbe576f03c2518b7328daba280d"
+    },
+    {
+      "local_path": "docs/kalshi/get-multiple-live-data.md",
+      "source_urls": [
+        "https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md"
+      ],
+      "sha256": "cf89d301bc6e3e7f360a5387cc87f44c9d3200ab806ed752787b495be9f453c1"
     },
     {
       "local_path": "docs/kalshi/get-multiple-market-orderbooks.md",
@@ -896,7 +902,7 @@
       "source_urls": [
         "https://docs.kalshi.com/api-reference/search/get-tags-for-series-categories.md"
       ],
-      "sha256": null
+      "sha256": "326e3f71548f8ad8249891c15e23d2856aee6dc334aab05eb5ab8fd5e9946803"
     },
     {
       "local_path": "docs/kalshi/get-total-resting-order-value.md",
@@ -939,6 +945,13 @@
         "https://docs.kalshi.com/api-reference/portfolio/intra-account-transfer.md"
       ],
       "sha256": "ef894e8e4554794ea1968afdd5bd2e7f52b4e3392ee7ee3761ea26c80d2c0361"
+    },
+    {
+      "local_path": "docs/kalshi/list-non-default-endpoint-costs.md",
+      "source_urls": [
+        "https://docs.kalshi.com/api-reference/account/list-non-default-endpoint-costs.md"
+      ],
+      "sha256": "1e106b35a57ba092381b3df9cb3cef52739e8defa7eed4b42edfc120d96c1b1a"
     },
     {
       "local_path": "docs/kalshi/listener-sessions.md",
@@ -1218,7 +1231,7 @@
       "source_urls": [
         "https://docs.kalshi.com/websockets/market-ticker.md"
       ],
-      "sha256": null
+      "sha256": "c49eac3ed98fb2d0ad2af01ce39a37ec33705fce0ece4316b5f71d1873560d31"
     },
     {
       "local_path": "docs/kalshi/market_lifecycle.md",
@@ -1323,7 +1336,7 @@
       "source_urls": [
         "https://docs.kalshi.com/websockets/public-trades.md"
       ],
-      "sha256": null
+      "sha256": "d063af6a5f5ccbddf1b1ec9b508bf6445c06453e72d21dcf9c2080a2b52b1854"
     },
     {
       "local_path": "docs/kalshi/pyth-value.md",
@@ -1358,16 +1371,14 @@
       "source_urls": [
         "https://docs.kalshi.com/getting_started/quick_start_websockets.md"
       ],
-      "sha256": null
+      "sha256": "bd73b9f565531287f4def8c5e5188a236efa64b5d383b231a87c5566ff99ba2b"
     },
     {
       "local_path": "docs/kalshi/rate_limits.md",
       "source_urls": [
-        "https://docs.kalshi.com/getting_started/rate_limits.md",
-        "https://docs.kalshi.com/api-reference/account/list-non-default-endpoint-costs.md",
-        "https://docs.kalshi.com/llms.txt"
+        "https://docs.kalshi.com/getting_started/rate_limits.md"
       ],
-      "sha256": null
+      "sha256": "c7fac04330544488f504533d96d7893652679e4898a5fc365f8d644c2401d32d"
     },
     {
       "local_path": "docs/kalshi/reset-order-group.md",
@@ -1486,7 +1497,7 @@
       "source_urls": [
         "https://docs.kalshi.com/websockets/websocket-connection.md"
       ],
-      "sha256": null
+      "sha256": "fb7b06551c9f1d97ff8b8f9dd5e30e9625ff405e74138099b6dec3b8d8da2b93"
     },
     {
       "local_path": "docs/kalshi/websockets.md",

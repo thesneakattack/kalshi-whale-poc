@@ -1,50 +1,67 @@
-Source: https://docs.kalshi.com/getting_started/api_environments.md
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
+> Use this file to discover all available pages before exploring further.
 
 # API Environments and Endpoints
 
-## REST API Base URLs
+> REST and WebSocket base URLs for production and demo
 
-**Production:**
-- `https://external-api.kalshi.com/trade-api/v2` (recommended)
-- `https://api.elections.kalshi.com/trade-api/v2` (also supported)
+Kalshi provides separate production and demo environments. Credentials are not shared between environments, so demo API keys only work against demo endpoints and production API keys only work against production endpoints.
 
-**Demo:**
-- `https://external-api.demo.kalshi.co/trade-api/v2` (recommended)
-- `https://demo-api.kalshi.co/trade-api/v2` (also supported)
+## REST API
 
-## WebSocket URLs
+Use these base URLs for the Trade API:
 
-**Production:**
-- `wss://external-api-ws.kalshi.com/trade-api/ws/v2` (recommended)
-- `wss://api.elections.kalshi.com/trade-api/ws/v2` (also supported)
+| Environment | Recommended base URL                               | Also supported                                  |
+| ----------- | -------------------------------------------------- | ----------------------------------------------- |
+| Production  | `https://external-api.kalshi.com/trade-api/v2`     | `https://api.elections.kalshi.com/trade-api/v2` |
+| Demo        | `https://external-api.demo.kalshi.co/trade-api/v2` | `https://demo-api.kalshi.co/trade-api/v2`       |
 
-**Demo:**
-- `wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2` (recommended)
-- `wss://demo-api.kalshi.co/trade-api/ws/v2` (also supported)
+The `external-api` hosts are dedicated to the external Trade API and are the recommended hosts for API traders. The existing shared hosts remain supported for compatibility with existing clients.
 
-## Default recommendation
+<Note>
+  Despite the `elections` subdomain, the production Trade API provides access to all Kalshi markets, not only election-related markets.
+</Note>
 
-The `external-api` hosts are the recommended endpoints for general API
-access. Despite the "elections" subdomain naming, the API provides access
-to all Kalshi markets: "the production Trade API provides access to all
-Kalshi markets, not only election-related markets." The alternative hosts
-remain supported for backward compatibility but are not preferred for new
-implementations.
+## WebSocket API
 
-**No category-specific hosts exist** (no separate sports/crypto/mentions/
-politics API hosts) - this definitively resolves an earlier open question
-from this project's own investigation (2026-08-15 session: "its not JUST
-api.elections.kalshi.com, each category should have their own category
-specific endpoint"). There is only ever one general-purpose REST host and
-one general-purpose WS host per environment; `api.elections.kalshi.com` is
-a legacy alias for the exact same backend, not a scoped one.
+Use these WebSocket URLs for the Trade API:
 
-**Action taken 2026-08-15**: `config/settings.yaml`'s `kalshi.base_url` was
-switched from the legacy `api.elections.kalshi.com` alias to the
-recommended `external-api.kalshi.com` host, per direct instruction ("i
-insist you use the default api endpoint whenever possible not this
-elections one"). Verified live afterward: markets/account/exchange-status
-all continued working normally against the new host, zero errors.
+| Environment | Recommended URL                                        | Also supported                                   |
+| ----------- | ------------------------------------------------------ | ------------------------------------------------ |
+| Production  | `wss://external-api-ws.kalshi.com/trade-api/ws/v2`     | `wss://api.elections.kalshi.com/trade-api/ws/v2` |
+| Demo        | `wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2` | `wss://demo-api.kalshi.co/trade-api/ws/v2`       |
 
-This file is a local copy of the fetched page content used during this
-session.
+## Private Connectivity
+
+For participants requiring network-level isolation, Kalshi supports private connectivity to the REST and WebSocket APIs via [AWS PrivateLink](https://docs.aws.amazon.com/vpc/latest/privatelink/what-is-privatelink.html). With PrivateLink, your API traffic is routed entirely within the AWS backbone and never traverses the public internet.
+
+PrivateLink is available for the production hosts `external-api.kalshi.com` (REST) and `external-api-ws.kalshi.com` (WebSocket). The two APIs are provisioned as separate interface endpoints, each reachable over TLS on port 443. Connect to the endpoint's DNS name from within your VPC and set the matching host above as the TLS server name (SNI).
+
+Members on the Premier tier or above can contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to provision PrivateLink endpoints for their AWS account.
+
+Members on the Prime tier or above can also contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to discuss VPC peering for production WebSocket connectivity from their AWS VPC.
+
+## Request Signing
+
+The host does not change the signature payload. Sign the full request path from the API root, without query parameters.
+
+For example, all of these hosts use the same signed path for an order request:
+
+```text theme={null}
+/trade-api/v2/portfolio/orders
+```
+
+If the request URL is:
+
+```text theme={null}
+https://external-api.kalshi.com/trade-api/v2/portfolio/orders?limit=5
+```
+
+sign:
+
+```text theme={null}
+/trade-api/v2/portfolio/orders
+```
+
+not the hostname and not the query string.

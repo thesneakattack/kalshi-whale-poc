@@ -92,7 +92,7 @@ async def propagate_milestone_winners(client: KalshiClient, markets: list[dict])
                         milestone_by_event[et] = ms
 
             # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
-            # get-live-data.md) - was N individual get_live_data() calls,
+            # get-multiple-live-data.md) - was N individual get_live_data() calls,
             # one per event with a milestone, each inside this same loop.
             # One get_live_datas call now covers every event polled this
             # tick regardless of how many need it.

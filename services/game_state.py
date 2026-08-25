@@ -34,7 +34,7 @@ derived signal, so it stays useful across changes of approach.
 
 SPORT-SHAPED, NOT FOOTBALL-SHAPED
 
-docs/kalshi/get-live-data.md's verified football_game example carries
+docs/kalshi/get-live-data-with-type.md's verified football_game example carries
 `away_points`/`home_points`/`clock`/`quarter`/`situation`. Other sports use
 different names for the same ideas - a baseball game has innings rather
 than quarters, and half-innings rather than a clock. So the columns here
@@ -116,7 +116,7 @@ def _connect() -> sqlite3.Connection:
 
 
 # Per-sport field names for the same underlying concept. Football is the one
-# shape verified against a real payload (docs/kalshi/get-live-data.md, real
+# shape verified against a real payload (docs/kalshi/get-live-data-with-type.md, real
 # NFL milestones, 2026-08-15); the others are declared here as the mapping
 # to apply IF those field names appear, and are explicitly unverified until
 # a real payload confirms them - see period_label_for().

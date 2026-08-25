@@ -31,27 +31,44 @@ Not every locally mirrored page is a literal byte-for-byte copy of its
 source URL, and this module must not silently pretend otherwise - a real,
 live-verified finding from building this checker, not a hypothetical:
 
-- Two pages (get-live-data.md, rate_limits.md) are hand-merged from TWO
+- Two pages (get-live-data.md, rate_limits.md) were hand-merged from TWO
   source URLs each, per their own README "Sources:" (plural) entries - not
   a 1:1 mirror of either URL alone.
 - 16 pages fetched during the original 2026-08-15 session (before the
   2026-08-16 "mirror literally every page" pass - see README.md's own
-  "full-index gap-fill" section) are hand-written LLM *summaries* of the
+  "full-index gap-fill" section) were hand-written LLM *summaries* of the
   page, not verbatim copies - e.g. the real
-  websockets/websocket-connection.md is 73KB; the local mirror is 2.6KB of
+  websockets/websocket-connection.md is 73KB; the local mirror was 2.6KB of
   condensed prose. Live-verified while building this tool: fetching these
   16 pages fresh and hashing them against the committed manifest produced
   drift on effectively all of them, every single run, regardless of
   whether Kalshi's page had actually changed - a permanent false positive,
   not a signal.
 
-Detected structurally, not by a hardcoded filename list: every one of
-these 16 files' first line is a `Source: <url>` citation (a hand-written
-distillation's own convention); every one of the other 197 per-page
-mirrors instead starts with the fetch tool's own literal
-`> ## Documentation Index` boilerplate header (a real raw mirror). This
-100%-clean split was verified against all 213 per-page files before
-relying on it - see `_looks_like_curated_summary`.
+**Update, 2026-08-24 (Kalshi Integration Phase A, Task A1 -
+docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md):** 15 of
+those 16 curated summaries were production-used contracts (per
+docs/kalshi/used-contracts.json's census) and have since been replaced
+with real verbatim mirrors, fetched fresh via direct HTTP the same way the
+other real mirrors were - both merged files were split into one file per
+source URL (get-live-data.md -> get-live-data-with-type.md +
+get-multiple-live-data.md; rate_limits.md -> rate_limits.md, now
+single-source, + list-non-default-endpoint-costs.md), and the app-specific
+analysis that used to live inside those two files' bodies (real account
+rate-limit tier data, the SDK method-name/legacy-endpoint findings) moved
+to docs/kalshi/CHEATSHEET.md instead, per the boundary design spec's "keep
+application commentary in CHEATSHEET rather than inside the mirrored
+body." Only get-game-stats.md remains a curated summary now - deliberately:
+it is not a production-used contract (see docs/kalshi/README.md's own note
+on that entry), so replacing it is deferred per Finding A's own scope note
+rather than blocking unrelated migration work.
+
+Detected structurally, not by a hardcoded filename list: a curated
+summary's first line is a `Source: <url>` citation (a hand-written
+distillation's own convention); a real raw mirror instead starts with the
+fetch tool's own literal `> ## Documentation Index` boilerplate header.
+This 100%-clean split was verified against every per-page file in the
+mirror before relying on it - see `_looks_like_curated_summary`.
 
 `llms.txt` (the 214th entry - the index itself, not a per-endpoint page)
 is a known, deliberate imprecision in that same heuristic: live-verified
@@ -143,6 +160,17 @@ def _parse_readme_provenance(readme_text: str) -> list[tuple[str, list[str]]]:
         name = bullet.group(1)
         start = bullet.end()
         end = bullets[i + 1].start() if i + 1 < len(bullets) else len(section)
+        # A bullet's own continuation lines never contain a blank line - one
+        # blank line always separates it from whatever comes next (another
+        # bullet, or a subheading/prose paragraph like the real README's
+        # "### 2026-08-16 - full-index gap-fill" section intro). Clamping
+        # to the first blank line, not just the next bullet, stops a
+        # same-scanned URL in that unrelated prose from silently attaching
+        # itself to the preceding bullet - a real bug, found live 2026-08-24
+        # (see this function's own test for the exact reproduction).
+        blank_line = section.find("\n\n", start, end)
+        if blank_line != -1:
+            end = blank_line
         urls = _URL_RE.findall(section[start:end])
         if urls:
             entries.append((name, urls))

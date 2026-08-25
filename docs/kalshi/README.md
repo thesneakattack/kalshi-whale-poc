@@ -37,17 +37,29 @@ Local copies of the docs.kalshi.com pages and live response snapshots fetched du
 - `get-milestones.md` (2026-08-15)
   Source: `https://docs.kalshi.com/api-reference/milestone/get-milestones.md` -
   the list form, `category`/`min_updated_ts` filters.
-- `get-live-data.md` (2026-08-15)
-  Sources: `https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md`,
-  `https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md` -
-  single + batch milestone-keyed live data (real game score/clock/quarter).
+- `get-live-data-with-type.md` (2026-08-24, Phase A Task A1 - split from the
+  old merged `get-live-data.md`, verbatim now)
+  Source: `https://docs.kalshi.com/api-reference/live-data/get-live-data-with-type.md`
+- `get-multiple-live-data.md` (2026-08-24, Phase A Task A1 - split from the
+  old merged `get-live-data.md`, verbatim now)
+  Source: `https://docs.kalshi.com/api-reference/live-data/get-multiple-live-data.md`
 - `get-game-stats.md` (2026-08-15)
   Source: `https://docs.kalshi.com/api-reference/live-data/get-game-stats.md`
-- `rate_limits.md` (2026-08-15)
-  Sources: `https://docs.kalshi.com/getting_started/rate_limits.md`,
-  `https://docs.kalshi.com/api-reference/account/list-non-default-endpoint-costs.md` -
-  refetched fresh plus this account's own real live tier/cost data via
-  `get_account_api_limits()`/`get_account_endpoint_costs()`.
+  - deliberately left as a curated summary: not a production-used contract
+    (no call site anywhere reads this endpoint - `game_state.py`'s own
+    score/period fields come from the live-data milestone endpoints above,
+    confirmed via A0's census finding zero `get_game_stats`-shaped call
+    sites), so Phase A's Finding A scope note ("global mirror completeness
+    is an initiative goal, not a reason to block unrelated migration
+    indefinitely") applies - not an oversight.
+- `rate_limits.md` (2026-08-24, Phase A Task A1 - now a verbatim single-
+  source mirror; this account's own live tier/cost data and the flagged
+  rate-limiter tuning finding moved to CHEATSHEET.md instead of living in
+  the mirrored body)
+  Source: `https://docs.kalshi.com/getting_started/rate_limits.md`
+- `list-non-default-endpoint-costs.md` (2026-08-24, Phase A Task A1 - split
+  from the old merged `rate_limits.md`, verbatim now)
+  Source: `https://docs.kalshi.com/api-reference/account/list-non-default-endpoint-costs.md`
 
 ### 2026-08-16 — full-index gap-fill
 

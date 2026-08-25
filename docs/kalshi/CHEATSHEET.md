@@ -368,3 +368,85 @@ so every downstream consumer (frontend, `_join_real_position_prices`,
 `_real_account_position_tickers`) keeps reading the one key it already
 expects regardless of source.
 **Found:** 2026-08-24, same session as the two findings above.
+
+---
+
+## Is `services/kalshi_client.py`'s `get_live_data` on the current or legacy milestone-live-data endpoint?
+**Answer:** Legacy. `get-live-data-with-type.md` (`GET
+/live_data/{type}/milestone/{milestone_id}`, what the SDK's
+`get_live_data(type=..., milestone_id=...)` calls) is documented as: "This
+is the legacy endpoint that requires a type path parameter. Prefer using
+`/live_data/milestone/{milestone_id}` instead." That preferred endpoint is
+a *third*, separate page (`live-data-get-live-data.md`'s source,
+`api-reference/live-data/get-live-data.md` — not `get-live-data-with-type`
+or `get-multiple-live-data`, and not the same shape as either: no `type`
+path param at all). Not migrated as part of this pass — a genuine
+docs/live contract discrepancy recorded here per the boundary design
+spec's "treat docs/live disagreement as an explicit contract discrepancy
+rather than guessing," not silently fixed as an incidental refactor.
+`get_live_datas` (the batched form, `get-multiple-live-data.md`) is not
+flagged as legacy by its own doc page — only the single-item form is.
+**Source:** `get-live-data-with-type.md`, `get-multiple-live-data.md`,
+`live-data-get-live-data.md`, `llms.txt` (lines naming
+`get-live-data-with-type.md` "the legacy endpoint").
+**Found:** 2026-08-24, Kalshi Integration Phase A Task A1, while replacing
+the old merged/curated `get-live-data.md` with verbatim per-source mirrors
+(`docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md`).
+
+---
+
+## What does this app's real connected account's rate-limit tier actually look like, and is the current limiter tuned to it?
+**Answer:** Real 2026-08-15 live values for this account (`GET
+/account/api_limits`): `usage_tier: "basic"`, read `{refill_rate: 200,
+bucket_capacity: 600}`, write `{refill_rate: 100, bucket_capacity: 100}` —
+a 600-token (~3s) real read burst pool, larger than `rate_limits.md`'s own
+generic one-second-of-budget framing for Basic-tier reads suggested (the
+real page, re-verified 2026-08-24, actually documents Basic/Advanced as a
+**two**-second burst bucket — see its own "Bucket capacity and bursting"
+section — so the account data and the doc agree once the doc is read
+precisely; the discrepancy was against an earlier, less careful reading,
+not the doc itself). `GET /account/endpoint_costs` for this account: every
+endpoint this app actually calls (markets, market, event, events,
+series_list, milestones, live_data, live_datas, event_live_data, trades,
+candlesticks, exchange_status, tags/filters search, balance, positions,
+fills, orders, create_order, cancel_order) costs the flat default of 10
+tokens — none of the non-default-cost endpoints listed in
+`list-non-default-endpoint-costs.md` apply to this app.
+**Gotcha:** `services/http_client.py`'s limiter
+(`_KALSHI_READ_RATE_PER_SEC = 3.0`, burst 2.0) uses roughly 15% of this
+account's real sustained read budget (200 ÷ 10 = 20 req/sec) and a burst
+pool roughly 300x smaller than the real 600-token pool. Confirmed
+2026-08-15 that the same-day 429s motivating the conservative tuning were
+more likely caused by several now-fixed uncapped/uncached call sites
+producing outsized real bursts than by the nominal rate itself being
+unsafe. Raising the limiter toward the real ceiling (with a safety margin)
+is a live, evidence-backed candidate — flagged here, not applied
+automatically, since it touches the same code that caused that incident.
+**Source:** `rate_limits.md`, `list-non-default-endpoint-costs.md`, this
+account's own live `get_account_api_limits()`/`get_account_endpoint_costs()`
+responses.
+**Found:** 2026-08-15 (original live-account verification); moved here
+from inside `docs/kalshi/rate_limits.md`'s own mirrored body 2026-08-24,
+Kalshi Integration Phase A Task A1, per the boundary design spec's "keep
+application commentary in CHEATSHEET rather than inside the mirrored
+body" — the doc mirror itself is verbatim upstream prose now, not a place
+for this app's own account-specific numbers.
+
+---
+
+## Does this app's WebSocket client follow Kalshi's documented ping/pong guidance?
+**Answer:** Yes, already compliant — confirmed, not assumed.
+`quick_start_websockets.md`'s own "Connection Keep-Alive" section: "The
+Python `websockets` library automatically handles WebSocket ping/pong
+frames to keep connections alive. No manual heartbeat handling is
+required... Other WebSocket libraries may require manual ping/pong
+implementation." `services/kalshi_trade_ws.py` uses the `websockets`
+library's own `connect(..., ping_interval=20, ping_timeout=20)` and does
+no manual ping/pong frame handling of its own — exactly the documented
+recommended pattern. No specific interval/timeout values are documented
+upstream (just "the library handles it automatically"), so 20s/20s is
+this app's own choice within the library's supported knobs, not something
+that could be doc-verified further.
+**Source:** `quick_start_websockets.md`.
+**Found:** 2026-08-24, Kalshi Integration Phase A Task A1, verifying
+`services/kalshi_trade_ws.py` against documented suggested WS practices.

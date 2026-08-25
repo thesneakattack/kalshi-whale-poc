@@ -1,51 +1,274 @@
-Source: https://docs.kalshi.com/websockets/public-trades.md
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
+> Use this file to discover all available pages before exploring further.
 
 # Public Trades
 
-Public trade notifications when trades occur.
+> Public trade notifications when trades occur.
 
-Requirements surfaced in the fetch:
-- no additional channel-level auth beyond the authenticated websocket connection
-- market specification optional
-- updates sent immediately after trade execution
+**Requirements:**
+- No additional channel-level authentication beyond the authenticated WebSocket connection
+- Market specification optional (omit to receive all trades)
+- Updates sent immediately after trade execution
 
-## Message Shape
+**Use case:** Trade feed, volume analysis
 
-```json
-{
-  "type": "trade",
-  "sid": 11,
-  "msg": {
-    "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
-    "market_ticker": "HIGHNY-22DEC23-B53.5",
-    "yes_price_dollars": "0.360",
-    "no_price_dollars": "0.640",
-    "count_fp": "136.00",
-    "taker_side": "no",
-    "taker_outcome_side": "no",
-    "taker_book_side": "ask",
-    "is_block_trade": false,
-    "ts": 1669149841,
-    "ts_ms": 1669149841000
-  }
-}
-```
 
-Fields surfaced in the fetched schema:
-- `trade_id`
-- `market_ticker`
-- `yes_price_dollars`
-- `no_price_dollars`
-- `count_fp`
-- `taker_side`
-- `taker_outcome_side`
-- `taker_book_side`
-- `is_block_trade`
-- `ts`
-- `ts_ms`
 
-Use case called out by the page:
-- trade feed
-- volume analysis
 
-This file is a local copy of the fetched page content used during this session.
+## AsyncAPI
+
+````yaml asyncapi.yaml trade
+id: trade
+title: Public Trades
+description: >
+  Public trade notifications when trades occur.
+
+
+  **Requirements:**
+
+  - No additional channel-level authentication beyond the authenticated
+  WebSocket connection
+
+  - Market specification optional (omit to receive all trades)
+
+  - Updates sent immediately after trade execution
+
+
+  **Use case:** Trade feed, volume analysis
+servers:
+  - id: production
+    protocol: wss
+    host: external-api-ws.kalshi.com
+    bindings: []
+    variables: []
+address: trade
+parameters: []
+bindings: []
+operations:
+  - &ref_2
+    id: receiveTrade
+    title: Trade Update
+    description: Receive public trade notifications
+    type: send
+    messages:
+      - &ref_3
+        id: trade
+        contentType: application/json
+        payload:
+          - name: Trade Update
+            description: Public trade information
+            type: object
+            properties:
+              - name: type
+                type: string
+                description: trade
+                required: true
+              - name: sid
+                type: integer
+                description: >-
+                  Server-generated subscription identifier (sid) used to
+                  identify the channel
+                required: true
+              - name: msg
+                type: object
+                required: true
+                properties:
+                  - name: trade_id
+                    type: string
+                    description: Unique identifier for the trade
+                    required: true
+                  - name: market_ticker
+                    type: string
+                    description: Unique market identifier
+                    examples: &ref_0
+                      - FED-23DEC-T3.00
+                      - HIGHNY-22DEC23-B53.5
+                    required: true
+                  - name: yes_price_dollars
+                    type: string
+                    description: Yes side price in dollars
+                    required: true
+                  - name: no_price_dollars
+                    type: string
+                    description: No side price in dollars
+                    required: true
+                  - name: count_fp
+                    type: string
+                    description: Fixed-point contracts traded (2 decimals)
+                    required: true
+                  - name: taker_side
+                    type: string
+                    description: Market side
+                    enumValues:
+                      - 'yes'
+                      - 'no'
+                    required: true
+                  - name: taker_outcome_side
+                    type: string
+                    description: Market side
+                    enumValues:
+                      - 'yes'
+                      - 'no'
+                    required: true
+                  - name: taker_book_side
+                    type: string
+                    description: >-
+                      Side of the book for an order or trade. 'bid' is
+                      equivalent to outcome_side 'yes'; 'ask' is equivalent to
+                      outcome_side 'no'.
+                    enumValues:
+                      - bid
+                      - ask
+                    required: true
+                  - name: is_block_trade
+                    type: boolean
+                    description: True if the trade was matched off book as a block trade
+                    required: true
+                  - name: ts
+                    type: integer
+                    description: Deprecated - Unix timestamp in seconds. Use ts_ms instead.
+                    deprecated: true
+                    required: true
+                  - name: ts_ms
+                    type: integer
+                    description: Unix timestamp in milliseconds
+                    required: true
+        headers: []
+        jsonPayloadSchema:
+          type: object
+          required:
+            - type
+            - sid
+            - msg
+          properties:
+            type:
+              type: string
+              const: trade
+              x-parser-schema-id: <anonymous-schema-96>
+            sid:
+              type: integer
+              description: >-
+                Server-generated subscription identifier (sid) used to identify
+                the channel
+              minimum: 1
+              x-parser-schema-id: subscriptionId
+            msg:
+              type: object
+              required:
+                - trade_id
+                - market_ticker
+                - yes_price_dollars
+                - no_price_dollars
+                - count_fp
+                - taker_side
+                - taker_outcome_side
+                - taker_book_side
+                - is_block_trade
+                - ts
+                - ts_ms
+              properties:
+                trade_id:
+                  type: string
+                  description: Unique identifier for the trade
+                  format: uuid
+                  x-parser-schema-id: <anonymous-schema-98>
+                market_ticker:
+                  type: string
+                  description: Unique market identifier
+                  pattern: ^[A-Z0-9-]+$
+                  examples: *ref_0
+                  x-parser-schema-id: marketTicker
+                yes_price_dollars:
+                  type: string
+                  description: Yes side price in dollars
+                  x-parser-schema-id: <anonymous-schema-99>
+                no_price_dollars:
+                  type: string
+                  description: No side price in dollars
+                  x-parser-schema-id: <anonymous-schema-100>
+                count_fp:
+                  type: string
+                  description: Fixed-point contracts traded (2 decimals)
+                  x-parser-schema-id: <anonymous-schema-101>
+                taker_side: &ref_1
+                  type: string
+                  description: Market side
+                  enum:
+                    - 'yes'
+                    - 'no'
+                  x-parser-schema-id: marketSide
+                taker_outcome_side: *ref_1
+                taker_book_side:
+                  type: string
+                  description: >-
+                    Side of the book for an order or trade. 'bid' is equivalent
+                    to outcome_side 'yes'; 'ask' is equivalent to outcome_side
+                    'no'.
+                  enum:
+                    - bid
+                    - ask
+                  x-parser-schema-id: bookSide
+                is_block_trade:
+                  type: boolean
+                  description: True if the trade was matched off book as a block trade
+                  x-parser-schema-id: <anonymous-schema-102>
+                ts:
+                  type: integer
+                  deprecated: true
+                  description: Deprecated - Unix timestamp in seconds. Use ts_ms instead.
+                  format: int64
+                  x-parser-schema-id: <anonymous-schema-103>
+                ts_ms:
+                  type: integer
+                  description: Unix timestamp in milliseconds
+                  format: int64
+                  x-parser-schema-id: <anonymous-schema-104>
+              x-parser-schema-id: <anonymous-schema-97>
+          x-parser-schema-id: tradePayload
+        title: Trade Update
+        description: Public trade information
+        example: |-
+          {
+            "type": "trade",
+            "sid": 11,
+            "msg": {
+              "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
+              "market_ticker": "HIGHNY-22DEC23-B53.5",
+              "yes_price_dollars": "0.360",
+              "no_price_dollars": "0.640",
+              "count_fp": "136.00",
+              "taker_side": "no",
+              "is_block_trade": false,
+              "ts": 1669149841,
+              "ts_ms": 1669149841000
+            }
+          }
+        bindings: []
+        extensions:
+          - id: x-parser-unique-object-id
+            value: trade
+    bindings: []
+    extensions:
+      - id: x-parser-unique-object-id
+        value: trade
+sendOperations: []
+receiveOperations:
+  - *ref_2
+sendMessages: []
+receiveMessages:
+  - *ref_3
+extensions:
+  - id: x-parser-unique-object-id
+    value: trade
+securitySchemes:
+  - id: apiKey
+    name: apiKey
+    type: apiKey
+    description: |
+      API key authentication required for WebSocket connections.
+      The API key should be provided during the WebSocket handshake.
+    in: user
+    extensions: []
+
+````

@@ -1,66 +1,244 @@
-Source: https://docs.kalshi.com/api-reference/milestone/get-milestones.md
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-# Get Milestones (list)
+# Get Milestones
 
-## Route
+> Minimum start date to filter milestones. Format: RFC3339 timestamp
 
-`GET /milestones`
 
-## Parameters
 
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `limit` | integer | Yes | 1-500 per page |
-| `minimum_start_date` | RFC3339 | No | filter by earliest start date |
-| `category` | string | No | e.g. Sports, Elections, Esports, Crypto |
-| `competition` | string | No | e.g. Pro Football, Pro Basketball |
-| `source_id` | string | No | filter by source identifier |
-| `type` | string | No | e.g. football_game, basketball_game |
-| `related_event_ticker` | string | No | **single value only**, not a list |
-| `cursor` | string | No | pagination cursor |
-| `min_updated_ts` | integer (unix sec) | No | incremental-poll watermark |
+## OpenAPI
 
-## Response shape
+````yaml /openapi.yaml get /milestones
+openapi: 3.0.0
+info:
+  title: Kalshi Trade API Manual Endpoints
+  version: 3.29.0
+  description: >-
+    Manually defined OpenAPI spec for endpoints being migrated to spec-first
+    approach
+servers:
+  - url: https://external-api.kalshi.com/trade-api/v2
+    description: Production Trade API server
+  - url: https://api.elections.kalshi.com/trade-api/v2
+    description: Production shared API server, also supported
+  - url: https://external-api.demo.kalshi.co/trade-api/v2
+    description: Demo Trade API server
+  - url: https://demo-api.kalshi.co/trade-api/v2
+    description: Demo shared API server, also supported
+security: []
+tags:
+  - name: api-keys
+    description: API key management endpoints
+  - name: orders
+    description: Order management endpoints
+  - name: order-groups
+    description: Order group management endpoints
+  - name: portfolio
+    description: Portfolio and balance information endpoints
+  - name: communications
+    description: Request-for-quote (RFQ) endpoints
+  - name: multivariate
+    description: Multivariate event collection endpoints
+  - name: exchange
+    description: Exchange status and information endpoints
+  - name: live-data
+    description: Live data endpoints
+  - name: markets
+    description: Market data endpoints
+  - name: milestone
+    description: Milestone endpoints
+  - name: search
+    description: Search and filtering endpoints
+  - name: incentive-programs
+    description: Incentive program endpoints
+  - name: fcm
+    description: FCM member specific endpoints
+  - name: events
+    description: Event endpoints
+  - name: structured-targets
+    description: Structured targets endpoints
+paths:
+  /milestones:
+    get:
+      tags:
+        - milestone
+      summary: Get Milestones
+      description: 'Minimum start date to filter milestones. Format: RFC3339 timestamp'
+      operationId: GetMilestones
+      parameters:
+        - name: limit
+          in: query
+          description: Number of milestones to return per page
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+        - name: minimum_start_date
+          in: query
+          description: Minimum start date to filter milestones. Format RFC3339 timestamp
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: category
+          in: query
+          description: >-
+            Filter by milestone category. E.g. Sports, Elections, Esports,
+            Crypto.
+          required: false
+          schema:
+            type: string
+            example: Sports
+        - name: competition
+          in: query
+          description: >-
+            Filter by competition. E.g. Pro Football, Pro Basketball (M), Pro
+            Baseball, Pro Hockey, College Football.
+          required: false
+          schema:
+            type: string
+            example: Pro Football
+        - name: source_id
+          in: query
+          description: Filter by source id
+          required: false
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: >-
+            Filter by milestone type. E.g. football_game, basketball_game,
+            soccer_tournament_multi_leg, baseball_game, hockey_match,
+            political_race.
+          required: false
+          schema:
+            type: string
+            example: football_game
+        - name: related_event_ticker
+          in: query
+          description: Filter by related event ticker
+          required: false
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: >-
+            Pagination cursor. Use the cursor value returned from the previous
+            response to get the next page of results
+          required: false
+          schema:
+            type: string
+        - name: min_updated_ts
+          in: query
+          required: false
+          description: >-
+            Filter milestones with metadata updated after this Unix timestamp
+            (in seconds). Use this to efficiently poll for changes.
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Milestones retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetMilestonesResponse'
+        '400':
+          description: Bad Request
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal Server Error
+components:
+  schemas:
+    GetMilestonesResponse:
+      type: object
+      required:
+        - milestones
+      properties:
+        milestones:
+          type: array
+          items:
+            $ref: '#/components/schemas/Milestone'
+          description: List of milestones.
+        cursor:
+          type: string
+          description: Cursor for pagination.
+    Milestone:
+      type: object
+      required:
+        - id
+        - category
+        - type
+        - start_date
+        - related_event_tickers
+        - title
+        - notification_message
+        - details
+        - primary_event_tickers
+        - last_updated_ts
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the milestone.
+        category:
+          type: string
+          description: Category of the milestone. E.g. Sports, Elections, Esports, Crypto.
+          example: Sports
+        type:
+          type: string
+          description: >-
+            Type of the milestone. E.g. football_game, basketball_game,
+            soccer_tournament_multi_leg, baseball_game, hockey_match,
+            golf_tournament, political_race.
+          example: football_game
+        start_date:
+          type: string
+          format: date-time
+          description: Start date of the milestone.
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: End date of the milestone, if any.
+        related_event_tickers:
+          type: array
+          items:
+            type: string
+          description: List of event tickers related to this milestone.
+        title:
+          type: string
+          description: Title of the milestone.
+        notification_message:
+          type: string
+          description: Notification message for the milestone.
+        source_id:
+          type: string
+          nullable: true
+          description: Source id of milestone if available.
+        source_ids:
+          type: object
+          additionalProperties:
+            type: string
+          description: Source ids of milestone if available.
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional details about the milestone.
+        primary_event_tickers:
+          type: array
+          items:
+            type: string
+          description: >-
+            List of event tickers directly related to the outcome of this
+            milestone.
+        last_updated_ts:
+          type: string
+          format: date-time
+          description: Last time this structured target was updated.
 
-```json
-{
-  "milestones": [
-    {
-      "id": "string", "category": "string", "type": "string",
-      "start_date": "RFC3339", "end_date": "RFC3339 or null",
-      "related_event_tickers": ["string"], "title": "string",
-      "notification_message": "string", "source_id": "string or null",
-      "source_ids": {"key": "value"}, "details": {"key": "value"},
-      "primary_event_tickers": ["string"], "last_updated_ts": "RFC3339"
-    }
-  ],
-  "cursor": "string"
-}
-```
-
-## Live verification (2026-08-15, real account)
-
-`get_milestones(limit=200, category="Sports", min_updated_ts=<6h ago>)` -
-**one call, no per-event filter at all** - returned 200 milestones
-covering **1,483 distinct `related_event_tickers`**.
-
-## Real architectural finding
-
-`main.py`'s current design calls `get_milestones_for_event(et)`
-(`related_event_ticker=et`, one value) once per event ticker in the
-watchlist/candidate pool - both in `_fetch_live_status` and
-`propagate_milestone_winners`. Since `related_event_ticker` can't take a
-list, that per-event pattern can't be batched directly the way
-`get_events`/`get_live_datas` can. But the *category+min_updated_ts* form
-above is a genuinely different, much cheaper strategy: a periodic (e.g.
-every few minutes) single category-scoped call could build a local
-`event_ticker -> milestone` map covering the *entire* candidate pool in
-one request, which `_fetch_live_status`/`propagate_milestone_winners`
-would then read from locally (zero API cost) instead of each doing its
-own per-event REST round trip. Not yet implemented - a real "reapproach"
-candidate, bigger in scope than the caching/batching fixes already
-shipped this session, flagged for prioritization rather than applied
-blind.
-
-This file is a local copy of the fetched page content used during this
-session.
+````

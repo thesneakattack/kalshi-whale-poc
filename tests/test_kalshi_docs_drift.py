@@ -88,6 +88,51 @@ def test_build_manifest_skips_documented_entries_with_no_actual_local_file(tmp_p
     assert [e["local_path"] for e in manifest["entries"]] == ["docs/kalshi/get-market.md"]
 
 
+def test_build_manifest_does_not_bleed_urls_from_prose_after_a_bullet(tmp_path):
+    """Real bug, found live 2026-08-24 (Phase A Task A1): docs/kalshi/README.md's
+    real "## Source Pages" section ends its curated subset with a bullet
+    immediately followed (after a blank line) by a "### ..." subheading and
+    a prose paragraph that happens to name another doc URL in backticks
+    (the full-index gap-fill section's own explanatory text, which cites
+    `https://docs.kalshi.com/llms.txt`). The old implementation scanned for
+    URLs all the way to the *next bullet*, so that prose URL silently
+    attached itself to the unrelated preceding bullet - confirmed via
+    `git show HEAD:docs/kalshi/upstream-manifest.json`, where the real
+    rate_limits.md entry already carried a spurious third
+    https://docs.kalshi.com/llms.txt source_url before this fix. A bullet's
+    URL scan must stop at the first blank line (the end of its own
+    indented continuation block), not run to the next bullet."""
+    _write_readme(tmp_path, """# Kalshi Docs Snapshot
+
+## Source Pages
+
+- `get-market.md`
+  Source: `https://docs.kalshi.com/api-reference/market/get-market.md`
+
+### An unrelated subsection
+
+This prose mentions `https://docs.kalshi.com/llms.txt` for an unrelated
+reason and must not become one of get-market.md's source_urls.
+
+- `get-event.md`
+  Source: `https://docs.kalshi.com/api-reference/events/get-event.md`
+
+## Fetched Response Snapshots
+""")
+    (tmp_path / "get-market.md").write_text("content\n", encoding="utf-8")
+    (tmp_path / "get-event.md").write_text("content\n", encoding="utf-8")
+
+    manifest = drift.build_manifest(tmp_path)
+
+    by_path = {e["local_path"]: e for e in manifest["entries"]}
+    assert by_path["docs/kalshi/get-market.md"]["source_urls"] == [
+        "https://docs.kalshi.com/api-reference/market/get-market.md",
+    ]
+    assert by_path["docs/kalshi/get-event.md"]["source_urls"] == [
+        "https://docs.kalshi.com/api-reference/events/get-event.md",
+    ]
+
+
 def test_build_manifest_skips_content_hash_for_curated_summary_pages(tmp_path):
     """A hand-written LLM distillation (first line 'Source: <url>') is not
     a verbatim mirror - hashing it against a fresh raw fetch would drift

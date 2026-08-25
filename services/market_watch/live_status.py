@@ -144,7 +144,7 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
         *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
     )
     # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
-    # get-live-data.md) - was N individual get_live_data() calls via
+    # get-multiple-live-data.md) - was N individual get_live_data() calls via
     # asyncio.gather, one per event with a milestone. Live-verified: 3
     # individual = 0.99s wall, 1 batched get_live_datas call = 0.02s wall.
     milestone_by_event = {}
@@ -168,7 +168,7 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
             if status:
                 confirmed[et] = status
             # Real score/quarter/clock/down-distance/last_play (2026-08-16
-            # audit finding B2, docs/kalshi/get-live-data.md) - the exact
+            # audit finding B2, docs/kalshi/get-multiple-live-data.md) - the exact
             # same get_live_datas call above already fetches this full
             # payload; previously only widget_status was ever read out of
             # it. Pure value-add at zero extra API cost: surfaced here so

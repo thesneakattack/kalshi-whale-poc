@@ -1,7 +1,7 @@
 """services/game_state.py — durable in-game state (score, period, clock).
 
 The football payload here is the real one verified against live NFL
-milestones in docs/kalshi/get-live-data.md, not invented. The baseball one
+milestones in docs/kalshi/get-live-data-with-type.md, not invented. The baseball one
 is the shape this module is designed to absorb without a schema change.
 """
 import json
@@ -24,7 +24,7 @@ def _isolated(monkeypatch, tmp_path):
 
 
 # The real response `details` for a football_game milestone, from
-# docs/kalshi/get-live-data.md's live verification.
+# docs/kalshi/get-live-data-with-type.md's live verification.
 _FOOTBALL = {
     "away_points": 24, "home_points": 20, "clock": "00:00", "quarter": 4,
     "status": "closed", "widget_status": "finished", "winner": "",

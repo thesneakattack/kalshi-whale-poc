@@ -378,12 +378,13 @@ class KalshiClient:
         return resp.model_dump(mode="json")
 
     _LIVE_DATAS_BATCH_SIZE = 100  # Kalshi's documented max milestone_ids per
-    # get_live_datas call (docs/kalshi/get-live-data.md).
+    # get_live_datas call (docs/kalshi/get-multiple-live-data.md).
 
     async def get_live_datas(self, milestone_ids: list[str]) -> dict[str, dict]:
         """Batched form of get_live_data - one call per up-to-100 milestone
         ids instead of N individual get_live_data() calls. Live-verified
-        2026-08-15 (docs/kalshi/get-live-data.md, finding B3.2): 3
+        2026-08-15 (docs/kalshi/get-live-data-with-type.md +
+        docs/kalshi/get-multiple-live-data.md, finding B3.2): 3
         individual calls = 0.99s wall, 1 batched call = 0.02s wall. Returns
         milestone_id -> {"type", "details", "milestone_id"} - the batch
         response's own flat per-item shape, NOT get_live_data()'s
@@ -406,7 +407,7 @@ class KalshiClient:
                 # SDK's GetLiveDatasResponse model declares live_datas as a
                 # required list, so parsing the raw response throws inside
                 # the SDK before this method ever sees it. Not documented
-                # in docs/kalshi/get-live-data.md's response shape. null
+                # in docs/kalshi/get-multiple-live-data.md's response shape. null
                 # and [] mean the same thing here - no live data for this
                 # chunk - so this degrades to skipping just this chunk
                 # rather than losing every other chunk's real data (and the
