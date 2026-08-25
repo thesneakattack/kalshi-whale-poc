@@ -69,3 +69,48 @@ def test_check_all_covers_overrides_not_just_the_global_default():
     }
     v = config_bounds.check_all(cfg)
     assert any(x["scope"] == "series:KXBTC15M" and x["field"] == "stop_loss_pct" for x in v)
+
+
+# ---- kelly_fraction_of_cap domain (2026-08-25) ---------------------------
+# This dial is not a cost-basis fraction like the fields above - it is a
+# dimensionless 0-1 interpolation weight - but it shares the exact failure
+# mode this module exists to catch: a value outside its real domain that
+# does not error, and instead silently changes behavior while the config
+# keeps claiming otherwise. It is live-editable from the dashboard Controls
+# panel, and the number input's max="1" is presentational only.
+
+def test_kelly_fraction_above_one_is_reported():
+    v = config_bounds.check({"kelly_fraction_of_cap": 3.0})
+    assert len(v) == 1
+    assert v[0]["field"] == "kelly_fraction_of_cap"
+    assert v[0]["value"] == 3.0
+    assert v[0]["bound"] == 1.0
+    # "clamped", not "unreachable": strategy_engine.kelly_scaled_max_size
+    # clamps to 1.0, so sizing stays sane - this is a "you asked for 3 and
+    # are getting 1" discrepancy, which is a warning, not a failure.
+    assert v[0]["severity"] == "clamped"
+
+
+def test_kelly_fraction_negative_is_reported_as_unreachable():
+    # Negative reaches kelly_scaled_max_size's `kelly_fraction <= 0` branch
+    # and is treated as fully OFF, so confidence scaling never applies at
+    # all while the config still shows a value set for it - the silent-
+    # disable class, same as an unreachable stop_loss_pct.
+    v = config_bounds.check({"kelly_fraction_of_cap": -0.5})
+    assert len(v) == 1
+    assert v[0]["field"] == "kelly_fraction_of_cap"
+    assert v[0]["severity"] == "unreachable"
+
+
+@pytest.mark.parametrize("value", [0.0, 0.3, 1.0, None])
+def test_kelly_fraction_within_domain_is_clean(value):
+    # 0.0 is "off" by design and 1.0 is full strength; None is this app's
+    # established "disabled" convention. None of them is a violation.
+    assert config_bounds.check({"kelly_fraction_of_cap": value}) == []
+
+
+def test_kelly_fraction_violation_does_not_disturb_other_checks():
+    # A bad kelly value alongside a bad stop_loss must yield both, so one
+    # finding never masks another.
+    v = config_bounds.check({"kelly_fraction_of_cap": 3.0, "stop_loss_pct": 1.75})
+    assert {f["field"] for f in v} == {"kelly_fraction_of_cap", "stop_loss_pct"}

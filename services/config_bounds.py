@@ -30,6 +30,14 @@ every position. A one-way ratchet: every position could lose, most could
 not take profit. Observed over 24h: 25 stop-losses (-$6,422) against 3
 take-profits.
 
+Most fields checked here are cost-basis fractions bounded by that
+arithmetic. `kelly_fraction_of_cap` is the exception and is checked anyway:
+it is a dimensionless 0-1 interpolation weight, not a fraction of cost
+basis, but it fails the same way - a value outside its real domain does not
+error, it silently changes behavior while the config keeps claiming
+otherwise. That failure mode, not the settlement arithmetic specifically, is
+what this module is for.
+
 Read-only and pure - this module computes and reports, it never mutates
 config. `advisory_engine` calls `clamp()` on its own suggestions;
 `diagnostics` surfaces violations; `/api/config` warns.
@@ -134,7 +142,9 @@ def check(cfg: dict, scope: str = "strategy") -> list[dict]:
     of {field, value, bound, severity, detail}; empty means everything is
     at least physically reachable. severity "unreachable" means the rule can
     never fire for any position (it is silently disabled); "partial" means
-    it fires for only part of the allowed price band."""
+    it fires for only part of the allowed price band; "clamped" means the
+    value is outside its documented domain and the consuming code bounds it
+    back, so behavior stays sane but is not what the config says."""
     out = []
     stop_loss = cfg.get("stop_loss_pct")
     if stop_loss is not None and stop_loss > 1.0 + _FEE_HEADROOM:
@@ -171,6 +181,39 @@ def check(cfg: dict, scope: str = "strategy") -> list[dict]:
                     f"reachable only for entries at unit cost <= {c_max:.3f}; unreachable for anything "
                     f"priced {c_max:.3f}-{cfg.get('max_unit_cost')}. Stop-loss stays reachable for all "
                     f"of them, so most positions can lose but not take profit"
+                ),
+            })
+
+    # kelly_fraction_of_cap is documented as a 0-1 dial (see
+    # strategy_engine.kelly_scaled_max_size). Above 1.0 the raw formula
+    # `1.0 - kelly_fraction * (1.0 - raw_scale)` produces a NEGATIVE size
+    # ceiling; that function now clamps to 1.0 so sizing stays sane, but
+    # the clamp alone would just absorb a typo silently - a dashboard entry
+    # of `3` instead of `0.3` would quietly size every position at full
+    # strength forever. Reported here so it gets corrected rather than
+    # absorbed.
+    kelly = cfg.get("kelly_fraction_of_cap")
+    if kelly is not None:
+        kelly = float(kelly)
+        if kelly > 1.0:
+            out.append({
+                "scope": scope, "field": "kelly_fraction_of_cap", "value": kelly,
+                "bound": 1.0, "severity": "clamped",
+                "detail": (
+                    f"kelly_fraction_of_cap is a 0-1 dial, so {kelly} is outside its domain and is "
+                    f"clamped to 1.0 (full confidence scaling) — position sizing is behaving as 1.0, "
+                    f"not {kelly}. Left unclamped this formula returns a negative size ceiling; check "
+                    f"whether a decimal point was dropped"
+                ),
+            })
+        elif kelly < 0.0:
+            out.append({
+                "scope": scope, "field": "kelly_fraction_of_cap", "value": kelly,
+                "bound": 0.0, "severity": "unreachable",
+                "detail": (
+                    f"a negative kelly_fraction_of_cap ({kelly}) is treated as fully OFF, so position "
+                    f"size never scales with confidence at all while the config still shows a value "
+                    f"set for it — use 0.0 to disable it deliberately"
                 ),
             })
 
