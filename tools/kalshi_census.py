@@ -298,7 +298,10 @@ DEFAULT_HOT_COLD_TABLE: tuple[dict, ...] = (
         "classification": "hot", "reason": "Called from _process_stream_ticker for every captured ticker update.",
     },
     {
-        "module": "services.whalewatchers.kalshi_trade_tape", "symbol": "_taker_side",
+        # Moved behind the boundary at A13; the provider's _taker_side is
+        # now a same-object alias of this function, so this is the symbol
+        # that actually runs per trade.
+        "module": "services.kalshi.contracts.trade", "symbol": "resolve_taker_outcome_side",
         "classification": "hot", "reason": "Called per trade to classify direction on the whale-detection path.",
     },
     {

@@ -59,6 +59,12 @@
       "inside_approved_integration_file": false
     },
     {
+      "file": "tools/kalshi_census.py",
+      "line": 304,
+      "snippet": "services.kalshi.contracts.trade",
+      "inside_approved_integration_file": false
+    },
+    {
       "file": "tools/kalshi_docs_sync.py",
       "line": 65,
       "snippet": "https://docs.kalshi.com/llms.txt",
@@ -105,6 +111,12 @@
       "line": 40,
       "snippet": "https://external-api.kalshi.com/trade-api/v2",
       "inside_approved_integration_file": true
+    },
+    {
+      "file": "tools/quality_audit/kalshi_boundary.py",
+      "line": 1,
+      "snippet": "Kalshi integration-boundary CI ratchet \u2014 Phase A Task A15.\n\nTurns the boundary the A4-A14 migration built into an enforc",
+      "inside_approved_integration_file": false
     }
   ],
   "legacy_wrapper": {
@@ -666,11 +678,11 @@
       "verified": true
     },
     {
-      "module": "services.whalewatchers.kalshi_trade_tape",
-      "symbol": "_taker_side",
+      "module": "services.kalshi.contracts.trade",
+      "symbol": "resolve_taker_outcome_side",
       "classification": "hot",
       "reason": "Called per trade to classify direction on the whale-detection path.",
-      "verified": false
+      "verified": true
     },
     {
       "module": "services.market_watch.catalog_scan",
@@ -689,14 +701,14 @@
   ],
   "counts": {
     "sdk_import_sites": 1,
-    "direct_host_usage_sites": 14,
+    "direct_host_usage_sites": 16,
     "legacy_wrapper_import_sites": 20,
     "legacy_wrapper_construction_sites": 18,
     "wrapper_method_call_sites": 68,
     "known_field_read_sites": 39,
     "fixtures_total": 12,
     "fixtures_missing_source_doc": 0,
-    "direct_access_count": 2,
+    "direct_access_count": 4,
     "legacy_caller_count": 16
   }
 }
