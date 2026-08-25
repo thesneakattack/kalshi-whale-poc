@@ -13,11 +13,17 @@ name: docs-drift-check
 # compared against docs/kalshi/upstream-manifest.json, which was built
 # from the CURRENT local mirror the last time someone deliberately
 # refreshed it. A page returning non-200 is still reported the same way
-# the old check did. 17 of 214 entries (2 hand-merged from multiple source
-# URLs, 16 hand-written summaries rather than verbatim copies, and the
-# llms.txt index itself) get availability-only checking instead of
-# content-hash comparison - see that tool's own module docstring for the
-# live-verified reasoning.
+# the old check did. Originally 17 of 214 entries got availability-only
+# checking (2 hand-merged from multiple source URLs, 16 hand-written
+# summaries, and the llms.txt index itself); Kalshi Integration Phase A
+# Task A1 (2026-08-24) replaced every production-used one of those 16 with
+# a real verbatim mirror and split both merged files into one file per
+# source URL, so only 2 entries (the one remaining, deliberately deferred,
+# non-production-used curated summary get-game-stats.md, and llms.txt
+# itself) get availability-only checking now - see
+# tools/kalshi_docs_drift.py's own module docstring for the live-verified
+# reasoning and docs/kalshi/README.md's per-entry notes for the current
+# state.
 #
 # First real --check run against the internet (2026-08-24, building this
 # workflow) found 111 of the 197 content-checked pages had genuinely
