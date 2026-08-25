@@ -178,11 +178,14 @@ where this is now the documented default.
   cancellation events (needs a `WOODPECKER_TOKEN` to query pipeline state
   directly) — re-open this if a push's real, non-superseded workflow ever
   shows this error instead of a clean pass/fail.
-- No GitHub branch protection is currently configured on `main`
-  (`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection`
-  → 404, reconfirmed 2026-08-25), so nothing is silently broken by moving
-  these checks off GitHub Actions' automatic triggers. If protection is
-  added later, point required checks at the Woodpecker-reported contexts.
+- `main` has real GitHub branch protection, configured 2026-08-25 (was
+  unconfigured/404 before that) — see
+  `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" section
+  for the exact settings and how to change them. The five required
+  status-check contexts are the `ci/woodpecker/pr/*` names (not
+  `ci/woodpecker/push/*`) since PR-triggered runs are what actually gate
+  a PR's merge button; `quality-frontend-build` is deliberately excluded
+  since it's path-filtered and posts nothing when skipped.
 
 ## Repo activation in Woodpecker — done
 

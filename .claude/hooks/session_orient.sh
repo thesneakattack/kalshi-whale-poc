@@ -14,6 +14,9 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   branch=$(git branch --show-current 2>/dev/null)
   dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   echo "git: on branch '$branch', $dirty uncommitted change(s) - see CLAUDE.md, git history only covers work after the initial commit"
+  if [ "$branch" = "main" ]; then
+    echo "branch policy: on main - create a short-lived initiative branch (feat/fix/refactor/chore/docs) before implementation work, don't commit directly to main. See .claude/rules/branching-and-ci.md."
+  fi
 fi
 
 if command -v ddev >/dev/null 2>&1 && ddev describe >/dev/null 2>&1; then

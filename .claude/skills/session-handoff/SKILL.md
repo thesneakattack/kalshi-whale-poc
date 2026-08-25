@@ -18,7 +18,9 @@ git log -10 --oneline
 ```
 
 Report:
-- current branch and HEAD,
+- current branch and HEAD, and whether that branch has an open PR (per
+  `.claude/rules/branching-and-ci.md`, work in progress normally lives on
+  an initiative branch, not `main` — say so if it's still on `main`),
 - work completed this session,
 - last fully completed plan/task unit,
 - first incomplete next unit,

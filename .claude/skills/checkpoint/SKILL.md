@@ -16,8 +16,18 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
 
 ## Steps
 
-1. **Decide where to verify.** Default: skip a redundant local full-suite
-   run and let CI be the gate (steps 2-5) — the per-edit `PostToolUse`
+1. **Branch check.** `git branch --show-current` — per
+   `.claude/rules/branching-and-ci.md`, normal implementation work doesn't
+   commit directly to `main`. Already on an initiative branch → continue.
+   On `main` with real implementation work about to be committed → stop
+   and create/switch to one (`git checkout -b <feat|fix|refactor|chore|
+   docs>/<name>`) before proceeding to step 3. A checkpoint that's purely
+   about docs/rules/skills housekeeping still follows this — see that rule
+   file for the full branch-naming and lifecycle policy; this skill only
+   covers the verify/commit/push/confirm-CI mechanics within it.
+
+2. **Decide where to verify.** Default: skip a redundant local full-suite
+   run and let CI be the gate (steps 3-6) — the per-edit `PostToolUse`
    hook (`run_tests.py`) already ran pytest locally after every real
    `main.py`/`services/*.py` edit this session, so a second full local run
    right before committing is usually just repeating work CI is about to
@@ -30,29 +40,30 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    prefer to test locally first regardless, and i accept that" — this is
    a judgment call each time, not a hard rule either way.
 
-2. **Review scope.** `git status` and `git diff --stat` — confirm nothing
+3. **Review scope.** `git status` and `git diff --stat` — confirm nothing
    unexpected is about to be staged (a stray `data/*.db`, `.env`, a session
    scratch file, or unrelated work-in-progress from earlier in the session
    that isn't actually verified yet). Stage specific paths only — never
    `git add -A` / `git add .`.
 
-3. **Commit.** Write the message around *why*, in this repo's existing
+4. **Commit.** Write the message around *why*, in this repo's existing
    terse, direct style (`git log` for tone/examples — e.g. "Fix X", "Ship
    Y", "Cross-reference Z against W"). One commit per logical unit of
    work — if the session covered several unrelated things, split it into
    separate commits rather than one bundled one.
 
-4. **Push.** `git push` on the current branch. This repo is already
-   activated in the shared Woodpecker instance (`portfolio/ci-cd/` -
-   confirmed live 2026-08-25 via real GitHub commit statuses and pipeline
-   numbers in the high 20s, not just the setup docs' claim), so this
-   triggers every `.woodpecker/*.yml` workflow whose `when:` matches the
-   push automatically. `.github/workflows/tests.yml`/`quality.yml` are
-   `workflow_dispatch`-only now and do NOT run automatically on push -
-   don't wait on them here.
+5. **Push.** `git push` on the current branch (the initiative branch from
+   step 1, not `main`). This repo is already activated in the shared
+   Woodpecker instance (`portfolio/ci-cd/` - confirmed live 2026-08-25 via
+   real GitHub commit statuses and pipeline numbers in the high 20s, not
+   just the setup docs' claim), so this triggers every `.woodpecker/*.yml`
+   workflow whose `when:` matches the push automatically - branch pushes
+   included, per `.claude/rules/branching-and-ci.md`.
+   `.github/workflows/tests.yml`/`quality.yml` are `workflow_dispatch`-only
+   now and do NOT run automatically on push - don't wait on them here.
 
-5. **Confirm CI and interpret the result — this is the real gate when
-   step 1 skipped the local run. Actually run this step; do not assume
+6. **Confirm CI and interpret the result — this is the real gate when
+   step 2 skipped the local run. Actually run this step; do not assume
    green and do not substitute a local full-suite re-run instead** (found
    live 2026-08-25: `quality-architecture-audit` sat red across three real
    pushes - `d644034`, `21a303a`, `b28a380` - unnoticed, because this step
@@ -94,11 +105,20 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    PRs), fall back to `scripts/woodpecker-status`/the Woodpecker web UI; if
    neither is reachable, say so rather than silently skipping this step.
 
-6. **Roadmap sync check.** If this checkpoint closes out a `ROADMAP.md`
+7. **Roadmap sync check.** If this checkpoint closes out a `ROADMAP.md`
    item, run `/sync-status-docs` now, before moving on — cheap, and keeps
    `status.html` from quietly drifting the way it already has once before.
 
-7. **Session-hygiene prompt.** Give a short 2-3 sentence summary of what
+8. **PR check — only when this checkpoint completes the initiative, not
+   every mid-initiative checkpoint.** If the branch has no open PR yet and
+   the initiative this branch covers is actually done, `gh pr create`; if
+   CI (step 6) is green and the diff has been reviewed, `gh pr merge
+   --merge` (preserves individual commits) then delete the branch — see
+   `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" for the
+   full policy. A checkpoint in the middle of a multi-task initiative just
+   leaves the branch pushed and green; it doesn't open or merge a PR yet.
+
+9. **Session-hygiene prompt.** Give a short 2-3 sentence summary of what
    this checkpoint covered (keeps continuity across a later `/compact`).
    Then suggest — don't insist — whichever fits: `/compact` if context is
    getting heavy after a substantial chunk of work, `/clear` if the next

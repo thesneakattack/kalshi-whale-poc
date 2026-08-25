@@ -74,6 +74,10 @@ acceptance criteria, safety rules, and verification requirements.
    - every existing file the task proposes touching
    - relevant `CHEATSHEET.md`
    - current `.github/workflows/`
+   Per `.claude/rules/branching-and-ci.md`: already on this initiative's
+   branch → continue using it. On `main` → sync it and create one before
+   implementing; the initiative stays on one branch across its numbered
+   tasks, not one branch per task.
 
 3. Determine what already exists.
    - The plan describes intent.
@@ -202,4 +206,8 @@ acceptance criteria, safety rules, and verification requirements.
     - commit SHA;
     - first genuinely incomplete next task.
 
-17. Stop. Do not silently begin the next numbered task.
+17. Stop. Do not silently begin the next numbered task. Push the commit on
+    the initiative branch (never `main` directly); leave the PR unopened/
+    unmerged between tasks unless this task was the initiative's final
+    task — only then open/merge per `.claude/rules/branching-and-ci.md`'s
+    "Integration lifecycle."

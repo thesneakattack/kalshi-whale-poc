@@ -75,16 +75,21 @@ CI must:
 - avoid depending on DDEV-only hostnames unless the workflow deliberately
   provisions DDEV.
 
-## Local vs CI verification policy (2026-08-24)
+## Local vs CI verification policy (2026-08-24, branch model added 2026-08-25)
 
 Direct instruction, implemented in full: Woodpecker CI is the authoritative
 executor of expensive, exhaustive, repeatable repository validation.
 Claude does not routinely run the complete test/build/audit suite on the
-interactive development machine before every push.
+interactive development machine before every push. This applies on every
+branch, not just `main` - `.claude/rules/branching-and-ci.md` is the
+authoritative rule for the branch model itself (`main` + short-lived
+initiative branches, normal implementation never commits directly to
+`main`); this section is about what runs where once you're on the right
+branch, not which branch to be on.
 
 ```text
-Claude / local dev            Woodpecker CI                  Merge/release
-  targeted verification   ->    exhaustive validation    ->    branch protection
+initiative branch             Woodpecker CI                  PR -> main
+  targeted verification   ->    exhaustive validation    ->    merge
 ```
 
 **Where it runs.** A shared Woodpecker server + one Docker-backed agent
@@ -96,11 +101,13 @@ shared instance, not per-repo. This repository's own pipeline definitions
 live in `.woodpecker/*.yml` here (see that directory's files - one per
 named check: `tests-pytest`, `tests-dependency-audit`,
 `quality-frontend-build`, `quality-architecture-audit`,
-`kalshi-contract-fixtures`). Each file is an independent Woodpecker
-workflow, so independent checks run in parallel rather than one serialized
-script (bounded today by the shared agent's configured concurrency, not by
-anything in these pipeline files - see that skill's own repo for how to
-raise it).
+`quality-browser-e2e`, `kalshi-contract-fixtures`). Each file is an
+independent Woodpecker workflow, so independent checks run in parallel
+rather than one serialized script (bounded today by the shared agent's
+configured concurrency, not by anything in these pipeline files - see
+that skill's own repo for how to raise it). `when: event: [push,
+pull_request]` matches a push to any branch, so all of this fires on an
+initiative branch's push exactly the same way it fires on `main`.
 
 ### During implementation - Claude owns targeted verification
 
@@ -186,10 +193,10 @@ nothing while idle. `docs-drift-check.yml` is unchanged: it is a scheduled,
 network-dependent check with no live-repository-state dependency, exactly
 what stays on GitHub Actions rather than moving to Woodpecker (see "CI
 topology" above - "Use scheduled/manual workflows for... Kalshi
-documentation content drift"). No GitHub branch protection currently
-requires any check by name (`gh api repos/.../branches/main/protection`
-returns 404) - if that changes, point required checks at the Woodpecker-
-reported context names, not the now-manual-only GitHub Actions ones, and
-do not mark a path-filtered Woodpecker workflow (`quality-frontend-build`)
-as required, since a skipped workflow posts no status at all and would
-block merges on unrelated changes forever.
+documentation content drift"). `main` has real GitHub branch protection
+(configured 2026-08-25, see `.claude/rules/branching-and-ci.md`'s
+"Integration lifecycle" for the exact settings) requiring the five
+`ci/woodpecker/pr/*` context names, not the now-manual-only GitHub
+Actions ones and not the path-filtered `quality-frontend-build` (a
+skipped workflow posts no status at all, which would block merges on
+unrelated changes forever if it were required).
