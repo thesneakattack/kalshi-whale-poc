@@ -35,18 +35,33 @@ from pathlib import Path
 from services.quality.models import QualityFinding
 from tools.quality_audit import source
 
-_CLOSEABLE_CLASS_NAMES = {"KalshiClient", "KalshiAccountClient", "KalshiTradeWebSocketClient"}
+_CLOSEABLE_CLASS_NAMES = {
+    "KalshiClient",
+    "KalshiAccountClient",
+    "KalshiTradeWebSocketClient",
+    # services/kalshi/transport.py's builder factories (Phase A Task A5)
+    # return SDK clients owning an aiohttp session - constructing one via a
+    # builder is the same leak class as constructing the wrapper directly.
+    "build_public_client",
+    "build_account_client",
+}
 
 _FunctionDefNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 def _construction_class_name(call: ast.Call) -> str | None:
-    # Only a bare `KalshiClient(...)` call counts - not `kpa.KalshiClient(...)`,
-    # the third-party SDK class services/kalshi_client.py itself wraps, which
-    # this codebase always assigns to `self._client` (an Attribute target,
-    # already excluded below) rather than a bare local name.
+    # A bare `KalshiClient(...)` / `build_public_client(...)` call counts,
+    # and so does the attribute form `transport.build_public_client(...)`
+    # real boundary callers use (added with A5's builders). Note
+    # `kpa.KalshiClient(...)` - the third-party SDK class the wrappers/
+    # builders themselves construct - now matches here too, but every such
+    # site assigns to `self._client` (an Attribute target, already excluded
+    # by the scan loop) or returns it immediately (ownership escape), so it
+    # still produces no finding.
     if isinstance(call.func, ast.Name):
         return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
     return None
 
 

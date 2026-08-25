@@ -21,10 +21,10 @@ match the wire JSON.
 import asyncio
 from urllib.parse import urljoin
 
-import kalshi_python_async as kpa
 from pydantic import ValidationError as PydanticValidationError
 
 from services.http_client import call_with_backoff, get_client
+from services.kalshi import transport
 from services.signal_log import series_of
 
 # self.timeout is intentionally unused below except where noted. The SDK's
@@ -44,8 +44,10 @@ class KalshiClient:
     def __init__(self, base_url: str, timeout: float = 10.0):
         self.timeout = timeout
         self.base_url = base_url.rstrip("/")
-        config = kpa.Configuration(host=base_url.rstrip("/"))
-        self._client = kpa.KalshiClient(config)
+        # SDK-client construction is owned by the integration boundary
+        # (services/kalshi/transport.py, Phase A Task A5) - this facade
+        # delegates rather than building kpa.Configuration itself.
+        self._client = transport.build_public_client(base_url)
 
     async def _get_json(self, path: str, endpoint: str, params: dict | None = None) -> dict:
         # endpoint (2026-08-24, QCP Task 15): every _get_json call site shares

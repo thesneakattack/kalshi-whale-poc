@@ -311,6 +311,54 @@ def test_client_stored_in_cache_produces_no_finding(tmp_path):
     assert resources.scan_resource_lifecycle(tmp_path) == []
 
 
+def test_unclosed_transport_builder_call_fails_high_confidence(tmp_path):
+    """A5: services/kalshi/transport.py's build_*_client factories return
+    SDK clients that own an aiohttp session - a bare-name builder call
+    constructed in a function body and never closed is the same leak class
+    as a direct KalshiClient() construction."""
+    _write(
+        tmp_path / "services" / "leaky_builder.py",
+        "def build_public_client(base_url):\n    pass\n"
+        '\n\nasync def leak():\n    client = build_public_client("https://x")\n'
+        '    return await client.get_markets()\n',
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_builder:leak:client"
+    assert findings[0].severity == "error"
+
+
+def test_unclosed_attribute_form_transport_builder_call_fails(tmp_path):
+    """`transport.build_public_client(...)` (the attribute form real
+    callers use) must be caught too - the original bare-Name-only matching
+    predates the boundary's builder functions."""
+    _write(
+        tmp_path / "services" / "leaky_attr.py",
+        "from services.kalshi import transport\n"
+        '\n\nasync def leak():\n    client = transport.build_public_client("https://x")\n'
+        '    return await client.get_markets()\n',
+    )
+
+    findings = resources.scan_resource_lifecycle(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].finding_id == "resource-unclosed:services.leaky_attr:leak:client"
+
+
+def test_closed_transport_builder_call_produces_no_finding(tmp_path):
+    _write(
+        tmp_path / "services" / "clean_builder.py",
+        "from services.kalshi import transport\n"
+        '\n\nasync def fetch():\n    client = transport.build_public_client("https://x")\n'
+        "    try:\n        return await client.get_markets()\n"
+        "    finally:\n        await client.close()\n",
+    )
+
+    assert resources.scan_resource_lifecycle(tmp_path) == []
+
+
 def test_module_level_client_construction_is_not_scanned(tmp_path):
     """services/app_state.py's real eager singletons (account =
     KalshiAccountClient(...), trade_stream = KalshiTradeWebSocketClient(...))
@@ -508,6 +556,23 @@ def test_stale_contract_docs_key_reports_medium_confidence_warning(tmp_path):
     assert stale[0].finding_id == "kalshi-contract-docs-stale:services.kalshi.public:get_market"
     assert stale[0].severity == "warning"
     assert stale[0].confidence == "medium"
+
+
+def test_annotated_contract_docs_assignment_is_recognized(tmp_path):
+    """`CONTRACT_DOCS: dict[str, ContractDocs] = {...}` (AnnAssign) is how
+    real boundary modules declare the mapping - the scanner's original
+    plain-Assign-only matching flagged transport.py's documented operations
+    as undocumented, caught live at A5."""
+    _write(tmp_path / "docs" / "kalshi" / "get-markets.md", "# Get Markets\n")
+    _write(
+        tmp_path / "services" / "kalshi" / "public.py",
+        "CONTRACT_DOCS: dict = {\n"
+        '    "get_markets": ("docs/kalshi/get-markets.md",),\n'
+        "}\n"
+        "\n\ndef get_markets():\n    pass\n",
+    )
+
+    assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
 
 
 def test_infrastructure_marker_exempts_module_from_missing_mapping(tmp_path):

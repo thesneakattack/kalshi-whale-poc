@@ -391,3 +391,41 @@ def test_get_markets_by_tickers_chunks_above_the_batch_size(monkeypatch):
     result = asyncio.run(client.get_markets_by_tickers(["A", "B", "C"]))
     assert calls == ["A,B", "C"]
     assert set(result.keys()) == {"A", "B", "C"}
+
+
+# ---- A5 transport delegation (Kalshi Integration Phase A) ------------------
+
+
+def test_construction_delegates_to_the_boundary_transport(monkeypatch):
+    """A5: SDK-client construction is owned by services/kalshi/transport.py;
+    this wrapper delegates instead of building kpa.Configuration itself, so
+    there is exactly one construction implementation for later boundary
+    modules and this facade to share."""
+    from services import kalshi_client as kc_module
+
+    sentinel = object()
+    seen = []
+
+    def fake_build(base_url):
+        seen.append(base_url)
+        return sentinel
+
+    monkeypatch.setattr(kc_module.transport, "build_public_client", fake_build)
+
+    client = KalshiClient(base_url="https://example.invalid/trade-api/v2/", timeout=1.0)
+
+    assert client._client is sentinel
+    assert seen == ["https://example.invalid/trade-api/v2/"]
+    assert client.base_url == "https://example.invalid/trade-api/v2"
+
+
+def test_close_still_closes_the_sdk_client(monkeypatch):
+    client = _client()
+    closed = []
+
+    async def fake_close():
+        closed.append(True)
+
+    monkeypatch.setattr(client._client, "close", fake_close)
+    asyncio.run(client.close())
+    assert closed == [True]

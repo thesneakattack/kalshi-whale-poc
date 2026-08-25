@@ -88,14 +88,25 @@ def _string_elements(node: ast.expr) -> list[str]:
 
 def _contract_docs(tree: ast.Module) -> dict[str, list[str]] | None:
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
+        # Both `CONTRACT_DOCS = {...}` and the annotated form
+        # `CONTRACT_DOCS: dict[str, ContractDocs] = {...}` (an AnnAssign,
+        # which real boundary modules use) declare the mapping - missing the
+        # latter made the scanner flag transport.py's documented operations
+        # as undocumented, caught by its first real consumer at A5.
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
             continue
-        if not any(isinstance(target, ast.Name) and target.id == "CONTRACT_DOCS" for target in node.targets):
+        if not any(isinstance(target, ast.Name) and target.id == "CONTRACT_DOCS" for target in targets):
             continue
-        if not isinstance(node.value, ast.Dict):
+        if not isinstance(value, ast.Dict):
             continue
         mapping: dict[str, list[str]] = {}
-        for key_node, value_node in zip(node.value.keys, node.value.values):
+        for key_node, value_node in zip(value.keys, value.values):
             if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
                 continue
             mapping[key_node.value] = _string_elements(value_node)

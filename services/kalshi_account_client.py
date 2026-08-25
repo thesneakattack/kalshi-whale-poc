@@ -41,9 +41,9 @@ import os
 import time
 
 import kalshi_python_async as kpa
-from cryptography.hazmat.primitives import serialization
 
 from services.http_client import call_with_backoff
+from services.kalshi import transport
 from services.risk_manager import RiskManager
 
 
@@ -71,14 +71,11 @@ class KalshiAccountClient:
             try:
                 with open(key_path, "rb") as f:
                     key_bytes = f.read()
-                # Validate it's actually a loadable RSA key before handing the
-                # raw PEM to the SDK - a real parse error here, not a
-                # confusing failure deep inside the SDK's own auth setup.
-                serialization.load_pem_private_key(key_bytes, password=None)
-                config = kpa.Configuration(host=self.base_url)
-                config.api_key_id = self.key_id
-                config.private_key_pem = key_bytes
-                self._client = kpa.KalshiClient(config)
+                # Signed-client construction (PEM validation included) is
+                # owned by the integration boundary (services/kalshi/
+                # transport.py, Phase A Task A5); this facade keeps the
+                # env/file handling and error capture.
+                self._client = transport.build_account_client(self.base_url, self.key_id, key_bytes)
             except Exception as e:
                 self._load_error = str(e)
 

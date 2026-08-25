@@ -297,3 +297,33 @@ def test_get_balance_positions_fills_delegate_to_sdk():
     assert asyncio.run(c.get_positions()) == {"market_positions": []}
     assert asyncio.run(c.get_fills(limit=10)) == {"fills": []}
     assert fake.calls == [("get_fills", {"limit": 10})]
+
+
+# ---- A5 transport delegation (Kalshi Integration Phase A) ------------------
+
+def test_credential_construction_delegates_to_the_boundary_transport(tmp_path, monkeypatch):
+    """A5: the authenticated SDK-client construction (PEM validation +
+    Configuration wiring) is owned by services/kalshi/transport.py; this
+    wrapper keeps env/file handling and error capture but delegates the
+    vendor construction itself."""
+    key_path = tmp_path / "test_key.pem"
+    pem = _generate_test_key_pem()
+    key_path.write_bytes(pem)
+    monkeypatch.setenv("KALSHI_API_KEY_ID", "test-key-id")
+    monkeypatch.setenv("KALSHI_PRIVATE_KEY_PATH", str(key_path))
+
+    sentinel = object()
+    seen = []
+
+    def fake_build(base_url, key_id, private_key_pem):
+        seen.append((base_url, key_id, private_key_pem))
+        return sentinel
+
+    monkeypatch.setattr(kac_module.transport, "build_account_client", fake_build)
+
+    c = kac_module.KalshiAccountClient(
+        base_url="https://example.test/trade-api/v2", request_timeout_sec=5, trading_enabled=False,
+    )
+
+    assert c._client is sentinel
+    assert seen == [("https://example.test/trade-api/v2", "test-key-id", pem)]
