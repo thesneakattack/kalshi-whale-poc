@@ -29,6 +29,7 @@ from services.diagnostics import diagnostics
 from services.diagnostics import trade_capture_reconciliation
 from services.app_state import state, trade_stream, whale_provider
 from services import whale_pipeline_perf
+from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
 from services.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
@@ -45,6 +46,7 @@ async def get_diagnostics(hours: float = 24.0):
 
 
 @router.get("/api/diagnostics/coverage")
+@http_client.classify("interactive")
 async def get_diagnostics_coverage(pages: int = 2):
     """The one check the app cannot answer from its own stores: how much
     real exchange-wide whale flow it never sees. Makes 1-2 real API calls
@@ -57,6 +59,7 @@ async def get_diagnostics_coverage(pages: int = 2):
 
 
 @router.get("/api/diagnostics/trade-capture")
+@http_client.classify("interactive")
 async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float = 60.0, max_pages: int = 10):
     """REST-vs-WebSocket capture completeness by trade_id over a bounded,
     recent exchange-time window (realtime data-plane task I4, hypothesis
@@ -210,6 +213,10 @@ async def get_pipeline_health():
         # perf.py): where a trade message's time goes, and how many messages
         # enter the thread hop versus how many are real candidates.
         "whale_pipeline": whale_pipeline_perf.perf.snapshot(),
+        # REST latency decomposition by caller class + token-bucket waiter
+        # gauges (I5, services/http_client.py's rest_latency_snapshot):
+        # limiter wait vs network vs backoff, so a slow call is attributable.
+        "rest_latency": http_client.rest_latency_snapshot(),
         "stores": {
             "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),
             "book_snapshots": _age(series_watcher.DB_PATH, "book_snapshots", "observed_at"),

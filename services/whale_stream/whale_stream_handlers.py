@@ -14,6 +14,7 @@ import time
 
 from services import candidate_log, config_performance, market_analyst_agent, market_history, series_watcher, settlement_edge
 from services import whale_pipeline_perf
+from services import http_client
 from services.kalshi import websocket as kalshi_websocket
 from services.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
@@ -498,7 +499,8 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         # fallback path to catch if it ever resurfaces on the watchlist.
         try:
             client = _stream_market_client(config_store.get())
-            market = await client.get_market(ticker)
+            with http_client.caller_class("background_resolution"):
+                market = await client.get_market(ticker)
         except Exception:
             return
         if (market.get("status") or "") != "finalized":

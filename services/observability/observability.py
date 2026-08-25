@@ -24,7 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import whale_pipeline_perf
+from services import http_client, whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -193,7 +193,35 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # window is rolled by maybe_capture after persisting.
     metrics.update(_flatten_whale_pipeline(whale_pipeline_perf.perf.snapshot()))
 
+    # kalshi_rest_class.* / kalshi_rest_limiter.* (I5) - REST latency split
+    # into limiter wait / network / backoff / total per caller class, plus
+    # the token buckets' waiter-depth gauges (services/http_client.py's
+    # rest_latency_snapshot, pure read; window rolled by maybe_capture).
+    metrics.update(_flatten_rest_latency(http_client.rest_latency_snapshot()))
+
     return metrics
+
+
+def _flatten_rest_latency(snapshot: dict) -> dict:
+    out: dict = {}
+    by_class = snapshot.get("by_class") or {}
+    if not by_class:
+        return out  # nothing has called Kalshi yet in this process - no evidence, no rows
+    for cls, stats in by_class.items():
+        p = f"kalshi_rest_class.{cls}"
+        for key in ("calls", "attempts", "rate_limited", "errors"):
+            out[f"{p}.{key}"] = float(stats.get(key) or 0)
+        for component in ("limiter_wait", "network", "backoff", "total"):
+            window = (stats.get(component) or {}).get("window") or {}
+            if window.get("count"):
+                for key in ("avg_ms", "max_ms"):
+                    if window.get(key) is not None:
+                        out[f"{p}.{component}.window_{key}"] = float(window[key])
+    for bucket, gauges in (snapshot.get("limiter") or {}).items():
+        for key in ("waiters", "waiters_high_water"):
+            if (gauges or {}).get(key) is not None:
+                out[f"kalshi_rest_limiter.{bucket}.{key}"] = float(gauges[key])
+    return out
 
 
 def _flatten_whale_pipeline(snapshot: dict) -> dict:
@@ -300,6 +328,7 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
             except Exception:
                 pass
     whale_pipeline_perf.perf.reset_window()
+    http_client.reset_rest_latency_window()
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------

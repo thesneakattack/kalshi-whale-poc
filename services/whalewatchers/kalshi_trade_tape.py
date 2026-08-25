@@ -32,6 +32,7 @@ from datetime import datetime
 
 from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
 from services import whale_pipeline_perf
+from services import http_client
 from services.kalshi.contracts import trade as trade_contract
 from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
@@ -322,6 +323,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         signals = self._process_trades_sync(trade_tape, markets, markets_by_ticker, cfg, now, counts=counts)
         return signals, started, time.monotonic()
 
+    @http_client.classify("critical_whale")
     async def _resolve_unknown_markets(
         self, trade_tape: list[dict], markets_by_ticker: dict[str, dict], cfg: dict,
         client, now: float, counts: dict[str, int] | None = None,

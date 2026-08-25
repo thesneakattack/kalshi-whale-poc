@@ -7,12 +7,142 @@ same host seconds apart. One long-lived client reuses keep-alive connections
 across calls instead.
 """
 import asyncio
+import contextvars
+import functools
 import random
 import time
+from contextlib import contextmanager
 
 import httpx
 
+from services.latency_agg import LatencyAgg
+
 _client: httpx.AsyncClient | None = None
+
+# Clock indirection so tests/test_http_client.py can drive the latency
+# decomposition deterministically without patching time.monotonic itself
+# (asyncio's own loop clock reads that).
+_monotonic = time.monotonic
+
+# --- caller classes (realtime data-plane investigation, I5) ------------------
+#
+# Every REST call is attributed to one bounded caller class so the shared
+# read bucket's contention can be decomposed by WHO is spending it - the
+# I0 baseline (docs/superpowers/research/2026-08-25-realtime-data-plane-
+# baseline.md section 3) enumerates the callers; this is that taxonomy made
+# measurable. Set with the caller_class() context manager or the classify()
+# decorator; propagates into asyncio.gather()/create_task() children because
+# tasks copy the current context at creation. Unset callers land in "other".
+CALLER_CLASSES: tuple[str, ...] = (
+    "critical_whale",           # whale-candidate market enrichment on the stream hot path
+    "critical_position",        # open-position pricing, account snapshot, exchange status
+    "interactive",              # dashboard/diagnostics routes a human is waiting on
+    "background_discovery",     # discovery-cache refresh
+    "background_catalog",       # catalog scan, event titles, category metadata
+    "background_live_status",   # milestones/live data/event live data polling
+    "background_resolution",    # signal/outcome resolution, event-schedule resolver
+    "other",
+)
+_caller_class_var: contextvars.ContextVar[str] = contextvars.ContextVar("kalshi_rest_caller_class", default="other")
+
+
+def current_caller_class() -> str:
+    return _caller_class_var.get()
+
+
+@contextmanager
+def caller_class(name: str):
+    if name not in CALLER_CLASSES:
+        raise ValueError(f"unknown Kalshi REST caller class {name!r}; choose one of {CALLER_CLASSES}")
+    token = _caller_class_var.set(name)
+    try:
+        yield
+    finally:
+        _caller_class_var.reset(token)
+
+
+def classify(name: str):
+    """Decorator form of caller_class() for whole async functions."""
+    if name not in CALLER_CLASSES:
+        raise ValueError(f"unknown Kalshi REST caller class {name!r}; choose one of {CALLER_CLASSES}")
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            token = _caller_class_var.set(name)
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                _caller_class_var.reset(token)
+        return wrapper
+    return decorate
+
+
+class _RestClassStats:
+    """Per-caller-class decomposition of every logical call_with_backoff
+    call: limiter wait and network time per attempt, backoff sleep and total
+    elapsed per logical call, plus counts. Window aggregates are reset by
+    the observability sampler after each persisted sample (same ownership
+    as the WebSocket ingest and whale-pipeline metrics); lifetime ones are
+    monotone."""
+    __slots__ = ("calls", "attempts", "rate_limited", "errors", "window", "lifetime")
+    _COMPONENTS = ("limiter_wait", "network", "backoff", "total")
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.attempts = 0
+        self.rate_limited = 0
+        self.errors = 0
+        self.window = {c: LatencyAgg() for c in self._COMPONENTS}
+        self.lifetime = {c: LatencyAgg() for c in self._COMPONENTS}
+
+    def add(self, component: str, seconds: float) -> None:
+        self.window[component].add(seconds)
+        self.lifetime[component].add(seconds)
+
+    def reset_window(self) -> None:
+        self.window = {c: LatencyAgg() for c in self._COMPONENTS}
+
+    def snapshot(self) -> dict:
+        out: dict = {"calls": self.calls, "attempts": self.attempts,
+                     "rate_limited": self.rate_limited, "errors": self.errors}
+        for c in self._COMPONENTS:
+            out[c] = {"window": self.window[c].snapshot(1000.0, "ms"), "lifetime": self.lifetime[c].snapshot(1000.0, "ms")}
+        return out
+
+
+_rest_class_stats: dict[str, _RestClassStats] = {}
+
+
+def _class_stats(name: str) -> _RestClassStats:
+    stats = _rest_class_stats.get(name)
+    if stats is None:
+        stats = _rest_class_stats[name] = _RestClassStats()
+    return stats
+
+
+def _limiter_gauges(limiter) -> dict:
+    tokens = limiter.tokens_available() if hasattr(limiter, "tokens_available") else None
+    return {
+        "waiters": getattr(limiter, "waiters", 0),
+        "waiters_high_water": getattr(limiter, "waiters_high_water", 0),
+        "tokens": round(tokens, 3) if tokens is not None else None,
+    }
+
+
+def rest_latency_snapshot() -> dict:
+    """Pure read (no resets): per-caller-class latency decomposition plus
+    the two token buckets' waiter-depth gauges. Classes never used are
+    omitted, not reported as zeros."""
+    return {
+        "by_class": {name: stats.snapshot() for name, stats in _rest_class_stats.items()},
+        "limiter": {"read": _limiter_gauges(_kalshi_read_limiter), "write": _limiter_gauges(_kalshi_write_limiter)},
+    }
+
+
+def reset_rest_latency_window() -> None:
+    for stats in _rest_class_stats.values():
+        stats.reset_window()
 
 
 class _TokenBucketRateLimiter:
@@ -45,17 +175,33 @@ class _TokenBucketRateLimiter:
         self._tokens = self._burst
         self._last_refill = time.monotonic()
         self._lock = asyncio.Lock()
+        # Waiter-depth gauges (I5): how many callers are inside acquire()
+        # right now (including the one holding the lock) and the most that
+        # ever were. A high-water mark that climbs is the local-contention
+        # signature that per-endpoint network latency can never show.
+        self.waiters = 0
+        self.waiters_high_water = 0
+
+    def tokens_available(self) -> float:
+        """Read-only refill-adjusted token estimate for diagnostics."""
+        return min(self._burst, self._tokens + (time.monotonic() - self._last_refill) * self._rate)
 
     async def acquire(self):
-        async with self._lock:
-            while True:
-                now = time.monotonic()
-                self._tokens = min(self._burst, self._tokens + (now - self._last_refill) * self._rate)
-                self._last_refill = now
-                if self._tokens >= 1:
-                    self._tokens -= 1
-                    return
-                await asyncio.sleep((1 - self._tokens) / self._rate)
+        self.waiters += 1
+        if self.waiters > self.waiters_high_water:
+            self.waiters_high_water = self.waiters
+        try:
+            async with self._lock:
+                while True:
+                    now = time.monotonic()
+                    self._tokens = min(self._burst, self._tokens + (now - self._last_refill) * self._rate)
+                    self._last_refill = now
+                    if self._tokens >= 1:
+                        self._tokens -= 1
+                        return
+                    await asyncio.sleep((1 - self._tokens) / self._rate)
+        finally:
+            self.waiters -= 1
 
 
 # Global throughput bound (2026-08-15, direct live incident: "why are there
@@ -288,24 +434,50 @@ async def call_with_backoff(
     global _rate_limit_hits_since_reset
     endpoint_name = endpoint or _default_endpoint_name(coro_func)
     limiter = _kalshi_write_limiter if is_write else _kalshi_read_limiter
+    # Latency decomposition by caller class (I5): limiter wait and network
+    # time per attempt, backoff sleep and total elapsed per logical call.
+    # The pre-existing per-endpoint avg_latency_ms stays network-only and
+    # success-only; these are the numbers that let a multi-second call be
+    # attributed to local queueing, upstream time, or retry sleep.
+    stats = _class_stats(_caller_class_var.get())
+    stats.calls += 1
+    call_started = _monotonic()
+    backoff_total = 0.0
+    failed = False
     delay = base_delay
-    for attempt in range(max_retries + 1):
-        try:
+    try:
+        for attempt in range(max_retries + 1):
+            stats.attempts += 1
+            wait_started = _monotonic()
             await limiter.acquire()
-            started = time.monotonic()
-            result = await coro_func(*args, **kwargs)
-            _record_http_attempt(
-                endpoint_name, rate_limited=False, success=True,
-                latency_ms=(time.monotonic() - started) * 1000,
-            )
+            started = _monotonic()
+            stats.add("limiter_wait", started - wait_started)
+            try:
+                result = await coro_func(*args, **kwargs)
+            except Exception as e:
+                stats.add("network", _monotonic() - started)
+                if getattr(e, "status", None) != 429:
+                    _record_http_attempt(endpoint_name, rate_limited=False, success=False, latency_ms=None)
+                    failed = True
+                    raise
+                _record_http_attempt(endpoint_name, rate_limited=True, success=False, latency_ms=None)
+                stats.rate_limited += 1
+                if attempt == max_retries:
+                    failed = True
+                    raise
+                _rate_limit_hits_since_reset += 1
+                sleep_started = _monotonic()
+                await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter
+                backoff_total += _monotonic() - sleep_started
+                delay *= 2
+                continue
+            network = _monotonic() - started
+            stats.add("network", network)
+            _record_http_attempt(endpoint_name, rate_limited=False, success=True, latency_ms=network * 1000)
             return result
-        except Exception as e:
-            if getattr(e, "status", None) != 429:
-                _record_http_attempt(endpoint_name, rate_limited=False, success=False, latency_ms=None)
-                raise
-            _record_http_attempt(endpoint_name, rate_limited=True, success=False, latency_ms=None)
-            if attempt == max_retries:
-                raise
-            _rate_limit_hits_since_reset += 1
-            await asyncio.sleep(delay + random.uniform(0, delay * 0.25))  # jitter
-            delay *= 2
+    finally:
+        stats.add("total", _monotonic() - call_started)
+        if backoff_total > 0.0:
+            stats.add("backoff", backoff_total)
+        if failed:
+            stats.errors += 1

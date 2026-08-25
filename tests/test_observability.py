@@ -580,3 +580,69 @@ def test_maybe_capture_resets_the_whale_pipeline_window_after_persisting(monkeyp
     assert observability.history("whale_pipeline.counter.trades", since_ts=0)[0]["value"] == 5.0
     assert fresh.snapshot()["counters"]["window"]["trades"] == 0
     assert fresh.snapshot()["counters"]["lifetime"]["trades"] == 5
+
+
+# --- REST latency by caller class (realtime data-plane task I5) ------------
+
+def _fake_rest_latency():
+    def agg(count, avg, mx):
+        return {"window": {"count": count, "avg_ms": avg, "max_ms": mx},
+                "lifetime": {"count": count, "avg_ms": avg, "max_ms": mx}}
+    return {
+        "by_class": {
+            "critical_whale": {
+                "calls": 3, "attempts": 4, "rate_limited": 1, "errors": 0,
+                "limiter_wait": agg(4, 120.0, 300.0), "network": agg(4, 80.0, 200.0),
+                "backoff": agg(1, 500.0, 500.0), "total": agg(3, 400.0, 900.0),
+            },
+            "background_catalog": {
+                "calls": 10, "attempts": 10, "rate_limited": 0, "errors": 1,
+                "limiter_wait": agg(10, 900.0, 2500.0), "network": agg(10, 60.0, 90.0),
+                "backoff": agg(0, None, None), "total": agg(10, 960.0, 2600.0),
+            },
+        },
+        "limiter": {
+            "read": {"waiters": 2, "waiters_high_water": 7, "tokens": 0.5},
+            "write": {"waiters": 0, "waiters_high_water": 0, "tokens": 1.0},
+        },
+    }
+
+
+def test_capture_from_runtime_flattens_rest_latency_by_caller_class(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["kalshi_rest_class.critical_whale.calls"] == 3.0
+    assert metrics["kalshi_rest_class.critical_whale.attempts"] == 4.0
+    assert metrics["kalshi_rest_class.critical_whale.rate_limited"] == 1.0
+    assert metrics["kalshi_rest_class.critical_whale.errors"] == 0.0
+    assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_avg_ms"] == 120.0
+    assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_max_ms"] == 300.0
+    assert metrics["kalshi_rest_class.critical_whale.network.window_avg_ms"] == 80.0
+    assert metrics["kalshi_rest_class.critical_whale.backoff.window_avg_ms"] == 500.0
+    assert metrics["kalshi_rest_class.critical_whale.total.window_max_ms"] == 900.0
+    assert metrics["kalshi_rest_class.background_catalog.limiter_wait.window_max_ms"] == 2500.0
+    assert "kalshi_rest_class.background_catalog.backoff.window_avg_ms" not in metrics  # empty window omitted
+    assert metrics["kalshi_rest_limiter.read.waiters"] == 2.0
+    assert metrics["kalshi_rest_limiter.read.waiters_high_water"] == 7.0
+    assert metrics["kalshi_rest_limiter.write.waiters_high_water"] == 0.0
+
+
+def test_capture_from_runtime_omits_rest_latency_when_nothing_has_called_yet(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot",
+                        lambda: {"by_class": {}, "limiter": _fake_rest_latency()["limiter"]})
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+    assert not any(k.startswith("kalshi_rest_class.") or k.startswith("kalshi_rest_limiter.") for k in metrics)
+
+
+def test_maybe_capture_resets_the_rest_latency_window_after_persisting(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    resets = []
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]
+    assert observability.history("kalshi_rest_class.critical_whale.calls", since_ts=0)[0]["value"] == 3.0

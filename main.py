@@ -50,7 +50,7 @@ from services import title_cache
 from services import trade_analytics
 from services import trade_category
 from services.config_store import config_store
-from services.http_client import close_client, get_and_reset_rate_limit_hits, http_metrics_snapshot
+from services.http_client import classify, close_client, get_and_reset_rate_limit_hits, http_metrics_snapshot
 from services.kalshi.public import KalshiPublicGateway
 from services.kalshi.account_client import KalshiAccountClient
 from services.kalshi.websocket import KalshiStreamGateway
@@ -189,6 +189,7 @@ def _maybe_check_signal_resolutions(cfg: dict) -> None:
         )
 
 
+@classify("background_resolution")
 async def _check_signal_resolutions_background(cfg: dict) -> None:
     """Owns its own KalshiPublicGateway - see _refresh_discovery_cache's
     identical reasoning (the calling tick's own client closes at the end

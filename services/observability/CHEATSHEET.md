@@ -288,6 +288,106 @@ What it says, and what it does not:
   the loop (series_watcher flush) and the worker.
 
 
+### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
+
+Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),
+flattened by `_flatten_rest_latency`. Exists because the I0 baseline found
+the only REST latency the app recorded (`kalshi_rest.<endpoint>.avg_latency_ms`)
+is timed from *after* `limiter.acquire()` returns, success-only — local
+limiter wait was not conflated into it, it was **invisible**, so H6/H7
+could not be judged at all.
+
+Every `call_with_backoff` call is attributed to one bounded caller class
+(`http_client.CALLER_CLASSES`: `critical_whale`, `critical_position`,
+`interactive`, `background_discovery`, `background_catalog`,
+`background_live_status`, `background_resolution`, `other`), set by the
+`caller_class(name)` context manager or the `@classify(name)` decorator on
+the calling async function; the contextvar propagates into `gather`/
+`create_task` children. Annotated sites: the provider's off-list market
+enrichment (`critical_whale`); `_fetch_markets` / `_fetch_account_snapshot`
+/ `_fetch_exchange_status` (`critical_position`); `_fetch_live_status` /
+`_fetch_event_live_data` (`background_live_status`); `_fetch_event_titles` /
+`_fetch_category_metadata` / catalog scan (`background_catalog`); discovery
+refresh (`background_discovery`); signal-resolution checker, event-schedule
+resolver, lifecycle `settled` re-read (`background_resolution`); the
+coverage and trade-capture diagnostics routes (`interactive`). Anything
+unannotated is `other` — a non-trivial `other` share is a to-do, not noise.
+
+Names (`float`; the whole group is omitted until something has called
+Kalshi in this process; classes never used are omitted):
+
+- `kalshi_rest_class.<class>.calls|attempts|rate_limited|errors` — window
+  counts; `calls` are logical calls, `attempts` include every 429 retry,
+  `errors` are logical calls that ended in an exception (non-429 or
+  exhausted retries).
+- `kalshi_rest_class.<class>.limiter_wait.window_avg_ms|window_max_ms` —
+  time inside `limiter.acquire()` per attempt (**local queueing**).
+- `…network.window_avg_ms|window_max_ms` — per attempt, including 429/error
+  round trips (the per-endpoint number stays success-only).
+- `…backoff.window_avg_ms|window_max_ms` — 429 retry sleep summed per
+  logical call (only calls that slept are samples).
+- `…total.window_avg_ms|window_max_ms` — caller-experienced elapsed per
+  logical call = limiter wait + network + backoff over all attempts.
+- `kalshi_rest_limiter.read|write.waiters|waiters_high_water` — callers
+  currently inside `acquire()` and the most that ever were (lifetime
+  high-water; not reset).
+
+**Window ownership.** Same rule as the other I-series groups:
+`maybe_capture` calls `http_client.reset_rest_latency_window()` after a
+sample is persisted; `capture_from_runtime` never resets. Lifetime
+aggregates are monotone. `tests/conftest.py` gives every test a fresh
+`_rest_class_stats` dict.
+
+**Reading it.** A slow call is local queueing if `limiter_wait` carries it,
+upstream if `network` does, retry sleep if `backoff` does. Contention shows
+as `limiter_wait` rising for `critical_*` classes while `background_*`
+classes hold most of the `calls` — that is H7's signature; the endpoint
+averages alone can never show it.
+
+**First live window (2026-08-25, 796 s hands-off, one monotone segment,
+1,393 logical calls ≈ 1.75 calls/s against the 8/s read bucket):**
+
+| class | calls (share) | attempts | 429 | errors | limiter wait avg / max (ms) | network avg / max (ms) | backoff avg (ms) | total avg / max (ms) |
+|---|---|---|---|---|---|---|---|---|
+| background_catalog | 404 (29.0%) | 404 | 0 | 0 | **224** / 3,699 | 179 / 3,786 | — | 403 / 3,786 |
+| other (unannotated) | 285 (20.5%) | 285 | 0 | 2 | **533** / 4,548 | 57 / 3,571 | — | 590 / 4,576 |
+| critical_position | 275 (19.7%) | 276 | 1 | 0 | 164 / 3,704 | **643** / 3,780 | 506 | 812 / 3,869 |
+| background_live_status | 184 (13.2%) | 184 | 0 | **78** | 352 / 4,022 | 74 / 3,874 | — | 426 / 4,045 |
+| critical_whale | 159 (11.4%) | 161 | **2** | 0 | 61 / **1,826** | 46 / 3,601 | 609 | 116 / 3,601 |
+| background_resolution | 86 (6.2%) | 87 | 1 | 0 | 88 / 1,898 | 182 / 3,762 | 608 | 280 / 3,762 |
+
+Read-bucket gauges across the 41 samples: `waiters_high_water` 14 → 19;
+`tokens` at sample time was ≤ 3 of 8 in 12 of 41 samples and 0.0 once;
+`waiters` > 0 in 5 samples. Ticks: p50 1.75 s, max 4.79 s.
+
+What it says:
+
+- **H6 confirmed as a measurement.** Average demand is ~22% of the local
+  budget, yet limiter wait is the *majority* of caller-experienced latency
+  for four of six classes and reaches 1.8–4.5 s. The budget is depleted by
+  *bursts* (a catalog batch's gather, the tick's own gather), not by the
+  average rate — exactly the number that was invisible before I5.
+- **Whale enrichment is not insulated**: `critical_whale` waited up to
+  1.8 s in the local limiter and drew 2 of the window's 4 upstream 429s
+  (backoff ~0.6 s each) while background classes held 69% of calls.
+  Consistent with H7; causality (critical waits *because of* background
+  bursts) is I8/I11's to pin with demand-share timelines and fault
+  injection, not this table's.
+- **Upstream is the story only for `critical_position`** (network avg
+  643 ms, i.e. the account/markets/exchange-status calls themselves are
+  slow) — the one class where a "Kalshi is slow" reading would be right.
+- **42% of `background_live_status` calls failed** (78 of 184, non-429
+  errors) — a real effectiveness finding for I8, previously visible only
+  as per-endpoint error counts with no caller attribution.
+- **20.5% of calls are unattributed** (`other`): `propagate_milestone_winners`
+  in the tick was the missing annotation (added `background_live_status`
+  after this window); anything still landing in `other` is a to-do.
+- Four upstream 429s in 13 minutes at ≤ 8 calls/s locally: the anonymous
+  market-data ceiling is being brushed by bursts even under the
+  conservative local cap — a data point for I8's endpoint-cost/limit
+  study, not a limiter change.
+
+
 ## Persistence
 
 `data/observability.db`, one `metric_samples` table (`observed_at`,

@@ -410,3 +410,221 @@ def test_two_different_endpoints_are_tracked_independently(monkeypatch):
     snapshot = http_client.http_metrics_snapshot()
     assert snapshot["widgets"]["calls"] == 2
     assert snapshot["gadgets"]["calls"] == 1
+
+
+# --- REST latency decomposition by caller class (realtime data-plane I5) ---
+#
+# Deterministic: http_client reads its clock through the module-level
+# _monotonic indirection so tests can drive it, and the limiter is replaced
+# by a fake whose acquire() advances that clock - no real sleeping, and no
+# patching of time.monotonic itself (asyncio's loop clock uses it).
+
+class _FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+class _Err429(Exception):
+    status = 429
+
+
+def _install_clock(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr(http_client, "_monotonic", clock.monotonic)
+    monkeypatch.setattr(http_client, "_rest_class_stats", {})  # fresh per test - module-global state
+    return clock
+
+
+def _install_limiter(monkeypatch, clock, wait_sec: float):
+    class _FakeLimiter:
+        waiters = 0
+        waiters_high_water = 0
+
+        async def acquire(self):
+            clock.advance(wait_sec)
+
+        def tokens_available(self):
+            return 1.0
+
+    limiter = _FakeLimiter()
+    monkeypatch.setattr(http_client, "_kalshi_read_limiter", limiter)
+    return limiter
+
+
+def test_limiter_wait_network_time_and_total_are_measured_separately(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.100)
+
+    async def coro():
+        clock.advance(0.010)
+        return "ok"
+
+    assert asyncio.run(http_client.call_with_backoff(coro)) == "ok"
+
+    other = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert (other["calls"], other["attempts"], other["rate_limited"], other["errors"]) == (1, 1, 0, 0)
+    assert other["limiter_wait"]["window"]["avg_ms"] == pytest.approx(100.0)
+    assert other["network"]["window"]["avg_ms"] == pytest.approx(10.0)
+    assert other["backoff"]["window"]["count"] == 0
+    assert other["total"]["window"]["avg_ms"] == pytest.approx(110.0)
+    # The pre-existing per-endpoint number is (and stays) network-only.
+    assert http_client.http_metrics_snapshot()["coro"]["avg_latency_ms"] == pytest.approx(10.0)
+
+
+def test_429_backoff_sleep_and_attempts_are_accounted_per_logical_call(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+    monkeypatch.setattr(http_client.random, "uniform", lambda a, b: 0.0)
+
+    async def fake_sleep(seconds):
+        clock.advance(seconds)
+
+    monkeypatch.setattr(http_client.asyncio, "sleep", fake_sleep)
+    calls = {"n": 0}
+
+    async def coro():
+        calls["n"] += 1
+        clock.advance(0.010)
+        if calls["n"] < 3:
+            raise _Err429()
+        return "ok"
+
+    assert asyncio.run(http_client.call_with_backoff(coro, base_delay=0.5)) == "ok"
+
+    c = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert (c["calls"], c["attempts"], c["rate_limited"], c["errors"]) == (1, 3, 2, 0)
+    assert c["network"]["window"]["count"] == 3 and c["network"]["window"]["avg_ms"] == pytest.approx(10.0)
+    assert c["backoff"]["window"]["count"] == 1 and c["backoff"]["window"]["avg_ms"] == pytest.approx(1500.0)
+    assert c["total"]["window"]["count"] == 1 and c["total"]["window"]["avg_ms"] == pytest.approx(1530.0)
+
+
+def test_caller_class_context_manager_attributes_the_call(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+
+    async def coro():
+        return 1
+
+    async def run():
+        with http_client.caller_class("critical_whale"):
+            await http_client.call_with_backoff(coro)
+        await http_client.call_with_backoff(coro)
+        return http_client.current_caller_class()
+
+    assert asyncio.run(run()) == "other"
+    by = http_client.rest_latency_snapshot()["by_class"]
+    assert by["critical_whale"]["calls"] == 1 and by["other"]["calls"] == 1
+    assert set(by) == {"critical_whale", "other"}  # classes never used are omitted, not fabricated
+
+
+def test_unknown_caller_class_is_rejected_so_the_label_set_stays_bounded():
+    with pytest.raises(ValueError):
+        with http_client.caller_class("critical_whales"):
+            pass
+    assert set(http_client.CALLER_CLASSES) == {
+        "critical_whale", "critical_position", "interactive", "background_discovery",
+        "background_catalog", "background_live_status", "background_resolution", "other",
+    }
+
+
+def test_classify_decorator_sets_the_class_for_the_whole_coroutine(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+    seen = []
+
+    async def coro():
+        seen.append(http_client.current_caller_class())
+        return 1
+
+    @http_client.classify("background_catalog")
+    async def scan(x):
+        await http_client.call_with_backoff(coro)
+        return x * 2
+
+    async def run():
+        result = await scan(21)
+        return result, http_client.current_caller_class()
+
+    assert asyncio.run(run()) == (42, "other")
+    assert seen == ["background_catalog"]
+    assert http_client.rest_latency_snapshot()["by_class"]["background_catalog"]["calls"] == 1
+
+
+def test_classify_propagates_into_gathered_child_tasks(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+
+    async def coro():
+        return 1
+
+    @http_client.classify("background_live_status")
+    async def fan_out():
+        await asyncio.gather(http_client.call_with_backoff(coro), http_client.call_with_backoff(coro))
+
+    asyncio.run(fan_out())
+    assert http_client.rest_latency_snapshot()["by_class"]["background_live_status"]["calls"] == 2
+
+
+def test_failed_logical_calls_are_counted_once_as_errors(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+
+    async def fake_sleep(seconds):
+        clock.advance(seconds)
+
+    monkeypatch.setattr(http_client.asyncio, "sleep", fake_sleep)
+
+    async def boom():
+        raise RuntimeError("upstream 500")
+
+    async def always_429():
+        raise _Err429()
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(http_client.call_with_backoff(boom))
+    with pytest.raises(_Err429):
+        asyncio.run(http_client.call_with_backoff(always_429, max_retries=2))
+
+    c = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert c["calls"] == 2 and c["errors"] == 2
+    assert c["attempts"] == 1 + 3 and c["rate_limited"] == 3
+    assert c["total"]["window"]["count"] == 2  # a failed call still has a measured total
+
+
+def test_limiter_tracks_concurrent_waiters_and_their_high_water():
+    limiter = http_client._TokenBucketRateLimiter(rate_per_sec=200.0, burst=1.0)
+
+    async def run():
+        await asyncio.gather(limiter.acquire(), limiter.acquire(), limiter.acquire())
+        return limiter.waiters, limiter.waiters_high_water
+
+    waiters_after, high_water = asyncio.run(run())
+    assert waiters_after == 0
+    assert high_water >= 2  # two callers queued behind the one free token
+
+
+def test_snapshot_reports_limiter_depth_gauges_for_both_buckets():
+    snap = http_client.rest_latency_snapshot()["limiter"]
+    assert set(snap) == {"read", "write"}
+    assert set(snap["read"]) == {"waiters", "waiters_high_water", "tokens"}
+
+
+def test_reset_rest_latency_window_keeps_lifetime_and_high_water(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.05)
+
+    async def coro():
+        return 1
+
+    asyncio.run(http_client.call_with_backoff(coro))
+    http_client.reset_rest_latency_window()
+    c = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert c["calls"] == 1  # lifetime counters survive
+    assert c["limiter_wait"]["window"]["count"] == 0
+    assert c["limiter_wait"]["lifetime"]["count"] == 1
