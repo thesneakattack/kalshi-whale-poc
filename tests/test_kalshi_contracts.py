@@ -749,3 +749,33 @@ def test_pyth_value_records_a_straight_underlying_price():
     assert latest is not None
     assert latest["value"] == 65002.41
     assert latest["q15_value"] is None  # pyth carries no windowed averages
+
+
+# --- C2: strict closed semantics, tolerant open vendor values ---------------
+
+
+def test_direction_vocabulary_has_exactly_one_shared_copy():
+    """trade.py and fill.py narrow through the SAME mapping objects in
+    contracts/types.py - the two channels structurally cannot disagree
+    about yes/no ⇄ bid/ask equivalence."""
+    from services.kalshi.contracts import fill as fill_contract
+    from services.kalshi.contracts import trade as trade_contract
+    from services.kalshi.contracts import types as boundary_types
+    assert trade_contract.AS_OUTCOME_SIDE is boundary_types.AS_OUTCOME_SIDE
+    assert fill_contract.AS_OUTCOME_SIDE is boundary_types.AS_OUTCOME_SIDE
+    assert trade_contract.BOOK_SIDE_TO_OUTCOME is fill_contract.BOOK_SIDE_TO_OUTCOME
+
+
+def test_unknown_open_enum_value_survives_normalization_untouched():
+    """Open vendor values (fee_type is the proven live case - Kalshi grew
+    quadratic_with_combo_maker_fees beyond its documented enum in 2026-08)
+    must pass through normalization and canonical construction untouched:
+    tolerated, preserved, never validated into a crash."""
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    msg["fee_type"] = "a_fee_type_kalshi_invents_tomorrow"
+    normalized = trade_contract.normalize_trade(msg)
+    assert normalized["fee_type"] == "a_fee_type_kalshi_invents_tomorrow"
+    canonical = trade_contract.public_trade_from_ws(msg)
+    assert canonical.raw_payload["fee_type"] == "a_fee_type_kalshi_invents_tomorrow"
+    assert canonical.outcome_side == "no"  # closed semantics still resolve strictly beside it

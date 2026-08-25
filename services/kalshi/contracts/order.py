@@ -24,6 +24,7 @@ from typing import Any
 
 from dataclasses import dataclass
 
+from services.kalshi.contracts.types import BookSide
 from services.kalshi.provenance import ContractDocs
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
@@ -35,15 +36,17 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
 }
 
 # BookSide (create-order-v2.md): the only two legal values, YES-leg
-# vocabulary. "yes"/"no"/"buy"/"sell" are other surfaces' vocabularies
-# and must never reach this endpoint.
+# vocabulary - the closed Literal lives in contracts/types.py (C2).
+# "yes"/"no"/"buy"/"sell" are other surfaces' vocabularies and must
+# never reach this endpoint; __post_init__ still enforces it at runtime
+# for untyped callers (typing cannot replace the check).
 _BOOK_SIDES = ("bid", "ask")
 
 
 @dataclass(frozen=True, slots=True)
 class CreateOrderRequest:
     ticker: str
-    side: str                      # "bid" (buy YES) | "ask" (sell YES)
+    side: BookSide                 # "bid" (buy YES) | "ask" (sell YES)
     count: str                     # FixedPointCount string, e.g. "10.00"
     price: str                     # fixed-point dollars string, e.g. "0.5600"
     time_in_force: str = "immediate_or_cancel"

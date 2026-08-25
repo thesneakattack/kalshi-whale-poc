@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from services.kalshi.contracts.types import AS_OUTCOME_SIDE, BOOK_SIDE_TO_OUTCOME, OutcomeSide
 from services.kalshi.provenance import ContractDocs
 from services.kalshi.contracts.trade import _dollars
 
@@ -33,10 +34,8 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     ),
 }
 
-# Closed vendor vocabularies (order_direction.md, identical on Fill
-# responses): outcome_side yes|no; book_side bid|ask, bid == yes always.
-_OUTCOME_SIDES = ("yes", "no")
-_BOOK_SIDE_TO_OUTCOME = {"bid": "yes", "ask": "no"}
+# Closed vocabularies + narrowing maps live in contracts/types.py (C2) -
+# identical on Fill responses per order_direction.md, one shared copy.
 
 
 def normalize_fill(msg: dict) -> dict:
@@ -46,21 +45,18 @@ def normalize_fill(msg: dict) -> dict:
     }
 
 
-def _fill_outcome_side(msg: dict) -> str | None:
+def _fill_outcome_side(msg: dict) -> OutcomeSide | None:
     """Canonical-first direction on a fill (order_direction.md: the same
     outcome_side/book_side pair carries direction on Fill responses; the
     bare `side` field is the legacy vocabulary). Unknown values stay None
     - never guessed into a yes/no."""
-    outcome = str(msg.get("outcome_side") or "").lower()
-    if outcome in _OUTCOME_SIDES:
+    outcome = AS_OUTCOME_SIDE.get(str(msg.get("outcome_side") or "").lower())
+    if outcome is not None:
         return outcome
-    book = str(msg.get("book_side") or "").lower()
-    if book in _BOOK_SIDE_TO_OUTCOME:
-        return _BOOK_SIDE_TO_OUTCOME[book]
-    legacy = str(msg.get("side") or "").lower()
-    if legacy in _OUTCOME_SIDES:
-        return legacy
-    return None
+    book = BOOK_SIDE_TO_OUTCOME.get(str(msg.get("book_side") or "").lower())
+    if book is not None:
+        return book
+    return AS_OUTCOME_SIDE.get(str(msg.get("side") or "").lower())
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +67,7 @@ class UserFill:
 
     trade_id: str | None
     ticker: str | None
-    outcome_side: str | None   # "yes" | "no" | None - never guessed
+    outcome_side: OutcomeSide | None   # never guessed - unknown stays None
     action: str | None         # "buy" | "sell" (user-fills.md)
     count: float | None        # contracts (from count_fp)
     yes_price: float | None    # dollars/contract
