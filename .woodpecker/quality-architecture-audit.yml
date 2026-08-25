@@ -31,6 +31,22 @@ when:
 steps:
   - name: architecture-audit
     image: python:3.13-slim
+    # Persistent uv download cache, shared across pipelines and runs. uv made
+    # installing free (CI log: "Installed 64 packages in 110ms") but a fresh
+    # container still re-downloaded every wheel each run - measured at
+    # "Prepared 64 packages in 50.50s". This mounts one named Docker volume
+    # so that download happens once per package version instead of once per
+    # step per push. Measured locally on this exact requirements set: 4.5s
+    # cold, 0.875s warm.
+    #
+    # Safe to share concurrently - uv locks its cache, which matters here
+    # because the agent runs WOODPECKER_MAX_WORKFLOWS=4 and several of these
+    # steps install at the same time. The repo is already trusted for volumes
+    # (network/volumes/security all true), so this needs no settings change.
+    # Prune with `docker volume rm wp-uv-cache` if it ever grows unreasonably;
+    # losing it costs one slow run, nothing more.
+    volumes:
+      - wp-uv-cache:/root/.cache/uv
     commands:
       # uv instead of pip: measured 5s vs 78s for this same
       # requirements-dev.txt on python:3.13-slim (both runs back to back on
