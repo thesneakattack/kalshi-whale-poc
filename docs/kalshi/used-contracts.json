@@ -6,9 +6,6 @@
     "legacy_caller_count": "Count of distinct production files importing KalshiClient/KalshiAccountClient/KalshiTradeWebSocketClient from their current legacy module locations - the Phase A compatibility-facade caller count (design spec's 'Compatibility facades' rule 1: captured at Phase A start).",
     "approved_integration_files": [
       "services/http_client.py",
-      "services/kalshi_account_client.py",
-      "services/kalshi_client.py",
-      "services/kalshi_trade_ws.py",
       "tools/kalshi_docs_sync.py",
       "tools/kalshi_public_canary.py"
     ]
@@ -60,7 +57,7 @@
     },
     {
       "file": "tools/kalshi_census.py",
-      "line": 309,
+      "line": 304,
       "snippet": "services.kalshi.contracts.trade",
       "inside_approved_integration_file": false
     },

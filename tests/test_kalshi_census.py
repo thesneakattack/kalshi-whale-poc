@@ -40,7 +40,9 @@ def test_direct_sdk_import_detected_outside_approved_file(tmp_path):
 
 
 def test_sdk_import_inside_approved_integration_file_is_flagged_approved(tmp_path):
-    _write(tmp_path / "services" / "kalshi_client.py", "import kalshi_python_async as kpa\n")
+    # C9: the legacy facade files left the approved set when C8 deleted
+    # them - http_client.py is the remaining non-boundary approved seam.
+    _write(tmp_path / "services" / "http_client.py", "import kalshi_python_async as kpa\n")
 
     census = kalshi_census.build_census(tmp_path)
 
@@ -91,7 +93,7 @@ def test_direct_host_string_outside_approved_file_is_flagged(tmp_path):
 
 
 def test_direct_host_string_inside_approved_file_is_not_flagged_as_leak(tmp_path):
-    _write(tmp_path / "services" / "kalshi_trade_ws.py", "_PROD_WS_URL = 'wss://external-api-ws.kalshi.com/trade-api/ws/v2'\n")
+    _write(tmp_path / "services" / "http_client.py", "_BASE = 'https://external-api.kalshi.com/trade-api/v2'\n")
 
     census = kalshi_census.build_census(tmp_path)
 

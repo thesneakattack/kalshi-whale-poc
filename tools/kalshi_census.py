@@ -48,20 +48,15 @@ from tools.quality_audit import source
 
 _SDK_MODULE = "kalshi_python_async"
 
-# Files where a direct kalshi_python_async import or a raw Kalshi host
-# string is the current, deliberate architecture (services/kalshi_client.py
-# and services/kalshi_account_client.py wrap the SDK; services/kalshi_trade_ws.py
-# owns the WS host constants; services/http_client.py is the shared transport
-# layer; tools/kalshi_public_canary.py is the scheduled/manual live canary -
-# see docs/superpowers/research/2026-08-24-kalshi-integration-audit.md's
-# "Current strengths to preserve" #1-3). Not an allowlist that suppresses a
-# finding - every site is still recorded - just the flag future tasks (A15's
-# CI boundary ratchet) need to tell "known integration seam" apart from "new
-# leak outside services/kalshi/".
+# Files where a raw Kalshi host string is the current, deliberate
+# architecture (services/http_client.py is the shared transport layer;
+# tools/kalshi_public_canary.py is the scheduled/manual live canary). The
+# legacy facade entries were removed at C9 after C8 deleted those files
+# at zero callers. Not an allowlist that suppresses a finding - every
+# site is still recorded - just the flag the CI boundary check uses to
+# tell "known integration seam" apart from "new leak outside
+# services/kalshi/".
 _APPROVED_INTEGRATION_FILES = frozenset({
-    "services/kalshi_client.py",
-    "services/kalshi_account_client.py",
-    "services/kalshi_trade_ws.py",
     "services/http_client.py",
     "tools/kalshi_public_canary.py",
     # docs-mirror sync tooling (A2) references docs.kalshi.com - the
