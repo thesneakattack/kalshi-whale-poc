@@ -13,6 +13,14 @@ else supplements it.
 ## Git state
 
 - Branch: **`chore/claude-toolchain`**, branched off `origin/main` (`a659f0c`).
+- HEAD: **`7a46d4a`**, pushed. Working tree clean.
+- **Woodpecker CI: all 5 checks green on `7a46d4a`** (architecture-audit,
+  kalshi-contract-fixtures, dependency-audit, browser-e2e, pytest).
+  Note: the preceding commit `0088822` showed a transient `error` on
+  `tests-dependency-audit`; it passed on re-run and `main` was green on the
+  same check, so it was infra, not this change.
+- No PR opened yet — deliberate, so Session B can finish acceptance testing
+  and delete this handoff file before the branch is proposed for merge.
 - Toolchain work is committed here.
 - **Do not disturb `refactor/kalshi-integration-boundary`** — it has open
   **PR #3** (Kalshi Integration Phase A) and is unrelated to this work. The
