@@ -15,6 +15,14 @@ to the current task and load/use the relevant skill before acting.
   migration, schema-driven Config tab, charts module); reconstruct progress
   from `frontend/src/js/{panels,legacy}` and the `frontend-*` baseline
   ratchets, one task at a time, TDD, verify, commit, stop.
+- **autonomous-quality-coordination-investigation** — investigating (not
+  implementing) how Quality Control Plane findings could be reported,
+  escalated, or mechanically remediated without stepping on active
+  branches/PRs or adding GitHub write authority; execute one numbered `I<n>`
+  task from `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+  per session, re-ground active work and CI first, no GitHub writes, no
+  credentials, no auto-merge — see
+  `.claude/rules/autonomous-quality-coordination-evidence.md`.
 - **root-cause-debugging** — unexpected bug, failing test, live incident,
   contradictory metrics, strange behavior, performance anomaly, or anything
   tempting a speculative patch. Prove root cause before changing behavior.
