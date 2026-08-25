@@ -162,10 +162,13 @@ def _relevant_tickers() -> set[str]:
             tickers.add(t)
     account = state.get("account") or {}
     tickers |= _real_account_position_tickers(account)
+    # Canonical key only (A14): REST fills carry `ticker` natively and WS
+    # fills get it from services/kalshi/contracts/fill.py at the gateway -
+    # no presentation-layer alias fallback needed.
     tickers |= {
-        f.get("ticker") or f.get("market_ticker")
+        f.get("ticker")
         for f in ((account.get("fills") or {}).get("fills") or [])
-        if f.get("ticker") or f.get("market_ticker")
+        if f.get("ticker")
     }
     return tickers
 

@@ -153,7 +153,8 @@ def test_notional_usd_uses_the_takers_own_side_price():
 def test_process_stream_ticker_reads_documented_price_fields():
     main.state["latest_prices"] = {}
     main.state["markets"] = [{"ticker": "FED-23DEC-T3.00", "yes_ask_dollars": None}]
-    ticker_msg = _payload("market_ticker.json")
+    from services.kalshi.contracts import ticker as ticker_contract
+    ticker_msg = ticker_contract.normalize_ticker(_payload("market_ticker.json"))
 
     asyncio.run(main._process_stream_ticker(ticker_msg))
 
@@ -217,8 +218,10 @@ def test_market_position_envelope_dispatches_to_on_position():
 
 def test_process_stream_position_reads_market_ticker_and_normalizes_to_ticker():
     _reset_account_state()
-    position_msg = _payload("market_position.json")
-    assert "ticker" not in position_msg  # confirms the fixture matches the real (ticker-less) wire shape
+    from services.kalshi.contracts import position as position_contract
+    raw = _payload("market_position.json")
+    assert "ticker" not in raw  # the real wire shape carries market_ticker only
+    position_msg = position_contract.normalize_position(raw)  # gateway does this before the callback
 
     asyncio.run(main._process_stream_position(position_msg))
 
@@ -231,7 +234,8 @@ def test_process_stream_position_updates_an_existing_entry_in_place():
     _reset_account_state(
         positions={"market_positions": [{"ticker": "FED-23DEC-T3.00", "position_fp": "1.00"}], "event_positions": []},
     )
-    position_msg = _payload("market_position.json")
+    from services.kalshi.contracts import position as position_contract
+    position_msg = position_contract.normalize_position(_payload("market_position.json"))
 
     asyncio.run(main._process_stream_position(position_msg))
 
@@ -253,7 +257,9 @@ def test_lifecycle_determined_does_not_resolve_outcome():
         "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
     }
 
-    asyncio.run(main._process_stream_lifecycle(_payload("market_lifecycle_determined.json")))
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    asyncio.run(main._process_stream_lifecycle(
+        lifecycle_contract.normalize_lifecycle(_payload("market_lifecycle_determined.json"))))
 
     stats = main.state["lifecycle_stream_stats"]
     assert stats["events_by_type"]["determined"] == 1
@@ -615,3 +621,54 @@ def test_cancel_order_result_from_documented_v2_response():
     assert result.client_order_id == resp["client_order_id"]
     assert result.reduced_by == resp["reduced_by"]
     assert result.raw_payload is resp
+
+
+# --- A14: stream handlers consume canonical fields, not vendor aliases ------
+# Production dispatch (services/kalshi/websocket.py) normalizes every
+# message before the callback, so a handler only ever sees the canonical
+# `ticker` key present. These prove the handlers actually READ the
+# canonical key - a message carrying only `ticker` (no market_ticker
+# alias) must process fully, which fails while any handler still reads
+# the vendor alias directly.
+
+
+def _canonical_only(normalized: dict) -> dict:
+    stripped = dict(normalized)
+    stripped.pop("market_ticker", None)
+    return stripped
+
+
+def test_process_stream_ticker_consumes_the_canonical_ticker_key():
+    from services.kalshi.contracts import ticker as ticker_contract
+    main.state["latest_prices"] = {}
+    main.state["markets"] = [{"ticker": "FED-23DEC-T3.00", "yes_ask_dollars": None}]
+    msg = _canonical_only(ticker_contract.normalize_ticker(_payload("market_ticker.json")))
+
+    asyncio.run(main._process_stream_ticker(msg))
+
+    assert main.state["latest_prices"]["FED-23DEC-T3.00"] == 0.450
+
+
+def test_process_stream_position_consumes_the_canonical_ticker_key():
+    from services.kalshi.contracts import position as position_contract
+    _reset_account_state()
+    msg = _canonical_only(position_contract.normalize_position(_payload("market_position.json")))
+
+    asyncio.run(main._process_stream_position(msg))
+
+    market_positions = main.state["account"]["positions"]["market_positions"]
+    assert len(market_positions) == 1
+    assert market_positions[0]["ticker"] == "FED-23DEC-T3.00"
+
+
+def test_process_stream_lifecycle_consumes_the_canonical_ticker_key():
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    main.state["lifecycle_stream_stats"] = {
+        "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
+        "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
+    }
+    msg = _canonical_only(lifecycle_contract.normalize_lifecycle(_payload("market_lifecycle_determined.json")))
+
+    asyncio.run(main._process_stream_lifecycle(msg))
+
+    assert main.state["lifecycle_stream_stats"]["events_by_type"]["determined"] == 1

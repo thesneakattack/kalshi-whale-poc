@@ -62,6 +62,24 @@ config_store_module.config_store._path = _tmp_config_path
 config_store_module.config_store.reload()
 
 import main  # noqa: E402  (must import after the redirects above)
+
+
+# A14: production dispatch normalizes every WS message at the gateway
+# before any handler runs (services/kalshi/websocket.py) - these wrappers
+# mirror that, so handler tests exercise the same shapes production
+# delivers instead of raw vendor payloads the handlers no longer parse.
+def _run_lifecycle(msg):
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    if isinstance(msg, tuple):  # a wrapped call site's trailing comma parses as a 1-tuple
+        (msg,) = msg
+    asyncio.run(main._process_stream_lifecycle(lifecycle_contract.normalize_lifecycle(msg)))
+
+
+def _run_stream_ticker(msg):
+    from services.kalshi.contracts import ticker as ticker_contract
+    if isinstance(msg, tuple):
+        (msg,) = msg
+    asyncio.run(main._process_stream_ticker(ticker_contract.normalize_ticker(msg)))
 from fastapi.testclient import TestClient  # noqa: E402
 from services import account_positions  # noqa: E402
 from services.market_watch import discovery_cache  # noqa: E402
@@ -311,19 +329,27 @@ def test_state_market_titles_includes_real_account_position_and_fill_tickers(mon
     assert body["market_titles"]["REAL-FILL"]["title"] == "A Real Fill Title"
 
 
-def test_relevant_tickers_falls_back_to_market_ticker_field_for_fills(monkeypatch):
-    # _FILL_FIELDS carries both "ticker" and "market_ticker" (confirmed real
-    # fields against a live account) - a fill missing "ticker" but carrying
-    # "market_ticker" must still resolve, not silently drop out.
+def test_relevant_tickers_reads_the_canonical_ticker_for_fills(monkeypatch):
+    # A14: presentation reads the canonical "ticker" key only. Both real
+    # sources guarantee it: the REST Fill schema REQUIRES ticker AND
+    # market_ticker, documenting market_ticker as "legacy field name, same
+    # as ticker" (docs/kalshi/get-fills.md), and a WS fill gets the
+    # canonical alias from services/kalshi/contracts/fill.py at the
+    # gateway before any handler stores it. The old market_ticker
+    # fallback here guarded a ticker-less shape neither surface can
+    # produce - that alias knowledge now lives only at the boundary.
     monkeypatch.setitem(main.state, "markets", [])
     monkeypatch.setitem(main.state, "signal_feed", [])
     monkeypatch.setitem(main.state, "decision_feed", [])
+    from services.kalshi.contracts import fill as fill_contract
+    ws_fill = fill_contract.normalize_fill({"market_ticker": "REAL-WS-FILL", "side": "yes"})
     monkeypatch.setitem(main.state, "account", {
         "connected": True, "trading_enabled": False, "error": None,
         "positions": {"market_positions": []},
-        "fills": {"fills": [{"ticker": None, "market_ticker": "REAL-FALLBACK", "side": "yes"}]},
+        "fills": {"fills": [ws_fill, {"ticker": "REAL-REST-FILL", "market_ticker": "REAL-REST-FILL", "side": "yes"}]},
     })
-    assert "REAL-FALLBACK" in main._relevant_tickers()
+    assert "REAL-WS-FILL" in main._relevant_tickers()
+    assert "REAL-REST-FILL" in main._relevant_tickers()
 
 
 def test_real_account_position_tickers_excludes_fills():
@@ -1873,7 +1899,7 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
     monkeypatch.setattr(main.strategy, "check_exits", fake_check_exits)
 
     before = time.time()
-    asyncio.run(main._process_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
     after = time.time()
 
     assert captured["opened_since"] is not None
@@ -1908,7 +1934,7 @@ def test_lifecycle_close_date_updated_refreshes_matching_market():
     main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
     gen_before = main.state["generation"]
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 1735689600},
     ))
 
@@ -1932,7 +1958,7 @@ def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
     main.state["markets"] = [{"ticker": "TICK-B", "close_time": "2026-01-01T00:00:00Z"}]
     gen_before = main.state["generation"]
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": 1735689600},
     ))
 
@@ -1955,7 +1981,7 @@ def test_lifecycle_determined_updates_catalog_status_but_does_not_resolve_outcom
     _seed_catalog_row("TICK-A")
     cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "determined", "market_ticker": "TICK-A", "result": "yes",
          "determination_ts": 1735689600, "settlement_value": "1.0000"},
     ))
@@ -1976,7 +2002,7 @@ def test_lifecycle_determined_still_updates_catalog_for_a_scalar_result():
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "determined", "market_ticker": "TICK-A", "result": "scalar"},
     ))
 
@@ -2009,7 +2035,7 @@ def test_lifecycle_settled_resolves_outcome_via_a_fresh_rest_read(monkeypatch):
     fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
     monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
     ))
 
@@ -2035,7 +2061,7 @@ def test_lifecycle_settled_does_not_resolve_when_the_fresh_read_disagrees_it_is_
     fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "determined", "result": "yes"})
     monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
     ))
 
@@ -2048,7 +2074,7 @@ def test_lifecycle_settled_degrades_cleanly_when_the_rest_read_fails(monkeypatch
     fake_client = _FakeLifecycleSettleClient(raises=True)
     monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
     ))
 
@@ -2061,8 +2087,8 @@ def test_lifecycle_settled_degrades_cleanly_when_the_rest_read_fails(monkeypatch
 
 def test_lifecycle_ignores_message_missing_event_type_or_ticker():
     _reset_lifecycle_stats()
-    asyncio.run(main._process_stream_lifecycle({"market_ticker": "TICK-A"}))
-    asyncio.run(main._process_stream_lifecycle({"event_type": "created"}))
+    _run_lifecycle(({"market_ticker": "TICK-A"}))
+    _run_lifecycle(({"event_type": "created"}))
     assert main.state["lifecycle_stream_stats"]["events_by_type"] == {}
 
 
@@ -2070,7 +2096,7 @@ def test_lifecycle_close_date_updated_tolerates_unparseable_close_ts():
     _reset_lifecycle_stats()
     main.state["markets"] = [{"ticker": "TICK-A", "close_time": "2026-01-01T00:00:00Z"}]
 
-    asyncio.run(main._process_stream_lifecycle(
+    _run_lifecycle((
         {"event_type": "close_date_updated", "market_ticker": "TICK-A", "close_ts": "not-a-number"},
     ))
 

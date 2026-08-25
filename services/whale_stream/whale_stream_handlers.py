@@ -191,7 +191,10 @@ async def _process_stream_trade(trade: dict) -> None:
 
 
 async def _process_stream_ticker(ticker_msg: dict) -> None:
-    ticker = ticker_msg.get("market_ticker")
+    # Canonical key (A14): the stream gateway normalizes every message
+    # before this callback (services/kalshi/contracts/ticker.py owns the
+    # market_ticker alias) - handlers read vendor-neutral fields only.
+    ticker = ticker_msg.get("ticker")
     if not ticker:
         return
     # opened_since=now (2026-08-16 self-review finding): this was the one
@@ -327,10 +330,13 @@ async def _process_stream_position(position_msg: dict) -> None:
     if not state["account"].get("connected"):
         return
     position = _slim_position(position_msg)
-    ticker = position.get("ticker") or position.get("market_ticker")
+    # Canonical key only (A14): the REST-vs-WS market_ticker alias is
+    # resolved by services/kalshi/contracts/position.py at the gateway,
+    # before this callback - re-interpreting it here is exactly the
+    # presentation-layer alias knowledge the boundary exists to remove.
+    ticker = position.get("ticker")
     if not ticker:
         return
-    position["ticker"] = ticker
     positions = state["account"].get("positions") or {"market_positions": [], "event_positions": []}
     market_positions = list(positions.get("market_positions") or [])
     for i, p in enumerate(market_positions):
@@ -420,7 +426,7 @@ async def _process_stream_lifecycle(msg: dict) -> None:
     from datetime import datetime, timezone
 
     event_type = msg.get("event_type")
-    ticker = msg.get("market_ticker")
+    ticker = msg.get("ticker")  # canonical alias, normalized at the gateway (A14)
     if not event_type or not ticker:
         return
     stats = state["lifecycle_stream_stats"]

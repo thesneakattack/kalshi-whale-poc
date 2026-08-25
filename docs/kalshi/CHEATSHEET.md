@@ -450,3 +450,16 @@ that could be doc-verified further.
 **Source:** `quick_start_websockets.md`.
 **Found:** 2026-08-24, Kalshi Integration Phase A Task A1, verifying
 `services/kalshi_trade_ws.py` against documented suggested WS practices.
+
+## On a REST Fill, is `market_ticker` the real name or an alias? (and `ticker` on WS?)
+
+Resolved 2026-08-25 (Phase A Task A14), from `docs/kalshi/get-fills.md`'s Fill schema:
+the REST Fill object REQUIRES **both** `ticker` and `market_ticker`, and documents
+`market_ticker` as "legacy field name, same as ticker" — mirroring the same schema's
+`trade_id` being "legacy field name, same as fill_id" on REST. The WS user-fills message
+(`docs/kalshi/user-fills.md`) is the inverse world: it carries `market_ticker` (and
+`trade_id`) only. Net: every fill this app stores now carries the canonical `ticker` —
+REST natively, WS via `services/kalshi/contracts/fill.py`'s gateway normalization — so
+presentation code (`services/state_view.py`) reads `ticker` alone, with no
+alias fallback. Don't reintroduce per-consumer `or market_ticker` fallbacks; the alias
+knowledge lives at the boundary.

@@ -332,7 +332,7 @@
     ],
     "account.get": [
       "services/account_positions.py:132",
-      "services/state_view.py:167"
+      "services/state_view.py:170"
     ],
     "account.get_balance": [
       "services/account_positions.py:168"
@@ -400,7 +400,7 @@
       "services/market_catalog/routes.py:133",
       "services/market_events/event_inspector.py:49",
       "services/whale_stream/index_stream_handlers.py:66",
-      "services/whale_stream/whale_stream_handlers.py:470"
+      "services/whale_stream/whale_stream_handlers.py:476"
     ],
     "client.get_markets": [
       "services/market_events/event_inspector.py:102",
@@ -433,8 +433,8 @@
     "client.get_trades": [
       "services/diagnostics/diagnostics.py:530",
       "services/market_catalog/routes.py:86",
-      "services/whale_stream/whale_stream_handlers.py:524",
-      "services/whale_stream/whale_stream_handlers.py:529"
+      "services/whale_stream/whale_stream_handlers.py:530",
+      "services/whale_stream/whale_stream_handlers.py:535"
     ],
     "client.post": [
       "services/alerting/alerting.py:182"
@@ -476,12 +476,7 @@
       "services/kalshi/contracts/trade.py:79",
       "services/kalshi/contracts/trade.py:162",
       "services/series_watcher.py:225",
-      "services/series_watcher.py:270",
-      "services/state_view.py:166",
-      "services/state_view.py:168",
-      "services/whale_stream/whale_stream_handlers.py:194",
-      "services/whale_stream/whale_stream_handlers.py:423",
-      "services/whale_stream/whale_stream_handlers.py:330"
+      "services/series_watcher.py:270"
     ],
     "taker_book_side": [
       "services/kalshi/contracts/trade.py:88",
@@ -506,9 +501,9 @@
       "services/kalshi/contracts/trade.py:161",
       "services/series_watcher.py:226",
       "services/whale_stream/whale_stream_handlers.py:137",
-      "services/whale_stream/whale_stream_handlers.py:299",
       "services/whale_stream/whale_stream_handlers.py:302",
-      "services/whale_stream/whale_stream_handlers.py:302",
+      "services/whale_stream/whale_stream_handlers.py:305",
+      "services/whale_stream/whale_stream_handlers.py:305",
       "services/whalewatchers/kalshi_trade_tape.py:317",
       "services/whalewatchers/kalshi_trade_tape.py:393"
     ]
@@ -698,7 +693,7 @@
     "legacy_wrapper_import_sites": 20,
     "legacy_wrapper_construction_sites": 18,
     "wrapper_method_call_sites": 68,
-    "known_field_read_sites": 44,
+    "known_field_read_sites": 39,
     "fixtures_total": 12,
     "fixtures_missing_source_doc": 0,
     "direct_access_count": 2,
