@@ -320,6 +320,7 @@ class KalshiPublicGateway:
 
     async def get_trades(
         self, ticker: str | None = None, limit: int = 25, min_ts: int | None = None, cursor: str | None = None,
+        max_ts: int | None = None,
     ) -> dict:
         # min_ts (real, SDK-confirmed param - "filter items after this Unix
         # timestamp") lets a caller fetch every trade since a known
@@ -329,8 +330,14 @@ class KalshiPublicGateway:
         # pagination token (empty string on the response = no more pages) -
         # see main.py's _fetch_trade_tape, which pages through every
         # ticker's full result set rather than keeping only the first page.
+        # max_ts (I4, 2026-08-25): docs/kalshi/get-trades.md's MaxTsQuery -
+        # "Filter items before this Unix timestamp", int64 seconds, the
+        # counterpart of min_ts above; accepted by the installed SDK's
+        # MarketApi.get_trades (verified by introspection, 3.27.0). Lets a
+        # caller bound a reconciliation window on both ends instead of
+        # paging forward from min_ts until it runs past the end.
         resp = await call_with_backoff(
-            self._client.get_trades, ticker=ticker, limit=limit, min_ts=min_ts, cursor=cursor,
+            self._client.get_trades, ticker=ticker, limit=limit, min_ts=min_ts, cursor=cursor, max_ts=max_ts,
         )
         return resp.model_dump(mode="json")
 

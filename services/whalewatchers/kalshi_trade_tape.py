@@ -214,7 +214,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
 
     def __init__(self):
         self._seen_trade_ids: set[str] = set()
-        self._seen_order: deque[str] = deque()
+        # (trade_id, exchange_ts) in insertion order - the eviction ring for
+        # _seen_trade_ids, and (I4) the WebSocket path's own record of WHAT it
+        # evaluated and WHEN in exchange time, so REST-vs-WS reconciliation
+        # (services/diagnostics/trade_capture_reconciliation.py) can bound a
+        # window on the same clock Kalshi's created_time uses. Stored in the
+        # deque that already exists rather than a second 250k-entry
+        # structure; seen_exchange_ts_by_id() materializes it on demand for
+        # the manual diagnostic only.
+        self._seen_order: deque[tuple[str, float]] = deque()
         # ticker -> (fetched_at, market|None) for markets resolved on demand
         # because a whale-sized print arrived on a market outside the
         # watchlist (see _resolve_unknown_markets). None is cached too - a
@@ -235,14 +243,26 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # opts in; once selected, it's always ready.
         return True
 
-    def _mark_seen(self, trade_id: str) -> None:
+    def _mark_seen(self, trade_id: str, exchange_ts: float | None = None) -> None:
         if trade_id in self._seen_trade_ids:
             return
         self._seen_trade_ids.add(trade_id)
-        self._seen_order.append(trade_id)
+        self._seen_order.append((trade_id, float(exchange_ts) if exchange_ts is not None else time.time()))
         while len(self._seen_order) > _MAX_SEEN_TRADE_IDS:
-            oldest = self._seen_order.popleft()
+            oldest, _ = self._seen_order.popleft()
             self._seen_trade_ids.discard(oldest)
+
+    def seen_exchange_ts_by_id(self) -> dict[str, float]:
+        """trade_id -> exchange timestamp for every trade still in the dedupe
+        ring (I4). O(n) over the ring - for the manual reconciliation
+        diagnostic, never the hot path."""
+        return dict(self._seen_order)
+
+    def seen_horizon_ts(self) -> float | None:
+        """Exchange timestamp of the oldest trade still retained - a
+        reconciliation window that starts before this cannot tell a real
+        miss from an evicted id."""
+        return self._seen_order[0][1] if self._seen_order else None
 
     async def fetch_signals(
         self, since_ts: float | None = None, market_context: dict | None = None,
@@ -430,7 +450,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             trade_id = trade.get("trade_id")
             if not trade_id or trade_id in self._seen_trade_ids:
                 continue
-            self._mark_seen(trade_id)  # evaluated once, regardless of outcome below
+            # Evaluated once, regardless of outcome below; exchange time kept
+            # for REST-vs-WS reconciliation (I4).
+            self._mark_seen(trade_id, exchange_ts=trade_contract.trade_exchange_ts(trade) or now)
             _bump("trades")
 
             ticker = trade.get("ticker")

@@ -26,9 +26,10 @@ from fastapi import APIRouter, HTTPException
 
 from services import index_feed, series_watcher, settlement_edge, trade_archive
 from services.diagnostics import diagnostics
+from services.diagnostics import trade_capture_reconciliation
 from services.app_state import state, trade_stream, whale_provider
 from services import whale_pipeline_perf
-from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
+from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
 from services.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 
@@ -53,6 +54,50 @@ async def get_diagnostics_coverage(pages: int = 2):
     watched = {m["ticker"] for m in (state.get("markets") or []) if m.get("ticker")}
     check = await diagnostics.check_coverage(cfg, watched, pages=pages)
     return check.to_dict()
+
+
+@router.get("/api/diagnostics/trade-capture")
+async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float = 60.0, max_pages: int = 10):
+    """REST-vs-WebSocket capture completeness by trade_id over a bounded,
+    recent exchange-time window (realtime data-plane task I4, hypothesis
+    H5 - services/diagnostics/trade_capture_reconciliation.py).
+
+    Manual only - never scheduled. Costs at most `max_pages` exchange-wide
+    GET /markets/trades pages of 1000 (docs/kalshi/get-trades.md), read-only.
+    The window ends `lag_sec` before now so a print still sitting in the
+    ingest queue is not mistaken for a miss; the current oldest-message age
+    is attached so a too-small lag is visible rather than silent."""
+    cfg = config_store.get()
+    now = time.time()
+    window_end = now - max(lag_sec, 0.0)
+    window_start = window_end - max(minutes, 0.1) * 60.0
+    seen_by_id = getattr(whale_provider, "seen_exchange_ts_by_id", None)
+    if not callable(seen_by_id):
+        return {"error": f"active whale provider {getattr(whale_provider, 'name', '?')!r} keeps no seen-record; "
+                         "reconciliation needs kalshi_trade_tape"}
+    wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
+    ingest = trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else {}
+    evidence = {
+        "dropped_messages": ingest.get("dropped_messages"),
+        "dropped_window": ingest.get("dropped_window"),
+        "error_25_total": ingest.get("error_25_total"),
+        "reconnects": (ingest.get("connection") or {}).get("reconnects"),
+        "oldest_message_age_sec": (ingest.get("queue") or {}).get("oldest_message_age_sec"),
+        "queue_depth": (ingest.get("queue") or {}).get("depth"),
+        "lag_sec": lag_sec,
+    }
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"].get("request_timeout_sec", 10))
+    try:
+        return await trade_capture_reconciliation.reconcile_window(
+            client, window_start=window_start, window_end=window_end,
+            seen_exchange_ts_by_id=seen_by_id(),
+            min_contracts_for=lambda ticker: min_contracts_for(ticker, wwk_cfg),
+            max_pages=max(1, min(max_pages, 50)),
+            ingest_evidence=evidence,
+            seen_horizon_ts=whale_provider.seen_horizon_ts(),
+        )
+    finally:
+        await client.close()
 
 
 @router.get("/api/diagnostics/series/{series}")

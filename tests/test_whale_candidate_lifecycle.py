@@ -101,9 +101,9 @@ def test_transient_lookup_failure_marks_the_trade_seen_before_any_evaluation():
     order = []
     real_mark_seen = provider._mark_seen
 
-    def spy_mark_seen(trade_id):
+    def spy_mark_seen(trade_id, exchange_ts=None):
         order.append(("mark_seen", trade_id, client.calls))
-        real_mark_seen(trade_id)
+        real_mark_seen(trade_id, exchange_ts=exchange_ts)
 
     provider._mark_seen = spy_mark_seen
 

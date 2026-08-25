@@ -67,3 +67,40 @@ always-safe offline set) for exactly this reason.
 - **Downstream:** purely read-only with respect to trading — no
   `config_store.update()` anywhere in this module, unlike
   advisory/whale_calibration's auto-apply write-back loops.
+
+## REST-vs-WebSocket trade capture reconciliation (realtime data-plane I4, 2026-08-25)
+
+`trade_capture_reconciliation.reconcile_window(...)` + the manual route
+`GET /api/diagnostics/trade-capture?minutes=5&lag_sec=60&max_pages=10`.
+The one measurement that can say how complete WebSocket capture actually
+is: fetch Kalshi's exchange-wide REST record of a bounded exchange-time
+window (`GET /markets/trades`, no `ticker`, `limit=1000`, `min_ts`/`max_ts`,
+cursor until empty — docs/kalshi/get-trades.md) and check every
+`trade_id` against the whale provider's own seen-record
+(`KalshiTradeTapeProvider.seen_exchange_ts_by_id()`, the dedupe ring with
+exchange timestamps). Reports REST count / WS count / intersection /
+missing ids / whale-sized missing ids / completeness ratios, with the
+ingest queue evidence (drops, error 25, reconnects, oldest-message age)
+attached, and explicit caveats: paging truncation (counts become lower
+bounds), an empty REST window (completeness is `None`, never 100%), and
+a seen-record horizon newer than the window start (misses before it may
+be dedupe-ring eviction — at ~250 k ids the ring holds only ~10–30 min of
+exchange-wide flow, so keep windows short and recent). The window ends
+`lag_sec` before now so a print still queued is not counted as missed.
+Never scheduled — manual/interactive only; each run costs at most
+`max_pages` REST pages against the shared read limiter.
+
+**First live reading (2026-08-25, after 4 min of untouched uptime,
+`minutes=2&lag_sec=60&max_pages=30`):** REST 12,737 trades in 120 s (13
+pages, not truncated, ≈106/s; 29 whale-sized), WS-seen 12,855 in the same
+window, intersection 12,737 → **capture completeness 1.00, whale-sized
+29/29**, with `dropped_messages=0`, no error 25, no reconnects and an empty
+queue for the whole period. Two lessons for interpretation: (1) the very
+first attempt, 4 s after a `--reload`, reported 0% because the fresh
+provider's seen-record did not yet reach back to the window — the horizon
+caveat exists for exactly that; always check `caveats` before believing a
+ratio; (2) 118 WS-only ids (`ws.not_in_rest`) appeared at the window edges
+— consistent with `min_ts`/`max_ts` being whole seconds against WS `ts_ms`,
+so treat `not_in_rest` as boundary noise unless it grows with the window.
+A 3-minute window at this flow rate needs >10 pages; size `max_pages` to
+the rate or the result is only a lower bound (and says so).

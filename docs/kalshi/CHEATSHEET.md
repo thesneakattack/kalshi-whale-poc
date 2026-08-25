@@ -463,3 +463,24 @@ REST natively, WS via `services/kalshi/contracts/fill.py`'s gateway normalizatio
 presentation code (`services/state_view.py`) reads `ticker` alone, with no
 alias fallback. Don't reintroduce per-consumer `or market_ticker` fallbacks; the alias
 knowledge lives at the boundary.
+
+## Can `GET /markets/trades` fetch a bounded exchange-time window, and how big can a page be?
+**Answer:** Yes. `get-trades.md` documents `min_ts` **and** `max_ts` (both
+"Unix timestamp", `integer/int64` seconds — "after"/"before", inclusivity
+unstated, so enforce the window locally on each Trade's own `created_time`
+too), `limit` 1–1000 (default 100 — the SDK default this app used, 25, is
+its own choice), and cursor paging where an **empty** cursor means no more
+pages. Omitting `ticker` returns "all trades for all markets". Each REST
+`Trade` carries `trade_id`, `ticker`, `count_fp`, ISO `created_time`; the
+WS `trade` message carries the same `trade_id` plus `ts_ms` — so REST and
+WS records of one print share an identity key and a comparable clock
+(`services/kalshi/contracts/trade.py::trade_exchange_ts`).
+**Gotcha:** `services/kalshi/public.py`'s `get_trades` only passed `min_ts`
+until 2026-08-25 (I4); the installed SDK 3.27.0 `MarketApi.get_trades`
+accepts `max_ts` (and `is_block_trade`) — verified by introspection, not
+assumed — so the passthrough is a one-line addition, not a raw-HTTP bypass.
+**Source:** `get-trades.md` (`MinTsQuery`/`MaxTsQuery`/`MarketLimitQuery`/
+`CursorQuery`, `GetTradesResponse`, `Trade` schema), `pagination.md`,
+`public-trades.md` (WS field list).
+**Found:** 2026-08-25, realtime data-plane task I4 (REST-vs-WS capture
+reconciliation, `services/diagnostics/trade_capture_reconciliation.py`).
