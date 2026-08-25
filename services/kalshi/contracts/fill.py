@@ -16,14 +16,27 @@ Semantics owned:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from services.kalshi.provenance import ContractDocs
+from services.kalshi.contracts.trade import _dollars
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_fill": (
         "docs/kalshi/user-fills.md",
         "docs/kalshi/order_direction.md",
     ),
+    "user_fill_from_ws": (
+        "docs/kalshi/user-fills.md",
+        "docs/kalshi/order_direction.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
 }
+
+# Closed vendor vocabularies (order_direction.md, identical on Fill
+# responses): outcome_side yes|no; book_side bid|ask, bid == yes always.
+_OUTCOME_SIDES = ("yes", "no")
+_BOOK_SIDE_TO_OUTCOME = {"bid": "yes", "ask": "no"}
 
 
 def normalize_fill(msg: dict) -> dict:
@@ -31,3 +44,50 @@ def normalize_fill(msg: dict) -> dict:
         **msg,
         "ticker": msg.get("market_ticker") or msg.get("ticker"),
     }
+
+
+def _fill_outcome_side(msg: dict) -> str | None:
+    """Canonical-first direction on a fill (order_direction.md: the same
+    outcome_side/book_side pair carries direction on Fill responses; the
+    bare `side` field is the legacy vocabulary). Unknown values stay None
+    - never guessed into a yes/no."""
+    outcome = str(msg.get("outcome_side") or "").lower()
+    if outcome in _OUTCOME_SIDES:
+        return outcome
+    book = str(msg.get("book_side") or "").lower()
+    if book in _BOOK_SIDE_TO_OUTCOME:
+        return _BOOK_SIDE_TO_OUTCOME[book]
+    legacy = str(msg.get("side") or "").lower()
+    if legacy in _OUTCOME_SIDES:
+        return legacy
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class UserFill:
+    """Canonical user-fill contract (A12). Identity is trade_id - the WS
+    message has no fill_id (that name is REST-only), and inventing one
+    silently discarded every real fill once already."""
+
+    trade_id: str | None
+    ticker: str | None
+    outcome_side: str | None   # "yes" | "no" | None - never guessed
+    action: str | None         # "buy" | "sell" (user-fills.md)
+    count: float | None        # contracts (from count_fp)
+    yes_price: float | None    # dollars/contract
+    ts_ms: int | None
+    raw_payload: dict
+
+
+def user_fill_from_ws(msg: dict) -> UserFill:
+    ts_ms = msg.get("ts_ms")
+    return UserFill(
+        trade_id=msg.get("trade_id"),
+        ticker=msg.get("market_ticker") or msg.get("ticker"),
+        outcome_side=_fill_outcome_side(msg),
+        action=msg.get("action"),
+        count=_dollars(msg.get("count_fp")),
+        yes_price=_dollars(msg.get("yes_price_dollars")),
+        ts_ms=ts_ms if isinstance(ts_ms, int) else None,
+        raw_payload=msg,
+    )

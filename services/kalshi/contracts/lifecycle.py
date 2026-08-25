@@ -24,11 +24,17 @@ migration (A13/A14).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from services.kalshi.provenance import ContractDocs
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_lifecycle": ("docs/kalshi/market-and-event-lifecycle.md",),
     "resolves_outcome": (
+        "docs/kalshi/market-and-event-lifecycle.md",
+        "docs/kalshi/market_lifecycle.md",
+    ),
+    "lifecycle_event_from_ws": (
         "docs/kalshi/market-and-event-lifecycle.md",
         "docs/kalshi/market_lifecycle.md",
     ),
@@ -55,3 +61,30 @@ def normalize_lifecycle(msg: dict) -> dict:
         **msg,
         "ticker": msg.get("market_ticker") or msg.get("ticker"),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleEvent:
+    """Canonical lifecycle contract (A12). may_resolve_outcome encodes the
+    determined/finalized/settled rule (see module docstring): True only
+    for `settled`, and resolution still requires the REST re-read gated on
+    TERMINAL_REST_STATUS - the event itself never carries a trustworthy
+    final result."""
+
+    ticker: str | None
+    event_type: str | None
+    close_ts: int | None          # present on close_date_updated events
+    may_resolve_outcome: bool
+    raw_payload: dict
+
+
+def lifecycle_event_from_ws(msg: dict) -> LifecycleEvent:
+    event_type = msg.get("event_type")
+    close_ts = msg.get("close_ts")
+    return LifecycleEvent(
+        ticker=msg.get("market_ticker") or msg.get("ticker"),
+        event_type=event_type,
+        close_ts=close_ts if isinstance(close_ts, int) else None,
+        may_resolve_outcome=resolves_outcome(event_type),
+        raw_payload=msg,
+    )

@@ -18,10 +18,18 @@ Semantics owned:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from services.kalshi.provenance import ContractDocs
+from services.kalshi.contracts.trade import _dollars
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_position": ("docs/kalshi/market-positions.md",),
+    "market_position_from_ws": (
+        "docs/kalshi/market-positions.md",
+        "docs/kalshi/get-positions.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
 }
 
 # Per-message `type` (singular) vs subscription channel (plural) - see
@@ -35,3 +43,29 @@ def normalize_position(msg: dict) -> dict:
         **msg,
         "ticker": msg.get("market_ticker") or msg.get("ticker"),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPosition:
+    """Canonical market-position contract (A12). Sign semantics per
+    docs/kalshi/get-positions.md's position_fp: positive means YES
+    contracts, negative means NO contracts - the exact field the real
+    emergency flatten's side mapping depends on."""
+
+    ticker: str | None
+    position: float | None       # contracts, signed (from position_fp)
+    position_cost: float | None  # dollars (position_cost_dollars)
+    realized_pnl: float | None   # dollars (realized_pnl_dollars)
+    fees_paid: float | None      # dollars (fees_paid_dollars)
+    raw_payload: dict
+
+
+def market_position_from_ws(msg: dict) -> MarketPosition:
+    return MarketPosition(
+        ticker=msg.get("market_ticker") or msg.get("ticker"),
+        position=_dollars(msg.get("position_fp")),
+        position_cost=_dollars(msg.get("position_cost_dollars")),
+        realized_pnl=_dollars(msg.get("realized_pnl_dollars")),
+        fees_paid=_dollars(msg.get("fees_paid_dollars")),
+        raw_payload=msg,
+    )

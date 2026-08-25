@@ -27,6 +27,7 @@ migrates behind this boundary at Task A13, not here.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from services.kalshi.provenance import ContractDocs
@@ -37,7 +38,22 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
         "docs/kalshi/get-trades.md",
         "docs/kalshi/order_direction.md",
     ),
+    "resolve_taker_outcome_side": (
+        "docs/kalshi/get-trades.md",
+        "docs/kalshi/order_direction.md",
+    ),
+    "public_trade_from_ws": (
+        "docs/kalshi/public-trades.md",
+        "docs/kalshi/get-trades.md",
+        "docs/kalshi/order_direction.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
 }
+
+# Closed vendor vocabularies (order_direction.md): outcome_side is
+# yes|no; book_side is bid|ask with bid == yes, ask == no, always.
+_OUTCOME_SIDES = ("yes", "no")
+_BOOK_SIDE_TO_OUTCOME = {"bid": "yes", "ask": "no"}
 
 
 def normalize_trade(msg: dict) -> dict:
@@ -66,3 +82,80 @@ def normalize_trade(msg: dict) -> dict:
         "ts_ms": msg.get("ts_ms"),
         "created_time": created_time,
     }
+
+
+def resolve_taker_outcome_side(msg: dict) -> str | None:
+    """Which outcome the taker is positioned for, or None when the trade
+    doesn't say. Canonical-first precedence per docs/kalshi/get-trades.md
+    (taker_side is deprecated - its "will not be removed before May 14,
+    2026" guarantee has expired - and taker_outcome_side/taker_book_side
+    are named "the canonical way to determine trade direction"), with
+    book vocabulary mapping exactly per order_direction.md: bid == yes,
+    ask == no, always.
+
+    Returns None rather than defaulting: an UNKNOWN value (a new enum
+    member, a malformed field) must never become a confident yes/no -
+    the pre-2026-08-17 code turned every unreadable trade into "no",
+    wrong direction AND wrong notional, silently, on every signal."""
+    outcome = str(msg.get("taker_outcome_side") or "").lower()
+    if outcome in _OUTCOME_SIDES:
+        return outcome
+    book = str(msg.get("taker_book_side") or "").lower()
+    if book in _BOOK_SIDE_TO_OUTCOME:
+        return _BOOK_SIDE_TO_OUTCOME[book]
+    legacy = str(msg.get("taker_side") or "").lower()
+    if legacy in _OUTCOME_SIDES:
+        return legacy
+    return None
+
+
+def _dollars(value) -> float | None:
+    """Cheap float parse of a fixed-point dollars/count string; None stays
+    None and garbage stays None rather than raising on a hot-adjacent
+    path (spec numeric policy: cheap parsing, raw strings preserved in
+    raw_payload)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class PublicTrade:
+    """Canonical public-trade contract (A12) - the likely-final interface
+    consumers migrate to at A13. Constructed on demand (never eagerly in
+    the exchange-wide dispatch loop); every upstream field, known or
+    unknown, stays available on raw_payload."""
+
+    trade_id: str | None
+    ticker: str | None
+    outcome_side: str | None   # "yes" | "no" | None - never guessed
+    count: float | None        # contracts (from count_fp)
+    yes_price: float | None    # dollars/contract
+    no_price: float | None     # dollars/contract
+    occurred_at: str | None    # ISO-8601 UTC (from ts_ms)
+    ts_ms: int | None
+    raw_payload: dict
+
+
+def public_trade_from_ws(msg: dict) -> PublicTrade:
+    ts_ms = msg.get("ts_ms")
+    occurred_at = None
+    if ts_ms is not None:
+        try:
+            occurred_at = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError, OSError):
+            occurred_at = None
+    return PublicTrade(
+        trade_id=msg.get("trade_id"),
+        ticker=msg.get("market_ticker") or msg.get("ticker"),
+        outcome_side=resolve_taker_outcome_side(msg),
+        count=_dollars(msg.get("count_fp")),
+        yes_price=_dollars(msg.get("yes_price_dollars")),
+        no_price=_dollars(msg.get("no_price_dollars")),
+        occurred_at=occurred_at,
+        ts_ms=ts_ms if isinstance(ts_ms, int) else None,
+        raw_payload=msg,
+    )

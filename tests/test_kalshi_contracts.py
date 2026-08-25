@@ -479,3 +479,139 @@ def test_lifecycle_normalizer_preserves_raw_and_aliases_ticker():
         assert normalized["ticker"] == msg["market_ticker"]
         for key, value in msg.items():
             assert normalized[key] == value
+
+
+# --- A12: canonical Kalshi contracts (likely-final interfaces for Phase C) ---
+# Lightweight slots dataclasses + per-module factory functions (names are
+# globally unique because provenance.validate_operations flags the same
+# operation name declared in two boundary modules). Constructed on demand
+# by consumers (A13/A14) - the hot dispatch path keeps emitting cheap
+# dicts, so these carry no blanket runtime validation.
+
+
+def test_public_trade_resolves_outcome_side_from_canonical_field():
+    from services.kalshi.contracts import trade as trade_contract
+    t = trade_contract.public_trade_from_ws(_payload("public_trade.json"))
+    assert t.trade_id == "d91bc706-ee49-470d-82d8-11418bda6fed"
+    assert t.ticker == "HIGHNY-22DEC23-B53.5"
+    assert t.outcome_side == "no"
+    assert t.count == 136.0
+    assert t.yes_price == 0.360
+    assert t.no_price == 0.640
+    assert t.raw_payload == _payload("public_trade.json")
+
+
+def test_public_trade_resolves_direction_from_book_side_when_outcome_absent():
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    del msg["taker_outcome_side"], msg["taker_side"]
+    assert msg["taker_book_side"] == "ask"  # bid == yes, ask == no (order_direction.md)
+    t = trade_contract.public_trade_from_ws(msg)
+    assert t.outcome_side == "no"
+
+
+def test_public_trade_never_guesses_an_unknown_direction_value():
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    msg["taker_outcome_side"] = "maybe"   # unknown closed-enum value
+    msg["taker_book_side"] = "sideways"
+    msg["taker_side"] = "perhaps"
+    t = trade_contract.public_trade_from_ws(msg)
+    assert t.outcome_side is None  # unknown stays unknown - never a guessed yes/no
+
+
+def test_public_trade_keeps_unknown_extension_fields_in_raw_payload():
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    msg["field_kalshi_adds_tomorrow"] = {"nested": True}
+    t = trade_contract.public_trade_from_ws(msg)
+    assert t.raw_payload["field_kalshi_adds_tomorrow"] == {"nested": True}
+
+
+def test_ticker_update_carries_app_price_fields_and_raw():
+    from services.kalshi.contracts import ticker as ticker_contract
+    msg = _payload("market_ticker.json")
+    u = ticker_contract.ticker_update_from_ws(msg)
+    assert u.ticker == "FED-23DEC-T3.00"
+    assert u.yes_bid == 0.450
+    assert u.yes_ask == 0.530
+    assert u.price == 0.480
+    assert u.ts_ms == msg["ts_ms"]
+    assert u.raw_payload is msg
+
+
+def test_user_fill_keys_on_trade_id_and_resolves_side_canonically():
+    from services.kalshi.contracts import fill as fill_contract
+    msg = _payload("fill.json")
+    f = fill_contract.user_fill_from_ws(msg)
+    assert f.trade_id == "d91bc706-ee49-470d-82d8-11418bda6fed"
+    assert f.ticker == "HIGHNY-22DEC23-B53.5"
+    assert f.outcome_side == msg["outcome_side"]
+    assert f.action == msg["action"]
+    assert f.count == float(msg["count_fp"])
+    assert f.raw_payload is msg
+
+
+def test_user_fill_never_guesses_an_unknown_side():
+    from services.kalshi.contracts import fill as fill_contract
+    msg = dict(_payload("fill.json"))
+    msg["outcome_side"] = "maybe"
+    msg["book_side"] = "sideways"
+    msg["side"] = "perhaps"
+    f = fill_contract.user_fill_from_ws(msg)
+    assert f.outcome_side is None
+
+
+def test_market_position_from_ws_carries_documented_fields_and_raw():
+    from services.kalshi.contracts import position as position_contract
+    msg = _payload("market_position.json")
+    p = position_contract.market_position_from_ws(msg)
+    assert p.ticker == "FED-23DEC-T3.00"
+    assert p.position == 100.0  # positive means YES contracts (get-positions.md)
+    assert p.realized_pnl == float(msg["realized_pnl_dollars"])
+    assert p.fees_paid == float(msg["fees_paid_dollars"])
+    assert p.raw_payload is msg
+
+
+def test_lifecycle_event_from_ws_classifies_without_resolving_determined():
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    determined = lifecycle_contract.lifecycle_event_from_ws(_payload("market_lifecycle_determined.json"))
+    settled = lifecycle_contract.lifecycle_event_from_ws(_payload("market_lifecycle_settled.json"))
+    assert determined.event_type == "determined"
+    assert determined.may_resolve_outcome is False
+    assert settled.event_type == "settled"
+    assert settled.may_resolve_outcome is True
+    assert settled.ticker == settled.raw_payload["market_ticker"]
+
+
+def test_create_order_request_produces_the_documented_v2_kwargs():
+    from services.kalshi.contracts import order as order_contract
+    req = order_contract.CreateOrderRequest(
+        ticker="TICK-A", side="bid", count="10.00", price="0.5600",
+    )
+    kwargs = order_contract.create_order_kwargs(req)
+    assert kwargs["ticker"] == "TICK-A"
+    assert kwargs["side"] == "bid"
+    assert kwargs["count"] == "10.00"
+    assert kwargs["price"] == "0.5600"
+    assert kwargs["time_in_force"] == "immediate_or_cancel"
+    assert kwargs["self_trade_prevention_type"] == "taker_at_cross"
+    # legacy (non-v2) shape must not leak in
+    for legacy in ("action", "yes_price", "no_price", "type"):
+        assert legacy not in kwargs
+
+
+def test_create_order_request_rejects_a_non_v2_side_vocabulary():
+    from services.kalshi.contracts import order as order_contract
+    with pytest.raises(ValueError):
+        order_contract.CreateOrderRequest(ticker="TICK-A", side="yes", count="1.00", price="0.5000")
+
+
+def test_cancel_order_result_from_documented_v2_response():
+    from services.kalshi.contracts import order as order_contract
+    resp = _payload("cancel_order_response.json")
+    result = order_contract.cancel_order_result_from_response(resp)
+    assert result.order_id == resp["order_id"]
+    assert result.client_order_id == resp["client_order_id"]
+    assert result.reduced_by == resp["reduced_by"]
+    assert result.raw_payload is resp
