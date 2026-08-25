@@ -672,3 +672,80 @@ def test_process_stream_lifecycle_consumes_the_canonical_ticker_key():
     asyncio.run(main._process_stream_lifecycle(msg))
 
     assert main.state["lifecycle_stream_stats"]["events_by_type"]["determined"] == 1
+
+
+# --- A16: production-used surface without fixture coverage until now --------
+
+
+def test_rest_position_slims_to_the_documented_presentation_fields():
+    from services.account_positions import _slim_position
+    position = _payload("rest_market_position.json")
+    slimmed = _slim_position(position)
+    assert slimmed["ticker"] == "FED-23DEC-T3.00"
+    assert slimmed["position_fp"] == "-40.00"
+    assert slimmed["realized_pnl_dollars"] == "1.2500"
+    assert slimmed["fees_paid_dollars"] == "0.3400"
+
+
+def test_flatten_closes_a_doc_sourced_rest_no_position_by_buying_yes():
+    """The real-money flatten side mapping, grounded in the documented
+    REST shape rather than a synthetic dict: position_fp is negative
+    ('Negative means NO contracts'), so the close order must BUY yes
+    (side='bid') at the pinned 0.9900 - the exact semantics
+    get-positions.md + create-order-v2.md document."""
+    from services import execution
+
+    class _Account:
+        def __init__(self, position):
+            self._position = position
+            self.orders = []
+
+        async def get_positions(self):
+            return {"market_positions": [self._position]}
+
+        async def create_order(self, **kwargs):
+            self.orders.append(kwargs)
+            return {"ok": True}
+
+    account = _Account(_payload("rest_market_position.json"))
+    results = asyncio.run(execution.flatten_all_real_positions(account))
+    assert len(results) == 1
+    assert results[0]["error"] is None
+    order = account.orders[0]
+    assert order["side"] == "bid"
+    assert order["price"] == "0.9900"
+    assert order["count"] == "40.00"
+    assert order["is_closing_order"] is True
+
+
+def test_rest_fill_slims_with_both_documented_identity_spellings():
+    from services.account_positions import _slim_fill
+    fill = _payload("rest_fill.json")
+    slimmed = _slim_fill(fill)
+    # get-fills.md: trade_id is 'legacy field name, same as fill_id';
+    # market_ticker is 'legacy field name, same as ticker'.
+    assert slimmed["fill_id"] == slimmed["trade_id"] == "aa1e3f60-8ec6-4441-9d67-c2cf6a2c9d1e"
+    assert slimmed["ticker"] == slimmed["market_ticker"] == "HIGHNY-22DEC23-B53.5"
+    assert slimmed["count_fp"] == "10.00"
+    assert slimmed["created_time"] == "2022-12-23T18:30:00Z"
+
+
+def test_cfbenchmarks_value_records_settlement_average_and_spot():
+    from services import index_feed
+    msg = _payload("cfbenchmarks_value.json")
+    assert index_feed.record_cfbenchmarks(msg, now=1755990000.2) is True
+    latest = index_feed.latest("BRTI")
+    assert latest is not None
+    assert latest["value"] == 65001.23  # upstream index level from the nested data frame
+    assert latest["q15_value"] == 64999.87  # the KXBTC15M settlement quantity itself
+    assert latest["avg_60s_value"] == 64998.51
+
+
+def test_pyth_value_records_a_straight_underlying_price():
+    from services import index_feed
+    msg = _payload("pyth_value.json")
+    assert index_feed.record_pyth(msg, now=1755990000.2) is True
+    latest = index_feed.latest("Crypto.BTC/USD")
+    assert latest is not None
+    assert latest["value"] == 65002.41
+    assert latest["q15_value"] is None  # pyth carries no windowed averages

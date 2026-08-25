@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-fills.md",
+    "note": "REST GetFills Fill schema. Carries BOTH identity spellings (trade_id documented as 'legacy field name, same as fill_id') and BOTH ticker spellings (market_ticker documented as 'legacy field name, same as ticker') - the exact inverse of the WS user-fills message (fill.json), which has neither fill_id nor ticker. side is the deprecated legacy direction vocabulary; outcome_side/book_side are canonical."
+  },
+  "payload": {
+    "fill_id": "aa1e3f60-8ec6-4441-9d67-c2cf6a2c9d1e",
+    "trade_id": "aa1e3f60-8ec6-4441-9d67-c2cf6a2c9d1e",
+    "order_id": "e2565a48-70b7-4d31-8cbf-207b1d61b5c9",
+    "ticker": "HIGHNY-22DEC23-B53.5",
+    "market_ticker": "HIGHNY-22DEC23-B53.5",
+    "outcome_side": "yes",
+    "book_side": "bid",
+    "side": "yes",
+    "action": "buy",
+    "count_fp": "10.00",
+    "yes_price_dollars": "0.5600",
+    "no_price_dollars": "0.4400",
+    "is_taker": true,
+    "fee_cost": "0.07",
+    "created_time": "2022-12-23T18:30:00Z"
+  }
+}
