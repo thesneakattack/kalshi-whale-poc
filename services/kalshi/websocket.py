@@ -44,6 +44,8 @@ from services.kalshi.contracts import position as position_contract
 from services.kalshi.contracts import ticker as ticker_contract
 from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
+from services import fault_log
+from services.latency_agg import LatencyAgg, bucket_for, empty_buckets, p95_upper_bound
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "run": (
@@ -57,6 +59,13 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     ),
     "enabled": ("docs/kalshi/websocket-connection.md",),
     "status": ("docs/kalshi/websocket-connection.md",),
+    # I1 queue-health surface: classifies Kalshi's own server-side error
+    # codes (error 25 = subscription buffer overflow, the documented
+    # "reduce scope or improve read throughput" signal) separately from
+    # local QueueFull drops, and exists to verify the quick-start's
+    # buffering/throughput guidance against measured behavior.
+    "ingest_metrics": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
+    "reset_ingest_window": ("docs/kalshi/websocket-connection.md",),
 }
 
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -69,12 +78,41 @@ _DEMO_WS_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 # reader is exactly the failure this split exists to prevent.
 _INGEST_QUEUE_MAX = 20000
 
+# Bounded message-class labels for ingest metrics (realtime data-plane
+# investigation task I1). Keyed by the per-message `type` field each channel
+# doc declares; anything unrecognised lands in one "other" bucket so the
+# label set can never grow with vendor changes. "control" is the command/
+# acknowledgement traffic (subscribed/ok/error/...), kept as its own class
+# because server-side `error` messages - error 25, subscription buffer
+# overflow, in particular - are a distinct failure point from a local
+# QueueFull and must never be conflated with it.
+_CLASS_BY_MESSAGE_TYPE: dict[str, str] = {
+    "trade": "trade",
+    "ticker": "ticker",
+    "fill": "fill",
+    position_contract.WS_MESSAGE_TYPE: "position",
+    "market_lifecycle_v2": "lifecycle",
+    "cfbenchmarks_value": "index",
+    "pyth_value": "index",
+    "subscribed": "control",
+    "unsubscribed": "control",
+    "ok": "control",
+    "error": "control",
+    "cfbenchmarks_value_indexlist": "control",
+    "pyth_value_underlying_list": "control",
+}
+_OTHER_CLASS = "other"
+_KALSHI_SUBSCRIPTION_OVERFLOW_CODE = 25  # docs/kalshi/websocket-connection.md error table
+_MAX_SERVER_ERROR_CODES_TRACKED = 64  # documented codes are a small fixed set; cap defensively
+_MAX_DISCONNECT_REASON_CHARS = 200
+
 
 class KalshiStreamGateway:
     def __init__(self, base_url: str, exchange_wide_trades: bool = False,
                  index_ids: list[str] | None = None,
                  underlying_tickers: list[str] | None = None,
-                 subscribe_lifecycle: bool = False):
+                 subscribe_lifecycle: bool = False,
+                 ingest_queue_max: int = _INGEST_QUEUE_MAX):
         # exchange_wide_trades (2026-08-17, direct goal: "realtime data
         # across everything" / "zero latency and maximum insight"):
         # subscribe the `trade` channel with NO market_tickers, which
@@ -171,6 +209,39 @@ class KalshiStreamGateway:
         # shows up as a number rather than as a market that looks quiet.
         self.messages_received = 0
         self.dropped_messages = 0
+        # Queue-health metrics (I1). Lifetime counters are monotone so any
+        # two persisted observability samples can be differenced; "window"
+        # accumulators are reset by the observability sampler right after
+        # it persists them (services/observability/observability.py's
+        # maybe_capture), so a window is one persisted sample's worth of
+        # time. Every clock the queue path reads is monotonic and injectable
+        # (now=...), which is what makes tests/test_kalshi_ws_ingest_metrics.py
+        # deterministic without a socket.
+        self._ingest_queue_max = ingest_queue_max
+        self._queue: asyncio.Queue | None = None
+        self.malformed_messages = 0
+        self._received_by_class: dict[str, int] = {}
+        self._processed_by_class: dict[str, int] = {}
+        self._dropped_by_class: dict[str, int] = {}
+        self._dropped_window = 0
+        self._handler_exceptions_by_class: dict[str, int] = {}
+        self._handler_exceptions_total = 0
+        self._fault_logged_classes_this_window: set[str] = set()
+        self._queue_high_water = 0
+        self._wait_last: float | None = None
+        self._wait_lifetime = LatencyAgg()
+        self._wait_window = LatencyAgg()
+        self._wait_buckets: dict[str, int] = empty_buckets()
+        self._handler_lifetime: dict[str, LatencyAgg] = {}
+        self._handler_window: dict[str, LatencyAgg] = {}
+        self._server_errors_total = 0
+        self._server_errors_by_code: dict[str, int] = {}
+        self._server_error_last: dict | None = None
+        self._error_25_total = 0
+        self._error_25_window = 0
+        self._connects = 0
+        self._reconnects = 0
+        self._last_disconnect: dict | None = None
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
@@ -302,27 +373,31 @@ class KalshiStreamGateway:
                     # connection delivered ~20 and then appeared frozen for
                     # minutes.
                     #
-                    # Now the reader does nothing but recv and enqueue, which
-                    # is microseconds, and a worker drains the queue. The
-                    # queue is BOUNDED and overflow is counted rather than
-                    # silently absorbed - a stalled consumer must be visible
-                    # (see self.dropped_messages), not disguised as a quiet
-                    # market.
-                    queue: asyncio.Queue = asyncio.Queue(maxsize=_INGEST_QUEUE_MAX)
+                    # Now the reader does nothing but recv, parse, classify
+                    # and enqueue (see _ingest_raw - a few microseconds), and
+                    # a worker drains the queue. The queue is BOUNDED and
+                    # overflow is counted rather than silently absorbed - a
+                    # stalled consumer must be visible (see
+                    # self.dropped_messages / ingest_metrics()), not disguised
+                    # as a quiet market.
+                    queue = self._begin_connection()
 
                     async def _consume():
                         while True:
-                            raw = await queue.get()
+                            item = await queue.get()
                             try:
-                                await self._handle_message(
-                                    raw, on_trade, on_ticker, on_status, on_fill,
+                                # _process_item never raises for a handler
+                                # failure: it counts it and fault-logs once
+                                # per class per window, so one mishandled
+                                # message still can't tear down the socket -
+                                # but it no longer vanishes either (I1: the
+                                # old bare `except: pass` here made a
+                                # systematically failing handler class
+                                # indistinguishable from a quiet market).
+                                await self._process_item(
+                                    item, on_trade, on_ticker, on_status, on_fill,
                                     on_position, on_index, on_lifecycle,
                                 )
-                            except Exception:
-                                # One malformed or mishandled message must not
-                                # tear down the socket - the reader is still
-                                # draining behind this.
-                                pass
                             finally:
                                 queue.task_done()
 
@@ -340,15 +415,11 @@ class KalshiStreamGateway:
                                 self._update_event.clear()
                                 await self._sync_subscriptions()
                             if recv_task in done:
-                                raw_message = recv_task.result()
-                                self.messages_received += 1
-                                try:
-                                    queue.put_nowait(raw_message)
-                                except asyncio.QueueFull:
-                                    self.dropped_messages += 1
+                                self._ingest_raw(recv_task.result())
                     finally:
                         consumer.cancel()
             except Exception as exc:
+                self._record_disconnect(exc)
                 if on_status is not None:
                     await on_status({"connected": False, "error": str(exc), "ws_url": self.ws_url})
                 async with self._lock:
@@ -363,8 +434,11 @@ class KalshiStreamGateway:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _handle_message(self, raw_message: str, on_trade, on_ticker, on_status, on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
-        data = json.loads(raw_message)
+    async def _handle_message(self, raw_message, on_trade, on_ticker, on_status, on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
+        # Accepts the reader's already-parsed dict (run() path, via
+        # _process_item) or a raw JSON string (direct callers and the
+        # pre-I1 tests) - one parse per message either way.
+        data = raw_message if isinstance(raw_message, dict) else json.loads(raw_message)
         msg_type = data.get("type")
         if msg_type == "subscribed":
             msg = data.get("msg") or {}
@@ -376,8 +450,9 @@ class KalshiStreamGateway:
         if msg_type == "ok":
             return
         if msg_type == "error":
+            err = data.get("msg") or {}
+            self._record_server_error(err)
             if on_status is not None:
-                err = data.get("msg") or {}
                 await on_status({"connected": True, "error": f"Kalshi WS error {err.get('code')}: {err.get('msg')}", "ws_url": self.ws_url})
             return
         # Index feeds (docs/kalshi/cfbenchmarks-value.md, pyth-value.md).
@@ -452,6 +527,202 @@ class KalshiStreamGateway:
                 logger.info("first real 'market_position' message shape (verify parsing against this): %r", data)
             if on_position is not None:
                 await on_position(position_contract.normalize_position(data.get("msg") or {}))
+
+    # --- ingest queue health (realtime data-plane investigation, I1) --------
+    #
+    # The four failure points docs/superpowers/research/2026-08-25-realtime-
+    # data-plane-known-findings.md requires telling apart - Kalshi-side
+    # subscription overflow (server error 25), the `websockets` receive
+    # buffer, this application queue overflowing (QueueFull), and downstream
+    # processing backlog (queue wait / oldest age) - each get their own
+    # counter here. Before I1 the first and third collapsed into one
+    # ephemeral status string plus one lifetime int.
+
+    def _begin_connection(self) -> asyncio.Queue:
+        """Fresh bounded reader->consumer queue for one physical connection.
+        run() calls this right after the socket is up, so a reconnect starts
+        empty with its own depth history; tests call it directly."""
+        self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        self._connects += 1
+        return self._queue
+
+    @staticmethod
+    def _message_class(data) -> str:
+        msg_type = data.get("type") if isinstance(data, dict) else None
+        return _CLASS_BY_MESSAGE_TYPE.get(msg_type, _OTHER_CLASS)
+
+    def _ingest_raw(self, raw_message, now: float | None = None) -> bool:
+        """Reader side: parse, classify, count, then enqueue or drop. Returns
+        whether the message was enqueued.
+
+        json.loads moved here from the consumer (still exactly one parse per
+        message, just earlier) because a drop has to know the message's
+        class to be attributable, and the enqueue timestamp has to be taken
+        at receive time - not dequeue time - for queue wait to mean
+        anything. A frame that isn't JSON is counted as malformed and never
+        enqueued: it is not a drop (the queue had room) and must not tear
+        the connection down the way an exception escaping the reader loop
+        would. `now` is monotonic; injectable for deterministic tests."""
+        self.messages_received += 1
+        try:
+            data = json.loads(raw_message)
+        except (TypeError, ValueError):
+            self.malformed_messages += 1
+            return False
+        cls = self._message_class(data)
+        self._received_by_class[cls] = self._received_by_class.get(cls, 0) + 1
+        queue = self._queue
+        if queue is None:
+            queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        if now is None:
+            now = time.monotonic()
+        try:
+            queue.put_nowait((now, cls, data))
+        except asyncio.QueueFull:
+            self.dropped_messages += 1
+            self._dropped_window += 1
+            self._dropped_by_class[cls] = self._dropped_by_class.get(cls, 0) + 1
+            return False
+        depth = queue.qsize()
+        if depth > self._queue_high_water:
+            self._queue_high_water = depth
+        return True
+
+    async def _process_item(self, item, on_trade, on_ticker, on_status, on_fill=None, on_position=None,
+                            on_index=None, on_lifecycle=None, now: float | None = None) -> None:
+        """Consumer side: record this message's queue wait, time its handler
+        by class, count the outcome. Never raises for a handler failure."""
+        enqueued_at, cls, data = item
+        if now is None:
+            now = time.monotonic()
+        wait = now - enqueued_at
+        if wait < 0.0:
+            wait = 0.0
+        self._wait_last = wait
+        self._wait_lifetime.add(wait)
+        self._wait_window.add(wait)
+        self._wait_buckets[bucket_for(wait)] += 1
+        started = time.monotonic()
+        try:
+            await self._handle_message(
+                data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+            )
+        except Exception as exc:
+            self._handler_exceptions_total += 1
+            self._handler_exceptions_by_class[cls] = self._handler_exceptions_by_class.get(cls, 0) + 1
+            if cls not in self._fault_logged_classes_this_window:
+                # One durable fault row per class per window - a storm at
+                # exchange-wide rate must not become a SQLite write per
+                # message on the consumer's own critical path. The
+                # in-memory counter above still carries the full count.
+                self._fault_logged_classes_this_window.add(cls)
+                fault_log.record("kalshi_websocket", f"handle_message:{cls}", exc)
+        finally:
+            elapsed = time.monotonic() - started
+            self._processed_by_class[cls] = self._processed_by_class.get(cls, 0) + 1
+            lifetime = self._handler_lifetime.get(cls)
+            if lifetime is None:
+                lifetime = self._handler_lifetime[cls] = LatencyAgg()
+            lifetime.add(elapsed)
+            window = self._handler_window.get(cls)
+            if window is None:
+                window = self._handler_window[cls] = LatencyAgg()
+            window.add(elapsed)
+
+    def _record_server_error(self, err: dict) -> None:
+        code = err.get("code")
+        self._server_errors_total += 1
+        key = str(code) if code is not None else "unknown"
+        if key in self._server_errors_by_code or len(self._server_errors_by_code) < _MAX_SERVER_ERROR_CODES_TRACKED:
+            self._server_errors_by_code[key] = self._server_errors_by_code.get(key, 0) + 1
+        self._server_error_last = {"code": code, "msg": err.get("msg"), "at": time.time()}
+        if code == _KALSHI_SUBSCRIPTION_OVERFLOW_CODE:
+            self._error_25_total += 1
+            self._error_25_window += 1
+
+    def _record_disconnect(self, exc: BaseException, now: float | None = None) -> None:
+        self._reconnects += 1
+        self._last_disconnect = {
+            "reason": f"{type(exc).__name__}: {exc}"[:_MAX_DISCONNECT_REASON_CHARS],
+            "at": now if now is not None else time.time(),
+        }
+
+    def reset_ingest_window(self) -> None:
+        """Owned by the observability sampler: called right after a sample
+        is persisted, so every "window" figure covers exactly one persisted
+        sample's span. Lifetime counters are untouched."""
+        self._dropped_window = 0
+        self._error_25_window = 0
+        self._wait_window = LatencyAgg()
+        self._wait_buckets = empty_buckets()
+        self._handler_window = {cls: LatencyAgg() for cls in self._handler_lifetime}
+        self._fault_logged_classes_this_window.clear()
+
+    def _oldest_message_age(self, now: float) -> float | None:
+        queue = self._queue
+        if queue is None or queue.empty():
+            return 0.0
+        try:
+            # asyncio.Queue keeps its items in a deque named _queue (the
+            # attribute its own stdlib subclasses override). Peeking the
+            # head is read-only; if the implementation ever changes, report
+            # unknown (None) rather than a fabricated age.
+            head = queue._queue[0]  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        return round(max(now - head[0], 0.0), 4)
+
+    def ingest_metrics(self, now: float | None = None) -> dict:
+        """Point-in-time queue-health snapshot. Pure read - no resets (the
+        observability sampler owns reset_ingest_window). `now` is monotonic,
+        injectable for tests."""
+        if now is None:
+            now = time.monotonic()
+        queue = self._queue
+        wait_window = self._wait_window.snapshot(1.0, "sec")
+        wait_window["p95_upper_bound_sec"] = p95_upper_bound(self._wait_buckets, self._wait_window.count)
+        return {
+            "messages_received": self.messages_received,
+            "dropped_messages": self.dropped_messages,
+            "dropped_window": self._dropped_window,
+            "malformed_messages": self.malformed_messages,
+            "received_by_class": dict(self._received_by_class),
+            "processed_by_class": dict(self._processed_by_class),
+            "dropped_by_class": dict(self._dropped_by_class),
+            "handler_exceptions_total": self._handler_exceptions_total,
+            "handler_exceptions_by_class": dict(self._handler_exceptions_by_class),
+            "queue": {
+                "depth": queue.qsize() if queue is not None else 0,
+                "capacity": self._ingest_queue_max,
+                "high_water": self._queue_high_water,
+                "oldest_message_age_sec": self._oldest_message_age(now),
+            },
+            "queue_wait": {
+                "last_sec": round(self._wait_last, 6) if self._wait_last is not None else None,
+                "lifetime": self._wait_lifetime.snapshot(1.0, "sec"),
+                "window": wait_window,
+                "buckets": dict(self._wait_buckets),
+            },
+            "handler_time_by_class": {
+                cls: {
+                    "window": self._handler_window.get(cls, LatencyAgg()).snapshot(1000.0, "ms"),
+                    "lifetime": agg.snapshot(1000.0, "ms"),
+                }
+                for cls, agg in self._handler_lifetime.items()
+            },
+            "server_errors": {
+                "total": self._server_errors_total,
+                "by_code": dict(self._server_errors_by_code),
+                "last": dict(self._server_error_last) if self._server_error_last else None,
+            },
+            "error_25_total": self._error_25_total,
+            "error_25_window": self._error_25_window,
+            "connection": {
+                "connects": self._connects,
+                "reconnects": self._reconnects,
+                "last_disconnect": dict(self._last_disconnect) if self._last_disconnect else None,
+            },
+        }
 
     async def _sync_subscriptions(self, force_subscribe: bool = False) -> None:
         # force_subscribe is now implied rather than read: run() resets both

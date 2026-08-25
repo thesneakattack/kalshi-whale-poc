@@ -176,7 +176,65 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
         if m["avg_latency_ms"] is not None:
             metrics[f"kalshi_rest.{endpoint}.avg_latency_ms"] = float(m["avg_latency_ms"])
 
+    # <stream>.ingest.* (realtime data-plane investigation, I1) - the
+    # gateway's own queue-health snapshot (services/kalshi/websocket.py's
+    # ingest_metrics), flattened under bounded names. Same pure-read
+    # contract as everything above: ingest_metrics() never resets anything;
+    # maybe_capture is what rolls the gateway's window after persisting.
+    for stream, prefix in ((trade_stream, "trade_stream"), (index_stream, "index_stream")):
+        snapshot = _ingest_snapshot(stream)
+        if snapshot is not None:
+            metrics.update(_flatten_ingest_metrics(prefix, snapshot))
+
     return metrics
+
+
+def _ingest_snapshot(stream) -> dict | None:
+    ingest = getattr(stream, "ingest_metrics", None) if stream is not None else None
+    if not callable(ingest):
+        return None
+    try:
+        return ingest()
+    except Exception:
+        return None  # unknown over fabricated - a broken snapshot is omitted, not zeroed
+
+
+def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
+    p = f"{prefix}.ingest"
+    out: dict = {}
+    for group in ("received", "processed", "dropped"):
+        for cls, count in (im.get(f"{group}_by_class") or {}).items():
+            if count:  # zero classes omitted, never fabricated
+                out[f"{p}.{group}.{cls}"] = float(count)
+    out[f"{p}.dropped_window"] = float(im.get("dropped_window") or 0)
+    out[f"{p}.malformed_messages"] = float(im.get("malformed_messages") or 0)
+    out[f"{p}.handler_exceptions"] = float(im.get("handler_exceptions_total") or 0)
+    queue = im.get("queue") or {}
+    out[f"{p}.queue_depth"] = float(queue.get("depth") or 0)
+    out[f"{p}.queue_high_water"] = float(queue.get("high_water") or 0)
+    if queue.get("oldest_message_age_sec") is not None:
+        out[f"{p}.oldest_message_age_sec"] = float(queue["oldest_message_age_sec"])
+    wait = im.get("queue_wait") or {}
+    window = wait.get("window") or {}
+    out[f"{p}.queue_wait.window_count"] = float(window.get("count") or 0)
+    if window.get("count"):
+        for key in ("max_sec", "avg_sec", "p95_upper_bound_sec"):
+            if window.get(key) is not None:
+                out[f"{p}.queue_wait.window_{key}"] = float(window[key])
+    for name, count in (wait.get("buckets") or {}).items():
+        out[f"{p}.queue_wait.bucket.{name}"] = float(count)
+    for cls, timing in (im.get("handler_time_by_class") or {}).items():
+        window = timing.get("window") or {}
+        out[f"{p}.handler.{cls}.window_count"] = float(window.get("count") or 0)
+        if window.get("count"):
+            for key in ("avg_ms", "max_ms"):
+                if window.get(key) is not None:
+                    out[f"{p}.handler.{cls}.window_{key}"] = float(window[key])
+    out[f"{p}.server_errors"] = float((im.get("server_errors") or {}).get("total") or 0)
+    out[f"{p}.error_25_total"] = float(im.get("error_25_total") or 0)
+    out[f"{p}.error_25_window"] = float(im.get("error_25_window") or 0)
+    out[f"{p}.reconnects"] = float((im.get("connection") or {}).get("reconnects") or 0)
+    return out
 
 
 def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
@@ -200,6 +258,17 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     metrics = capture_from_runtime(cfg, state, trade_stream, index_stream)
     record_samples_bulk(metrics, observed_at=now)
     obs_state["last_sample_at"] = now
+    # The gateways' "window" accumulators (queue wait, handler time by class,
+    # dropped_window, error_25_window) cover exactly one persisted sample's
+    # span - reset them only here, only after the sample is durably written,
+    # never from the on-demand /current route (which must stay a pure read).
+    for stream in (trade_stream, index_stream):
+        reset = getattr(stream, "reset_ingest_window", None) if stream is not None else None
+        if callable(reset):
+            try:
+                reset()
+            except Exception:
+                pass
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------
@@ -242,6 +311,32 @@ def _dropped_messages_findings(trade_stream, index_stream) -> list[QualityFindin
             scope=scope,
             summary=f"{scope} has dropped {dropped} message(s) since last reset",
             evidence={"dropped_messages": dropped},
+        ))
+    return findings
+
+
+def _server_error_25_findings(trade_stream, index_stream) -> list[QualityFinding]:
+    """Kalshi-side subscription buffer overflow (docs/kalshi/websocket-
+    connection.md error 25) reported this window - a server-side loss
+    point, deliberately distinct from the local QueueFull finding above
+    (I1: the two used to be indistinguishable after the fact)."""
+    findings = []
+    for stream, scope in ((trade_stream, "trade_stream"), (index_stream, "index_stream")):
+        snapshot = _ingest_snapshot(stream)
+        if snapshot is None:
+            continue
+        window = snapshot.get("error_25_window") or 0
+        if not window:
+            continue
+        findings.append(QualityFinding(
+            finding_id=f"observability:ws-server-error-25:{scope}",
+            check="ws-server-error-25", severity="warning", confidence="high", source="runtime",
+            scope=scope,
+            summary=(
+                f"Kalshi reported subscription buffer overflow (error 25) {window} time(s) on "
+                f"{scope} this window - server-side loss, separate from local queue drops"
+            ),
+            evidence={"error_25_window": window, "error_25_total": snapshot.get("error_25_total")},
         ))
     return findings
 
@@ -296,6 +391,7 @@ def runtime_findings(
     if tick_finding is not None:
         findings.append(tick_finding)
     findings.extend(_dropped_messages_findings(trade_stream, index_stream))
+    findings.extend(_server_error_25_findings(trade_stream, index_stream))
     findings.extend(_stream_disconnected_findings(state))
     rate_limit_finding = _repeated_rate_limit_hits_finding(now=now)
     if rate_limit_finding is not None:

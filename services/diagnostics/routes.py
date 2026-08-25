@@ -153,6 +153,11 @@ async def get_pipeline_health():
             "dedup_ids_held": len(getattr(whale_provider, "_seen_trade_ids", ())),
             "dedup_cap": _MAX_SEEN_TRADE_IDS,
             "provider_stats": getattr(whale_provider, "stats", None),
+            # Live queue-health snapshot (I1, services/kalshi/websocket.py's
+            # ingest_metrics): per-class counts, depth/high-water, oldest
+            # message age, queue-wait and handler-time windows, server
+            # error 25 vs local drops, reconnects. Pure read.
+            "queue_health": trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else None,
         },
         "index_stream": state.get("index_stream_status"),
         "stores": {

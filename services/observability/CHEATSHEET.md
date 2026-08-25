@@ -114,6 +114,74 @@ these are Task 10/11 territory, not this module:
   to read *through* this module's `history()`/`summary()` rather than
   duplicate its persistence.
 
+### `<stream>.ingest.*` — WebSocket queue health (realtime data-plane I1, 2026-08-25)
+
+Source: `services/kalshi/websocket.py`'s `KalshiStreamGateway.ingest_metrics()`
+(pure read), flattened by `_flatten_ingest_metrics` for both `trade_stream`
+and `index_stream`. Exists because the I0 baseline
+(`docs/superpowers/research/2026-08-25-realtime-data-plane-baseline.md` §4)
+found the four failure points the investigation must tell apart — Kalshi
+server-side subscription overflow (error 25), the `websockets` receive
+buffer, the app queue overflowing (`QueueFull`), and downstream backlog —
+collapsed into one lifetime `dropped_messages` int plus an ephemeral status
+string.
+
+Names (all `float`; zero-count classes are omitted, never fabricated):
+
+- `…ingest.received.<class>` / `…ingest.processed.<class>` /
+  `…ingest.dropped.<class>` — lifetime counters by bounded message class
+  (`trade`, `ticker`, `fill`, `position`, `lifecycle`, `index`, `control`,
+  `other` — `_CLASS_BY_MESSAGE_TYPE` in websocket.py; unknown `type`s land
+  in `other` so the label set cannot grow with vendor changes).
+- `…ingest.dropped_window`, `…ingest.malformed_messages`,
+  `…ingest.handler_exceptions` — the last is the count of handler
+  exceptions the consumer used to swallow with a bare `except: pass`; each
+  class is also fault-logged (`kalshi_websocket` / `handle_message:<class>`)
+  once per window, never once per message.
+- `…ingest.queue_depth`, `…ingest.queue_high_water`,
+  `…ingest.oldest_message_age_sec` — the head-of-queue age is the direct
+  "received promptly but processed stale" measurement.
+- `…ingest.queue_wait.window_count|window_max_sec|window_avg_sec|window_p95_upper_bound_sec`
+  and `…ingest.queue_wait.bucket.<le_1ms|le_10ms|le_100ms|le_1s|le_10s|gt_10s>`
+  — queue wait = monotonic dequeue time − monotonic enqueue time, per
+  message. The p95 figure is the smallest finite bucket bound at/above the
+  p95 rank (`services/latency_agg.py`), `None`/omitted when the p95 sits in
+  `gt_10s` — the overflow count is persisted so that case is visible.
+- `…ingest.handler.<class>.window_count|window_avg_ms|window_max_ms` —
+  handler time by class. Complements (does not replace) the
+  application-level `trade_stream.avg_handler_ms`, which times only the
+  trade callback.
+- `…ingest.server_errors`, `…ingest.error_25_total`, `…ingest.error_25_window`,
+  `…ingest.reconnects`.
+
+**Window semantics — who resets what.** Every `window`/`_window` figure
+covers exactly one persisted sample's span: `maybe_capture` calls each
+gateway's `reset_ingest_window()` immediately *after* `record_samples_bulk`
+succeeds. `capture_from_runtime` (shared with the on-demand `/current`
+route) never resets anything — the same rule as `kalshi_rest.*`. Lifetime
+counters are monotone; difference two persisted samples for a rate.
+
+**Runtime finding.** `observability:ws-server-error-25:<scope>` (warning)
+fires when `error_25_window > 0` — Kalshi reported its own outbound buffer
+overflowed for this subscription. Deliberately separate from the existing
+`ws-dropped-messages` error, which is local `QueueFull` only.
+
+**Measured hot-path cost (in-container, 50k synthetic trade messages ×5,
+2026-08-25):** old path (parse + dispatch) 5.41 µs/msg → new path (parse +
+classify + timestamps + aggregation) 8.04 µs/msg, i.e. **+2.63 µs/msg**
+(~0.1% of the 3.2 ms p50 trade handler cost measured in the I0 baseline);
+`ingest_metrics()` snapshot 7 µs. JSON parsing moved from the consumer to
+the reader (still one parse per message) so a drop can be attributed to a
+class and the enqueue timestamp is taken at receive time.
+
+**First live reading after deploy (≈60 s after the `--reload`, cold
+caches — not a controlled window):** queue depth 2,841 / high-water 2,888,
+oldest message 20.3 s, every wait in the window in `gt_10s`, trade handler
+window avg 5.7 ms with a lifetime max of 4,360 ms, ticker handler avg
+~30 ms. Recorded here as the instrumentation's acceptance evidence
+("received promptly but processed stale" is now a number); the controlled
+baseline is task I7's job.
+
 ## Persistence
 
 `data/observability.db`, one `metric_samples` table (`observed_at`,
