@@ -85,9 +85,12 @@ evidence of correctness. Confirm consequential answers against source.
 
 Optional cloud/embedding features are deliberately **not** enabled
 (`--embeddings`); `.gitnexusrc` keeps `indexOnly: true` so GitNexus never
-injects competing `CLAUDE.md`/`AGENTS.md`/skills. Its auto-augment and
-freshness hooks stay **disabled** — they spawn a node process on every
-Grep/Glob/Bash call.
+injects competing `CLAUDE.md`/`AGENTS.md`/skills.
+
+**⚠️ Its auto-augment and freshness hooks are supposed to be disabled but
+are currently STILL ENABLED** — see "Known unresolved" at the end of this
+file. They spawn a node process on every Grep/Glob/Bash call, which is the
+exact idle overhead the policy below forbids.
 
 ### dimensional-analysis — trading-math correctness
 Local skill (trailofbits 3.0.1), no credentials. Apply *after*
@@ -110,6 +113,40 @@ can be dimensionally perfect and still produce a negative position size when
 an unbounded config dial exceeds its assumed range. Do not restructure
 architecture merely to satisfy annotations.
 
+### Chrome DevTools MCP — browser-facing evidence
+**Status: ACTIVE** (repaired and re-verified 2026-08-25, Session C).
+
+App URL: `https://kalshi-whale-poc.ddev.site:8443` (port 8443, not 443);
+`ddev start` first if the containers are down. Use for dashboard bugs,
+frontend/backend integration, failed API calls, JS exceptions,
+DOM/rendering, network + WebSocket behavior, perf regressions. Not for
+backend-only work.
+
+Acceptance test re-run end to end after the WSLg repair: `new_page` →
+`list_console_messages` → `list_network_requests` → `get_network_request`.
+Headful launch now succeeds (page user-agent reports `X11; Linux x86_64`,
+i.e. a real X server), title `Whale Signal — Paper Trading Terminal`, valid
+mkcert TLS chain with no `--acceptInsecureCerts`, and browser-originated
+FastAPI calls all `200 application/json` through the nginx proxy
+(`/api/config`, `/api/session`, `/api/state`,
+`/api/position-netting/groups`). The only console error on a clean load is
+a cosmetic `GET /favicon.ico 404` — no such file is served, and nothing
+depends on one; it is not an app fault and does not need chasing.
+
+**Prior failure, kept because the diagnosis was counter-intuitive:** the
+MCP's default launch is *headful*, so it died with `Missing X server to
+start the headful browser` once `guiApplications=false` in
+`C:\Users\davidf\.wslconfig` removed WSLg on the 2026-08-25 reboot. The
+MCP server itself connected fine throughout — **a connected MCP does not
+prove the underlying capability works.** Everything except the X server had
+already been verified headless. Repair was `guiApplications=true` plus
+`wsl --shutdown`; confirm with a non-empty `$DISPLAY`. Do **not** "fix" a
+recurrence by editing plugin cache files or registering a second, duplicate
+chrome-devtools MCP — one canonical integration only.
+
+Fallback if it regresses: `curl` against the nginx proxy, the existing
+browser E2E suite in Woodpecker, and `.claude/skills/frontend-verification`.
+
 ## Limited
 
 ### Context7 — external library docs
@@ -126,38 +163,6 @@ If rate-limited or unavailable → go straight to official library docs.
 
 **Kalshi exception:** `docs/kalshi/` is canonical for Kalshi's own API.
 Context7 must never override it.
-
-## Broken locally — repair pending
-
-### Chrome DevTools MCP
-**Status: BROKEN_LOCAL** (as of 2026-08-25). Not an account problem.
-
-Root cause, reproduced: `C:\Users\davidf\.wslconfig` had
-`guiApplications=false`, which took effect on the 2026-08-25 reboot and
-removed WSLg. With no X server, the MCP's **default headful** launch fails:
-`Missing X server to start the headful browser`. The MCP server itself
-connects fine — a connected MCP does not mean a working browser.
-
-Everything else in the stack is verified working headless against the live
-DDEV app: navigation (200, `Whale Signal — Paper Trading Terminal`), a valid
-mkcert TLS chain with no `--acceptInsecureCerts`, DOM queries, console
-capture, the full network table, and browser-originated FastAPI calls
-(`/api/config`, `/api/session`, `/api/state`, `/api/position-netting/groups`
-— all `200 application/json` via the nginx proxy).
-
-**Repair:** `.wslconfig` now sets `guiApplications=true`; it takes effect
-after `wsl --shutdown` and a restart. After that restart, re-run the §24
-browser test and reclassify to **ACTIVE**. Do **not** "fix" this by editing
-plugin cache files or by registering a second, duplicate chrome-devtools
-MCP — one canonical integration only.
-
-App URL: `https://kalshi-whale-poc.ddev.site:8443` (port 8443, not 443).
-Use for dashboard bugs, frontend/backend integration, failed API calls, JS
-exceptions, DOM/rendering, network + WebSocket behavior, perf regressions.
-Not for backend-only work.
-
-Fallback while broken: `curl` against the nginx proxy, the existing browser
-E2E suite in Woodpecker, and `.claude/skills/frontend-verification`.
 
 ## Installed but inactive — do not invoke
 
@@ -217,7 +222,7 @@ Real paths in this repo. Blocked tools are deliberately absent.
 | Execution/broker | `services/paper_broker.py`, `services/position/`, `services/exits/`, `services/shadow_mode.py` | GitNexus, internal review pass |
 | Kalshi client | `services/kalshi/`, `kalshi_client.py`, `kalshi_account_client.py`, `kalshi_trade_ws.py`, `kalshi_fees.py` | `docs/kalshi/` **first**, then `kalshi-contract-review`, then GitNexus |
 | FastAPI routes | `main.py` | Context7 (FastAPI 0.134.0), route/authn/authz tests, `tools.quality_audit` |
-| Frontend | `frontend/src/js/`, `static/` | `frontend-verification`; Chrome DevTools once repaired |
+| Frontend | `frontend/src/js/`, `static/` | `frontend-verification`, Chrome DevTools |
 | Backtesting/analytics | `services/backtest/`, `services/analytics/` | GitNexus, dimensional-analysis |
 
 ## Worked routings
@@ -229,7 +234,7 @@ Real paths in this repo. Blocked tools are deliberately absent.
 `Superpowers → GitNexus blast radius → TDD → dimensional-analysis → tests → internal review pass`
 
 **Dashboard is making a failing request**
-`superpowers:systematic-debugging → Chrome DevTools if repaired, else curl + frontend-verification → GitNexus if backend tracing is needed → fix → reproduce → verify`
+`superpowers:systematic-debugging → Chrome DevTools (console + network table) → GitNexus if backend tracing is needed → fix → reproduce → verify`
 
 **Add an authenticated FastAPI trading route**
 `Superpowers → GitNexus if useful → Context7 for FastAPI specifics → authn/authz + route tests`
@@ -242,9 +247,56 @@ Normal lightweight workflow. **No specialized plugin.**
 
 Do not let the toolchain tax every task:
 - No GitNexus / 42Crunch / dimensional-analysis on every edit.
-- GitNexus auto-augment + freshness hooks stay **disabled** (a node process
-  per Grep/Glob/Bash call). Invoke GitNexus deliberately instead.
+- GitNexus auto-augment + freshness hooks are **meant to be disabled** (a
+  node process per Grep/Glob/Bash call); they are currently still enabled —
+  see "Known unresolved" below. Invoke GitNexus deliberately regardless.
 - `gitnexus context` can return >140KB for a single symbol — prefer
   `impact --summaryOnly`, or `grep`, when that's all you need.
 - Chrome DevTools only for browser-facing work.
 - No account checks, auth prompts, or retries for blocked plugins.
+
+---
+
+# Known unresolved — needs a user action
+
+## GitNexus always-on hooks are still live in `~/.claude/settings.json`
+
+Still present as of 2026-08-25 (Session C):
+
+- `PreToolUse` matcher `Grep|Glob|Bash` → `gitnexus-hook.cjs`
+- `PostToolUse` matcher `Bash` → `gitnexus-hook.cjs`
+
+These spawn a node process on *every* search and Bash call — the idle
+overhead the "Idle overhead" section above forbids. Confirmed still firing
+this session (a `[GitNexus] N related symbols found` block was injected into
+routine `grep` output).
+
+**Three sessions (A, B, C) have now tried to remove them and all three were
+refused by Claude Code's own permission classifier**, which guards the
+user-global settings file against agent edits — via `Bash`/`python3` and via
+the `Edit` tool alike. This is not a `sudo`/file-ownership problem (the file
+is owned and writable by the user), so escalating with `sudo` would be
+circumventing the guard rather than satisfying it. **It requires the user.**
+
+A corrected copy of the file — GitNexus hooks stripped, the `sql_guard.py`
+`PreToolUse` hook preserved, everything else byte-identical — is generated
+at `.claude/settings-json-gitnexus-hooks-removed.json` by:
+
+```bash
+python3 .claude/tools/strip_gitnexus_hooks.py
+```
+
+Apply it manually (the user, not Claude):
+
+```bash
+cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%F)
+cp <repo>/.claude/settings-json-gitnexus-hooks-removed.json ~/.claude/settings.json
+```
+
+Then restart Claude Code. The hook script stays on disk, so this is fully
+reversible. Pre-install original:
+`~/claude-toolchain-backup-2026-08-25/user-settings.json`.
+
+**Do not re-litigate this every session.** Until it is applied, simply
+ignore the injected `[GitNexus]` blocks; they are noise, not findings, and
+GitNexus should still be invoked deliberately per the routing rules above.

@@ -36,3 +36,7 @@ build/
 # machine-specific and large. `.gitnexusrc` (indexOnly:true) IS committed; the
 # generated graph itself is not.
 .gitnexus/
+
+# Regenerated on demand by .claude/tools/strip_gitnexus_hooks.py - a copy of the
+# user-global ~/.claude/settings.json, not project state.
+.claude/settings-json-gitnexus-hooks-removed.json
