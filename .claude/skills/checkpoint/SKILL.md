@@ -42,28 +42,40 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    work — if the session covered several unrelated things, split it into
    separate commits rather than one bundled one.
 
-4. **Push.** `git push` on the current branch. Once this repo is activated
-   in the shared Woodpecker instance (`portfolio/ci-cd/` - a one-time
-   manual step via its web UI, see `.claude/skills/ci-cd-guardrails/
-   SKILL.md`), this triggers every `.woodpecker/*.yml` workflow whose
-   `when:` matches the push. `.github/workflows/tests.yml`/`quality.yml`
-   are `workflow_dispatch`-only now and do NOT run automatically on push -
+4. **Push.** `git push` on the current branch. This repo is already
+   activated in the shared Woodpecker instance (`portfolio/ci-cd/` -
+   confirmed live 2026-08-25 via real GitHub commit statuses and pipeline
+   numbers in the high 20s, not just the setup docs' claim), so this
+   triggers every `.woodpecker/*.yml` workflow whose `when:` matches the
+   push automatically. `.github/workflows/tests.yml`/`quality.yml` are
+   `workflow_dispatch`-only now and do NOT run automatically on push -
    don't wait on them here.
 
 5. **Confirm CI and interpret the result — this is the real gate when
-   step 1 skipped the local run.** Use `scripts/woodpecker-status` (needs a
-   personal `WOODPECKER_TOKEN` in the environment - the script explains how
-   to get one if it's missing) to list this commit's pipeline runs and
-   their conclusions across the separate `.woodpecker/*.yml` workflows.
-   Read each workflow's conclusion separately, the same way the former
-   GitHub Actions jobs were read individually rather than off one
-   aggregate status:
+   step 1 skipped the local run. Actually run this step; do not assume
+   green and do not substitute a local full-suite re-run instead** (found
+   live 2026-08-25: `quality-architecture-audit` sat red across three real
+   pushes - `d644034`, `21a303a`, `b28a380` - unnoticed, because this step
+   was never actually exercised in that stretch of work).
+
+   Zero-setup check, no personal `WOODPECKER_TOKEN` needed - Woodpecker
+   posts a commit status back to GitHub per workflow, and `gh` is already
+   authenticated in every Claude session:
+   ```bash
+   gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status
+   ```
+   Read each entry's `context` (`ci/woodpecker/push/<workflow-name>`) and
+   `state` independently, the same way the former per-job GitHub Actions
+   checks were read individually rather than off one aggregate status - a
+   `failure` on any single context means the change is NOT verified yet,
+   regardless of the others being green:
    - `tests-pytest` must succeed. On failure, pull the failing step's log
-     (`scripts/woodpecker-status --log <pipeline>` or the Woodpecker web
-     UI), fix it the same way any bug gets fixed, verify locally to close
-     the loop fast rather than round-tripping CI again for the same fix,
-     then commit + push the fix — never leave `main`'s `tests-pytest`
-     workflow red.
+     (`scripts/woodpecker-status --pipeline N --log STEP`, which needs a
+     personal `WOODPECKER_TOKEN` - see that script's own header - or the
+     failing status's own `target_url`, the Woodpecker web UI), fix it the
+     same way any bug gets fixed, verify locally to close the loop fast
+     rather than round-tripping CI again for the same fix, then commit +
+     push the fix — never leave `main`'s `tests-pytest` workflow red.
    - `tests-dependency-audit` should show **zero known vulnerabilities**
      (fixed 2026-08-23 — `ROADMAP.md`'s "Path to production" section,
      checked off; confirmed live 2026-08-24 running this exact pipeline via
@@ -72,9 +84,15 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
      pre-triaged debt — earlier versions of this skill said otherwise
      (20 CVEs, deliberately left unfixed); that was true when written but
      is stale now that the fix shipped.
-   If `WOODPECKER_TOKEN` isn't set and Woodpecker's web UI isn't checked
-   either, say so rather than silently skipping this step — same standard
-   `gh auth status` used to set for the GitHub Actions path.
+   - `quality-architecture-audit` failing often means a structural-drift
+     check, not a scanner finding — check `static/project-manifest.json`
+     first (`python -m tools.project_manifest --check
+     static/project-manifest.json --repo-root .`; regenerate with
+     `--write` in place of `--check` if it reports stale) before assuming
+     a real new `tools.quality_audit` finding.
+   If `gh api` itself is unavailable (rare - it's the same `gh` used for
+   PRs), fall back to `scripts/woodpecker-status`/the Woodpecker web UI; if
+   neither is reachable, say so rather than silently skipping this step.
 
 6. **Roadmap sync check.** If this checkpoint closes out a `ROADMAP.md`
    item, run `/sync-status-docs` now, before moving on — cheap, and keeps

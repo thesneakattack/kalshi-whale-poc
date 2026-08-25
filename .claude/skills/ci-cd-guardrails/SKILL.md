@@ -126,9 +126,32 @@ every push - that is unrelated to which system runs the test suite.
 
 ### After push - Woodpecker owns exhaustive validation
 
-Inspect Woodpecker's result before treating a change as fully verified.
-`scripts/woodpecker-status` shows recent pipeline runs for this repo (needs
-a personal `WOODPECKER_TOKEN` - see that script's own header). If a
+Inspect Woodpecker's result before treating a change as fully verified -
+do not assume green, and do not fall back to a full local re-run just
+because checking feels like friction (that defeats the point of this
+policy). Found live 2026-08-25: `quality-architecture-audit` sat red
+across three real pushes (`d644034`, `21a303a`, `b28a380` - a stale
+`static/project-manifest.json` after files were added without
+regenerating it) with nobody noticing, because this step was never
+actually exercised.
+
+**Zero-setup check - works in any Claude session, no personal
+`WOODPECKER_TOKEN` needed.** Woodpecker posts a commit status back to
+GitHub for every workflow, and `gh` is already authenticated:
+
+```bash
+gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status
+```
+
+Read each entry's `context` (`ci/woodpecker/push/<workflow-name>`) and
+`state` independently, the same way the former per-job GitHub Actions
+checks were read individually rather than off one aggregate - a
+`failure` on any single context means the change is NOT verified,
+regardless of the others being green. Each entry's `target_url` points at
+the Woodpecker web UI for that run. `scripts/woodpecker-status --pipeline
+N --log STEP` (needs a personal `WOODPECKER_TOKEN`, see that script's own
+header) is how to pull the actual failing step's log text once `gh api`
+has told you which workflow and pipeline number to look at. If a
 pipeline fails:
 1. inspect the failing workflow/step and its log output;
 2. identify the actual failure - do not guess;

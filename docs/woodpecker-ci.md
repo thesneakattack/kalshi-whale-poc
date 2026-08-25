@@ -126,53 +126,86 @@ call `GET /exchange/status` and `GET /markets`, never an account/order
 endpoint (`tests/test_kalshi_public_canary.py::
 test_main_never_touches_account_or_order_endpoints`).
 
+## Checking CI results (no personal token needed)
+
+Woodpecker posts a commit status back to GitHub for every workflow, so the
+fastest way to check a push's result — in any Claude session, with zero
+setup — is `gh` (already authenticated), not `scripts/woodpecker-status`:
+
+```bash
+gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status
+```
+
+Read each entry's `context` (`ci/woodpecker/push/<workflow-name>`) and
+`state` independently — a `failure` on any one context means that change
+isn't verified, regardless of the others. Each entry's `target_url` opens
+the Woodpecker web UI for that run; `scripts/woodpecker-status --pipeline
+N --log STEP` (needs a personal `WOODPECKER_TOKEN`) pulls the same failing
+step's log text without a browser. **Actually run this after every push —
+found live 2026-08-25 that `quality-architecture-audit` sat red across
+three real pushes (`d644034`, `21a303a`, `b28a380`, a stale
+`static/project-manifest.json`) with nobody noticing, because this check
+was never exercised.** See `.claude/skills/ci-cd-guardrails/SKILL.md`'s
+"After push" section and `.claude/skills/checkpoint/SKILL.md` step 5 for
+where this is now the documented default.
+
 ## Known limitations (observed, not assumed)
 
-- The agent's startup log reports `"parallel workflows":1` — only one
-  workflow runs at a time today despite six independent files existing.
-  True parallelism needs `WOODPECKER_MAX_WORKFLOWS` raised on the shared
-  agent (`portfolio/ci-cd/docker-compose.yml`) or a second agent added —
-  either affects the whole portfolio, so raise it deliberately, not as a
-  side effect of this repo's own pipeline count.
+- `WOODPECKER_MAX_WORKFLOWS` was raised from Woodpecker's default of 1 to
+  2 on the shared agent (`portfolio/ci-cd/docker-compose.yml`, commit
+  `81068e2`) — confirmed live in the agent's own startup log
+  (`"parallel workflows":2`). Still less than this repo's six independent
+  `.woodpecker/*.yml` files, so some queuing under concurrent pipelines is
+  expected; raising it further affects the whole portfolio-wide agent
+  (memory-constrained host — see that commit's own comment), so raise it
+  deliberately, not as a side effect of this repo's own pipeline count.
 - `WOODPECKER_GRPC_SECRET` is unset on the shared server, so a restart
   regenerates a random one (`WOODPECKER_GRPC_SECRET is not set; generated
   a temporary random secret` in `docker logs woodpecker-server`). The
   agent still reconnected successfully in the case observed here, but
   persisting this secret in `portfolio/ci-cd/.env` would make that
   reconnection deterministic instead of relying on a fresh handshake.
+- The agent log periodically shows `"queue: task not found"` /
+  `"failed to extend workflow lease"` (with a matching server-side
+  `"stream: not found"` / `"cannot close log stream"`) for a handful of
+  pipeline/workflow IDs scattered hours apart (observed 2026-08-24 around
+  14:20, 19:25, 21:33 for pipelines 8, 15, 23/26). Consistent with a
+  workflow being superseded/canceled by a rapid follow-up push while it's
+  mid-run — exactly what "Cancel previous pipelines" below is for — rather
+  than a systemic failure: pipeline numbers kept climbing normally into
+  the high 20s across the same window with real passing/failing statuses
+  reported throughout. Not confirmed against the server's actual
+  cancellation events (needs a `WOODPECKER_TOKEN` to query pipeline state
+  directly) — re-open this if a push's real, non-superseded workflow ever
+  shows this error instead of a clean pass/fail.
 - No GitHub branch protection is currently configured on `main`
   (`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection`
-  → 404), so nothing is silently broken by moving these checks off
-  GitHub Actions' automatic triggers. If protection is added later, point
-  required checks at the Woodpecker-reported contexts.
+  → 404, reconfirmed 2026-08-25), so nothing is silently broken by moving
+  these checks off GitHub Actions' automatic triggers. If protection is
+  added later, point required checks at the Woodpecker-reported contexts.
 
-## One-time manual step: activate this repo in Woodpecker
+## Repo activation in Woodpecker — done
 
-Everything above is built and verified (pipeline files lint clean, and
-were proven end-to-end via `woodpecker-cli exec --local` against the real
-Docker backend — see the QCP/Woodpecker session's commit history for the
-exact runs, including a deliberate isolated failure proven to report
-correctly and a clean pipeline proven to pass afterward). What's left
-needs a browser and the `thesneakattack` GitHub account's own OAuth login,
-which cannot be done from here:
+`kalshi-whale-poc` is activated in the shared Woodpecker instance
+(confirmed live 2026-08-25: real GitHub commit statuses posting per push —
+see "Checking CI results" above — and pipeline numbers into the high 20s,
+not just this doc's earlier claim that activation was still pending). The
+GitHub webhook this required was created automatically by
+`WOODPECKER_GITHUB` OAuth on activation; no manual webhook configuration
+was needed.
 
-1. Open `https://ci.webfoundry.dev` (or the offline router, once its
-   hostname resolves) and log in via GitHub OAuth.
-2. Find `kalshi-whale-poc` in the repo list and enable it — this is what
-   actually creates the GitHub webhook (`WOODPECKER_GITHUB` OAuth handles
-   this automatically on activation, no manual webhook configuration
-   needed).
-3. Optional but recommended: in the repo's Woodpecker project settings,
-   enable "Cancel previous pipelines" (handles superseded runs when
-   corrective commits land quickly — Woodpecker's supported mechanism for
-   this, no pipeline-file changes needed).
-4. Generate a personal CLI/API token (Settings → CLI/API Access Token) and
-   `export WOODPECKER_TOKEN=...` in your own shell profile (never in this
-   repo) to use `scripts/woodpecker-status`/`woodpecker-trigger` beyond
-   their unauthenticated health check.
+Two sub-items from the original activation checklist remain genuinely
+unconfirmed (neither is checkable without a personal `WOODPECKER_TOKEN` or
+the web UI, so state that honestly rather than assuming):
 
-After step 2, the next push to `main` (or any branch/PR) triggers every
-`.woodpecker/*.yml` workflow automatically.
+- Whether "Cancel previous pipelines" is enabled in the repo's Woodpecker
+  project settings — the "queue: task not found" pattern above is
+  consistent with it being on, but that's circumstantial, not confirmed.
+- Whether anyone has generated a personal CLI/API token
+  (Settings → CLI/API Access Token, `export WOODPECKER_TOKEN=...` in your
+  own shell profile, never in this repo) — needed for
+  `scripts/woodpecker-status`/`woodpecker-trigger`'s authenticated
+  features and for pulling a failing step's raw log text.
 
 ## Operating the shared instance itself
 
