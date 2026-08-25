@@ -38,7 +38,16 @@ steps:
       # Selenium Manager's own network-fetched driver.
       - apt-get update -qq
       - apt-get install -y --no-install-recommends chromium chromium-driver > /dev/null
-      - pip install -q -r requirements-dev.txt
+      # uv instead of pip: measured 5s vs 78s for this same
+      # requirements-dev.txt on python:3.13-slim (both runs back to back on
+      # the same contended host, so the ratio is the meaningful part, not
+      # the absolute numbers). Four of this repo's pipelines pay this exact
+      # install, and it was the single largest cost in the two slowest
+      # steps. --system installs into the image's own interpreter rather
+      # than a venv, which is what every step here already assumed pip was
+      # doing. Resolution is unchanged: same requirements file, same pins.
+      - pip install -q uv
+      - uv pip install --system -q -r requirements-dev.txt
       - mkdir -p build
       # build/, not /tmp - each Woodpecker step is its own container, and
       # only the workspace directory (build/ included) is shared across

@@ -25,7 +25,16 @@ steps:
   - name: kalshi-fixture-contracts
     image: python:3.13-slim
     commands:
-      - pip install -r requirements-dev.txt
+      # uv instead of pip: measured 5s vs 78s for this same
+      # requirements-dev.txt on python:3.13-slim (both runs back to back on
+      # the same contended host, so the ratio is the meaningful part, not
+      # the absolute numbers). Four of this repo's pipelines pay this exact
+      # install, and it was the single largest cost in the two slowest
+      # steps. --system installs into the image's own interpreter rather
+      # than a venv, which is what every step here already assumed pip was
+      # doing. Resolution is unchanged: same requirements file, same pins.
+      - pip install -q uv
+      - uv pip install --system -r requirements-dev.txt
       - >
         python -m pytest -v
         tests/test_kalshi_client.py
