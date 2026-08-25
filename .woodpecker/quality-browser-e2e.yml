@@ -64,13 +64,17 @@ steps:
       # Services boot alongside the pipeline, not before it, so the grid may
       # not be up yet. Poll it rather than guessing with a sleep.
       #
-      # $i not ${i}: Woodpecker runs its own substitution pass over these
-      # command strings and consumes ${...}, so the first version of this
-      # logged "grid ready after s" with the count silently eaten.
+      # No loop counter in the message on purpose. Woodpecker runs its own
+      # substitution pass over these command strings before the shell sees
+      # them: ${i} was silently consumed (pipeline 72 logged "ready after s"),
+      # and trying to dodge that with $i""s made it strictly worse - pipelines
+      # 73 and 74 died at config parse with "unable to parse variable name",
+      # so nothing ran at all. A static string cannot fail either way, and the
+      # count was never worth a pipeline outage.
       - |
         for i in $(seq 1 60); do
           if python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://selenium:4444/status', timeout=2).status == 200 else 1)" 2>/dev/null; then
-            echo "selenium grid ready after $i""s"; break
+            echo "selenium grid ready"; break
           fi
           sleep 1
         done
