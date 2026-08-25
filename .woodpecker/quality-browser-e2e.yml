@@ -29,15 +29,23 @@ steps:
     image: python:3.13-slim
     environment:
       RUN_BROWSER_E2E: "1"
-      CHROME_BIN: /usr/bin/chromium
-      CHROMEDRIVER_PATH: /usr/bin/chromedriver
+      # The browser now lives in the `selenium` service at the bottom of this
+      # file instead of being apt-installed into this container on every run.
+      # That install measured ~2m43s and was the largest single cost here;
+      # the service image is cached on the host and its grid answered /status
+      # 3s after start. Measured end to end on the same four tests: 7.2s for
+      # the whole step, "4 passed in 3.96s".
+      #
+      # tests/test_browser_e2e.py already supported this - SELENIUM_REMOTE_URL
+      # has been in its documented env list all along, for driving ddev's
+      # selenium-chrome add-on locally. No test change was needed.
+      #
+      # CHROME_BIN/CHROMEDRIVER_PATH are deliberately gone rather than moved:
+      # both name paths inside THIS container, and the driver fixture applies
+      # binary_location from CHROME_BIN even in remote mode - which would aim
+      # the grid's browser at a path that does not exist over there.
+      SELENIUM_REMOTE_URL: http://selenium:4444
     commands:
-      # Same major version for both packages (verified live: apt offers a
-      # single matched 151.x candidate for each) avoids the classic
-      # chromedriver/Chrome version-skew failure - deliberately not using
-      # Selenium Manager's own network-fetched driver.
-      - apt-get update -qq
-      - apt-get install -y --no-install-recommends chromium chromium-driver > /dev/null
       # uv instead of pip: measured 5s vs 78s for this same
       # requirements-dev.txt on python:3.13-slim (both runs back to back on
       # the same contended host, so the ratio is the meaningful part, not
@@ -47,14 +55,28 @@ steps:
       # than a venv, which is what every step here already assumed pip was
       # doing. Resolution is unchanged: same requirements file, same pins.
       - pip install -q uv
-      - uv pip install --system -q -r requirements-dev.txt
+      - uv pip install --system -q -r requirements-dev.txt -r requirements-selenium.txt
       - mkdir -p build
+      # Services boot alongside the pipeline, not before it, so the grid may
+      # not be up yet. Poll it rather than guessing with a sleep.
+      - |
+        for i in $(seq 1 60); do
+          if python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://selenium:4444/status', timeout=2).status == 200 else 1)" 2>/dev/null; then
+            echo "selenium grid ready after ${i}s"; break
+          fi
+          sleep 1
+        done
+      # The browser is in another container now, so 127.0.0.1 would resolve to
+      # the grid itself. Bind the harness to 0.0.0.0 and point the browser at
+      # this container's address on the shared pipeline network. `hostname -i`
+      # can emit several addresses; take the first.
+      - export E2E_BASE_URL=http://$(hostname -i | awk '{print $1}'):8765
       # build/, not /tmp - each Woodpecker step is its own container, and
       # only the workspace directory (build/ included) is shared across
       # them; the print-server-log step below couldn't see anything written
       # under /tmp here.
-      - python3 -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 > build/e2e-uvicorn.log 2>&1 &
-      - python3 -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+      - python3 -m uvicorn tests.support.e2e_server:app --host 0.0.0.0 --port 8765 > build/e2e-uvicorn.log 2>&1 &
+      - python3 -m tests.support.wait_for_health $E2E_BASE_URL/api/state
       - python3 -m pytest tests/test_browser_e2e.py -v
 
   # Playwright covers what WebDriver structurally cannot: putting the
@@ -117,3 +139,14 @@ steps:
       - cat build/e2e-uvicorn.log || echo "no selenium server log captured"
       - cat build/playwright-uvicorn.log || echo "no playwright server log captured"
       - ls -R build/playwright-artifacts 2>/dev/null || echo "no playwright traces (nothing failed)"
+
+# Runs for the whole pipeline alongside the steps and is reachable from them
+# by this name. Replaces the per-run `apt-get install chromium
+# chromium-driver` the browser-e2e step used to pay (~2m43s measured). The
+# image is already present on this host anyway - ddev's own selenium-chrome
+# add-on uses it. No shm_size override: the driver fixture already passes
+# --disable-dev-shm-usage, the documented fix for exactly the /dev/shm
+# exhaustion a default-sized container would otherwise hit.
+services:
+  - name: selenium
+    image: selenium/standalone-chromium:138.0

@@ -1,0 +1,4 @@
+# Selenium browser tests (tests/test_browser_e2e.py) only - same split, and
+# the same reason, as requirements-playwright.txt: four pipelines install
+# requirements-dev.txt and only the browser one needs a WebDriver client.
+selenium==4.47.0
