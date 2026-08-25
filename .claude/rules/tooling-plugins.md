@@ -1,100 +1,100 @@
-# Specialized tooling — plugin routing policy
+# Specialized tooling — effective toolchain and routing policy
 
-Installed 2026-08-25. This file is the authoritative router for **which
-specialized tool to reach for**. It does not replace any existing rule:
+Installed 2026-08-25. **Capability-verified 2026-08-25 (Session B)** against a
+fresh WSL boot, with every classification below backed by a real invocation,
+not by `claude plugin list` output.
+
+This file is the authoritative router for **which specialized tool to reach
+for**. It does not replace any existing rule:
 `.claude/rules/branching-and-ci.md` still owns git/CI,
 `.claude/rules/kalshi-integration-authority.md` still owns Kalshi semantics,
 and `.claude/rules/quality-capabilities.md` still owns this repo's own
 `.claude/skills/*`.
 
-## Responsibility hierarchy
+## The two rules that matter most
+
+**1. Route by capability state, not installation state.**
 
 ```
-Superpowers          engineering process        (owns HOW work is done)
-  ↓ everything below supplements it, never replaces it
-GitNexus             architectural/dependency evidence
-Context7             external-library documentation
-dimensional-analysis trading/scoring numerical correctness
-42Crunch             API/OpenAPI security
-Chrome DevTools MCP  browser/runtime/network evidence
-second-opinion       independent high-risk review
+ACTIVE            → use when its trigger applies
+LIMITED           → use only within its working subset
+BLOCKED_EXTERNAL  → skip SILENTLY, use the fallback
+BROKEN_LOCAL      → repair only if the capability is materially needed now
+NOT_NEEDED        → ignore
 ```
+
+**2. Optional specialized integrations fail open, not closed.**
+
+If an optional plugin rate-limits, loses auth, fails to start, or needs a
+subscription that isn't there: fall back to the documented alternative,
+continue the work, and mention the degraded capability only if it materially
+changed what you could verify. **Never halt normal development because an
+optional plugin is unavailable, and never re-litigate a BLOCKED_EXTERNAL
+tool every session.** The only non-optional gates are the ones project
+policy names explicitly (Kalshi doc authority, CI, safety invariants).
 
 Superpowers owns the development process (brainstorming → plan → TDD →
 verification). A specialized plugin supplies *evidence* inside that process.
-None of them is a substitute for executable tests.
+**None of them is a substitute for executable tests.**
 
-## Routing triggers
+---
 
-| Trigger | Tool |
-|---|---|
-| Cross-module change, "what breaks if I change X" | GitNexus |
-| Financial/scoring arithmetic, units, scaling | dimensional-analysis |
-| External library behavior/version uncertainty | Context7 |
-| FastAPI route/auth/API-security change | 42Crunch |
-| Frontend/browser/runtime bug | Chrome DevTools |
-| High-risk trading/risk/security change | second-opinion |
-| Kalshi field/endpoint/message semantics | `docs/kalshi/` + `kalshi-contract-review` (NOT Context7) |
+# Effective toolchain
 
-**Never invoke everything for every task.** Most edits need none of these.
+## Active
 
-## Actual invocations
+### Superpowers — PRIMARY development process
+User-scope, v6.3.0. Owns brainstorming/design, planning, TDD, systematic
+debugging, implementation workflow, verification, code review, worktrees.
+Verified: skills load and execute. Never bypass it in favor of a specialist.
 
-These are the real, verified entry points. No wrapper slash-commands were
-created — each plugin already ships its own skills, and duplicating them
-would just add drift.
+### GitNexus — structural/dependency evidence
+Local knowledge graph, no external account. Invoke deliberately via the
+`gitnexus-*` skills or `npx gitnexus@latest <cmd>`.
 
-| Tool | How you actually invoke it |
-|---|---|
-| GitNexus | `gitnexus-impact-analysis`, `gitnexus-exploring`, `gitnexus-debugging`, `gitnexus-refactoring`, `gitnexus-pr-review`, `gitnexus-taint-analysis`, `gitnexus-pdg-query`, `gitnexus-cli`, `gitnexus-guide` skills + `npx gitnexus@latest <cmd>` |
-| Context7 | MCP tools only (`plugin:context7:context7`) — no skills |
-| dimensional-analysis | `dimensional-analysis` skill (+ 5 sub-agents) |
-| 42Crunch | `42crunch-audit`, `42crunch-scan`, `42crunch-setup`, `generate-oas`, `42crunch-api-security-testing` skills |
-| Chrome DevTools | MCP tools + `chrome-devtools`, `chrome-devtools-cli`, `troubleshooting`, `memory-leak-debugging`, `debug-optimize-lcp`, `a11y-debugging` skills |
-| second-opinion | `second-opinion` skill (shells out to an external LLM CLI) |
-
-## Repository routing map
-
-Real paths in this repo, not hypothetical ones:
-
-| Area | Real paths | Primary tools |
-|---|---|---|
-| Config/tuning | `config/settings.yaml`, `services/config/`, `config_bounds.py`, `config_overrides.py`, `config_performance.py` | GitNexus, dimensional-analysis |
-| Advisory | `services/advisory/` | GitNexus, dimensional-analysis, second-opinion |
-| Whale calibration | `services/whale_calibration/` | GitNexus, **dimensional-analysis (critical)**, second-opinion |
-| Confidence scoring | `services/confidence_scoring.py` | GitNexus, **dimensional-analysis (critical)** |
-| Strategy | `services/strategy_engine.py` (`kelly_scaled_max_size`, `evaluate`) | GitNexus, **dimensional-analysis (critical)**, second-opinion |
-| Risk/sizing | `services/risk_manager.py` (`max_trade_size`, `check_total_exposure`, `check_daily_loss`) | GitNexus, dimensional-analysis, **second-opinion (critical)** |
-| Execution/broker | `services/paper_broker.py`, `services/position/`, `services/exits/`, `services/shadow_mode.py` | GitNexus, **second-opinion (critical)** |
-| Kalshi client | `services/kalshi/`, `kalshi_client.py`, `kalshi_account_client.py`, `kalshi_trade_ws.py`, `kalshi_fees.py` | `docs/kalshi/` first, then GitNexus, second-opinion |
-| FastAPI routes | `main.py` (93 paths) | **42Crunch (critical)**, Context7 |
-| Frontend | `frontend/src/js/`, `static/` | **Chrome DevTools (critical)** |
-| Backtesting/analytics | `services/backtest/`, `services/analytics/` | GitNexus, dimensional-analysis |
-
-## Tool-specific usage
-
-### GitNexus — structural evidence
-Indexed knowledge graph of this repo (6.6k nodes / 14.3k edges).
 ```bash
-npx gitnexus@latest impact  <symbol>   # blast radius — run BEFORE substantial edits
+npx gitnexus@latest impact  <symbol>   # blast radius — BEFORE substantial edits
 npx gitnexus@latest context <symbol>   # callers, callees, processes
 npx gitnexus@latest trace <from> <to>  # path between two symbols
 npx gitnexus@latest status             # is the index current?
-npx gitnexus@latest analyze            # re-index (after significant merges)
 ```
+
 Use before changing advisory, calibration, confidence, strategy, risk,
 sizing, P&L, execution, shadow/live mode, Kalshi client, or shared state.
 **Do not run it for trivial or single-file changes.**
-The index is stale-checked manually — `status` after pulling/merging;
-`analyze` when it reports drift. (Its auto-freshness hook was deliberately
-not enabled; see "Idle overhead" below.)
 
-### dimensional-analysis — trading math correctness
-Apply *after* implementation, *before* completion, on code touching
-probability, prices, cents/dollars, contracts, bankroll, exposure,
-percentages, P&L, EV, fees, calibration, weights, thresholds, normalization.
+**⚠️ Index-integrity check — this repo has already been burned once.**
+A partially-completed `analyze` leaves an `incrementalInProgress` flag and a
+`LadybugDB ... WAL checkpoint` error, after which queries still return
+`status: ok` and `epistemic: "exact"` while emitting a **target-independent
+whole-repo blob**. Observed 2026-08-25: `composite_confidence` and
+`kelly_scaled_max_size` returned byte-identical impact sets (51 direct, 21
+processes, `risk: CRITICAL`), including impossible edges such as a
+JavaScript file `CALLS`-ing a Python function. Post-repair the same query
+correctly returned `impactedCount: 2, risk: LOW`.
 
-Project unit conventions:
+Detection and repair:
+```bash
+npx gitnexus@latest clean
+GITNEXUS_WAL_CHECKPOINT_THRESHOLD=67108864 npx gitnexus@latest analyze --force --skip-agents-md
+```
+**Smell test before trusting any GitNexus answer:** if two unrelated symbols
+give the same impact set, or a result contradicts a 10-second `grep`, the
+index is bad — rebuild, don't reason from it. `epistemic: "exact"` is not
+evidence of correctness. Confirm consequential answers against source.
+
+Optional cloud/embedding features are deliberately **not** enabled
+(`--embeddings`); `.gitnexusrc` keeps `indexOnly: true` so GitNexus never
+injects competing `CLAUDE.md`/`AGENTS.md`/skills. Its auto-augment and
+freshness hooks stay **disabled** — they spawn a node process on every
+Grep/Glob/Bash call.
+
+### dimensional-analysis — trading-math correctness
+Local skill (trailofbits 3.0.1), no credentials. Apply *after*
+implementation, *before* completion, on code touching probability, prices,
+cents/dollars, contracts, bankroll, exposure, percentages, P&L, EV, fees,
+calibration, weights, thresholds, normalization.
+
 ```
 Probability  0..1 normalized      Percent      0..100 unless normalized
 PriceCents   cents/contract       DollarPrice  dollars/contract
@@ -102,94 +102,149 @@ Contracts    count                Notional/Bankroll/Exposure  dollars
 Confidence   dimensionless        Weight       dimensionless
 Fee          dollars unless explicitly labeled otherwise
 ```
-This repo has already shipped two real unit/derivation bugs (the no-side
-`1 - price` inversion and the `equity - starting_bankroll` mislabel — see
-CLAUDE.md's "Bug pattern to watch for"). That is exactly this tool's target
-class. Do not restructure architecture merely to satisfy annotations.
+This repo has shipped two real unit/derivation bugs (the no-side `1 - price`
+inversion and the `equity - starting_bankroll` mislabel — see CLAUDE.md's
+"Bug pattern to watch for"). That is exactly this tool's target class. Check
+both **dimensional consistency** and **range/domain invariants** — a formula
+can be dimensionally perfect and still produce a negative position size when
+an unbounded config dial exceeds its assumed range. Do not restructure
+architecture merely to satisfy annotations.
+
+## Limited
 
 ### Context7 — external library docs
-For FastAPI, Pydantic, asyncio, HTTP/WebSocket clients, cryptography, SQLite,
-frontend and testing libraries: determine the project's installed version,
-then pull version-specific docs, then implement.
+**Anonymous/shared rate limits.** Works without an account; do not create one
+to raise limits. Verified retrieving version-relevant FastAPI docs.
+
+For FastAPI, Pydantic, asyncio, HTTP/WebSocket clients, cryptography,
+SQLite, frontend and testing libraries: determine the installed version
+first, then pull docs, then implement. This project currently runs
+FastAPI 0.134.0 / Pydantic 2.13.4 / Python 3.13.15.
+
+If rate-limited or unavailable → go straight to official library docs.
+**Never block work on Context7.**
 
 **Kalshi exception:** `docs/kalshi/` is canonical for Kalshi's own API.
 Context7 must never override it.
 
-### 42Crunch — API security
-This app's OpenAPI is **not served publicly** (nginx proxies only `/api/` and
-`/auth/`; `/openapi.json` returns 404 through the web container — by design).
-Generate the spec instead:
-```bash
-ddev exec -s fastapi python -c "import json,main; open('/app/build/openapi.json','w').write(json.dumps(main.app.openapi()))"
-```
-Run for: new public endpoints, auth/authorization changes, account APIs,
-trading APIs, config-mutation APIs, request-model security changes, major
-OpenAPI changes, pre-live security review. **Not after every Python edit.**
-Never auto-rewrite application code just to clear a finding.
+## Broken locally — repair pending
 
-### Chrome DevTools MCP — runtime browser evidence
-For browser-facing bugs prefer runtime evidence over static speculation:
-```
-reproduce → console → network → request/response → DOM/runtime state
-→ (GitNexus if backend tracing needed) → hypothesis → fix → reproduce → verify
-```
+### Chrome DevTools MCP
+**Status: BROKEN_LOCAL** (as of 2026-08-25). Not an account problem.
+
+Root cause, reproduced: `C:\Users\davidf\.wslconfig` had
+`guiApplications=false`, which took effect on the 2026-08-25 reboot and
+removed WSLg. With no X server, the MCP's **default headful** launch fails:
+`Missing X server to start the headful browser`. The MCP server itself
+connects fine — a connected MCP does not mean a working browser.
+
+Everything else in the stack is verified working headless against the live
+DDEV app: navigation (200, `Whale Signal — Paper Trading Terminal`), a valid
+mkcert TLS chain with no `--acceptInsecureCerts`, DOM queries, console
+capture, the full network table, and browser-originated FastAPI calls
+(`/api/config`, `/api/session`, `/api/state`, `/api/position-netting/groups`
+— all `200 application/json` via the nginx proxy).
+
+**Repair:** `.wslconfig` now sets `guiApplications=true`; it takes effect
+after `wsl --shutdown` and a restart. After that restart, re-run the §24
+browser test and reclassify to **ACTIVE**. Do **not** "fix" this by editing
+plugin cache files or by registering a second, duplicate chrome-devtools
+MCP — one canonical integration only.
+
 App URL: `https://kalshi-whale-poc.ddev.site:8443` (port 8443, not 443).
 Use for dashboard bugs, frontend/backend integration, failed API calls, JS
 exceptions, DOM/rendering, network + WebSocket behavior, perf regressions.
 Not for backend-only work.
 
-### second-opinion — independent high-risk review
-Reserve for: live order placement/cancellation, live-trading activation,
-kill switches, bankroll limits, risk controls, position sizing, fee/EV/P&L
-math, whale-calibration or advisory redesign, auth/security, major
-architecture, irreversible migrations.
-Provide goal, requirements, diff, invariants, tests, known risks, specific
-questions. **Do not blindly accept its output** — weigh findings against
-tests, runtime evidence, `docs/kalshi/`, and project requirements.
+Fallback while broken: `curl` against the nginx proxy, the existing browser
+E2E suite in Woodpecker, and `.claude/skills/frontend-verification`.
 
-## Cooperation examples
+## Installed but inactive — do not invoke
 
-**Trading sizing change**
-`Superpowers → GitNexus (blast radius) → Context7 if a library is involved →
-TDD → dimensional-analysis → tests → second-opinion → verification`
+### 42Crunch
+**Status: BLOCKED_EXTERNAL.**
+Reason: no credential store and no binary — `~/.42crunch/` does not exist and
+`42c-ast` is not on PATH. Audit/scan are platform-backed operations; there is
+no meaningful local-only subset.
+**Do not invoke during normal development. Do not make it a completion gate
+for API work. Do not repeatedly ask the user to configure it.**
+Activation condition: a 42Crunch platform account + token in
+`~/.42crunch/conf/env` plus the `42c-ast` binary (`/42crunch-setup`) — a user
+decision involving an external account, out of scope for routine work.
 
-**Dashboard API failure**
-`Superpowers systematic-debugging → Chrome DevTools (console/network) →
-GitNexus if backend tracing needed → fix → tests → Chrome reproduction →
-verification`
+Fallback for FastAPI/API-security work:
+```
+OpenAPI/FastAPI schema inspection · authn tests · authz tests · route tests
+threat-oriented code review · tools.quality_audit's API-contract checks
+```
+Spec generation, if ever needed:
+`ddev exec -s fastapi python -c "import json,main; open('/app/build/openapi.json','w').write(json.dumps(main.app.openapi()))"`
+
+### second-opinion
+**Status: BLOCKED_EXTERNAL.**
+Reason: it shells out to an external reviewer CLI; v1.7.0 supports OpenAI
+Codex CLI and Google Gemini CLI, and **neither is installed** (its bundled
+`codex` MCP therefore shows `✘ Failed to connect` in `claude mcp list` —
+expected, not a fault to chase).
+**Do not make external-model review a completion gate. Do not weaken
+correctness standards because it is unavailable.**
+Activation condition: an installed *and authenticated* Codex or Gemini CLI —
+a paid external account, so a user decision.
+
+Fallback for high-risk review (live orders, kill switches, bankroll limits,
+sizing, fee/EV/P&L math, auth, irreversible migrations):
+```
+superpowers:requesting-code-review
+superpowers:verification-before-completion
+an independent internal review pass
+tests · GitNexus where applicable · dimensional-analysis where applicable
+```
+
+---
+
+# Repository routing map
+
+Real paths in this repo. Blocked tools are deliberately absent.
+
+| Area | Real paths | Route to |
+|---|---|---|
+| Config/tuning | `config/settings.yaml`, `services/config/`, `config_bounds.py`, `config_overrides.py`, `config_performance.py` | GitNexus, dimensional-analysis |
+| Advisory | `services/advisory/` | GitNexus, dimensional-analysis |
+| Whale calibration | `services/whale_calibration/` | GitNexus, **dimensional-analysis (critical)** |
+| Confidence scoring | `services/confidence_scoring.py` | GitNexus, **dimensional-analysis (critical)** |
+| Strategy | `services/strategy_engine.py` (`kelly_scaled_max_size`, `evaluate`) | GitNexus, **dimensional-analysis (critical)** |
+| Risk/sizing | `services/risk_manager.py` | GitNexus, **dimensional-analysis (critical)**, internal review pass |
+| Execution/broker | `services/paper_broker.py`, `services/position/`, `services/exits/`, `services/shadow_mode.py` | GitNexus, internal review pass |
+| Kalshi client | `services/kalshi/`, `kalshi_client.py`, `kalshi_account_client.py`, `kalshi_trade_ws.py`, `kalshi_fees.py` | `docs/kalshi/` **first**, then `kalshi-contract-review`, then GitNexus |
+| FastAPI routes | `main.py` | Context7 (FastAPI 0.134.0), route/authn/authz tests, `tools.quality_audit` |
+| Frontend | `frontend/src/js/`, `static/` | `frontend-verification`; Chrome DevTools once repaired |
+| Backtesting/analytics | `services/backtest/`, `services/analytics/` | GitNexus, dimensional-analysis |
+
+## Worked routings
+
+**Audit the whale calibration engine**
+`Superpowers → GitNexus (verify index sane first) → dimensional-analysis → tests`
+
+**Change sizing from fixed contracts to bankroll percentage**
+`Superpowers → GitNexus blast radius → TDD → dimensional-analysis → tests → internal review pass`
+
+**Dashboard is making a failing request**
+`superpowers:systematic-debugging → Chrome DevTools if repaired, else curl + frontend-verification → GitNexus if backend tracing is needed → fix → reproduce → verify`
+
+**Add an authenticated FastAPI trading route**
+`Superpowers → GitNexus if useful → Context7 for FastAPI specifics → authn/authz + route tests`
+(42Crunch is blocked; its absence does not gate this work.)
 
 **Rename a CSS class**
-Normal lightweight workflow. No specialized plugin.
+Normal lightweight workflow. **No specialized plugin.**
 
-## Superpowers lifecycle integration
+## Idle overhead — keep it low
 
-- **Brainstorming/design** — GitNexus for architecture/dependency evidence;
-  Context7 where an external library shapes the design.
-- **Planning** — add explicit specialized verification tasks only where
-  justified (blast-radius check, dimensional analysis, 42Crunch pass,
-  Chrome runtime verification, second-opinion review).
-- **TDD** — specialized tools never replace executable tests.
-- **Systematic debugging** — route by evidence type: dependency → GitNexus;
-  browser/runtime → Chrome DevTools; library behavior → Context7; math/
-  scaling → dimensional-analysis; API security → 42Crunch.
-- **Verification before completion** — ask "does this change trigger a
-  specialized verification requirement?" If yes, run it.
-
-## Idle overhead
-
-Always-on cost is ~3.5k tokens across all plugins. Keep it that way:
-- No GitNexus/42Crunch/dimensional-analysis on every edit.
-- GitNexus's auto-augment + freshness hooks (`Grep|Glob|Bash`) were
-  **deliberately left disabled** — they spawn a node process on every search
-  and Bash call. Invoke GitNexus deliberately instead.
-- Chrome DevTools only for browser-facing work; second-opinion only for
-  genuinely consequential changes.
-
-## Known setup gaps (as of 2026-08-25)
-
-- **second-opinion** requires an external LLM CLI (OpenAI Codex or Gemini),
-  neither installed; its bundled `codex` MCP therefore fails to connect.
-  Skill is discoverable; reviews need a user decision on the external account.
-- **42Crunch** requires a platform/trial token in `~/.42crunch/conf/env` plus
-  the `42c-ast` binary — neither configured. Run `/42crunch-setup` to
-  provision (needs user credentials).
+Do not let the toolchain tax every task:
+- No GitNexus / 42Crunch / dimensional-analysis on every edit.
+- GitNexus auto-augment + freshness hooks stay **disabled** (a node process
+  per Grep/Glob/Bash call). Invoke GitNexus deliberately instead.
+- `gitnexus context` can return >140KB for a single symbol — prefer
+  `impact --summaryOnly`, or `grep`, when that's all you need.
+- Chrome DevTools only for browser-facing work.
+- No account checks, auth prompts, or retries for blocked plugins.
