@@ -149,6 +149,38 @@ was never exercised.** See `.claude/skills/ci-cd-guardrails/SKILL.md`'s
 "After push" section and `.claude/skills/checkpoint/SKILL.md` step 5 for
 where this is now the documented default.
 
+## Dependency cache (`wp-uv-cache`)
+
+Every Python step installs with `uv` rather than `pip`, and the five that do
+share one named Docker volume mounted at `/root/.cache/uv`.
+
+The split matters: `uv` makes *installing* effectively free, but not
+*downloading*. A real CI log read `Prepared 64 packages in 50.50s / Installed
+64 packages in 110ms` — so on a fresh container the whole cost was the
+network. The volume makes that download happen once per package version
+instead of once per step per push (measured locally on this requirements set:
+4.5s cold, 0.875s warm).
+
+Notes:
+
+- Safe under concurrency — `uv` locks its cache, which matters because the
+  agent runs `WOODPECKER_MAX_WORKFLOWS=4` and several of these steps install
+  simultaneously.
+- Needs no settings change: this repo is already trusted for volumes
+  (`gh`-equivalent check: `curl -s https://ci.webfoundry.dev/api/repos/1`
+  shows `trusted: {network, volumes, security}` all true).
+- To reset it: `docker volume rm wp-uv-cache`. Losing it costs exactly one
+  slow run; Docker recreates it on next use.
+- `tests-dependency-audit` deliberately stays on `pip` and has no cache
+  mount — it installs only `pip-audit`, and having the tool that audits
+  dependency provenance be installed by a different resolver, from a shared
+  cache, is not a tradeoff worth ~30s.
+
+Requirements are also split so a step downloads only what it imports:
+`requirements-dev.txt` (shared), `requirements-selenium.txt` (browser-e2e
+only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
+(playwright-e2e only).
+
 ## Known limitations (observed, not assumed)
 
 - `WOODPECKER_MAX_WORKFLOWS` on the shared agent

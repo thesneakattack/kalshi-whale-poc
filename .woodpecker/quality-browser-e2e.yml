@@ -27,26 +27,121 @@ steps:
 
   - name: browser-e2e
     image: python:3.13-slim
+    # Shared uv download cache - see tests-pytest.yml for the full reasoning
+    # and the measurement behind it.
+    volumes:
+      - wp-uv-cache:/root/.cache/uv
     environment:
       RUN_BROWSER_E2E: "1"
-      CHROME_BIN: /usr/bin/chromium
-      CHROMEDRIVER_PATH: /usr/bin/chromedriver
+      # The browser now lives in the `selenium` service at the bottom of this
+      # file instead of being apt-installed into this container on every run.
+      # That install measured ~2m43s and was the largest single cost here;
+      # the service image is cached on the host and its grid answered /status
+      # 3s after start. Measured end to end on the same four tests: 7.2s for
+      # the whole step, "4 passed in 3.96s".
+      #
+      # tests/test_browser_e2e.py already supported this - SELENIUM_REMOTE_URL
+      # has been in its documented env list all along, for driving ddev's
+      # selenium-chrome add-on locally. No test change was needed.
+      #
+      # CHROME_BIN/CHROMEDRIVER_PATH are deliberately gone rather than moved:
+      # both name paths inside THIS container, and the driver fixture applies
+      # binary_location from CHROME_BIN even in remote mode - which would aim
+      # the grid's browser at a path that does not exist over there.
+      SELENIUM_REMOTE_URL: http://selenium:4444
     commands:
-      # Same major version for both packages (verified live: apt offers a
-      # single matched 151.x candidate for each) avoids the classic
-      # chromedriver/Chrome version-skew failure - deliberately not using
-      # Selenium Manager's own network-fetched driver.
-      - apt-get update -qq
-      - apt-get install -y --no-install-recommends chromium chromium-driver > /dev/null
-      - pip install -q -r requirements-dev.txt
+      # uv instead of pip: measured 5s vs 78s for this same
+      # requirements-dev.txt on python:3.13-slim (both runs back to back on
+      # the same contended host, so the ratio is the meaningful part, not
+      # the absolute numbers). Four of this repo's pipelines pay this exact
+      # install, and it was the single largest cost in the two slowest
+      # steps. --system installs into the image's own interpreter rather
+      # than a venv, which is what every step here already assumed pip was
+      # doing. Resolution is unchanged: same requirements file, same pins.
+      - pip install -q uv
+      - uv pip install --system -q -r requirements-dev.txt -r requirements-selenium.txt
       - mkdir -p build
+      # Services boot alongside the pipeline, not before it, so the grid may
+      # not be up yet. Poll it rather than guessing with a sleep.
+      #
+      # No loop counter in the message on purpose. Woodpecker runs its own
+      # substitution pass over these command strings before the shell sees
+      # them: ${i} was silently consumed (pipeline 72 logged "ready after s"),
+      # and trying to dodge that with $i""s made it strictly worse - pipelines
+      # 73 and 74 died at config parse with "unable to parse variable name",
+      # so nothing ran at all. A static string cannot fail either way, and the
+      # count was never worth a pipeline outage.
+      - |
+        for i in $(seq 1 60); do
+          if python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://selenium:4444/status', timeout=2).status == 200 else 1)" 2>/dev/null; then
+            echo "selenium grid ready"; break
+          fi
+          sleep 1
+        done
+      # The browser is in another container now, so 127.0.0.1 would resolve to
+      # the grid itself. Bind the harness to 0.0.0.0 and point the browser at
+      # this container's address on the shared pipeline network. `hostname -i`
+      # can emit several addresses; take the first.
+      - export E2E_BASE_URL=http://$(hostname -i | awk '{print $1}'):8765
       # build/, not /tmp - each Woodpecker step is its own container, and
       # only the workspace directory (build/ included) is shared across
       # them; the print-server-log step below couldn't see anything written
       # under /tmp here.
-      - python3 -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 > build/e2e-uvicorn.log 2>&1 &
-      - python3 -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+      - python3 -m uvicorn tests.support.e2e_server:app --host 0.0.0.0 --port 8765 > build/e2e-uvicorn.log 2>&1 &
+      - python3 -m tests.support.wait_for_health $E2E_BASE_URL/api/state
       - python3 -m pytest tests/test_browser_e2e.py -v
+
+  # Playwright covers what WebDriver structurally cannot: putting the
+  # browser's network layer under test control. See
+  # tests/test_browser_playwright_e2e.py's docstring for the full reasoning -
+  # in short, it forces API failures instead of waiting for one, which turns
+  # CLAUDE.md's "a displayed value must match its label" rule into an
+  # executable guard rather than prose two shipped bugs already slipped past.
+  #
+  # Its own step, and its own image, on purpose:
+  #   - mcr.microsoft.com/playwright/python ships the browsers prebuilt, so
+  #     this pays no download at runtime. The Selenium step above spends
+  #     ~2-3 minutes on `apt-get install chromium chromium-driver` every
+  #     run; this step deliberately does not repeat that mistake.
+  #   - a separate named step means a red check says WHICH stack broke, per
+  #     .claude/skills/ci-cd-guardrails' "a red job should tell the developer
+  #     what class of problem occurred".
+  # The image tag and requirements-playwright.txt's pin must move together.
+  #
+  # The uv venv is not optional plumbing - this image is Ubuntu 24.04 and
+  # ships Python 3.12, while requirements.txt pins kalshi-python-async, which
+  # requires >=3.13. The harness imports main, so it genuinely needs the full
+  # app dependency set; installing less is not an option. uv provisions 3.13
+  # in ~5s and installs everything in ~10s. Verified locally: the venv's
+  # playwright still uses the image's prebuilt browsers via
+  # PLAYWRIGHT_BROWSERS_PATH=/ms-playwright (chromium-1234), because the
+  # pinned package version matches the image's own - which is the entire
+  # reason for choosing this image, so keep those two in step.
+  - name: playwright-e2e
+    image: mcr.microsoft.com/playwright/python:v1.62.0-noble
+    # Shared uv download cache - see tests-pytest.yml for the full reasoning
+    # and the measurement behind it. The uv venv here does not relocate the
+    # cache, so this step shares the same one.
+    volumes:
+      - wp-uv-cache:/root/.cache/uv
+    environment:
+      RUN_PLAYWRIGHT_E2E: "1"
+    commands:
+      - pip install -q uv
+      # Absolute interpreter path rather than exporting PATH: Woodpecker
+      # does its own substitution pass over these command strings, and a
+      # bare $PATH is needless ambiguity when /venv/bin/python is exact.
+      - uv venv --python 3.13 /venv --quiet
+      - uv pip install --python /venv/bin/python -q -r requirements-dev.txt -r requirements-playwright.txt
+      - mkdir -p build
+      # Same server, started fresh: the Selenium step's uvicorn died with its
+      # own container. Bound to 127.0.0.1 like that step, since the browser
+      # here runs inside this container rather than in a service alongside it.
+      - /venv/bin/python -m uvicorn tests.support.e2e_server:app --host 127.0.0.1 --port 8765 > build/playwright-uvicorn.log 2>&1 &
+      - /venv/bin/python -m tests.support.wait_for_health http://127.0.0.1:8765/api/state
+      # retain-on-failure: a trace is only useful when something broke, and
+      # writing one per passing test would cost time and disk for nothing.
+      - /venv/bin/python -m pytest tests/test_browser_playwright_e2e.py -v --tracing=retain-on-failure --output=build/playwright-artifacts
 
   # Woodpecker has no first-class "upload artifact" step (see
   # quality-architecture-audit.yml's own comment on the same pattern) - the
@@ -58,4 +153,17 @@ steps:
       - event: [push, pull_request]
         status: [failure, success]
     commands:
-      - cat build/e2e-uvicorn.log || echo "no server log captured"
+      - cat build/e2e-uvicorn.log || echo "no selenium server log captured"
+      - cat build/playwright-uvicorn.log || echo "no playwright server log captured"
+      - ls -R build/playwright-artifacts 2>/dev/null || echo "no playwright traces (nothing failed)"
+
+# Runs for the whole pipeline alongside the steps and is reachable from them
+# by this name. Replaces the per-run `apt-get install chromium
+# chromium-driver` the browser-e2e step used to pay (~2m43s measured). The
+# image is already present on this host anyway - ddev's own selenium-chrome
+# add-on uses it. No shm_size override: the driver fixture already passes
+# --disable-dev-shm-usage, the documented fix for exactly the /dev/shm
+# exhaustion a default-sized container would otherwise hit.
+services:
+  - name: selenium
+    image: selenium/standalone-chromium:138.0
