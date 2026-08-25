@@ -530,6 +530,14 @@
       "source_doc_exists": true
     },
     {
+      "file": "tests/fixtures/kalshi/cfbenchmarks_value.json",
+      "source_doc": "docs/kalshi/cfbenchmarks-value.md",
+      "source_docs": [
+        "docs/kalshi/cfbenchmarks-value.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
       "file": "tests/fixtures/kalshi/create_order_request.json",
       "source_doc": "docs/kalshi/create-order-v2.md",
       "source_docs": [
@@ -616,6 +624,30 @@
       "source_docs": [
         "docs/kalshi/public-trades.md",
         "docs/kalshi/CHEATSHEET.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/pyth_value.json",
+      "source_doc": "docs/kalshi/pyth-value.md",
+      "source_docs": [
+        "docs/kalshi/pyth-value.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/rest_fill.json",
+      "source_doc": "docs/kalshi/get-fills.md",
+      "source_docs": [
+        "docs/kalshi/get-fills.md"
+      ],
+      "source_doc_exists": true
+    },
+    {
+      "file": "tests/fixtures/kalshi/rest_market_position.json",
+      "source_doc": "docs/kalshi/get-positions.md",
+      "source_docs": [
+        "docs/kalshi/get-positions.md"
       ],
       "source_doc_exists": true
     }
@@ -706,7 +738,7 @@
     "legacy_wrapper_construction_sites": 18,
     "wrapper_method_call_sites": 68,
     "known_field_read_sites": 39,
-    "fixtures_total": 12,
+    "fixtures_total": 16,
     "fixtures_missing_source_doc": 0,
     "direct_access_count": 4,
     "legacy_caller_count": 16
