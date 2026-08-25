@@ -27,4 +27,17 @@ steps:
       # doing. Resolution is unchanged: same requirements file, same pins.
       - pip install -q uv
       - uv pip install --system -r requirements-dev.txt
-      - python -m pytest -v
+      # -n 4, not `auto`. `auto` uses every visible core, and the
+      # container sees all 16 of the host's - but the shared agent runs
+      # WOODPECKER_MAX_WORKFLOWS=4, so four concurrent pytest steps would
+      # ask for 64 workers on 16 cores. At 4 the worst case is exactly the
+      # core count. Measured on this suite (1574 tests, all green at every
+      # setting): 230s serial, 72s at -n 2, 46s at -n 4, 29s at -n 8, 23s at
+      # -n auto. Most of the win is already banked by 4, and the remaining
+      # 17s is not worth oversubscribing a host that also runs the live ddev
+      # stack. Raise it here if the agent's concurrency ever drops.
+      #
+      # -v dropped deliberately: xdist interleaves workers, so per-test
+      # verbose output arrives out of order and is harder to read than the
+      # progress line, not easier.
+      - python -m pytest -n 4
