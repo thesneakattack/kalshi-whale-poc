@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generated_at": 1787635490.017282,
-  "generated_from_head": "751f599aa313ef7210982459ff7ef928cb4d0ef3",
+  "generated_at": 1787636377.544296,
+  "generated_from_head": "2db733f40bf93fa53765f6e1b515e436ecb7c0ff",
   "files": {
-    "python": 236,
+    "python": 238,
     "javascript": 14,
     "html": 4
   },
   "lines": {
-    "python": 52482,
+    "python": 52483,
     "javascript": 6228,
     "html": 7561
   },
@@ -18,7 +18,7 @@
   "workflow_files": 11,
   "workflow_jobs": 17,
   "tests": {
-    "files": 84,
+    "files": 85,
     "count": 1590
   }
 }

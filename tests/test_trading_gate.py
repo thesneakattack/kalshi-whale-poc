@@ -1803,8 +1803,6 @@ def test_refresh_discovery_cache_background_creates_and_closes_its_own_client(mo
     main.state["event_titles"].clear()
     main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": True, "task": None}
     _FakeBackgroundClient.instances = []
-    real_client_cls = main.KalshiClient
-    _FakeBackgroundClient.round_robin_select = staticmethod(real_client_cls.round_robin_select)
     monkeypatch.setattr(discovery_cache, "KalshiClient", _FakeBackgroundClient)
 
     asyncio.run(main._refresh_discovery_cache_background(

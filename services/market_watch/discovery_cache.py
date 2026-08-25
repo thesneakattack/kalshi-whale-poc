@@ -12,6 +12,7 @@ from services.app_state import state
 from services.kalshi_client import KalshiClient
 from services.market_catalog import market_catalog
 from services.market_events import event_lifecycle
+from services.market_watch import selection
 
 _PINNED_MARKET_REFRESH_SEC = 300  # structural fields (title, close_time, status, ...) for a
 # manually-pinned ticker change rarely - price freshness comes from the WS ticker stream instead
@@ -255,7 +256,7 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
         pre_tail_volume_weight=el_cfg.get("pre_tail_volume_weight", 0.4),
         post_tail_volume_weight=el_cfg.get("post_tail_volume_weight", 0.2),
     )
-    markets = KalshiClient.round_robin_select(
+    markets = selection.round_robin_select(
         candidates, cfg["kalshi"]["watchlist_size"],
         max_children_per_parent=cfg["kalshi"].get("max_children_per_parent"),
     )

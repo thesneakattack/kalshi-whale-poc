@@ -279,27 +279,27 @@
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 34,
+        "line": 35,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 58,
+        "line": 59,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 83,
+        "line": 84,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 129,
+        "line": 130,
         "symbol": "KalshiClient"
       },
       {
         "file": "services/market_catalog/routes.py",
-        "line": 196,
+        "line": 197,
         "symbol": "KalshiClient"
       },
       {
@@ -314,7 +314,7 @@
       },
       {
         "file": "services/market_watch/discovery_cache.py",
-        "line": 312,
+        "line": 313,
         "symbol": "KalshiClient"
       },
       {
@@ -358,29 +358,26 @@
       "services/analytics/routes.py:175",
       "services/diagnostics/diagnostics.py:538",
       "services/diagnostics/routes.py:220",
-      "services/market_catalog/routes.py:40",
-      "services/market_catalog/routes.py:72",
-      "services/market_catalog/routes.py:89",
-      "services/market_catalog/routes.py:146",
-      "services/market_catalog/routes.py:277",
+      "services/market_catalog/routes.py:41",
+      "services/market_catalog/routes.py:73",
+      "services/market_catalog/routes.py:90",
+      "services/market_catalog/routes.py:147",
+      "services/market_catalog/routes.py:278",
       "services/market_events/event_schedule.py:476",
       "services/market_watch/catalog_scan.py:374",
-      "services/market_watch/discovery_cache.py:317",
+      "services/market_watch/discovery_cache.py:318",
       "services/whale_stream/index_stream_handlers.py:83"
     ],
     "client.get": [
       "services/market_events/event_schedule.py:264"
     ],
-    "client.get_candidate_markets": [
-      "services/market_catalog/routes.py:240"
-    ],
     "client.get_candlesticks": [
-      "services/market_catalog/routes.py:66"
+      "services/market_catalog/routes.py:67"
     ],
     "client.get_event": [
       "services/analytics/market_analyst_orchestrator.py:78",
-      "services/market_catalog/routes.py:60",
-      "services/market_catalog/routes.py:140",
+      "services/market_catalog/routes.py:61",
+      "services/market_catalog/routes.py:141",
       "services/market_events/event_inspector.py:65"
     ],
     "client.get_event_live_data": [
@@ -393,7 +390,7 @@
       "services/market_watch/live_status.py:228"
     ],
     "client.get_filters_for_sports": [
-      "services/market_watch/discovery_cache.py:60"
+      "services/market_watch/discovery_cache.py:61"
     ],
     "client.get_live_data": [
       "services/market_events/event_inspector.py:90"
@@ -405,20 +402,21 @@
     "client.get_market": [
       "services/analytics/market_analyst_orchestrator.py:72",
       "services/diagnostics/routes.py:210",
-      "services/market_catalog/routes.py:132",
+      "services/market_catalog/routes.py:133",
       "services/market_events/event_inspector.py:49",
       "services/whale_stream/index_stream_handlers.py:66",
       "services/whale_stream/whale_stream_handlers.py:470"
     ],
     "client.get_markets": [
       "services/market_events/event_inspector.py:102",
-      "services/market_watch/catalog_scan.py:306"
+      "services/market_watch/catalog_scan.py:306",
+      "services/market_watch/selection.py:61"
     ],
     "client.get_markets_by_tickers": [
       "main.py:253",
       "services/market_watch/catalog_scan.py:132",
-      "services/market_watch/discovery_cache.py:122",
-      "services/market_watch/discovery_cache.py:277",
+      "services/market_watch/discovery_cache.py:123",
+      "services/market_watch/discovery_cache.py:278",
       "services/whale_stream/index_stream_handlers.py:108",
       "services/whalewatchers/kalshi_trade_tape.py:393"
     ],
@@ -429,20 +427,17 @@
       "services/market_watch/live_status.py:144"
     ],
     "client.get_orderbook": [
-      "services/market_catalog/routes.py:36"
+      "services/market_catalog/routes.py:37"
     ],
     "client.get_series_list": [
       "services/market_watch/catalog_scan.py:202"
     ],
     "client.get_tags_for_series_categories": [
-      "services/market_watch/discovery_cache.py:59"
-    ],
-    "client.get_top_volume_markets": [
-      "services/market_catalog/routes.py:252"
+      "services/market_watch/discovery_cache.py:60"
     ],
     "client.get_trades": [
       "services/diagnostics/diagnostics.py:529",
-      "services/market_catalog/routes.py:85",
+      "services/market_catalog/routes.py:86",
       "services/whale_stream/whale_stream_handlers.py:524",
       "services/whale_stream/whale_stream_handlers.py:529"
     ],
@@ -693,7 +688,7 @@
     "direct_host_usage_sites": 14,
     "legacy_wrapper_import_sites": 20,
     "legacy_wrapper_construction_sites": 18,
-    "wrapper_method_call_sites": 68,
+    "wrapper_method_call_sites": 67,
     "known_field_read_sites": 30,
     "fixtures_total": 12,
     "fixtures_missing_source_doc": 0,

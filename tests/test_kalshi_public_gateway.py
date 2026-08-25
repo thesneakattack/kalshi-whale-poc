@@ -28,14 +28,15 @@ def test_facade_is_the_gateway_not_a_reimplementation():
         assert getattr(KalshiClient, name) is getattr(KalshiPublicGateway, name), name
 
 
-def test_facade_keeps_only_policy_methods_of_its_own():
-    """Selection/watchlist policy (A7's migration target) is the only
-    non-inherited surface the facade still owns."""
+def test_facade_owns_no_methods_of_its_own():
+    """Since A7 moved selection policy to services/market_watch/selection.py,
+    the facade is a pure alias for the gateway - any method appearing here
+    is boundary leakage."""
     own = {
         name for name, member in vars(KalshiClient).items()
         if callable(member) and not name.startswith("__")
     }
-    assert own <= {"get_candidate_markets", "round_robin_select", "get_top_volume_markets"}
+    assert own == set()
 
 
 def test_gateway_covers_every_used_operation_with_contract_docs():

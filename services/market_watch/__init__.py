@@ -15,6 +15,9 @@ live-status/milestone/event tracking. Was one 1,337-line file
   milestone/live-data system, plus exchange status.
 - event_metadata.py - event title/metadata caching, the crypto/commodity/
   weather live-data feed.
+- selection.py - market-selection policy (candidate filtering, series-
+  level round-robin, watchlist caps), moved out of the vendor client at
+  Kalshi Integration Phase A Task A7.
 
 Every name external callers need is re-exported here, so
 `from services.market_watch import X` is the one import line to use -
@@ -41,3 +44,4 @@ from services.market_watch.live_status import (  # noqa: F401
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _LIVE_STATUS_TERMINAL,
 )
 from services.market_watch.market_fetch import _fetch_markets, _MARKET_FIELDS, _slim_market  # noqa: F401
+from services.market_watch import selection  # noqa: F401
