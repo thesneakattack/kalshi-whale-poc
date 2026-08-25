@@ -779,3 +779,42 @@ def test_unknown_open_enum_value_survives_normalization_untouched():
     canonical = trade_contract.public_trade_from_ws(msg)
     assert canonical.raw_payload["fee_type"] == "a_fee_type_kalshi_invents_tomorrow"
     assert canonical.outcome_side == "no"  # closed semantics still resolve strictly beside it
+
+
+# --- C4: canonical identity is structurally closed --------------------------
+
+
+def test_canonical_objects_expose_no_alias_spellings():
+    """C4: a consumer holding the canonical object CANNOT choose REST-vs-WS
+    alias spellings itself - slots-frozen dataclasses expose exactly the
+    canonical names (trade_id, ticker); fill_id / market_ticker exist only
+    inside raw_payload, where archival/diagnostics can still reach them."""
+    from services.kalshi.contracts import fill as fill_contract
+    from services.kalshi.contracts import position as position_contract
+    from services.kalshi.contracts import trade as trade_contract
+
+    f = fill_contract.user_fill_from_ws(_payload("fill.json"))
+    p = position_contract.market_position_from_ws(_payload("market_position.json"))
+    t = trade_contract.public_trade_from_ws(_payload("public_trade.json"))
+
+    for obj, alias in ((f, "fill_id"), (f, "market_ticker"),
+                       (p, "market_ticker"), (t, "market_ticker"), (t, "taker_side")):
+        with pytest.raises(AttributeError):
+            getattr(obj, alias)
+    # ...and the aliases are still preserved for archival, in raw_payload
+    assert f.raw_payload["market_ticker"] == f.ticker
+    assert p.raw_payload["market_ticker"] == p.ticker
+
+
+def test_lifecycle_event_never_implies_determined_is_final_even_with_a_result():
+    """The determined fixture CARRIES result + settlement_value - exactly
+    the bait that once caused premature outcome resolution. The canonical
+    event still says may_resolve_outcome=False; the result stays in
+    raw_payload for diagnostics only."""
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    msg = _payload("market_lifecycle_determined.json")
+    assert "result" in msg  # the bait is real
+    event = lifecycle_contract.lifecycle_event_from_ws(msg)
+    assert event.may_resolve_outcome is False
+    with pytest.raises(AttributeError):
+        event.result  # never a first-class attribute - raw_payload only
