@@ -23,3 +23,9 @@ requests==2.33.0
 # CI: `uv pip install` reported "Prepared 64 packages in 50.50s / Installed
 # 64 packages in 110ms" - the install is already free, the download is not,
 # so the only remaining lever is not fetching what a step never imports.
+# Scoped static type checking for services/kalshi/ only (Kalshi Integration
+# Phase C Task C1, mypy.ini) - static contract mistakes in the integration
+# boundary fail in CI before runtime, without dragging the legacy app into
+# a repo-wide typing project. Current stable at adoption time (2026-08-25),
+# Python 3.13-compatible, pinned exact like everything else here.
+mypy==2.3.1

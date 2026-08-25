@@ -20,8 +20,11 @@ dataclasses, no runtime validation framework.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass
 
+from services.kalshi.contracts.types import BookSide
 from services.kalshi.provenance import ContractDocs
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
@@ -33,15 +36,17 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
 }
 
 # BookSide (create-order-v2.md): the only two legal values, YES-leg
-# vocabulary. "yes"/"no"/"buy"/"sell" are other surfaces' vocabularies
-# and must never reach this endpoint.
+# vocabulary - the closed Literal lives in contracts/types.py (C2).
+# "yes"/"no"/"buy"/"sell" are other surfaces' vocabularies and must
+# never reach this endpoint; __post_init__ still enforces it at runtime
+# for untyped callers (typing cannot replace the check).
 _BOOK_SIDES = ("bid", "ask")
 
 
 @dataclass(frozen=True, slots=True)
 class CreateOrderRequest:
     ticker: str
-    side: str                      # "bid" (buy YES) | "ask" (sell YES)
+    side: BookSide                 # "bid" (buy YES) | "ask" (sell YES)
     count: str                     # FixedPointCount string, e.g. "10.00"
     price: str                     # fixed-point dollars string, e.g. "0.5600"
     time_in_force: str = "immediate_or_cancel"
@@ -52,7 +57,7 @@ class CreateOrderRequest:
     cancel_order_on_pause: bool | None = None
     reduce_only: bool | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.side not in _BOOK_SIDES:
             raise ValueError(
                 f"create-order-v2 side must be one of {_BOOK_SIDES} (YES-leg book vocabulary, "
@@ -65,7 +70,7 @@ def create_order_kwargs(request: CreateOrderRequest) -> dict:
     always present, optionals only when set (the SDK treats explicit-None
     and omitted differently at the wire level; see services/kalshi/
     public.py's confirmed get_markets case)."""
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         ticker=request.ticker,
         side=request.side,
         count=request.count,

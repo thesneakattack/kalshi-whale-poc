@@ -51,9 +51,9 @@ from services import trade_analytics
 from services import trade_category
 from services.config_store import config_store
 from services.http_client import close_client, get_and_reset_rate_limit_hits, http_metrics_snapshot
-from services.kalshi_client import KalshiClient
-from services.kalshi_account_client import KalshiAccountClient
-from services.kalshi_trade_ws import KalshiTradeWebSocketClient
+from services.kalshi.public import KalshiPublicGateway
+from services.kalshi.account_client import KalshiAccountClient
+from services.kalshi.websocket import KalshiStreamGateway
 from services.confidence_scoring import WhaleSignal
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS, get_active_provider
@@ -190,14 +190,14 @@ def _maybe_check_signal_resolutions(cfg: dict) -> None:
 
 
 async def _check_signal_resolutions_background(cfg: dict) -> None:
-    """Owns its own KalshiClient - see _refresh_discovery_cache's
+    """Owns its own KalshiPublicGateway - see _refresh_discovery_cache's
     identical reasoning (the calling tick's own client closes at the end
     of that same tick, well before an independent background task would
     finish). Exceptions are caught and recorded by task_supervisor.supervise
     (the caller) - this only needs its own finally to release the
     "checking" flag and close the client regardless of outcome."""
     check_state = state["signal_resolution_check"]
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _check_signal_resolutions(client)
     finally:
@@ -215,14 +215,14 @@ _SIGNAL_RESOLUTION_BATCH_SIZE = 200  # 2026-08-16 API-doc audit finding: real,
 # confirmed via the installed SDK's own get_markets signature - a real,
 # documented batch filter this app never used) turns what used to be N
 # individual get_market() calls, each its own local rate-limiter acquire(),
-# into ceil(N/50) batched calls (see KalshiClient.get_markets_by_tickers's
+# into ceil(N/50) batched calls (see KalshiPublicGateway.get_markets_by_tickers's
 # own _MARKETS_BY_TICKERS_BATCH_SIZE=50, sized to Kalshi's real 600-token
 # burst ceiling). 200/check at the existing 30s cadence drains this backlog
 # in about an hour instead of a full day, at only 4 local acquire() calls
 # per check instead of 200.
 
 
-async def _check_signal_resolutions(client: KalshiClient):
+async def _check_signal_resolutions(client: KalshiPublicGateway):
     """Pick a batch of old-enough unresolved logged signals and see if their
     markets have settled yet. Interval-gating and background-task
     scheduling both live in _maybe_check_signal_resolutions above now -
@@ -302,7 +302,7 @@ async def trading_loop():
             if cfg.get("series_evaluator", {}).get("enabled"):
                 series_evaluator.evaluate_pending(cfg, time.time())
 
-            client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+            client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
 
             # Market data, account data, exchange status, and resolution-checking
             # don't depend on each other — fetch/run all four concurrently.
@@ -1116,6 +1116,16 @@ def _build_state_body() -> dict:
             "sport_ordering": state["category_metadata"].get("sport_ordering") or [],
         },
         "trade_tape": state["trade_tape"],
+        # Streaming-path liveness/measurement surface (C3 finding,
+        # 2026-08-25): both were populated in-process (observability has
+        # been sampling trade_stream_perf all along) but never served -
+        # the A17 soak had to reconstruct stream throughput from
+        # data/observability.db history because the live snapshot omitted
+        # the purpose-built per-second perf window. A dashboard/diagnostic
+        # read of /api/state can now tell "stream quiet" from "handler
+        # stalled" directly.
+        "trade_tape_last_fetch_ts": state.get("trade_tape_last_fetch_ts"),
+        "trade_stream_perf": state.get("trade_stream_perf"),
         "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],
         "signal_feed": state["signal_feed"],

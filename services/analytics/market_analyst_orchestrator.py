@@ -17,12 +17,12 @@ from services import (
 from services.advisory import advisory_engine
 from services.app_state import broker, bump_generation, state
 from services.config.config_paths import _types_compatible
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 
 _analyzing_tickers: set[str] = set()
 
 
-async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker: str) -> dict:
+async def _run_market_analyst_for_ticker(client: KalshiPublicGateway, cfg: dict, ticker: str) -> dict:
     """On-demand, single-ticker orchestration for services/market_analyst_agent/
     - direct request (2026-08-09): switched from an automatic per-tick
     background scan to a button-triggered "analyze this one market right
@@ -62,7 +62,7 @@ async def _run_market_analyst_for_ticker(client: KalshiClient, cfg: dict, ticker
 
 
 async def _analyze_market_uncached(
-    client: KalshiClient, ma_cfg: dict, cfg: dict, ticker: str, now: float, api_key: str,
+    client: KalshiPublicGateway, ma_cfg: dict, cfg: dict, ticker: str, now: float, api_key: str,
 ) -> dict:
     """The real fetch-and-analyze body, split out of _run_market_analyst_for_
     ticker so the in-flight guard in that function wraps every exit path

@@ -42,8 +42,8 @@ from pathlib import Path
 import pytest
 
 import main  # noqa: E402
-from services.kalshi_account_client import KalshiAccountClient  # noqa: E402
-from services.kalshi_trade_ws import KalshiTradeWebSocketClient  # noqa: E402
+from services.kalshi.account_client import KalshiAccountClient  # noqa: E402
+from services.kalshi.websocket import KalshiStreamGateway  # noqa: E402
 from services.market_watch import _MARKET_FIELDS  # noqa: E402
 from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side  # noqa: E402
 
@@ -104,7 +104,7 @@ def _reset_account_state(connected: bool = True, fills=None, positions=None) -> 
 def test_normalize_trade_keeps_all_three_direction_fields():
     trade = _payload("public_trade.json")
 
-    normalized = KalshiTradeWebSocketClient.normalize_trade(trade)
+    normalized = KalshiStreamGateway.normalize_trade(trade)
 
     assert normalized["ticker"] == "HIGHNY-22DEC23-B53.5"
     assert normalized["taker_outcome_side"] == "no"
@@ -118,7 +118,7 @@ def test_normalize_trade_prefers_canonical_field_when_legacy_taker_side_is_absen
     # unreadable to "no" - see docs/kalshi/CHEATSHEET.md's own entry.
     trade = _payload("public_trade_no_deprecated_side.json")
 
-    normalized = KalshiTradeWebSocketClient.normalize_trade(trade)
+    normalized = KalshiStreamGateway.normalize_trade(trade)
 
     assert normalized["taker_outcome_side"] == "yes"
     assert normalized["taker_side"] == "yes"  # NOT the "no" a naive default would produce
@@ -201,7 +201,7 @@ def test_process_stream_fill_is_a_noop_when_account_not_connected():
 
 
 def test_market_position_envelope_dispatches_to_on_position():
-    client = KalshiTradeWebSocketClient("https://external-api.kalshi.com/trade-api/v2")
+    client = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2")
     envelope = _fixture("market_position_envelope.json")
     received = []
 
@@ -395,7 +395,7 @@ def test_ws_client_trade_normalizer_is_the_boundary_implementation():
     # Delegation without re-implementation: the compatibility staticmethod
     # and the boundary function must be the same object, so the two can
     # never drift apart.
-    assert KalshiTradeWebSocketClient.normalize_trade is trade_contract.normalize_trade
+    assert KalshiStreamGateway.normalize_trade is trade_contract.normalize_trade
 
 
 def test_trade_normalizer_leaves_direction_none_when_unreadable():
@@ -749,3 +749,72 @@ def test_pyth_value_records_a_straight_underlying_price():
     assert latest is not None
     assert latest["value"] == 65002.41
     assert latest["q15_value"] is None  # pyth carries no windowed averages
+
+
+# --- C2: strict closed semantics, tolerant open vendor values ---------------
+
+
+def test_direction_vocabulary_has_exactly_one_shared_copy():
+    """trade.py and fill.py narrow through the SAME mapping objects in
+    contracts/types.py - the two channels structurally cannot disagree
+    about yes/no ⇄ bid/ask equivalence."""
+    from services.kalshi.contracts import fill as fill_contract
+    from services.kalshi.contracts import trade as trade_contract
+    from services.kalshi.contracts import types as boundary_types
+    assert trade_contract.AS_OUTCOME_SIDE is boundary_types.AS_OUTCOME_SIDE
+    assert fill_contract.AS_OUTCOME_SIDE is boundary_types.AS_OUTCOME_SIDE
+    assert trade_contract.BOOK_SIDE_TO_OUTCOME is fill_contract.BOOK_SIDE_TO_OUTCOME
+
+
+def test_unknown_open_enum_value_survives_normalization_untouched():
+    """Open vendor values (fee_type is the proven live case - Kalshi grew
+    quadratic_with_combo_maker_fees beyond its documented enum in 2026-08)
+    must pass through normalization and canonical construction untouched:
+    tolerated, preserved, never validated into a crash."""
+    from services.kalshi.contracts import trade as trade_contract
+    msg = dict(_payload("public_trade.json"))
+    msg["fee_type"] = "a_fee_type_kalshi_invents_tomorrow"
+    normalized = trade_contract.normalize_trade(msg)
+    assert normalized["fee_type"] == "a_fee_type_kalshi_invents_tomorrow"
+    canonical = trade_contract.public_trade_from_ws(msg)
+    assert canonical.raw_payload["fee_type"] == "a_fee_type_kalshi_invents_tomorrow"
+    assert canonical.outcome_side == "no"  # closed semantics still resolve strictly beside it
+
+
+# --- C4: canonical identity is structurally closed --------------------------
+
+
+def test_canonical_objects_expose_no_alias_spellings():
+    """C4: a consumer holding the canonical object CANNOT choose REST-vs-WS
+    alias spellings itself - slots-frozen dataclasses expose exactly the
+    canonical names (trade_id, ticker); fill_id / market_ticker exist only
+    inside raw_payload, where archival/diagnostics can still reach them."""
+    from services.kalshi.contracts import fill as fill_contract
+    from services.kalshi.contracts import position as position_contract
+    from services.kalshi.contracts import trade as trade_contract
+
+    f = fill_contract.user_fill_from_ws(_payload("fill.json"))
+    p = position_contract.market_position_from_ws(_payload("market_position.json"))
+    t = trade_contract.public_trade_from_ws(_payload("public_trade.json"))
+
+    for obj, alias in ((f, "fill_id"), (f, "market_ticker"),
+                       (p, "market_ticker"), (t, "market_ticker"), (t, "taker_side")):
+        with pytest.raises(AttributeError):
+            getattr(obj, alias)
+    # ...and the aliases are still preserved for archival, in raw_payload
+    assert f.raw_payload["market_ticker"] == f.ticker
+    assert p.raw_payload["market_ticker"] == p.ticker
+
+
+def test_lifecycle_event_never_implies_determined_is_final_even_with_a_result():
+    """The determined fixture CARRIES result + settlement_value - exactly
+    the bait that once caused premature outcome resolution. The canonical
+    event still says may_resolve_outcome=False; the result stays in
+    raw_payload for diagnostics only."""
+    from services.kalshi.contracts import lifecycle as lifecycle_contract
+    msg = _payload("market_lifecycle_determined.json")
+    assert "result" in msg  # the bait is real
+    event = lifecycle_contract.lifecycle_event_from_ws(msg)
+    assert event.may_resolve_outcome is False
+    with pytest.raises(AttributeError):
+        event.result  # never a first-class attribute - raw_payload only

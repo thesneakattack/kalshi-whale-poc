@@ -9,11 +9,11 @@ import time
 
 from services import game_state
 from services.app_state import state
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_lookup import _sport_for_event
 
 
-async def _fetch_event_titles(client: KalshiClient, markets: list[dict]) -> dict:
+async def _fetch_event_titles(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     """Fetches every not-yet-cached event's own title/sub_title/category -
     not just events with sibling markets (an earlier, narrower version of
     this only fetched for multi-outcome groups; broadened because this data
@@ -152,7 +152,7 @@ _EVENT_LIVE_DATA_EXCLUDED_CATEGORIES = {"Sports"}  # 2026-08-16 API-doc audit
 # already follows.
 
 
-async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> dict:
+async def _fetch_event_live_data(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     event_tickers = list(dict.fromkeys(
         m["event_ticker"] for m in markets if m.get("event_ticker")
     ))
@@ -184,7 +184,7 @@ async def _fetch_event_live_data(client: KalshiClient, markets: list[dict]) -> d
                     # **ld first (2026-08-17): this used to keep five named
                     # keys and drop the rest of the live-data response.
                     # Same instruction, same reason as
-                    # KalshiTradeWebSocketClient.normalize_trade - a field
+                    # KalshiStreamGateway.normalize_trade - a field
                     # Kalshi adds should arrive intact rather than be
                     # discarded before anything can notice it exists. The
                     # explicit keys still win, so `details` is still

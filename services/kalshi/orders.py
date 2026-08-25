@@ -27,8 +27,11 @@ docstrings.
 """
 from __future__ import annotations
 
+
 import time
 
+from services.kalshi.contracts.order import CreateOrderRequest, create_order_kwargs
+from services.kalshi.contracts.types import BookSide
 from services.kalshi.provenance import ContractDocs
 from services.kalshi.transport import call_with_backoff
 
@@ -76,7 +79,7 @@ class KalshiOrderGateway:
     async def create_order(
         self,
         ticker: str,
-        side: str,                    # "bid" (buy YES) | "ask" (sell YES) — BookSide, docs/kalshi/create-order-v2.md
+        side: BookSide,                # "bid" (buy YES) | "ask" (sell YES) — BookSide, docs/kalshi/create-order-v2.md
         count: str,                    # FixedPointCount string, e.g. "10.00" — contracts, 0-2 decimals
         price: str,                    # FixedPointDollars string, e.g. "0.5600" — dollars, up to 4 decimals
         time_in_force: str = "immediate_or_cancel",   # "fill_or_kill" | "good_till_canceled" | "immediate_or_cancel"
@@ -91,7 +94,14 @@ class KalshiOrderGateway:
         self._require_trading_enabled()
         if not is_closing_order:
             self._require_risk_ok()
-        kwargs = dict(
+        # C5: wire kwargs are built by the canonical contract - ONE
+        # construction path (contracts/order.py's create_order_kwargs), and
+        # CreateOrderRequest's own BookSide validation now guards the real
+        # write: a legacy "yes"/"no"/"buy"/"sell" side raises ValueError
+        # here instead of reaching the SDK as a real-money order. Gates
+        # above run first on purpose - a disabled account refuses before
+        # vocabulary is even examined.
+        request = CreateOrderRequest(
             ticker=ticker,
             side=side,
             count=count,
@@ -99,15 +109,12 @@ class KalshiOrderGateway:
             time_in_force=time_in_force,
             self_trade_prevention_type=self_trade_prevention_type,
             client_order_id=client_order_id or f"kwp-{int(time.time() * 1000)}",
+            expiration_time=expiration_time,
+            post_only=post_only,
+            cancel_order_on_pause=cancel_order_on_pause,
+            reduce_only=reduce_only,
         )
-        if expiration_time is not None:
-            kwargs["expiration_time"] = expiration_time
-        if post_only is not None:
-            kwargs["post_only"] = post_only
-        if cancel_order_on_pause is not None:
-            kwargs["cancel_order_on_pause"] = cancel_order_on_pause
-        if reduce_only is not None:
-            kwargs["reduce_only"] = reduce_only
+        kwargs = create_order_kwargs(request)
         # create_order_v2 takes **kwargs (unlike the account read methods)
         # and does accept _request_timeout - verified 2026-08-08 by reading
         # its generated source, not assumed (the read endpoints' stricter

@@ -1,42 +1,38 @@
 """Tests for services/kalshi/public.py — the documented public read gateway
-(Kalshi Integration Phase A Task A6).
+(Kalshi Integration Phase A Task A6; sole implementation AND sole import
+path since the compatibility facades were deleted at zero callers,
+Phase C Task C8).
 
-Wire-semantic behavior tests live in tests/test_kalshi_client.py and keep
-passing unchanged through the compatibility facade (KalshiClient subclasses
-the gateway, so those tests exercise the gateway's own implementations).
-This file proves the boundary structure itself: one implementation under
-services/kalshi/, the facade adding policy only, and every gateway
-operation carrying CONTRACT_DOCS provenance.
+Wire-semantic behavior tests live in tests/test_kalshi_client.py and
+exercise the gateway directly. This file proves the boundary structure:
+one implementation under services/kalshi/, no legacy import path left,
+and every gateway operation carrying CONTRACT_DOCS provenance.
 """
 from __future__ import annotations
 
 import asyncio
 import inspect
 
+import pytest
+
 from services.kalshi.public import CONTRACT_DOCS, KalshiPublicGateway
-from services.kalshi_client import KalshiClient
 
 
-def test_facade_is_the_gateway_not_a_reimplementation():
-    """Design-spec facade rule 5: 'facade methods delegate without
-    re-implementing semantics.' Subclassing is that, provably: the facade's
-    wire methods ARE the gateway's own functions."""
-    assert issubclass(KalshiClient, KalshiPublicGateway)
-    for name in ("get_markets", "get_series_list", "get_market", "get_markets_by_tickers",
-                 "get_orderbook", "get_event", "get_events", "get_live_datas",
-                 "get_trades", "get_exchange_status", "close"):
-        assert getattr(KalshiClient, name) is getattr(KalshiPublicGateway, name), name
+def test_legacy_facade_import_paths_are_gone():
+    """C8: the compatibility facades were deleted at zero callers - the
+    legacy import paths must stay dead. A reintroduced facade module
+    would make these imports succeed and this test fail (the runtime
+    complement to the kalshi_boundary CI ratchet)."""
+    with pytest.raises(ModuleNotFoundError):
+        import services.kalshi_client  # noqa: F401
+    with pytest.raises(ModuleNotFoundError):
+        import services.kalshi_trade_ws  # noqa: F401
+    with pytest.raises(ModuleNotFoundError):
+        import services.kalshi_account_client  # noqa: F401
 
 
-def test_facade_owns_no_methods_of_its_own():
-    """Since A7 moved selection policy to services/market_watch/selection.py,
-    the facade is a pure alias for the gateway - any method appearing here
-    is boundary leakage."""
-    own = {
-        name for name, member in vars(KalshiClient).items()
-        if callable(member) and not name.startswith("__")
-    }
-    assert own == set()
+# (test_facade_owns_no_methods_of_its_own retired at C8 with the facade
+# itself - superseded by test_legacy_facade_import_paths_are_gone.)
 
 
 def test_gateway_covers_every_used_operation_with_contract_docs():

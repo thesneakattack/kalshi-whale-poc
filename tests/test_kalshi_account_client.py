@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from services import kalshi_account_client as kac_module
+from services.kalshi import account_client as kac_module
 from services.risk_manager import RiskManager
 
 
@@ -332,3 +332,63 @@ def test_facade_client_injection_reaches_both_gateways():
     assert c._reads._client is fake
     assert c._writes._client is fake
     assert c._client is fake
+
+
+# ---- C5: canonical order contract guards the production write path ---------
+
+
+def test_create_order_rejects_non_v2_side_vocabulary_before_any_sdk_call():
+    """C5: the order gateway builds its wire kwargs through the canonical
+    CreateOrderRequest, whose construction rejects any side outside
+    create-order-v2.md's BookSide vocabulary - so a legacy "yes"/"no" (or
+    "buy"/"sell") can never reach the SDK as a real-money order with a
+    guessed meaning. Trading gates still take precedence (PermissionError
+    when disabled, checked before the request is even built)."""
+    c, fake = _client_with_fake_sdk(trading_enabled=True)
+    for bad_side in ("yes", "no", "buy", "sell"):
+        with pytest.raises(ValueError):
+            asyncio.run(c.create_order(ticker="TICK-A", side=bad_side, count="1.00", price="0.5000"))
+    assert fake.calls == []
+
+    # gate precedence: disabled trading refuses before vocabulary validation
+    c2, fake2 = _client_with_fake_sdk(trading_enabled=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(c2.create_order(ticker="TICK-A", side="yes", count="1.00", price="0.5000"))
+    assert fake2.calls == []
+
+
+def test_order_gateway_wire_kwargs_are_built_by_the_canonical_contract():
+    """One construction path for order wire kwargs: the gateway must build
+    through contracts/order.py's create_order_kwargs, not a private inline
+    copy that could drift from the documented v2 shape."""
+    import inspect
+    from services.kalshi import orders as orders_module
+    src = inspect.getsource(orders_module.KalshiOrderGateway.create_order)
+    assert "create_order_kwargs" in src
+
+
+# ---- C7: capability protocols --------------------------------------------
+
+
+def test_facade_and_gateways_satisfy_their_capability_protocols():
+    """C7: consumers depend on capabilities (services/kalshi/interfaces.py),
+    not on transitional concrete classes. The composing facade satisfies
+    all three; the read gateway satisfies READS ONLY - it must never
+    structurally satisfy the write capability."""
+    from services.kalshi.account import KalshiAccountGateway
+    from services.kalshi.interfaces import AccountReads, FlattenCapable, OrderWrites
+    from services.kalshi.orders import KalshiOrderGateway
+
+    c, _ = _client_with_fake_sdk(trading_enabled=False)
+    assert isinstance(c, AccountReads)
+    assert isinstance(c, OrderWrites)
+    assert isinstance(c, FlattenCapable)
+
+    reads = KalshiAccountGateway(None)
+    assert isinstance(reads, AccountReads)
+    assert not isinstance(reads, OrderWrites)
+    assert not isinstance(reads, FlattenCapable)
+
+    writes = KalshiOrderGateway(None, trading_enabled=False, request_timeout_sec=5)
+    assert isinstance(writes, OrderWrites)
+    assert not isinstance(writes, AccountReads)

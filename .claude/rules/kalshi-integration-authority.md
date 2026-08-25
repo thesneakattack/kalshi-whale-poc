@@ -41,9 +41,11 @@ When implementing that initiative, use
 Opaque raw Kalshi payloads may be preserved or transported for diagnostics, archival,
 observability, and research.
 
-Vendor-specific semantic interpretation should live in `services/kalshi/` once the
-relevant Phase A migration task has landed. Do not create new interpretation outside that
-boundary while migration is in progress.
+Vendor-specific semantic interpretation lives in `services/kalshi/` — the migration is
+complete (Phase A merged 2026-08-25; Phase C finalized the boundary the same day). Do not
+create semantic interpretation outside that boundary; the architecture audit's
+`kalshi_boundary` scanner enforces the containment on every push, and
+`services/kalshi/CHEATSHEET.md` documents the permanent add/change-an-endpoint workflow.
 
 ## Safety
 

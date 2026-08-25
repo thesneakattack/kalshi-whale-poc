@@ -9,7 +9,7 @@ Business callbacks (on_trade/on_ticker/on_fill/...) remain application
 code — this gateway never interprets vendor fields itself and never
 decides what the app should do with a message.
 
-services/kalshi_trade_ws.py remains the compatibility facade production
+services/kalshi_trade_ws.py was the compatibility facade production
 wiring imports (services/app_state.py constructs one instance for the
 trade/ticker/lifecycle connection and a second, physically isolated one
 for index feeds — that independence is constructor policy, preserved
@@ -28,7 +28,12 @@ import websockets
 
 logger = logging.getLogger(__name__)
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # typing-only - runtime imports unchanged
+    from websockets.asyncio.client import ClientConnection
 
 # Channel-specific semantic normalization lives behind the integration
 # boundary (Phase A Task A10) - this transport delegates and never
@@ -121,9 +126,9 @@ class KalshiStreamGateway:
         self.key_id = os.getenv("KALSHI_API_KEY_ID", "").strip()
         self.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "").strip()
         self.ws_url = _DEMO_WS_URL if "demo.kalshi" in self.base_url else _PROD_WS_URL
-        self._private_key = None
+        self._private_key: rsa.RSAPrivateKey | None = None
         self._load_error = None
-        self._ws = None
+        self._ws: ClientConnection | None = None
         self._lock = asyncio.Lock()
         self._desired_tickers: set[str] = set()
         self._subscribed_tickers: set[str] = set()
@@ -169,7 +174,15 @@ class KalshiStreamGateway:
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
-                    self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+                    loaded_key = serialization.load_pem_private_key(f.read(), password=None)
+                    if not isinstance(loaded_key, rsa.RSAPrivateKey):
+                        # Kalshi API keys are RSA (docs/kalshi/api_keys.md);
+                        # the RSA-PSS signing in _auth_headers is only
+                        # defined for RSA. A non-RSA key always failed
+                        # later, deep inside sign(), with a confusing
+                        # error - fail here with a real one instead.
+                        raise ValueError("KALSHI_PRIVATE_KEY_PATH is not an RSA private key")
+                    self._private_key = loaded_key
             except Exception as exc:
                 self._load_error = str(exc)
 
@@ -558,6 +571,7 @@ class KalshiStreamGateway:
             await self._ws.send(json.dumps(payload))
 
     def _auth_headers(self) -> dict[str, str]:
+        assert self._private_key is not None  # only called when enabled (credentials loaded)
         timestamp = str(int(time.time() * 1000))
         message = (timestamp + "GET" + "/trade-api/ws/v2").encode("utf-8")
         signature = self._private_key.sign(

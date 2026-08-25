@@ -13,7 +13,7 @@ import time
 from services import index_feed, settlement_edge, settlement_edge_entry
 from services.app_state import broker, risk, state
 from services.config_store import config_store
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.whale_stream import decision_bridge
 
 # ticker -> settlement spec (services/index_feed.settlement_spec). A market's
@@ -61,7 +61,7 @@ async def _spec_for(ticker: str) -> dict:
     spec = _settlement_spec_cache.get(ticker)
     if spec is None:
         cfg = config_store.get()
-        client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+        client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
         try:
             spec = index_feed.settlement_spec(await client.get_market(ticker))
         except Exception:
@@ -70,7 +70,7 @@ async def _spec_for(ticker: str) -> dict:
             return {"supported": False, "reason": "market fetch failed"}
         finally:
             # Real live leak (2026-08-23): this client was never closed on
-            # any path - a fresh KalshiClient (and its SDK-managed aiohttp
+            # any path - a fresh KalshiPublicGateway (and its SDK-managed aiohttp
             # session, see services/kalshi_client.py's own close() docstring)
             # leaked on every cache miss. This module's own docstring above
             # already knew the cadence ("the 15-minute series rotates its
@@ -87,7 +87,7 @@ async def _spec_for(ticker: str) -> dict:
     return spec
 
 
-async def _resolve_settlement_windows(client: KalshiClient) -> None:
+async def _resolve_settlement_windows(client: KalshiPublicGateway) -> None:
     """Fill in outcomes for observed settlement windows, driven by
     settlement_edge's own pending list rather than the discovery watchlist.
 

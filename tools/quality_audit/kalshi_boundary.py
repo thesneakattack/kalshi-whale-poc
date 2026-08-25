@@ -34,7 +34,6 @@ investigation-to-guard rule option 3, shared logic for runtime/CI.
 from __future__ import annotations
 
 import ast
-from collections import Counter
 from pathlib import Path
 
 from services.quality.models import QualityFinding
@@ -52,9 +51,6 @@ _BOUNDARY_PREFIX = "services/kalshi/"
 # Raw host strings allowed outside services/kalshi/: the reviewed census
 # seam (see tools/kalshi_census.py's _APPROVED_INTEGRATION_FILES rationale).
 _HOST_ALLOWED_FILES = frozenset({
-    "services/kalshi_client.py",
-    "services/kalshi_account_client.py",
-    "services/kalshi_trade_ws.py",
     "services/http_client.py",
     "tools/kalshi_public_canary.py",
     "tools/kalshi_docs_sync.py",
@@ -62,15 +58,15 @@ _HOST_ALLOWED_FILES = frozenset({
     "tools/quality_audit/kalshi_boundary.py",
 })
 
-# Reviewed ratchet baseline: current legacy-facade import counts at the
-# time A15 landed (production code only, tests excluded - same scan the
-# census uses). Lower these as C8 removes consumers; never raise them
-# without an explicit reviewed decision recorded in the commit.
-FACADE_IMPORT_BASELINE: dict[str, int] = {
-    "services.kalshi_client": 16,
-    "services.kalshi_account_client": 2,
-    "services.kalshi_trade_ws": 2,
-}
+# C9: the migration ratchet became a final invariant. The legacy module
+# paths were deleted at zero callers (C8); ANY import of them - with or
+# without a reintroduced file - is a hard error, no baseline, no
+# file-existence precondition.
+BANNED_LEGACY_MODULES = frozenset({
+    "services.kalshi_client",
+    "services.kalshi_account_client",
+    "services.kalshi_trade_ws",
+})
 
 _DEPRECATED_DIRECTION_FIELDS = frozenset({"taker_side", "taker_outcome_side", "taker_book_side"})
 
@@ -92,11 +88,8 @@ def _docstring_linenos(tree: ast.Module) -> set[int]:
     return linenos
 
 
-def scan_kalshi_boundary(
-    repo_root: Path, facade_baseline: dict[str, int] | None = None
-) -> list[QualityFinding]:
+def scan_kalshi_boundary(repo_root: Path) -> list[QualityFinding]:
     repo_root = Path(repo_root)
-    baseline = FACADE_IMPORT_BASELINE if facade_baseline is None else facade_baseline
     findings: list[QualityFinding] = []
 
     # 1. SDK import outside services/kalshi/
@@ -131,41 +124,22 @@ def scan_kalshi_boundary(
             remediation="use the services/kalshi/ gateways (or config-provided base URLs) instead of embedding vendor hosts",
         ))
 
-    # 3. Legacy-facade import ratchet
-    counts = Counter(i["module"] for i in _scan_legacy_wrapper(repo_root)["imports"])
-    for module in sorted(set(counts) | set(baseline)):
-        # A tree that doesn't contain the facade module at all (a test
-        # fixture tree, or a future repo state where C8 deleted it) has
-        # nothing to ratchet for it - only compare where the facade exists,
-        # so the embedded default baseline never misfires on temp trees.
-        if not (repo_root / (module.replace(".", "/") + ".py")).exists():
+    # 3. Legacy-facade imports: a final invariant since C9 - any import
+    # of a deleted legacy module path is an error, file or no file.
+    for site in _scan_legacy_wrapper(repo_root)["imports"]:
+        if site["module"] not in BANNED_LEGACY_MODULES:
             continue
-        current = counts.get(module, 0)
-        allowed = baseline.get(module, 0)
-        if current > allowed:
-            findings.append(QualityFinding(
-                finding_id=f"kalshi-boundary-facade-ratchet:{module}",
-                check="kalshi-boundary", severity="error", confidence="high", source="ci",
-                scope=module,
-                summary=(
-                    f"{module} is imported at {current} site(s), above the reviewed ratchet "
-                    f"baseline of {allowed} - new legacy-facade consumers are not allowed"
-                ),
-                evidence={"module": module, "current": current, "baseline": allowed},
-                remediation="consume the services/kalshi/ gateways instead of the legacy compatibility facade",
-            ))
-        elif current < allowed:
-            findings.append(QualityFinding(
-                finding_id=f"kalshi-boundary-facade-ratchet-lower:{module}",
-                check="kalshi-boundary", severity="info", confidence="high", source="ci",
-                scope=module,
-                summary=(
-                    f"{module} import count fell to {current} (baseline {allowed}) - lower "
-                    "FACADE_IMPORT_BASELINE in tools/quality_audit/kalshi_boundary.py to lock in the progress"
-                ),
-                evidence={"module": module, "current": current, "baseline": allowed},
-                remediation="lower the reviewed baseline so the ratchet keeps tightening",
-            ))
+        findings.append(QualityFinding(
+            finding_id=f"kalshi-boundary-legacy-import:{site['file']}:{site['line']}",
+            check="kalshi-boundary", severity="error", confidence="high", source="ci",
+            scope=site["file"],
+            summary=(
+                f"{site['module']} imported at {site['file']}:{site['line']} - the legacy "
+                "compatibility facades were deleted at zero callers (C8) and must not return"
+            ),
+            evidence={"path": site["file"], "line": site["line"], "module": site["module"]},
+            remediation="import the services/kalshi/ gateways (public/websocket/account_client) instead",
+        ))
 
     # 4. Deprecated direction-alias read outside boundary + archival allowlist
     for field, sites in _scan_known_field_reads(repo_root).items():

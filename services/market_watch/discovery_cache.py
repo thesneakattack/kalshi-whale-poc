@@ -9,7 +9,7 @@ import time
 
 from services import series_evaluator, task_supervisor
 from services.app_state import state
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_events import event_lifecycle
 from services.market_watch import selection
@@ -50,7 +50,7 @@ _DISCOVERY_REFRESH_SEC = 300  # 2026-08-15, second incident on the same code pat
 # often the underlying selection itself gets re-run.
 
 
-async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) -> dict:
+async def _fetch_category_metadata(client: KalshiPublicGateway, ttl_sec: int = 3600) -> dict:
     cache = state["category_metadata"]
     now = time.time()
     if cache.get("fetched_at") and (now - cache["fetched_at"]) < ttl_sec:
@@ -90,7 +90,7 @@ async def _fetch_category_metadata(client: KalshiClient, ttl_sec: int = 3600) ->
     return cache
 
 
-async def _cached_market_fetch(client: KalshiClient, tickers: list[str]) -> list[dict]:
+async def _cached_market_fetch(client: KalshiPublicGateway, tickers: list[str]) -> list[dict]:
     """Shared by market_fetch._fetch_markets' pinned-watchlist, extra_tickers,
     and live_markets_only hydration (2026-08-15, "websocket stream
     everything you can... leave the api calls for things that are
@@ -153,7 +153,7 @@ def _maybe_refresh_discovery_cache(cfg: dict) -> None:
 
     Takes no client - _refresh_discovery_cache_background creates its own
     (2026-08-16 fix, real live incident: this used to hand the calling
-    tick's own KalshiClient straight into the background task, but that
+    tick's own KalshiPublicGateway straight into the background task, but that
     same tick's own `finally: await client.close()` closes it at the end of
     that tick, well before an independent background task reliably
     finishes - a real client-lifecycle race, confirmed live via repeated
@@ -191,7 +191,7 @@ def _maybe_refresh_discovery_cache(cfg: dict) -> None:
 _DISCOVERY_TERMINAL_STATUSES = {"closed", "determined", "disputed", "amended", "finalized"}
 
 
-async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
+async def _refresh_discovery_cache(cfg: dict, client: KalshiPublicGateway) -> None:
     """Discovery's selection pipeline, now sourced entirely from
     market_catalog's already-persisted, independently-scanned data
     (services/market_catalog/market_catalog.py's open_candidates) instead of a fresh
@@ -292,7 +292,7 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiClient) -> None:
 
 async def _refresh_discovery_cache_background(cfg: dict) -> None:
     """Background-task wrapper around _refresh_discovery_cache - owns its own
-    KalshiClient (2026-08-16 client-lifecycle fix, real live incident:
+    KalshiPublicGateway (2026-08-16 client-lifecycle fix, real live incident:
     _maybe_refresh_discovery_cache used to hand this the calling tick's own
     client, but that same tick's own `finally: await client.close()` closes
     it at the end of that tick regardless of whether this independent
@@ -310,7 +310,7 @@ async def _refresh_discovery_cache_background(cfg: dict) -> None:
     outcome. The stale cache stays in place and _maybe_refresh_discovery_cache
     will try again next time it's due."""
     disc_cache = state["discovery_cache"]
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _refresh_discovery_cache(cfg, client)
     finally:

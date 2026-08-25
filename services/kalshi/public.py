@@ -6,7 +6,8 @@ logic, and per-operation batching, all backed by Kalshi's official
 kalshi_python_async SDK (constructed via services/kalshi/transport.py) and
 the shared services/http_client.py backoff/limiter/telemetry stack.
 
-services/kalshi_client.py remains the compatibility facade: it subclasses
+services/kalshi_client.py was the compatibility facade (deleted at zero
+callers, C8): it subclassed
 this gateway (delegation without re-implementation) and adds only the
 market-selection *policy* methods, which are application concerns scheduled
 to move into services/market_watch/ at A7 — the adapter batches and fetches
@@ -24,6 +25,7 @@ responses, and the test suite unchanged; the SDK's real, verified field
 names flow through as-is either way, since Pydantic's field names already
 match the wire JSON.
 """
+from typing import Any
 from urllib.parse import urljoin
 
 from pydantic import ValidationError as PydanticValidationError
@@ -101,7 +103,7 @@ class KalshiPublicGateway:
         # provided" differently at the wire level. Not verified for
         # series_ticker specifically, but the same omit-when-unset pattern
         # costs nothing and sidesteps the risk.
-        kwargs = {"limit": limit, "status": status}
+        kwargs: dict[str, Any] = {"limit": limit, "status": status}
         if mve_filter is not None:
             kwargs["mve_filter"] = mve_filter
         if series_ticker is not None:
@@ -207,7 +209,7 @@ class KalshiPublicGateway:
         same as a failed get_event() call being skipped by its own caller."""
         if not event_tickers:
             return []
-        events = []
+        events: list[dict] = []
         for i in range(0, len(event_tickers), self._EVENTS_BATCH_SIZE):
             chunk = event_tickers[i:i + self._EVENTS_BATCH_SIZE]
             resp = await call_with_backoff(self._client.get_events, tickers=",".join(chunk), limit=len(chunk))

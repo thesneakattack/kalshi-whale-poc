@@ -1,15 +1,15 @@
 """Wire-semantic tests for the public Kalshi read surface, exercised
-through the KalshiClient compatibility facade (services/kalshi/public.py's
+through the KalshiPublicGateway compatibility facade (services/kalshi/public.py's
 KalshiPublicGateway since A6). The market-selection policy tests that used
 to live here moved with their implementation to
 tests/test_market_selection.py at A7."""
 import asyncio
 
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 
 
 def _client():
-    return KalshiClient(base_url="https://example.invalid/trade-api/v2", timeout=1.0)
+    return KalshiPublicGateway(base_url="https://example.invalid/trade-api/v2", timeout=1.0)
 
 
 class _FakeModel:
@@ -240,7 +240,7 @@ def test_construction_delegates_to_the_boundary_transport(monkeypatch):
 
     monkeypatch.setattr(transport, "build_public_client", fake_build)
 
-    client = KalshiClient(base_url="https://example.invalid/trade-api/v2/", timeout=1.0)
+    client = KalshiPublicGateway(base_url="https://example.invalid/trade-api/v2/", timeout=1.0)
 
     assert client._client is sentinel
     assert seen == ["https://example.invalid/trade-api/v2/"]

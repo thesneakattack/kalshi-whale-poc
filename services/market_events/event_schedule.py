@@ -33,7 +33,7 @@ assumed:
    there's no separate "end" - a point-in-time announcement's own moment
    is both bounds (see resolve_one).
 
-2. Kalshi's milestone API (services/kalshi_client.py's
+2. Kalshi's milestone API (services/kalshi/public.py's
    get_milestones_for_event) - a real, structured start_date field.
    Confirmed live: KXPGATOUR-FESJC26's tournament milestone reports
    start_date 2026-08-13T11:00:00Z, matching the real tournament's actual
@@ -87,7 +87,7 @@ from dateutil import parser as _dateutil_parser
 
 from services import task_supervisor
 from services.http_client import get_client
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "event_schedule.db"
 
@@ -239,7 +239,7 @@ def parse_date_range_from_text(text: str | None, ref_year: int | None = None) ->
     return None
 
 
-async def _milestone_schedule(client: KalshiClient, event_ticker: str) -> tuple[float, float | None] | None:
+async def _milestone_schedule(client: KalshiPublicGateway, event_ticker: str) -> tuple[float, float | None] | None:
     try:
         milestones = await client.get_milestones_for_event(event_ticker)
     except Exception:
@@ -277,7 +277,7 @@ async def _web_search_schedule(query: str) -> tuple[float, float | None] | None:
 
 
 async def resolve_one(
-    client: KalshiClient,
+    client: KalshiPublicGateway,
     event_ticker: str,
     *,
     event_strike_date: str | None = None,
@@ -391,7 +391,7 @@ def _events_needing_resolution(markets: list[dict], event_schedules: dict, now: 
 
 
 async def _resolve_event_schedules(
-    client: KalshiClient,
+    client: KalshiPublicGateway,
     cfg: dict,
     markets: list[dict],
     event_titles: dict,
@@ -464,7 +464,7 @@ async def _resolve_event_schedules_background(cfg: dict) -> None:
     from services.app_state import state
 
     schedule_state = state["event_schedule_scan"]
-    client = KalshiClient(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
     try:
         await _resolve_event_schedules(
             client, cfg,

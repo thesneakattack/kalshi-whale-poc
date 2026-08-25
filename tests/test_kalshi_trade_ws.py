@@ -2,13 +2,13 @@ import asyncio
 import json
 import logging
 
-from services.kalshi_trade_ws import KalshiTradeWebSocketClient
+from services.kalshi.websocket import KalshiStreamGateway
 
 
 def _client():
     # No real credentials needed for _handle_message tests - that method
     # doesn't touch auth at all (only run()'s connection setup does).
-    return KalshiTradeWebSocketClient("https://external-api.kalshi.com/trade-api/v2")
+    return KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2")
 
 
 class _FakeWebSocket:
@@ -195,7 +195,7 @@ def test_incremental_update_only_targets_trade_ticker_sids():
 # which is the fix for the measured ~98% coverage loss. --------------------
 
 def _wide_client():
-    return KalshiTradeWebSocketClient(
+    return KalshiStreamGateway(
         "https://external-api.kalshi.com/trade-api/v2", exchange_wide_trades=True,
     )
 
@@ -303,7 +303,7 @@ def test_normalize_trade_preserves_fields_it_does_not_know_about():
         "some_new_kalshi_field": "keep me",
         "price_level_structure": "deci_cent",
     }
-    out = KalshiTradeWebSocketClient.normalize_trade(msg)
+    out = KalshiStreamGateway.normalize_trade(msg)
 
     assert out["some_new_kalshi_field"] == "keep me"
     assert out["price_level_structure"] == "deci_cent"
@@ -319,7 +319,7 @@ def test_normalize_trade_preserves_fields_it_does_not_know_about():
 # item #2 of the REST-vs-websocket architecture finding) -------------------
 
 def _lifecycle_client():
-    return KalshiTradeWebSocketClient(
+    return KalshiStreamGateway(
         "https://external-api.kalshi.com/trade-api/v2", subscribe_lifecycle=True,
     )
 
@@ -407,18 +407,8 @@ def test_lifecycle_not_resubscribed_on_a_later_sync():
 # ---- A11: stream gateway behind the integration boundary -------------------
 
 
-def test_ws_client_is_a_compatibility_facade_over_the_boundary_gateway():
-    """A11: the transport implementation lives in
-    services/kalshi/websocket.py; services/kalshi_trade_ws.py remains the
-    import path production wiring (services/app_state.py) uses. Subclass
-    delegation without re-implementation - the facade must add no
-    behavioral overrides of its own."""
-    from services.kalshi.websocket import KalshiStreamGateway
-    assert issubclass(KalshiTradeWebSocketClient, KalshiStreamGateway)
-    # Every attribute the facade class itself defines must be inert
-    # (docstring/module metadata), never a behavior override.
-    behavioral = [
-        name for name, value in vars(KalshiTradeWebSocketClient).items()
-        if callable(value) or isinstance(value, (staticmethod, classmethod, property))
-    ]
-    assert behavioral == []
+# (test_ws_client_is_a_compatibility_facade_over_the_boundary_gateway
+# retired at C8 with the facade itself - services/kalshi_trade_ws.py is
+# deleted; the import-path-stays-dead guarantee lives in
+# tests/test_kalshi_public_gateway.py's
+# test_legacy_facade_import_paths_are_gone.)

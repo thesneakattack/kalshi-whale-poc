@@ -9,7 +9,7 @@ from datetime import datetime
 
 from services import game_state
 from services.app_state import state
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services.market_lookup import _sport_for_event
 
 _LIVE_STATUS_LOOKBACK_SEC = 8 * 3600  # keep tracking an event up to 8h after its scheduled start
@@ -57,7 +57,7 @@ _LIVE_STATUS_MAX_POLL_PER_TICK = 10  # Bounded per-tick batch (2026-08-15
 # this function already relies on for "not yet due" - unchanged here).
 
 
-async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
+async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     """The real live/scheduled/finished status per event, via Kalshi's
     actual milestone/live-data system - confirmed directly against a real
     AFL match at its actual start time (status "scheduled"->"inprogress"->
@@ -220,7 +220,7 @@ async def _fetch_live_status(client: KalshiClient, markets: list[dict]) -> dict:
     return result
 
 
-async def _fetch_exchange_status(client: KalshiClient) -> dict | None:
+async def _fetch_exchange_status(client: KalshiPublicGateway) -> dict | None:
     # A transient hiccup here shouldn't take down the whole poll tick the way
     # a markets/account failure would (nothing downstream depends on it) —
     # swallow and keep the last known status rather than clearing it.

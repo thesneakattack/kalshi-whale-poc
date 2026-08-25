@@ -68,7 +68,7 @@ class _TokenBucketRateLimiter:
 #
 # First fix attempted here was a global asyncio.Semaphore bounding how many
 # Kalshi calls could be in flight at once (mirroring the EARLIER, real,
-# and still-valid fix this session: services/kalshi_client.py's own
+# and still-valid fix this session: services/kalshi/public.py's own
 # Semaphore(10) on get_candidate_markets's own internal fan-out) - dropping
 # it all the way to Semaphore(5) still didn't fully stop the spikes.
 # Confirmed why by actually reading Kalshi's rate-limit docs (docs.kalshi.
@@ -275,7 +275,7 @@ async def call_with_backoff(
     is_write (2026-08-15): routes to the write-operation token bucket
     instead of the read one - see the two _kalshi_*_limiter definitions
     above for why they're separate. Every caller of call_with_backoff is
-    read by default; services/kalshi_account_client.py's create_order/
+    read by default; services/kalshi/orders.py's create_order/
     cancel_order are the only two real callers that pass is_write=True -
     grep for call_with_backoff before adding a new write-shaped call
     elsewhere and make sure it does too.

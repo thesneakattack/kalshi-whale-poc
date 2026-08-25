@@ -1,7 +1,7 @@
 """Public-trade WS channel semantics — Phase A Task A10.
 
 The one implementation of trade-message normalization, moved verbatim from
-services/kalshi_trade_ws.py (which now delegates its compatibility
+the websocket transport (which delegates its compatibility
 staticmethod here). Semantics owned:
 
 - market_ticker -> ticker alias (WS carries market_ticker; app consumers
@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from services.kalshi.contracts.types import AS_OUTCOME_SIDE, BOOK_SIDE_TO_OUTCOME, OutcomeSide
 from services.kalshi.provenance import ContractDocs
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
@@ -59,10 +60,8 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     ),
 }
 
-# Closed vendor vocabularies (order_direction.md): outcome_side is
-# yes|no; book_side is bid|ask with bid == yes, ask == no, always.
-_OUTCOME_SIDES = ("yes", "no")
-_BOOK_SIDE_TO_OUTCOME = {"bid": "yes", "ask": "no"}
+# Closed vocabularies + narrowing maps live in contracts/types.py (C2) -
+# one copy shared with fill.py, so the two channels can never disagree.
 
 
 def normalize_trade(msg: dict) -> dict:
@@ -93,7 +92,7 @@ def normalize_trade(msg: dict) -> dict:
     }
 
 
-def resolve_taker_outcome_side(msg: dict) -> str | None:
+def resolve_taker_outcome_side(msg: dict) -> OutcomeSide | None:
     """Which outcome the taker is positioned for, or None when the trade
     doesn't say. Canonical-first precedence per docs/kalshi/get-trades.md
     (taker_side is deprecated - its "will not be removed before May 14,
@@ -106,19 +105,16 @@ def resolve_taker_outcome_side(msg: dict) -> str | None:
     member, a malformed field) must never become a confident yes/no -
     the pre-2026-08-17 code turned every unreadable trade into "no",
     wrong direction AND wrong notional, silently, on every signal."""
-    outcome = str(msg.get("taker_outcome_side") or "").lower()
-    if outcome in _OUTCOME_SIDES:
+    outcome = AS_OUTCOME_SIDE.get(str(msg.get("taker_outcome_side") or "").lower())
+    if outcome is not None:
         return outcome
-    book = str(msg.get("taker_book_side") or "").lower()
-    if book in _BOOK_SIDE_TO_OUTCOME:
-        return _BOOK_SIDE_TO_OUTCOME[book]
-    legacy = str(msg.get("taker_side") or "").lower()
-    if legacy in _OUTCOME_SIDES:
-        return legacy
-    return None
+    book = BOOK_SIDE_TO_OUTCOME.get(str(msg.get("taker_book_side") or "").lower())
+    if book is not None:
+        return book
+    return AS_OUTCOME_SIDE.get(str(msg.get("taker_side") or "").lower())
 
 
-def _dollars(value) -> float | None:
+def _dollars(value: str | float | int | None) -> float | None:
     """Cheap float parse of a fixed-point dollars/count string; None stays
     None and garbage stays None rather than raising on a hot-adjacent
     path (spec numeric policy: cheap parsing, raw strings preserved in
@@ -140,7 +136,7 @@ class PublicTrade:
 
     trade_id: str | None
     ticker: str | None
-    outcome_side: str | None   # "yes" | "no" | None - never guessed
+    outcome_side: OutcomeSide | None   # never guessed - unknown stays None
     count: float | None        # contracts (from count_fp)
     yes_price: float | None    # dollars/contract
     no_price: float | None     # dollars/contract

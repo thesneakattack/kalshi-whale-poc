@@ -1,7 +1,7 @@
 """Utilities to inspect a market's event/series context and live/settlement state.
 
 Primary entrypoint:
-    async def inspect_market_event(client: KalshiClient, ticker: str) -> dict
+    async def inspect_market_event(client: KalshiPublicGateway, ticker: str) -> dict
 
 Returns a dict with keys: market, event, milestones, live_status (widget_status/ source),
 siblings (other markets sharing the same event_ticker), mutually_exclusive (from get_event/title_cache),
@@ -11,11 +11,11 @@ should be treated as complementary (one winner) vs independent props.
 Usage (inside project, ddev fastapi container):
     python - <<'PY'
     import asyncio
-    from services.kalshi_client import KalshiClient
+    from services.kalshi.public import KalshiPublicGateway
     from services import event_inspector
 
     async def main():
-        client = KalshiClient('https://api.kalshi.com')
+        client = KalshiPublicGateway('https://api.kalshi.com')
         report = await event_inspector.inspect_market_event(client, 'KXMLBGAME-26AUG111905SEANYY-NYY')
         import json; print(json.dumps(report, indent=2))
         await client.close()
@@ -29,12 +29,12 @@ import asyncio
 import math
 from typing import Dict, Any, List
 
-from services.kalshi_client import KalshiClient
+from services.kalshi.public import KalshiPublicGateway
 from services import title_cache
 from services.market_catalog import market_catalog
 
 
-async def inspect_market_event(client: KalshiClient, ticker: str) -> Dict[str, Any]:
+async def inspect_market_event(client: KalshiPublicGateway, ticker: str) -> Dict[str, Any]:
     """Fetch market, its event, milestones/live-data, and sibling markets.
 
     The returned dict is intended for human inspection and for programmatic
