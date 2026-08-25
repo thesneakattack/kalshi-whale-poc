@@ -393,27 +393,16 @@ questions.
       exit managed positions ended up winning if i had just held to
       settlement." Investigation in progress - not yet quantified against
       real settlement outcomes.
-- [ ] **`.woodpecker/quality-frontend-build.yml`'s bundle-sync check
-      (`git diff --exit-code -- static/js/dashboard.bundle.js`) is
-      currently a silent no-op — it can never fail.** Found live 2026-08-24
-      investigating the item above (this is what triggered that workflow to
-      run for the first time this session, since it's path-filtered to
-      `frontend/**`). `static/js/dashboard.bundle.js` is gitignored and has
-      never been tracked (`git log --all` on the path: zero commits) —
-      confirmed by deliberately corrupting the built file and running the
-      exact same `git diff --exit-code` command: exit 0, no diff detected,
-      despite real, non-trivial corruption. The check's own inline comments
-      describe careful debugging to make it correctly catch "a genuinely
-      out-of-sync bundle" (a `git: not found` fix, a `safe.directory` fix)
-      — strongly suggesting it worked as intended at some point before the
-      bundle was gitignored, silently neutering it after the fact. Not
-      fixed here (a real design decision: commit the bundle again despite
-      the "ddev/CI both rebuild it automatically" rationale for excluding
-      it, compare a hash/checksum instead of the file itself, or conclude
-      the check is redundant now that `quality-browser-e2e`'s own
-      `build-frontend` step always produces a fresh bundle anyway and
-      remove it) — reverted the deliberate corruption immediately after
-      confirming the finding; no functional change made.
+- [x] **`.woodpecker/quality-frontend-build.yml`'s bundle-sync check was a
+      silent no-op — fixed 2026-08-25 by removing it.** Found live
+      2026-08-24: `static/js/dashboard.bundle.js` is gitignored/untracked,
+      so `git diff --exit-code` on it always reported "no difference"
+      regardless of real corruption. Resolved by removing the check rather
+      than re-committing the bundle: `quality-browser-e2e.yml`'s own
+      `build-frontend` step (and this workflow's own `npm run build`)
+      already rebuild the bundle from current source on every push, so a
+      broken build fails loudly on its own and a stale-vs-source drift
+      can't reach either check undetected.
 
 ## Shipped
 

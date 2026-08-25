@@ -5904,6 +5904,40 @@
           <code>config/settings.yaml</code> · <code>tests/test_alerting.py</code> · <code>ROADMAP.md</code></div>
       </div>
 
+      <div class="t-phase">
+        <div class="tag">phase 152 · a Woodpecker CI audit that found CI itself was silently broken</div>
+        <h4>The documented "trust Woodpecker" policy had no working way to check Woodpecker</h4>
+        <p>Asked to audit the already-built Woodpecker CI setup (server/agent, six
+          <code>.woodpecker/*.yml</code> pipelines, the local-vs-CI verification policy) against a fresh
+          from-scratch build spec, direct pushback identified the real gap: full local test/E2E suites kept
+          running anyway despite the policy saying Woodpecker should own that. Root cause traced, not guessed —
+          the only documented way to check a pipeline's result, <code>scripts/woodpecker-status</code>, requires a
+          personal <code>WOODPECKER_TOKEN</code> that's never available in a Claude session by design (it belongs
+          in a human's shell profile, not the repo), and the <code>checkpoint</code> skill's own fallback when
+          that token is missing was "say so rather than silently skipping this step" — no working alternative, so
+          nothing ever actually checked. Fixed by wiring in <code>gh api repos/.../commits/&lt;sha&gt;/status</code>
+          as the primary check instead: Woodpecker already posts a commit status per workflow to GitHub, and
+          <code>gh</code> is authenticated in every session with zero extra setup.</p>
+        <p>Using that check for the first time immediately proved the point: <code>quality-architecture-audit</code>
+          had been failing on three consecutive real pushes (<code>d644034</code>, <code>21a303a</code>,
+          <code>b28a380</code>) with nobody noticing. Cause was a stale <code>static/project-manifest.json</code> —
+          new files landed (<code>tools/kalshi_census.py</code> and friends) without regenerating it, the same
+          failure class <code>fd0ba71</code> had already fixed once before. Regenerated it again. Also corrected
+          two stale claims in <code>docs/woodpecker-ci.md</code> (the agent's parallel-workflow count, and repo
+          activation being described as still-pending when pipeline history already proved it done), and, while in
+          there, resolved a real bug <code>ROADMAP.md</code> had already found and left open:
+          <code>quality-frontend-build.yml</code>'s bundle-sync check
+          (<code>git diff --exit-code -- static/js/dashboard.bundle.js</code>) could never fail, since that file is
+          gitignored and has zero commits ever. Removed the check rather than patch it onto a nonexistent
+          comparison — both this workflow's own <code>npm run build</code> and <code>quality-browser-e2e.yml</code>'s
+          <code>build-frontend</code> step already rebuild the bundle from source on every push, so a broken build
+          fails loudly on its own.</p>
+        <div class="files"><code>.claude/skills/ci-cd-guardrails/SKILL.md</code> ·
+          <code>.claude/skills/checkpoint/SKILL.md</code> · <code>docs/woodpecker-ci.md</code> ·
+          <code>.woodpecker/quality-frontend-build.yml</code> · <code>static/project-manifest.json</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
     </div>
   </section>
 
