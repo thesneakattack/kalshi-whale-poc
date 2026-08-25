@@ -1116,6 +1116,16 @@ def _build_state_body() -> dict:
             "sport_ordering": state["category_metadata"].get("sport_ordering") or [],
         },
         "trade_tape": state["trade_tape"],
+        # Streaming-path liveness/measurement surface (C3 finding,
+        # 2026-08-25): both were populated in-process (observability has
+        # been sampling trade_stream_perf all along) but never served -
+        # the A17 soak had to reconstruct stream throughput from
+        # data/observability.db history because the live snapshot omitted
+        # the purpose-built per-second perf window. A dashboard/diagnostic
+        # read of /api/state can now tell "stream quiet" from "handler
+        # stalled" directly.
+        "trade_tape_last_fetch_ts": state.get("trade_tape_last_fetch_ts"),
+        "trade_stream_perf": state.get("trade_stream_perf"),
         "live_status": state["live_status"],
         "latest_prices": state["latest_prices"],
         "signal_feed": state["signal_feed"],

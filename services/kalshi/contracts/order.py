@@ -57,7 +57,7 @@ class CreateOrderRequest:
     cancel_order_on_pause: bool | None = None
     reduce_only: bool | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.side not in _BOOK_SIDES:
             raise ValueError(
                 f"create-order-v2 side must be one of {_BOOK_SIDES} (YES-leg book vocabulary, "

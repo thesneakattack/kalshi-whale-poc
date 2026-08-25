@@ -114,7 +114,7 @@ def resolve_taker_outcome_side(msg: dict) -> OutcomeSide | None:
     return AS_OUTCOME_SIDE.get(str(msg.get("taker_side") or "").lower())
 
 
-def _dollars(value) -> float | None:
+def _dollars(value: str | float | int | None) -> float | None:
     """Cheap float parse of a fixed-point dollars/count string; None stays
     None and garbage stays None rather than raising on a hot-adjacent
     path (spec numeric policy: cheap parsing, raw strings preserved in
