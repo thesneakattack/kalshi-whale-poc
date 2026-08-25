@@ -31,6 +31,7 @@ from collections import deque
 from datetime import datetime
 
 from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
+from services.kalshi.contracts import trade as trade_contract
 from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
 
@@ -96,37 +97,15 @@ _CLUSTER_LOOKBACK_SEC = 30 * 60
 _ANALYST_FRESHNESS_SEC = 24 * 3600
 
 
-def _taker_side(trade: dict) -> str | None:
-    """Which outcome the taker is positioned for, or None when the trade
-    doesn't say.
-
-    Reads `taker_outcome_side` first, then `taker_book_side`, and only then
-    the legacy `taker_side` (2026-08-17 audit, per docs/kalshi/
-    get-trades.md): `taker_side` is explicitly deprecated - "Deprecated. Use
-    `taker_outcome_side` (or `taker_book_side`) instead... This field will
-    not be removed before May 14, 2026" - a guarantee that has already
-    expired, and the docs name the other two "the canonical way to determine
-    trade direction". Book vocabulary maps exactly: 'bid' == yes, 'ask' ==
-    no.
-
-    Returns None rather than defaulting, because the old code's
-    `"yes" if ... == "yes" else "no"` turned *every* unreadable trade into a
-    confident NO - wrong direction AND wrong notional (no_price instead of
-    yes_price), silently, on every signal. For a system whose entire output
-    is a directional call, guessing a side is strictly worse than skipping
-    the trade."""
-    outcome = str(trade.get("taker_outcome_side") or "").lower()
-    if outcome in ("yes", "no"):
-        return outcome
-    book = str(trade.get("taker_book_side") or "").lower()
-    if book == "bid":
-        return "yes"
-    if book == "ask":
-        return "no"
-    legacy = str(trade.get("taker_side") or "").lower()
-    if legacy in ("yes", "no"):
-        return legacy
-    return None
+# A13: direction resolution is boundary-owned. Same-object aliases (not
+# wrappers), so the provider, series_watcher, and the boundary literally
+# share one implementation and can never disagree about a trade's
+# direction or its side-aware notional - the two semantics whose historical
+# bugs (taker_side defaulting to "no"; cost without the no-side inversion)
+# this module's own docstrings chronicle. The full precedence rules and
+# never-guess rationale live with the implementation in
+# services/kalshi/contracts/trade.py.
+_taker_side = trade_contract.resolve_taker_outcome_side
 
 
 def _price_dollars(trade: dict, key: str) -> float | None:
@@ -162,26 +141,7 @@ def _price_dollars(trade: dict, key: str) -> float | None:
         return None
 
 
-def _notional_usd(trade: dict, side: str) -> float | None:
-    """Real dollar size of a trade, side-aware - the same lesson this app
-    already paid for once (ROADMAP.md: open_position charged size * price
-    unconditionally, but a no-side position's real cost is size * (1 -
-    price)). A trade's notional is count * whichever price the taker
-    actually paid, not always the yes price.
-
-    `side` is passed in (resolved once by _taker_side) rather than re-read
-    here, so the notional and the signal's own direction can never disagree
-    about which side the taker took.
-
-    Returns None when either the count or the side's price is missing - a
-    notional derived from an invented zero is worse than no notional,
-    because it silently reads as "tiny trade" and gets filtered out for the
-    wrong reason rather than flagged as unusable."""
-    count = _price_dollars(trade, "count_fp")
-    price = _price_dollars(trade, "yes_price_dollars" if side == "yes" else "no_price_dollars")
-    if count is None or price is None:
-        return None
-    return count * price
+_notional_usd = trade_contract.taker_notional_usd
 
 
 def min_contracts_for(ticker: str, wwk_cfg: dict) -> float:
@@ -209,15 +169,6 @@ def _prescan_count(trade: dict) -> tuple[str, float] | None:
         return None
     count = _price_dollars(trade, "count_fp")
     return (side, count) if count is not None else None
-
-
-def _parse_trade_time(created_time: str | None) -> float | None:
-    if not created_time:
-        return None
-    try:
-        return datetime.fromisoformat(created_time.replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError):
-        return None
 
 
 def _trend_factor(ticker: str, side: str, now: float) -> float:
@@ -618,7 +569,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 analyst_factor=analyst, block_trade_factor=is_block_trade,
                 weights=cfg.get("whale_confidence_weights"), side=side,
             )
-            timestamp = _parse_trade_time(trade.get("created_time")) or now
+            timestamp = trade_contract.trade_exchange_ts(trade) or now
 
             # Gap 8 of docs/config-tuning-data-gaps-2026-08-10.md - the raw
             # inputs behind the factor breakdown above, captured once here

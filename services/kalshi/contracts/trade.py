@@ -42,6 +42,15 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
         "docs/kalshi/get-trades.md",
         "docs/kalshi/order_direction.md",
     ),
+    "trade_exchange_ts": (
+        "docs/kalshi/public-trades.md",
+        "docs/kalshi/market-ticker.md",
+    ),
+    "taker_notional_usd": (
+        "docs/kalshi/get-trades.md",
+        "docs/kalshi/public-trades.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
     "public_trade_from_ws": (
         "docs/kalshi/public-trades.md",
         "docs/kalshi/get-trades.md",
@@ -159,3 +168,51 @@ def public_trade_from_ws(msg: dict) -> PublicTrade:
         ts_ms=ts_ms if isinstance(ts_ms, int) else None,
         raw_payload=msg,
     )
+
+
+def taker_notional_usd(msg: dict, side: str) -> float | None:
+    """Real dollar size of a trade, side-aware - count times whichever
+    price the taker actually paid, NOT always the yes price (the same
+    no-side-inversion lesson this app already paid for once: a no-side
+    cost is count * no_price == count * (1 - yes_price)).
+
+    `side` is passed in (resolved once by resolve_taker_outcome_side)
+    rather than re-read here, so the notional and the signal's own
+    direction can never disagree about which side the taker took.
+
+    Returns None when either the count or the side's price is missing - a
+    notional derived from an invented zero silently reads as "tiny trade"
+    and gets filtered for the wrong reason rather than flagged unusable."""
+    count = _dollars(msg.get("count_fp"))
+    price = _dollars(msg.get("yes_price_dollars") if side == "yes" else msg.get("no_price_dollars"))
+    if count is None or price is None:
+        return None
+    return count * price
+
+
+def trade_exchange_ts(msg: dict) -> float | None:
+    """Exchange-side timestamp of a trade/ticker message as epoch seconds,
+    or None when the message carries no readable one. Precedence: ts_ms
+    (millisecond precision, both channels), then ts (seconds), then a
+    parse-back of the normalized created_time ISO string (itself derived
+    from ts_ms by normalize_trade). Never invents a receive-side time -
+    the caller decides its own fallback."""
+    ms = msg.get("ts_ms")
+    if ms is not None:
+        try:
+            return float(ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    secs = msg.get("ts")
+    if secs is not None:
+        try:
+            return float(secs)
+        except (TypeError, ValueError):
+            pass
+    created_time = msg.get("created_time")
+    if not created_time:
+        return None
+    try:
+        return datetime.fromisoformat(str(created_time).replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None

@@ -66,7 +66,7 @@ from services import fault_log
 from services import signal_log, trade_analytics
 from services import paper_broker as pb_module
 from services.diagnostics.diagnostics import Check
-from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side
+from services.kalshi.contracts.trade import resolve_taker_outcome_side, taker_notional_usd, trade_exchange_ts
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "series_watcher.db"
 
@@ -206,22 +206,10 @@ def _float(value) -> float | None:
         return None
 
 
-def _exchange_ts(msg: dict) -> float | None:
-    ms = msg.get("ts_ms")
-    if ms is not None:
-        try:
-            return float(ms) / 1000.0
-        except (TypeError, ValueError):
-            pass
-    secs = msg.get("ts")
-    if secs is not None:
-        try:
-            return float(secs)
-        except (TypeError, ValueError):
-            pass
-    from services.whalewatchers.kalshi_trade_tape import _parse_trade_time
-
-    return _parse_trade_time(msg.get("created_time"))
+# A13: exchange-timestamp precedence (ts_ms -> ts -> created_time) is
+# trade-contract semantics, boundary-owned; same-object alias as with the
+# direction/notional helpers above.
+_exchange_ts = trade_exchange_ts
 
 
 def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None) -> bool:
@@ -247,8 +235,11 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
         # definition, so the watcher can never disagree with the signal
         # path about which side a print took (the exact failure mode the
         # 2026-08-17 taker_side audit found).
-        side = _taker_side(trade)
-        notional = _notional_usd(trade, side) if side else None
+        # Canonical columns derive from the boundary's own direction/
+        # notional semantics (A13) - the raw taker_* columns below stay as
+        # pure archival copies of what the wire carried.
+        side = resolve_taker_outcome_side(trade)
+        notional = taker_notional_usd(trade, side) if side else None
 
         _trade_buffer.append((
             str(trade_id), ticker, series, now if now is not None else time.time(),

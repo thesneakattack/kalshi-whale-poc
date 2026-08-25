@@ -508,3 +508,34 @@ def test_prints_at_the_price_extremes_never_become_signals(monkeypatch, tmp_path
         tape, markets, {"TICK-A": markets[0]}, cfg, time.time(),
     )
     assert [s.id for s in signals] == ["t4"], "only the tradeable print may become a signal"
+
+
+# ---- A13: direction semantics live behind the integration boundary ---------
+
+
+def test_taker_side_is_the_boundary_resolver():
+    """A13: the whale provider consumes the boundary's canonical direction
+    resolution - same-object delegation, so the provider and the boundary
+    can never disagree about a trade's direction."""
+    from services.kalshi.contracts import trade as trade_contract
+    assert _taker_side is trade_contract.resolve_taker_outcome_side
+
+
+def test_notional_usd_is_the_boundary_implementation():
+    """Side-aware notional (count x the taker's OWN side price - the
+    no-side-inversion bug family) is boundary-owned too."""
+    from services.kalshi.contracts import trade as trade_contract
+    assert _notional_usd is trade_contract.taker_notional_usd
+
+
+def test_series_watcher_derives_sides_from_the_boundary_not_the_provider():
+    """A13: series_watcher archives raw payloads while deriving canonical
+    columns via the boundary - not by importing the whale provider's
+    private helpers (the pre-A13 coupling)."""
+    import services.series_watcher as sw
+    from services.kalshi.contracts import trade as trade_contract
+    assert sw.resolve_taker_outcome_side is trade_contract.resolve_taker_outcome_side
+    assert sw.taker_notional_usd is trade_contract.taker_notional_usd
+    import inspect
+    src = inspect.getsource(sw)
+    assert "from services.whalewatchers.kalshi_trade_tape import" not in src
