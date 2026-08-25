@@ -339,3 +339,32 @@ def test_ingest_metrics_before_any_connection_reports_an_empty_queue_rather_than
     m = gw.ingest_metrics(now=0.0)
     assert m["queue"] == {"depth": 0, "capacity": 20000, "high_water": 0, "oldest_message_age_sec": 0.0}
     assert m["connection"]["connects"] == 0
+
+
+# --- enqueue timestamp handoff to application handlers (I2) ---------------
+
+def test_handlers_can_read_the_message_enqueue_timestamp_via_the_contextvar():
+    gw = _gateway()
+    seen = []
+
+    async def on_trade(_trade):
+        seen.append(ws_module.MESSAGE_ENQUEUED_AT.get())
+
+    gw._ingest_raw(_trade("a"), now=123.5)
+    item = gw._queue.get_nowait()
+    asyncio.run(gw._process_item(item, on_trade=on_trade, on_ticker=_noop, on_status=_noop, now=124.0))
+
+    assert seen == [123.5]
+    assert ws_module.MESSAGE_ENQUEUED_AT.get() is None  # reset after the handler, never leaks
+
+
+def test_contextvar_is_reset_even_when_the_handler_raises(monkeypatch):
+    monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: True)
+    gw = _gateway()
+
+    async def broken(_trade):
+        raise RuntimeError("boom")
+
+    gw._ingest_raw(_trade("a"), now=1.0)
+    asyncio.run(gw._process_item(gw._queue.get_nowait(), on_trade=broken, on_ticker=_noop, on_status=_noop, now=2.0))
+    assert ws_module.MESSAGE_ENQUEUED_AT.get() is None

@@ -9,3 +9,18 @@ on their own - lives in tests/support/runtime_isolation.py.
 from tests.support.runtime_isolation import install_runtime_isolation
 
 install_runtime_isolation()
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_whale_pipeline_perf(monkeypatch):
+    """services/whale_pipeline_perf.py's module-level singleton is process-
+    global mutable state the hot path records into; without this every
+    test that exercises the whale provider or stream handler would leak
+    lifetime counters into the next test (observability's "no evidence ->
+    no rows" contract is the first thing that breaks). Same principle as
+    the DB isolation above, applied to an in-memory aggregator."""
+    from services import whale_pipeline_perf as wpp
+    monkeypatch.setattr(wpp, "perf", wpp.WhalePipelinePerf())

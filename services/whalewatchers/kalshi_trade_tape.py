@@ -31,6 +31,7 @@ from collections import deque
 from datetime import datetime
 
 from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import whale_pipeline_perf
 from services.kalshi.contracts import trade as trade_contract
 from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
 from services.whalewatchers.base import WhaleWatcherProvider
@@ -271,16 +272,39 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         cfg = market_context.get("cfg") or {}
         markets_by_ticker = {m["ticker"]: m for m in markets if m.get("ticker")}
         now = time.time()
+        # Stage timing + counters (I2, services/whale_pipeline_perf.py). The
+        # worker thread returns its own start/finish clocks and fills
+        # `counts` in place; everything is recorded here on the event loop
+        # after the await, so the perf singleton never sees a cross-thread
+        # write.
+        perf = whale_pipeline_perf.perf
+        counts: dict[str, int] = {}
+        resolve_started = time.monotonic()
         await self._resolve_unknown_markets(
-            trade_tape, markets_by_ticker, cfg, market_context.get("client"), now,
+            trade_tape, markets_by_ticker, cfg, market_context.get("client"), now, counts=counts,
         )
-        return await asyncio.to_thread(
-            self._process_trades_sync, trade_tape, markets, markets_by_ticker, cfg, now,
+        submitted = time.monotonic()
+        perf.record_stage("resolve", submitted - resolve_started)
+        perf.record_count("to_thread_entries")
+        signals, started, finished = await asyncio.to_thread(
+            self._process_trades_timed, trade_tape, markets, markets_by_ticker, cfg, now, counts,
         )
+        perf.record_stage("thread_wait", started - submitted)
+        perf.record_stage("sync", finished - started)
+        perf.record_counts(counts)
+        return signals
+
+    def _process_trades_timed(
+        self, trade_tape: list[dict], markets: list[dict], markets_by_ticker: dict[str, dict],
+        cfg: dict, now: float, counts: dict[str, int],
+    ) -> tuple[list[WhaleSignal], float, float]:
+        started = time.monotonic()
+        signals = self._process_trades_sync(trade_tape, markets, markets_by_ticker, cfg, now, counts=counts)
+        return signals, started, time.monotonic()
 
     async def _resolve_unknown_markets(
         self, trade_tape: list[dict], markets_by_ticker: dict[str, dict], cfg: dict,
-        client, now: float,
+        client, now: float, counts: dict[str, int] | None = None,
     ) -> None:
         """Fetch market data for whale-sized prints on markets outside the
         watchlist, so an exchange-wide trade subscription actually produces
@@ -329,6 +353,8 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             if scan is None or scan[1] < min_contracts_for(ticker, wwk_cfg):
                 continue
             self.stats["whale_sized_offlist"] += 1
+            if counts is not None:
+                counts["offlist_candidates"] = counts.get("offlist_candidates", 0) + 1
             wanted.add(ticker)
 
         if not wanted or client is None:
@@ -340,10 +366,14 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # Anything over the cap is simply not resolved this round; the next
         # print on that market gets another chance.
         batch = sorted(wanted)[:_MAX_ONDEMAND_MARKET_FETCH]
+        if counts is not None:
+            counts["resolve_calls"] = counts.get("resolve_calls", 0) + 1
         try:
             fetched = await client.get_markets_by_tickers(batch)
         except Exception:
             self.stats["resolve_failures"] += 1
+            if counts is not None:
+                counts["resolve_failures"] = counts.get("resolve_failures", 0) + 1
             return
         for ticker in batch:
             market = fetched.get(ticker)
@@ -358,7 +388,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
 
     def _process_trades_sync(
         self, trade_tape: list[dict], markets: list[dict], markets_by_ticker: dict[str, dict],
-        cfg: dict, now: float,
+        cfg: dict, now: float, counts: dict[str, int] | None = None,
     ) -> list[WhaleSignal]:
         """Synchronous by design - see fetch_signals' docstring above for
         why. Every blocking call in here (record_rejection,
@@ -388,12 +418,20 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # accumulated history the moment it's turned on, same "preserve a
         # robust dataset" principle as everywhere else in this app.
         trades_observed_by_series: dict[str, int] = {}
+        # Per-call counters returned to the event loop (I2) - a plain dict
+        # so this thread never touches the perf singleton directly.
+        if counts is None:
+            counts = {}
+
+        def _bump(counter: str, n: int = 1) -> None:
+            counts[counter] = counts.get(counter, 0) + n
 
         for trade in trade_tape:
             trade_id = trade.get("trade_id")
             if not trade_id or trade_id in self._seen_trade_ids:
                 continue
             self._mark_seen(trade_id)  # evaluated once, regardless of outcome below
+            _bump("trades")
 
             ticker = trade.get("ticker")
             if ticker:
@@ -411,9 +449,14 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 # or a resolution that genuinely failed. Only the latter is
                 # worth logging, and only that case is checked, so the hot
                 # path stays free of a DB write per uninteresting trade.
-                if _prescan_count(trade) is not None and ticker:
-                    side_n = _prescan_count(trade)
+                scan = _prescan_count(trade)
+                if scan is None or not ticker or scan[1] < min_contracts_for(ticker, wwk_cfg):
+                    _bump("offlist_skipped")
+                if scan is not None and ticker:
+                    side_n = scan
                     if side_n[1] >= min_contracts_for(ticker, wwk_cfg):
+                        _bump("unresolved_market")
+                        _bump("rejection_writes")
                         # Cheap dict-field read on data already in hand (no
                         # new DB/API call) so this rejection carries
                         # unit_cost too - see record_rejection's own
@@ -444,6 +487,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 # become 0, which would filter the trade out as "too small"
                 # - the right answer for the wrong reason, and invisible in
                 # the rejection stats.
+                _bump("rejection_writes")
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side,
                 )
@@ -469,6 +513,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # fabricated number.
             price = _price_dollars(trade, "yes_price_dollars")
             if price is None:
+                _bump("rejection_writes")
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "unparseable_price", 0.0, 0.0, side=side,
                 )
@@ -484,11 +529,14 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # this module's own docstring for why.
             min_contracts = min_contracts_for(ticker, wwk_cfg)
             if count < min_contracts:
+                _bump("below_threshold")
+                _bump("rejection_writes")
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "min_contracts", count, min_contracts,
                     side=side, unit_cost=unit_cost,
                 )
                 continue
+            _bump("candidates")
 
             # Real dollar notional is no longer gated on, but is still
             # captured for diagnostics/raw_context below (a whale-sized
@@ -518,6 +566,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # that could never have been taken, which is worse than useless
             # - it is a number that looks like evidence.
             if not config_bounds.is_tradeable_unit_cost(unit_cost):
+                _bump("rejection_writes")
                 candidate_log.record_rejection(
                     ticker, "whale_watcher", "tradeable_price_range",
                     unit_cost, config_bounds.MIN_TRADEABLE_UNIT_COST, side=side, unit_cost=unit_cost,

@@ -541,3 +541,42 @@ def test_server_error_25_finding_absent_when_no_overflow_reported_or_no_ingest_m
     quiet.ingest_metrics = lambda: im
     ids = {f.finding_id for f in observability.runtime_findings(_POLL_CFG, {}, quiet, _fake_stream())}
     assert not any("ws-server-error-25" in i for i in ids)
+
+
+# --- whale pipeline stage timing (realtime data-plane task I2) -------------
+
+def test_capture_from_runtime_flattens_whale_pipeline_perf(monkeypatch):
+    from services import whale_pipeline_perf as wpp
+    fresh = wpp.WhalePipelinePerf()
+    monkeypatch.setattr(wpp, "perf", fresh)
+    fresh.record_stage("provider", 0.004)
+    fresh.record_stage("provider", 0.010)
+    fresh.record_stage("receive_to_decision", 0.3)
+    fresh.record_count("trades", 40)
+    fresh.record_count("candidates", 2)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["whale_pipeline.stage.provider.window_count"] == 2.0
+    assert metrics["whale_pipeline.stage.provider.window_avg_ms"] == 7.0
+    assert metrics["whale_pipeline.stage.provider.window_max_ms"] == 10.0
+    assert metrics["whale_pipeline.stage.capture.window_count"] == 0.0
+    assert "whale_pipeline.stage.capture.window_avg_ms" not in metrics
+    assert metrics["whale_pipeline.counter.trades"] == 40.0
+    assert metrics["whale_pipeline.counter.candidates"] == 2.0
+    assert metrics["whale_pipeline.receive_to_decision.window_p95_upper_bound_sec"] == 1.0
+    assert metrics["whale_pipeline.receive_to_decision.bucket.le_1s"] == 1.0
+
+
+def test_maybe_capture_resets_the_whale_pipeline_window_after_persisting(monkeypatch):
+    from services import whale_pipeline_perf as wpp
+    fresh = wpp.WhalePipelinePerf()
+    monkeypatch.setattr(wpp, "perf", fresh)
+    fresh.record_count("trades", 5)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert observability.history("whale_pipeline.counter.trades", since_ts=0)[0]["value"] == 5.0
+    assert fresh.snapshot()["counters"]["window"]["trades"] == 0
+    assert fresh.snapshot()["counters"]["lifetime"]["trades"] == 5

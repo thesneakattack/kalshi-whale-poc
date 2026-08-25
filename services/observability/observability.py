@@ -24,6 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -186,7 +187,36 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
         if snapshot is not None:
             metrics.update(_flatten_ingest_metrics(prefix, snapshot))
 
+    # whale_pipeline.* (I2) - the whale-trade pipeline's own stage timers
+    # and counters (services/whale_pipeline_perf.py, a pure module-level
+    # singleton, not services.app_state). Same pure-read contract; the
+    # window is rolled by maybe_capture after persisting.
+    metrics.update(_flatten_whale_pipeline(whale_pipeline_perf.perf.snapshot()))
+
     return metrics
+
+
+def _flatten_whale_pipeline(snapshot: dict) -> dict:
+    out: dict = {}
+    stages = snapshot.get("stages") or {}
+    lifetime_counters = (snapshot.get("counters") or {}).get("lifetime") or {}
+    if not any((t.get("lifetime") or {}).get("count") for t in stages.values()) and not any(lifetime_counters.values()):
+        return out  # the pipeline has never run in this process (poll mode, tests) - no evidence, no rows
+    for stage, timing in stages.items():
+        window = timing.get("window") or {}
+        out[f"whale_pipeline.stage.{stage}.window_count"] = float(window.get("count") or 0)
+        if window.get("count"):
+            for key in ("avg_ms", "max_ms"):
+                if window.get(key) is not None:
+                    out[f"whale_pipeline.stage.{stage}.window_{key}"] = float(window[key])
+    for counter, n in ((snapshot.get("counters") or {}).get("window") or {}).items():
+        out[f"whale_pipeline.counter.{counter}"] = float(n)
+    e2e = snapshot.get("receive_to_decision") or {}
+    if e2e.get("window_p95_upper_bound_sec") is not None:
+        out["whale_pipeline.receive_to_decision.window_p95_upper_bound_sec"] = float(e2e["window_p95_upper_bound_sec"])
+    for name, n in (e2e.get("buckets") or {}).items():
+        out[f"whale_pipeline.receive_to_decision.bucket.{name}"] = float(n)
+    return out
 
 
 def _ingest_snapshot(stream) -> dict | None:
@@ -269,6 +299,7 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
                 reset()
             except Exception:
                 pass
+    whale_pipeline_perf.perf.reset_window()
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------

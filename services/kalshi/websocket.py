@@ -19,6 +19,7 @@ an unnecessary transport rewrite").
 """
 import asyncio
 import base64
+import contextvars
 import json
 import logging
 import os
@@ -102,6 +103,16 @@ _CLASS_BY_MESSAGE_TYPE: dict[str, str] = {
     "pyth_value_underlying_list": "control",
 }
 _OTHER_CLASS = "other"
+
+# The monotonic enqueue timestamp of the message currently being handled,
+# visible to application callbacks for the duration of their call (I2:
+# services/whale_stream/whale_stream_handlers.py reads it to measure true
+# receive->decision latency without the gateway stamping a private key
+# into the vendor payload, which would leak into archival raw_json). None
+# outside a _process_item call.
+MESSAGE_ENQUEUED_AT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "kalshi_ws_message_enqueued_at", default=None,
+)
 _KALSHI_SUBSCRIPTION_OVERFLOW_CODE = 25  # docs/kalshi/websocket-connection.md error table
 _MAX_SERVER_ERROR_CODES_TRACKED = 64  # documented codes are a small fixed set; cap defensively
 _MAX_DISCONNECT_REASON_CHARS = 200
@@ -605,6 +616,7 @@ class KalshiStreamGateway:
         self._wait_window.add(wait)
         self._wait_buckets[bucket_for(wait)] += 1
         started = time.monotonic()
+        token = MESSAGE_ENQUEUED_AT.set(enqueued_at)
         try:
             await self._handle_message(
                 data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
@@ -620,6 +632,7 @@ class KalshiStreamGateway:
                 self._fault_logged_classes_this_window.add(cls)
                 fault_log.record("kalshi_websocket", f"handle_message:{cls}", exc)
         finally:
+            MESSAGE_ENQUEUED_AT.reset(token)
             elapsed = time.monotonic() - started
             self._processed_by_class[cls] = self._processed_by_class.get(cls, 0) + 1
             lifetime = self._handler_lifetime.get(cls)

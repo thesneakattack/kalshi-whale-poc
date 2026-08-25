@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException
 from services import index_feed, series_watcher, settlement_edge, trade_archive
 from services.diagnostics import diagnostics
 from services.app_state import state, trade_stream, whale_provider
+from services import whale_pipeline_perf
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
 from services.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
@@ -160,6 +161,10 @@ async def get_pipeline_health():
             "queue_health": trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else None,
         },
         "index_stream": state.get("index_stream_status"),
+        # Whale-pipeline stage timers/counters (I2, services/whale_pipeline_
+        # perf.py): where a trade message's time goes, and how many messages
+        # enter the thread hop versus how many are real candidates.
+        "whale_pipeline": whale_pipeline_perf.perf.snapshot(),
         "stores": {
             "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),
             "book_snapshots": _age(series_watcher.DB_PATH, "book_snapshots", "observed_at"),

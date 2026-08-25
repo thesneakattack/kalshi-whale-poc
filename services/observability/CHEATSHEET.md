@@ -182,6 +182,112 @@ window avg 5.7 ms with a lifetime max of 4,360 ms, ticker handler avg
 ("received promptly but processed stale" is now a number); the controlled
 baseline is task I7's job.
 
+### `whale_pipeline.*` — whale-trade pipeline stage timing (realtime data-plane I2, 2026-08-25)
+
+Source: `services/whale_pipeline_perf.py` (pure module singleton, not
+`services.app_state`), recorded by `services/whale_stream/
+whale_stream_handlers.py::_process_stream_trade` and
+`services/whalewatchers/kalshi_trade_tape.py::fetch_signals`. Exists so the
+most expensive stages of the per-message hot path are measured rather than
+inferred from code shape (H3 in the known-findings file).
+
+Names (`float`; the whole group is omitted until the pipeline has recorded
+anything in this process — poll mode and most tests never do):
+
+- `whale_pipeline.stage.<stage>.window_count|window_avg_ms|window_max_ms`
+  for `capture` (trade_tape insert + `series_watcher.record_trade`),
+  `config` (`config_store.get()` + `config_performance.fingerprint`),
+  `provider` (the whole `fetch_signals` call), `resolve`
+  (`_resolve_unknown_markets`, incl. any REST wait), `thread_wait`
+  (`asyncio.to_thread` submitted → worker started), `sync`
+  (`_process_trades_sync` on the worker, i.e. all SQLite work), `signals`
+  (`_handle_signal` + `check_exits`, only when a signal was emitted),
+  `handler_total`, `receive_to_handler_end` (gateway enqueue timestamp →
+  handler end, every stream trade), `receive_to_decision` (same, only for
+  trades that produced a signal).
+- `whale_pipeline.counter.<name>` — per-window counts: `trades`,
+  `below_threshold`, `offlist_skipped`, `unresolved_market`, `candidates`,
+  `offlist_candidates`, `to_thread_entries`, `rejection_writes`,
+  `resolve_calls`, `resolve_failures`, `signals_emitted`.
+- `whale_pipeline.receive_to_decision.window_p95_upper_bound_sec` and
+  `…receive_to_decision.bucket.<le_1ms…gt_10s>` (same fixed buckets as
+  `<stream>.ingest.queue_wait`).
+
+**How receive time reaches the handler.** The gateway's `_process_item`
+sets `services/kalshi/websocket.py::MESSAGE_ENQUEUED_AT` (a contextvar)
+to the message's monotonic enqueue timestamp for the duration of the
+callback and resets it after — no private key stamped into the vendor
+payload (which would leak into `series_watcher`'s archival `raw_json`).
+
+**Window ownership.** Same rule as `<stream>.ingest.*`: `maybe_capture`
+calls `whale_pipeline_perf.perf.reset_window()` only after a sample is
+persisted; `capture_from_runtime` never resets. Lifetime aggregates stay
+monotone. The worker thread returns its clocks/counts to the event loop
+(never records from the thread), so `snapshot()` never races a writer.
+`tests/conftest.py` gives every test a fresh singleton — this is
+process-global mutable state, the same isolation hazard as the DBs.
+
+**Per-message constant costs measured in-container (2026-08-25):**
+`config_store.get()` 9.3 µs/call (an `os.stat` + lock; its own docstring
+says "a handful of times per tick, not per message" — the stream handler
+calls it twice per trade message), `config_performance.fingerprint(cfg)`
+28.9 µs (json.dumps + sha256, once per trade message, needed only if a
+signal is emitted), `signal_log.series_of` 0.24 µs,
+`series_watcher.watched_series(cfg)` 3.1 µs. Total ≈ 48 µs/msg ≈ 1.5% of
+the I0 p50 handler cost: pure waste on the ~99.9% non-whale flow, but not
+where the time goes.
+
+**First live window (2026-08-25, 692 s of monotone samples across a 773 s
+read-only capture; 77,807 trades ≈ 112 trades/s — a quieter period than
+the I0 baseline's 148 msg/s p50, and interrupted by four `--reload`
+restarts caused by editing `.py` files during the capture — lesson for I7:
+a capture window must be hands-off, since every reload zeroes the lifetime
+counters):**
+
+| Stage (per trade, avg) | ms | window-max |
+|---|---|---|
+| capture | 0.064 | 59 |
+| config | 0.072 | 1.1 |
+| provider (= resolve + thread_wait + sync + loop re-entry) | **3.25** | **4,926** |
+| · resolve | 0.24 | 4,329 |
+| · thread_wait | 0.12 | 21 |
+| · sync (worker thread, all SQLite) | 1.58 | 277 |
+| · unattributed remainder ≈ loop re-entry after the worker finishes | ≈1.3 | — |
+| signals (per emitted signal, n=61) | 69.6 | 110 |
+| handler_total | 3.44 | 4,926 |
+| receive → handler end (every trade) | **649** | **9,624** |
+| receive → decision (n=61 candidates with a signal) | **727** | **5,294** |
+
+Counters: `to_thread_entries/trade = 1.000` vs `candidates/trade = 0.0030`
+(234 candidates, 198 of them off-watchlist, 198 resolve calls, 0 failures,
+19 `unresolved_market`); `offlist_skipped` 85.7% of trades;
+`rejection_writes/trade = 0.142` (11,042 SQLite write pairs in 692 s ≈ 16/s
+on the worker, one per sub-threshold print on a *watched* market — 12
+markets at the time; this scales with watchlist size, not with candidates).
+
+What it says, and what it does not:
+
+- **H3 confirmed.** The per-message floor is ≈3.3 ms of thread hop +
+  worker + loop re-entry, paid on 100% of trades, while the cheap
+  contract-count rejection that decides 99.7% of them costs microseconds
+  and already runs *inside* the hop. `provider` is 94% of handler time.
+- **Receive→decision is queue time, not handler time**: 649 ms average
+  wait versus 3.4 ms of work, at ~40% nominal utilization. Queue depth was
+  usually tiny (p50 1, max 71) with oldest-age spikes to 5 s — so the wait
+  is built by *stalls*, not by steady overload.
+- **The multi-second stalls sit in the unattributed remainder**: the
+  3.8–4.9 s `provider` maxima recur in windows where `resolve`, `thread_wait`
+  and `sync` maxima are all small, and the tick series shows 4.0 s and
+  7.99 s ticks in the same capture. The remainder is exactly the time a
+  finished worker's result waits for the event loop to be free — the
+  signature of the loop being blocked by synchronous work elsewhere (the
+  trading tick's SQLite phases are the obvious candidate). Correlation
+  only; I7 must pin it with tick-phase timestamps aligned to the stall
+  windows before it is called a cause.
+- `capture` max 59 ms and `sync` max 277 ms show SQLite contention on both
+  the loop (series_watcher flush) and the worker.
+
+
 ## Persistence
 
 `data/observability.db`, one `metric_samples` table (`observed_at`,
