@@ -16,9 +16,9 @@ objects too, not just separate docstrings.
 
 This facade keeps the public surface main.py/services.app_state already
 wire in: env credential loading (KALSHI_API_KEY_ID +
-KALSHI_PRIVATE_KEY_PATH), .status/.enabled, close(), the same read/write
-method signatures, and flatten_all (high-level execution policy — moves
-above the adapter at Task A9). The two gateways deliberately share one
+KALSHI_PRIVATE_KEY_PATH), .status/.enabled, close(), and the same read/write
+method signatures (emergency-flatten orchestration moved above the
+adapter to services/execution.py at Task A9). The two gateways deliberately share one
 signed SDK client (one aiohttp session, one auth context); the facade owns
 its lifecycle.
 
@@ -153,64 +153,3 @@ class KalshiAccountClient:
 
     async def cancel_order(self, order_id: str) -> dict:
         return await self._writes.cancel_order(order_id)
-
-    # ---- execution policy (moves above the adapter at Task A9) ------------
-
-    async def flatten_all(self) -> list[dict]:
-        """Closes every currently-open real market position via an
-        aggressive IOC order per ticker (2026-08-23 gap-check finding: no
-        "get flat immediately" path existed for the real account either -
-        the paper-mode half is PaperBroker.close_all_positions). No bulk
-        flatten endpoint exists on Kalshi (confirmed against docs/kalshi/ -
-        order-groups/trigger-order-group only cancel resting orders, never
-        touch open positions), so this is the only real path: one
-        create_order call per ticker.
-
-        Side/price mapping verified against docs/kalshi/create-order-v2.md's
-        BookSide description ("this endpoint quotes everything from the
-        YES side: bid means buy YES, ask means sell YES") and
-        docs/kalshi/get-positions.md's position_fp description ("negative
-        means NO contracts and positive means YES contracts") - NOT
-        guessed from the legacy action/side vocabulary in
-        docs/kalshi/order_direction.md, which uses a different vocabulary
-        for a different (non-v2) surface and would give the wrong mapping
-        here if followed directly. A held YES position (position_fp > 0)
-        closes by SELLING yes (side="ask"); a held NO position
-        (position_fp < 0) closes by BUYING yes (side="bid"), which nets
-        against the held NO contracts per Kalshi's binary-market
-        settlement (1 YES + 1 NO always nets to exactly $1). Price is
-        pinned to the extreme end of the 1-99 cent range on each side
-        (0.01 for an ask, 0.99 for a bid) so the IOC order is guaranteed to
-        cross the current book rather than rest - an emergency flatten
-        needs the fill, not the best price.
-
-        Disclosed, not silently assumed: this exact call path has never
-        been exercised against a real fill (trading_enabled is false by
-        default and no strategy code calls create_order today - this is
-        the first real caller). The side/price mapping above is grounded
-        directly in the docs, same confidence level as the rest of this
-        client's already-implemented, doc-verified order schema - but
-        "schema is correct" and "has produced one real observed fill" are
-        different claims, and only the first one is true here yet. Same
-        disclosure discipline services/account_positions.py's own
-        REST-vs-WS deferral already applies to unverified real-money
-        paths in this codebase."""
-        snapshot = await self.get_positions()
-        results = []
-        for pos in (snapshot.get("market_positions") or []):
-            ticker = pos.get("ticker")
-            position_fp = float(pos.get("position_fp") or 0)
-            if not ticker or position_fp == 0:
-                continue
-            side = "ask" if position_fp > 0 else "bid"
-            price = "0.0100" if side == "ask" else "0.9900"
-            count = f"{abs(position_fp):.2f}"
-            try:
-                order = await self.create_order(
-                    ticker=ticker, side=side, count=count, price=price,
-                    time_in_force="immediate_or_cancel", is_closing_order=True,
-                )
-                results.append({"ticker": ticker, "position_fp": position_fp, "order": order, "error": None})
-            except Exception as e:
-                results.append({"ticker": ticker, "position_fp": position_fp, "order": None, "error": str(e)})
-        return results

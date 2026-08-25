@@ -233,9 +233,12 @@ def test_flatten_all_also_flattens_the_real_account_when_trading_enabled(monkeyp
     client.post("/api/trading/enable", json={"confirmation_phrase": "ENABLE REAL TRADING"})
     assert main.account.trading_enabled is True
 
-    async def fake_flatten_all():
+    async def fake_flatten_all(account):
+        assert account is main.account  # the route passes its own facade in
         return [{"ticker": "REAL-A", "position_fp": 10.0, "order": {"ok": True}, "error": None}]
-    monkeypatch.setattr(main.account, "flatten_all", fake_flatten_all)
+    # A9: flatten orchestration lives in services/execution.py now, above
+    # the vendor adapter - the route composes it with the account facade.
+    monkeypatch.setattr(main.execution, "flatten_all_real_positions", fake_flatten_all)
 
     main.broker.reset(starting_bankroll=10000.0)
     resp = client.post("/api/trading/flatten-all", json={"confirmation_phrase": "FLATTEN ALL POSITIONS"})

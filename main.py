@@ -19,6 +19,7 @@ from services import logging_config
 logging_config.configure()
 
 from services import accounts_store
+from services import execution
 from services.advisory import advisory_engine
 from services import auth as auth_service
 from services.whale_calibration import calibration_history
@@ -1265,8 +1266,9 @@ async def flatten_all_positions(body: FlattenAllBody):
     # flattens the paper account (harmless, fully reversible via the
     # Danger Zone); also flattens the real account whenever
     # kalshi_account.trading_enabled is true - see
-    # KalshiAccountClient.flatten_all's own docstring for the order
-    # construction and its disclosed lack of a real-fill verification yet.
+    # services/execution.py's flatten_all_real_positions docstring for the
+    # order construction and its disclosed lack of a real-fill
+    # verification yet (moved above the vendor adapter at Task A9).
     if body.confirmation_phrase != FLATTEN_CONFIRMATION_PHRASE:
         raise HTTPException(
             status_code=400,
@@ -1275,7 +1277,7 @@ async def flatten_all_positions(body: FlattenAllBody):
     paper_closed = broker.close_all_positions(state["latest_prices"], "manual flatten-all")
     real_result = None
     if account.trading_enabled:
-        real_result = await account.flatten_all()
+        real_result = await execution.flatten_all_real_positions(account)
     bump_generation()
     return {
         "paper_closed": [t.to_dict() for t in paper_closed],
