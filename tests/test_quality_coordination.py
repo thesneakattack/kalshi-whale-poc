@@ -167,3 +167,59 @@ def test_recurrence_reopens_same_key_with_history(tmp_path, monkeypatch):
     ).fetchone()["c"]
     assert log_count >= 3  # observed, resolved, reopened — history retained, not truncated
     conn.close()
+
+
+from unittest.mock import patch
+
+from services.quality.models import QualityReport
+from services.quality_coordination import observe_main
+
+
+def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        r1 = observe_main(tmp_path, at=T0)
+        r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
+    assert r1.audit_fingerprint == r2.audit_fingerprint
+    assert r2.items_observed == 0  # second call short-circuits, no re-processing
+    conn = _connect()
+    runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
+    assert runs == 1  # only one row, not two
+    conn.close()
+
+
+def test_observe_main_writes_run_row_with_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value="deadbeef"):
+        result = observe_main(tmp_path, at=T0)
+    assert result.items_observed == 1
+    assert result.commit_sha == "deadbeef"
+    assert result.error is None
+
+
+def test_observe_main_survives_scanner_exception_and_records_error(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+        result = observe_main(tmp_path, at=T0)
+    assert result.error is not None and "boom" in result.error
+    assert result.items_observed == 0
+
+
+def test_scope_paths_prefers_evidence_path_over_dotted_scope():
+    """Real bug this test exists to prevent: `scope` is a dotted module path for most semantic
+    rules (e.g. 'services.foo'), which never equals a real GitHub file path ('services/foo.py')
+    — using it directly for suppression path-overlap matching would make every such rule
+    permanently unsuppressible by any real branch. evidence['path'] is the real file path."""
+    from services.quality_coordination import _scope_paths
+    f = _finding(check="router-registration", scope="services.foo", evidence={"path": "services/foo.py"})
+    assert _scope_paths(f) == ("services/foo.py",)
+
+
+def test_scope_paths_falls_back_to_scope_for_aggregate_rules_with_no_path():
+    from services.quality_coordination import _scope_paths
+    f = _finding(check="api-usage-inventory", scope="KalshiClient.get_market", evidence={})
+    assert _scope_paths(f) == ("KalshiClient.get_market",)

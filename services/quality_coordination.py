@@ -227,3 +227,100 @@ def apply_observation(conn: sqlite3.Connection, signals: list[Signal], branches:
             result[row["automation_key"]] = "resolved"
 
     return result
+
+
+import hashlib
+import subprocess
+from datetime import timezone
+
+from services.quality.models import QualityReport
+from tools.quality_audit.__main__ import run_audit as _run_static_audit
+
+
+def _current_commit_sha(repo_root: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _fingerprint(report: QualityReport) -> str:
+    parts = sorted(f"{f.finding_id}:{f.severity}" for f in report.findings)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def _scope_paths(f: QualityFinding) -> tuple[str, ...]:
+    """Real repo-relative file path(s) for suppression path-overlap matching against GitHub's
+    compare API (Task 5), which reports paths like 'services/x.py' — NOT `scope`, which for most
+    semantic rules (I1 §3.1: router-registration, background-wiring, persistence-isolation,
+    config-usage, ...) is a dotted module/config path like 'services.foo' or
+    'alerting.crash_auto_resolve_after_sec' and would never match a real filename. Prefer
+    evidence['path'] (present for the rules whose evidence I1 §3.1 lists 'path' for — the large
+    majority) and fall back to `scope` only for the aggregate/cross-file rules (api-usage,
+    frontend-route-missing, backend-route-unused) that have no single meaningful file path at
+    all — those simply won't path-overlap-suppress, which is correct: an aggregate finding isn't
+    owned by one file for a branch to be "fixing."""
+    evidence = f.evidence or {}
+    if "path" in evidence:
+        return (evidence["path"],)
+    return (f.scope,)
+
+
+@dataclass(frozen=True)
+class RunResult:
+    audit_fingerprint: str
+    commit_sha: str | None
+    items_observed: int
+    items_resolved: int
+    states: dict[str, str]
+    error: str | None
+
+
+def observe_main(repo_root: Path, at: datetime | None = None,
+                  branches: list[BranchSignal] | None = None,
+                  claims: list[Claim] | None = None) -> RunResult:
+    at = at or datetime.now(timezone.utc)
+    branches = branches or []
+    claims = claims or []
+    conn = _connect()
+    try:
+        try:
+            report = _run_static_audit(repo_root)
+        except Exception as exc:
+            fp = hashlib.sha256(f"error:{exc}".encode()).hexdigest()
+            conn.execute(
+                """INSERT OR IGNORE INTO coordination_runs
+                   (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+                   VALUES (?, ?, ?, 0, 0, ?)""",
+                (fp, _current_commit_sha(repo_root), at.isoformat(), str(exc)),
+            )
+            conn.commit()
+            return RunResult(fp, None, 0, 0, {}, str(exc))
+
+        fp = _fingerprint(report)
+        existing = conn.execute(
+            "SELECT * FROM coordination_runs WHERE audit_fingerprint=?", (fp,)
+        ).fetchone()
+        if existing is not None:
+            return RunResult(fp, existing["commit_sha"], 0, 0, {}, existing["error"])
+
+        signals = [
+            Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)
+            for f in report.findings
+        ]
+        states = apply_observation(conn, signals, branches, claims, at)
+        resolved = sum(1 for s in states.values() if s == "resolved")
+        sha = _current_commit_sha(repo_root)
+        conn.execute(
+            """INSERT INTO coordination_runs
+               (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+               VALUES (?, ?, ?, ?, ?, NULL)""",
+            (fp, sha, at.isoformat(), len(signals), resolved),
+        )
+        conn.commit()
+        return RunResult(fp, sha, len(signals), resolved, states, None)
+    finally:
+        conn.close()
