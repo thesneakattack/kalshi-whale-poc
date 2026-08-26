@@ -415,6 +415,27 @@ def test_runtime_findings_composes_every_applicable_rule():
     }
 
 
+# --- candidate_retry abandonment (realtime data-plane remediation P2 Task 13) ---
+
+def test_candidate_retry_abandoned_finding_absent_when_zero(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+    assert not [f for f in findings if f.check == "candidate-retry-abandoned"]
+
+
+def test_candidate_retry_abandoned_finding_warns_when_nonzero(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 2)
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    matches = [f for f in findings if f.check == "candidate-retry-abandoned"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert matches[0].confidence == "high"
+    assert matches[0].evidence == {"abandoned": 2}
+
+
 # --- WebSocket ingest queue-health metrics (realtime data-plane task I1) ---
 
 def _fake_ingest_metrics() -> dict:
@@ -654,3 +675,90 @@ def test_maybe_capture_resets_the_rest_latency_window_after_persisting(monkeypat
 
     assert resets == [1]
     assert observability.history("kalshi_rest_class.critical_whale.calls", since_ts=0)[0]["value"] == 3.0
+
+
+def test_loop_watchdog_metrics_flow_into_the_snapshot():
+    from services import loop_watchdog
+    loop_watchdog.reset_window()
+    # simulate a stall having been recorded without running the real task
+    loop_watchdog._stall_max_ms, loop_watchdog._stall_count, loop_watchdog._samples = 300.0, 1, 10
+    try:
+        metrics = observability.capture_from_runtime({}, {}, None, None)
+        assert metrics["loop_watchdog.stall_max_ms"] == 300.0
+        assert metrics["loop_watchdog.stall_count"] == 1.0
+        assert metrics["loop_watchdog.samples"] == 10.0
+    finally:
+        loop_watchdog.reset_window()
+
+
+def test_loop_watchdog_metrics_omitted_when_never_sampled():
+    from services import loop_watchdog
+    loop_watchdog.reset_window()
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+    assert not any(k.startswith("loop_watchdog.") for k in metrics)
+
+
+def test_maybe_capture_resets_the_loop_watchdog_window_after_persisting(monkeypatch):
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    resets = []
+    monkeypatch.setattr(loop_watchdog, "reset_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]
+
+
+def test_candidate_retry_metrics_flow_into_the_snapshot(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {"t1": {}})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 3)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 2)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 1)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["candidate_retry.pending"] == 1.0
+    assert metrics["candidate_retry.retried"] == 3.0
+    assert metrics["candidate_retry.recovered"] == 2.0
+    assert metrics["candidate_retry.abandoned"] == 1.0
+
+
+def test_candidate_retry_metrics_omitted_when_nothing_pending_or_happened(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 0)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 0)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert not any(k.startswith("candidate_retry.") for k in metrics)  # same "no evidence, no rows" contract
+
+
+def test_candidate_retry_metrics_present_when_something_is_pending_even_with_zero_window_activity(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {"t1": {}})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 0)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 0)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["candidate_retry.pending"] == 1.0
+    assert metrics["candidate_retry.retried"] == 0.0
+
+
+def test_maybe_capture_resets_the_candidate_retry_window_after_persisting(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    resets = []
+    monkeypatch.setattr(candidate_retry, "reset_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]

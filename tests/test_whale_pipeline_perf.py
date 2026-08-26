@@ -17,7 +17,7 @@ def test_stage_names_and_counter_names_are_a_fixed_bounded_set():
     assert set(wpp.COUNTERS) == {
         "trades", "below_threshold", "offlist_skipped", "unresolved_market", "candidates",
         "offlist_candidates", "to_thread_entries", "rejection_writes", "resolve_calls",
-        "resolve_failures", "signals_emitted",
+        "resolve_failures", "batch_capacity_truncated", "signals_emitted",
     }
 
 

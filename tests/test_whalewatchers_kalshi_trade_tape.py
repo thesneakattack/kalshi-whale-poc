@@ -628,3 +628,98 @@ def test_resolve_calls_and_failures_are_counted(_fresh_perf):
     }))
     c = _fresh_perf.snapshot()["counters"]["window"]
     assert c["resolve_calls"] == 1 and c["resolve_failures"] == 1
+
+
+# --- batch-capacity truncation (code-review finding #7) -------------------
+#
+# _MAX_ONDEMAND_MARKET_FETCH caps how many off-watchlist tickers get a
+# lookup ATTEMPT in one tick. A ticker bumped out of that cap never had a
+# lookup attempted at all - not a confirmed negative, and (before this fix)
+# not treated as a transient failure either, so its trade_id got marked
+# seen anyway and was lost for good: no retry, no counter, no way to ever
+# resolve it. The same silent-loss shape H4 (Task 11) closed for a REST
+# exception, reopened here via plain batch-size truncation.
+
+def test_batch_capacity_truncated_tickers_are_not_marked_seen(_fresh_perf, monkeypatch):
+    from services.whalewatchers import kalshi_trade_tape as ktt_module
+
+    monkeypatch.setattr(ktt_module, "_MAX_ONDEMAND_MARKET_FETCH", 2)
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+
+    # 3 distinct off-watchlist whale-sized tickers, cap is 2 - "TICK-2"
+    # sorts last alphabetically, so it's the one bumped out of the batch.
+    trade_tape = [
+        _trade(trade_id="t0", ticker="TICK-0", count_fp="100.00"),
+        _trade(trade_id="t1", ticker="TICK-1", count_fp="100.00"),
+        _trade(trade_id="t2", ticker="TICK-2", count_fp="100.00"),
+    ]
+
+    class _AlwaysResolvesClient:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: _market(ticker=t) for t in tickers}
+
+    signals = asyncio.run(provider.fetch_signals(market_context={
+        "markets": [], "trade_tape": trade_tape, "cfg": cfg, "client": _AlwaysResolvesClient(),
+    }))
+
+    resolved_tickers = {s.ticker for s in signals}
+    assert resolved_tickers == {"TICK-0", "TICK-1"}  # only the 2 within the cap resolved this round
+    # The truncated-out trade must NOT be on the seen-trade dedupe ring -
+    # marking it seen would make it permanently unresolvable, since nothing
+    # else would ever re-present this exact trade_id.
+    assert "t2" not in provider._seen_trade_ids
+    assert "t0" in provider._seen_trade_ids
+    assert "t1" in provider._seen_trade_ids
+
+
+def test_batch_capacity_truncated_tickers_are_enqueued_for_retry(monkeypatch):
+    from services import candidate_retry
+    from services.whalewatchers import kalshi_trade_tape as ktt_module
+
+    monkeypatch.setattr(ktt_module, "_MAX_ONDEMAND_MARKET_FETCH", 1)
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+
+    trade_tape = [
+        _trade(trade_id="ta", ticker="TICK-A", count_fp="100.00"),
+        _trade(trade_id="tb", ticker="TICK-B", count_fp="100.00"),
+    ]
+
+    class _AlwaysResolvesClient:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: _market(ticker=t) for t in tickers}
+
+    asyncio.run(provider.fetch_signals(market_context={
+        "markets": [], "trade_tape": trade_tape, "cfg": cfg, "client": _AlwaysResolvesClient(),
+    }))
+
+    # TICK-B was bumped out by the cap of 1 - its trade must have a durable
+    # retry path (services/candidate_retry.py), not just "hope it naturally
+    # re-presents" (which, before this fix, it structurally never could,
+    # having been wrongly marked seen).
+    assert "tb" in candidate_retry._pending
+    assert "ta" not in candidate_retry._pending  # resolved this round - nothing to retry
+
+
+def test_batch_capacity_truncation_is_counted(_fresh_perf, monkeypatch):
+    from services.whalewatchers import kalshi_trade_tape as ktt_module
+
+    monkeypatch.setattr(ktt_module, "_MAX_ONDEMAND_MARKET_FETCH", 1)
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+
+    trade_tape = [
+        _trade(trade_id="ta", ticker="TICK-A", count_fp="100.00"),
+        _trade(trade_id="tb", ticker="TICK-B", count_fp="100.00"),
+    ]
+
+    class _AlwaysResolvesClient:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: _market(ticker=t) for t in tickers}
+
+    asyncio.run(provider.fetch_signals(market_context={
+        "markets": [], "trade_tape": trade_tape, "cfg": cfg, "client": _AlwaysResolvesClient(),
+    }))
+    c = _fresh_perf.snapshot()["counters"]["window"]
+    assert c["batch_capacity_truncated"] == 1

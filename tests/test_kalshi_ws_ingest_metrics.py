@@ -368,3 +368,88 @@ def test_contextvar_is_reset_even_when_the_handler_raises(monkeypatch):
     gw._ingest_raw(_trade("a"), now=1.0)
     asyncio.run(gw._process_item(gw._queue.get_nowait(), on_trade=broken, on_ticker=_noop, on_status=_noop, now=2.0))
     assert ws_module.MESSAGE_ENQUEUED_AT.get() is None
+
+
+# --- reader-side whale gate, shadow mode (realtime data-plane remediation
+# P0 Task 3) - counts, never drops, until Task 17 flips it live ------------
+
+def _trade_with_count(trade_id: str, ticker: str, count_fp: str) -> str:
+    return json.dumps({"type": "trade", "msg": {"market_ticker": ticker, "trade_id": trade_id, "count_fp": count_fp}})
+
+
+def test_shadow_gate_counts_sub_threshold_trades_without_dropping_them(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}},
+    )
+    gw = _gateway()
+    assert gw._ingest_raw(_trade_with_count("t1", "K1", "1"), now=1.0) is True
+    m = gw.ingest_metrics(now=1.0)
+    assert m["gate_would_reject"] == 1
+    assert gw._queue.qsize() == 1  # still enqueued - shadow mode, not filtering
+
+
+def test_shadow_gate_does_not_count_a_whale_sized_trade(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}},
+    )
+    gw = _gateway()
+    gw._ingest_raw(_trade_with_count("t1", "K1", "500"), now=1.0)
+    assert gw.ingest_metrics(now=1.0)["gate_would_reject"] == 0
+
+
+def test_gate_exception_falls_open_and_still_enqueues(monkeypatch):
+    monkeypatch.setattr(ws_module.whale_gate, "passes", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
+    monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: True)
+    gw = _gateway()
+    assert gw._ingest_raw(_trade_with_count("t1", "K1", "500"), now=1.0) is True
+    assert gw.ingest_metrics(now=1.0)["gate_exceptions"] == 1
+    assert gw._queue.qsize() == 1
+
+
+# --- _shadow_gate_check's config cache (code-review finding #6) -----------
+#
+# config_store.get()'s own docstring assumes "a handful of times per tick,
+# not per message"; _shadow_gate_check runs once per inbound trade-class
+# message on the reader's hot path (thousands/minute exchange-wide),
+# breaking that assumption - measured directly (not assumed) at ~11us/call
+# in this environment, roughly 3x json.loads' own per-message cost. Fixed
+# with a 1-second cache, same shape as series_watcher.py's own
+# _quarantine_active().
+
+def test_shadow_gate_check_reuses_the_cached_config_across_messages_within_the_ttl(monkeypatch):
+    calls = {"n": 0}
+
+    def _counting_get():
+        calls["n"] += 1
+        return {"whale_watcher_kalshi": {"min_contracts": 100}}
+
+    monkeypatch.setattr(ws_module.config_store, "get", _counting_get)
+    gw = _gateway()
+
+    gw._ingest_raw(_trade_with_count("t1", "K1", "1"), now=1.0)
+    gw._ingest_raw(_trade_with_count("t2", "K1", "1"), now=1.0)
+    gw._ingest_raw(_trade_with_count("t3", "K1", "1"), now=1.0)
+
+    assert calls["n"] == 1  # one real config_store.get() for all three messages
+    assert gw.ingest_metrics(now=1.0)["gate_would_reject"] == 3  # gate still ran correctly each time
+
+
+def test_shadow_gate_check_refreshes_the_cached_config_after_the_ttl_expires(monkeypatch):
+    calls = {"n": 0}
+
+    def _counting_get():
+        calls["n"] += 1
+        return {"whale_watcher_kalshi": {"min_contracts": 100}}
+
+    monkeypatch.setattr(ws_module.config_store, "get", _counting_get)
+    gw = _gateway()
+
+    gw._ingest_raw(_trade_with_count("t1", "K1", "1"), now=1.0)
+    assert calls["n"] == 1
+    # Force the cache to look stale (more than the 1-second TTL old) without
+    # sleeping in real wall-clock time.
+    gw._gate_cfg_cache = (gw._gate_cfg_cache[0] - 2.0, gw._gate_cfg_cache[1])
+    gw._ingest_raw(_trade_with_count("t2", "K1", "1"), now=1.0)
+    assert calls["n"] == 2  # cache was stale - a fresh config_store.get() happened

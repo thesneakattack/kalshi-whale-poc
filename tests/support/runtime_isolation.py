@@ -46,6 +46,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.accounts_store",
     "services.alerting.alerting",
     "services.backup.backup",
+    "services.candidate_ledger",
     "services.candidate_log",
     "services.config_performance",
     "services.data_quarantine",

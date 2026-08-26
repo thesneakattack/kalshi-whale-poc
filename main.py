@@ -24,6 +24,7 @@ from services.advisory import advisory_engine
 from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
+from services import candidate_retry
 from services.diagnostics import diagnostics
 from services import regime_analytics
 from services.whale_calibration import confidence_calibration
@@ -40,6 +41,8 @@ from services import series_cache
 from services import series_evaluator
 from services import series_watcher
 from services import fault_log
+from services import loop_watchdog
+from services import tick_executor
 from services import task_supervisor
 from services import game_state
 from services import index_feed
@@ -262,6 +265,107 @@ async def _check_signal_resolutions(client: KalshiPublicGateway):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
 
 
+def _flush_trade_capture(trade_tape: list, cfg: dict) -> dict:
+    """Synchronous batched write into series_watcher's raw_trades table -
+    root-cause report C1's specifically measured 0.65-1.6s executemany on
+    essentially every tick. A plain sync function so it is directly
+    unit-testable and directly callable from tick_executor's worker thread
+    (realtime data-plane remediation plan, P1 Task 7)."""
+    for tape_trade in trade_tape:
+        series_watcher.record_trade(tape_trade, cfg)
+    return series_watcher.flush()
+
+
+async def _flush_trade_capture_async(trade_tape: list, cfg: dict) -> dict:
+    """Awaitable wrapper: runs _flush_trade_capture via tick_executor
+    instead of the calling event loop (P1 Task 7). Still uses series_
+    watcher's own _connect(), not tick_executor.connection_for() - see
+    tick_executor.py's own docstring ("connection_for() status") for why
+    that swap was investigated and deliberately not made (code-review
+    finding #3)."""
+    return await tick_executor.run(lambda: _flush_trade_capture(trade_tape, cfg))
+
+
+def _resolve_and_record_settlements(markets: list, market_results: dict, tick_now: float) -> list:
+    """The tick's synchronous market-result resolution + market-history
+    recording - root-cause report C1's ~1-5s 'resolve_and_record' phase
+    (realtime data-plane remediation plan, P1 Task 8). Single-connect
+    calls (market_analyst_agent/candidate_log resolution, the batched
+    market_history.record_snapshots executemany) plus a per-finalized-
+    market outcome/settlement-window write - a smaller N+1 shape than
+    series_stats' (Task 8's other target) since it only touches markets
+    that actually finalized this tick, not every watched market, but the
+    same _connect()-per-call cost either way. A plain sync function,
+    directly unit-testable and directly callable from tick_executor's
+    worker thread. Returns the slimmed markets list state["markets"]
+    should be set to (unchanged from what the inline block used to
+    compute)."""
+    slimmed = [_slim_market(m) for m in markets]
+    # Cheap, pure-DB checks (no new API calls) - run every tick regardless
+    # of market_analyst.enabled/whether a market ever traded, so analyses
+    # made while a feature was on still get graded after it's turned off.
+    market_analyst_agent.resolve_from_market_results(market_results)
+    candidate_log.resolve_from_market_results(market_results)
+    # Real market data logging (docs/advisory-engine-plan.md §9) -
+    # independent of whale signals, independent of whether either strategy
+    # ever trades a given market. Same real fields already fetched by the
+    # caller, zero extra API cost.
+    market_history.record_snapshots(
+        [
+            {
+                "ticker": m["ticker"],
+                "yes_price": float(m.get("yes_bid_dollars") or 0.5),
+                "spread": max(
+                    float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
+                ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
+                "volume_24h": float(m.get("volume_24h_fp") or 0.0),
+                "time_to_close_sec": market_history.seconds_to_close(m.get("close_time"), tick_now),
+            }
+            for m in markets if m.get("ticker")
+        ],
+        timestamp=tick_now,
+    )
+    for m in markets:
+        result = (m.get("result") or "").strip().lower()
+        # status=="finalized" gate: 2026-08-23 fix, same reasoning as
+        # propagate_milestone_winners' own docstring - result is set at
+        # "determined" but can still flip (disputed -> amended) before
+        # "finalized" is truly terminal.
+        if result in ("yes", "no") and m.get("ticker") and m.get("status") == "finalized":
+            market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
+            # Close the loop on any settlement-window observations taken
+            # for this market (services/settlement_edge.py) - the realised
+            # outcome is written onto the rows that forecast it, so scoring
+            # can never pair an observation with a different window's
+            # result. No-op (0 rows) for the overwhelming majority of
+            # markets, which are not index-settled and were never observed.
+            settlement_edge.resolve_window(m["ticker"], result == "yes")
+    return slimmed
+
+
+async def _resolve_and_record_settlements_async(markets: list, market_results: dict, tick_now: float) -> list:
+    """Awaitable wrapper: runs _resolve_and_record_settlements via
+    tick_executor instead of the calling event loop (P1 Task 8). The
+    market_analyst_agent/candidate_log/market_history/settlement_edge
+    calls inside still use their own modules' _connect(), not
+    tick_executor.connection_for() - see tick_executor.py's own docstring
+    ("connection_for() status") for why (code-review finding #3)."""
+    return await tick_executor.run(
+        lambda: _resolve_and_record_settlements(markets, market_results, tick_now)
+    )
+
+
+async def _build_series_track_record_async(tickers: list, days: int = 30) -> dict:
+    """Awaitable wrapper: runs signal_log.series_stats_bulk via
+    tick_executor instead of the calling event loop - root-cause report
+    C1's specifically named series_stats N+1 at main.py:736, one
+    _connect() per watched market before this (P1 Task 8). Still uses
+    signal_log's own _connect(), not tick_executor.connection_for() - see
+    tick_executor.py's own docstring ("connection_for() status") for why
+    (code-review finding #3)."""
+    return await tick_executor.run(lambda: signal_log.series_stats_bulk(tickers, days=days))
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -342,7 +446,6 @@ async def trading_loop():
             # fetch.
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
-            _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
             _maybe_run_backup(cfg)
             _maybe_run_research(cfg)
@@ -352,6 +455,16 @@ async def trading_loop():
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client),
             )
+            # Root-cause report C3/R1 (realtime data-plane remediation plan,
+            # P1 Task 9): this used to fire BEFORE the critical gather above,
+            # so the background catalog-scan task it spawns (up to
+            # PACE_LIMIT concurrent get_markets calls even after Task 9's
+            # own pacing fix) could start competing for the same REST
+            # token bucket the position/account/exchange-status fetch was
+            # about to need. Triggering it only after that gather returns
+            # means the critical fetch's own calls are already dispatched
+            # first.
+            _maybe_scan_catalog_batch(cfg)
             await _fetch_category_metadata(client)
             phase_timings["market_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
@@ -369,55 +482,17 @@ async def trading_loop():
             # _MARKET_FIELDS (that trimming is only for the /api/state
             # payload, not internal use).
             market_results = await propagate_milestone_winners(client, markets)
-            state["markets"] = [_slim_market(m) for m in markets]
-            # Cheap, pure-DB check (no new API calls - see the docstring on
-            # resolve_from_market_results) - runs every tick regardless of
-            # market_analyst.enabled, so analyses made while it was on still
-            # get graded after it's turned back off.
-            market_analyst_agent.resolve_from_market_results(market_results)
-            # Same zero-extra-API-call resolution shape - grades every
-            # rejected candidate (services/candidate_log.py, Gap 1 of
-            # docs/config-tuning-data-gaps-2026-08-10.md) against how its
-            # market actually resolved.
-            candidate_log.resolve_from_market_results(market_results)
-
-            # Real market data logging (docs/advisory-engine-plan.md §9,
-            # direct request: "start storing and analyzing market data
-            # now") - independent of whale signals, independent of whether
-            # either strategy ever trades a given market. Same real fields
-            # already fetched above, zero extra API cost.
+            # _resolve_and_record_settlements bundles everything that used
+            # to run inline here (root-cause report C1's ~1-5s
+            # "resolve_and_record" phase) - state["markets"] slimming, the
+            # market_analyst_agent/candidate_log resolution, the batched
+            # market_history.record_snapshots write, and the per-finalized-
+            # market outcome/settlement-window write - onto one
+            # tick_executor worker thread instead of this loop (P1 Task 8).
+            # propagate_milestone_winners above stays on the loop: it's an
+            # awaited network call, not sync work tick_executor can run.
             tick_now = time.time()
-            market_history.record_snapshots(
-                [
-                    {
-                        "ticker": m["ticker"],
-                        "yes_price": float(m.get("yes_bid_dollars") or 0.5),
-                        "spread": max(
-                            float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
-                        ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
-                        "volume_24h": float(m.get("volume_24h_fp") or 0.0),
-                        "time_to_close_sec": market_history.seconds_to_close(m.get("close_time"), tick_now),
-                    }
-                    for m in markets if m.get("ticker")
-                ],
-                timestamp=tick_now,
-            )
-            for m in markets:
-                result = (m.get("result") or "").strip().lower()
-                # status=="finalized" gate: 2026-08-23 fix, same reasoning as
-                # propagate_milestone_winners' own docstring - result is set
-                # at "determined" but can still flip (disputed -> amended)
-                # before "finalized" is truly terminal.
-                if result in ("yes", "no") and m.get("ticker") and m.get("status") == "finalized":
-                    market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
-                    # Close the loop on any settlement-window observations
-                    # taken for this market (services/settlement_edge.py) -
-                    # the realised outcome is written onto the rows that
-                    # forecast it, so scoring can never pair an observation
-                    # with a different window's result. No-op (0 rows) for
-                    # the overwhelming majority of markets, which are not
-                    # index-settled and were never observed.
-                    settlement_edge.resolve_window(m["ticker"], result == "yes")
+            state["markets"] = await _resolve_and_record_settlements_async(markets, market_results, tick_now)
             phase_timings["resolve_and_record"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
@@ -589,6 +664,20 @@ async def trading_loop():
                     _fetch_live_status(client, markets),
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
+            if _streaming_trade_tape_enabled():
+                # P2 Task 13: retries H4-unmarked candidates (services/
+                # candidate_retry.py) once per tick, stream mode only -
+                # mirrors the trade-tape branch above since a retry's own
+                # market lookup is only meaningful when the exchange-wide
+                # stream is what feeds whale candidates in the first
+                # place. Normally a near-instant no-op (nothing due).
+                # whale_provider + _handle_signal passed through (code-review
+                # fix, finding #1) so a recovered candidate is actually
+                # scored and evaluated through the same pipeline a first-try
+                # trade uses, not just claimed and dropped.
+                await candidate_retry.run_pending(
+                    client, whale_provider, _handle_signal, cfg, market_results, config_fp, tick_now,
+                )
             phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["event_titles"].update(event_titles)
@@ -650,13 +739,13 @@ async def trading_loop():
             # would under-report exactly when the stream is the thing
             # that's broken. record_trade dedupes on trade_id, so the
             # deliberate overlap between the two paths costs nothing.
-            for tape_trade in trade_tape:
-                series_watcher.record_trade(tape_trade, cfg)
-            # One batched write per tick for everything the websocket path
-            # buffered in between (see series_watcher.flush) - the capture
-            # layer never writes per message, which is what makes it safe
-            # to run against an exchange-wide subscription.
-            series_watcher.flush()
+            # The record loop + batched flush (see series_watcher.flush) is
+            # root-cause report C1's specifically measured 0.65-1.6s
+            # synchronous executemany into the 16.9M-row raw_trades table on
+            # essentially every tick - routed through tick_executor (P1
+            # Task 7) so it runs off this loop instead of starving the WS
+            # consumer for that whole stretch.
+            await _flush_trade_capture_async(trade_tape, cfg)
             # Same per-tick batched write for index ticks. Without this the
             # buffer only drained when it hit its own _FLUSH_BATCH, which at
             # ~1 tick/sec/index meant minutes of data sitting unwritten -
@@ -732,9 +821,13 @@ async def trading_loop():
             title_cache.save_market_titles(new_market_titles)
             # Computed once per poll tick (not per /api/state request, which is polled
             # more often) since it's the same until the next tick anyway.
-            state["series_track_record"] = {
-                m["ticker"]: signal_log.series_stats(m["ticker"], days=30) for m in markets if m.get("ticker")
-            }
+            # series_stats_bulk (P1 Task 8) replaces what used to be one
+            # signal_log.series_stats() call - and one _connect() - per
+            # market: root-cause report C1's specifically named series_stats
+            # N+1. One connection, one query pair per unique series, run
+            # off the loop via tick_executor.
+            _tracked_tickers = [m["ticker"] for m in markets if m.get("ticker")]
+            state["series_track_record"] = await _build_series_track_record_async(_tracked_tickers, days=30)
             phase_timings["capture_flush_and_titles"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["last_poll"] = time.time()
@@ -917,6 +1010,9 @@ async def lifespan(app: FastAPI):
     # not just vanish. See task_supervisor.py's own docstring for the
     # incidents (6973974, a31ae51, 12323cc) this is meant to catch.
     task = task_supervisor.supervise(trading_loop, component="trading_loop", operation="run", restart=True)
+    loop_watchdog_task = task_supervisor.supervise(
+        lambda: loop_watchdog.start_forever(), component="loop_watchdog", operation="run", restart=True,
+    )
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
@@ -949,6 +1045,7 @@ async def lifespan(app: FastAPI):
         await index_stream.close()
         index_stream_task.cancel()
     task.cancel()
+    loop_watchdog_task.cancel()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data
     # client) holding its own SDK-managed aiohttp session — needs its own
