@@ -11,7 +11,7 @@ from services.kalshi.contracts import trade as trade_contract
 from services.whalewatchers.kalshi_trade_tape import min_contracts_for as _series_min_contracts_for
 
 
-def passes(trade: dict, *, min_contracts: int) -> bool:
+def passes(trade: dict, *, min_contracts: float) -> bool:
     """True if this raw trade print's contract count clears min_contracts.
     A trade with an unparseable/missing count fails open toward the caller
     (returns False here, but callers must fall open on an *exception*, not
