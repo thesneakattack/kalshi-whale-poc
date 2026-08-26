@@ -568,3 +568,45 @@ built against this endpoint family.
 **Source:** Live measurement, `python -m tools.kalshi_rate_limit_probe
 --anonymous-ceiling` (realtime data-plane remediation plan P0 Task 4).
 **Found:** 2026-08-26, realtime data-plane remediation P0 Task 4.
+
+## Does a dispute/re-determination (`disputed`/`amended`) re-fire `determined` on `market_lifecycle_v2`?
+**Answer:** No — and the gap is wider than "undocumented." `disputed` and
+`amended` are documented REST-visible market statuses
+(`market_lifecycle.md`'s Statuses table: `disputed` = "Result has been
+challenged. May be re-determined."; `amended` = "Re-determined after a
+dispute. Settlement timer restarts."), but neither appears anywhere in
+`market_lifecycle_v2`'s event-type vocabulary. Confirmed by exhaustive grep
+of both lifecycle pages (`grep -in "amended\|disputed" market-and-event-
+lifecycle.md` → zero hits; same page's full WS `event_type` enum is
+`created, deactivated, activated, close_date_updated, determined, settled,
+price_level_structure_updated, metadata_updated` — 8 values, none of them
+dispute/amendment-related). `market_lifecycle.md`'s own "Explicit (WebSocket
+event emitted)" transition list is the same story: it enumerates
+`closed → determined` (event `determined`) and `determined`/`amended` →
+`finalized` (event `settled`), but has **no entry at all** for
+`determined → disputed` or `disputed → amended` — those two REST status
+transitions are simply absent from the list of transitions that emit a WS
+event. So this isn't just "`determined` doesn't re-fire" — a dispute or
+amendment produces **no `market_lifecycle_v2` event whatsoever**; the only
+observable signal a WS-only consumer ever gets is the original `determined`
+(with the pre-dispute `result`) and, later, one `settled`.
+**Gotcha (the actual risk for Task 21, the settled resolver):** because
+`settled` carries no `result` field itself (see the "Does the lifecycle
+`settled` WS message carry the market's result?" entry above) and no
+distinct event exists for `amended`, a consumer that caches
+`determined.result` the moment it arrives and treats `settled` merely as
+"go pay out using the cached result" can silently ship a stale, pre-dispute
+result if the market was disputed and amended in between — there is no WS
+signal to invalidate the cache. Task 21 must therefore treat a cached
+`determined.result` as **provisional until the ticker's REST status reaches
+`finalized`**, and re-read the market via REST at/after `settled` rather
+than trusting the cached WS value as a terminal decision — this app already
+does the REST re-read (`services/whale_stream/whale_stream_handlers.py`'s
+settled handler), so the fix is keeping that re-read (not removing it as a
+"redundant" REST call), plus explicitly never short-circuiting on the
+cached `determined.result` alone anywhere else settlement is decided.
+**Source:** `market-and-event-lifecycle.md` (full `event_type` enum + field
+table, lines 62-115 and 340-410), `market_lifecycle.md` (Statuses table and
+"Transitions" section, lines 11-52).
+**Found:** 2026-08-26, realtime data-plane remediation P0 Task 5.
+**Found:** 2026-08-26, realtime data-plane remediation P0 Task 4.
