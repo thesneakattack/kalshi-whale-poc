@@ -628,3 +628,44 @@ def test_reset_rest_latency_window_keeps_lifetime_and_high_water(monkeypatch):
     assert c["calls"] == 1  # lifetime counters survive
     assert c["limiter_wait"]["window"]["count"] == 0
     assert c["limiter_wait"]["lifetime"]["count"] == 1
+
+
+def test_class_window_counts_reset_per_sample_while_lifetime_counts_persist(monkeypatch):
+    # I8 found the I5 counters were lifetime-only while observability's
+    # CHEATSHEET (and the demand probe) treated them as per-sample counts -
+    # summing per-minute samples of a lifetime counter inflated demand ~30x.
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+
+    async def coro():
+        return 1
+
+    asyncio.run(http_client.call_with_backoff(coro))
+    asyncio.run(http_client.call_with_backoff(coro))
+    c = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert c["calls"] == 2 and c["window"]["calls"] == 2 and c["window"]["attempts"] == 2
+    http_client.reset_rest_latency_window()
+    c = http_client.rest_latency_snapshot()["by_class"]["other"]
+    assert c["calls"] == 2  # lifetime survives
+    assert c["window"] == {"calls": 0, "attempts": 0, "rate_limited": 0, "errors": 0}
+
+
+def test_per_endpoint_window_counts_are_exact_and_reset_with_the_window(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    _install_limiter(monkeypatch, clock, wait_sec=0.0)
+
+    async def get_markets():
+        return 1
+
+    async def get_milestones():
+        raise RuntimeError("boom")
+
+    asyncio.run(http_client.call_with_backoff(get_markets))
+    asyncio.run(http_client.call_with_backoff(get_markets))
+    with pytest.raises(RuntimeError):
+        asyncio.run(http_client.call_with_backoff(get_milestones))
+    ep = http_client.rest_latency_snapshot()["by_endpoint"]
+    assert ep["get_markets"] == {"calls": 2, "rate_limited": 0, "errors": 0}
+    assert ep["get_milestones"] == {"calls": 1, "rate_limited": 0, "errors": 1}
+    http_client.reset_rest_latency_window()
+    assert http_client.rest_latency_snapshot()["by_endpoint"] == {}

@@ -484,3 +484,26 @@ assumed — so the passthrough is a one-line addition, not a raw-HTTP bypass.
 `public-trades.md` (WS field list).
 **Found:** 2026-08-25, realtime data-plane task I4 (REST-vs-WS capture
 reconciliation, `services/diagnostics/trade_capture_reconciliation.py`).
+
+## Is a `GET /markets?tickers=…` request billed per ticker, and what does this account's budget really allow?
+**Answer:** No per-ticker billing. `rate_limits.md`'s "Batch endpoints don't
+save tokens ... every item in the batch is billed separately" is written for
+the batch **order** endpoints (`25 orders = 25 × 10 tokens`); nothing in the
+mirror says a list filter is billed per item, and this account's own
+`GET /account/endpoint_costs` (`list-non-default-endpoint-costs.md`) reports
+`default_cost` 10 with none of the app's endpoints priced differently.
+Measured 2026-08-25 (I8 probe): 50-, 100- and 200-ticker requests each
+returned complete in one request (41 / 73 / 106 ms, no 429). This account
+(`GET /account/limits`, `get-account-api-limits.md`): tier `basic`, read
+200 tokens/s with a 600-token capacity → **20 req/s sustained, 60-request
+burst**; write 100/100.
+**Gotcha:** `services/kalshi/public.py`'s 50-per-chunk `get_markets_by_tickers`
+sizing was justified as "500 tokens under the 600 ceiling" — that arithmetic
+assumes per-item billing the docs don't state for this endpoint. The chunk is
+now an explicit `batch_size` parameter (default unchanged) pending the REST
+solution comparison (I11); don't re-derive the 500-token reasoning.
+**Source:** `rate_limits.md` ("Batch endpoints don't save tokens"),
+`list-non-default-endpoint-costs.md`, `get-account-api-limits.md`,
+`get-markets.md` (`TickersQuery`: "Comma-separated list", no cap).
+**Found:** 2026-08-25, realtime data-plane task I8
+(`tools/kalshi_rate_limit_probe.py`, `docs/superpowers/research/2026-08-25-rest-demand-study.md`).

@@ -28,6 +28,11 @@ from services.kalshi.transport import call_with_backoff
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "get_balance": ("docs/kalshi/get-balance.md",),
+    # I8 (2026-08-25): read-only account limit/cost reads so the app can
+    # measure its real budget instead of assuming it (docs/kalshi/
+    # rate_limits.md: "query ... from the documented account endpoints").
+    "get_api_limits": ("docs/kalshi/get-account-api-limits.md", "docs/kalshi/rate_limits.md"),
+    "get_endpoint_costs": ("docs/kalshi/list-non-default-endpoint-costs.md", "docs/kalshi/rate_limits.md"),
     "get_positions": (
         "docs/kalshi/get-positions.md",
         "docs/kalshi/fixed_point_migration.md",
@@ -48,6 +53,19 @@ class KalshiAccountGateway:
         # A signed kpa.KalshiClient (or None while unconfigured). Borrowed,
         # never closed here - see module docstring.
         self._client = client
+
+    async def get_api_limits(self) -> dict:
+        """GET /account/limits - the authenticated user's usage tier and
+        read/write token buckets (refill_rate tokens/s, bucket_capacity).
+        Read-only; costs one read request."""
+        resp = await call_with_backoff(self._client.get_account_api_limits)
+        return resp.model_dump(mode="json")
+
+    async def get_endpoint_costs(self) -> dict:
+        """GET /account/endpoint_costs - default_cost plus every endpoint
+        priced differently ({method, path, cost}). Read-only."""
+        resp = await call_with_backoff(self._client.get_account_endpoint_costs)
+        return resp.model_dump(mode="json")
 
     async def get_balance(self) -> dict:
         resp = await call_with_backoff(self._client.get_balance)

@@ -591,16 +591,20 @@ def _fake_rest_latency():
     return {
         "by_class": {
             "critical_whale": {
-                "calls": 3, "attempts": 4, "rate_limited": 1, "errors": 0,
+                "calls": 300, "attempts": 400, "rate_limited": 100, "errors": 7,  # lifetime
+                "window": {"calls": 3, "attempts": 4, "rate_limited": 1, "errors": 0},
                 "limiter_wait": agg(4, 120.0, 300.0), "network": agg(4, 80.0, 200.0),
                 "backoff": agg(1, 500.0, 500.0), "total": agg(3, 400.0, 900.0),
             },
             "background_catalog": {
-                "calls": 10, "attempts": 10, "rate_limited": 0, "errors": 1,
+                "calls": 1000, "attempts": 1000, "rate_limited": 0, "errors": 100,
+                "window": {"calls": 10, "attempts": 10, "rate_limited": 0, "errors": 1},
                 "limiter_wait": agg(10, 900.0, 2500.0), "network": agg(10, 60.0, 90.0),
                 "backoff": agg(0, None, None), "total": agg(10, 960.0, 2600.0),
             },
         },
+        "by_endpoint": {"get_markets": {"calls": 9, "rate_limited": 1, "errors": 0},
+                        "get_milestones": {"calls": 4, "rate_limited": 0, "errors": 1}},
         "limiter": {
             "read": {"waiters": 2, "waiters_high_water": 7, "tokens": 0.5},
             "write": {"waiters": 0, "waiters_high_water": 0, "tokens": 1.0},
@@ -613,10 +617,14 @@ def test_capture_from_runtime_flattens_rest_latency_by_caller_class(monkeypatch)
 
     metrics = observability.capture_from_runtime({}, {}, None, None)
 
+    # Window counts (summable across persisted samples), never the lifetime ones.
     assert metrics["kalshi_rest_class.critical_whale.calls"] == 3.0
     assert metrics["kalshi_rest_class.critical_whale.attempts"] == 4.0
     assert metrics["kalshi_rest_class.critical_whale.rate_limited"] == 1.0
     assert metrics["kalshi_rest_class.critical_whale.errors"] == 0.0
+    assert metrics["kalshi_rest_endpoint.get_markets.calls"] == 9.0
+    assert metrics["kalshi_rest_endpoint.get_markets.rate_limited"] == 1.0
+    assert metrics["kalshi_rest_endpoint.get_milestones.errors"] == 1.0
     assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_avg_ms"] == 120.0
     assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_max_ms"] == 300.0
     assert metrics["kalshi_rest_class.critical_whale.network.window_avg_ms"] == 80.0

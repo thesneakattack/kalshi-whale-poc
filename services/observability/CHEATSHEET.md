@@ -316,10 +316,19 @@ unannotated is `other` — a non-trivial `other` share is a to-do, not noise.
 Names (`float`; the whole group is omitted until something has called
 Kalshi in this process; classes never used are omitted):
 
-- `kalshi_rest_class.<class>.calls|attempts|rate_limited|errors` — window
-  counts; `calls` are logical calls, `attempts` include every 429 retry,
-  `errors` are logical calls that ended in an exception (non-429 or
-  exhausted retries).
+- `kalshi_rest_class.<class>.calls|attempts|rate_limited|errors` — **window**
+  counts (summable across persisted samples); `calls` are logical calls,
+  `attempts` include every 429 retry, `errors` are logical calls that ended
+  in an exception (non-429 or exhausted retries). Lifetime counts stay in
+  the in-memory snapshot (`/api/health/pipeline`'s `rest_latency`) only.
+  (Corrected 2026-08-25 by I8: the first I5 cut persisted the *lifetime*
+  counters under these names, so summing per-minute samples inflated demand
+  ~30x — the probe that consumed them caught it.)
+- `kalshi_rest_endpoint.<family>.calls|rate_limited|errors` — exact
+  per-window counts by endpoint family (the same labels as
+  `kalshi_rest.<family>.*`, which remain per-*tick* snapshots reset by the
+  trading loop and therefore sample only ~1 tick in 10 at a 60 s cadence).
+  Use these for demand shares and the milestone/live-data duplicate estimate.
 - `kalshi_rest_class.<class>.limiter_wait.window_avg_ms|window_max_ms` —
   time inside `limiter.acquire()` per attempt (**local queueing**).
 - `…network.window_avg_ms|window_max_ms` — per attempt, including 429/error

@@ -85,33 +85,50 @@ class _RestClassStats:
     the observability sampler after each persisted sample (same ownership
     as the WebSocket ingest and whale-pipeline metrics); lifetime ones are
     monotone."""
-    __slots__ = ("calls", "attempts", "rate_limited", "errors", "window", "lifetime")
+    __slots__ = ("calls", "attempts", "rate_limited", "errors", "window_counts", "window", "lifetime")
     _COMPONENTS = ("limiter_wait", "network", "backoff", "total")
+    _COUNTS = ("calls", "attempts", "rate_limited", "errors")
 
     def __init__(self) -> None:
+        # Lifetime counts (monotone) and per-window counts (reset by the
+        # observability sampler after each persisted sample, so persisted
+        # samples are summable - I8 found summing samples of a lifetime
+        # counter inflated demand ~30x).
         self.calls = 0
         self.attempts = 0
         self.rate_limited = 0
         self.errors = 0
+        self.window_counts: dict[str, int] = dict.fromkeys(self._COUNTS, 0)
         self.window = {c: LatencyAgg() for c in self._COMPONENTS}
         self.lifetime = {c: LatencyAgg() for c in self._COMPONENTS}
+
+    def count(self, name: str, n: int = 1) -> None:
+        setattr(self, name, getattr(self, name) + n)
+        self.window_counts[name] += n
 
     def add(self, component: str, seconds: float) -> None:
         self.window[component].add(seconds)
         self.lifetime[component].add(seconds)
 
     def reset_window(self) -> None:
+        self.window_counts = dict.fromkeys(self._COUNTS, 0)
         self.window = {c: LatencyAgg() for c in self._COMPONENTS}
 
     def snapshot(self) -> dict:
         out: dict = {"calls": self.calls, "attempts": self.attempts,
-                     "rate_limited": self.rate_limited, "errors": self.errors}
+                     "rate_limited": self.rate_limited, "errors": self.errors,
+                     "window": dict(self.window_counts)}
         for c in self._COMPONENTS:
             out[c] = {"window": self.window[c].snapshot(1000.0, "ms"), "lifetime": self.lifetime[c].snapshot(1000.0, "ms")}
         return out
 
 
 _rest_class_stats: dict[str, _RestClassStats] = {}
+# Per-endpoint-family counts for the current observability window (I8):
+# exact, summable per-minute demand by endpoint, unlike the per-tick
+# _http_metrics snapshot main.py resets every tick. Bounded by the same
+# endpoint-family label set as _http_metrics.
+_endpoint_window: dict[str, dict[str, int]] = {}
 
 
 def _class_stats(name: str) -> _RestClassStats:
@@ -131,11 +148,13 @@ def _limiter_gauges(limiter) -> dict:
 
 
 def rest_latency_snapshot() -> dict:
-    """Pure read (no resets): per-caller-class latency decomposition plus
-    the two token buckets' waiter-depth gauges. Classes never used are
-    omitted, not reported as zeros."""
+    """Pure read (no resets): per-caller-class latency decomposition (with
+    lifetime and per-window counts), per-endpoint-family window counts, and
+    the two token buckets' waiter-depth gauges. Classes/endpoints never
+    used are omitted, not reported as zeros."""
     return {
         "by_class": {name: stats.snapshot() for name, stats in _rest_class_stats.items()},
+        "by_endpoint": {name: dict(counts) for name, counts in _endpoint_window.items()},
         "limiter": {"read": _limiter_gauges(_kalshi_read_limiter), "write": _limiter_gauges(_kalshi_write_limiter)},
     }
 
@@ -143,6 +162,18 @@ def rest_latency_snapshot() -> dict:
 def reset_rest_latency_window() -> None:
     for stats in _rest_class_stats.values():
         stats.reset_window()
+    _endpoint_window.clear()
+
+
+def _count_endpoint_window(endpoint: str, *, rate_limited: bool, error: bool) -> None:
+    counts = _endpoint_window.get(endpoint)
+    if counts is None:
+        counts = _endpoint_window[endpoint] = {"calls": 0, "rate_limited": 0, "errors": 0}
+    counts["calls"] += 1
+    if rate_limited:
+        counts["rate_limited"] += 1
+    if error:
+        counts["errors"] += 1
 
 
 class _TokenBucketRateLimiter:
@@ -440,14 +471,15 @@ async def call_with_backoff(
     # success-only; these are the numbers that let a multi-second call be
     # attributed to local queueing, upstream time, or retry sleep.
     stats = _class_stats(_caller_class_var.get())
-    stats.calls += 1
+    stats.count("calls")
+    _count_endpoint_window(endpoint_name, rate_limited=False, error=False)
     call_started = _monotonic()
     backoff_total = 0.0
     failed = False
     delay = base_delay
     try:
         for attempt in range(max_retries + 1):
-            stats.attempts += 1
+            stats.count("attempts")
             wait_started = _monotonic()
             await limiter.acquire()
             started = _monotonic()
@@ -458,10 +490,12 @@ async def call_with_backoff(
                 stats.add("network", _monotonic() - started)
                 if getattr(e, "status", None) != 429:
                     _record_http_attempt(endpoint_name, rate_limited=False, success=False, latency_ms=None)
+                    _endpoint_window[endpoint_name]["errors"] += 1
                     failed = True
                     raise
                 _record_http_attempt(endpoint_name, rate_limited=True, success=False, latency_ms=None)
-                stats.rate_limited += 1
+                _endpoint_window[endpoint_name]["rate_limited"] += 1
+                stats.count("rate_limited")
                 if attempt == max_retries:
                     failed = True
                     raise
@@ -480,4 +514,4 @@ async def call_with_backoff(
         if backoff_total > 0.0:
             stats.add("backoff", backoff_total)
         if failed:
-            stats.errors += 1
+            stats.count("errors")

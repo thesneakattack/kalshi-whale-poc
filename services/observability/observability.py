@@ -209,14 +209,20 @@ def _flatten_rest_latency(snapshot: dict) -> dict:
         return out  # nothing has called Kalshi yet in this process - no evidence, no rows
     for cls, stats in by_class.items():
         p = f"kalshi_rest_class.{cls}"
+        window_counts = stats.get("window") or {}
         for key in ("calls", "attempts", "rate_limited", "errors"):
-            out[f"{p}.{key}"] = float(stats.get(key) or 0)
+            # Per-window counts (summable across persisted samples) - never
+            # the lifetime ones, which I8 found had been sampled by mistake.
+            out[f"{p}.{key}"] = float(window_counts.get(key) or 0)
         for component in ("limiter_wait", "network", "backoff", "total"):
             window = (stats.get(component) or {}).get("window") or {}
             if window.get("count"):
                 for key in ("avg_ms", "max_ms"):
                     if window.get(key) is not None:
                         out[f"{p}.{component}.window_{key}"] = float(window[key])
+    for endpoint, counts in (snapshot.get("by_endpoint") or {}).items():
+        for key in ("calls", "rate_limited", "errors"):
+            out[f"kalshi_rest_endpoint.{endpoint}.{key}"] = float((counts or {}).get(key) or 0)
     for bucket, gauges in (snapshot.get("limiter") or {}).items():
         for key in ("waiters", "waiters_high_water"):
             if (gauges or {}).get(key) is not None:

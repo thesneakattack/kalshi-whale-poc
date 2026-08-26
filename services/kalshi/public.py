@@ -147,7 +147,7 @@ class KalshiPublicGateway:
     # even though it only drains this app's own local rate limiter once.
     # 50/chunk (500 tokens) leaves real margin under that 600-token ceiling.
 
-    async def get_markets_by_tickers(self, tickers: list[str]) -> dict[str, dict]:
+    async def get_markets_by_tickers(self, tickers: list[str], batch_size: int | None = None) -> dict[str, dict]:
         """Batched market lookup - one call per up-to-50 tickers instead of
         N individual get_market() calls (docs/kalshi/get-markets.md's
         documented `tickers` filter, confirmed via the installed SDK's own
@@ -162,8 +162,14 @@ class KalshiPublicGateway:
         if not tickers:
             return {}
         out: dict[str, dict] = {}
-        for i in range(0, len(tickers), self._MARKETS_BY_TICKERS_BATCH_SIZE):
-            chunk = tickers[i:i + self._MARKETS_BY_TICKERS_BATCH_SIZE]
+        # batch_size (I8, 2026-08-25): explicit per-request chunk for the
+        # rate-limit probe's 50/100/200 measurements - docs/kalshi/
+        # get-markets.md documents `tickers` as a comma-separated filter
+        # with no per-call cap. Production callers leave it None and keep
+        # the conservative default.
+        step = int(batch_size) if batch_size else self._MARKETS_BY_TICKERS_BATCH_SIZE
+        for i in range(0, len(tickers), step):
+            chunk = tickers[i:i + step]
             resp = await call_with_backoff(
                 self._client.get_markets, tickers=",".join(chunk), limit=len(chunk),
             )
