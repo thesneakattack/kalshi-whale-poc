@@ -342,18 +342,18 @@ The architecture survives a deliberate devil's-advocate pass and wins against a 
 - `integration-audit`
 - relevant project skills based on selected architecture
 
-- [ ] Specify exact modules/interfaces/state schema and which existing QCP types are reused.
-- [ ] Specify stable automation identity and migration behavior.
-- [ ] Specify branch/main observation semantics and active-work suppression precedence.
-- [ ] Specify local advisory tier only if I3 proved it worthwhile.
-- [ ] Specify reporting surfaces per finding class.
-- [ ] Specify credential/token/event architecture and minimum permissions if any write lane survived I10.
-- [ ] Specify protected paths/domains and self-modification prevention.
-- [ ] Specify deterministic fixer registry/allowlist if any candidate survived I7.
-- [ ] Specify state retention, idempotence, retry/recovery, and outage behavior.
-- [ ] Specify staged activation and rollback/kill switch for automation itself.
-- [ ] Self-review for ambiguity, contradictions, placeholders, and scope.
-- [ ] Commit: `docs: specify autonomous quality coordination`.
+- [x] Specify exact modules/interfaces/state schema and which existing QCP types are reused. (`services/quality_coordination.py`, 3-table SQLite schema, `QualityFinding`/`QualityReport` reused unmodified.)
+- [x] Specify stable automation identity and migration behavior. (External `derive_automation_key()`, diverging from I1's literal recommendation with reason — no scanner files modified; two named fallbacks for rules 4/14.)
+- [x] Specify branch/main observation semantics and active-work suppression precedence. (I3 §11 precedence reused exactly; real anonymous-GitHub-API data sources specified for the first time.)
+- [x] Specify local advisory tier only if I3 proved it worthwhile. (I3 rejected it — N/A, reason stated.)
+- [x] Specify reporting surfaces per finding class. (One surface: the persisted series; SARIF/issue stay candidates per I10.)
+- [x] Specify credential/token/event architecture and minimum permissions if any write lane survived I10. (None survived — N/A, forward-referenced to I4/I9 for a future decision.)
+- [x] Specify protected paths/domains and self-modification prevention. (Structural: one write path, no repo-file writes exist in the module at all.)
+- [x] Specify deterministic fixer registry/allowlist if any candidate survived I7. (I7's one candidate stays unregistered/unactivated — forward-referenced.)
+- [x] Specify state retention, idempotence, retry/recovery, and outage behavior. (Unbounded retention; content-fingerprint idempotence, not commit-SHA — caught and fixed a real container/git-binary gap during self-review; transactional writes; graceful degradation on GitHub outage.)
+- [x] Specify staged activation and rollback/kill switch for automation itself. (Single `quality_coordination.enabled` config flag; no further stage activated by this spec.)
+- [x] Self-review for ambiguity, contradictions, placeholders, and scope. (§12 — two real errors caught and fixed during self-review, recorded rather than smoothed over.)
+- [x] Commit: `docs: specify autonomous quality coordination`.
 
 **Acceptance**
 An implementation agent can build the selected architecture without inventing policy decisions.
