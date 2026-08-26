@@ -5,10 +5,14 @@ simulated-or-live whale order-flow signal + a broker layer, currently
 running in paper mode. Safety-first, incremental: no real order ever gets
 placed unless `kalshi_account.trading_enabled` is explicitly flipped in
 `config/settings.yaml` plus a typed in-app confirmation phrase. All P0
-code-level safety gates are done; what's still open before real capital
-should depend on this is operational — see ROADMAP.md's "Path to
-production" section, which is the authoritative checklist for that
-transition.
+code-level safety **primitives** (the trading gate itself, the kill
+switch, CORS) are shipped — but that is not the same claim as "real
+capital is ready to depend on this." Realtime data-plane correctness,
+economic/strategy validation, and canonical decision/execution semantics
+are still open, substantive, code-level work, not merely operational
+follow-up — see `docs/kalshi-personal-production-execution-program-
+2026-08-26.md` for the current program-level sequencing, and ROADMAP.md's
+"Path to production" section for the itemized checklist.
 
 ## Standing goal — personal-use, real-money production (2026-08-26)
 
@@ -300,9 +304,13 @@ concern, consistent with how the rest of the app is factored.
   verified against Kalshi's current docs and migrated to the official
   `kalshi_python_async` SDK — and gated by `kalshi_account.trading_enabled`
   (default `false`) plus a typed in-app confirmation phrase
-  (`POST /api/trading/enable`). All P0 code-level gates are done; what's
-  left before ever flipping it for real is operational, not code — see
-  ROADMAP.md's "Path to production" section.
+  (`POST /api/trading/enable`). The P0 code-level **gate/kill-switch
+  primitives** are done; that does not mean the rest of the path to real
+  capital is operational-only — realtime, economic/strategy, and
+  execution-semantics work still stands between here and flipping this
+  for real. See ROADMAP.md's "Path to production" section for the
+  itemized checklist and `docs/kalshi-personal-production-execution-
+  program-2026-08-26.md` for how that work is sequenced.
 - CORS is restricted to the DDEV hostname + `localhost:8000` (overridable
   via `ALLOWED_ORIGINS` in `.env`), not wide open — don't reopen it as a
   drive-by.
