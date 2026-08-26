@@ -35,3 +35,25 @@ def _fresh_rest_latency_stats(monkeypatch):
     rolls windows and is deliberately not a full reset."""
     from services import http_client
     monkeypatch.setattr(http_client, "_rest_class_stats", {})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_candidate_retry_state(monkeypatch):
+    """services/candidate_retry.py's pending queue + window counters (P2
+    Task 12) are the same class of module-global mutable state as
+    whale_pipeline_perf/http_client above, and just as easy to leak: any
+    test anywhere in the suite that calls enqueue()/run_pending() (this
+    module's own tests, plus the wiring test in
+    test_whale_candidate_lifecycle.py) otherwise leaves _pending entries
+    and non-zero window counters behind for the next test, which broke
+    test_observability.py's "a fully quiet tick returns metrics == {}"
+    contract the first time this module shipped (candidate_retry.retried
+    leaked from test_candidate_retry.py into an unrelated observability
+    test, alphabetically later in test discovery order - the exact same
+    failure shape as the whale_pipeline_perf leak that motivated the
+    fixture above it)."""
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 0)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 0)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)

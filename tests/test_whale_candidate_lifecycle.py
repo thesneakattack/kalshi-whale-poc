@@ -19,16 +19,23 @@ state, not from log text:
     terminal_evaluated  a WhaleSignal was emitted, or a real gate
                         (min_contracts / price range / ...) rejected it
 
-These tests characterize CURRENT behavior. The dedupe model is deliberately
-not redesigned here (plan I3: "Do not redesign the dedupe model in this
-task"); the strict-xfail test at the bottom pins the desired behavior so a
-future fix flips it visibly instead of silently.
+H4 FIXED (realtime data-plane remediation plan, P2 Task 11, 2026-08-26):
+_process_trades_sync no longer marks a trade seen until its market lookup
+has produced a definite outcome (found, or a genuine negative) - a
+transient failure this round (services.whalewatchers.kalshi_trade_tape.
+KalshiTradeTapeProvider._resolve_failed_tickers) leaves the trade
+unmarked, so a later presentation of the same trade_id gets a real
+chance once the lookup recovers. The dedupe model itself is unchanged
+(plan I3: "Do not redesign the dedupe model in this task") - only WHEN a
+trade_id enters it moved. The tests below now assert the fixed
+behavior directly; the desired-behavior test that used to pin this as a
+strict xfail now passes for real.
 """
 import asyncio
 
 import pytest
 
-from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_ledger, candidate_log, candidate_retry, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.market_analyst_agent import _db as maa_db_module
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider
 
@@ -42,6 +49,8 @@ def _isolated_dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
     monkeypatch.setattr(candidate_log, "DB_PATH", tmp_path / "candidate_log.db")
+    monkeypatch.setattr(candidate_ledger, "DB_PATH", tmp_path / "candidate_ledger.db")
+    monkeypatch.setattr(candidate_retry, "_pending", {})
 
 
 _CFG = {"whale_watcher_kalshi": {"min_contracts": 50}}
@@ -95,7 +104,11 @@ def test_control_a_whale_print_whose_lookup_succeeds_is_terminally_evaluated():
     assert "whale-1" in provider._seen_trade_ids  # wire_seen
 
 
-def test_transient_lookup_failure_marks_the_trade_seen_before_any_evaluation():
+def test_transient_lookup_failure_leaves_the_trade_unmarked_pending_retry():
+    """H4 FIXED (realtime data-plane remediation plan, P2 Task 11): a
+    transient lookup failure no longer marks the trade seen - it stays
+    candidate_pending, eligible for a later presentation, instead of being
+    permanently short-circuited by the seen dedupe ring."""
     provider = KalshiTradeTapeProvider()
     client = _FlakyClient(fail_first=1)
     order = []
@@ -112,35 +125,42 @@ def test_transient_lookup_failure_marks_the_trade_seen_before_any_evaluation():
     assert signals == []
     assert client.calls == 1  # the lookup was attempted once and raised
     assert provider.stats["resolve_failures"] == 1
-    # _mark_seen fired AFTER the failed lookup (calls==1 at that moment) and
-    # with no evaluation possible (no market) - the trade is wire_seen but
-    # was never terminal_evaluated: its only record is a market_unresolved
-    # rejection row, which is a diagnostic, not a decision.
-    assert order == [("mark_seen", "whale-1", 1)]
-    assert "whale-1" in provider._seen_trade_ids
+    # mark_seen never fires for a transient miss - wire_seen=False,
+    # candidate_pending=True (still resolvable on a later call), matching
+    # the market_unresolved rejection row, which stays a diagnostic, not a
+    # decision.
+    assert order == []
+    assert "whale-1" not in provider._seen_trade_ids
     assert _rejections(_OFFLIST) == ["market_unresolved"]
 
 
-def test_re_presenting_the_same_trade_after_the_lookup_recovers_is_ignored_by_dedupe():
+def test_re_presenting_the_same_trade_after_the_lookup_recovers_is_evaluated():
+    """H4 FIXED: the same trade_id's second presentation is no longer
+    dedupe-suppressed by _seen_trade_ids (it was never marked seen after
+    the first, failed attempt) and reaches a real terminal evaluation once
+    the lookup recovers."""
     provider = KalshiTradeTapeProvider()
     client = _FlakyClient(fail_first=1)
-    assert _run(provider, client, _whale_print()) == []       # first pass: lookup fails
-    assert _run(provider, client, _whale_print()) == []       # same trade_id again: lookup would now succeed
-    assert client.calls == 1  # ...but the dedupe ring short-circuits before any lookup is even attempted
-    assert _OFFLIST not in provider._market_cache  # nothing was cached on failure, so the market is still unknown
-    # Lifecycle verdict for this trade_id: wire_seen=True, candidate_pending=False
-    # (nothing will ever look it up again), terminal_evaluated=False.
+    assert _run(provider, client, _whale_print()) == []          # first pass: lookup fails, stays pending
+    second = _run(provider, client, _whale_print())               # same trade_id again: lookup now succeeds
+    assert client.calls == 2 and len(second) == 1 and second[0].id == "whale-1"
+    assert "whale-1" in provider._seen_trade_ids  # now terminally evaluated and marked seen
 
 
-def test_a_later_different_print_on_the_same_market_does_recover_the_market_but_not_the_lost_trade():
+def test_a_later_different_print_on_the_same_market_recovers_both_the_market_and_the_earlier_trade():
+    """H4 FIXED: whale-1's earlier transient failure no longer permanently
+    loses it - once the market resolves (triggered here by whale-2's
+    print), whale-1's own next presentation reaches a real evaluation too."""
     provider = KalshiTradeTapeProvider()
     client = _FlakyClient(fail_first=1)
     assert _run(provider, client, _whale_print("whale-1")) == []
     later = _run(provider, client, _whale_print("whale-2"))
     assert client.calls == 2 and len(later) == 1 and later[0].id == "whale-2"
-    # The market is now cached and whale-2 evaluated - but whale-1 stays lost:
-    assert _run(provider, client, _whale_print("whale-1")) == []
-    assert client.calls == 2
+    # The market is now cached and whale-2 evaluated - whale-1's next
+    # presentation is no longer lost either, since it was never marked seen:
+    recovered = _run(provider, client, _whale_print("whale-1"))
+    assert client.calls == 2  # market already cached - no new lookup needed
+    assert len(recovered) == 1 and recovered[0].id == "whale-1"
 
 
 def test_a_negative_cache_entry_suppresses_lookups_for_the_ttl_even_though_the_trade_was_new():
@@ -164,17 +184,22 @@ def test_a_negative_cache_entry_suppresses_lookups_for_the_ttl_even_though_the_t
     assert _rejections(_OFFLIST) == ["market_unresolved"]  # deduped row (ON CONFLICT) - both trades ended here
 
 
-# --- the desired behavior, pinned as a strict xfail until a fix lands -------
+# --- H4 fixed: the desired behavior, no longer an xfail ---------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="H4 proven defect (I3): a whale-sized off-watchlist print whose first market lookup "
-           "fails transiently is marked seen before any evaluation and is never retried, so it "
-           "can never reach a terminal decision. Fix belongs to the remediation plan, not I3.",
-)
 def test_desired_a_transiently_failed_candidate_is_eventually_evaluated_when_the_lookup_recovers():
     provider = KalshiTradeTapeProvider()
     client = _FlakyClient(fail_first=1)
     first = _run(provider, client, _whale_print())
     second = _run(provider, client, _whale_print())
     assert len(first) + len(second) == 1  # evaluated exactly once, on whichever pass the context was available
+
+
+# --- P2 Task 12: a transient lookup failure enqueues for retry --------------
+
+def test_a_lookup_failure_enqueues_for_retry_instead_of_vanishing():
+    provider = KalshiTradeTapeProvider()
+    client = _FlakyClient(fail_first=1)
+    assert _run(provider, client, _whale_print()) == []
+    assert candidate_retry.pending_count() == 1
+    assert "whale-1" in candidate_retry._pending
+    assert candidate_retry._pending["whale-1"]["trade"]["ticker"] == _OFFLIST

@@ -30,7 +30,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, candidate_retry, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
 from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi.contracts import trade as trade_contract
@@ -235,6 +235,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # exchange-wide and needs to be observable rather than assumed.
         self.stats = {"prescanned": 0, "whale_sized_offlist": 0, "markets_resolved": 0,
                       "resolve_failures": 0}
+        # Tickers whose _resolve_unknown_markets lookup raised THIS ROUND
+        # (H4 fix, realtime data-plane remediation plan P2 Task 11) - reset
+        # every fetch_signals() call, consulted only by _process_trades_sync
+        # within that same call to tell "this market's lookup transiently
+        # failed" apart from "no lookup was ever attempted" (a sub-threshold
+        # print, or a genuinely confirmed-absent market via _market_cache).
+        # Only the former must be left unmarked-seen; the latter two keep
+        # today's behavior unchanged.
+        self._resolve_failed_tickers: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -323,6 +332,28 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         signals = self._process_trades_sync(trade_tape, markets, markets_by_ticker, cfg, now, counts=counts)
         return signals, started, time.monotonic()
 
+    def score_recovered_trade(
+        self, trade: dict, market: dict, cfg: dict, now: float,
+    ) -> list[WhaleSignal]:
+        """See WhaleWatcherProvider.score_recovered_trade. Delegates
+        straight to _process_trades_sync with a singleton trade/market pair
+        rather than a fresh, second copy of the scoring logic - a recovered
+        candidate (services/candidate_retry.py) is judged through the exact
+        same pipeline (agreement/cluster/trend/analyst factors, composite
+        confidence, the tradeable-price-range and min-contracts gates) as a
+        trade whose market resolved on the first try. May return an empty
+        list even on a successful market resolution - the trade can still
+        fail a gate this pipeline applies (e.g. the market moved out of the
+        tradeable price range while this trade was pending retry); that is
+        a real "no signal" outcome, not a bug, and candidate_retry.
+        run_pending's own "recovered" counter reflects "the market resolved"
+        rather than "a signal was produced," consistent with this module's
+        own docstring."""
+        ticker = trade.get("ticker")
+        if not ticker:
+            return []
+        return self._process_trades_sync([trade], [market], {ticker: market}, cfg, now)
+
     @http_client.classify("critical_whale")
     async def _resolve_unknown_markets(
         self, trade_tape: list[dict], markets_by_ticker: dict[str, dict], cfg: dict,
@@ -356,8 +387,16 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         market. A missing market means the confidence score would have to
         be fabricated, and CLAUDE.md's standing rule is that this app
         skips rather than guesses."""
+        # Reset every call (H4 fix, P2 Task 11) - stale state from a prior
+        # tick must never leak into this one's mark-seen decision.
+        self._resolve_failed_tickers = set()
         wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
         wanted: set[str] = set()
+        # Retained only so a lookup failure below (candidate_retry, P2 Task
+        # 12) can enqueue every real trade behind a failed ticker - not just
+        # the ticker itself. More than one whale print can share an
+        # off-list ticker in the same tick.
+        trades_by_ticker: dict[str, list[dict]] = {}
         for trade in trade_tape:
             ticker = trade.get("ticker")
             trade_id = trade.get("trade_id")
@@ -378,6 +417,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             if counts is not None:
                 counts["offlist_candidates"] = counts.get("offlist_candidates", 0) + 1
             wanted.add(ticker)
+            trades_by_ticker.setdefault(ticker, []).append(trade)
 
         if not wanted or client is None:
             return
@@ -388,14 +428,53 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # Anything over the cap is simply not resolved this round; the next
         # print on that market gets another chance.
         batch = sorted(wanted)[:_MAX_ONDEMAND_MARKET_FETCH]
+        # Code-review fix (finding #7, /code-review high pass against PR
+        # #23): a ticker bumped out of `batch` by the cap above never got a
+        # lookup ATTEMPT this round - not a confirmed negative, and (before
+        # this fix) not treated as a failure either, since
+        # self._resolve_failed_tickers was only ever populated in the
+        # except branch below. _process_trades_sync's own mark_seen gate
+        # only skips marking seen when a ticker is IN _resolve_failed_
+        # tickers; a truncated-out ticker was in neither markets_by_ticker
+        # nor _resolve_failed_tickers, so it got marked seen anyway - the
+        # exact trade_id that could never resolve this round became
+        # permanently unresolvable, with no retry (candidate_retry.enqueue
+        # is also only called in the except branch below) and no counter
+        # anywhere reflecting it - the same silent-loss shape H4 (Task 11)
+        # closed for the exception case, reopened here via capacity
+        # instead of exception. Treated identically to a transient lookup
+        # failure: unmarked-seen and durably retried.
+        truncated = wanted - set(batch)
+        if truncated:
+            self._resolve_failed_tickers |= truncated
+            if counts is not None:
+                counts["batch_capacity_truncated"] = counts.get("batch_capacity_truncated", 0) + len(truncated)
+            for ticker in truncated:
+                for trade in trades_by_ticker.get(ticker, []):
+                    candidate_retry.enqueue(
+                        trade, failure=Exception(f"market fetch batch capacity exceeded for {ticker}"),
+                    )
         if counts is not None:
             counts["resolve_calls"] = counts.get("resolve_calls", 0) + 1
         try:
             fetched = await client.get_markets_by_tickers(batch)
-        except Exception:
+        except Exception as exc:
             self.stats["resolve_failures"] += 1
             if counts is not None:
                 counts["resolve_failures"] = counts.get("resolve_failures", 0) + 1
+            # H4 fix (P2 Task 11): every ticker this round was trying to
+            # resolve is now a TRANSIENT miss, not a confirmed negative -
+            # _process_trades_sync must not mark_seen these trade_ids, or
+            # a real whale print is lost forever to a 429/timeout that had
+            # nothing to do with the trade itself.
+            self._resolve_failed_tickers |= set(batch)
+            # P2 Task 12: give every trade behind a failed ticker a durable
+            # retry path instead of relying solely on the same trade_id
+            # naturally reappearing in a later trade tape poll (not
+            # guaranteed, and not bounded).
+            for ticker in batch:
+                for trade in trades_by_ticker.get(ticker, []):
+                    candidate_retry.enqueue(trade, failure=exc)
             return
         for ticker in batch:
             market = fetched.get(ticker)
@@ -452,9 +531,6 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             trade_id = trade.get("trade_id")
             if not trade_id or trade_id in self._seen_trade_ids:
                 continue
-            # Evaluated once, regardless of outcome below; exchange time kept
-            # for REST-vs-WS reconciliation (I4).
-            self._mark_seen(trade_id, exchange_ts=trade_contract.trade_exchange_ts(trade) or now)
             _bump("trades")
 
             ticker = trade.get("ticker")
@@ -462,6 +538,21 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 series = signal_log.series_of(ticker)
                 trades_observed_by_series[series] = trades_observed_by_series.get(series, 0) + 1
             market = markets_by_ticker.get(ticker)
+            # H4 fix (realtime data-plane remediation plan, P2 Task 11):
+            # mark_seen only once the market lookup has produced a DEFINITE
+            # outcome - found, or a genuine negative (this ticker was never
+            # even attempted this round, e.g. a sub-threshold print, or
+            # _resolve_unknown_markets' own negative cache already confirmed
+            # Kalshi's response omits it). A ticker whose lookup was
+            # attempted THIS round and raised (self._resolve_failed_tickers)
+            # stays unmarked - a transient 429/timeout must never
+            # permanently short-circuit a real whale print via the seen
+            # dedupe ring; it gets a real chance on a later presentation
+            # instead (this trade_id's next appearance in the trade tape,
+            # or Task 12's retry queue).
+            if market is not None or ticker not in self._resolve_failed_tickers:
+                # Exchange time kept for REST-vs-WS reconciliation (I4).
+                self._mark_seen(trade_id, exchange_ts=trade_contract.trade_exchange_ts(trade) or now)
             if not market:
                 # Can't score confidence without this market's own
                 # volume/close_time - skip, don't fabricate. Post

@@ -58,6 +58,7 @@ trusted when the dashboard's numbers are already in doubt.
 """
 import json
 import sqlite3
+import threading
 from contextlib import closing
 import time
 from pathlib import Path
@@ -103,6 +104,29 @@ _last_book_write: dict[str, float] = {}
 # process dies uncleanly. That is acceptable here and nowhere else in this
 # app - this store is an observability record, not trading state, and
 # paper_broker/risk_manager still write through immediately.
+#
+# _buffer_lock (code-review fix, finding #2 - /code-review high pass
+# against PR #23): the realtime data-plane remediation plan's own P1 work
+# made record_trade/record_book and flush() genuinely cross-thread - a
+# tick_executor worker thread (main.py's _flush_trade_capture_async) and
+# the main asyncio event-loop thread (services/whale_stream/
+# whale_stream_handlers.py's _process_stream_trade, which calls
+# record_trade() directly and synchronously per WS message) both touch
+# these two lists, and flush()'s swap-and-clear
+# (`trades, books = _trade_buffer, _book_buffer; _trade_buffer,
+# _book_buffer = [], []`) was never synchronized against a concurrent
+# .append() or a concurrent second flush() (record_trade's own
+# batch-triggered inline flush() call can race the tick_executor's
+# scheduled one). book_snapshots has no unique constraint (only an
+# AUTOINCREMENT surrogate key), so an unsynchronized double-flush can
+# insert the same buffered rows twice; the same race can also orphan an
+# appended row into a buffer nothing ever flushes again - a silently lost
+# row, no error, no drop counter increment. A plain threading.Lock (not
+# asyncio.Lock - the two real callers are on different OS threads, not
+# just different coroutines on one event loop) now guards every touch of
+# _trade_buffer/_book_buffer: both .append() calls below and flush()'s own
+# swap-and-clear.
+_buffer_lock = threading.Lock()
 _trade_buffer: list[tuple] = []
 _book_buffer: list[tuple] = []
 _FLUSH_BATCH = 500
@@ -241,7 +265,7 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
         side = resolve_taker_outcome_side(trade)
         notional = taker_notional_usd(trade, side) if side else None
 
-        _trade_buffer.append((
+        row = (
             str(trade_id), ticker, series, now if now is not None else time.time(),
             _exchange_ts(trade), trade.get("taker_outcome_side"), trade.get("taker_book_side"),
             trade.get("taker_side"), side, _float(trade.get("count_fp")),
@@ -249,8 +273,17 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
             notional, 1 if trade.get("is_block_trade") else 0,
             1 if _quarantine_active() else 0,
             json.dumps(trade, default=str),
-        ))
-        if len(_trade_buffer) >= _FLUSH_BATCH:
+        )
+        # _buffer_lock (finding #2): append + the length check must be
+        # atomic with flush()'s own swap-and-clear, or an append can land
+        # in a buffer flush() has already captured and will never read
+        # again - a silently lost row. flush() itself is called OUTSIDE
+        # the lock (below) since it does its own locking internally and a
+        # plain threading.Lock is not reentrant.
+        with _buffer_lock:
+            _trade_buffer.append(row)
+            should_flush = len(_trade_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception as exc:
@@ -281,7 +314,7 @@ def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = N
             return False
         _last_book_write[ticker] = now
 
-        _book_buffer.append((
+        row = (
             ticker, series, now, _exchange_ts(ticker_msg),
             _float(ticker_msg.get("price_dollars")), _float(ticker_msg.get("yes_bid_dollars")),
             _float(ticker_msg.get("yes_ask_dollars")), _float(ticker_msg.get("yes_bid_size_fp")),
@@ -289,8 +322,12 @@ def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = N
             _float(ticker_msg.get("open_interest_fp")), _float(ticker_msg.get("dollar_volume")),
             _float(ticker_msg.get("dollar_open_interest")), _float(ticker_msg.get("last_trade_size_fp")),
             json.dumps(ticker_msg, default=str),
-        ))
-        if len(_book_buffer) >= _FLUSH_BATCH:
+        )
+        # _buffer_lock (finding #2) - see record_trade's own comment above.
+        with _buffer_lock:
+            _book_buffer.append(row)
+            should_flush = len(_book_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception as exc:
@@ -328,8 +365,20 @@ def flush() -> dict:
     counted in _dropped_rows so the loss is visible in capture_stats
     instead of silent."""
     global _trade_buffer, _book_buffer, _dropped_rows
-    trades, books = _trade_buffer, _book_buffer
-    _trade_buffer, _book_buffer = [], []
+    # _buffer_lock (finding #2): the swap-and-clear itself must be atomic
+    # with record_trade/record_book's own append (above) and with a
+    # concurrent second flush() call (record_trade's batch-triggered
+    # inline flush racing the tick_executor's scheduled one) - without
+    # this, two flush() calls can both capture the same not-yet-reset
+    # buffer (book_snapshots has no unique constraint, so that means literal
+    # duplicate rows), or an append can land in a buffer neither flush()
+    # call will ever read again (a silently lost row). The DB write itself
+    # stays outside the lock - only the buffer swap needs it, and holding
+    # a lock across blocking disk I/O would needlessly serialize captures
+    # against a flush that's still writing.
+    with _buffer_lock:
+        trades, books = _trade_buffer, _book_buffer
+        _trade_buffer, _book_buffer = [], []
     if not trades and not books:
         return {"trades": 0, "books": 0}
     try:

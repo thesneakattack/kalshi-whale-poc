@@ -24,7 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import http_client, whale_pipeline_perf
+from services import candidate_retry, http_client, loop_watchdog, whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -199,7 +199,51 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # rest_latency_snapshot, pure read; window rolled by maybe_capture).
     metrics.update(_flatten_rest_latency(http_client.rest_latency_snapshot()))
 
+    # loop_watchdog.* (realtime data-plane remediation P0 Task 1) - whether
+    # the asyncio loop itself is stalling, independent of any one
+    # subsystem's own counters. Same "no evidence, no rows" contract as
+    # whale_pipeline: omitted entirely until the watchdog has taken at
+    # least one sample in this process.
+    metrics.update(_flatten_loop_watchdog(loop_watchdog.snapshot()))
+
+    # candidate_retry.* (realtime data-plane remediation P2 Task 12) - the
+    # H4-recovery retry queue's depth (a live gauge) plus this window's
+    # retried/recovered/abandoned counts. Same "no evidence, no rows"
+    # contract as loop_watchdog/whale_pipeline - every other metric family
+    # here follows it, and capture_from_runtime's own contract (asserted by
+    # test_capture_from_runtime_omits_missing_sources_instead_of_fabricating_zero)
+    # is that nothing having happened yields metrics == {}, not a page of
+    # meaningful-looking zeros.
+    metrics.update(_flatten_candidate_retry(candidate_retry.snapshot()))
+
     return metrics
+
+
+def _flatten_loop_watchdog(snapshot: dict) -> dict:
+    if not snapshot.get("samples"):
+        return {}  # watchdog hasn't sampled yet in this process - no evidence, no rows
+    out = {
+        "loop_watchdog.samples": float(snapshot["samples"]),
+        "loop_watchdog.stall_count": float(snapshot.get("stall_count") or 0),
+    }
+    if snapshot.get("stall_max_ms") is not None:
+        out["loop_watchdog.stall_max_ms"] = float(snapshot["stall_max_ms"])
+    return out
+
+
+def _flatten_candidate_retry(snapshot: dict) -> dict:
+    pending = snapshot.get("pending") or 0
+    retried = snapshot.get("retried") or 0
+    recovered = snapshot.get("recovered") or 0
+    abandoned = snapshot.get("abandoned") or 0
+    if not (pending or retried or recovered or abandoned):
+        return {}  # nothing pending and nothing happened this window - no evidence, no rows
+    return {
+        "candidate_retry.pending": float(pending),
+        "candidate_retry.retried": float(retried),
+        "candidate_retry.recovered": float(recovered),
+        "candidate_retry.abandoned": float(abandoned),
+    }
 
 
 def _flatten_rest_latency(snapshot: dict) -> dict:
@@ -335,6 +379,8 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
                 pass
     whale_pipeline_perf.perf.reset_window()
     http_client.reset_rest_latency_window()
+    loop_watchdog.reset_window()
+    candidate_retry.reset_window()
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------
@@ -447,6 +493,27 @@ def _repeated_rate_limit_hits_finding(now: float | None = None) -> QualityFindin
     )
 
 
+def _candidate_retry_abandoned_finding() -> QualityFinding | None:
+    """P2 Task 13's own gate criterion: an abandoned retry must be counted,
+    not silent (design spec). candidate_retry.snapshot()'s window counter
+    already resets via maybe_capture like every other window metric here -
+    this just turns a nonzero window into a visible finding instead of
+    something only a deliberate metric query would ever surface."""
+    abandoned = candidate_retry.snapshot().get("abandoned") or 0
+    if not abandoned:
+        return None
+    return QualityFinding(
+        finding_id="observability:candidate-retry-abandoned:kalshi_trade_tape",
+        check="candidate-retry-abandoned", severity="warning", confidence="high", source="runtime",
+        scope="kalshi_trade_tape",
+        summary=(
+            f"{abandoned} whale candidate(s) abandoned this window after exhausting the retry "
+            "budget (~91.5s) - a market lookup never recovered in time"
+        ),
+        evidence={"abandoned": abandoned},
+    )
+
+
 def runtime_findings(
     cfg: dict, state: dict, trade_stream, index_stream, now: float | None = None,
 ) -> list[QualityFinding]:
@@ -462,4 +529,7 @@ def runtime_findings(
     rate_limit_finding = _repeated_rate_limit_hits_finding(now=now)
     if rate_limit_finding is not None:
         findings.append(rate_limit_finding)
+    abandoned_finding = _candidate_retry_abandoned_finding()
+    if abandoned_finding is not None:
+        findings.append(abandoned_finding)
     return findings

@@ -40,3 +40,8 @@ build/
 # Regenerated on demand by .claude/tools/strip_gitnexus_hooks.py - a copy of the
 # user-global ~/.claude/settings.json, not project state.
 .claude/settings-json-gitnexus-hooks-removed.json
+
+# pytest-testmon's coverage-fingerprint database (.woodpecker/tests-pytest.yml's
+# push-event tier) - persisted per-branch in a Woodpecker cache volume in CI,
+# never committed; a local `pytest --testmon` run also drops one here.
+.testmondata

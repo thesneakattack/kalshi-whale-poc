@@ -1,32 +1,81 @@
-# Full backend pytest suite - Woodpecker's authoritative equivalent of the
+# Backend pytest suite - Woodpecker's authoritative equivalent of the
 # GitHub Actions tests.yml `pytest` job (now workflow_dispatch-only there,
-# see .github/workflows/tests.yml's own header comment). Runs on every push
-# and PR: no path filter, since a change anywhere in services/ or main.py
-# can regress any other module (cross-module regressions are exactly what
-# the full suite exists to catch - see CLAUDE.md's "Long-session workflow"
-# section and .claude/skills/ci-cd-guardrails/SKILL.md).
+# see .github/workflows/tests.yml's own header comment).
 #
 # tests/conftest.py (Task 2 of the Quality Control Plane) redirects every
 # persistence module's DB_PATH into a temp dir and hard-blocks sqlite3.connect
 # against the real data/ directory before any test can run, so this container
 # never touches (and does not even receive) this repo's live data/*.db files.
 #
-# The pytest step's own commands skip the actual suite when
-# scripts/ci-skip-heavy-suite.sh's verdict (computed once, in the
-# ci-fast-path-check step below, and shared via build/.ci-skip-verdict) is
-# SKIP - i.e. nothing outside docs/**, .claude/**, or repo-root scaffold
-# files changed relative to main. This is a fast-path for research/docs-only
-# investigation branches (found live, 2026-08-25: full pytest + browser E2E
-# on every push was inflating multi-commit investigation sessions from ~2h
-# to ~20h of wall time), NOT a path-to-test-file relevance scheme for real
-# code changes - see this file's own reasoning above ("no path filter,
-# since a change anywhere in services/ or main.py can regress any other
-# module") for why a real code change always still gets the full suite.
-# scripts/ci-skip-heavy-suite.sh's own header has the full design rationale
-# and fail-safe rules; this pipeline never changes `when:`/which steps run/
-# what status posts to GitHub, only whether pytest's commands do real work.
+# Three tiers, decided in the pytest step's own commands:
+#
+# 1. SKIP - nothing outside docs/**, .claude/**, or repo-root scaffold files
+#    changed relative to main (scripts/ci-skip-heavy-suite.sh's verdict,
+#    computed once in ci-fast-path-check below, shared via
+#    build/.ci-skip-verdict). Fast path for research/docs-only branches
+#    (found live, 2026-08-25: full pytest + browser E2E on every push was
+#    inflating multi-commit investigation sessions from ~2h to ~20h of wall
+#    time).
+# 2. PR event, or a push directly to `main` - FULL, unscoped suite, always.
+#    `main`'s branch protection requires the `ci/woodpecker/pr/*` contexts
+#    (not `push/*` - see .claude/rules/branching-and-ci.md's "Integration
+#    lifecycle"), so a PR-event run is the actual merge gate and never gets
+#    narrowed. This is also where "no path filter... a change anywhere in
+#    services/ or main.py can regress any other module" (this file's older
+#    header wording) still fully applies - unchanged from before.
+# 3. A push to any other branch, not (yet) a PR - testmon-scoped (2026-08-26,
+#    direct request: "any push [should] go through relevant testing only
+#    until a PR occurs"). pytest-testmon fingerprints which lines each test
+#    actually *executed* last run (coverage.py tracing) and only re-runs
+#    tests whose exercised lines changed since - a real execution-dependency
+#    graph, not a guessed file-path->test mapping, which is exactly what
+#    tier 2's "cross-module regressions" caution above is worried about: if
+#    a test never actually ran the changed line, it wasn't testing that
+#    behavior regardless of which directory the file sits in. Searched this
+#    repo's full git history and docs for a specific incident that motivated
+#    the old "no path filter" policy (git log -S across its own wording, all
+#    of docs/) and found none - it reads as general caution, not a
+#    documented war story, which is exactly the caution testmon's real
+#    execution tracing (not a hand-written map) is designed to satisfy
+#    safely. A branch's first push has no cached baseline yet, so testmon
+#    naturally falls back to running everything - same as today. See the
+#    pytest step's own comment for the per-branch cache mechanics.
 when:
   - event: [push, pull_request]
+
+# Full-history clone override, required by ci-fast-path-check below.
+#
+# Real bug found 2026-08-26: Woodpecker's default clone plugin sets
+# `partial: true`, which its own docs.md documents as "fetch the one
+# commit and its blob objects... overwrite depth with 1" - it silently
+# forces `--depth=1` no matter what `depth:` is configured to, and adds
+# `--filter=tree:0` on top. Confirmed live via the actual clone step log
+# on two separate pipelines (a docs-only push and a main-branch merge):
+# `git fetch --no-tags --depth=1 --filter=tree:0 origin +<sha>:` in both
+# cases - a shallow, single-commit checkout with zero parent history.
+#
+# ci-fast-path-check's git merge-base (feature branches) and HEAD^1 diff
+# (main pushes) both require real ancestor history that a depth=1 clone
+# cannot have - a shallow repo has no relationship to any other commit,
+# so `git merge-base origin/main HEAD` (or `HEAD^1`) fails every time,
+# silently, and the script's own fail-safe rule ("any ambiguity means
+# RUN, never SKIP") swallows the failure into a permanent RUN verdict.
+# Net effect: this fast path has computed RUN on 100% of runs since it
+# shipped (PR #13) - the "0 new" claim in status docs about it working
+# was never actually exercised. Confirmed via plugin-git's own source
+# (github.com/woodpecker-ci/plugin-git plugin.go's fetch()): `depth: 0`
+# means the `--depth` flag is omitted entirely (unlimited history), and
+# `partial: false` is required or `partial`'s own default overwrites any
+# depth value back to 1 regardless. This repo has no real git-lfs content
+# (no .gitattributes LFS rules), so the plugin's default LFS steps stay
+# fast no-ops either way - full clone cost here is git history transfer
+# only, not blob/LFS data.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
 
 steps:
   # Tiny, git-capable image (python:3.13-slim below has no git binary at
@@ -55,8 +104,17 @@ steps:
     # (network/volumes/security all true), so this needs no settings change.
     # Prune with `docker volume rm wp-uv-cache` if it ever grows unreasonably;
     # losing it costs one slow run, nothing more.
+    # wp-testmon-cache: one persisted .testmondata per branch, keyed by a
+    # slashes-stripped branch name subdirectory (branch names contain `/`,
+    # e.g. `fix/aqc-...`, which can't be a single path segment). Same
+    # accepted-growth convention as wp-uv-cache below: nothing prunes this
+    # automatically; losing a branch's entry just costs one full-suite-
+    # equivalent run to rebuild it, not a correctness problem. A merged/
+    # deleted branch's leftover subdirectory is inert, not a real cost -
+    # revisit only if this volume's size ever becomes a real concern.
     volumes:
       - wp-uv-cache:/root/.cache/uv
+      - wp-testmon-cache:/testmon-cache
     commands:
       - |
         if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
@@ -89,5 +147,13 @@ steps:
           # -v dropped deliberately: xdist interleaves workers, so
           # per-test verbose output arrives out of order and is
           # harder to read than the progress line, not easier.
-          python -m pytest -n 4
+          #
+          # A real script file, not inline here - see
+          # scripts/ci-testmon-run.sh's own header for why: Woodpecker
+          # silently blanks any `${VAR}` in inline `commands:` text that
+          # isn't one of its own known CI_* variables, before a shell ever
+          # sees it - broke a per-branch cache path variable live,
+          # confirmed via the actual pipeline log, same underlying reason
+          # scripts/ci-skip-heavy-suite.sh already lives in its own file.
+          sh scripts/ci-testmon-run.sh
         fi
