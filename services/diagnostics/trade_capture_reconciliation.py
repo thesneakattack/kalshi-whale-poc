@@ -84,7 +84,21 @@ async def reconcile_window(
         "caveats": caveats,
         "error": None,
         "ingest_evidence": ingest_evidence,
+        "backlog_exceeds_lag": False,
     }
+    # I7 blind spot: a print that arrived in the window but is still sitting
+    # in the ingest queue is not in the seen-record yet, so with a queue
+    # older than the lag "missing" mixes still-queued with lost. Flag it
+    # rather than let the ratio read as loss.
+    if ingest_evidence:
+        age = ingest_evidence.get("oldest_message_age_sec")
+        lag = ingest_evidence.get("lag_sec")
+        if age is not None and lag is not None and float(age) > float(lag):
+            result["backlog_exceeds_lag"] = True
+            caveats.append(
+                f"ingest queue backlog ({float(age):.0f} s) is older than the lag ({float(lag):.0f} s) - "
+                "prints counted missing may still be queued, not lost; re-run with lag_sec above the backlog age"
+            )
 
     trades: list[dict] = []
     pages = 0

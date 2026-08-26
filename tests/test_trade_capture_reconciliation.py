@@ -201,3 +201,19 @@ def test_provider_seen_timestamps_are_evicted_with_the_dedupe_ring(monkeypatch):
     assert set(provider.seen_exchange_ts_by_id()) == {"t2", "t3", "t4"}
     assert provider.seen_horizon_ts() == 102.0
     assert "t0" not in provider._seen_trade_ids
+
+
+def test_backlog_older_than_the_lag_is_flagged_because_missing_may_still_be_queued():
+    # I7 found this blind spot live: with the ingest queue ~150 s deep and a
+    # 60 s lag, prints that arrived in the window were still queued (not yet
+    # in the seen-record) and were counted as missing. The tool must say so.
+    t0 = 1_000_000.0
+    client = _PagedClient([[_rest_trade("a", t0 + 5), _rest_trade("b", t0 + 6)]])
+    evidence = {"oldest_message_age_sec": 150.0, "lag_sec": 60.0, "queue_depth": 18000}
+    r = _run(client, {}, window_start=t0, window_end=t0 + 60, ingest_evidence=evidence)
+    assert r["missing"]["count"] == 2
+    assert r["backlog_exceeds_lag"] is True
+    assert any("still be queued" in c for c in r["caveats"])
+    quiet = _run(client, {}, window_start=t0, window_end=t0 + 60,
+                 ingest_evidence={"oldest_message_age_sec": 0.2, "lag_sec": 60.0})
+    assert quiet["backlog_exceeds_lag"] is False and not any("still be queued" in c for c in quiet["caveats"])
