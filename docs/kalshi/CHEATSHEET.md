@@ -443,11 +443,18 @@ required... Other WebSocket libraries may require manual ping/pong
 implementation." `services/kalshi_trade_ws.py` uses the `websockets`
 library's own `connect(..., ping_interval=20, ping_timeout=20)` and does
 no manual ping/pong frame handling of its own — exactly the documented
-recommended pattern. No specific interval/timeout values are documented
+recommended pattern. No client-side interval/timeout values are documented
 upstream (just "the library handles it automatically"), so 20s/20s is
-this app's own choice within the library's supported knobs, not something
-that could be doc-verified further.
-**Source:** `quick_start_websockets.md`.
+this app's own choice within the library's supported knobs.
+**Correction (2026-08-25, I9):** `connection-keep-alive.md` — a page not
+read when this entry was written — documents the *server* side: "Kalshi
+sends Ping frames (0x9) every 10 seconds with body `heartbeat`"; clients
+must answer with Pong. And the `websockets` 17.x client's own keepalive
+closes the socket with 1011 "keepalive ping timeout" when *its* pong wait
+(`ping_timeout`) expires — which is exactly what an event-loop stall
+≥ 20 s produces (observed live in I7). So the 20 s knobs are also a
+loop-hygiene deadline, not merely a network setting.
+**Source:** `quick_start_websockets.md`, `connection-keep-alive.md`.
 **Found:** 2026-08-24, Kalshi Integration Phase A Task A1, verifying
 `services/kalshi_trade_ws.py` against documented suggested WS practices.
 
