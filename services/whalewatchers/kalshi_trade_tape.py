@@ -332,6 +332,28 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         signals = self._process_trades_sync(trade_tape, markets, markets_by_ticker, cfg, now, counts=counts)
         return signals, started, time.monotonic()
 
+    def score_recovered_trade(
+        self, trade: dict, market: dict, cfg: dict, now: float,
+    ) -> list[WhaleSignal]:
+        """See WhaleWatcherProvider.score_recovered_trade. Delegates
+        straight to _process_trades_sync with a singleton trade/market pair
+        rather than a fresh, second copy of the scoring logic - a recovered
+        candidate (services/candidate_retry.py) is judged through the exact
+        same pipeline (agreement/cluster/trend/analyst factors, composite
+        confidence, the tradeable-price-range and min-contracts gates) as a
+        trade whose market resolved on the first try. May return an empty
+        list even on a successful market resolution - the trade can still
+        fail a gate this pipeline applies (e.g. the market moved out of the
+        tradeable price range while this trade was pending retry); that is
+        a real "no signal" outcome, not a bug, and candidate_retry.
+        run_pending's own "recovered" counter reflects "the market resolved"
+        rather than "a signal was produced," consistent with this module's
+        own docstring."""
+        ticker = trade.get("ticker")
+        if not ticker:
+            return []
+        return self._process_trades_sync([trade], [market], {ticker: market}, cfg, now)
+
     @http_client.classify("critical_whale")
     async def _resolve_unknown_markets(
         self, trade_tape: list[dict], markets_by_ticker: dict[str, dict], cfg: dict,

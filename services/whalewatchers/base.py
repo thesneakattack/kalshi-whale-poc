@@ -28,3 +28,24 @@ class WhaleWatcherProvider(ABC):
         rather than calling an external source (see
         services/whalewatchers/kalshi_trade_tape.py). Providers that fetch
         from an independent external API (generic_rest, template) ignore it."""
+
+    def score_recovered_trade(
+        self, trade: dict, market: dict, cfg: dict, now: float,
+    ) -> list[WhaleSignal]:
+        """Score a single already-resolved trade+market pair through this
+        provider's normal per-trade scoring pipeline, for a candidate whose
+        market lookup failed on the first attempt and is now being
+        recovered (services/candidate_retry.py) instead of seen through a
+        fresh fetch_signals() call. Called from main.py's tick loop, never
+        from a specific-provider reach-through, so this stays the one place
+        candidate_retry needs to know about a provider's scoring pipeline.
+
+        Not abstract, and deliberately a no-op by default: most providers
+        derive signals from a batch fetch they have no way to meaningfully
+        re-enter for a single already-known item, so "nothing to recover
+        here" (empty list) is the same outcome as if the print had simply
+        never happened. Only KalshiTradeTapeProvider overrides this today —
+        it is the only provider services.candidate_retry.enqueue() is ever
+        called from (see services/whalewatchers/kalshi_trade_tape.py's own
+        _resolve_unknown_markets)."""
+        return []

@@ -660,7 +660,13 @@ async def trading_loop():
                 # market lookup is only meaningful when the exchange-wide
                 # stream is what feeds whale candidates in the first
                 # place. Normally a near-instant no-op (nothing due).
-                await candidate_retry.run_pending(client)
+                # whale_provider + _handle_signal passed through (code-review
+                # fix, finding #1) so a recovered candidate is actually
+                # scored and evaluated through the same pipeline a first-try
+                # trade uses, not just claimed and dropped.
+                await candidate_retry.run_pending(
+                    client, whale_provider, _handle_signal, cfg, market_results, config_fp, tick_now,
+                )
             phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["event_titles"].update(event_titles)
