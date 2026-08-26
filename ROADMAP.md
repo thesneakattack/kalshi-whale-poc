@@ -59,46 +59,53 @@ semantics (fully open). See
 that work is sequenced.
 
 - [ ] **The event loop stalls for 17-38+ seconds at a stretch, live,
-      post-P0-P2 — root cause still unproven, and a restart made it
-      worse, not better.** Found 2026-08-26 while trying to gather
-      Program 1's "runtime-measured" evidence: the local dev instance was
-      unreachable for 4.5+ minute stretches at a time. `loop_watchdog`
-      (P0 Task 1's own diagnostic) confirmed real stalls, not a hunch:
-      `stall_max_ms` sat at 17,800-38,000ms across the whole observation
-      window, main thread pegged ~100-120% CPU the entire time, every
-      other thread idle. Root cause not proven via a stack trace (this
-      container has no `SYS_PTRACE`; `py-spy` can't attach). A restart
-      (`docker restart ddev-kalshi-whale-poc-fastapi`) was tried as a
-      recovery step and made things worse: the process has stayed
-      completely unresponsive and CPU-pegged for **20+ continuous
-      minutes since**, longer than the original incident, with no
-      recovery observed before this was written up.
-      **First hypothesis, investigated and weakened, not confirmed:**
-      `main.py`'s `_maybe_prune_capture_stores()` runs synchronously on
-      the event loop and its interval gate (`_last_capture_prune_at`,
-      main.py:145) inits to `0.0`, so it re-fires on the very first tick
-      after every restart - which is consistent with the stall recurring
-      immediately post-restart. But `data/series_watcher.db` (14.1GB)
-      breaks down as ~19.5M rows in `raw_trades` (indexed, but explicitly
-      **never pruned** - `series_watcher.prune()`'s own docstring: "Trades
-      are NOT pruned... CLAUDE.md treats accumulated history as a
-      first-class asset") plus only ~180K rows in the actually-pruned
-      `book_snapshots` table (also indexed) - a single indexed DELETE
-      against 180K rows should not plausibly take 20+ minutes of sustained
-      CPU. That weakens, without ruling out, `series_watcher.prune()`
-      specifically as the cause; `index_feed`/`game_state`/`observability`
-      `prune()` (also called synchronously, unoffloaded, by the same
-      function) or something else entirely reachable from the first
-      post-restart tick remain equally plausible and unexamined.
-      **Needs a dedicated root-cause-debugging pass** with `SYS_PTRACE`
-      added to the fastapi container (`.ddev/docker-compose.fastapi.yaml`)
-      so a real stack trace can be captured next time this recurs - this
-      investigation deliberately stopped short of that (would require
-      another restart, destroying the live incident) and stopped short of
-      any code change (out of scope for a measurement-only pass). Whale-
-      signal handling itself (`whale_provider.fetch_signals`) is very
-      likely a *victim* of the stall, not its cause - its own inner stage
-      timers (resolve/thread_wait/sync) stayed near-zero while its outer
+      post-P0-P2 — root cause now proven via a real stack trace.** Found
+      2026-08-26 while trying to gather Program 1's "runtime-measured"
+      evidence: the local dev instance was unreachable for 4.5+ minute
+      stretches at a time. `loop_watchdog` (P0 Task 1's own diagnostic)
+      confirmed real stalls, not a hunch: `stall_max_ms` sat at
+      17,800-38,000ms, main thread pegged ~100-120% CPU throughout, every
+      other thread idle. Two hypotheses tried first and ruled out (kept
+      here, struck through in spirit per this file's own discipline of
+      recording how a finding evolved): ~~`_maybe_prune_capture_stores()`
+      pruning `series_watcher.db`~~ - restarting to test it only made
+      things worse (20+ more minutes down), and `series_watcher.prune()`
+      turned out to only touch a small, indexed, 180K-row table, not the
+      19.5M-row `raw_trades` table that's actually never pruned by design.
+      **Proven root cause** (added `cap_add: [SYS_PTRACE]` to
+      `.ddev/docker-compose.fastapi.yaml` so `py-spy dump` could attach to
+      the live stalled process): the main thread is stuck inside
+      `candidate_log.population_gate_summary()` (`services/candidate_log.py:316`),
+      called directly and synchronously - no `asyncio.to_thread`/
+      `tick_executor` offload at all - from `GET /api/candidate-log/summary`
+      (`services/analytics/routes.py:94`), a route the dashboard polls
+      routinely. That function runs `SELECT strategy, gate_name, side,
+      result, resolved, unit_cost FROM rejection_events` with **no WHERE
+      clause, no LIMIT** and no retention/pruning ever applied to that
+      table, then loops over every returned row in pure Python to group
+      and aggregate. **`rejection_events` currently holds 6,228,399
+      rows** and grows without bound (`record_rejection()` inserts one row
+      per gate check on every rejected candidate, undeduped, by design -
+      services/candidate_log.py's own "POPULATION STATISTICS" section).
+      Every dashboard poll of this endpoint re-triggers a full 6.2M-row
+      scan + Python-level grouping loop directly on the event loop,
+      blocking every other request and background task for the whole
+      duration - which is also why restarting didn't help: the dashboard
+      polls this route again almost immediately. **Fix, not yet
+      implemented**: offload `population_gate_summary()`'s call the same
+      way every other heavy DB call already is (`asyncio.to_thread` or
+      `tick_executor.run`) as a minimal first step to stop it blocking the
+      loop; separately decide whether `rejection_events` needs real
+      retention/aggregation (a rolling window, a pre-aggregated summary
+      table, or a sample cap) given it has no bound today and this table
+      is already 20x the row count that made `resolved_signals_with_factors`'s
+      own "small enough to scan" assumption fail for `signal_log.db`'s
+      much smaller `signals` table. Remove the temporary `SYS_PTRACE`
+      grant once this is fixed and verified - it was added purely to get
+      this stack trace. Whale-signal handling itself
+      (`whale_provider.fetch_signals`) was confirmed a *victim* of the
+      stall, not its cause - its own inner stage timers
+      (resolve/thread_wait/sync) stayed near-zero while its outer
       wall-clock ballooned to match the same stall window.
 
 - [x] Runway/exit gates: a position could open with almost no time left
