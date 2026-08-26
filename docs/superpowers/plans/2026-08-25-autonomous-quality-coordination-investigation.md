@@ -294,13 +294,13 @@ The coordination policy survives the scenario matrix without GitHub write author
 - `woodpecker-cli lint` and local execution if available/safe
 - Woodpecker remains exhaustive verifier for pushed investigation changes
 
-- [ ] Prove a candidate privileged filter is **not** selected on pull_request events targeting main.
-- [ ] Prove the same filter is selected on the intended trusted main-push/cron/manual event in a synthetic/local evaluation.
-- [ ] Prove PR lane operates with no write secret requirement.
-- [ ] Test stale main SHA handling: a decision generated for old main must refuse a write in the eventual design.
-- [ ] Test duplicate/retry behavior for the chosen reporting/escalation action using a fake GitHub transport.
-- [ ] Do not install real App credentials or issue/PR writes.
-- [ ] Commit: `test: fault inject quality control event semantics`.
+- [x] Prove a candidate privileged filter is **not** selected on pull_request events targeting main. (Against a real specimen: pipelines 92/94/96, `event=pull_request, branch=main`, PR #3.)
+- [x] Prove the same filter is selected on the intended trusted main-push/cron/manual event in a synthetic/local evaluation. (Against real pipeline 163, `event=push, branch=main`.)
+- [x] Prove PR lane operates with no write secret requirement. (Woodpecker docs, live-fetched: secrets require explicit per-secret `pull_request` opt-in; default is push-only.)
+- [x] Test stale main SHA handling: a decision generated for old main must refuse a write in the eventual design.
+- [x] Test duplicate/retry behavior for the chosen reporting/escalation action using a fake GitHub transport.
+- [x] Do not install real App credentials or issue/PR writes. (Confirmed: no `.woodpecker/*.yml` change, no PR opened, `FakeGitHubTransport` has no network dependency at all.)
+- [x] Commit: `test: fault inject quality control event semantics`.
 
 **Acceptance**
 The event/credential design is proven with failure cases before any real write credential exists.
