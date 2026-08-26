@@ -41,11 +41,15 @@ phrase, restricted CORS, real account field names, kill switch + bankroll
 persisting across restarts) — is **fully shipped**. That's necessary, not
 sufficient, and it does not mean the remaining distance to real capital is
 purely operational: most items below are (deployment target, auth model,
-sizing/kill-switch numbers, category legal risk), but the entry-gate
-adverse-selection item is a live strategy/code defect, not an ops
-question, and substantive code-level work still sits ahead of this
-checklist too — realtime data-plane correctness, economic/strategy
-validation, and canonical decision/execution semantics. See
+sizing/kill-switch numbers, category legal risk), but substantive
+code-level work still sits ahead of this checklist too — realtime
+data-plane correctness (P0-P2 of a 6-phase plan merged 2026-08-26; P3's
+live-gate flip and beyond remain open, separately gated, not authorized),
+economic/strategy validation (investigated 2026-08-26 — the originally-
+reported entry-gate adverse-selection defect below turned out not to
+reproduce in its original form, replaced by a different, still-open,
+currently-unimplemented finding), and canonical decision/execution
+semantics (fully open). See
 `docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
 that work is sequenced.
 
@@ -143,15 +147,27 @@ that work is sequenced.
       from.** Measured 2026-08-17 on KXBTC15M: whale signals resolved 88.8%
       correct across 394 settled signals, but the 12 the gates actually
       traded resolved only 58.3% — adverse selection, not a bad signal
-      source. Not yet root-caused to a specific gate. Progress since:
-      `candidate_log`'s population-statistics blocker is fixed (new
-      `rejection_events` table, undeduped — `GET /api/candidate-log/summary`'s
-      `population_gates` key), and per-gate rejections now carry `unit_cost`
-      (closing the "high win rate but loses money" blind spot partway — see
-      `docs/roadmap-archive-2026-08-23.md` for the full mechanism). **Still
-      not done**: a banded, sample-size-gated cost-aware win rate per gate
-      (the real next step, needs the new `unit_cost` data to accumulate
-      first) and the root-cause itself.
+      source. Progress since: `candidate_log`'s population-statistics
+      blocker is fixed (new `rejection_events` table, undeduped —
+      `GET /api/candidate-log/summary`'s `population_gates` key), and
+      per-gate rejections now carry `unit_cost` (closing the "high win
+      rate but loses money" blind spot partway — see
+      `docs/roadmap-archive-2026-08-23.md` for the full mechanism).
+      **Investigated 2026-08-26**
+      (`docs/superpowers/research/2026-08-26-economic-strategy-
+      effectiveness-status-report.md`): the original 394/88.8% sample and
+      the gate configuration that produced it (dollar-notional, replaced
+      by contract-count below) both no longer exist — not root-causable
+      in its original form. Under the *current* gate, selection is
+      currently *better* than population accuracy (opposite direction);
+      the real current shortfall (-$169.81 over 90 trades in ~3.2 days)
+      traces to a pricing/edge gap, not selection or exit. A banded,
+      sample-size-gated cost-aware EV-per-gate pattern was found (the
+      0.60-0.95 unit-cost band is negative-EV across every gate with
+      enough samples) — real, still open. **Still not done**: the
+      banded-EV diagnostic itself (designed, not implemented — Program 2,
+      gated on human design-doc approval) and re-verifying all of the
+      above against a larger post-realtime-fix sample.
 - [x] **Whale threshold switched from dollars to contract count.** Measured
       2026-08-17: a dollar gate was geometrically biased toward
       near-certainty (mean unit cost 0.926, 75.9% of clears in the
