@@ -318,14 +318,14 @@ The event/credential design is proven with failure cases before any real write c
 - `requesting-code-review`
 - main Claude remains final synthesizer
 
-- [ ] Score all surviving Candidate A–D architectures on the spec matrix using cited evidence from I0–I9.
-- [ ] Mark veto conditions separately from weighted scores.
-- [ ] Select a provisional winner and the simplest viable rollout.
-- [ ] Dispatch an independent adversarial reviewer with the decision, evidence table, and repo safety/branch rules explicitly supplied.
-- [ ] Require the reviewer to find failure modes, hidden maintenance cost, security gaps, and reasons the report-only control may actually be better.
-- [ ] Reconcile each critique against evidence; change the decision only where the critique is supported.
-- [ ] Record concessions, rejected objections, and remaining uncertainty.
-- [ ] Commit: `docs: decide autonomous quality coordination architecture`.
+- [x] Score all surviving Candidate A–D architectures on the spec matrix using cited evidence from I0–I9. (I4's matrix carried forward, contextualized with I7/I9 findings.)
+- [x] Mark veto conditions separately from weighted scores. (I6 §5's V1-V8, applied per-candidate, kept as its own table row.)
+- [x] Select a provisional winner and the simplest viable rollout. (D report-only, extended with a persisted observation series; dry-run→reporting stage only, issue/draft-PR stages designed but not activated.)
+- [x] Dispatch an independent adversarial reviewer with the decision, evidence table, and repo safety/branch rules explicitly supplied. (Isolated general-purpose subagent, no shared context, explicit rule text supplied inline.)
+- [x] Require the reviewer to find failure modes, hidden maintenance cost, security gaps, and reasons the report-only control may actually be better. (Inverted since D=report-only was the provisional winner: asked instead for the direct case for Candidate C, plus failure-mode/maintenance-cost/security-gap angles against D specifically.)
+- [x] Reconcile each critique against evidence; change the decision only where the critique is supported. (§6: 7 of 9 objections produced concrete document edits; 2 acknowledged without changing the topology choice.)
+- [x] Record concessions, rejected objections, and remaining uncertainty. (§6, explicit subsections for each.)
+- [x] Commit: `docs: decide autonomous quality coordination architecture`.
 
 **Acceptance**
 The architecture survives a deliberate devil's-advocate pass and wins against a report-only control for documented reasons, or the investigation concludes that report-only is the correct current architecture.
