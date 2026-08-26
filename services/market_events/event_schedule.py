@@ -88,6 +88,7 @@ from dateutil import parser as _dateutil_parser
 from services import task_supervisor
 from services.http_client import get_client
 from services.kalshi.public import KalshiPublicGateway
+from services import http_client
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "event_schedule.db"
 
@@ -452,6 +453,7 @@ async def _resolve_event_schedules(
         event_schedules[event_ticker] = save(event_ticker, start_ts, end_ts, source)
 
 
+@http_client.classify("background_resolution")
 async def _resolve_event_schedules_background(cfg: dict) -> None:
     """Background-task wrapper, same split as catalog_scan._scan_catalog_
     batch_background/backup._run_backup_background - owns releasing the

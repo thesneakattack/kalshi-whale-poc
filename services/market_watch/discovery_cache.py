@@ -10,6 +10,7 @@ import time
 from services import series_evaluator, task_supervisor
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
+from services import http_client
 from services.market_catalog import market_catalog
 from services.market_events import event_lifecycle
 from services.market_watch import selection
@@ -50,6 +51,7 @@ _DISCOVERY_REFRESH_SEC = 300  # 2026-08-15, second incident on the same code pat
 # often the underlying selection itself gets re-run.
 
 
+@http_client.classify("background_catalog")
 async def _fetch_category_metadata(client: KalshiPublicGateway, ttl_sec: int = 3600) -> dict:
     cache = state["category_metadata"]
     now = time.time()
@@ -290,6 +292,7 @@ async def _refresh_discovery_cache(cfg: dict, client: KalshiPublicGateway) -> No
     disc_cache["fetched_at"] = time.time()
 
 
+@http_client.classify("background_discovery")
 async def _refresh_discovery_cache_background(cfg: dict) -> None:
     """Background-task wrapper around _refresh_discovery_cache - owns its own
     KalshiPublicGateway (2026-08-16 client-lifecycle fix, real live incident:

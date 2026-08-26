@@ -257,3 +257,25 @@ def test_close_still_closes_the_sdk_client(monkeypatch):
     monkeypatch.setattr(client._client, "close", fake_close)
     asyncio.run(client.close())
     assert closed == [True]
+
+
+def test_get_markets_by_tickers_explicit_batch_size_overrides_the_default_chunk(monkeypatch):
+    # I8: the rate-limit probe measures 50/100/200-ticker requests through
+    # this one parameter; production callers leave it None and keep the
+    # conservative default (docs/kalshi/get-markets.md documents `tickers`
+    # as a comma-separated filter with no per-call cap).
+    client = _client()
+    calls = []
+
+    async def fake_get_markets(tickers, limit):
+        calls.append((len(tickers.split(",")), limit))
+        return type("R", (), {"markets": [_FakeModel({"ticker": t}) for t in tickers.split(",")]})()
+
+    monkeypatch.setattr(client._client, "get_markets", fake_get_markets)
+    tickers = [f"T{i}" for i in range(120)]
+    result = asyncio.run(client.get_markets_by_tickers(tickers, batch_size=100))
+    assert calls == [(100, 100), (20, 20)]
+    assert len(result) == 120
+    calls.clear()
+    asyncio.run(client.get_markets_by_tickers(tickers))  # default path unchanged: 50-ticker chunks
+    assert calls == [(50, 50), (50, 50), (20, 20)]

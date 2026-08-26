@@ -392,3 +392,31 @@ def test_facade_and_gateways_satisfy_their_capability_protocols():
     writes = KalshiOrderGateway(None, trading_enabled=False, request_timeout_sec=5)
     assert isinstance(writes, OrderWrites)
     assert not isinstance(writes, AccountReads)
+
+
+# ---- I8: read-only account limit / endpoint-cost reads ---------------------
+
+def test_get_api_limits_and_endpoint_costs_delegate_to_sdk_and_are_read_only():
+    # docs/kalshi/get-account-api-limits.md + list-non-default-endpoint-costs.md
+    c, fake = _client_with_fake_sdk(trading_enabled=False)
+
+    async def get_account_api_limits(**kwargs):
+        fake.calls.append(("get_account_api_limits", kwargs))
+        return _FakeResp({"usage_tier": "basic", "read": {"refill_rate": 200, "bucket_capacity": 600},
+                          "write": {"refill_rate": 100, "bucket_capacity": 100}, "grants": []})
+
+    async def get_account_endpoint_costs(**kwargs):
+        fake.calls.append(("get_account_endpoint_costs", kwargs))
+        return _FakeResp({"default_cost": 10, "endpoint_costs": []})
+
+    fake.get_account_api_limits = get_account_api_limits
+    fake.get_account_endpoint_costs = get_account_endpoint_costs
+
+    limits = asyncio.run(c.get_api_limits())
+    costs = asyncio.run(c.get_endpoint_costs())
+
+    assert limits["usage_tier"] == "basic" and limits["read"]["bucket_capacity"] == 600
+    assert costs == {"default_cost": 10, "endpoint_costs": []}
+    assert fake.calls == [("get_account_api_limits", {}), ("get_account_endpoint_costs", {})]
+    # Structural guarantee: the reads live on the read gateway, never the order gateway.
+    assert hasattr(c._reads, "get_api_limits") and not hasattr(c._writes, "get_api_limits")

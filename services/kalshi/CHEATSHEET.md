@@ -90,6 +90,22 @@ Canonical objects are built on demand (4.38 µs) — never eagerly in the
 exchange-wide loop. Don't add per-message validation here without
 re-measuring.
 
+## Ingest queue-health metrics (realtime data-plane I1, 2026-08-25)
+
+`KalshiStreamGateway.ingest_metrics()` / `reset_ingest_window()` are the
+gateway's queue-health surface (per-class received/processed/dropped,
+depth/high-water, oldest-message age, queue-wait and handler-time
+windows with fixed buckets, Kalshi server error 25 counted separately
+from local `QueueFull`, reconnects with reason). Read by
+`services/observability/observability.py` (persisted every minute as
+`<stream>.ingest.*`) and `/api/health/pipeline`'s `ingest.queue_health`.
+The reader now parses JSON (`_ingest_raw`) and the consumer times each
+message (`_process_item`) — one parse per message, +2.6 µs/msg measured.
+The generic accumulator lives in `services/latency_agg.py`, outside this
+package on purpose: the contract-docs scanner treats every public method
+here as a Kalshi operation. Full metric list and window semantics:
+`services/observability/CHEATSHEET.md`.
+
 ## Type strictness / tolerance policy (C2-C6, 2026-08-25)
 
 - **Closed Literal types** (contracts/types.py): only where an unknown

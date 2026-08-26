@@ -539,3 +539,92 @@ def test_series_watcher_derives_sides_from_the_boundary_not_the_provider():
     import inspect
     src = inspect.getsource(sw)
     assert "from services.whalewatchers.kalshi_trade_tape import" not in src
+
+
+# --- stage timing / counters (realtime data-plane task I2) -----------------
+
+from services import whale_pipeline_perf as _wpp
+
+
+@pytest.fixture
+def _fresh_perf(monkeypatch):
+    fresh = _wpp.WhalePipelinePerf()
+    monkeypatch.setattr(_wpp, "perf", fresh)
+    return fresh
+
+
+def test_below_threshold_watched_trade_is_counted_and_its_rejection_write_is_counted(_fresh_perf):
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 5000}}
+    signals = asyncio.run(provider.fetch_signals(
+        market_context={"markets": [_market()], "trade_tape": [_trade(count_fp="100.00")], "cfg": cfg},
+    ))
+    assert signals == []
+    snap = _fresh_perf.snapshot()
+    c = snap["counters"]["window"]
+    assert c["trades"] == 1
+    assert c["below_threshold"] == 1
+    assert c["candidates"] == 0
+    assert c["to_thread_entries"] == 1
+    assert c["rejection_writes"] == 1  # candidate_log.record_rejection - a real SQLite write per sub-threshold WATCHED print
+    for stage in ("resolve", "thread_wait", "sync"):
+        assert snap["stages"][stage]["window"]["count"] == 1, stage
+
+
+def test_whale_sized_watched_trade_is_a_candidate(_fresh_perf):
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+    signals = asyncio.run(provider.fetch_signals(
+        market_context={"markets": [_market()], "trade_tape": [_trade(count_fp="100.00")], "cfg": cfg},
+    ))
+    assert len(signals) == 1
+    c = _fresh_perf.snapshot()["counters"]["window"]
+    assert c["candidates"] == 1 and c["below_threshold"] == 0 and c["rejection_writes"] == 0
+
+
+def test_offlist_sub_threshold_prints_never_write_a_db_row(_fresh_perf, tmp_path):
+    # The overwhelming majority of exchange-wide flow: unknown market, small
+    # print. Proves the diagnostics (and the existing path) cost zero DB rows
+    # per ordinary trade - the rejection write above is watched-market only.
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 5000}}
+    tape = [_trade(trade_id=f"t{i}", ticker="UNKNOWN-MKT", count_fp="10.00") for i in range(50)]
+    signals = asyncio.run(provider.fetch_signals(
+        market_context={"markets": [_market()], "trade_tape": tape, "cfg": cfg},
+    ))
+    assert signals == []
+    c = _fresh_perf.snapshot()["counters"]["window"]
+    assert c["trades"] == 50
+    assert c["offlist_skipped"] == 50
+    assert c["rejection_writes"] == 0
+    assert c["resolve_calls"] == 0  # no REST either - sub-threshold off-list prints never resolve a market
+    assert not candidate_log.DB_PATH.exists() or candidate_log.gate_summary() in ({}, [])
+
+
+def test_whale_sized_offlist_print_with_no_client_is_counted_as_unresolved(_fresh_perf):
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+    signals = asyncio.run(provider.fetch_signals(
+        market_context={"markets": [_market()], "trade_tape": [_trade(ticker="UNKNOWN-MKT", count_fp="100.00")], "cfg": cfg},
+    ))
+    assert signals == []
+    c = _fresh_perf.snapshot()["counters"]["window"]
+    assert c["offlist_candidates"] == 1
+    assert c["unresolved_market"] == 1
+    assert c["rejection_writes"] == 1  # market_unresolved rejection row - the only off-list write path
+
+
+def test_resolve_calls_and_failures_are_counted(_fresh_perf):
+    provider = KalshiTradeTapeProvider()
+    cfg = {"whale_watcher_kalshi": {"min_contracts": 50}}
+
+    class _FailingClient:
+        async def get_markets_by_tickers(self, tickers):
+            raise RuntimeError("429-equivalent")
+
+    asyncio.run(provider.fetch_signals(market_context={
+        "markets": [_market()], "trade_tape": [_trade(ticker="UNKNOWN-MKT", count_fp="100.00")],
+        "cfg": cfg, "client": _FailingClient(),
+    }))
+    c = _fresh_perf.snapshot()["counters"]["window"]
+    assert c["resolve_calls"] == 1 and c["resolve_failures"] == 1

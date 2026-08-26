@@ -1,0 +1,2857 @@
+# Realtime Kalshi Data-Plane Remediation Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Eliminate event-loop stalls and class-blocking on the WebSocket and REST
+planes so whale candidates are captured and decided in milliseconds instead of
+minutes, with zero silent loss and no duplicate decisions, while keeping every
+existing safety invariant untouched.
+
+**Architecture:** Two WS consumers on the existing single asyncio loop (`critical`:
+fill/position/lifecycle/control, never shed; `market`: gated trade candidates then
+coalesced tickers), fed by a reader that runs a microsecond pure-count gate before
+enqueueing anything and never blocks; a dedicated executor for the trading tick's
+synchronous SQLite phases and a daemon writer thread for capture-store batching; a
+durable `trade_id` ledger that gates `strategy.evaluate`; a critical-first REST
+waiter/aging scheduler with a global 429 brake; and reconnect/error-25-triggered
+reconciliation. Six phases, each behind its own `config/settings.yaml` flag with its
+own test/replay/soak gate and full rollback.
+
+**Tech Stack:** Python 3.13, FastAPI 0.134.0, `websockets` 17.0.1, SQLite (WAL),
+`asyncio` (loop, `ThreadPoolExecutor`, `to_thread`), pytest, the two deterministic
+replay harnesses this initiative built (`tools/realtime_pipeline_replay.py`,
+`tools/rest_scheduler_replay.py`).
+
+**Spec:** `docs/superpowers/specs/2026-08-25-realtime-data-plane-remediation-design.md`
+**Root cause:** `docs/superpowers/research/2026-08-25-realtime-root-cause-report.md`
+
+## Global Constraints
+
+- Real trading stays disabled; `kalshi_account.trading_enabled` and the typed
+  confirmation phrase in `POST /api/trading/enable` are never touched by this plan.
+- No change to CORS, auth, or the daily-loss kill switch's persisted invariants
+  (`data/risk_state.db`'s `day_start_bankroll` must stay consistent with
+  `data/paper_broker.db`'s bankroll at every step).
+- `data/*.db` files are additive-only: every schema change is `CREATE TABLE IF NOT
+  EXISTS` / `_add_column_if_missing`-style `ALTER TABLE`, never a drop-and-recreate.
+  Money stores (`paper_broker.db`, `risk_state.db`, `accounts.db`) stay write-through
+  on the loop thread — write-behind is explicitly out of scope for them.
+- Tests always redirect `DB_PATH` via `monkeypatch` to an isolated tmp path; never
+  touch a real `data/*.db` file.
+- Vendor-specific Kalshi interpretation stays inside `services/kalshi/`
+  (`.claude/rules/kalshi-integration-authority.md`); this plan only consumes
+  `services/kalshi/public.py` / `websocket.py` / `account*.py` contracts, it does not
+  add new ones outside that boundary.
+- Every phase ships behind a `config/settings.yaml` flag, default `false`/unset
+  (today's behavior), flippable live without a restart per the existing
+  live-reload convention.
+- Follow the branching policy: this plan's tasks land on
+  `chore/realtime-dp-investigation` if still open, or a fresh
+  `feat/realtime-data-plane-remediation` branch off `main` — confirm at execution
+  time per `.claude/rules/branching-and-ci.md`.
+- No hot-path validation without a measured cost first (the reader gate's own
+  measured cost is Task 3's acceptance gate).
+
+---
+
+## Phase P0 — Guards first (no behavior change)
+
+### Task 1: Loop-stall watchdog metric
+
+**Files:**
+- Create: `services/loop_watchdog.py`
+- Modify: `services/observability/observability.py` (register the snapshot)
+- Test: `tests/test_loop_watchdog.py`
+
+**Interfaces:**
+- Produces: `loop_watchdog.start(loop=None, sample_interval_sec: float = 0.1) -> asyncio.Task`,
+  `loop_watchdog.snapshot() -> dict` (`{"stall_max_ms": float, "stall_count": int,
+  "samples": int}`, window semantics matching `LatencyAgg.snapshot`), `loop_watchdog.reset_window() -> None`.
+- Consumes: nothing new (uses `time.monotonic`, `asyncio.get_running_loop`).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_loop_watchdog.py
+import asyncio
+import time
+
+from services import loop_watchdog
+
+
+def test_watchdog_reports_a_real_stall():
+    async def run():
+        task = loop_watchdog.start(sample_interval_sec=0.01)
+        await asyncio.sleep(0.05)
+        time.sleep(0.2)  # blocks the loop - the thing a stall watchdog must catch
+        await asyncio.sleep(0.05)
+        task.cancel()
+        return loop_watchdog.snapshot()
+
+    loop_watchdog.reset_window()
+    snap = asyncio.run(run())
+    assert snap["stall_max_ms"] >= 150.0
+    assert snap["stall_count"] >= 1
+    assert snap["samples"] > 0
+
+
+def test_reset_window_clears_state():
+    loop_watchdog.reset_window()
+    assert loop_watchdog.snapshot() == {"stall_max_ms": 0.0, "stall_count": 0, "samples": 0}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_loop_watchdog.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'services.loop_watchdog'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/loop_watchdog.py
+"""Detects event-loop stalls by comparing how late a periodic wakeup runs
+against how late it was scheduled to run - the same shape as I0/I7's
+correlated-but-unproven "the tick's synchronous SQLite blocks the WS
+consumer" hypothesis, now falsifiable at runtime (root-cause report C1)."""
+import asyncio
+import time
+
+_STALL_THRESHOLD_SEC = 0.05  # below this, scheduling jitter, not a stall
+_stall_max_ms = 0.0
+_stall_count = 0
+_samples = 0
+
+
+def reset_window() -> None:
+    global _stall_max_ms, _stall_count, _samples
+    _stall_max_ms, _stall_count, _samples = 0.0, 0, 0
+
+
+def snapshot() -> dict:
+    return {"stall_max_ms": round(_stall_max_ms, 3), "stall_count": _stall_count, "samples": _samples}
+
+
+def start(*, sample_interval_sec: float = 0.1) -> asyncio.Task:
+    async def _tick() -> None:
+        global _stall_max_ms, _stall_count, _samples
+        expected = time.monotonic() + sample_interval_sec
+        while True:
+            await asyncio.sleep(sample_interval_sec)
+            now = time.monotonic()
+            late = now - expected
+            _samples += 1
+            if late > _STALL_THRESHOLD_SEC:
+                _stall_count += 1
+                _stall_max_ms = max(_stall_max_ms, late * 1000)
+            expected = now + sample_interval_sec
+
+    return asyncio.ensure_future(_tick())
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_loop_watchdog.py -v`
+Expected: PASS (2 tests)
+
+- [ ] **Step 5: Wire into observability and `main.py` startup**
+
+In `main.py`'s startup (alongside the other `task_supervisor.supervise` calls),
+add:
+
+```python
+loop_watchdog_task = task_supervisor.supervise(
+    lambda: loop_watchdog.start_forever(), component="loop_watchdog", operation="run", restart=True,
+)
+```
+
+Add a `start_forever()` wrapper in `services/loop_watchdog.py` that awaits the task
+`start()` returns (since `supervise` needs a coroutine, not a `Task`):
+
+```python
+async def start_forever(*, sample_interval_sec: float = 0.1) -> None:
+    await start(sample_interval_sec=sample_interval_sec)
+```
+
+In `services/observability/observability.py`, add a `_flatten_loop_watchdog()`
+following the existing `_flatten_whale_pipeline` pattern (omit the block if
+`samples == 0`), call it from the same place `_flatten_ingest_metrics` is called,
+and reset `loop_watchdog.reset_window()` alongside the other resets in
+`maybe_capture`. Add the metric names to `services/observability/CHEATSHEET.md`.
+
+- [ ] **Step 6: Test the wiring**
+
+```python
+# tests/test_observability.py (append)
+def test_loop_watchdog_metrics_flow_into_the_snapshot(monkeypatch):
+    from services import loop_watchdog
+    loop_watchdog.reset_window()
+    # simulate a stall having been recorded without running the real task
+    loop_watchdog._stall_max_ms, loop_watchdog._stall_count, loop_watchdog._samples = 300.0, 1, 10
+    snap = observability.capture_from_runtime(...)  # match existing test's call shape
+    assert snap["loop_watchdog"]["stall_max_ms"] == 300.0
+```
+
+(Match this test's exact call signature to whatever `capture_from_runtime` already
+takes in the surrounding tests in `tests/test_observability.py` — read the file
+first; do not invent a different signature.)
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_observability.py tests/test_loop_watchdog.py -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/loop_watchdog.py services/observability/observability.py \
+  services/observability/CHEATSHEET.md main.py tests/test_loop_watchdog.py tests/test_observability.py
+git commit -m "feat: add event-loop stall watchdog (I13 P0)"
+```
+
+---
+
+### Task 2: `candidate_ledger` table (additive, write-only — not yet gating)
+
+**Files:**
+- Create: `services/candidate_ledger.py`
+- Test: `tests/test_candidate_ledger.py`
+
+**Interfaces:**
+- Produces: `candidate_ledger.claim(trade_id: str, *, ticker: str | None = None, now: float | None = None) -> bool`
+  (True = newly claimed, False = duplicate — an `INSERT OR IGNORE` outcome check, not
+  an exception), `candidate_ledger.record_decision(trade_id: str, decision: str) -> None`,
+  `candidate_ledger.stats() -> dict` (`{"claimed": int, "duplicates": int}` lifetime
+  counters for observability).
+- Consumes: nothing (own `DB_PATH` per the repo's persistence idiom).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_candidate_ledger.py
+import importlib
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    from services import candidate_ledger
+    monkeypatch.setattr(candidate_ledger, "DB_PATH", tmp_path / "candidate_ledger_test.db")
+    yield
+
+
+def test_claim_is_true_once_and_false_on_replay():
+    from services import candidate_ledger
+    assert candidate_ledger.claim("abc123", ticker="KXBTC-25AUG25-T1") is True
+    assert candidate_ledger.claim("abc123", ticker="KXBTC-25AUG25-T1") is False
+
+
+def test_stats_count_claims_and_duplicates():
+    from services import candidate_ledger
+    candidate_ledger.claim("t1")
+    candidate_ledger.claim("t1")
+    candidate_ledger.claim("t2")
+    stats = candidate_ledger.stats()
+    assert stats["claimed"] == 2
+    assert stats["duplicates"] == 1
+
+
+def test_record_decision_is_idempotent_and_readable():
+    from services import candidate_ledger
+    candidate_ledger.claim("t1")
+    candidate_ledger.record_decision("t1", "opened")
+    candidate_ledger.record_decision("t1", "opened")  # must not raise
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_candidate_ledger.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/candidate_ledger.py
+"""Durable trade_id idempotency for the whale-candidate decision path (I13
+remediation design 5). Nothing downstream reads WhaleSignal.id today and the
+250k in-memory dedupe ring is empty after every --reload; this table is the
+single durable source of truth a retry, a reconciliation sweep, or a restart
+can consult before evaluate() runs again on the same trade_id."""
+import sqlite3
+import time
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_ledger.db"
+
+
+def _connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS candidates ("
+        "trade_id TEXT PRIMARY KEY, ticker TEXT, claimed_at REAL NOT NULL, decision TEXT)"
+    )
+    return conn
+
+
+def claim(trade_id: str, *, ticker: str | None = None, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO candidates (trade_id, ticker, claimed_at) VALUES (?, ?, ?)",
+            (trade_id, ticker, now),
+        )
+        return cur.rowcount == 1
+
+
+def record_decision(trade_id: str, decision: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE candidates SET decision = ? WHERE trade_id = ?", (decision, trade_id))
+
+
+def stats() -> dict:
+    with _connect() as conn:
+        claimed = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+    return {"claimed": claimed, "duplicates": _duplicate_count}
+
+
+_duplicate_count = 0
+```
+
+(`_duplicate_count` needs incrementing in `claim()` on the False branch — fold that
+into Step 3's real implementation rather than leaving the module-level counter
+disconnected; write it correctly the first time, this parenthetical is a reminder
+for the implementer, not a second draft to ship.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_candidate_ledger.py -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/candidate_ledger.py tests/test_candidate_ledger.py
+git commit -m "feat: add durable candidate_ledger table, unwired (I13 P0)"
+```
+
+---
+
+### Task 3: Reader-side gate predicate, shadow mode (counts only, filters nothing)
+
+**Files:**
+- Create: `services/whale_gate.py`
+- Modify: `services/kalshi/websocket.py` (`_process_item`, call the gate, count-only)
+- Test: `tests/test_whale_gate.py`, append to `tests/test_kalshi_ws_ingest_metrics.py`
+
+**Interfaces:**
+- Produces: `whale_gate.passes(trade: dict, *, min_contracts: int) -> bool` (pure,
+  microsecond-cost — Task 3's own acceptance gate), `whale_gate.min_contracts_for(ticker: str, cfg: dict) -> int`
+  (thin wrapper around whatever `services/whalewatchers/kalshi_trade_tape.py` already
+  exposes for this — read that module first and reuse its existing per-series
+  threshold function rather than re-deriving the threshold logic).
+- Consumes: `services/kalshi/public.py`'s trade-contract field accessors (grep
+  `trade_contract` in `services/kalshi/` for the exact accessor names before writing
+  this — do not read `trade["count"]` directly, which is exactly the kind of
+  Kalshi-shape assumption `.claude/rules/kalshi-integration-authority.md` exists to
+  prevent).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_whale_gate.py
+import time
+
+from services import whale_gate
+
+
+def test_passes_true_for_a_whale_sized_trade():
+    trade = {"trade_id": "t1", "ticker": "KXBTC-25AUG25-T1", "count": 500, "yes_price": 60}
+    assert whale_gate.passes(trade, min_contracts=100) is True
+
+
+def test_passes_false_for_a_small_trade():
+    trade = {"trade_id": "t1", "ticker": "KXBTC-25AUG25-T1", "count": 5, "yes_price": 60}
+    assert whale_gate.passes(trade, min_contracts=100) is False
+
+
+def test_gate_cost_is_microseconds():
+    trade = {"trade_id": "t1", "ticker": "KXBTC-25AUG25-T1", "count": 500, "yes_price": 60}
+    n = 20_000
+    start = time.perf_counter()
+    for _ in range(n):
+        whale_gate.passes(trade, min_contracts=100)
+    per_call_us = (time.perf_counter() - start) / n * 1_000_000
+    assert per_call_us < 20.0  # design spec §2's ceiling
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_gate.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Read `services/kalshi/` for the real trade-contract count accessor first
+(`grep -n "def trade_count\|def trade_ticker\|def trade_side" services/kalshi/*.py`)
+and use exactly that function name — the snippet below is illustrative of shape,
+not a literal name to copy without checking:
+
+```python
+# services/whale_gate.py
+"""Pure, allocation-free classification of a raw trade print as whale-sized
+or not - the gate the I12 review demanded exist before any reader-side
+filtering ships (design spec §2). Must stay well under 20us/call; Task 3's
+own test pins that budget so a future change that regresses it fails CI,
+not a production incident."""
+from services.kalshi import public as kalshi_public  # exact accessor names TBD by the grep above
+
+
+def passes(trade: dict, *, min_contracts: int) -> bool:
+    count = kalshi_public.trade_contract_count(trade)  # replace with the real accessor name
+    return count is not None and count >= min_contracts
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_gate.py -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Wire into `_process_item` as shadow-mode counting only**
+
+In `services/kalshi/websocket.py`'s `_process_item`, after the existing
+`_message_class(data)` call and before enqueueing, for `cls == "trade"`:
+
+```python
+if cls == "trade":
+    try:
+        min_contracts = whale_gate.min_contracts_for(data.get("ticker") or "", config_store.get())
+        if not whale_gate.passes(data, min_contracts=min_contracts):
+            self._gate_would_reject += 1  # shadow counter only - still enqueues below
+    except Exception as exc:
+        self._gate_exceptions += 1
+        fault_log.record("whale_gate", "passes", exc)
+        # fall open: never let a gate bug hide a whale (design spec §2)
+```
+
+Add `_gate_would_reject`/`_gate_exceptions` to `ingest_metrics()`'s returned dict
+(follow the existing counter pattern in that method) and to
+`services/observability/CHEATSHEET.md`.
+
+- [ ] **Step 6: Test shadow-mode counting and the fall-open behavior**
+
+```python
+# tests/test_kalshi_ws_ingest_metrics.py (append)
+def test_shadow_gate_counts_sub_threshold_trades_without_dropping_them():
+    ws = _make_ws()  # use this file's existing helper
+    small = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 1}}
+    ws._ingest_raw(json.dumps(small))
+    metrics = ws.ingest_metrics()
+    assert metrics["gate_would_reject"] == 1
+    assert ws._queue.qsize() == 1  # still enqueued - shadow mode, not filtering
+
+
+def test_gate_exception_falls_open_and_still_enqueues(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.whale_gate.passes", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
+    trade = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 500}}
+    ws._ingest_raw(json.dumps(trade))
+    assert ws.ingest_metrics()["gate_exceptions"] == 1
+    assert ws._queue.qsize() == 1
+```
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py tests/test_whale_gate.py -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/whale_gate.py services/kalshi/websocket.py \
+  services/observability/CHEATSHEET.md tests/test_whale_gate.py tests/test_kalshi_ws_ingest_metrics.py
+git commit -m "feat: add whale gate predicate in shadow mode (I13 P0)"
+```
+
+---
+
+### Task 4: Probe the anonymous REST ceiling (measurement, not code)
+
+**Files:**
+- Modify: `tools/kalshi_rate_limit_probe.py`
+- Modify: `docs/kalshi/CHEATSHEET.md` (record the measured number)
+- Test: `tests/test_kalshi_rate_limit_probe.py` (append a test for the new mode)
+
+**Interfaces:**
+- Produces: `probe_anonymous_ceiling(client, *, duration_sec: float = 20.0) -> dict`
+  (`{"observed_max_rps": float, "first_429_at_rps": float | None, "sample_ticker": str}`).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_kalshi_rate_limit_probe.py (append)
+import pytest
+
+from tools import kalshi_rate_limit_probe as probe
+
+
+class _FakeUnauthClient:
+    def __init__(self, ceiling_rps: float):
+        self.ceiling_rps = ceiling_rps
+        self.calls = 0
+
+    async def get_market(self, ticker: str) -> dict:
+        self.calls += 1
+        if self.calls > self.ceiling_rps * 2:  # crude: fail once we're clearly over
+            raise Exception("429 Too Many Requests")
+        return {"ticker": ticker, "status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_probe_anonymous_ceiling_reports_where_429s_start():
+    client = _FakeUnauthClient(ceiling_rps=5.0)
+    result = await probe.probe_anonymous_ceiling(client, duration_sec=2.0)
+    assert result["first_429_at_rps"] is not None
+    assert result["observed_max_rps"] > 0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_rate_limit_probe.py -k anonymous_ceiling -v`
+Expected: FAIL with `AttributeError: module 'tools.kalshi_rate_limit_probe' has no attribute 'probe_anonymous_ceiling'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Follow the existing `probe_limits`/`probe_costs` pattern in the same file (ramp
+concurrency, catch the exception class the real SDK raises for a 429 — check what
+`probe_costs` already catches and reuse it, don't invent a new exception check):
+
+```python
+async def probe_anonymous_ceiling(client, *, duration_sec: float = 20.0) -> dict:
+    import asyncio
+    import time
+
+    rps = 2.0
+    first_429_at = None
+    observed_max = 0.0
+    deadline = time.monotonic() + duration_sec
+    while time.monotonic() < deadline and first_429_at is None:
+        interval = 1.0 / rps
+        window_end = time.monotonic() + 2.0
+        calls_this_window = 0
+        try:
+            while time.monotonic() < window_end:
+                await client.get_market("KXBTCD-25AUG25-T1")  # any stable, always-open ticker
+                calls_this_window += 1
+                await asyncio.sleep(interval)
+            observed_max = max(observed_max, rps)
+            rps *= 1.5
+        except Exception as exc:
+            if "429" in str(exc) or "Too Many Requests" in str(exc):
+                first_429_at = rps
+            else:
+                raise
+    return {"observed_max_rps": observed_max, "first_429_at_rps": first_429_at, "sample_ticker": "KXBTCD-25AUG25-T1"}
+```
+
+Wire a `--anonymous-ceiling` CLI flag next to the existing `--limits/--costs/--batch`
+flags, using an **unauthenticated** client instance (the existing authenticated
+`client` fixture in this file's `_run()` is the wrong one — construct the
+unauthenticated market-data client the same way `services/kalshi/public.py`'s
+default gateway does, without credentials).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_rate_limit_probe.py -k anonymous_ceiling -v`
+Expected: PASS
+
+- [ ] **Step 5: Run the real probe once against live Kalshi and record the result**
+
+Run: `ddev exec -s fastapi python -m tools.kalshi_rate_limit_probe --anonymous-ceiling`
+
+This is a live, read-only, unauthenticated network call — safe per repo policy, but
+real. Append the measured `observed_max_rps`/`first_429_at_rps` to
+`docs/kalshi/CHEATSHEET.md` as a new dated entry ("What is the unauthenticated
+market-data ceiling?"), same format as the existing entries. This number is what
+Task 20 (limiter budget) is allowed to use as an upper bound — do not raise the
+local bucket past it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tools/kalshi_rate_limit_probe.py tests/test_kalshi_rate_limit_probe.py docs/kalshi/CHEATSHEET.md
+git commit -m "feat: probe the anonymous REST ceiling, record the result (I13 P0)"
+```
+
+---
+
+### Task 5: Verify whether a re-determination re-fires `determined` (documentation task)
+
+**Files:**
+- Modify: `docs/kalshi/CHEATSHEET.md`
+
+- [ ] **Step 1: Read `docs/kalshi/market-and-event-lifecycle.md` and `market_lifecycle.md` in full for any statement about `amended`/`disputed` re-firing `determined` on the `market_lifecycle_v2` channel.**
+- [ ] **Step 2: If undocumented (expected, per I12's finding that the channel lists no `amended`/`disputed` event), record that explicitly as an open gap** rather than asserting a behavior: add a CHEATSHEET entry stating the channel's documented event list (`created, activated, deactivated, close_date_updated, determined, settled, metadata_updated`), that no re-determination event is named, and that Task 21 (the settled resolver) must therefore treat a cached `determined.result` as provisional until the ticker reaches `finalized` — never as a terminal decision cache.
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/kalshi/CHEATSHEET.md
+git commit -m "docs: record the determined re-fire gap for the settled resolver (I13 P0)"
+```
+
+---
+
+**P0 gate:** `ddev exec -s fastapi python -m pytest tests/ -q` green; `/api/health/pipeline`
+shows `loop_watchdog` and `gate_would_reject`/`gate_exceptions` counters moving on the
+live instance; no behavior change (verify with a 10-minute read-only sampler against
+`GET /api/observability/current`, same method as I0 §6, confirming drop rate and
+candidate counts are unchanged from before P0).
+
+---
+
+## Phase P1 — Loop hygiene (tick executor)
+
+### Task 6: Persistent-connection executor for the trading tick's synchronous SQLite phases
+
+**Files:**
+- Create: `services/tick_executor.py`
+- Test: `tests/test_tick_executor.py`
+
+**Interfaces:**
+- Produces: `tick_executor.run(fn: Callable[[], T]) -> Awaitable[T]` (awaitable from
+  the loop; runs `fn` on a 2-worker `ThreadPoolExecutor` with a `threading.local`
+  SQLite connection cache keyed by `DB_PATH`, opened with `timeout=0.05` and
+  `check_same_thread=False`... actually `check_same_thread=True` per-thread local is
+  correct since each worker thread gets its own connection — do not share one
+  connection across the pool's two threads), `tick_executor.connection_for(db_path: Path) -> sqlite3.Connection`
+  (the thread-local getter individual store modules will call from inside `run()`).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_tick_executor.py
+import sqlite3
+import threading
+
+import pytest
+
+from services import tick_executor
+
+
+@pytest.mark.asyncio
+async def test_run_executes_off_the_calling_loop_thread():
+    calling_thread = threading.get_ident()
+    result = await tick_executor.run(lambda: threading.get_ident())
+    assert result != calling_thread
+
+
+@pytest.mark.asyncio
+async def test_connection_for_is_reused_across_calls_on_the_same_worker(tmp_path):
+    db_path = tmp_path / "t.db"
+
+    def _get_id():
+        conn = tick_executor.connection_for(db_path)
+        return id(conn)
+
+    first = await tick_executor.run(_get_id)
+    second = await tick_executor.run(_get_id)
+    # Not guaranteed to land on the same worker thread, but if it does, the
+    # connection object must be identical (proving reuse, not reconnect-per-call).
+    assert isinstance(first, int) and isinstance(second, int)
+
+
+@pytest.mark.asyncio
+async def test_connection_for_opens_with_a_short_busy_timeout(tmp_path):
+    db_path = tmp_path / "t.db"
+
+    def _get_timeout():
+        conn = tick_executor.connection_for(db_path)
+        return conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    ms = await tick_executor.run(_get_timeout)
+    assert ms <= 100  # design spec §8: never a 5s sleep on the loop
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_tick_executor.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/tick_executor.py
+"""Runs the trading tick's synchronous SQLite phases off the asyncio loop.
+Root-cause report C1: capture_flush_and_titles, resolve_and_record, and the
+series_stats N+1 in main.py are the measured source of the 4-13.6s per-tick
+loop stalls that starve the WS consumer. This does not change what those
+functions do - only where they run and how their connections are opened
+(a bounded busy_timeout instead of the sqlite3 default 5s sleep, which would
+otherwise just move the stall from the loop to a worker thread that still
+blocks a whole tick)."""
+import asyncio
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
+
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tick-executor")
+_local = threading.local()
+
+
+def connection_for(db_path: Path) -> sqlite3.Connection:
+    cache = getattr(_local, "connections", None)
+    if cache is None:
+        cache = _local.connections = {}
+    conn = cache.get(db_path)
+    if conn is None:
+        db_path.parent.mkdir(exist_ok=True)
+        conn = sqlite3.connect(db_path, timeout=0.05, check_same_thread=True)
+        conn.execute("PRAGMA busy_timeout = 50")
+        conn.execute("PRAGMA journal_mode = WAL")
+        cache[db_path] = conn
+    return conn
+
+
+async def run(fn: Callable[[], T]) -> T:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, fn)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_tick_executor.py -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/tick_executor.py tests/test_tick_executor.py
+git commit -m "feat: add persistent-connection tick executor, unwired (I13 P1)"
+```
+
+---
+
+### Task 7: Move `capture_flush_and_titles` behind the tick executor
+
+**Files:**
+- Modify: `main.py` (the tick loop's `capture_flush_and_titles` call site)
+- Test: `tests/test_main_tick_executor_wiring.py`
+
+**Interfaces:**
+- Consumes: `tick_executor.run` from Task 6.
+- Consumes: whatever `capture_flush_and_titles` currently is in `main.py` — read its
+  exact current signature before editing (`grep -n "def capture_flush_and_titles" main.py`).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_main_tick_executor_wiring.py
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_capture_flush_and_titles_runs_via_tick_executor():
+    import main
+    with patch("main.tick_executor.run", wraps=main.tick_executor.run) as spy:
+        await main.capture_flush_and_titles_async()  # the new async wrapper this task adds
+    spy.assert_called_once()
+```
+
+(Match this to `capture_flush_and_titles`'s real current call shape — if it is
+already a plain sync function called inline in the tick loop, this task's job is to
+wrap that exact call site with `await tick_executor.run(lambda: capture_flush_and_titles(...))`,
+not to redesign its signature.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_main_tick_executor_wiring.py -v`
+Expected: FAIL (the wrapper doesn't exist yet)
+
+- [ ] **Step 3: Wire the call site**
+
+In `main.py`'s trading tick, replace the direct synchronous call with:
+
+```python
+await tick_executor.run(lambda: capture_flush_and_titles(state, cfg))
+```
+
+(substitute the function's real current arguments). Add `from services import
+tick_executor` to `main.py`'s imports.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_main_tick_executor_wiring.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Verify no regression in the existing tick test suite**
+
+Run: `ddev exec -s fastapi python -m pytest tests/ -k "tick or trading_loop" -v`
+Expected: PASS, no changes to assertions about `capture_flush_and_titles`'s effects
+(only where it runs changed, not what it does)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add main.py tests/test_main_tick_executor_wiring.py
+git commit -m "perf: run capture_flush_and_titles off the event loop (I13 P1)"
+```
+
+---
+
+### Task 8: Move `resolve_and_record` and the `series_stats` N+1 behind the tick executor
+
+**Files:**
+- Modify: `main.py` (the `resolve_and_record` call site, `main.py:736`'s `series_stats` loop)
+- Test: append to `tests/test_main_tick_executor_wiring.py`
+
+Same pattern as Task 7: write a test asserting `tick_executor.run` is invoked for
+each of these two call sites, watch it fail, wrap the call sites, watch it pass,
+run the existing tick/resolution test suite for a regression check
+(`ddev exec -s fastapi python -m pytest tests/ -k "resolve or signal_resolution" -v`),
+commit as `perf: run resolve_and_record and series_stats off the event loop (I13 P1)`.
+
+Read `main.py:736`'s exact current loop body before touching it — the task is to
+batch its N per-market `_connect()` calls into one `tick_executor.run()` call that
+does all of them on one worker-thread connection, not merely to move the same N
+connections onto a different thread (that would still serialize N × 12.6 ms on the
+worker, just off the loop — better than today, but the plan's P1 gate requires the
+tick's own wall time not to regress, so batch the connection use inside the one
+`run()` call).
+
+---
+
+### Task 9: Pace the catalog batch and move it after the critical gather
+
+**Files:**
+- Modify: `main.py` (`_maybe_scan_catalog_batch` call site, currently before the
+  critical `asyncio.gather`), `services/market_watch/catalog_scan.py` (`_scan_catalog_batch`'s internal gather)
+- Test: `tests/test_catalog_scan_pacing.py`, append to `tests/test_rest_scheduler_replay.py`
+  if the launch-order fix from I12 needs a corresponding production-side test
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: `catalog_scan.PACE_LIMIT = 4` (module constant, the max concurrent
+  `get_markets` calls in one batch's internal gather).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_catalog_scan_pacing.py
+import asyncio
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_scan_catalog_batch_paces_concurrent_calls(monkeypatch):
+    from services.market_watch import catalog_scan
+
+    in_flight = 0
+    max_in_flight = 0
+
+    class _FakeClient:
+        async def get_markets(self, **kwargs):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return {"markets": []}
+
+    series = [{"ticker": f"S{i}"} for i in range(10)]
+    await catalog_scan._scan_catalog_batch(_FakeClient(), {"series_watch": series})
+    assert max_in_flight <= catalog_scan.PACE_LIMIT
+```
+
+(Match `_scan_catalog_batch`'s real config-key name for the series list — read the
+function body first; `{"series_watch": series}` above is illustrative.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_catalog_scan_pacing.py -v`
+Expected: FAIL — `max_in_flight` will be the full batch size (today's unbounded
+`asyncio.gather`), which for a 10-series batch is 10 > any reasonable `PACE_LIMIT`
+
+- [ ] **Step 3: Bound the internal gather with a semaphore**
+
+```python
+PACE_LIMIT = 4
+_pace_sem = asyncio.Semaphore(PACE_LIMIT)
+
+
+async def _paced_get_markets(client, **kwargs):
+    async with _pace_sem:
+        return await client.get_markets(**kwargs)
+```
+
+Replace the internal `asyncio.gather(*(client.get_markets(...) for s in batch))`
+with `asyncio.gather(*(_paced_get_markets(client, ...) for s in batch))`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_catalog_scan_pacing.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Move the catalog task launch after the critical gather in `main.py`**
+
+Change the tick loop from (today, `main.py:346` before `:351`):
+
+```python
+_maybe_scan_catalog_batch(cfg)
+...
+markets, account_snapshot, exchange_status = await asyncio.gather(...)
+```
+
+to:
+
+```python
+markets, account_snapshot, exchange_status = await asyncio.gather(...)
+...
+_maybe_scan_catalog_batch(cfg)  # after the critical gather returns (I13 root-cause C3/R1)
+```
+
+Leave `_maybe_check_signal_resolutions`, `_maybe_run_backup`, `_maybe_run_research`,
+and `event_schedule._maybe_resolve_event_schedules` in their current relative order
+after the move — only the catalog batch's position changes, since it was the one
+the root-cause report and I12 traced as the actual REST contention source.
+
+- [ ] **Step 6: Run the existing trading-loop test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/ -k "trading_loop or catalog" -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add main.py services/market_watch/catalog_scan.py tests/test_catalog_scan_pacing.py
+git commit -m "perf: pace the catalog batch and launch it after the critical gather (I13 P1)"
+```
+
+---
+
+**P1 gate:** `ddev exec -s fastapi python -m pytest tests/ -q` green. Live 30-minute
+read-only sampler (I0 §6's method) against a busy period shows `loop_watchdog.stall_max_ms`
+p95 < 250 ms and tick p95 < 1 s (root-cause report §8 targets), with `trade_stream`
+drop rate unchanged from P0's baseline (P1 does not change capture yet — only where
+the tick's SQLite work runs).
+
+---
+
+## Phase P2 — Ledger gates `evaluate`; retry state machine
+
+### Task 10: Gate `_handle_signal` on the candidate ledger
+
+**Files:**
+- Modify: `services/whale_stream/decision_bridge.py` (`_handle_signal`)
+- Test: `tests/test_whale_stream_decision_bridge.py` (create if it doesn't exist —
+  check first) or append to whatever file currently tests `_handle_signal`
+
+**Interfaces:**
+- Consumes: `candidate_ledger.claim` from Task 2.
+- Produces: `_handle_signal` returns `{"skipped": "duplicate_trade_id"}` (matching
+  the existing `_skip(...)`-shaped return values in `strategy_engine.py` — read that
+  return shape first and match it exactly) instead of evaluating, when `claim` is False.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_handle_signal_skips_a_trade_id_already_claimed(monkeypatch):
+    from services import candidate_ledger
+    from services.whale_stream import decision_bridge
+
+    signal = _make_signal(id="dup1")  # use this test file's existing signal factory
+    candidate_ledger.claim("dup1")  # pre-claim it, simulating an earlier evaluation
+
+    result = asyncio.run(decision_bridge._handle_signal(signal, cfg={}, market_results={}, config_fp="", tick_now=0.0))
+    assert result["skipped"] == "duplicate_trade_id"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_stream_decision_bridge.py -k duplicate -v`
+Expected: FAIL — today's `_handle_signal` evaluates unconditionally
+
+- [ ] **Step 3: Add the claim check before `strategy.evaluate`**
+
+At the top of `_handle_signal`, before today's `signal_log.log_signal(...)` call:
+
+```python
+if not candidate_ledger.claim(signal.id, ticker=signal.ticker):
+    return {"skipped": "duplicate_trade_id"}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_stream_decision_bridge.py -v`
+Expected: PASS, and all pre-existing tests in this file still pass (the claim only
+rejects a true repeat of the same `trade_id` — every existing test uses a fresh id
+per call unless it specifically tests duplication)
+
+- [ ] **Step 5: Record the decision after `strategy.evaluate` returns**
+
+After the `decision = strategy.evaluate(...)` line, add:
+
+```python
+candidate_ledger.record_decision(signal.id, decision.get("action", "unknown"))
+```
+
+(Match `decision`'s real key name — read `strategy_engine.evaluate`'s return shape
+first.)
+
+- [ ] **Step 6: Test the decision is recorded**
+
+```python
+def test_handle_signal_records_the_decision_in_the_ledger(monkeypatch):
+    from services import candidate_ledger
+    signal = _make_signal(id="rec1")
+    asyncio.run(decision_bridge._handle_signal(signal, cfg={}, market_results={}, config_fp="", tick_now=0.0))
+    # candidate_ledger has no public read-by-id helper yet - add one for this test:
+    # candidate_ledger.decision_for(trade_id: str) -> str | None
+```
+
+Add `candidate_ledger.decision_for(trade_id: str) -> str | None` to
+`services/candidate_ledger.py` (a one-line `SELECT decision FROM candidates WHERE
+trade_id = ?`) as part of this step, with its own unit test in
+`tests/test_candidate_ledger.py`.
+
+- [ ] **Step 7: Run the full whale-stream test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/ -k "whale_stream or decision_bridge or signal" -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/whale_stream/decision_bridge.py services/candidate_ledger.py \
+  tests/test_whale_stream_decision_bridge.py tests/test_candidate_ledger.py
+git commit -m "fix: gate evaluate on the candidate ledger (I13 P2)"
+```
+
+---
+
+### Task 11: Move `_mark_seen` to after a successful market lookup, not before
+
+**Files:**
+- Modify: `services/whalewatchers/kalshi_trade_tape.py` (`_process_trades_sync`)
+- Test: append to `tests/test_whale_candidate_lifecycle.py` (this is the file that
+  already pins H4 as a strict xfail — flip it to a real assertion here)
+
+**Interfaces:**
+- Consumes: nothing new.
+- Changes: `_mark_seen(trade_id, ...)` moves from immediately after
+  `trade_id in self._seen_trade_ids` to after the market lookup (`markets_by_ticker.get(ticker)`
+  or its REST fallback) has produced a definite terminal outcome (market found, or a
+  terminal "will never resolve" decision) — not on a transient failure.
+
+- [ ] **Step 1: Confirm the existing xfail test's exact assertion shape**
+
+Read `tests/test_whale_candidate_lifecycle.py` in full. It already encodes the
+desired behavior (`wire_seen=True, candidate_pending=?, terminal_evaluated=False`
+today; something else desired) as a strict xfail. Do not write a new test file —
+this task's job is to make that existing test pass and remove its `xfail` marker.
+
+- [ ] **Step 2: Run the existing test to confirm it still fails as expected**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_candidate_lifecycle.py -v --runxfail`
+Expected: the xfail test FAILs when forced to run for real (confirms it's still
+testing the live bug, not a stale assertion)
+
+- [ ] **Step 3: Move `_mark_seen` in `_process_trades_sync`**
+
+Read the function's current control flow (`services/whalewatchers/kalshi_trade_tape.py`,
+the `for trade in trade_tape:` loop). Move the `self._mark_seen(trade_id, ...)` call
+from immediately after the `trade_id in self._seen_trade_ids` check to the point
+where the market is either found (`market = markets_by_ticker.get(ticker)` succeeds,
+possibly after a REST lookup) or a lookup is attempted and **succeeds but confirms
+the market doesn't exist** (a genuinely terminal outcome, distinct from a raised
+exception). On a raised exception from the lookup, do **not** mark seen — leave the
+trade eligible for the next presentation (which Task 12's retry state machine will
+provide; until Task 12 ships, "next presentation" means the trade simply isn't
+false-terminally lost, even without an active retry yet).
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_candidate_lifecycle.py -v`
+Expected: PASS. Remove the `@pytest.mark.xfail(...)` decorator from the test.
+
+- [ ] **Step 5: Run the full trade-tape test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whalewatchers_kalshi_trade_tape.py -v`
+Expected: PASS — pay particular attention to any test asserting `_seen_trade_ids`
+membership immediately after a successful trade (those should be unaffected: the
+mark-seen point only moved for the *failure* path)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add services/whalewatchers/kalshi_trade_tape.py tests/test_whale_candidate_lifecycle.py
+git commit -m "fix: mark a trade seen only after a terminal outcome, not before the lookup (I13 P2, closes H4)"
+```
+
+---
+
+### Task 12: Single-owner retry state machine for transient enrichment failures
+
+**Files:**
+- Create: `services/candidate_retry.py`
+- Modify: `services/whalewatchers/kalshi_trade_tape.py` (enqueue a failed lookup for retry)
+- Test: `tests/test_candidate_retry.py`
+
+**Interfaces:**
+- Produces: `candidate_retry.enqueue(trade: dict, *, failure: Exception) -> None`,
+  `candidate_retry.run_pending(client, *, now: float | None = None) -> dict`
+  (`{"retried": int, "recovered": int, "abandoned": int}`) — called from one place
+  only (the market consumer's own loop, Task 17), never from a second task, per
+  review R7's "single mutator" requirement.
+- Consumes: `services/http_client.py`'s `classify("critical_whale")` context manager
+  (reuse it, don't invent a second classification path), `candidate_ledger.claim`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_candidate_retry.py
+import time
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_is_retried_and_recovered(monkeypatch):
+    from services import candidate_retry
+
+    calls = {"n": 0}
+
+    class _FlakyClient:
+        async def get_markets_by_tickers(self, tickers):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise Exception("429 Too Many Requests")
+            return {t: {"ticker": t, "status": "active"} for t in tickers}
+
+    trade = {"trade_id": "t1", "ticker": "K1", "count": 500}
+    candidate_retry.enqueue(trade, failure=Exception("first failure"))
+    client = _FlakyClient()
+
+    for _ in range(5):  # backoff schedule advances internally; simulate elapsed retries
+        result = await candidate_retry.run_pending(client, now=time.time() + 100 * _)
+    assert result["recovered"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_abandonment_after_the_retry_budget_is_exhausted():
+    from services import candidate_retry
+
+    class _AlwaysFailsClient:
+        async def get_markets_by_tickers(self, tickers):
+            raise Exception("429 Too Many Requests")
+
+    trade = {"trade_id": "t2", "ticker": "K2", "count": 500}
+    candidate_retry.enqueue(trade, failure=Exception("first failure"))
+    client = _AlwaysFailsClient()
+    now = time.time()
+    result = {"abandoned": 0}
+    for i in range(10):
+        now += 20.0  # advance past the >=72s budget (I12 R7)
+        result = await candidate_retry.run_pending(client, now=now)
+    assert result["abandoned"] >= 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_candidate_retry.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/candidate_retry.py
+"""Single-owner retry queue for whale candidates whose market lookup failed
+transiently. Root-cause report C5 / I12 R7: a retry must (a) be the only
+mutator of pending state besides the reader, (b) inherit the critical_whale
+caller class so it doesn't silently fall into 'other', and (c) abandon after
+a bounded budget (>=72s survives a 60s outage per I12's recovery-sim
+finding) rather than retry forever."""
+import time
+
+from services import candidate_ledger, http_client
+
+_BACKOFF_SCHEDULE_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0)  # sums to >72s
+_pending: dict[str, dict] = {}  # trade_id -> {"trade": ..., "attempts": int, "next_at": float}
+
+
+def enqueue(trade: dict, *, failure: Exception, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    trade_id = trade["trade_id"]
+    if trade_id in _pending:
+        return  # already owned - the reader is the only other writer and never re-enqueues
+    _pending[trade_id] = {"trade": trade, "attempts": 0, "next_at": now + _BACKOFF_SCHEDULE_SEC[0]}
+
+
+async def run_pending(client, *, now: float | None = None) -> dict:
+    now = time.time() if now is None else now
+    retried = recovered = abandoned = 0
+    for trade_id in list(_pending):
+        entry = _pending[trade_id]
+        if now < entry["next_at"]:
+            continue
+        retried += 1
+        try:
+            with http_client.caller_class("critical_whale"):
+                result = await client.get_markets_by_tickers([entry["trade"]["ticker"]])
+            if result.get(entry["trade"]["ticker"]):
+                candidate_ledger.claim(trade_id, ticker=entry["trade"]["ticker"], now=now)
+                recovered += 1
+                del _pending[trade_id]
+                continue
+            raise KeyError("market still missing")
+        except Exception:
+            entry["attempts"] += 1
+            if entry["attempts"] >= len(_BACKOFF_SCHEDULE_SEC):
+                abandoned += 1
+                del _pending[trade_id]
+                continue
+            entry["next_at"] = now + _BACKOFF_SCHEDULE_SEC[entry["attempts"]]
+    return {"retried": retried, "recovered": recovered, "abandoned": abandoned}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_candidate_retry.py -v`
+Expected: PASS (2 tests)
+
+- [ ] **Step 5: Wire the reader's failure path into `enqueue`**
+
+In `services/whalewatchers/kalshi_trade_tape.py`'s `_process_trades_sync`, in the
+`except Exception:` branch around the market lookup (the one Task 11 just stopped
+marking seen on), add:
+
+```python
+from services import candidate_retry
+...
+except Exception as exc:
+    candidate_retry.enqueue(trade, failure=exc)
+    continue
+```
+
+Add `run_pending` to `services/observability/observability.py`'s snapshot
+(`candidate_retry.pending_count()` — add this one-line helper — as a gauge; retried/
+recovered/abandoned as window counters following the `LatencyAgg`-adjacent pattern
+used elsewhere) and to `CHEATSHEET.md`.
+
+- [ ] **Step 6: Test the wiring end to end**
+
+```python
+# tests/test_whale_candidate_lifecycle.py (append)
+def test_a_lookup_failure_enqueues_for_retry_instead_of_vanishing(monkeypatch):
+    from services import candidate_retry
+    candidate_retry._pending.clear()
+    # drive _process_trades_sync with a market lookup that raises, as this file's
+    # existing H4 test does, then assert:
+    assert "the_trade_id" in candidate_retry._pending
+```
+
+(Match this to the existing test's exact harness for driving `_process_trades_sync`
+with a failing lookup — reuse it rather than building a new one.)
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_candidate_lifecycle.py tests/test_candidate_retry.py -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/candidate_retry.py services/whalewatchers/kalshi_trade_tape.py \
+  services/observability/observability.py services/observability/CHEATSHEET.md \
+  tests/test_candidate_retry.py tests/test_whale_candidate_lifecycle.py
+git commit -m "feat: retry transient enrichment failures instead of losing the candidate (I13 P2)"
+```
+
+---
+
+### Task 13: Wire `run_pending` into the trading tick and cap retry budget observably
+
+**Files:**
+- Modify: `main.py` (call `candidate_retry.run_pending` once per tick, in stream mode)
+- Test: append to `tests/test_main_tick_executor_wiring.py`
+
+- [ ] **Step 1: Write a test asserting the tick calls `run_pending` once per iteration when streaming is enabled** (follow this file's existing pattern for asserting a per-tick call, e.g. how `_maybe_check_signal_resolutions` is already tested for tick membership).
+- [ ] **Step 2: Run it, watch it fail.**
+- [ ] **Step 3: Add the call** in the tick loop, in stream mode only (mirroring the existing `if _streaming_trade_tape_enabled():` branch), classed under `critical_whale` via the retry module itself (already handled inside `run_pending`).
+- [ ] **Step 4: Run it, watch it pass.**
+- [ ] **Step 5: Add a quality finding when `abandoned > 0` in a window**, following the existing `services/quality/` finding pattern (grep for how `/api/quality/summary`'s existing findings are registered and match that shape exactly) — this is what makes P2's abandonment "counted, not silent" per the design spec.
+- [ ] **Step 6: Run the full test suite for a regression check:** `ddev exec -s fastapi python -m pytest tests/ -q`
+- [ ] **Step 7: Commit:** `git commit -m "feat: run the candidate retry queue every tick, surface abandonment as a finding (I13 P2)"`
+
+---
+
+**P2 gate:** The now-unmarked `tests/test_whale_candidate_lifecycle.py` H4 test passes
+for real (not xfail). A fault-injection test (extend
+`tests/test_realtime_pipeline_candidates.py` or add a new integration test) drives a
+trade through: transient failure → retry → recovery, and separately: transient
+failure → exhausted retries → abandonment counted, asserting zero silent loss in
+both paths and zero duplicate ledger claims when the same `trade_id` is
+re-presented mid-retry. `ddev exec -s fastapi python -m pytest tests/ -q` green.
+
+---
+
+## Phase P3 — Reader gate live, capture contract, writer thread
+
+### Task 14: Writer thread with per-store batched flush, supervised
+
+**Files:**
+- Create: `services/capture_writer.py`
+- Test: `tests/test_capture_writer.py`
+
+**Interfaces:**
+- Produces: `capture_writer.submit(store: str, row: tuple) -> None` (non-blocking,
+  appends to an in-memory buffer keyed by `store`), `capture_writer.start() -> None`
+  (starts the daemon thread), `capture_writer.stop(timeout_sec: float = 2.0) -> None`
+  (bounded shutdown flush), `capture_writer.depth() -> dict[str, int]`,
+  `capture_writer.last_flush_age_ms() -> dict[str, float]`.
+- Consumes: nothing new — this module owns its own flush cadence, independent of the
+  `series_watcher.py` buffer/flush idiom it will eventually replace (Task 15 wires
+  the reader into this module; `series_watcher.py`'s existing `_FLUSH_BATCH`/`flush()`
+  stays as-is until then).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_capture_writer.py
+import time
+
+import pytest
+
+
+def test_submit_is_non_blocking_and_flush_lands_in_the_db(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "capture_test.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    capture_writer.start()
+    try:
+        capture_writer.submit("raw_trades", ("t1", "K1", 100, time.time()))
+        for _ in range(50):
+            if capture_writer.depth()["raw_trades"] == 0:
+                break
+            time.sleep(0.05)
+        assert capture_writer.depth()["raw_trades"] == 0
+    finally:
+        capture_writer.stop()
+
+
+def test_stop_flushes_pending_rows_before_returning(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "capture_test2.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    capture_writer.start()
+    capture_writer.submit("raw_trades", ("t2", "K1", 100, time.time()))
+    capture_writer.stop()
+    assert capture_writer.depth()["raw_trades"] == 0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_capture_writer.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/capture_writer.py
+"""Daemon thread that batches capture-store writes off both the asyncio loop
+and the reader coroutine. Design spec §8: the reader must never do more than
+an in-memory append; this is the only writer for the stores it owns, opened
+with a short busy_timeout so a collision with another connection never sleeps
+five seconds on any thread that matters."""
+import queue
+import sqlite3
+import threading
+import time
+from pathlib import Path
+
+_STORE_PATHS: dict[str, Path] = {
+    "raw_trades": Path(__file__).resolve().parent.parent / "data" / "series_watcher.db",
+}
+_STORE_TABLE = {"raw_trades": "raw_trades"}  # extend as more stores move here
+_FLUSH_INTERVAL_SEC = 1.0
+_FLUSH_BATCH = 500
+
+_buffers: dict[str, list[tuple]] = {name: [] for name in _STORE_PATHS}
+_lock = threading.Lock()
+_last_flush_at: dict[str, float] = {name: time.time() for name in _STORE_PATHS}
+_thread: threading.Thread | None = None
+_stop_event = threading.Event()
+
+
+def submit(store: str, row: tuple) -> None:
+    with _lock:
+        _buffers[store].append(row)
+
+
+def depth() -> dict[str, int]:
+    with _lock:
+        return {name: len(rows) for name, rows in _buffers.items()}
+
+
+def last_flush_age_ms() -> dict[str, float]:
+    now = time.time()
+    return {name: round((now - ts) * 1000, 1) for name, ts in _last_flush_at.items()}
+
+
+def _flush_store(store: str) -> None:
+    with _lock:
+        rows, _buffers[store] = _buffers[store], []
+    if not rows:
+        _last_flush_at[store] = time.time()
+        return
+    db_path = _STORE_PATHS[store]
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=0.05)
+    try:
+        conn.execute("PRAGMA busy_timeout = 50")
+        placeholders = ",".join("?" for _ in rows[0])
+        conn.executemany(f"INSERT INTO {_STORE_TABLE[store]} VALUES ({placeholders})", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    _last_flush_at[store] = time.time()
+
+
+def _run() -> None:
+    while not _stop_event.is_set():
+        _stop_event.wait(_FLUSH_INTERVAL_SEC)
+        for store, rows in list(_buffers.items()):
+            if len(rows) >= _FLUSH_BATCH or (_stop_event.is_set()):
+                _flush_store(store)
+    for store in _buffers:
+        _flush_store(store)
+
+
+def start() -> None:
+    global _thread
+    _stop_event.clear()
+    _thread = threading.Thread(target=_run, name="capture-writer", daemon=True)
+    _thread.start()
+
+
+def stop(timeout_sec: float = 2.0) -> None:
+    _stop_event.set()
+    if _thread is not None:
+        _thread.join(timeout=timeout_sec)
+```
+
+(The `_run` loop's periodic flush only fires past `_FLUSH_BATCH` OR on shutdown in
+this minimal version — add a time-based flush too, so a slow trickle still lands
+within `_FLUSH_INTERVAL_SEC`, not just at 500 rows: track `_last_flush_at` per store
+and flush a non-empty buffer whose age exceeds `_FLUSH_INTERVAL_SEC` on every wake,
+not only at `_stop_event.is_set()`. Fix this in the real Step 3 implementation, not
+as a follow-up — the test in Step 1 doesn't currently exercise the time-based path,
+so add that assertion too before calling this step done.)
+
+- [ ] **Step 4: Add the time-based flush and its test, then verify all pass**
+
+```python
+def test_a_small_buffer_flushes_on_the_time_interval_not_only_at_batch_size(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "capture_test3.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    monkeypatch.setattr(capture_writer, "_FLUSH_INTERVAL_SEC", 0.1)
+    capture_writer.start()
+    try:
+        capture_writer.submit("raw_trades", ("t3", "K1", 1, time.time()))  # far below _FLUSH_BATCH
+        time.sleep(0.3)
+        assert capture_writer.depth()["raw_trades"] == 0
+    finally:
+        capture_writer.stop()
+```
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_capture_writer.py -v`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: Supervise the thread and expose liveness**
+
+Add `capture_writer.is_alive() -> bool` and wire a periodic check (via
+`task_supervisor.supervise` with `restart=True`, wrapping a coroutine that checks
+`is_alive()` every 5 s and calls `start()` again if not) into `main.py`'s startup,
+alongside the other supervised tasks. Add `writer.depth`, `writer.last_flush_age_ms`
+per store, and a `writer.alive` gauge to `services/observability/observability.py`,
+with a quality finding when `writer.alive` is False. Update
+`services/observability/CHEATSHEET.md`.
+
+- [ ] **Step 6: Test the supervisor restarts a dead writer**
+
+```python
+def test_supervisor_restarts_a_dead_writer_thread(monkeypatch):
+    from services import capture_writer
+    capture_writer.start()
+    capture_writer._thread = None  # simulate an unexpected death without a real crash
+    # call whatever check function Step 5 added, e.g. capture_writer.ensure_alive()
+    from services import capture_writer as cw
+    cw.ensure_alive()
+    assert cw._thread is not None and cw._thread.is_alive()
+    capture_writer.stop()
+```
+
+Add `ensure_alive()` as part of Step 5, not as a separate task.
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_capture_writer.py -v`
+Expected: PASS (5 tests)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/capture_writer.py services/observability/observability.py \
+  services/observability/CHEATSHEET.md main.py tests/test_capture_writer.py
+git commit -m "feat: add supervised capture writer thread, unwired (I13 P3)"
+```
+
+---
+
+### Task 15: Reader-side capture contract — `record_trade` appends via the writer, not inline
+
+**Files:**
+- Modify: `services/series_watcher.py` (`record_trade`)
+- Modify: `services/capture_writer.py` (`_STORE_TABLE` gains the real `raw_trades` schema/columns)
+- Test: append to whatever file currently tests `series_watcher.record_trade`
+
+**Interfaces:**
+- Consumes: `capture_writer.submit` from Task 14.
+- Changes: `record_trade`'s inline `_FLUSH_BATCH`-triggered `executemany` becomes a
+  `capture_writer.submit("raw_trades", row)` call; the module's own `_trade_buffer`/
+  `flush()` machinery is removed once nothing calls it directly anymore (read the
+  current `record_trade`/`flush()` pair fully first — this task retires that
+  in-module buffering by delegating to the shared writer, it does not run both).
+
+- [ ] **Step 1: Read `services/series_watcher.py`'s current `record_trade`/`flush()` in full** and note the exact row tuple shape and table name it inserts into (`raw_trades`), so Task 14's `_STORE_TABLE`/`_STORE_PATHS` can be corrected to match reality rather than the illustrative single-column stub in Task 14.
+- [ ] **Step 2: Write a test asserting `record_trade` calls `capture_writer.submit("raw_trades", <matching row shape>)` and does not touch a live connection itself.**
+- [ ] **Step 3: Run it, watch it fail** (today's `record_trade` calls its own inline `_trade_buffer.append` and periodically `executemany`s directly).
+- [ ] **Step 4: Replace the body**: `record_trade` builds the same row tuple it does today, then calls `capture_writer.submit("raw_trades", row)` instead of appending to `_trade_buffer`; delete `_trade_buffer`, `_FLUSH_BATCH`'s trade half, and the trade half of `flush()` (keep the book-side buffer/flush exactly as-is — this task only moves the trade capture path; the `_book_buffer` stays inline until a future task, since I12 did not measure it as a hot-path cost).
+- [ ] **Step 5: Run it, watch it pass.**
+- [ ] **Step 6: Run the full series_watcher test suite for a regression check:** `ddev exec -s fastapi python -m pytest tests/test_series_watcher.py -v` (or whatever the real test filename is — confirm with `find tests -iname "*series_watcher*"`).
+- [ ] **Step 7: Verify `raw_trades` growth rate is unchanged** — this is the P3 gate's key correctness property (capture must not shrink). Add an integration test that submits 1,000 trades through `record_trade` and asserts exactly 1,000 rows land in `raw_trades` after `capture_writer.stop()` flushes.
+- [ ] **Step 8: Commit:** `git commit -m "feat: route raw_trades capture through the shared writer thread (I13 P3)"`
+
+---
+
+### Task 16: Aggregate sub-threshold rejection rows instead of one row per print
+
+**Files:**
+- Modify: `services/candidate_log.py` (the per-row rejection write)
+- Test: append to the existing `candidate_log` test file
+
+**Interfaces:**
+- Produces: `candidate_log.record_rejection_aggregate(ticker: str, side: str, minute_bucket: int, count: int) -> None`
+  (an `UPSERT`-shaped write: `INSERT ... ON CONFLICT(ticker, side, minute_bucket) DO UPDATE SET count = count + excluded.count`).
+- Changes: the call site that today writes one `rejected_candidates` row per
+  sub-threshold print instead accumulates in memory (following the same
+  `capture_writer`-adjacent buffering shape as Task 14, or reusing `capture_writer`
+  itself with a `"rejections"` store — prefer reusing `capture_writer` over building
+  a third buffering mechanism) and flushes one aggregate row per (ticker, side,
+  minute) instead of per print.
+
+- [ ] **Step 1: Read the existing rejection-write call site and `rejected_candidates`'s schema in full** (`services/candidate_log.py`, and whatever calls it from the trade-tape path) to confirm the exact columns `record_rejection_aggregate` must produce, and confirm `gate_summary` (the consumer named in the I12 review, row W5) reads `rejected_candidates` in a way that an aggregated-by-minute row still satisfies — read `gate_summary`'s query before designing the aggregate schema, not after.
+- [ ] **Step 2: Write a failing test**: 50 sub-threshold prints on the same (ticker, side) inside one minute produce exactly one aggregate row with `count = 50`, not 50 rows.
+- [ ] **Step 3: Run it, watch it fail.**
+- [ ] **Step 4: Add the additive schema change** (`ALTER TABLE` or a new `rejected_candidates_agg` table, additive per the persistence idiom) and `record_rejection_aggregate`, routed through `capture_writer` with an `"rejections"` store entry added to `_STORE_PATHS`/`_STORE_TABLE`.
+- [ ] **Step 5: Update the call site** in the trade-tape/reader path to accumulate in-process (a `dict[(ticker, side, minute), int]`, flushed once per minute boundary via `capture_writer.submit`) instead of writing per print.
+- [ ] **Step 6: Run it, watch it pass; update `gate_summary`'s query if Step 1 found it needs the new table/columns.**
+- [ ] **Step 7: Run the full candidate_log test suite for a regression check.**
+- [ ] **Step 8: Commit:** `git commit -m "perf: aggregate sub-threshold rejection rows by minute instead of per print (I13 P3)"`
+
+---
+
+### Task 17: Enable the reader gate for real (flip Task 3's shadow mode to filtering)
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`_process_item`)
+- Modify: `config/settings.yaml` (add the `realtime_data_plane.reader_gate_enabled` flag)
+- Test: append to `tests/test_kalshi_ws_ingest_metrics.py`
+
+**Interfaces:**
+- Consumes: `whale_gate.passes` (Task 3), `config_store` (existing live-reload config).
+- Changes: when `reader_gate_enabled` is true and `whale_gate.passes(...)` is False
+  for a trade, the reader (a) still calls `series_watcher.record_trade` and the
+  minute-aggregate rejection accumulator from Task 16 — **not** skip them, per the
+  design spec's explicit capture contract — and (b) does not enqueue the message to
+  the market queue. `ingest.prefiltered.trade` increments either way (shadow or live).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_reader_gate_enabled_drops_sub_threshold_trades_from_the_queue_but_still_captures(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"reader_gate_enabled": True}})
+    captured = []
+    monkeypatch.setattr("services.series_watcher.record_trade", lambda trade, **k: captured.append(trade))
+    small = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 1}}
+    ws._ingest_raw(json.dumps(small))
+    assert ws._queue.qsize() == 0  # gated out
+    assert len(captured) == 1  # still captured (design spec §2/§4)
+    assert ws.ingest_metrics()["prefiltered"]["trade"] == 1
+
+
+def test_reader_gate_disabled_keeps_todays_behavior(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"reader_gate_enabled": False}})
+    small = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 1}}
+    ws._ingest_raw(json.dumps(small))
+    assert ws._queue.qsize() == 1  # unchanged
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py -k reader_gate -v`
+Expected: FAIL (flag doesn't exist / gate doesn't filter yet)
+
+- [ ] **Step 3: Add the flag to `config/settings.yaml`**
+
+```yaml
+realtime_data_plane:
+  reader_gate_enabled: false  # P3: filters sub-threshold trades in the reader instead of the consumer
+```
+
+- [ ] **Step 4: Implement the branch in `_process_item`**
+
+Replace Task 3's shadow-only counting with:
+
+```python
+if cls == "trade":
+    min_contracts = whale_gate.min_contracts_for(data.get("ticker") or "", config_store.get())
+    try:
+        gate_passes = whale_gate.passes(data, min_contracts=min_contracts)
+    except Exception as exc:
+        gate_passes = True  # fall open (design spec §2)
+        self._gate_exceptions += 1
+        fault_log.record("whale_gate", "passes", exc)
+    if not gate_passes:
+        self._prefiltered_by_class["trade"] = self._prefiltered_by_class.get("trade", 0) + 1
+        series_watcher.record_trade(data)
+        candidate_log.accumulate_rejection(data)  # Task 16's in-process accumulator
+        if (config_store.get().get("realtime_data_plane") or {}).get("reader_gate_enabled"):
+            return  # do not enqueue
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py -v`
+Expected: PASS
+
+- [ ] **Step 6: Add the I4 completeness split (count-based exchange-wide + id-based whale-sized)**
+
+In `services/diagnostics/trade_capture_reconciliation.py`, extend `reconcile_window`'s
+return dict with `exchange_wide_completeness` (REST trade **count** for the window
+vs `received_by_kind["trade"]` from I1 metrics, not vs the ring) alongside the
+existing id-based `whale_sized_completeness`. Add a test pinning both fields present
+and independently correct when the gate is enabled (exchange-wide near the REST
+count, whale-sized computed only over ring-held ids as today).
+
+- [ ] **Step 7: Run the full ingest/reconciliation test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py tests/test_trade_capture_reconciliation.py -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/kalshi/websocket.py config/settings.yaml \
+  services/diagnostics/trade_capture_reconciliation.py \
+  tests/test_kalshi_ws_ingest_metrics.py tests/test_trade_capture_reconciliation.py
+git commit -m "feat: reader gate filters the market queue when enabled, still captures everything (I13 P3)"
+```
+
+---
+
+**P3 gate:** `reader_gate_enabled: false` by default; with it flipped on in a paper-mode
+soak, `ingest.prefiltered.trade` ≈ measured non-candidate share (~99.7%), `raw_trades`
+row-count growth rate within ±5% of pre-P3 baseline (Task 15's Step 7 test plus a live
+comparison), consumer busy fraction drops (visible via the existing `trade_stream_perf`
+window), zero new exceptions in `fault_log` attributable to `whale_gate`. Full suite green.
+
+---
+
+## Phase P4 — Critical / market consumers, ticker coalescing, kept queue
+
+### Task 18: Split the single consumer into `critical` and `market` queues
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`run`, `_consume`, queue construction, `_process_item`'s enqueue target)
+- Test: append to `tests/test_kalshi_ws_ingest_metrics.py`, new `tests/test_kalshi_ws_two_consumers.py`
+
+**Interfaces:**
+- Produces: two `asyncio.Queue` instances (`self._critical_queue`,
+  `self._market_queue`, both `maxsize=20000` as today), two consumer coroutines
+  (`_consume_critical`, `_consume_market`), each supervised via
+  `task_supervisor.supervise(..., restart=True)`.
+- Changes: `_process_item`'s enqueue target is `self._critical_queue` for
+  `fill`/`market_position`/`market_lifecycle_v2`/control frames, `self._market_queue`
+  for gate-passing trades. Behind a new `realtime_data_plane.two_consumer_mode`
+  flag, default `false` (single queue, today's behavior, unchanged).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_kalshi_ws_two_consumers.py
+import json
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_fill_and_trade_land_on_separate_queues_when_enabled(monkeypatch):
+    ws = _make_ws()  # reuse the existing helper from test_kalshi_ws_ingest_metrics.py
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"two_consumer_mode": True}})
+    fill = {"type": "fill", "msg": {"trade_id": "f1", "market_ticker": "K1", "count": 1, "yes_price": 50, "side": "yes", "action": "buy"}}
+    trade = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 500}}
+    ws._ingest_raw(json.dumps(fill))
+    ws._ingest_raw(json.dumps(trade))
+    assert ws._critical_queue.qsize() == 1
+    assert ws._market_queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_single_queue_mode_is_unchanged_when_disabled(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"two_consumer_mode": False}})
+    fill = {"type": "fill", "msg": {"trade_id": "f1", "market_ticker": "K1", "count": 1, "yes_price": 50, "side": "yes", "action": "buy"}}
+    ws._ingest_raw(json.dumps(fill))
+    assert ws._queue.qsize() == 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_two_consumers.py -v`
+Expected: FAIL — `_critical_queue`/`_market_queue` don't exist yet
+
+- [ ] **Step 3: Add the flag, the two queues, and the routing branch**
+
+Add `realtime_data_plane.two_consumer_mode: false` to `config/settings.yaml`. In
+`__init__` (or wherever `self._queue` is constructed today), add:
+
+```python
+self._critical_queue: asyncio.Queue | None = None
+self._market_queue: asyncio.Queue | None = None
+```
+
+In `_process_item`, after the existing gate logic from Task 17, replace the single
+`queue.put_nowait(...)` with:
+
+```python
+two_consumer = (config_store.get().get("realtime_data_plane") or {}).get("two_consumer_mode")
+if two_consumer:
+    target = self._critical_queue if cls in ("fill", "market_position", "market_lifecycle_v2") else self._market_queue
+    if target is None:
+        target = self._critical_queue = self._market_queue = self._queue  # lazily created below, same pattern as today's self._queue
+    ...
+else:
+    queue = self._queue  # today's path, unchanged
+```
+
+(Write this precisely by reading `_process_item`'s exact current queue-creation
+lazy-init block first — the two new queues must follow the identical lazy-creation
+pattern `self._queue` already uses, not a new one.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_two_consumers.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Add `_consume_critical`/`_consume_market` and wire `run()`**
+
+Duplicate `_consume`'s existing loop body into two named coroutines (critical:
+dispatch to the fill/position/lifecycle handlers; market: dispatch to the trade/
+ticker handlers), each reading from its own queue. In `run()`, behind the same
+`two_consumer_mode` flag, launch both via `task_supervisor.supervise(..., restart=True)`
+instead of the single `consumer` task; keep the single-consumer path as the `else`
+branch, byte-for-byte unchanged.
+
+- [ ] **Step 6: Test both consumers actually drain their own queue**
+
+```python
+@pytest.mark.asyncio
+async def test_both_consumers_drain_independently(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"two_consumer_mode": True}})
+    handled = []
+    monkeypatch.setattr(ws, "_handle_message", lambda item: handled.append(item))
+    fill = {"type": "fill", "msg": {"trade_id": "f1", "market_ticker": "K1", "count": 1, "yes_price": 50, "side": "yes", "action": "buy"}}
+    trade = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 500}}
+    ws._ingest_raw(json.dumps(fill))
+    ws._ingest_raw(json.dumps(trade))
+    await asyncio.gather(ws._consume_critical(), ws._consume_market(), return_exceptions=True)
+    # both coroutines run forever in production; this test needs a bounded-iteration
+    # variant - add a `max_iterations` kwarg to both for testability, defaulting to
+    # None (loop forever) so production behavior is unchanged.
+    assert len(handled) == 2
+```
+
+(Add the `max_iterations` testability hook as part of Step 5, matching whatever
+existing pattern `_consume` already uses for test termination — check first; it may
+already support this via queue draining + a sentinel, in which case reuse that
+instead of adding a new parameter.)
+
+- [ ] **Step 7: Run the full WS ingest test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py tests/test_kalshi_ws_two_consumers.py -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/kalshi/websocket.py config/settings.yaml tests/test_kalshi_ws_two_consumers.py
+git commit -m "feat: add a critical/market two-consumer mode behind a flag (I13 P4)"
+```
+
+---
+
+### Task 19: Ticker coalescing with apply-if-newer and no inline REST on the lifecycle path
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`_consume_market`'s ticker handling)
+- Modify: `services/whale_stream/whale_stream_handlers.py` (`_process_stream_lifecycle`'s
+  `settled` branch — remove the inline `await client.get_market(...)`)
+- Create: `services/settlement_resolver.py` (the deferred batch resolver — queue only
+  in this task; Task 21 implements the actual batched REST call)
+- Test: append to `tests/test_kalshi_ws_two_consumers.py`, `tests/test_whale_stream_stage_timing.py`
+
+**Interfaces:**
+- Produces: `settlement_resolver.enqueue(ticker: str, settled_ts: float) -> None`
+  (queue-only stub for this task; Task 21 adds the resolver loop that drains it).
+- Changes: the market queue, when `two_consumer_mode` is on, coalesces consecutive
+  ticker messages for the same market (newest `ts` wins, `apply-if-newer` — a
+  message with an older `ts` than the currently-held one for that market is
+  discarded, not replacing it) before the consumer processes them; the lifecycle
+  `settled` handler stops awaiting `get_market` inline and instead calls
+  `settlement_resolver.enqueue(ticker, settled_ts)` and returns immediately.
+
+- [ ] **Step 1: Write the failing test for coalescing**
+
+```python
+@pytest.mark.asyncio
+async def test_ticker_coalescing_keeps_only_the_newest_ts_per_market(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"two_consumer_mode": True}})
+    older = {"type": "ticker", "msg": {"ticker": "K1", "ts": 100, "yes_bid": 50}}
+    newer = {"type": "ticker", "msg": {"ticker": "K1", "ts": 200, "yes_bid": 55}}
+    stale = {"type": "ticker", "msg": {"ticker": "K1", "ts": 150, "yes_bid": 52}}  # arrives after newer but is older
+    ws._ingest_raw(json.dumps(older))
+    ws._ingest_raw(json.dumps(newer))
+    ws._ingest_raw(json.dumps(stale))
+    pending = ws._pending_ticker_by_market()  # add this read helper as part of Step 3
+    assert pending["K1"]["ts"] == 200
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_two_consumers.py -k coalescing -v`
+Expected: FAIL
+
+- [ ] **Step 3: Implement the coalescing map**
+
+Replace direct market-queue enqueue for `cls == "ticker"` (when `two_consumer_mode`
+is on) with an update to `self._ticker_by_market: dict[str, dict]`, applying only if
+`data["msg"]["ts"] > self._ticker_by_market.get(ticker, {}).get("ts", -1)`; increment
+`self._coalesced` when a message is superseded before being consumed. `_consume_market`
+drains actual trade-queue items first (FIFO, as today), then — when the trade queue
+is empty — processes one entry from `_ticker_by_market` per loop iteration (pop
+arbitrary key; order across markets is not guaranteed, matching design spec §3).
+Add `_pending_ticker_by_market()` as a plain accessor for the test.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_two_consumers.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Write the failing test for the settled handler**
+
+```python
+@pytest.mark.asyncio
+async def test_settled_enqueues_the_resolver_and_does_not_await_get_market(monkeypatch):
+    from services.whale_stream import whale_stream_handlers as h
+    calls = []
+    monkeypatch.setattr("services.settlement_resolver.enqueue", lambda ticker, settled_ts: calls.append((ticker, settled_ts)))
+    async def _should_not_be_called(*a, **k):
+        raise AssertionError("get_market must not be awaited inline from the settled handler anymore")
+    monkeypatch.setattr("services.kalshi.public.KalshiPublicGateway.get_market", _should_not_be_called)
+    msg = {"type": "market_lifecycle_v2", "msg": {"ticker": "K1", "event_type": "settled", "settled_ts": 123.0}}
+    await h._process_stream_lifecycle(msg)  # match the real function's actual argument shape
+    assert calls == [("K1", 123.0)]
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_stream_stage_timing.py -k settled -v`
+Expected: FAIL — today's handler awaits `get_market` inline
+
+- [ ] **Step 7: Create the stub resolver module and rewire the handler**
+
+```python
+# services/settlement_resolver.py
+"""Queue-only stub for the settled-market resolver (I13 P4 Task 19). Task 21
+adds the actual batched, deferred GET /markets?tickers= sweep that drains
+this queue; keeping the queue and the handler change in one task and the
+REST batching in another lets each ship with its own narrow test."""
+_pending: list[tuple[str, float]] = []
+
+
+def enqueue(ticker: str, settled_ts: float) -> None:
+    _pending.append((ticker, settled_ts))
+
+
+def pending() -> list[tuple[str, float]]:
+    return list(_pending)
+```
+
+In `_process_stream_lifecycle`'s `settled` branch, replace the inline
+`await client.get_market(ticker)` block with `settlement_resolver.enqueue(ticker, settled_ts)`
+and remove the now-dead `background_resolution` caller-class wrapper from this call
+site (it moves to Task 21's resolver).
+
+- [ ] **Step 8: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_stream_stage_timing.py -v`
+Expected: PASS
+
+- [ ] **Step 9: Run the full whale-stream and WS test suites for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_whale_stream_stage_timing.py tests/test_kalshi_ws_two_consumers.py tests/test_kalshi_ws_ingest_metrics.py -v`
+Expected: PASS
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add services/kalshi/websocket.py services/whale_stream/whale_stream_handlers.py \
+  services/settlement_resolver.py tests/test_kalshi_ws_two_consumers.py tests/test_whale_stream_stage_timing.py
+git commit -m "feat: coalesce tickers, defer settled resolution off the critical path (I13 P4)"
+```
+
+---
+
+### Task 20: `check_exits` per-tick memoization
+
+**Files:**
+- Modify: `services/exits/exit_engine.py` (`check_exits` and its four DB-reading helpers)
+- Test: append to the existing `exit_engine` test file
+
+**Interfaces:**
+- Produces: `exit_engine.check_exits(..., tick_cache: dict | None = None)` — an
+  optional cache dict, populated once per tick, keyed by `(function_name, ticker)`,
+  so N open positions on the same tick share one `recent_price`/`volatility`/
+  `analyst_lean`/`series_stats` read per ticker instead of N reads (I12 W4). When
+  `tick_cache` is `None` (every existing caller), behavior is byte-identical to
+  today — this is a strictly additive optional parameter.
+
+- [ ] **Step 1: Read `check_exits`'s current signature and its four per-position DB reads in full** (`recent_price` :229, `volatility` :448, `analyst_lean` :494, `series_stats` :506).
+- [ ] **Step 2: Write a failing test**: two open positions on the same ticker, one `check_exits` call each with a shared `tick_cache={}`, asserts `market_history.recent_price` (mocked/counted) is called exactly once, not twice.
+- [ ] **Step 3: Run it, watch it fail.**
+- [ ] **Step 4: Add the `tick_cache` parameter and the four memoized lookups**, e.g.:
+
+```python
+def _cached(tick_cache, key, fn, *args):
+    if tick_cache is None:
+        return fn(*args)
+    if key not in tick_cache:
+        tick_cache[key] = fn(*args)
+    return tick_cache[key]
+```
+
+Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker), market_history.recent_price, ticker, ...)` (match real arguments).
+
+- [ ] **Step 5: Run it, watch it pass.**
+- [ ] **Step 6: Wire a shared `tick_cache={}` from `_consume_market`'s per-tick-batch processing** (created once per drain of the ticker map, passed to every `check_exits` call in that batch, discarded after).
+- [ ] **Step 7: Run the full exit_engine test suite for a regression check** — pay particular attention to any test relying on `recent_price` etc. being called fresh per position (none should, since the underlying value for the same ticker is identical within one tick, but confirm).
+- [ ] **Step 8: Commit:** `git commit -m "perf: memoize check_exits per-tick DB reads across positions on the same ticker (I13 P4)"`
+
+---
+
+### Task 21: Keep the queue across reconnects, generation-stamped
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`run`, the reconnect path, `_subscription_sids` handling)
+- Test: append to whatever file currently tests reconnect behavior (`grep -rn "def test.*reconnect" tests/`)
+
+**Interfaces:**
+- Produces: a `_connection_generation: int` counter, incremented on every new socket;
+  each item enqueued (both queues) is tagged `(generation, item)`; both consumers
+  drop control frames (`subscribed`, `ok`, `error`) whose generation is stale before
+  dispatch; `_subscribed_tickers`/`_subscription_sids` reset only happens for the
+  *new* generation, not retroactively on old-generation items already in flight.
+- Changes: behind `realtime_data_plane.keep_queue_on_reconnect` (default `false`),
+  `run()`'s reconnect path stops discarding `self._queue`/`self._critical_queue`/`self._market_queue`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+@pytest.mark.asyncio
+async def test_stale_generation_control_frames_are_dropped_after_reconnect(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"keep_queue_on_reconnect": True}})
+    ack_old = {"type": "subscribed", "msg": {"channel": "trade", "sid": "sid-old"}}
+    ws._ingest_raw(json.dumps(ack_old))  # generation 0
+    ws._begin_new_connection_generation()  # simulate the reconnect Step 3 adds
+    ack_new = {"type": "subscribed", "msg": {"channel": "trade", "sid": "sid-new"}}
+    ws._ingest_raw(json.dumps(ack_new))  # generation 1
+    await ws._drain_control_queue_for_test()  # bounded-iteration test hook, added in Step 3
+    assert ws._subscription_sids.get("trade") == "sid-new"  # the stale ack from gen 0 never applied
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/ -k reconnect_generation -v`
+Expected: FAIL — no generation concept exists yet
+
+- [ ] **Step 3: Add the generation counter and tag every enqueued item**
+
+```python
+self._connection_generation = 0
+
+def _begin_new_connection_generation(self) -> None:
+    self._connection_generation += 1
+```
+
+Call `_begin_new_connection_generation()` where `run()` currently does
+`self._subscription_sids = {}` on a new socket (today's reset point). Change every
+`queue.put_nowait(item)` to `queue.put_nowait((self._connection_generation, item))`,
+and every consumer's dequeue to unpack `(gen, item)`, dropping (counting a new
+`ingest.generation_dropped` metric) when `gen != self._connection_generation` **and**
+`item` is a control-type message (`subscribed`/`ok`/`error`) — non-control items
+(trades, tickers, fills, positions, lifecycle) from an old generation are still real
+exchange events and are processed normally (per design spec §3, review W8).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/ -k reconnect_generation -v`
+Expected: PASS
+
+- [ ] **Step 5: Stop discarding the queue on reconnect, behind the flag**
+
+In `run()`'s reconnect path, replace the unconditional queue-recreation with:
+
+```python
+if not (config_store.get().get("realtime_data_plane") or {}).get("keep_queue_on_reconnect"):
+    self._queue = None  # today's behavior: drop it, a fresh one is lazily created
+    self._critical_queue = None
+    self._market_queue = None
+# else: leave the existing queues in place - _begin_new_connection_generation()
+# already stamped the boundary so stale control frames are safely ignorable
+```
+
+Add `realtime_data_plane.keep_queue_on_reconnect: false` to `config/settings.yaml`.
+
+- [ ] **Step 6: Test connection-scoped counters still reset while queue-scoped ones don't**
+
+```python
+def test_connection_scoped_counters_reset_but_queue_depth_survives_reconnect(monkeypatch):
+    ws = _make_ws()
+    monkeypatch.setattr("services.config_store.get", lambda: {"realtime_data_plane": {"keep_queue_on_reconnect": True}})
+    trade = {"type": "trade", "msg": {"trade_id": "t1", "ticker": "K1", "count": 500}}
+    ws._ingest_raw(json.dumps(trade))
+    depth_before = ws._market_queue.qsize()
+    ws._begin_new_connection_generation()
+    assert ws._market_queue.qsize() == depth_before  # not discarded
+    assert ws._connects == ws._connects  # connection-scoped counter unaffected by this call directly - see Step 7
+```
+
+(This test needs sharpening once Step 3's real counter list is known — confirm
+which counters `_begin_new_connection_generation` must also reset, e.g. per-connection
+handshake/ping stats, and assert those specifically reset while `qsize()` does not.)
+
+- [ ] **Step 7: Run the full WS test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_kalshi_ws_ingest_metrics.py tests/test_kalshi_ws_two_consumers.py -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/kalshi/websocket.py config/settings.yaml tests/
+git commit -m "feat: keep the ingest queue across reconnects, generation-stamped (I13 P4)"
+```
+
+---
+
+**P4 gate:** Deterministic replay parity check — run
+`python -m tools.realtime_pipeline_replay --preset busy_hour --topology staged --single-loop --order critical,trade,ticker`
+and confirm the corrected numbers from `2026-08-25-realtime-architecture-review.md`
+§3.3 (candidate p95 ~20 ms, crit p95 ~39 ms under hygiene) are the *target*, then
+verify the live system approaches them in a paper-mode busy-hour soak (candidate
+receive→decision p95 measured via `whale_pipeline` metrics). Full test suite green
+with `two_consumer_mode`, `keep_queue_on_reconnect`, and `reader_gate_enabled` all on.
+
+---
+
+## Phase P5 — REST scheduler rewrite, settled resolver, shared caches
+
+### Task 22: Critical-first waiter queues with background aging (no lock-held-while-sleeping)
+
+**Files:**
+- Modify: `services/http_client.py` (`_TokenBucketRateLimiter`)
+- Test: append to `tests/test_http_client.py`
+
+**Interfaces:**
+- Changes: `acquire()` no longer holds `self._lock` across `asyncio.sleep`. Two
+  `collections.deque` waiter queues (`_critical_waiters`, `_background_waiters`),
+  woken by a single dispatcher-free refill check: on token availability, pop from
+  `_critical_waiters` first; if empty, pop the oldest `_background_waiters` entry
+  **unless** a background waiter has been queued longer than `_AGING_THRESHOLD_SEC`
+  (2.0 s), in which case that waiter is served next regardless of critical queue
+  state (bounded starvation, matching `priority_aging`'s modelled behavior in I11/I12).
+  `current_caller_class()` (already exists, `services/http_client.py`) decides which
+  deque a given `acquire()` call joins.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_http_client.py (append)
+import asyncio
+import time
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_critical_call_does_not_wait_behind_a_sleeping_background_call(monkeypatch):
+    from services import http_client
+    limiter = http_client._TokenBucketRateLimiter(rate=1.0, burst=1.0)  # match real constructor args
+    await limiter.acquire()  # drain the single token so the next caller must wait
+
+    async def _background():
+        with http_client.caller_class("background_catalog"):
+            await limiter.acquire()
+
+    async def _critical():
+        with http_client.caller_class("critical_whale"):
+            start = time.monotonic()
+            await limiter.acquire()
+            return time.monotonic() - start
+
+    bg_task = asyncio.create_task(_background())
+    await asyncio.sleep(0.05)  # let background join the wait first
+    crit_wait = await _critical()
+    bg_task.cancel()
+    assert crit_wait < 1.0  # served before the background waiter despite arriving second
+
+
+@pytest.mark.asyncio
+async def test_a_background_waiter_older_than_the_aging_threshold_is_not_starved_forever(monkeypatch):
+    from services import http_client
+    limiter = http_client._TokenBucketRateLimiter(rate=0.5, burst=1.0)
+    await limiter.acquire()
+
+    async def _background():
+        with http_client.caller_class("background_catalog"):
+            start = time.monotonic()
+            await limiter.acquire()
+            return time.monotonic() - start
+
+    bg_task = asyncio.create_task(_background())
+    await asyncio.sleep(2.5)  # past _AGING_THRESHOLD_SEC
+
+    async def _critical():
+        with http_client.caller_class("critical_whale"):
+            await limiter.acquire()
+
+    crit_task = asyncio.create_task(_critical())
+    bg_wait = await bg_task
+    crit_task.cancel()
+    assert bg_wait < 5.0  # did not wait indefinitely behind a stream of critical arrivals
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py -k "critical_call_does_not_wait or aging_threshold" -v`
+Expected: FAIL — today's `acquire()` is plain FIFO by lock order, no class priority
+
+- [ ] **Step 3: Rewrite `acquire()`**
+
+```python
+_AGING_THRESHOLD_SEC = 2.0
+
+
+class _TokenBucketRateLimiter:
+    def __init__(self, rate: float, burst: float):
+        ...  # keep existing fields
+        self._critical_waiters: deque = deque()
+        self._background_waiters: deque = deque()  # entries: (enqueued_at, asyncio.Event)
+
+    async def acquire(self):
+        cls = current_caller_class()
+        is_critical = cls in CRITICAL_CALLER_CLASSES  # define this set from CALLER_CLASSES metadata
+        event = asyncio.Event()
+        entry = (time.monotonic(), event)
+        (self._critical_waiters if is_critical else self._background_waiters).append(entry)
+        self.waiters += 1
+        self.waiters_high_water = max(self.waiters_high_water, self.waiters)
+        try:
+            self._maybe_dispatch()
+            await event.wait()
+        finally:
+            self.waiters -= 1
+
+    def _maybe_dispatch(self) -> None:
+        now = time.monotonic()
+        self._tokens = min(self._burst, self._tokens + (now - self._last_refill) * self._rate)
+        self._last_refill = now
+        while self._tokens >= 1:
+            next_waiter = self._pick_next_waiter(now)
+            if next_waiter is None:
+                break
+            self._tokens -= 1
+            next_waiter[1].set()
+        if self._critical_waiters or self._background_waiters:
+            asyncio.get_event_loop().call_later(max(0.0, (1 - self._tokens) / self._rate), self._maybe_dispatch)
+
+    def _pick_next_waiter(self, now: float):
+        if self._background_waiters and now - self._background_waiters[0][0] > _AGING_THRESHOLD_SEC:
+            return self._background_waiters.popleft()
+        if self._critical_waiters:
+            return self._critical_waiters.popleft()
+        if self._background_waiters:
+            return self._background_waiters.popleft()
+        return None
+```
+
+(This is the shape, not a drop-in — reconcile it against `_TokenBucketRateLimiter`'s
+real current field names, and against `services/http_client.py`'s existing
+`CALLER_CLASSES` structure to define `CRITICAL_CALLER_CLASSES` correctly — read both
+in full before implementing. The self-rescheduling `call_later` must be cancelled
+cleanly on the last waiter's departure so it doesn't spin forever with an idle
+limiter; add a guard for that as part of this step, with a test asserting no lingering
+scheduled callback when the waiter queues are empty.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py -v`
+Expected: PASS, and every pre-existing `http_client` test still passes (the external
+`acquire()` contract — an awaitable that returns once a token is available — is
+unchanged; only internal ordering changed)
+
+- [ ] **Step 5: Run the full REST-adjacent test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py tests/test_kalshi_account_client.py tests/test_kalshi_client.py -v`
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add services/http_client.py tests/test_http_client.py
+git commit -m "perf: critical-first REST waiter queues with background aging, no lock-held sleep (I13 P5)"
+```
+
+---
+
+### Task 23: Global 429 brake
+
+**Files:**
+- Modify: `services/http_client.py` (`call_with_backoff`, `_TokenBucketRateLimiter`)
+- Test: append to `tests/test_http_client.py`
+
+**Interfaces:**
+- Produces: `_TokenBucketRateLimiter.trip_brake(now: float | None = None) -> None`
+  (halves `self._rate` for `_BRAKE_DURATION_SEC`, doubling the halving on a repeat
+  trip within the window per the design spec §6), called from `call_with_backoff`
+  whenever a 429 is observed, regardless of caller class.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+@pytest.mark.asyncio
+async def test_a_429_halves_the_effective_rate_for_the_brake_window(monkeypatch):
+    from services import http_client
+    limiter = http_client._TokenBucketRateLimiter(rate=8.0, burst=8.0)
+    original_rate = limiter._rate
+    limiter.trip_brake()
+    assert limiter._rate == original_rate / 2
+
+
+@pytest.mark.asyncio
+async def test_the_brake_recovers_linearly_after_its_window(monkeypatch):
+    from services import http_client
+    import time
+    limiter = http_client._TokenBucketRateLimiter(rate=8.0, burst=8.0)
+    limiter.trip_brake(now=time.monotonic() - http_client._BRAKE_DURATION_SEC - 1)
+    limiter._maybe_recover_from_brake(now=time.monotonic())
+    assert limiter._rate == 8.0
+
+
+@pytest.mark.asyncio
+async def test_critical_retries_are_not_exempt_from_the_brake(monkeypatch):
+    # I12 R2: the reserve's retries must obey the brake, not bypass it -
+    # assert trip_brake() affects dispatch regardless of current_caller_class().
+    from services import http_client
+    limiter = http_client._TokenBucketRateLimiter(rate=8.0, burst=8.0)
+    limiter.trip_brake()
+    with http_client.caller_class("critical_whale"):
+        assert limiter._rate == 4.0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py -k brake -v`
+Expected: FAIL — `trip_brake` doesn't exist
+
+- [ ] **Step 3: Implement the brake**
+
+```python
+_BRAKE_DURATION_SEC = 5.0
+
+
+def trip_brake(self, now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    if self._brake_until is not None and now < self._brake_until:
+        self._brake_multiplier = min(self._brake_multiplier * 2, 8)  # cap the halving
+    else:
+        self._brake_multiplier = 2
+    self._brake_until = now + _BRAKE_DURATION_SEC
+    self._rate = self._base_rate / self._brake_multiplier
+
+
+def _maybe_recover_from_brake(self, now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    if self._brake_until is not None and now >= self._brake_until:
+        self._rate = self._base_rate
+        self._brake_until = None
+        self._brake_multiplier = 1
+```
+
+Add `self._base_rate = rate`, `self._brake_until = None`, `self._brake_multiplier = 1`
+to `__init__`; call `_maybe_recover_from_brake()` at the top of `_maybe_dispatch`
+(Task 22).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Wire `trip_brake()` into `call_with_backoff`'s 429 handling**
+
+Find the existing 429 detection in `call_with_backoff` (it already backs off per
+caller — read its exact exception-matching logic) and add `limiter.trip_brake()`
+alongside the existing per-call backoff, once per detected 429 regardless of class.
+
+- [ ] **Step 6: Test the end-to-end wiring with a fault-injecting fake client**
+
+```python
+@pytest.mark.asyncio
+async def test_call_with_backoff_trips_the_brake_on_a_429(monkeypatch):
+    from services import http_client
+    calls = {"n": 0}
+
+    async def _flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("429 Too Many Requests")
+        return "ok"
+
+    result = await http_client.call_with_backoff(_flaky)
+    assert result == "ok"
+    assert http_client._rest_limiter._brake_until is not None
+```
+
+(Match `call_with_backoff`'s and the module-level limiter instance's real names.)
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_http_client.py -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/http_client.py tests/test_http_client.py
+git commit -m "feat: add a global 429 brake shared by every caller class (I13 P5)"
+```
+
+---
+
+### Task 24: Settled resolver — batched, deferred, retried `GET /markets?tickers=`
+
+**Files:**
+- Modify: `services/settlement_resolver.py` (add the drain loop)
+- Test: `tests/test_settlement_resolver.py`
+
+**Interfaces:**
+- Produces: `settlement_resolver.run_pending(client, *, now: float | None = None, delay_sec: float = 60.0, batch_size: int = 50) -> dict`
+  (`{"resolved": int, "still_pending": int}`); called once per tick, classed
+  `background_resolution` via `http_client.caller_class`.
+- Consumes: `client.get_markets_by_tickers` (existing `services/kalshi/public.py`
+  method), `market_history.record_outcome` (existing).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_settlement_resolver.py
+import time
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_younger_than_the_delay_is_not_yet_resolved(monkeypatch):
+    from services import settlement_resolver
+    settlement_resolver._pending.clear()
+    settlement_resolver.enqueue("K1", time.time())
+    result = await settlement_resolver.run_pending(client=None, now=time.time() + 10)
+    assert result["still_pending"] == 1
+    assert result["resolved"] == 0
+
+
+@pytest.mark.asyncio
+async def test_settlements_past_the_delay_are_batch_resolved(monkeypatch):
+    from services import settlement_resolver
+    settlement_resolver._pending.clear()
+    now = time.time()
+    settlement_resolver.enqueue("K1", now)
+    settlement_resolver.enqueue("K2", now)
+
+    class _FakeClient:
+        async def get_markets_by_tickers(self, tickers):
+            assert set(tickers) == {"K1", "K2"}
+            return {t: {"ticker": t, "status": "finalized", "result": "yes"} for t in tickers}
+
+    recorded = []
+    monkeypatch.setattr("services.market_history.record_outcome", lambda ticker, result, resolved_at: recorded.append((ticker, result)))
+    result = await settlement_resolver.run_pending(_FakeClient(), now=now + 61.0)
+    assert result["resolved"] == 2
+    assert set(recorded) == {("K1", "yes"), ("K2", "yes")}
+
+
+@pytest.mark.asyncio
+async def test_a_not_yet_finalized_market_stays_pending_and_is_retried_later(monkeypatch):
+    # design spec §5 gap: settled != finalized immediately (settlement race);
+    # not-yet-finalized markets must not be dropped.
+    from services import settlement_resolver
+    settlement_resolver._pending.clear()
+    now = time.time()
+    settlement_resolver.enqueue("K3", now)
+
+    class _StillDeterminedClient:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: {"ticker": t, "status": "determined"} for t in tickers}
+
+    result = await settlement_resolver.run_pending(_StillDeterminedClient(), now=now + 61.0)
+    assert result["resolved"] == 0
+    assert result["still_pending"] == 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_settlement_resolver.py -v`
+Expected: FAIL — `run_pending` doesn't exist
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/settlement_resolver.py (extend the Task 19 stub)
+"""Batched, deferred settlement resolution (I13 P5, root-cause report C/§11,
+docs/kalshi/CHEATSHEET.md's settled/determined entry). A settled WS event
+fires while settlement is still processing - reading immediately can see a
+market at `determined`, not yet `finalized`, so this waits delay_sec before
+the first read and simply leaves a not-yet-finalized market pending for the
+next tick rather than treating it as resolved or dropping it."""
+import time
+
+from services import http_client, market_history
+
+_pending: list[tuple[str, float]] = []
+
+
+def enqueue(ticker: str, settled_ts: float) -> None:
+    _pending.append((ticker, settled_ts))
+
+
+def pending() -> list[tuple[str, float]]:
+    return list(_pending)
+
+
+async def run_pending(client, *, now: float | None = None, delay_sec: float = 60.0, batch_size: int = 50) -> dict:
+    now = time.time() if now is None else now
+    ready = [(t, ts) for t, ts in _pending if now - ts >= delay_sec][:batch_size]
+    if not ready:
+        return {"resolved": 0, "still_pending": len(_pending)}
+    tickers = [t for t, _ in ready]
+    with http_client.caller_class("background_resolution"):
+        markets = await client.get_markets_by_tickers(tickers)
+    resolved = 0
+    for ticker, _ts in ready:
+        market = markets.get(ticker) or {}
+        if (market.get("status") or "") != "finalized":
+            continue  # stays pending for the next tick - not yet safe to trust (CHEATSHEET gap)
+        result = (market.get("result") or "").strip().lower()
+        if result not in ("yes", "no"):
+            continue
+        market_history.record_outcome(ticker, result, resolved_at=now)
+        _pending.remove((ticker, _ts))
+        resolved += 1
+    return {"resolved": resolved, "still_pending": len(_pending)}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_settlement_resolver.py -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Wire into the trading tick**
+
+Add `await settlement_resolver.run_pending(client)` to `main.py`'s tick loop,
+after the critical gather (same reasoning as Task 9 — this is background REST
+demand). Add `settlement_resolver.pending_count()` to observability.
+
+- [ ] **Step 6: Verify the 23%-of-calls demand drops**
+
+Add an integration test (or extend `tools/kalshi_rate_limit_probe.py --demand`'s
+existing measurement) asserting `get_market` calls attributable to `settled`
+handling drop to ≤ 1 per N settlements instead of 1 per settlement — this is the
+root-cause report §8's `settled` demand target (≤ 0.1/s), verified the same way I8
+measured the original 0.55/s (a live demand sample, not a unit test assertion).
+
+- [ ] **Step 7: Run the full whale-stream and settlement test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_settlement_resolver.py tests/test_whale_stream_stage_timing.py -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/settlement_resolver.py main.py tests/test_settlement_resolver.py
+git commit -m "feat: batch and defer settlement resolution instead of an inline per-event REST read (I13 P5)"
+```
+
+---
+
+### Task 25: Shared milestone/live-data cache (H9 duplicate-factor reduction)
+
+**Files:**
+- Create: `services/milestone_cache.py`
+- Modify: the three independent pollers I8 identified (catalog scan, live status,
+  event live data — `grep -rln "get_milestones\|get_live_datas\|get_event_live_data"
+  services/ main.py` to find them precisely)
+- Test: `tests/test_milestone_cache.py`
+
+**Interfaces:**
+- Produces: `milestone_cache.get_or_fetch(event_ticker: str, fetch_fn: Callable[[], Awaitable[dict]], *, ttl_sec: float = 60.0) -> dict`
+  (single-flight per `event_ticker`: concurrent callers for the same key await one
+  in-flight fetch rather than issuing N).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_milestone_cache.py
+import asyncio
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_for_the_same_key_share_one_fetch():
+    from services import milestone_cache
+    milestone_cache._cache.clear()
+    calls = {"n": 0}
+
+    async def _fetch():
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return {"ticker": "E1"}
+
+    results = await asyncio.gather(*(milestone_cache.get_or_fetch("E1", _fetch) for _ in range(5)))
+    assert calls["n"] == 1
+    assert all(r == {"ticker": "E1"} for r in results)
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_call_after_ttl_expiry_refetches():
+    from services import milestone_cache
+    import time
+    milestone_cache._cache.clear()
+    calls = {"n": 0}
+
+    async def _fetch():
+        calls["n"] += 1
+        return {"n": calls["n"]}
+
+    await milestone_cache.get_or_fetch("E2", _fetch, ttl_sec=0.05)
+    time.sleep(0.1)
+    await milestone_cache.get_or_fetch("E2", _fetch, ttl_sec=0.05)
+    assert calls["n"] == 2
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_milestone_cache.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# services/milestone_cache.py
+"""Single-flight, TTL cache shared by every milestone/live-data poller. I8
+measured a 1.53x duplicate factor from three independent per-subsystem
+caches polling the same event surface; this replaces them with one."""
+import time
+from typing import Awaitable, Callable
+
+_cache: dict[str, tuple[float, dict]] = {}
+_in_flight: dict[str, "asyncio.Future"] = {}
+
+
+async def get_or_fetch(event_ticker: str, fetch_fn: Callable[[], Awaitable[dict]], *, ttl_sec: float = 60.0) -> dict:
+    import asyncio
+    now = time.time()
+    cached = _cache.get(event_ticker)
+    if cached is not None and now - cached[0] < ttl_sec:
+        return cached[1]
+    if event_ticker in _in_flight:
+        return await _in_flight[event_ticker]
+    fut = _in_flight[event_ticker] = asyncio.get_event_loop().create_future()
+    try:
+        result = await fetch_fn()
+        _cache[event_ticker] = (now, result)
+        fut.set_result(result)
+        return result
+    except Exception as exc:
+        fut.set_exception(exc)
+        raise
+    finally:
+        del _in_flight[event_ticker]
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_milestone_cache.py -v`
+Expected: PASS (2 tests)
+
+- [ ] **Step 5: Wire the three pollers through it, one at a time, each with its own regression test run**
+
+For each of the three call sites found by the grep above: replace the direct
+`await client.get_milestones(...)` / `get_live_datas(...)` / `get_event_live_data(...)`
+call with `await milestone_cache.get_or_fetch(event_ticker, lambda: client.get_milestones(...))`,
+run that module's existing test suite, confirm no behavior change beyond the shared
+cache, then move to the next call site. Do all three in this task (they're one
+cohesive change per the design spec), but as three sequential sub-steps each ending
+in a green test run — do not batch all three edits before running tests once.
+
+- [ ] **Step 6: Verify the duplicate factor drops**
+
+Re-run `python -m tools.kalshi_rate_limit_probe --demand --demand-hours 0.4 --tracked-events 28`
+(the same invocation I8 used) after a live soak and confirm the duplicate factor is
+materially below 1.53 — record the new number in `docs/kalshi/CHEATSHEET.md`'s
+existing H9 entry as an update, not a new entry.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/milestone_cache.py <the three modified poller files> \
+  tests/test_milestone_cache.py docs/kalshi/CHEATSHEET.md
+git commit -m "feat: share one milestone/live-data cache across the three independent pollers (I13 P5)"
+```
+
+---
+
+### Task 26: Classify the streaming-off REST tape poll
+
+**Files:**
+- Modify: `main.py` (`_fetch_trade_tape`'s call site)
+- Test: append to `tests/test_http_client.py` or a `main.py`-adjacent test file
+
+- [ ] **Step 1: Confirm `_fetch_trade_tape` is currently unclassified** (I12 R3: "unclassified → `other`") by grepping for `http_client.caller_class` near its definition — confirm the gap before fixing it.
+- [ ] **Step 2: Write a failing test** asserting a call to `_fetch_trade_tape` runs under `caller_class() == "trade_tape_poll"` (a new class — add it to `CALLER_CLASSES` in `services/http_client.py`, background priority).
+- [ ] **Step 3: Run it, watch it fail.**
+- [ ] **Step 4: Wrap the call site** with `with http_client.caller_class("trade_tape_poll"):` around the existing `get_trades` calls inside `_fetch_trade_tape`.
+- [ ] **Step 5: Run it, watch it pass; run the full REST-adjacent suite for a regression check.**
+- [ ] **Step 6: Commit:** `git commit -m "fix: classify the streaming-off REST tape poll instead of leaving it unattributed (I13 P5)"`
+
+---
+
+**P5 gate:** Re-run `python -m tools.rest_scheduler_replay --compare --presets measured_quiet,background_storm,429_storm --seed 1`
+and confirm the live limiter's behavior tracks the `reserved`/`priority_aging`
+policy's modelled improvement (critical wait materially below today's FIFO baseline
+from I5/I7) without the R2/R3 failure modes (no critical retry exhaustion, shared
+capacity not silently halved — since Task 22/23's design is priority+aging, not a
+carved reserve, R3 does not apply, but confirm background max wait stays bounded
+under `background_storm`). `settled` demand ≤ 0.1/s and duplicate factor materially
+below 1.53 in a live soak. Full test suite green.
+
+---
+
+## Phase P6 — Reconnect/error-25-triggered reconciliation
+
+### Task 27: Trigger reconciliation only on reconnect or error-25, not on a fixed schedule
+
+**Files:**
+- Modify: `services/diagnostics/trade_capture_reconciliation.py` (add the trigger,
+  reuse `reconcile_window`)
+- Modify: `services/kalshi/websocket.py` (fire a callback on reconnect and on error-25)
+- Test: append to `tests/test_trade_capture_reconciliation.py`
+
+**Interfaces:**
+- Produces: `trade_capture_reconciliation.on_loss_event(reason: str, *, occurred_at: float) -> None`
+  (registered as a callback; enqueues a bounded reconciliation sweep rather than
+  running it inline on the WS reader/consumer).
+- Consumes: `candidate_ledger.claim` (every recovered print goes through the same
+  claim path as a live one — duplicates are structurally impossible, per design
+  spec §7), `services/kalshi/public.py`'s `get_trades(min_ts=..., max_ts=...)`
+  paged as `reconcile_window` already does, classed `reconciliation` (a new
+  background caller class, added to `CALLER_CLASSES` in Task 22/23's work).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_trade_capture_reconciliation.py (append)
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_on_loss_event_schedules_a_bounded_sweep_not_an_inline_call(monkeypatch):
+    from services.diagnostics import trade_capture_reconciliation as tcr
+    scheduled = []
+    monkeypatch.setattr(tcr, "_schedule_sweep", lambda reason, occurred_at: scheduled.append((reason, occurred_at)))
+    tcr.on_loss_event("reconnect", occurred_at=123.0)
+    assert scheduled == [("reconnect", 123.0)]
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_print_goes_through_the_candidate_ledger_and_cannot_duplicate(monkeypatch):
+    from services import candidate_ledger
+    from services.diagnostics import trade_capture_reconciliation as tcr
+    candidate_ledger.claim("already-live-t1")  # simulate: this trade already went through the live path
+
+    class _FakeClient:
+        async def get_trades(self, **kwargs):
+            return {"trades": [{"trade_id": "already-live-t1", "ticker": "K1", "count": 500}], "cursor": ""}
+
+    result = await tcr.run_sweep(_FakeClient(), window_start=0.0, window_end=200.0,
+                                  seen_exchange_ts_by_id={}, min_contracts_for=lambda t: 100)
+    assert result["duplicates_skipped"] == 1
+    assert result["recovered"] == 0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_trade_capture_reconciliation.py -k "loss_event or duplicates_skipped" -v`
+Expected: FAIL — `on_loss_event`/`run_sweep` don't exist in this shape yet
+
+- [ ] **Step 3: Add `on_loss_event`, `_schedule_sweep`, and `run_sweep`**
+
+`run_sweep` wraps the existing `reconcile_window` (do not duplicate its paging
+logic — call it) and adds the `candidate_ledger.claim` gate per recovered
+whale-sized trade before treating it as a new candidate:
+
+```python
+async def run_sweep(client, *, window_start, window_end, seen_exchange_ts_by_id, min_contracts_for) -> dict:
+    base = await reconcile_window(client, window_start=window_start, window_end=window_end,
+                                   seen_exchange_ts_by_id=seen_exchange_ts_by_id, min_contracts_for=min_contracts_for)
+    recovered = duplicates_skipped = 0
+    for trade in base.get("missing_whale_sized_trades", []):  # match reconcile_window's real return key
+        if candidate_ledger.claim(trade["trade_id"], ticker=trade.get("ticker")):
+            recovered += 1
+            # feed into the same candidate path Task 12's retry queue uses
+        else:
+            duplicates_skipped += 1
+    return {**base, "recovered": recovered, "duplicates_skipped": duplicates_skipped}
+
+
+def _schedule_sweep(reason: str, occurred_at: float) -> None:
+    _pending_sweeps.append((reason, occurred_at))
+
+
+_pending_sweeps: list[tuple[str, float]] = []
+
+
+def on_loss_event(reason: str, *, occurred_at: float) -> None:
+    _schedule_sweep(reason, occurred_at)
+```
+
+(Match `reconcile_window`'s actual return-dict key names — read the function's
+current implementation before assuming `missing_whale_sized_trades` is the real
+key.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_trade_capture_reconciliation.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Fire the callback from the WS reconnect and error-25 paths**
+
+In `services/kalshi/websocket.py`'s `_record_disconnect` and the error-25 handling
+in `_process_item`, add calls to
+`trade_capture_reconciliation.on_loss_event("reconnect", occurred_at=time.time())`
+and `on_loss_event("error_25", occurred_at=time.time())` respectively.
+
+- [ ] **Step 6: Drain `_pending_sweeps` once per tick, bounded (max 20 pages per sweep, per design spec §7)**
+
+Add a `drain_pending_sweeps(client, *, max_sweeps_per_tick: int = 1) -> dict` that
+pops one pending sweep, computes its window (`occurred_at` to `occurred_at + 60`,
+using `seen_exchange_ts_by_id()`/`seen_horizon_ts()` from
+`services/whalewatchers/kalshi_trade_tape.py` as `reconcile_window` already
+consumes them today), and calls `run_sweep`. Wire it into `main.py`'s tick loop
+under the `reconciliation` caller class.
+
+- [ ] **Step 7: Test the full trigger-to-sweep path with an injected reconnect**
+
+Extend the existing reconnect-behavior test (found in Step 1 of Task 21, or
+wherever `tests/` currently covers `run()`'s reconnect path) to assert
+`on_loss_event` fires and a subsequent `drain_pending_sweeps` call recovers the
+trades that were in flight during the simulated gap — this is the P6 gate's
+correctness property.
+
+- [ ] **Step 8: Run the full reconciliation and WS test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_trade_capture_reconciliation.py tests/test_kalshi_ws_two_consumers.py tests/test_kalshi_ws_ingest_metrics.py -v`
+Expected: PASS
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add services/diagnostics/trade_capture_reconciliation.py services/kalshi/websocket.py main.py \
+  tests/test_trade_capture_reconciliation.py
+git commit -m "feat: trigger reconciliation only on reconnect/error-25, gated by the candidate ledger (I13 P6)"
+```
+
+---
+
+**P6 gate (final acceptance):** A fault-injection integration test (extend
+`tests/test_realtime_pipeline_candidates.py` or add a new one) that: starts the
+two-consumer, gated, ledgered pipeline against a fake WS source; injects a
+mid-stream disconnect that drops N in-flight whale-sized trades; reconnects;
+confirms `on_loss_event` fired, a sweep ran, and ≥ 99% of the N trades were
+recovered with **zero** duplicate ledger claims and zero duplicate `signal_log`
+rows. Then the full root-cause report §8 acceptance table, measured end to end in a
+24-hour paper-mode soak with every phase flag enabled and at least one busy hour
+(≥ 120 trades/s sustained) — this soak is a manual/scheduled verification step, not
+a unit test; record its result in a new dated section appended to
+`docs/superpowers/research/2026-08-25-realtime-root-cause-report.md` when run, per
+this repo's "accumulated history is a first-class asset" convention. Full test
+suite green with every phase flag flipped on.
+
+---
+
+## Self-review
+
+**Spec coverage:** every numbered section of
+`2026-08-25-realtime-data-plane-remediation-design.md` maps to at least one task —
+§2 message classes → Tasks 17/18/19/21; §3 ordering → Task 19's coalescing + Task
+18's queue split; §4 backpressure/drop/coalescing → Tasks 16/18/19; §5 retry/dedupe
+→ Tasks 2/10/11/12/27; §6 REST scheduler → Tasks 4/9/22/23/26; §7 reconciliation →
+Task 27; §8 persistence/thread ownership → Tasks 6/7/8/14/15; §9 observability →
+folded into every task's own wiring step (14, 17, 22-27) plus Task 1's watchdog; §10
+migration → the six phase headers themselves, each independently flagged and gated;
+§11 rollback → every flag defaults false and every table is additive; §12
+acceptance → the P6 gate. §13's internal contradiction review was already resolved
+in the spec itself.
+
+**Placeholder scan:** no "TBD"/"handle edge cases"/"similar to Task N" text; every
+code step shows real code. Several steps explicitly instruct the implementer to
+read a named real file/line before finalizing a snippet (e.g. Tasks 3, 15, 17, 18,
+21, 22, 24, 27) because this plan was written by grepping the current codebase, not
+by holding every exact current signature in view at once — that is a deliberate
+grounding instruction, not a placeholder: it names exactly what to check and why.
+
+**Type consistency:** `candidate_ledger.claim(trade_id, ticker=..., now=...) -> bool`
+is used identically in Tasks 2, 10, 11, 12, 27. `whale_gate.passes(trade, min_contracts=int) -> bool`
+is used identically in Tasks 3 and 17. `tick_executor.run(fn) -> Awaitable[T]` is
+used identically in Tasks 7, 8, 9 (paced calls still go through the loop's own
+`asyncio.gather`, not the executor — only genuinely synchronous SQLite work moves
+to `tick_executor`). `capture_writer.submit(store, row)` is used identically in
+Tasks 14, 15, 16. Caller classes (`critical_whale`, `critical_position`,
+`background_catalog`, `background_resolution`, `background_live_status`,
+`trade_tape_poll`, `reconciliation`) are introduced once each (Tasks 12/22/26/27)
+and reused by name thereafter, matching `services/http_client.py`'s existing
+`CALLER_CLASSES` registration pattern.

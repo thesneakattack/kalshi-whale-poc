@@ -10,9 +10,11 @@ import time
 from services import game_state
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
+from services import http_client
 from services.market_lookup import _sport_for_event
 
 
+@http_client.classify("background_catalog")
 async def _fetch_event_titles(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     """Fetches every not-yet-cached event's own title/sub_title/category -
     not just events with sibling markets (an earlier, narrower version of
@@ -152,6 +154,7 @@ _EVENT_LIVE_DATA_EXCLUDED_CATEGORIES = {"Sports"}  # 2026-08-16 API-doc audit
 # already follows.
 
 
+@http_client.classify("background_live_status")
 async def _fetch_event_live_data(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     event_tickers = list(dict.fromkeys(
         m["event_ticker"] for m in markets if m.get("event_ticker")

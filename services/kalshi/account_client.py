@@ -137,6 +137,12 @@ class KalshiAccountClient:
     async def get_balance(self) -> dict:
         return await self._reads.get_balance()
 
+    async def get_api_limits(self) -> dict:
+        return await self._reads.get_api_limits()
+
+    async def get_endpoint_costs(self) -> dict:
+        return await self._reads.get_endpoint_costs()
+
     async def get_positions(self) -> dict:
         return await self._reads.get_positions()
 
