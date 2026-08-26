@@ -420,6 +420,22 @@ questions.
       already rebuild the bundle from current source on every push, so a
       broken build fails loudly on its own and a stale-vs-source drift
       can't reach either check undetected.
+- [ ] **Persisted quality-coordination observation series** (I11 spec, I12
+      plan) — a read-only `services/quality_coordination.py` module that
+      tracks `tools.quality_audit` static findings' identity/persistence/
+      suppression state over time and exposes it via
+      `GET /api/quality/coordination`, with zero GitHub writes and zero new
+      credentials. Fully specified and planned as 9 bite-sized TDD tasks but
+      **not implemented** — the 2026-08-25/26 autonomous-quality-
+      coordination investigation (`docs/superpowers/research/2026-08-25-
+      autonomous-quality-architecture-decision.md`) measured **zero**
+      durable `main`-level findings needing escalation across its 41-hour
+      sample and concluded report-only stays correct until new evidence
+      says otherwise — building even this report-only observation series is
+      queued nice-to-have, not urgent, and a future write-lane (GitHub
+      issues/draft PRs) is explicitly a separate, later decision requiring
+      its own re-verification, not a default next step. Start here:
+      `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`.
 
 ## Shipped
 

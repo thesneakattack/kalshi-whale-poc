@@ -1,3 +1,4 @@
+import calendar
 import time
 
 from services import risk_manager as rm
@@ -6,6 +7,16 @@ from services import risk_manager as rm
 def _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True):
     monkeypatch.setattr(rm, "DB_PATH", tmp_path / "risk_state.db")
     return rm.RiskManager(starting_bankroll, max_daily_loss_pct, kill_switch_enabled)
+
+
+def _noon_of_seeded_day(manager) -> float:
+    """A `now` guaranteed to fall on the UTC calendar date the manager itself
+    seeded day_start_date from, so `now + 60` is provably the same day and
+    `now + 86400` provably the next one. Sampling time.time() in the test
+    instead raced the manager's own wall-clock seed: Woodpecker pipeline 135
+    (2026-08-25) took day1 at 23:59:57Z, so day1 + 60 was a real UTC date
+    rollover and the "same day" assertion failed on a docs-only push."""
+    return calendar.timegm(time.strptime(manager.day_start_date, "%Y-%m-%d")) + 12 * 3600
 
 
 def test_fresh_risk_manager_seeds_day_start_from_starting_bankroll(tmp_path, monkeypatch):
@@ -65,11 +76,11 @@ def test_reset_day_clears_halt_and_rebases_baseline(tmp_path, monkeypatch):
 
 def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch):
     # day1 must land on the *same* UTC calendar date the freshly-constructed
-    # RiskManager itself seeded day_start_date from (real wall-clock time)
-    # for this to actually exercise "no rollover yet" rather than
-    # accidentally triggering one from date mismatch alone.
-    day1 = time.time()
+    # RiskManager itself seeded day_start_date from, for this to actually
+    # exercise "no rollover yet" rather than accidentally triggering one
+    # from date mismatch alone - derived from the manager, not time.time().
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    day1 = _noon_of_seeded_day(risk)
     risk.check_daily_loss(890.0, now=day1)
     assert risk.halted is True
     # Later the same UTC day - still halted, no rollover yet.
@@ -78,8 +89,8 @@ def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch
 
 
 def test_check_daily_loss_auto_rolls_over_on_a_new_utc_day(tmp_path, monkeypatch):
-    day1 = time.time()
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    day1 = _noon_of_seeded_day(risk)
     risk.check_daily_loss(890.0, now=day1)
     assert risk.halted is True
     day2 = day1 + 86400  # 24h later - a new UTC calendar date
@@ -90,8 +101,8 @@ def test_check_daily_loss_auto_rolls_over_on_a_new_utc_day(tmp_path, monkeypatch
 
 
 def test_rollover_rebases_day_start_bankroll_even_without_a_prior_halt(tmp_path, monkeypatch):
-    day1 = time.time()
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
+    day1 = _noon_of_seeded_day(risk)
     risk.check_daily_loss(980.0, now=day1)  # small loss, never halts
     day2 = day1 + 86400
     risk.check_daily_loss(950.0, now=day2)
@@ -101,8 +112,8 @@ def test_rollover_rebases_day_start_bankroll_even_without_a_prior_halt(tmp_path,
 def test_rollover_persists_across_a_restart(tmp_path, monkeypatch):
     db_path = tmp_path / "risk_state.db"
     monkeypatch.setattr(rm, "DB_PATH", db_path)
-    day1 = time.time()
     risk = rm.RiskManager(starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True)
+    day1 = _noon_of_seeded_day(risk)
     risk.check_daily_loss(890.0, now=day1)
     assert risk.halted is True
 
