@@ -25,13 +25,6 @@
 # suppressed - if those lines are creeping up toward the threshold, run
 # `python3 -m tools.project_manifest --write static/project-manifest.json
 # --repo-root .` on the host (not via ddev exec: no git binary there).
-#
-# Also runs tools.build_status_page --check (2026-08-26 modularization of
-# static/status.html into docs/status-src/ fragments - see that module's
-# docstring). Exact match, not tolerance-based like project_manifest: this
-# is deterministic templating, not a mechanical count, so any difference
-# means someone edited static/status.html directly instead of its
-# fragments and forgot to regenerate.
 when:
   - event: [push, pull_request]
 
@@ -70,7 +63,6 @@ steps:
         --baseline tools/quality_audit/baseline.json
         --json-out build/quality-audit.json
       - python -m tools.project_manifest --check static/project-manifest.json --repo-root .
-      - python -m tools.build_status_page --check static/status.html --repo-root .
       # Scoped static type check of the Kalshi integration boundary
       # (Phase C Task C1, mypy.ini pins scope to services/kalshi/). A
       # separately identifiable command so a type failure reads as a type

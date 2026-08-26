@@ -164,25 +164,19 @@ Do not use it to justify reduced CI on real code changes.
 
 ---
 
-## 4.5 Generated status-page workflow — MERGED + OPERATIONAL
+## 4.5 Generated status-page workflow — RETIRED (2026-08-26, same day as this section originally described it as MERGED + OPERATIONAL)
 
-PR #16 changed `static/status.html` into generated output assembled from `docs/status-src/`.
+PR #16 changed `static/status.html` into generated output assembled from `docs/status-src/` (below, describing that state). Later the same day, the whole mechanism — page, fragments, generator, CI drift check, and the `/sync-status-docs` skill — was retired outright: it had already needed one modularization pass to stay manageable, and everything it recorded going forward duplicated what `git log` already had for free. Frozen as `docs/status-archive-2026-08-26.html`; see CLAUDE.md's "Git history + supplementary docs" section for the full reasoning. Kept here, struck through in spirit rather than deleted, per this doc's own §9 self-review discipline:
 
-Already operational:
+~~Already operational: `tools/build_status_page.py`, source fragments under `docs/status-src/`, CI drift check, updated `/sync-status-docs`.~~ `.claude/worktrees/` exclusion from project-manifest scans is the one part of this section that's still real — that scanner behavior is independent of status.html and wasn't touched by the retirement.
 
-- `tools/build_status_page.py`
-- source fragments under `docs/status-src/`
-- CI drift check
-- updated `/sync-status-docs`
-- `.claude/worktrees/` exclusion from project-manifest scans
+### Gain already realized (still true)
 
-### Gain already realized
+Parallel worktrees no longer inflate project-manifest counts.
 
-Large execution programs can update history with lower context/merge cost, and parallel worktrees no longer inflate project-manifest counts.
+### No longer applicable
 
-### Requirement
-
-Plans written before PR #16 must be refreshed if they instruct agents to edit `static/status.html` directly.
+The "refresh plans that instruct editing `static/status.html` directly" requirement this subsection originally named is moot now that the file doesn't exist to edit.
 
 ---
 
@@ -1153,7 +1147,7 @@ section), which still needs explicit design-doc approval regardless.
 | QCP/static health tooling | MERGED + OPERATIONAL | Maintain/extend only when gaps found |
 | Docs/research CI fast path | MERGED + OPERATIONAL (real as of 2026-08-26 — was merged but silently never engaging since PR #13; root-caused and fixed same day, PR #24) | Existing CI |
 | Push-scoped pytest via testmon | MERGED + OPERATIONAL (new 2026-08-26, PR #25) | Existing CI |
-| Generated status workflow | MERGED + OPERATIONAL | `/sync-status-docs` |
+| Generated status workflow | RETIRED (2026-08-26, same day) — frozen as `docs/status-archive-2026-08-26.html` | N/A — `git log` + `/close-roadmap-item` |
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
 | Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
@@ -1199,7 +1193,10 @@ Project-manifest scans no longer multi-count `.claude/worktrees/`.
 
 ### Lower documentation/context cost
 
-Status history is fragmented/generated rather than one huge file.
+Superseded same day (§4.5): the fragmented/generated status history this
+described was itself retired, not merely made cheaper to maintain — `git
+log` carries anything shipped going forward, at zero ongoing maintenance
+cost rather than a lower one.
 
 ### Better falsification tooling
 

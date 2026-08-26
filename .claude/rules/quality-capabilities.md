@@ -85,8 +85,8 @@ to the current task and load/use the relevant skill before acting.
 
 Existing project skills remain authoritative for their own responsibilities,
 including `/checkpoint`, `/config-field-edit`, `/run`, and
-`/sync-status-docs`. Prefer extending/combining existing capabilities rather
-than duplicating them.
+`/close-roadmap-item`. Prefer extending/combining existing capabilities
+rather than duplicating them.
 
 ## Standing investigation-to-guard rule
 

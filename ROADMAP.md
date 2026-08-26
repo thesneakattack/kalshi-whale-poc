@@ -9,29 +9,34 @@ below is measured against that bar, not against "does it technically work."
 This is a living to-do list, not a snapshot — check items off in place and
 add new ones as they turn up. **Keep this file short.** Only genuinely open
 items live here; the moment something ships, it comes off this list
-entirely (a one-line pointer at most) — the narrative belongs in
-`static/status.html`, not here. Four other docs carry the "what happened
-and why":
+entirely (a one-line pointer at most) — the narrative belongs in `git log`,
+not here. Other docs carry the "what happened and why":
 
-- **`static/status.html`** (`/status`) — the actively-maintained
-  backward-looking record, phase by phase, with the full "why," verification
-  steps, and bugs found along the way. The primary source for "what
-  happened and why" for anything shipped from now on.
+- **`git log` / `git blame` / `git diff`** — the primary, actively
+  maintained source for anything shipped from 2026-08-07 (the git cutover)
+  onward. Real commit-by-commit history, not reconstructed prose.
+- **`docs/status-archive-2026-08-26.html`** — a frozen, final snapshot of
+  `static/status.html`, the hand-maintained build-timeline page this
+  project kept before and after the git cutover, retired 2026-08-26 once
+  everything it recorded going forward was already git-tracked (see
+  `CLAUDE.md`'s "Git history + supplementary docs" section for the full
+  reasoning). Not maintained going forward — consult it for the
+  irreplaceable pre-git narrative, or anything shipped 2026-08-07 through
+  2026-08-26 that a bare commit message doesn't fully explain.
 - **`docs/roadmap-archive-2026-08-09.md`** — frozen snapshot #1 (pre-condense,
   837 lines).
 - **`docs/roadmap-archive-2026-08-16.md`** — frozen snapshot #2, covering
   2026-08-09 → 2026-08-16.
 - **`docs/roadmap-archive-2026-08-23.md`** — frozen snapshot #3, covering
   2026-08-16 → 2026-08-23 — the full evidence/numbers/fix-narrative behind
-  every item condensed below lives here (or in `status.html`/`git log` for
-  anything it references by commit).
+  every item condensed below lives here (or in the status archive/`git log`
+  for anything it references by commit).
 
-**When something ships, update `status.html`, not this file's own prose.**
-Use the `/sync-status-docs` skill — it checks the item off here (a bare
-`[x]`, not a rewrite into a paragraph) and adds the matching timeline
-phase to `status.html` in one pass. Resist the urge to leave a factual
-trail in this file itself; that's exactly how it got long three times
-already (837 → 1300+ → 979 → this).
+**When something ships, record the "why" in the commit message, not this
+file's own prose.** Use the `/close-roadmap-item` skill to check the item
+off here (a bare `[x]`, not a rewrite into a paragraph). Resist the urge to
+leave a factual trail in this file itself; that's exactly how it got long
+three times already (837 → 1300+ → 979 → this).
 
 ## Path to production
 
@@ -211,8 +216,9 @@ that work is sequenced.
       2026-08-23 compression pass: commit `e2dcf33`, "Phase 1/9: Remove the
       Market-Native strategy entirely," is on `main`. `services/market_strategy.py`/
       `market_strategy_calibration.py` no longer exist. This item had not
-      been checked off or logged in `status.html` — worth a `/sync-status-docs`
-      pass to backfill the phase entry.
+      been checked off at the time; the backfill-a-phase-entry follow-up is
+      now moot — `status.html` retired 2026-08-26 (`docs/status-archive-
+      2026-08-26.html`), commit `e2dcf33` speaks for itself in `git log`.
 - [x] **Split `services/analytics/` further** (advisory + whale calibration
       each their own module). Shipped 2026-08-22 as Phases 2-4/9 of the
       continued-modularization pass: `services/whale_calibration/`,

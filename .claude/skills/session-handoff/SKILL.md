@@ -35,8 +35,8 @@ Report:
 - docs/status/CHEATSHEET sync state.
 
 Use the existing `/checkpoint` skill first when verified work should be
-committed/pushed/checked in CI. Use `/sync-status-docs` when a roadmap item
-shipped.
+committed/pushed/checked in CI. Use `/close-roadmap-item` when a roadmap
+item shipped.
 
 The next session should reconstruct progress from git/current HEAD, not depend
 on this chat transcript.
