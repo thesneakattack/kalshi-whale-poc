@@ -110,14 +110,47 @@ visible in one place.
 | 4 — canonical shadow qualification | 3 exit | not started |
 | 5 — frontend operator console | plan refresh (spec stale) | not started |
 | 6 — personal production operations | 3/4 exit + human capital-policy decision | not started |
-| 7 — revised AQC implementation | plan refresh (spec stale) | not started |
+| 7 — revised AQC implementation | none for Tasks 1-9 as originally scoped (plan corrected 2026-08-26, `d015733`) — **new gate below** | **paused after Task 3** |
 | 8 — capital qualification (Stages A–F) | 6 exit + each stage's own human gate | not started |
 
 Programs 5 and 7 have no technical dependency on Track A/B — they're
-sequenced late by priority, not by a hard gate. If there's ever a reason
-to parallelize further (a separate session/worktree with nothing else to
-do), either could be picked up independently; say so explicitly rather
-than assuming this table's order is a hard constraint for those two.
+sequenced late by priority, not by a hard gate, which is why Program 7
+(AQC implementation) was picked up out of order on 2026-08-26 with no
+issue. Program 5 remains available for the same reason if there's ever
+a reason to parallelize further.
+
+**Program 7 status (2026-08-26): paused after Task 3, mid-plan, by
+explicit user decision — not a stall.** Tasks 1-3 (schema, automation-key
+derivation, coordinator policy port) are complete and committed on
+`feat/autonomous-quality-coordination`
+(worktree: `.claude/worktrees/autonomous-quality-coordination`), all
+zero-write, zero-credential, matching the plan's original scope exactly.
+Ledger: `.superpowers/sdd/2026-08-26-autonomous-quality-coordination/progress.md`
+on that branch/worktree — read it before resuming, it has the full pause
+rationale and two parked Task 3 review findings.
+
+**Why paused, not just slow:** mid-Task-4, the user asked to install a
+GitHub MCP server + a "GitHub Issues Kanban" skill and factor those
+write-capable GitHub operations into this AQC implementation. That
+directly conflicts with this plan's own Global Constraint #1 ("no write
+lane, no GitHub credential, no issue/PR authority anywhere in this
+plan... enabling any write capability is a separate, later, explicit
+design decision") and with
+`.claude/rules/autonomous-quality-coordination-evidence.md`'s
+requirement for a full threat-model/fault-injection/adversarial-review
+pass before any write lane exists. Given the choice, the user chose to
+**pause AQC implementation and scope a real write-lane design first**,
+rather than install-and-keep-separate or something narrower.
+
+**New gate for Program 7's remaining Tasks 4-9:** a separate write-lane
+design investigation must complete and produce its own explicit plan
+before implementation resumes — Tasks 4-9 are otherwise unblocked
+(zero-write as originally scoped) but should not resume until that
+parallel decision is resolved one way or another, so the two efforts
+don't end up designing against each other. That investigation had not
+yet started as of this board update (blocked on inspecting the actual
+MCP tool's real capabilities/credential model — a marketplace page
+fetch failed 3x with HTTP 429).
 
 ---
 
