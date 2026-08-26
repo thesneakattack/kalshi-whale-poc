@@ -35,12 +35,19 @@ ROADMAP.md's "Path to production" section and the relevant module
 - Entry-gate adverse selection — KXBTC15M whale signals resolved 88.8%
   correct across 394 settled signals, but the 12 the gates actually traded
   resolved only 58.3%. Not yet root-caused.
-- `services/shadow_mode.py` output has never been reviewed for a real
-  evaluation stretch — that review, not the code existing, is the actual
-  gate before ever flipping `trading_enabled`.
-- No real deployment target yet (local `ddev` on one machine only), no
-  human-set real position-size/kill-switch numbers, and the single-operator
-  auth model hasn't been explicitly confirmed as sufficient for real money.
+- `services/shadow_mode.py` has never produced a trade to review, not just
+  "unreviewed" — `mode` has been switched to `shadow` only twice ever, both
+  reverted within 24h, zero rows logged either time. No sustained real
+  evaluation stretch has happened yet, and none is in progress today
+  (`mode: paper`). That stretch, then a review of it, is the actual gate
+  before ever flipping `trading_enabled` — see ROADMAP.md for the verified
+  detail.
+- No real deployment target yet (local `ddev` on one machine only); no
+  human-set real position-size/kill-switch numbers (`risk.max_daily_loss_pct`
+  is currently `0.85` — today's kill switch only halts after 85% of the
+  day's bankroll is gone, i.e. not meaningfully protective as configured);
+  and the single-operator auth model hasn't been explicitly confirmed as
+  sufficient for real money.
 - Sports-category contracts carry unresolved multi-state legal exposure
   (`docs/prediction-markets-research-reference.md` Part 3); this app has
   zero category-level legal-risk awareness today.
