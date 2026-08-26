@@ -10,10 +10,35 @@
 # persistence module's DB_PATH into a temp dir and hard-blocks sqlite3.connect
 # against the real data/ directory before any test can run, so this container
 # never touches (and does not even receive) this repo's live data/*.db files.
+#
+# The pytest step's own commands skip the actual suite when
+# scripts/ci-skip-heavy-suite.sh's verdict (computed once, in the
+# ci-fast-path-check step below, and shared via build/.ci-skip-verdict) is
+# SKIP - i.e. nothing outside docs/**, .claude/**, or repo-root scaffold
+# files changed relative to main. This is a fast-path for research/docs-only
+# investigation branches (found live, 2026-08-25: full pytest + browser E2E
+# on every push was inflating multi-commit investigation sessions from ~2h
+# to ~20h of wall time), NOT a path-to-test-file relevance scheme for real
+# code changes - see this file's own reasoning above ("no path filter,
+# since a change anywhere in services/ or main.py can regress any other
+# module") for why a real code change always still gets the full suite.
+# scripts/ci-skip-heavy-suite.sh's own header has the full design rationale
+# and fail-safe rules; this pipeline never changes `when:`/which steps run/
+# what status posts to GitHub, only whether pytest's commands do real work.
 when:
   - event: [push, pull_request]
 
 steps:
+  # Tiny, git-capable image (python:3.13-slim below has no git binary at
+  # all - see quality-architecture-audit.yml's own comment on this) that
+  # computes the fast-path verdict once and writes it to the shared
+  # workspace for the pytest step to read - no git needed there.
+  - name: ci-fast-path-check
+    image: alpine/git
+    commands:
+      - mkdir -p build
+      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+
   - name: pytest
     image: python:3.13-slim
     # Persistent uv download cache, shared across pipelines and runs. uv made
@@ -33,27 +58,36 @@ steps:
     volumes:
       - wp-uv-cache:/root/.cache/uv
     commands:
-      # uv instead of pip: measured 5s vs 78s for this same
-      # requirements-dev.txt on python:3.13-slim (both runs back to back on
-      # the same contended host, so the ratio is the meaningful part, not
-      # the absolute numbers). Four of this repo's pipelines pay this exact
-      # install, and it was the single largest cost in the two slowest
-      # steps. --system installs into the image's own interpreter rather
-      # than a venv, which is what every step here already assumed pip was
-      # doing. Resolution is unchanged: same requirements file, same pins.
-      - pip install -q uv
-      - uv pip install --system -r requirements-dev.txt
-      # -n 4, not `auto`. `auto` uses every visible core, and the
-      # container sees all 16 of the host's - but the shared agent runs
-      # WOODPECKER_MAX_WORKFLOWS=4, so four concurrent pytest steps would
-      # ask for 64 workers on 16 cores. At 4 the worst case is exactly the
-      # core count. Measured on this suite (1574 tests, all green at every
-      # setting): 230s serial, 72s at -n 2, 46s at -n 4, 29s at -n 8, 23s at
-      # -n auto. Most of the win is already banked by 4, and the remaining
-      # 17s is not worth oversubscribing a host that also runs the live ddev
-      # stack. Raise it here if the agent's concurrency ever drops.
-      #
-      # -v dropped deliberately: xdist interleaves workers, so per-test
-      # verbose output arrives out of order and is harder to read than the
-      # progress line, not easier.
-      - python -m pytest -n 4
+      - |
+        if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
+          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping the full pytest run"
+        else
+          # uv instead of pip: measured 5s vs 78s for this same
+          # requirements-dev.txt on python:3.13-slim (both runs back to
+          # back on the same contended host, so the ratio is the
+          # meaningful part, not the absolute numbers). Four of this
+          # repo's pipelines pay this exact install, and it was the
+          # single largest cost in the two slowest steps. --system
+          # installs into the image's own interpreter rather than a
+          # venv, which is what every step here already assumed pip
+          # was doing. Resolution is unchanged: same requirements
+          # file, same pins.
+          pip install -q uv
+          uv pip install --system -r requirements-dev.txt
+          # -n 4, not `auto`. `auto` uses every visible core, and the
+          # container sees all 16 of the host's - but the shared
+          # agent runs WOODPECKER_MAX_WORKFLOWS=4, so four concurrent
+          # pytest steps would ask for 64 workers on 16 cores. At 4
+          # the worst case is exactly the core count. Measured on
+          # this suite (1574 tests, all green at every setting): 230s
+          # serial, 72s at -n 2, 46s at -n 4, 29s at -n 8, 23s at -n
+          # auto. Most of the win is already banked by 4, and the
+          # remaining 17s is not worth oversubscribing a host that
+          # also runs the live ddev stack. Raise it here if the
+          # agent's concurrency ever drops.
+          #
+          # -v dropped deliberately: xdist interleaves workers, so
+          # per-test verbose output arrives out of order and is
+          # harder to read than the progress line, not easier.
+          python -m pytest -n 4
+        fi
