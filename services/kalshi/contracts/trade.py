@@ -52,6 +52,11 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
         "docs/kalshi/public-trades.md",
         "docs/kalshi/fixed_point_migration.md",
     ),
+    "trade_contract_count": (
+        "docs/kalshi/get-trades.md",
+        "docs/kalshi/public-trades.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
     "public_trade_from_ws": (
         "docs/kalshi/public-trades.md",
         "docs/kalshi/get-trades.md",
@@ -164,6 +169,19 @@ def public_trade_from_ws(msg: dict) -> PublicTrade:
         ts_ms=ts_ms if isinstance(ts_ms, int) else None,
         raw_payload=msg,
     )
+
+
+def trade_contract_count(msg: dict) -> float | None:
+    """Raw contract count (count_fp) from a trade print, or None when
+    absent/unparseable - never a fabricated 0 (same never-invent-a-number
+    rule as _dollars/taker_notional_usd; a fabricated 0 would silently read
+    as "below any threshold" instead of "unusable"). Deliberately the
+    cheapest possible accessor (one dict get + one float parse, no side
+    resolution, no timestamp derivation) so a reader-side size gate that
+    runs on every trade message can stay at microsecond cost - see
+    services/whale_gate.py, the realtime data-plane remediation plan's P0
+    Task 3."""
+    return _dollars(msg.get("count_fp"))
 
 
 def taker_notional_usd(msg: dict, side: str) -> float | None:

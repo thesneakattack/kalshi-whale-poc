@@ -154,6 +154,20 @@ Names (all `float`; zero-count classes are omitted, never fabricated):
 - `…ingest.server_errors`, `…ingest.error_25_total`, `…ingest.error_25_window`,
   `…ingest.reconnects`.
 
+**`gate_would_reject` / `gate_exceptions` (realtime data-plane remediation
+P0 Task 3, 2026-08-26).** Two lifetime counters on `ingest_metrics()`
+itself (`services/whale_gate.py`'s reader-side whale-size gate, run in
+`_ingest_raw` for every `trade`-class message). Shadow mode today: nothing
+is dropped, `gate_would_reject` counts what a live gate WOULD have
+rejected and `gate_exceptions` counts the gate's own failures (fall-open -
+never silently hides a whale). **Not yet flattened into `capture_from_runtime`
+or persisted to `data/observability.db`** - deliberately out of this
+task's scope; read them live via `ingest_metrics()` (e.g. through
+whatever route already surfaces it, such as `/api/health/pipeline`) until
+Task 17 (which flips the gate from shadow to actually filtering the
+market queue) wires them into the persisted history alongside the rest of
+`<stream>.ingest.*`.
+
 **Window semantics — who resets what.** Every `window`/`_window` figure
 covers exactly one persisted sample's span: `maybe_capture` calls each
 gateway's `reset_ingest_window()` immediately *after* `record_samples_bulk`

@@ -46,6 +46,8 @@ from services.kalshi.contracts import ticker as ticker_contract
 from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
 from services import fault_log
+from services import whale_gate
+from services.config_store import config_store
 from services.latency_agg import LatencyAgg, bucket_for, empty_buckets, p95_upper_bound
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
@@ -250,6 +252,13 @@ class KalshiStreamGateway:
         self._server_error_last: dict | None = None
         self._error_25_total = 0
         self._error_25_window = 0
+        # Reader-side whale-size gate shadow counters (realtime data-plane
+        # remediation P0 Task 3). Shadow mode never drops anything on their
+        # account - gate_would_reject just counts what a live gate WOULD
+        # have rejected, and gate_exceptions counts the gate's own failures
+        # (fall-open: a broken gate must never hide a whale).
+        self._gate_would_reject = 0
+        self._gate_exceptions = 0
         self._connects = 0
         self._reconnects = 0
         self._last_disconnect: dict | None = None
@@ -564,6 +573,21 @@ class KalshiStreamGateway:
             return _OTHER_CLASS
         return _CLASS_BY_MESSAGE_TYPE.get(msg_type, _OTHER_CLASS)
 
+    def _shadow_gate_check(self, trade_msg: dict) -> None:
+        """Shadow-mode only (realtime data-plane remediation P0 Task 3):
+        counts what whale_gate.passes() would reject, never drops anything
+        - Task 17 is what flips this to actually filtering the market
+        queue. A gate exception falls open (counted, not raised) so a bug
+        in the gate itself can never hide a real whale print; the message
+        is still enqueued below exactly as it is today either way."""
+        try:
+            min_contracts = whale_gate.min_contracts_for(trade_msg.get("market_ticker") or "", config_store.get())
+            if not whale_gate.passes(trade_msg, min_contracts=min_contracts):
+                self._gate_would_reject += 1
+        except Exception as exc:
+            self._gate_exceptions += 1
+            fault_log.record("whale_gate", "passes", exc)
+
     def _ingest_raw(self, raw_message, now: float | None = None) -> bool:
         """Reader side: parse, classify, count, then enqueue or drop. Returns
         whether the message was enqueued.
@@ -584,6 +608,8 @@ class KalshiStreamGateway:
             return False
         cls = self._message_class(data)
         self._received_by_class[cls] = self._received_by_class.get(cls, 0) + 1
+        if cls == "trade":
+            self._shadow_gate_check(data.get("msg") or {})
         queue = self._queue
         if queue is None:
             queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
@@ -732,6 +758,8 @@ class KalshiStreamGateway:
             },
             "error_25_total": self._error_25_total,
             "error_25_window": self._error_25_window,
+            "gate_would_reject": self._gate_would_reject,
+            "gate_exceptions": self._gate_exceptions,
             "connection": {
                 "connects": self._connects,
                 "reconnects": self._reconnects,
