@@ -372,3 +372,42 @@ def fetch_branch_signals(repo: str = "thesneakattack/kalshi-whale-poc", timeout:
             continue
         signals.append(BranchSignal(name=name, changed_paths=paths, last_commit_at_iso=last_commit_iso))
     return signals
+
+
+def latest_run_at() -> float | None:
+    """Most recent persisted run timestamp, for cold-start seeding — same role as backup.py's
+    `latest()` call in `_maybe_run_backup`. Returns None if no run has ever completed."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT MAX(ran_at) AS m FROM coordination_runs").fetchone()
+        if row is None or row["m"] is None:
+            return None
+        return datetime.fromisoformat(row["m"]).timestamp()
+    finally:
+        conn.close()
+
+
+def run_coordination_cycle(repo_root: Path) -> RunResult:
+    """The full cycle: fetch branch signals, derive claims, observe main. Synchronous and
+    blocking by design (fetch_branch_signals does a real urlopen; observe_main runs a full
+    tools.quality_audit pass) — the async wrapper in main.py is what keeps this off the
+    event loop, not this function itself, exactly matching backup.py's
+    run_backup_cycle/_run_backup_background split. That also makes this directly callable
+    from a plain script with no asyncio involved at all, same as backup.py's own
+    `if __name__ == "__main__":` block.
+
+    Returns RunResult (Task 4's dataclass, from observe_main) — NOT a plain dict, unlike
+    backup.py's run_backup_cycle. A dataclass isn't JSON-serializable on its own; the
+    __main__ block below converts via dataclasses.asdict() before json.dumps()."""
+    branches = fetch_branch_signals()
+    claims = derive_claims()
+    return observe_main(repo_root, branches=branches, claims=claims)
+
+
+if __name__ == "__main__":
+    import dataclasses
+    import json
+
+    _repo_root = Path(__file__).resolve().parent.parent
+    _result = run_coordination_cycle(_repo_root)
+    print(json.dumps(dataclasses.asdict(_result), indent=2))

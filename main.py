@@ -5,6 +5,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path as _Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -113,6 +114,7 @@ from services.market_watch import (  # noqa: E402
 )
 from services.backup import _maybe_run_backup  # noqa: E402
 from services.backup import routes as backup_routes  # noqa: E402
+from services.quality_coordination import latest_run_at, run_coordination_cycle  # noqa: E402
 from services.alerting import check_and_alert  # noqa: E402
 from services.alerting import routes as alerting_routes  # noqa: E402
 from services.observability import maybe_capture as _maybe_capture_observability  # noqa: E402
@@ -263,6 +265,56 @@ async def _check_signal_resolutions(client: KalshiPublicGateway):
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
+
+
+_REPO_ROOT = _Path(__file__).resolve().parent
+
+
+async def _run_quality_coordination_background() -> None:
+    """Background-task wrapper — same split as backup.py's _run_backup_background.
+    asyncio.to_thread is what actually keeps run_coordination_cycle's blocking urlopen +
+    quality-audit work off the event loop; without it, a coordination run would stall the
+    trading loop's own tick timing for the duration."""
+    qc_state = state["quality_coordination"]
+    try:
+        await asyncio.to_thread(run_coordination_cycle, _REPO_ROOT)
+    finally:
+        qc_state["running"] = False
+
+
+def _maybe_run_quality_coordination(cfg: dict) -> None:
+    """Kicks off _run_quality_coordination_background as an independent background task if a
+    coordination run is due and none is already running - never awaited by the calling tick,
+    same fire-and-forget shape as _maybe_run_backup/_maybe_check_signal_resolutions. Disabled
+    by default (config/settings.yaml's quality_coordination.enabled: false) until a real
+    tick_phase_timings noninterference measurement is taken with it turned on - see
+    services/quality_coordination.py's run_coordination_cycle docstring.
+
+    Same cold-start-safe interval tracking as _maybe_run_backup: last_run_at is seeded from
+    services/quality_coordination.py's own persisted coordination_runs history
+    (latest_run_at()) on first check in a process, rather than trusting an unseeded 0.0 -
+    a restart doesn't mean immediately overdue, just unknown, so go check what actually
+    happened before deciding."""
+    qc_cfg = cfg.get("quality_coordination") or {}
+    if not qc_cfg.get("enabled", False):
+        return
+    qc_state = state.setdefault(
+        "quality_coordination", {"running": False, "last_run_at": 0.0, "task": None},
+    )
+    if qc_state["last_run_at"] == 0.0:
+        persisted = latest_run_at()
+        if persisted is not None:
+            qc_state["last_run_at"] = persisted
+    interval = qc_cfg.get("interval_sec", 3600)
+    now_ts = time.time()
+    due = now_ts - qc_state["last_run_at"] > interval
+    if due and not qc_state["running"]:
+        qc_state["running"] = True
+        qc_state["last_run_at"] = now_ts
+        qc_state["task"] = task_supervisor.supervise(
+            _run_quality_coordination_background,
+            component="quality_coordination", operation="run",
+        )
 
 
 def _flush_trade_capture(trade_tape: list, cfg: dict) -> dict:
@@ -447,6 +499,7 @@ async def trading_loop():
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
             _maybe_check_signal_resolutions(cfg)
+            _maybe_run_quality_coordination(cfg)
             _maybe_run_backup(cfg)
             _maybe_run_research(cfg)
             event_schedule._maybe_resolve_event_schedules(cfg)
