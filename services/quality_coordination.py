@@ -48,7 +48,7 @@ def _connect() -> sqlite3.Connection:
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS coordination_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        audit_fingerprint TEXT NOT NULL UNIQUE,
+        audit_fingerprint TEXT NOT NULL,
         commit_sha TEXT,
         ran_at TEXT NOT NULL,
         items_observed INTEGER NOT NULL,
@@ -297,21 +297,25 @@ def observe_main(repo_root: Path, at: datetime | None = None,
             report = _run_static_audit(repo_root)
         except Exception as exc:
             fp = hashlib.sha256(f"error:{exc}".encode()).hexdigest()
-            conn.execute(
-                """INSERT OR IGNORE INTO coordination_runs
-                   (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
-                   VALUES (?, ?, ?, 0, 0, ?)""",
-                (fp, _current_commit_sha(repo_root), at.isoformat(), str(exc)),
-            )
-            conn.commit()
+            last = conn.execute(
+                "SELECT audit_fingerprint FROM coordination_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if last is None or last["audit_fingerprint"] != fp:
+                conn.execute(
+                    """INSERT INTO coordination_runs
+                       (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+                       VALUES (?, ?, ?, 0, 0, ?)""",
+                    (fp, _current_commit_sha(repo_root), at.isoformat(), str(exc)),
+                )
+                conn.commit()
             return RunResult(fp, None, 0, 0, {}, str(exc))
 
         fp = _fingerprint(report)
-        existing = conn.execute(
-            "SELECT * FROM coordination_runs WHERE audit_fingerprint=?", (fp,)
+        last = conn.execute(
+            "SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        if existing is not None:
-            return RunResult(fp, existing["commit_sha"], 0, 0, {}, existing["error"])
+        if last is not None and last["audit_fingerprint"] == fp:
+            return RunResult(fp, last["commit_sha"], 0, 0, {}, last["error"])
 
         signals = [
             Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)

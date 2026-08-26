@@ -305,3 +305,85 @@ def test_fetch_branch_signals_degrades_to_empty_list_when_branches_payload_is_no
         lambda url, timeout: {"message": "Not Found"},
     )
     assert fetch_branch_signals() == []
+
+
+def test_observe_main_reprocesses_a_fingerprint_that_recurs_non_consecutively(tmp_path, monkeypatch):
+    """Task 10: idempotence must be scoped to the immediately-preceding run, not all history.
+    {A} -> {A,B} -> {A} again: the third run's fingerprint equals the first's, but the
+    immediately-preceding run (the {A,B} one) has a different fingerprint, so the third run
+    must reprocess (not short-circuit) and mark B resolved. Under the old all-history
+    UNIQUE/WHERE-lookup behavior this fingerprint would already exist in coordination_runs
+    (from run 1) and the run would wrongly short-circuit."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report_a = QualityReport(findings=[_finding(check="config-usage", scope="a.b", finding_id="a")])
+    report_ab = QualityReport(findings=[
+        _finding(check="config-usage", scope="a.b", finding_id="a"),
+        _finding(check="config-usage", scope="c.d", finding_id="b"),
+    ])
+    with patch("services.quality_coordination._current_commit_sha", return_value=None):
+        with patch("services.quality_coordination._run_static_audit", return_value=report_a):
+            r1 = observe_main(tmp_path, at=T0)
+        with patch("services.quality_coordination._run_static_audit", return_value=report_ab):
+            r2 = observe_main(tmp_path, at=T0 + timedelta(hours=1))
+        with patch("services.quality_coordination._run_static_audit", return_value=report_a):
+            r3 = observe_main(tmp_path, at=T0 + timedelta(hours=2))
+    assert r1.audit_fingerprint == r3.audit_fingerprint
+    assert r2.audit_fingerprint != r1.audit_fingerprint
+    assert r3.items_observed == 1  # reprocessed, not short-circuited
+
+    conn = _connect()
+    runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
+    assert runs == 3  # every run gets its own row now, not deduped against all history
+    row = conn.execute(
+        "SELECT state FROM coordination_items WHERE automation_key='config-usage|c.d|'"
+    ).fetchone()
+    assert row["state"] == "resolved"  # B absent from the third (back-to-A) report
+    conn.close()
+
+
+def test_observe_main_still_short_circuits_on_true_back_to_back_repeat(tmp_path, monkeypatch):
+    """Task 4's original idempotence guarantee, preserved: two consecutive identical-fingerprint
+    runs must still short-circuit the second one."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        r1 = observe_main(tmp_path, at=T0)
+        r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
+    assert r1.audit_fingerprint == r2.audit_fingerprint
+    assert r2.items_observed == 0  # second call short-circuits, no re-processing
+    conn = _connect()
+    runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
+    assert runs == 1  # only one row, not two
+    conn.close()
+
+
+def test_observe_main_error_path_does_not_spam_identical_consecutive_errors(tmp_path, monkeypatch):
+    """The error path must not insert a new coordination_runs row for a repeating identical
+    error now that the UNIQUE constraint (which used to do this implicitly via
+    INSERT OR IGNORE) is gone."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+        r1 = observe_main(tmp_path, at=T0)
+        r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
+    assert r1.audit_fingerprint == r2.audit_fingerprint
+    conn = _connect()
+    runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
+    assert runs == 1
+    conn.close()
+
+
+def test_observe_main_error_path_logs_a_new_row_when_the_error_changes(tmp_path, monkeypatch):
+    """A different consecutive error must still get its own row — this also resolves the
+    separately-parked Minor finding that latest_run_at() used to freeze at the first failure
+    forever under the old UNIQUE-constrained scheme."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+        r1 = observe_main(tmp_path, at=T0)
+    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("crash")):
+        r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
+    assert r1.audit_fingerprint != r2.audit_fingerprint
+    conn = _connect()
+    runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
+    assert runs == 2
+    conn.close()
