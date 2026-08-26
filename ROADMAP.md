@@ -80,6 +80,22 @@ that work is sequenced.
       gate check on every rejected candidate, by design) needs real
       retention or a pre-aggregated summary table - the SQL rewrite fixed
       the loop-blocking, not the underlying growth.
+- [x] **A second, unrelated event-loop-blocking bug**, found the same day
+      while investigating WS-subscription churn (below): three
+      `services/whale_calibration/routes.py` routes ran synchronous work
+      directly on the event loop on every dashboard poll, proven via
+      another live `py-spy` trace. `GET /api/confidence-calibration/status`
+      fetched and JSON-parsed every resolved-with-factors signal
+      (~70K rows) just to `len()` the result - replaced with
+      `signal_log.resolved_with_factors_count()`, a plain `COUNT(*)`.
+      `GET .../report` and `POST .../apply` ran the full per-factor bucket
+      analysis (`confidence_calibration._bucket_win_rates`) synchronously -
+      offloaded via `tick_executor` (a plain thread offload was sufficient
+      here, unlike the fix above, since the per-call cost at current scale
+      is ~2s, not 18s+). Live-verified: 5 consecutive `/api/state` requests
+      all succeeded in 1.5-2.5s each, sustained over 15s, where the app had
+      previously been unable to complete a single request. PR #36
+      (`fix/whale-calibration-blocking-loop`).
 
 - [x] Runway/exit gates: a position could open with almost no time left
       before its market's close and ride unmanaged to settlement. Fixed via

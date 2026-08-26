@@ -10,7 +10,7 @@ cleanest of the modules pulled out this pass.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import config_performance, signal_log
+from services import config_performance, signal_log, tick_executor
 from services.app_state import bump_generation
 from services.config_store import config_store
 from services.whale_calibration import calibration_history, confidence_calibration
@@ -67,8 +67,14 @@ async def get_confidence_calibration_status():
     # Same "honest progress even while gated" idiom as /api/advisory/status -
     # never leaks a real report early, but useful to show real progress
     # toward the threshold while waiting.
+    # resolved_with_factors_count() (2026-08-26 fix, ROADMAP.md's event-
+    # loop-stall entry) - this used to fetch+JSON-parse every resolved
+    # signal with a factor breakdown just to call len() on the result,
+    # proven live via a py-spy stack trace to cost real time on every
+    # dashboard poll of this route. A plain COUNT(*) answers the same
+    # question without materializing a single row in Python.
     cc_cfg = config_store.get()["confidence_calibration"]
-    resolved_count = len(signal_log.resolved_signals_with_factors())
+    resolved_count = signal_log.resolved_with_factors_count()
     return {
         "enabled": cc_cfg["enabled"],
         "min_resolved_signals": cc_cfg["min_resolved_signals"],
@@ -88,9 +94,21 @@ async def get_confidence_calibration_report():
     if not cc_cfg["enabled"]:
         return {"report": None, "gated_reason": "confidence calibration is disabled", "resolved_count": None}
 
-    rows = signal_log.resolved_signals_with_factors()
+    # Offloaded via tick_executor (2026-08-26 fix, ROADMAP.md's event-loop-
+    # stall entry) - proven live via a py-spy stack trace to run the fetch
+    # (signal_log.resolved_signals_with_factors, one JSON-parse per row)
+    # and the per-factor bucket analysis (confidence_calibration._bucket_
+    # win_rates, one sort+filter pass per factor) directly on the event
+    # loop, on every dashboard poll of this route.
     current_weights = config_store.get().get("whale_confidence_weights")
-    return confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
+
+    def _build_report():
+        rows = signal_log.resolved_signals_with_factors()
+        return confidence_calibration.generate_calibration_report(
+            rows, cc_cfg["min_resolved_signals"], current_weights
+        )
+
+    return await tick_executor.run(_build_report)
 
 
 @router.post("/api/confidence-calibration/apply")
@@ -115,9 +133,15 @@ async def apply_confidence_calibration_suggestion():
 
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
-    rows = signal_log.resolved_signals_with_factors()
     current_weights = cfg.get("whale_confidence_weights") or {}
-    result = confidence_calibration.generate_calibration_report(rows, cc_cfg["min_resolved_signals"], current_weights)
+
+    def _build_report():
+        rows = signal_log.resolved_signals_with_factors()
+        return confidence_calibration.generate_calibration_report(
+            rows, cc_cfg["min_resolved_signals"], current_weights
+        )
+
+    result = await tick_executor.run(_build_report)
     if result["report"] is None:
         raise HTTPException(status_code=400, detail=result["gated_reason"])
 
