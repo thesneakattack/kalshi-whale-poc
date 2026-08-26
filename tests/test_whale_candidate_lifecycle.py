@@ -35,7 +35,7 @@ import asyncio
 
 import pytest
 
-from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_ledger, candidate_log, candidate_retry, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.market_analyst_agent import _db as maa_db_module
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider
 
@@ -49,6 +49,8 @@ def _isolated_dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
     monkeypatch.setattr(candidate_log, "DB_PATH", tmp_path / "candidate_log.db")
+    monkeypatch.setattr(candidate_ledger, "DB_PATH", tmp_path / "candidate_ledger.db")
+    monkeypatch.setattr(candidate_retry, "_pending", {})
 
 
 _CFG = {"whale_watcher_kalshi": {"min_contracts": 50}}
@@ -190,3 +192,14 @@ def test_desired_a_transiently_failed_candidate_is_eventually_evaluated_when_the
     first = _run(provider, client, _whale_print())
     second = _run(provider, client, _whale_print())
     assert len(first) + len(second) == 1  # evaluated exactly once, on whichever pass the context was available
+
+
+# --- P2 Task 12: a transient lookup failure enqueues for retry --------------
+
+def test_a_lookup_failure_enqueues_for_retry_instead_of_vanishing():
+    provider = KalshiTradeTapeProvider()
+    client = _FlakyClient(fail_first=1)
+    assert _run(provider, client, _whale_print()) == []
+    assert candidate_retry.pending_count() == 1
+    assert "whale-1" in candidate_retry._pending
+    assert candidate_retry._pending["whale-1"]["trade"]["ticker"] == _OFFLIST

@@ -335,6 +335,47 @@ tick executor, the reader gate, the two-consumer split) actually reduce
 loop stalls rather than only moving where the same blocking work runs.
 
 
+### `candidate_retry.*` — H4-recovery retry queue (realtime data-plane remediation P2 Task 12, 2026-08-26)
+
+Source: `services/candidate_retry.py`, the single-owner retry queue a
+whale-sized off-watchlist print's `trade_id` enters when its market
+lookup fails transiently (`services/whalewatchers/kalshi_trade_tape.py`'s
+`_resolve_unknown_markets`, on the `except Exception:` branch that Task
+11's H4 fix also stops from marking the trade seen). `run_pending` is not
+yet wired into the trading tick (that is Task 13) — until then this
+module accumulates only via direct test calls, and every metric below
+reads as its default (`pending` 0, everything else 0).
+
+Names (`float`; same "no evidence, no rows" contract as every other
+family in this file — omitted entirely when nothing is pending AND
+nothing happened this window; `capture_from_runtime`'s own tested
+contract is that a fully quiet tick returns `metrics == {}`, not a page
+of meaningful-looking zeros):
+
+- `candidate_retry.pending` — a live gauge, `len(candidate_retry._pending)`
+  at capture time, not a windowed count.
+- `candidate_retry.retried` — retry attempts made in this window (an
+  entry whose backoff had elapsed when `run_pending` ran, regardless of
+  outcome).
+- `candidate_retry.recovered` — of those, how many found a market and
+  claimed their `trade_id` in `candidate_ledger` (Task 10's gate) this
+  window.
+- `candidate_retry.abandoned` — of those, how many exhausted
+  `_BACKOFF_SCHEDULE_SEC` (sums to ≈91.5 s, comfortably over I12 R7's
+  ≥72 s minimum-survivable-outage finding) and were dropped this window.
+
+**Window ownership.** Same rule as every other module in this file:
+`maybe_capture` calls `candidate_retry.reset_window()` only after a
+sample is durably persisted; `capture_from_runtime`/`snapshot()` never
+reset. `reset_window()` only zeroes the three window counters — `pending`
+reads `_pending`'s real current length, never reset (it isn't a window
+metric, it's live state).
+
+**Use.** Task 13's own P2 gate criterion — "abandoned > 0 in a window
+surfaces as a quality finding" — reads `candidate_retry.abandoned` from
+here, once Task 13 wires the finding.
+
+
 ### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
 
 Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),

@@ -30,7 +30,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import candidate_log, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, candidate_retry, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
 from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi.contracts import trade as trade_contract
@@ -370,6 +370,11 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         self._resolve_failed_tickers = set()
         wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
         wanted: set[str] = set()
+        # Retained only so a lookup failure below (candidate_retry, P2 Task
+        # 12) can enqueue every real trade behind a failed ticker - not just
+        # the ticker itself. More than one whale print can share an
+        # off-list ticker in the same tick.
+        trades_by_ticker: dict[str, list[dict]] = {}
         for trade in trade_tape:
             ticker = trade.get("ticker")
             trade_id = trade.get("trade_id")
@@ -390,6 +395,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             if counts is not None:
                 counts["offlist_candidates"] = counts.get("offlist_candidates", 0) + 1
             wanted.add(ticker)
+            trades_by_ticker.setdefault(ticker, []).append(trade)
 
         if not wanted or client is None:
             return
@@ -404,7 +410,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             counts["resolve_calls"] = counts.get("resolve_calls", 0) + 1
         try:
             fetched = await client.get_markets_by_tickers(batch)
-        except Exception:
+        except Exception as exc:
             self.stats["resolve_failures"] += 1
             if counts is not None:
                 counts["resolve_failures"] = counts.get("resolve_failures", 0) + 1
@@ -414,6 +420,13 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # a real whale print is lost forever to a 429/timeout that had
             # nothing to do with the trade itself.
             self._resolve_failed_tickers |= set(batch)
+            # P2 Task 12: give every trade behind a failed ticker a durable
+            # retry path instead of relying solely on the same trade_id
+            # naturally reappearing in a later trade tape poll (not
+            # guaranteed, and not bounded).
+            for ticker in batch:
+                for trade in trades_by_ticker.get(ticker, []):
+                    candidate_retry.enqueue(trade, failure=exc)
             return
         for ticker in batch:
             market = fetched.get(ticker)

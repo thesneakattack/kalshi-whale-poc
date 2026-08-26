@@ -688,3 +688,56 @@ def test_maybe_capture_resets_the_loop_watchdog_window_after_persisting(monkeypa
     observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
 
     assert resets == [1]
+
+
+def test_candidate_retry_metrics_flow_into_the_snapshot(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {"t1": {}})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 3)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 2)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 1)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["candidate_retry.pending"] == 1.0
+    assert metrics["candidate_retry.retried"] == 3.0
+    assert metrics["candidate_retry.recovered"] == 2.0
+    assert metrics["candidate_retry.abandoned"] == 1.0
+
+
+def test_candidate_retry_metrics_omitted_when_nothing_pending_or_happened(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 0)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 0)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert not any(k.startswith("candidate_retry.") for k in metrics)  # same "no evidence, no rows" contract
+
+
+def test_candidate_retry_metrics_present_when_something_is_pending_even_with_zero_window_activity(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_pending", {"t1": {}})
+    monkeypatch.setattr(candidate_retry, "_window_retried", 0)
+    monkeypatch.setattr(candidate_retry, "_window_recovered", 0)
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["candidate_retry.pending"] == 1.0
+    assert metrics["candidate_retry.retried"] == 0.0
+
+
+def test_maybe_capture_resets_the_candidate_retry_window_after_persisting(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    resets = []
+    monkeypatch.setattr(candidate_retry, "reset_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]

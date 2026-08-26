@@ -24,7 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import http_client, loop_watchdog, whale_pipeline_perf
+from services import candidate_retry, http_client, loop_watchdog, whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -206,6 +206,16 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # least one sample in this process.
     metrics.update(_flatten_loop_watchdog(loop_watchdog.snapshot()))
 
+    # candidate_retry.* (realtime data-plane remediation P2 Task 12) - the
+    # H4-recovery retry queue's depth (a live gauge) plus this window's
+    # retried/recovered/abandoned counts. Same "no evidence, no rows"
+    # contract as loop_watchdog/whale_pipeline - every other metric family
+    # here follows it, and capture_from_runtime's own contract (asserted by
+    # test_capture_from_runtime_omits_missing_sources_instead_of_fabricating_zero)
+    # is that nothing having happened yields metrics == {}, not a page of
+    # meaningful-looking zeros.
+    metrics.update(_flatten_candidate_retry(candidate_retry.snapshot()))
+
     return metrics
 
 
@@ -219,6 +229,21 @@ def _flatten_loop_watchdog(snapshot: dict) -> dict:
     if snapshot.get("stall_max_ms") is not None:
         out["loop_watchdog.stall_max_ms"] = float(snapshot["stall_max_ms"])
     return out
+
+
+def _flatten_candidate_retry(snapshot: dict) -> dict:
+    pending = snapshot.get("pending") or 0
+    retried = snapshot.get("retried") or 0
+    recovered = snapshot.get("recovered") or 0
+    abandoned = snapshot.get("abandoned") or 0
+    if not (pending or retried or recovered or abandoned):
+        return {}  # nothing pending and nothing happened this window - no evidence, no rows
+    return {
+        "candidate_retry.pending": float(pending),
+        "candidate_retry.retried": float(retried),
+        "candidate_retry.recovered": float(recovered),
+        "candidate_retry.abandoned": float(abandoned),
+    }
 
 
 def _flatten_rest_latency(snapshot: dict) -> dict:
@@ -355,6 +380,7 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     whale_pipeline_perf.perf.reset_window()
     http_client.reset_rest_latency_window()
     loop_watchdog.reset_window()
+    candidate_retry.reset_window()
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------
