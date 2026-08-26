@@ -247,7 +247,7 @@ Therefore AQC has improved **execution discipline**, not delivered runtime auton
 
 P0, P1, and P2 were implemented, fully tested (1912 local, CI green on all
 10 push+PR contexts), and pushed to `feat/realtime-data-plane-remediation`
-(PR #23, open, unmerged). Execution was deliberately stopped at that
+(PR #23). Execution was deliberately stopped at that
 checkpoint rather than continuing into P3 (Task 17 flips the reader gate
 from shadow to live filtering — a materially bigger step into live
 behavior change), specifically so a human could review the accumulated
@@ -1064,70 +1064,65 @@ For frontend, refresh/execute the existing plan rather than reopening framework 
 
 # 11. Exact immediate queue
 
-**Outcome as of 2026-08-26 (this queue has now run once):**
+**Outcome as of 2026-08-26 (this queue has now run its course; all three
+items are closed, none re-queued automatically):**
 
 - **Immediate 1 (doctrine)** — done, merged (PR #21).
-- **Immediate 2 (realtime execution)** — ran through P0–P2, but do not
-  re-enter this as "begin Task 1" — it's mid-flight with confirmed defects
-  to fix first (§5.1, Program 1 status). The actual next immediate action
-  is **fix PR #23's 5 confirmed defects, re-verify, re-review, then either
-  merge or continue P3** — not a fresh preflight.
-- **Immediate 3 (parallel research)** — started, produced real research
-  output, then cancelled by direct user action before merging (§ Program
-  2R status). Not resumed; do not restart without an explicit request.
-- **"After realtime merges" (below)** is therefore not reachable yet on
-  either front — realtime hasn't merged (defects unfixed) and the
-  research it would rebase against no longer exists in a usable state.
+- **Immediate 2 (realtime execution)** — done. Ran through P0–P2, review
+  found 9 real defects despite green CI, all 9 fixed with real TDD and
+  re-verified, merged as PR #23 into `main`@`22d1a79` (§5.1, Program 1
+  status). This branch and its worktree no longer exist — do not recreate
+  `feat/realtime-data-plane-remediation` or re-run P0–P2's tasks; that
+  work is on `main`. The only remaining item under this plan is P3
+  (Task 14 onward, the live-gate flip), which is a **new, separate,
+  not-yet-authorized decision** — see §5.1's verdict — not a continuation
+  of this queue slot.
+- **Immediate 3 (parallel research)** — started, produced 5 real,
+  never-pushed commits on `research/economic-strategy-effectiveness`
+  (scoping, E1–E7 research, E11–E12 adversarial review, a Program 2
+  candidate design, a new orchestrator skill), then stopped by direct
+  user action before opening a PR (§ Program 2R status). That branch
+  still exists locally with its commits intact; its worktree was removed
+  during session cleanup. Not resumed, not authoritative — do not push,
+  rebase, or build on it without an explicit request to do so.
+- **"After realtime merges" (below)** — the literal trigger (P0–P2 on
+  `main`) has now happened, but the subsection's original text assumed
+  Program 2R would still be live to rebase against. It isn't (cancelled).
+  So this is **not** an auto-executing next step: there are two genuinely
+  open, human-level decisions sitting side by side with no ordering
+  between them forced by evidence yet — (a) resume/discard/review
+  `research/economic-strategy-effectiveness` and let Program 2 proceed on
+  that front, or (b) authorize Program 1's P3. Neither is queued; both
+  require an explicit request before work starts on either.
 
-## Immediate 1 — tiny doctrine branch
+## Immediate 1 — tiny doctrine branch (closed)
 
-Branch:
+Branch: `docs/production-doctrine-final-truth`. Merged as PR #21. Nothing
+further queued here.
 
-`docs/production-doctrine-final-truth`
+## Immediate 2 — realtime execution branch (closed)
 
-Change only:
+Branch `feat/realtime-data-plane-remediation` ran P0–P2 through review,
+fix, and merge (PR #23, `main`@`22d1a79`); branch and worktree deleted
+post-merge. Do not re-open this slot to "begin Task 1" — Task 1 already
+ran. The next real task under this plan is P3, gated as described above.
 
-- `CLAUDE.md` top-level “all P0 / rest operational” implication;
-- corresponding ROADMAP classification.
+## Immediate 3 — parallel research worktree (stopped, not closed)
 
-Use docs-only CI fast path.
-
-Merge.
-
-## Immediate 2 — realtime execution branch
-
-Branch:
-
-`feat/realtime-data-plane-remediation`
-
-from updated `main`.
-
-Run the existing plan preflight. If source does not contradict the design, begin Task 1.
-
-Do not open another realtime investigation.
-
-## Immediate 3 — parallel research worktree
-
-Branch/worktree:
-
-`research/economic-strategy-effectiveness`
-
-Research only.
-
-Do not modify:
-
-- `main.py`;
-- realtime scheduler;
-- WS consumer;
-- Kalshi limiter implementation;
-- strategy config;
-- live data stores.
-
-Produce research/spec/plan.
+Branch `research/economic-strategy-effectiveness` holds 5 real commits,
+never pushed to `origin`, worktree already removed. Preserved as-is
+pending an explicit decision — do not modify, rebase, or delete without
+one.
 
 ## After realtime merges
 
-Rebase/finalize economic research as needed, incorporate post-remediation measurement implications, merge the research plan, then execute its remediation.
+Now that P0–P2 are on `main`, this is a live fork point rather than a
+future one: either resume the preserved economic research (rebase it
+against current `main`, incorporate P0–P2's measurement implications,
+open a PR, then execute Program 2 on it) or authorize Program 1's P3
+first. Both remain unauthorized until requested — this section records
+what "after realtime merges" now means in practice, it does not itself
+authorize either path.
 
 ---
 
@@ -1145,7 +1140,7 @@ Rebase/finalize economic research as needed, incorporate post-remediation measur
 | AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
-| Economic strategy effectiveness | INVESTIGATION CANCELLED MID-FLIGHT (2026-08-26) — real E1-E7/E11-E12 output exists in an unmerged, unpushed worktree; not authoritative until explicitly resumed | Program 2R |
+| Economic strategy effectiveness | INVESTIGATION CANCELLED MID-FLIGHT (2026-08-26) — real E1-E7/E11-E12 output exists on an unpushed local branch (`research/economic-strategy-effectiveness`, worktree since removed, branch preserved); not authoritative until explicitly resumed | Program 2R |
 | Realistic execution simulation | INVESTIGATION REQUIRED | Program 2R/2 |
 | Full strategy replay | INVESTIGATION REQUIRED | Program 2R/2 |
 | Canonical TradeIntent | INVESTIGATION REQUIRED | Program 3R |
