@@ -412,3 +412,66 @@ def test_lifecycle_not_resubscribed_on_a_later_sync():
 # deleted; the import-path-stays-dead guarantee lives in
 # tests/test_kalshi_public_gateway.py's
 # test_legacy_facade_import_paths_are_gone.)
+
+
+# ---- subscription-set churn metrics (realtime data-plane investigation,
+# new hypothesis found 2026-08-26 investigating a direct report: "the way
+# the websocket subscriptions per Market change after every Market
+# discovery scan is also a major problem") -----------------------------------
+
+def test_subscription_sync_with_a_real_diff_counts_a_sync_and_the_ticker_delta():
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"trade": 3, "ticker": 4}
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
+    client._subscribed_tickers = {"TICK-A", "TICK-B"}
+    client._desired_tickers = {"TICK-B", "TICK-C", "TICK-D"}  # TICK-A removed, TICK-C/D added
+
+    asyncio.run(client._sync_subscriptions())
+
+    churn = client.ingest_metrics()["subscription_churn"]
+    assert churn["syncs_window"] == 1
+    assert churn["tickers_added_window"] == 2
+    assert churn["tickers_removed_window"] == 1
+    assert churn["syncs_total"] == 1
+    assert churn["tickers_added_total"] == 2
+    assert churn["tickers_removed_total"] == 1
+
+
+def test_subscription_sync_with_no_diff_does_not_count_a_sync():
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"trade": 3, "ticker": 4}
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
+    client._subscribed_tickers = {"TICK-A"}
+    client._desired_tickers = {"TICK-A"}  # unchanged
+
+    asyncio.run(client._sync_subscriptions())
+
+    churn = client.ingest_metrics()["subscription_churn"]
+    assert churn["syncs_window"] == 0
+    assert churn["tickers_added_window"] == 0
+    assert churn["tickers_removed_window"] == 0
+
+
+def test_subscription_churn_window_resets_but_lifetime_totals_survive():
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"trade": 3, "ticker": 4}
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
+    client._subscribed_tickers = {"TICK-A"}
+    client._desired_tickers = {"TICK-B"}
+
+    asyncio.run(client._sync_subscriptions())
+    client.reset_ingest_window()
+
+    churn = client.ingest_metrics()["subscription_churn"]
+    assert churn["syncs_window"] == 0
+    assert churn["tickers_added_window"] == 0
+    assert churn["tickers_removed_window"] == 0
+    assert churn["syncs_total"] == 1
+    assert churn["tickers_added_total"] == 1
+    assert churn["tickers_removed_total"] == 1

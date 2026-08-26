@@ -527,7 +527,38 @@ def test_capture_from_runtime_omits_window_latency_metrics_when_the_window_is_em
 def test_capture_from_runtime_still_works_for_streams_without_ingest_metrics():
     metrics = observability.capture_from_runtime({}, {}, _fake_stream(dropped_messages=1, messages_received=9), None)
     assert metrics["trade_stream.dropped_messages"] == 1.0
-    assert not any(k.startswith("trade_stream.ingest.") for k in metrics)
+
+
+# --- subscription-set churn (realtime data-plane investigation, new
+# hypothesis found 2026-08-26: "the way the websocket subscriptions per
+# Market change after every Market discovery scan is also a major
+# problem") ------------------------------------------------------------
+
+def test_capture_from_runtime_flattens_subscription_churn_when_nonzero():
+    trade_stream = _fake_stream_with_ingest()
+    metrics_dict = _fake_ingest_metrics()
+    metrics_dict["subscription_churn"] = {
+        "syncs_total": 5, "syncs_window": 2,
+        "tickers_added_total": 12, "tickers_added_window": 3,
+        "tickers_removed_total": 9, "tickers_removed_window": 1,
+    }
+    trade_stream.ingest_metrics = lambda: metrics_dict
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert metrics["trade_stream.ingest.subscription_churn.syncs_window"] == 2.0
+    assert metrics["trade_stream.ingest.subscription_churn.tickers_added_window"] == 3.0
+    assert metrics["trade_stream.ingest.subscription_churn.tickers_removed_window"] == 1.0
+
+
+def test_capture_from_runtime_omits_subscription_churn_when_no_syncs_this_window():
+    trade_stream = _fake_stream_with_ingest()  # _fake_ingest_metrics() carries no subscription_churn key at all
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert "trade_stream.ingest.subscription_churn.syncs_window" not in metrics
+    assert "trade_stream.ingest.subscription_churn.tickers_added_window" not in metrics
+    assert "trade_stream.ingest.subscription_churn.tickers_removed_window" not in metrics
 
 
 def test_maybe_capture_resets_ingest_windows_only_after_a_sample_is_persisted():
