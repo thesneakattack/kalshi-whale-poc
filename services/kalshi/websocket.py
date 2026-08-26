@@ -259,6 +259,20 @@ class KalshiStreamGateway:
         # (fall-open: a broken gate must never hide a whale).
         self._gate_would_reject = 0
         self._gate_exceptions = 0
+        # (timestamp, cfg) cache for _shadow_gate_check (code-review finding
+        # #6, /code-review high pass against PR #23) - same shape as
+        # services/series_watcher.py's own _quarantine_active() cache.
+        # config_store.get()'s own docstring assumes "a handful of times per
+        # tick, not per message"; _shadow_gate_check runs on the reader's
+        # hot path, once per inbound trade-class WS message (thousands/
+        # minute exchange-wide), which broke that assumption. Measured
+        # directly (not assumed) in this environment: config_store.get()'s
+        # unchanged-file path costs ~11us/call - roughly 3x json.loads' own
+        # cost for a typical trade message and, since this is a pure
+        # shadow-mode counter, config a second stale cannot mislabel
+        # anything that matters (this gate never drops a message either
+        # way - see this method's own docstring).
+        self._gate_cfg_cache: tuple[float, dict] | None = None
         self._connects = 0
         self._reconnects = 0
         self._last_disconnect: dict | None = None
@@ -573,6 +587,15 @@ class KalshiStreamGateway:
             return _OTHER_CLASS
         return _CLASS_BY_MESSAGE_TYPE.get(msg_type, _OTHER_CLASS)
 
+    def _cached_gate_cfg(self) -> dict:
+        """config_store.get(), cached for a second (finding #6 - see
+        self._gate_cfg_cache's own comment in __init__). A one-second lag
+        cannot mislabel anything a pure shadow-mode counter reports."""
+        now = time.time()
+        if self._gate_cfg_cache is None or (now - self._gate_cfg_cache[0]) > 1.0:
+            self._gate_cfg_cache = (now, config_store.get())
+        return self._gate_cfg_cache[1]
+
     def _shadow_gate_check(self, trade_msg: dict) -> None:
         """Shadow-mode only (realtime data-plane remediation P0 Task 3):
         counts what whale_gate.passes() would reject, never drops anything
@@ -581,7 +604,7 @@ class KalshiStreamGateway:
         in the gate itself can never hide a real whale print; the message
         is still enqueued below exactly as it is today either way."""
         try:
-            min_contracts = whale_gate.min_contracts_for(trade_msg.get("market_ticker") or "", config_store.get())
+            min_contracts = whale_gate.min_contracts_for(trade_msg.get("market_ticker") or "", self._cached_gate_cfg())
             if not whale_gate.passes(trade_msg, min_contracts=min_contracts):
                 self._gate_would_reject += 1
         except Exception as exc:
