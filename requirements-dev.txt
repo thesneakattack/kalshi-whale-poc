@@ -29,3 +29,13 @@ requests==2.33.0
 # a repo-wide typing project. Current stable at adoption time (2026-08-25),
 # Python 3.13-compatible, pinned exact like everything else here.
 mypy==2.3.1
+# Coverage-based test selection for push-event CI only (2026-08-26) - see
+# .woodpecker/tests-pytest.yml's own comment for the full design. Fingerprints
+# which lines each test actually executes (via coverage.py tracing) and only
+# re-runs tests whose exercised lines changed - real execution dependency,
+# not a guessed path->test mapping, which is exactly what this repo's
+# "no path filter" full-suite policy was worried about. PR-event and
+# main-push pipelines never use this - they stay full-suite, unscoped,
+# unchanged, and remain the actual merge gate. Confirmed compatible with
+# pytest-xdist (auto-detected, controller/worker split) via its own docs.
+pytest-testmon==2.2.0
