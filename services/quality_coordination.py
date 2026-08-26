@@ -20,6 +20,12 @@ def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # WAL mode: lets a reader (e.g. GET /api/quality/coordination) proceed concurrently
+    # with the background coordination cycle's writer instead of blocking on the default
+    # rollback-journal lock - same hardening every other DB-owning module in this repo
+    # applies (see services/paper_broker.py's _connect for the original incident). Idempotent
+    # - safe to run on every connect.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS coordination_items (
         automation_key TEXT PRIMARY KEY,
         state TEXT NOT NULL,
@@ -347,30 +353,51 @@ def _http_get_json(url: str, timeout: float):
 
 def fetch_branch_signals(repo: str = "thesneakattack/kalshi-whale-poc", timeout: float = 5.0) -> list[BranchSignal]:
     """Anonymous, unauthenticated GitHub reads only (I11 §4/§7 — no credential exists to use).
-    Degrades to [] on any failure — never raises, per I11 §10's outage-behavior design."""
+    Degrades to [] on any failure — never raises, per I11 §10's outage-behavior design. Every
+    branch's own fetch AND response parsing lives inside that branch's own try/except, so a
+    single malformed response (a missing key, a commits entry with a null committer, a
+    /compare payload that isn't the expected shape) only skips that one branch instead of
+    raising out of the function and aborting the whole coordination cycle (including the
+    unrelated audit-observation half). The /branches payload itself is also guarded — a
+    non-list response degrades to [] the same way a network failure does."""
     base = _GITHUB_API.format(repo=repo)
     try:
         branches = _http_get_json(f"{base}/branches", timeout)
     except Exception:
         return []
 
+    if not isinstance(branches, list):
+        return []
+
     signals: list[BranchSignal] = []
     for b in branches:
-        name = b.get("name")
-        if not name or name == "main":
-            continue
         try:
+            if not isinstance(b, dict):
+                continue
+            name = b.get("name")
+            if not name or name == "main":
+                continue
             compare = _http_get_json(f"{base}/compare/main...{name}", timeout)
+            if not isinstance(compare, dict):
+                continue
+            paths = tuple(
+                f["filename"] for f in compare.get("files", []) or []
+                if isinstance(f, dict) and "filename" in f
+            )
+            commits = compare.get("commits", []) or []
+            last_commit_iso = None
+            if isinstance(commits, list) and commits:
+                last_commit = commits[-1]
+                if isinstance(last_commit, dict):
+                    commit = last_commit.get("commit") or {}
+                    committer = commit.get("committer") if isinstance(commit, dict) else None
+                    if isinstance(committer, dict):
+                        last_commit_iso = committer.get("date")
+            if not paths or not last_commit_iso:
+                continue
+            signals.append(BranchSignal(name=name, changed_paths=paths, last_commit_at_iso=last_commit_iso))
         except Exception:
             continue
-        paths = tuple(f["filename"] for f in compare.get("files", []))
-        commits = compare.get("commits", [])
-        last_commit_iso = (
-            commits[-1]["commit"]["committer"]["date"] if commits else None
-        )
-        if not paths or not last_commit_iso:
-            continue
-        signals.append(BranchSignal(name=name, changed_paths=paths, last_commit_at_iso=last_commit_iso))
     return signals
 
 

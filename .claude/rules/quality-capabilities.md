@@ -22,14 +22,16 @@ to the current task and load/use the relevant skill before acting.
   branches/PRs or adding GitHub write authority. Decision: report-only stays
   correct today (zero durable findings measured in the sample) —
   `docs/superpowers/research/2026-08-25-autonomous-quality-architecture-decision.md`.
-  A persisted, read-only observation series is fully specified and planned
-  but **not implemented**: `docs/superpowers/specs/2026-08-26-autonomous-
-  quality-coordination-design.md` / `docs/superpowers/plans/2026-08-26-
-  autonomous-quality-coordination.md` (9 TDD tasks, execute via
-  `superpowers:executing-plans` or `superpowers:subagent-driven-development`
-  when picked up — no bespoke orchestrator needed, unlike the investigation
-  itself). No GitHub write authority exists anywhere in that plan either —
-  see `.claude/rules/autonomous-quality-coordination-evidence.md` for the
+  A persisted, read-only observation series was fully specified and planned
+  in `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-
+  design.md` / `docs/superpowers/plans/2026-08-26-autonomous-quality-
+  coordination.md` (9 TDD tasks, executed via `superpowers:executing-plans`/
+  `superpowers:subagent-driven-development` — no bespoke orchestrator
+  needed, unlike the investigation itself) and **is now implemented** — all
+  9 tasks complete: see the **quality-coordination-observation** bullet
+  immediately below and `services/quality_coordination.py` itself. No
+  GitHub write authority exists anywhere in that plan either — see
+  `.claude/rules/autonomous-quality-coordination-evidence.md` for the
   governing constraints any future write-lane decision must still satisfy.
 - **quality-coordination-observation** — `services/quality_coordination.py`,
   a read-only persisted observation series over `tools.quality_audit`'s

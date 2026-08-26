@@ -258,3 +258,50 @@ def test_fetch_branch_signals_parses_real_shaped_response(monkeypatch):
     assert len(result) == 1
     assert result[0].name == "fix/x"
     assert result[0].changed_paths == ("services/x.py",)
+
+
+def test_fetch_branch_signals_skips_a_malformed_branch_without_raising(monkeypatch):
+    """Final-review fix (Important #3): parsing used to sit outside the per-branch
+    try/except, so a malformed /compare response (a 'files' entry with no 'filename' key, a
+    commits entry with a null committer) raised KeyError/TypeError straight out of
+    fetch_branch_signals - contradicting its own "never raises... degrades to [] on any
+    failure" docstring and aborting the whole coordination cycle. Both shapes below would
+    have raised before the fix; now the malformed branch is just skipped and the well-formed
+    branch is still returned."""
+    branches_payload = [
+        {"name": "broken/branch", "commit": {"sha": "bad"}},
+        {"name": "fix/good", "commit": {"sha": "good"}},
+    ]
+    compare_payloads = {
+        "broken/branch": {
+            "files": [{"status": "modified"}],  # no 'filename' key
+            "commits": [{"commit": {"committer": None}}],  # null committer
+        },
+        "fix/good": {
+            "files": [{"filename": "services/y.py"}],
+            "commits": [{"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}}],
+        },
+    }
+
+    def _fake_get(url, timeout):
+        if url.endswith("/branches"):
+            return branches_payload
+        for name, payload in compare_payloads.items():
+            if url.endswith(f"/compare/main...{name}"):
+                return payload
+        raise AssertionError(f"unexpected compare URL: {url}")
+
+    monkeypatch.setattr("services.quality_coordination._http_get_json", _fake_get)
+    result = fetch_branch_signals()
+    assert [s.name for s in result] == ["fix/good"]
+
+
+def test_fetch_branch_signals_degrades_to_empty_list_when_branches_payload_is_not_a_list(monkeypatch):
+    """GitHub's /branches endpoint is documented to return a list; a malformed/error response
+    (e.g. a {'message': ...} error body) must degrade to [] rather than raising when the
+    per-branch loop tries to treat it as one."""
+    monkeypatch.setattr(
+        "services.quality_coordination._http_get_json",
+        lambda url, timeout: {"message": "Not Found"},
+    )
+    assert fetch_branch_signals() == []

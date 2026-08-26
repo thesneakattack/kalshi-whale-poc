@@ -27,9 +27,14 @@ def _isolated_storage_health(tmp_path, monkeypatch):
     """storage_health.DATA_DIR defaults to the real repo data/ directory -
     without this redirect, GET /api/quality/summary's new storage_health
     composition (QCP Task 11) would open real data/*.db files, which
-    tests/support/runtime_isolation.py's sqlite3.connect guard hard-blocks."""
+    tests/support/runtime_isolation.py's sqlite3.connect guard hard-blocks.
+
+    services.quality_coordination's own DB_PATH no longer needs a local
+    redirect here - it's now registered in
+    tests/support/runtime_isolation.py's PERSISTENCE_MODULE_PATHS, so the
+    global install_runtime_isolation() call in conftest.py already covers
+    it before this module is even collected."""
     monkeypatch.setattr(storage_health, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
 
 
 def test_quality_summary_returns_the_documented_top_level_shape():
@@ -61,10 +66,7 @@ def test_quality_summary_makes_no_kalshi_network_calls(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_quality_coordination_route_returns_items_and_log(tmp_path, monkeypatch):
-    import services.quality_coordination as qc
-
-    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
+def test_quality_coordination_route_returns_items_and_log():
     conn = qc._connect()
     conn.execute(
         """INSERT INTO coordination_items
@@ -82,10 +84,7 @@ def test_quality_coordination_route_returns_items_and_log(tmp_path, monkeypatch)
     assert body["items"][0]["state"] == "escalation_eligible"
 
 
-def test_quality_summary_gains_coordination_rollup(tmp_path, monkeypatch):
-    import services.quality_coordination as qc
-
-    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
+def test_quality_summary_gains_coordination_rollup():
     resp = client.get("/api/quality/summary")
     assert resp.status_code == 200
     assert set(resp.json()["coordination"]) == {"escalation_eligible", "suppressed", "observed"}
