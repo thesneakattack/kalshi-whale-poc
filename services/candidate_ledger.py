@@ -50,6 +50,15 @@ def record_decision(trade_id: str, decision: str) -> None:
         conn.execute("UPDATE candidates SET decision = ? WHERE trade_id = ?", (decision, trade_id))
 
 
+def decision_for(trade_id: str) -> str | None:
+    """The decision recorded for trade_id, or None if it was never claimed
+    or never reached record_decision (P2 Task 10 - read-side complement to
+    record_decision, used by tests and any future reconciliation sweep)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT decision FROM candidates WHERE trade_id = ?", (trade_id,)).fetchone()
+    return row[0] if row else None
+
+
 def stats() -> dict:
     with _connect() as conn:
         claimed = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]

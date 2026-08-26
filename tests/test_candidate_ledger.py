@@ -30,3 +30,17 @@ def test_record_decision_is_idempotent_and_readable():
     candidate_ledger.claim("t1")
     candidate_ledger.record_decision("t1", "opened")
     candidate_ledger.record_decision("t1", "opened")  # must not raise
+
+
+def test_decision_for_reads_back_the_recorded_decision():
+    from services import candidate_ledger
+    candidate_ledger.claim("t1")
+    candidate_ledger.record_decision("t1", "trade")
+    assert candidate_ledger.decision_for("t1") == "trade"
+
+
+def test_decision_for_is_none_for_an_unclaimed_or_undecided_trade_id():
+    from services import candidate_ledger
+    assert candidate_ledger.decision_for("never-claimed") is None
+    candidate_ledger.claim("claimed-not-decided")
+    assert candidate_ledger.decision_for("claimed-not-decided") is None

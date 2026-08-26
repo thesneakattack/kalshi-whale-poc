@@ -9,7 +9,7 @@ importing from the whale-stream module just for its own loop body.
 """
 import asyncio
 
-from services import signal_log, trade_category
+from services import candidate_ledger, signal_log, trade_category
 from services.market_events import event_lifecycle
 from services.app_state import shadow, state, strategy
 from services.market_lookup import _category_by_ticker, _sport_for_event, _subcategory_by_ticker
@@ -43,6 +43,19 @@ def _shadow_reference_bankroll(account_snapshot: dict, cfg: dict) -> tuple[float
 
 
 async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str, tick_now: float) -> dict:
+    # Candidate-ledger gate (realtime data-plane remediation plan, P2 Task
+    # 10; root-cause report C6: WhaleSignal.id/trade_id was never read
+    # anywhere downstream, so nothing stopped the same real trade from
+    # being evaluated twice - e.g. the REST tape poll and the WS trade
+    # stream both surfacing the same print, or Task 12's future retry
+    # re-presenting one already claimed). Checked before any of this
+    # signal's other side effects (feed insertion, signals_seen, logging)
+    # so a true duplicate is a full no-op here, not just skipped at the
+    # strategy layer - a duplicate re-presentation isn't a new signal to
+    # show the user or count.
+    if not candidate_ledger.claim(signal.id, ticker=signal.ticker):
+        return {"action": "skip", "signal": signal.to_dict(), "reason": "duplicate_trade_id"}
+
     state["signal_feed"].insert(0, signal.to_dict())
     state["signal_feed"] = state["signal_feed"][:50]
     state["stats"]["signals_seen"] += 1
@@ -88,6 +101,7 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
         latest_prices=state["latest_prices"], category=category, me_complement=me_complement,
         market_titles=state["market_titles"], event_titles=state["event_titles"], markets=state["markets"],
     )
+    candidate_ledger.record_decision(signal.id, decision.get("action", "unknown"))
     state["decision_feed"].insert(0, decision)
     state["decision_feed"] = state["decision_feed"][:50]
     # limit_order_placed (2026-08-15, strategy.use_limit_orders) is neither
