@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from services import (
     candidate_log,
     config_performance, market_analyst_agent,
-    regime_analytics, series_evaluator, signal_log, suggestion_decisions, trade_analytics,
+    regime_analytics, series_evaluator, signal_log, suggestion_decisions, tick_executor, trade_analytics,
 )
 from services.analytics.market_analyst_orchestrator import (
     _run_full_spectrum_analysis, _run_market_analyst_for_ticker, _run_series_analysis,
@@ -89,9 +89,21 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # gates is the same question answered from rejection_events, the true
     # undeduped population, with an honest "insufficient" status per gate
     # rather than a number earned from too few samples.
+    # population_gate_summary runs an unfiltered scan of rejection_events
+    # (6.2M rows and growing as of 2026-08-26, no retention applied) -
+    # proven via a live py-spy stack trace to block the event loop for
+    # 17-38s on every call, since this route is polled routinely by the
+    # dashboard (ROADMAP.md's "Path to production" section). Offloaded via
+    # tick_executor the same way main.py's other heavy synchronous DB
+    # calls already are. gate_summary() reads the much smaller (62K-row),
+    # deduped rejected_candidates table - not implicated by that trace, so
+    # left inline rather than offloaded speculatively.
+    population_gates = await tick_executor.run(
+        lambda: candidate_log.population_gate_summary(min_population_samples)
+    )
     return {
         "gates": candidate_log.gate_summary(),
-        "population_gates": candidate_log.population_gate_summary(min_population_samples),
+        "population_gates": population_gates,
     }
 
 

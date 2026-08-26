@@ -309,36 +309,44 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     accumulate, same pattern this table's own rejection_events history
     followed. A high hypothetical_win_rate here is a real, useful
     counterfactual signal but not by itself proof a gate should be
-    loosened - see ROADMAP.md."""
+    loosened - see ROADMAP.md.
+
+    Aggregates via SQL GROUP BY, not a per-row Python loop (2026-08-26 fix
+    - see ROADMAP.md's "event loop stalls for 17-38+ seconds" entry). The
+    prior version fetched every one of rejection_events' 6.2M+ rows
+    (undeduped, no retention - see this function's own docstring above)
+    into Python before grouping; even off the event loop via
+    tick_executor, that stayed slow enough to matter (measured live:
+    18.2s total, 15.3s of it just constructing 6.2M row tuples) because
+    building millions of Python objects holds the GIL regardless of which
+    OS thread runs it - a thread offload only helps genuinely I/O-bound
+    work, not this. Doing the grouping in SQL instead (measured: 4.8s for
+    the same 6.2M rows, returning only ~10 grouped rows) cuts the
+    Python-object cost to near zero and makes the remaining time actually
+    I/O-bound again, so the tick_executor offload at this function's own
+    call site (services/analytics/routes.py) is now doing real work."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT strategy, gate_name, side, result, resolved, unit_cost FROM rejection_events",
+            """
+            SELECT strategy, gate_name,
+                   COUNT(*) AS rejected_count,
+                   SUM(CASE WHEN resolved THEN 1 ELSE 0 END) AS resolved_count,
+                   SUM(CASE WHEN resolved AND side IN ('yes', 'no') THEN 1 ELSE 0 END) AS sided_total,
+                   SUM(CASE WHEN resolved AND side IN ('yes', 'no') AND result = side
+                       THEN 1 ELSE 0 END) AS sided_wins,
+                   SUM(unit_cost) AS unit_cost_total,
+                   COUNT(unit_cost) AS unit_cost_n
+            FROM rejection_events
+            GROUP BY strategy, gate_name
+            """,
         ).fetchall()
-    grouped: dict[tuple, dict] = {}
-    for strategy, gate_name, side, result, resolved, unit_cost in rows:
-        key = (strategy, gate_name)
-        g = grouped.setdefault(key, {
-            "strategy": strategy, "gate_name": gate_name,
-            "rejected_count": 0, "resolved_count": 0,
-            "_sided_total": 0, "_sided_wins": 0,
-            "_unit_cost_total": 0.0, "_unit_cost_n": 0,
-        })
-        g["rejected_count"] += 1
-        if unit_cost is not None:
-            g["_unit_cost_total"] += unit_cost
-            g["_unit_cost_n"] += 1
-        if resolved:
-            g["resolved_count"] += 1
-            if side in ("yes", "no"):
-                g["_sided_total"] += 1
-                if result == side:
-                    g["_sided_wins"] += 1
     out = []
-    for g in grouped.values():
-        sided_total = g.pop("_sided_total")
-        sided_wins = g.pop("_sided_wins")
-        unit_cost_n = g.pop("_unit_cost_n")
-        unit_cost_total = g.pop("_unit_cost_total")
+    for strategy, gate_name, rejected_count, resolved_count, sided_total, sided_wins, \
+            unit_cost_total, unit_cost_n in rows:
+        g = {
+            "strategy": strategy, "gate_name": gate_name,
+            "rejected_count": rejected_count, "resolved_count": resolved_count,
+        }
         if sided_total == 0 or sided_total < min_samples:
             g["status"] = "insufficient"
             g["hypothetical_win_rate"] = None
