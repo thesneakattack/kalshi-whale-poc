@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "generated_at": 1787709417.2423177,
-  "generated_from_head": "48f9b6ac9276ddd63e70f0ce9d9c35e03a6a2b63",
+  "generated_at": 1787709629.7061572,
+  "generated_from_head": "f86cfed667530903aaec8597e9748c2a34ae73ee",
   "files": {
-    "python": 520,
-    "javascript": 28,
-    "html": 8
+    "python": 267,
+    "javascript": 14,
+    "html": 4
   },
   "lines": {
-    "python": 115918,
-    "javascript": 12456,
-    "html": 15338
+    "python": 60703,
+    "javascript": 6228,
+    "html": 7669
   },
   "services": 68,
   "api_routes": 95,
