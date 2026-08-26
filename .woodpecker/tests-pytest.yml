@@ -147,22 +147,13 @@ steps:
           # -v dropped deliberately: xdist interleaves workers, so
           # per-test verbose output arrives out of order and is
           # harder to read than the progress line, not easier.
-          if [ "${CI_PIPELINE_EVENT}" = "pull_request" ] || [ "${CI_COMMIT_BRANCH}" = "main" ]; then
-            # The actual merge gate (PR event) or a just-merged main push -
-            # always full, unscoped, never testmon-selected. See this
-            # file's header, tier 2.
-            python -m pytest -n 4
-          else
-            # A push to a non-main branch, not yet a PR - testmon-scoped
-            # (tier 3). Restore this branch's cached baseline if one
-            # exists (a brand-new branch has none, so pytest-testmon
-            # naturally treats everything as unstable and runs it all -
-            # correct, safe first-push behavior, not a special case here).
-            BRANCH_KEY="$(echo "${CI_COMMIT_BRANCH}" | tr '/' '_')"
-            mkdir -p "/testmon-cache/${BRANCH_KEY}"
-            [ -f "/testmon-cache/${BRANCH_KEY}/.testmondata" ] && \
-              cp "/testmon-cache/${BRANCH_KEY}/.testmondata" .testmondata
-            python -m pytest --testmon -n 4
-            cp .testmondata "/testmon-cache/${BRANCH_KEY}/.testmondata"
-          fi
+          #
+          # A real script file, not inline here - see
+          # scripts/ci-testmon-run.sh's own header for why: Woodpecker
+          # silently blanks any `${VAR}` in inline `commands:` text that
+          # isn't one of its own known CI_* variables, before a shell ever
+          # sees it - broke a per-branch cache path variable live,
+          # confirmed via the actual pipeline log, same underlying reason
+          # scripts/ci-skip-heavy-suite.sh already lives in its own file.
+          sh scripts/ci-testmon-run.sh
         fi
