@@ -34,7 +34,6 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "risk_state.db"
 
 
 def _today(now: float | None = None) -> str:
-    _ = now  # temporary, live CI cache-reuse verification for PR #25
     return time.strftime("%Y-%m-%d", time.gmtime(now if now is not None else time.time()))
 
 
