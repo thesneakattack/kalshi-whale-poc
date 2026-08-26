@@ -548,3 +548,23 @@ deliberately grades on `finalized`, not `determined` (2026-08-23 correction,
 `market_lifecycle.md` ("Transitions", "Settlement").
 **Found:** 2026-08-25, realtime data-plane task I12 (adversarial review of the
 REST demand-reduction item).
+
+## What is the unauthenticated market-data REST ceiling?
+**Answer:** Measured live (not documented anywhere in the mirror -
+`rate_limits.md` only states authenticated per-tier read/write token
+buckets): a single `GET /markets/{ticker}` client with no credentials
+sustained **~51.3 req/s** cleanly, then hit its first 429 when ramped to
+**~76.9 req/s**. This is the real anonymous ceiling, not this app's own
+locally configured rate limiter - the probe used a raw, unauthenticated
+`kalshi_python_async` client (`services.kalshi.transport.build_public_client`)
+that bypasses `call_with_backoff`/the app's token bucket entirely.
+**Gotcha:** This app never runs anywhere near this ceiling in production
+(it goes through the authenticated account's own token bucket for
+everything, including market-data reads, per `services/kalshi/public.py`),
+so this number is a ceiling on what an anonymous/public integration could
+sustain, not a live operating constraint - useful context if a future
+anonymous-only tool (this probe itself, a public dashboard, etc.) is ever
+built against this endpoint family.
+**Source:** Live measurement, `python -m tools.kalshi_rate_limit_probe
+--anonymous-ceiling` (realtime data-plane remediation plan P0 Task 4).
+**Found:** 2026-08-26, realtime data-plane remediation P0 Task 4.

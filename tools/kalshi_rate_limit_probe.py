@@ -20,10 +20,17 @@ to an explicit "unavailable" rather than a guess:
   kalshi_rest_endpoint.* from data/observability.db), plus a milestone/live-data
   duplicate-demand estimate: observed milestone-family calls per tracked
   event versus the minimum the repoll intervals require.
+- ``anonymous-ceiling`` (realtime data-plane remediation P0 Task 4) - ramps
+  request rate against a raw, UNAUTHENTICATED SDK client (bypassing this
+  app's own local rate limiter entirely) until Kalshi returns a 429,
+  reporting where the real server-side anonymous ceiling sits. Not part of
+  ``--all`` - deliberately a separate, explicit, slower invocation, since
+  it pushes real load against the exchange until it gets rate-limited.
 
 Usage:
     python -m tools.kalshi_rate_limit_probe --all --json
     python -m tools.kalshi_rate_limit_probe --batch --sizes 50,100,200
+    python -m tools.kalshi_rate_limit_probe --anonymous-ceiling
 """
 from __future__ import annotations
 
@@ -166,6 +173,56 @@ def _delta(before: dict, after: dict) -> dict:
     return {k: round(after[k] - before[k], 1) if isinstance(after[k], float) else after[k] - before[k] for k in before}
 
 
+# --- anonymous REST ceiling (realtime data-plane remediation P0 Task 4) --------
+
+_ANONYMOUS_CEILING_RAMP_FACTOR = 1.5
+_ANONYMOUS_CEILING_WINDOW_SEC = 2.0
+_ANONYMOUS_CEILING_START_RPS = 2.0
+
+
+async def probe_anonymous_ceiling(
+    client, *, duration_sec: float = 20.0, ticker: str = "KXBTCD-25AUG25-T1",
+    window_sec: float = _ANONYMOUS_CEILING_WINDOW_SEC,
+) -> dict:
+    """Ramps request rate against an UNAUTHENTICATED market-data client
+    until Kalshi returns a 429 or duration_sec elapses, to find the real
+    server-side ceiling for anonymous reads - not this app's own locally
+    configured rate limit. `client` must therefore be the raw SDK client
+    (services.kalshi.transport.build_public_client), never
+    KalshiPublicGateway: KalshiPublicGateway.get_market goes through
+    call_with_backoff and this app's own token bucket, which would just
+    measure our own configured rate back at us instead of Kalshi's.
+
+    Ramps geometrically (x1.5 every window_sec, default 2s) starting from a
+    low rate so a single run doesn't open by hammering at an arbitrary high
+    guess. A 429 is detected the same way call_with_backoff does (the
+    SDK's own exception exposes .status == 429); any other exception
+    propagates - this probe's job is to characterize rate-limit behavior,
+    not to silently swallow a real connectivity failure as "no ceiling
+    found". `window_sec` is injectable (like probe_batch_sizes' `sleep`)
+    so a test can ramp through many windows in well under a second instead
+    of waiting out the real 2s default."""
+    rps = _ANONYMOUS_CEILING_START_RPS
+    first_429_at: float | None = None
+    observed_max = 0.0
+    deadline = time.monotonic() + duration_sec
+    while time.monotonic() < deadline and first_429_at is None:
+        interval = 1.0 / rps
+        window_end = time.monotonic() + window_sec
+        try:
+            while time.monotonic() < window_end:
+                await client.get_market(ticker)
+                await asyncio.sleep(interval)
+            observed_max = max(observed_max, rps)
+            rps *= _ANONYMOUS_CEILING_RAMP_FACTOR
+        except Exception as exc:
+            if getattr(exc, "status", None) == 429:
+                first_429_at = rps
+            else:
+                raise
+    return {"observed_max_rps": observed_max, "first_429_at_rps": first_429_at, "sample_ticker": ticker}
+
+
 # --- demand shares from observability --------------------------------------------
 
 def demand_shares(summary: dict, hours: float) -> dict:
@@ -247,6 +304,23 @@ async def _run(args) -> dict:
             shares = demand_shares(summary, args.demand_hours)
             out["demand"] = shares
             out["milestone_duplicates"] = milestone_duplicate_estimate(shares["by_endpoint"], args.tracked_events, args.demand_hours)
+        if args.anonymous_ceiling:
+            # Deliberately NOT KalshiPublicGateway (see probe_anonymous_ceiling's
+            # own docstring) - a fresh raw SDK client, unauthenticated, closed
+            # in this block only (public/account above stay closed in finally).
+            # A real, currently-open ticker (via the already-open `public`
+            # gateway) rather than a hardcoded guess - a settled/expired
+            # ticker 404s instead of exercising the rate limiter at all.
+            from services.kalshi import transport
+            sample = await _sample_tickers(public, 1)
+            anon_client = transport.build_public_client(cfg["kalshi"]["base_url"])
+            try:
+                kwargs = {"duration_sec": args.anonymous_ceiling_duration_sec}
+                if sample:
+                    kwargs["ticker"] = sample[0]
+                out["anonymous_ceiling"] = await probe_anonymous_ceiling(anon_client, **kwargs)
+            finally:
+                await anon_client.close()
     finally:
         await public.close()
         await account.close()
@@ -267,14 +341,16 @@ def _parse_args(argv):
     parser.add_argument("--costs", action="store_true")
     parser.add_argument("--batch", action="store_true")
     parser.add_argument("--demand", action="store_true")
+    parser.add_argument("--anonymous-ceiling", action="store_true")
     parser.add_argument("--sizes", default=",".join(str(s) for s in DEFAULT_BATCH_SIZES))
     parser.add_argument("--demand-hours", type=float, default=1.0)
     parser.add_argument("--tracked-events", type=int, default=0)
+    parser.add_argument("--anonymous-ceiling-duration-sec", type=float, default=20.0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     args.sizes = tuple(int(s) for s in args.sizes.split(",") if s)
-    if not (args.all or args.limits or args.costs or args.batch or args.demand):
-        parser.error("choose --all or at least one of --limits/--costs/--batch/--demand")
+    if not (args.all or args.limits or args.costs or args.batch or args.demand or args.anonymous_ceiling):
+        parser.error("choose --all or at least one of --limits/--costs/--batch/--demand/--anonymous-ceiling")
     return args
 
 

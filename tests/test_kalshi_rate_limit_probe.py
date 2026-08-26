@@ -199,6 +199,46 @@ def test_milestone_duplicate_estimate_is_unknown_without_a_tracked_event_count()
     assert est["duplicate_factor"] is None and est["minimum_required"] is None
 
 
+# --- anonymous REST ceiling (realtime data-plane remediation P0 Task 4) -------
+
+class _FakeUnauthClient:
+    """Stands in for the raw, unauthenticated SDK client
+    (services.kalshi.transport.build_public_client) - deliberately NOT
+    KalshiPublicGateway, whose get_market goes through call_with_backoff
+    and this app's own local rate limiter. The point of this probe is to
+    find Kalshi's real anonymous ceiling, not to re-measure a locally
+    configured rate."""
+    def __init__(self, ceiling_rps: float):
+        self.ceiling_rps = ceiling_rps
+        self.calls = 0
+
+    async def get_market(self, ticker: str):
+        self.calls += 1
+        if self.calls > self.ceiling_rps * 2:  # crude: fail once we're clearly over
+            raise _Err429("429 Too Many Requests")
+        return {"market": {"ticker": ticker, "status": "active"}}
+
+
+def test_probe_anonymous_ceiling_reports_where_429s_start():
+    client = _FakeUnauthClient(ceiling_rps=5.0)
+    # window_sec deliberately tiny so this ramps through many windows (and
+    # therefore reaches a 429) in well under a second of real wall time,
+    # rather than waiting out the real 2s-per-window default.
+    result = asyncio.run(probe.probe_anonymous_ceiling(client, duration_sec=2.0, window_sec=0.05))
+    assert result["first_429_at_rps"] is not None
+    assert result["observed_max_rps"] > 0
+    assert result["sample_ticker"]
+
+
+def test_probe_anonymous_ceiling_reraises_a_non_429_error():
+    class _AlwaysBroken:
+        async def get_market(self, ticker: str):
+            raise RuntimeError("connection reset")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(probe.probe_anonymous_ceiling(_AlwaysBroken(), duration_sec=1.0))
+
+
 # --- CLI argument contract -----------------------------------------------------
 
 def test_cli_requires_at_least_one_probe_and_parses_sizes():
@@ -206,3 +246,8 @@ def test_cli_requires_at_least_one_probe_and_parses_sizes():
         probe._parse_args([])
     args = probe._parse_args(["--batch", "--sizes", "50,100"])
     assert args.sizes == (50, 100) and args.batch is True and args.all is False
+
+
+def test_cli_accepts_anonymous_ceiling_flag_alone():
+    args = probe._parse_args(["--anonymous-ceiling"])
+    assert args.anonymous_ceiling is True
