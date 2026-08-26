@@ -858,17 +858,55 @@ git commit -m "feat: fetch branch suppression signals from anonymous GitHub API"
 - Test: `tests/test_quality_coordination_scheduler.py`
 
 **Interfaces:**
-- Consumes: `observe_main`, `fetch_branch_signals`, `derive_claims` (Tasks 4–5).
-- Produces: `services.quality_coordination.latest_run_at() -> float | None`, `main._maybe_run_quality_coordination(cfg: dict) -> None`.
+- Consumes: `observe_main`, `fetch_branch_signals`, `derive_claims` (Tasks 4–5), `services.task_supervisor.supervise` (existing, unmodified).
+- Produces: `services.quality_coordination.latest_run_at() -> float | None`, `services.quality_coordination.run_coordination_cycle(repo_root: Path) -> dict`, `main._maybe_run_quality_coordination(cfg: dict) -> None`, `main._run_quality_coordination_background() -> None` (async).
 
-**Design note, grounded in a real incident in this exact repo:** a naive `_maybe_*` scheduler that
-tracks "last run" as a bare in-memory variable is precisely the bug `services/backup/backup.py`'s
-own docstring documents fixing live 2026-08-23 (`_maybe_run_backup`) — in-memory state resets to
-zero on every `uvicorn --reload`, not just a real restart, making the scheduler think it's
-immediately overdue on every single code edit. `_maybe_run_backup`'s fix (still in the codebase
-today) is the pattern this task follows exactly: track state in `services/app_state.py`'s shared
-`state` dict (survives reload, since that module isn't reimported), and seed it from the module's
-own persisted history on first check rather than trusting an unseeded `0.0`.
+> **ARCHITECTURAL CORRECTION (2026-08-26) — the version of this task below
+> replaces an earlier draft that called `fetch_branch_signals()`
+> (`urllib.request.urlopen(..., timeout=5.0)`, blocking network I/O) and
+> `observe_main()` (a full `tools.quality_audit.run_audit()` pass)
+> **synchronously, inline, directly inside the trading-critical tick** —
+> the exact failure shape the realtime data-plane investigation
+> independently root-caused as the cause of event-loop stalls/backlog in
+> this app (`docs/superpowers/research/2026-08-25-realtime-root-cause-
+> report.md`; see also `.claude/rules/realtime-data-plane-evidence.md`'s
+> "Hot-path rule"). Flagged during the personal-production execution
+> program's plan-safety review
+> (`docs/kalshi-personal-production-execution-program-2026-08-26.md` §5.3)
+> before any of this was implemented — confirmed via `git log --all` that
+> no `services/quality_coordination.py` exists anywhere in this repo's
+> history, so this correction changes only the plan, not any shipped
+> code. The corrected design below keeps everything else about Task 6
+> (config flag, cold-start-safe interval tracking, the read routes in
+> Task 7) unchanged — only *how* the work reaches the event loop changes.
+
+**Design note, grounded in a real incident in this exact repo:** this task follows
+`services/backup/backup.py`'s `_maybe_run_backup` pattern in **two** respects, not one:
+
+1. **Cold-start-safe interval tracking.** A naive `_maybe_*` scheduler that tracks "last
+   run" as a bare in-memory variable is precisely the bug `_maybe_run_backup`'s own
+   docstring documents fixing live 2026-08-23 — in-memory state resets to zero on every
+   `uvicorn --reload`, not just a real restart, making the scheduler think it's
+   immediately overdue on every single code edit. Track state in `services/app_state.py`'s
+   shared `state` dict (survives reload, since that module isn't reimported), and seed it
+   from the module's own persisted history on first check rather than trusting an
+   unseeded `0.0`.
+2. **Off-event-loop execution.** `_maybe_run_backup` never calls its own blocking work
+   inline either — it kicks off `_run_backup_background` via `task_supervisor.supervise`
+   (fire-and-forget `asyncio.create_task`, with fault-log recording if it raises), and
+   `_run_backup_background` itself wraps the actual blocking call in
+   `await asyncio.to_thread(...)`, with its own docstring spelling out exactly why:
+   *"asyncio.to_thread is what actually keeps run_backup_cycle's blocking sqlite3.backup()
+   calls off the event loop; without it, backing up several MB-scale files would stall the
+   trading loop's own tick timing for the duration."* `fetch_branch_signals()`'s blocking
+   `urlopen` call and `observe_main()`'s full audit pass are the same shape — blocking,
+   self-contained, no partial results needed mid-call — so `asyncio.to_thread` is squarely
+   justified here per the same reasoning, not a separate process: this *is* the "isolated
+   worker/thread" option the execution program's required-correction list names as
+   acceptable when a full separate process is unjustified for a fully self-contained
+   iteration. **Default `enabled: false`** until a real runtime-cost measurement (the same
+   `tick_phase_timings` comparison backup.py's own incident writeup used) is taken with it
+   turned on — do not flip the default to `true` as part of implementing this task.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -881,11 +919,11 @@ from services.app_state import state
 
 
 def test_scheduler_skips_when_disabled():
-    state["quality_coordination"] = {"last_run_at": 0.0}
+    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": False}}
-    with patch("main.observe_main") as mock_observe:
+    with patch("main.task_supervisor") as mock_supervisor:
         main._maybe_run_quality_coordination(cfg)
-    mock_observe.assert_not_called()
+    mock_supervisor.supervise.assert_not_called()
 
 
 EPOCH = 1_800_000_000.0  # a realistic time.time() scale — real epoch seconds, not small test
@@ -896,35 +934,59 @@ EPOCH = 1_800_000_000.0  # a realistic time.time() scale — real epoch seconds,
 #                          break that property and pass for the wrong reason.
 
 
-def test_scheduler_runs_once_then_waits_for_interval():
-    state["quality_coordination"] = {"last_run_at": 0.0}
+def test_scheduler_fires_a_supervised_background_task_once_then_waits_for_interval():
+    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": True, "interval_sec": 3600}}
-    with patch("main.observe_main") as mock_observe, \
-         patch("main.fetch_branch_signals", return_value=[]), \
-         patch("main.derive_claims", return_value=[]), \
+    with patch("main.task_supervisor") as mock_supervisor, \
          patch("main.latest_run_at", return_value=None), \
          patch("main.time") as mock_time:
         mock_time.time.return_value = EPOCH
         main._maybe_run_quality_coordination(cfg)  # first check: due (never run, no history)
         mock_time.time.return_value = EPOCH + 5
         main._maybe_run_quality_coordination(cfg)  # 5s later, well under the 3600s interval
-    assert mock_observe.call_count == 1
+    assert mock_supervisor.supervise.call_count == 1
+    assert mock_supervisor.supervise.call_args.kwargs["component"] == "quality_coordination"
+
+
+def test_scheduler_skips_while_a_run_is_already_in_flight():
+    """Same 'running' guard as backup's state["backup"]["running"] — a slow run must not
+    overlap with the next interval tick firing a second one."""
+    state["quality_coordination"] = {"running": True, "last_run_at": EPOCH, "task": None}
+    cfg = {"quality_coordination": {"enabled": True, "interval_sec": 1}}
+    with patch("main.task_supervisor") as mock_supervisor, \
+         patch("main.time") as mock_time:
+        mock_time.time.return_value = EPOCH + 3600  # well past due, but a run is in flight
+        main._maybe_run_quality_coordination(cfg)
+    mock_supervisor.supervise.assert_not_called()
 
 
 def test_scheduler_seeds_last_run_at_from_persisted_history_on_cold_start():
     """The cold-start-reload fix: if in-memory state is unseeded (0.0) but a prior run is
     already recorded on disk, the scheduler must not treat that as newly overdue."""
-    state["quality_coordination"] = {"last_run_at": 0.0}
+    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": True, "interval_sec": 3600}}
-    with patch("main.observe_main") as mock_observe, \
-         patch("main.fetch_branch_signals", return_value=[]), \
-         patch("main.derive_claims", return_value=[]), \
+    with patch("main.task_supervisor") as mock_supervisor, \
          patch("main.latest_run_at", return_value=EPOCH), \
          patch("main.time") as mock_time:
         mock_time.time.return_value = EPOCH + 5  # 5s after the persisted last run, not due
         main._maybe_run_quality_coordination(cfg)
-    mock_observe.assert_not_called()
+    mock_supervisor.supervise.assert_not_called()
     assert state["quality_coordination"]["last_run_at"] == EPOCH
+
+
+async def test_background_wrapper_runs_the_blocking_work_via_to_thread():
+    """The actual off-event-loop guarantee — assert the wrapper awaits asyncio.to_thread
+    around the blocking fetch/audit call, not a bare synchronous call."""
+    from main import _run_quality_coordination_background
+
+    state["quality_coordination"] = {"running": True, "last_run_at": 0.0, "task": None}
+    with patch("main.asyncio.to_thread") as mock_to_thread:
+        async def _fake_result():
+            return None
+        mock_to_thread.return_value = _fake_result()
+        await _run_quality_coordination_background()
+    mock_to_thread.assert_called_once()
+    assert state["quality_coordination"]["running"] is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -934,18 +996,21 @@ Expected: FAIL with `AttributeError: module 'main' has no attribute '_maybe_run_
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `config/settings.yaml` (new top-level section, alongside `backup:`/`observability:`):
+Add to `config/settings.yaml` (new top-level section, alongside `backup:`/`observability:`).
+**`enabled: false`, deliberately** — see the design note above; flip it only after a real
+runtime-cost measurement, as its own follow-up, not as part of this task:
 
 ```yaml
 quality_coordination:
-  enabled: true
+  enabled: false
   interval_sec: 3600
 ```
 
-Add to `services/app_state.py`'s `state` dict defaults, alongside the existing `"backup": {...}` entry:
+Add to `services/app_state.py`'s `state` dict defaults, alongside the existing
+`"backup": {...}` entry — same three fields, same meaning:
 
 ```python
-    "quality_coordination": {"last_run_at": 0.0},
+    "quality_coordination": {"running": False, "last_run_at": 0.0, "task": None},
 ```
 
 Add to `services/quality_coordination.py` (append):
@@ -962,45 +1027,78 @@ def latest_run_at() -> float | None:
         return datetime.fromisoformat(row["m"]).timestamp()
     finally:
         conn.close()
+
+
+def run_coordination_cycle(repo_root: Path) -> dict:
+    """The full cycle: fetch branch signals, derive claims, observe main. Synchronous and
+    blocking by design (fetch_branch_signals does a real urlopen; observe_main runs a full
+    tools.quality_audit pass) — the async wrapper in main.py is what keeps this off the
+    event loop, not this function itself, exactly matching backup.py's
+    run_backup_cycle/_run_backup_background split. That also makes this directly callable
+    from a plain script with no asyncio involved at all, same as backup.py's own
+    `if __name__ == "__main__":` block."""
+    branches = fetch_branch_signals()
+    claims = derive_claims()
+    return observe_main(repo_root, branches=branches, claims=claims)
 ```
 
-Add to `main.py` (near the other `_maybe_*` scheduler definitions, following `_maybe_run_backup`'s
-exact cold-start-seeding shape):
+Add to `main.py` (near the other `_maybe_*`/background-task pairs — `_maybe_run_backup`/
+`_run_backup_background` is the exact template):
 
 ```python
+import asyncio
 import time
 from pathlib import Path as _Path
 
+from services import task_supervisor
 from services.app_state import state as _app_state
-from services.quality_coordination import (
-    derive_claims, fetch_branch_signals, latest_run_at, observe_main,
-)
+from services.quality_coordination import latest_run_at, run_coordination_cycle
+
+_REPO_ROOT = _Path(__file__).resolve().parent
+
+
+async def _run_quality_coordination_background() -> None:
+    """Background-task wrapper — same split as backup.py's _run_backup_background.
+    asyncio.to_thread is what actually keeps run_coordination_cycle's blocking urlopen +
+    quality-audit work off the event loop; without it, a coordination run would stall the
+    trading loop's own tick timing for the duration."""
+    qc_state = _app_state["quality_coordination"]
+    try:
+        await asyncio.to_thread(run_coordination_cycle, _REPO_ROOT)
+    finally:
+        qc_state["running"] = False
 
 
 def _maybe_run_quality_coordination(cfg: dict) -> None:
     qc_cfg = cfg.get("quality_coordination") or {}
-    if not qc_cfg.get("enabled", True):
+    if not qc_cfg.get("enabled", False):
         return
-    qc_state = _app_state.setdefault("quality_coordination", {"last_run_at": 0.0})
+    qc_state = _app_state.setdefault(
+        "quality_coordination", {"running": False, "last_run_at": 0.0, "task": None},
+    )
     if qc_state["last_run_at"] == 0.0:
         persisted = latest_run_at()
         if persisted is not None:
             qc_state["last_run_at"] = persisted
     interval = qc_cfg.get("interval_sec", 3600)
     now_ts = time.time()
-    if now_ts - qc_state["last_run_at"] <= interval:
-        return
-    qc_state["last_run_at"] = now_ts
-    repo_root = _Path(__file__).resolve().parent
-    branches = fetch_branch_signals()
-    claims = derive_claims()
-    observe_main(repo_root, branches=branches, claims=claims)
+    due = now_ts - qc_state["last_run_at"] > interval
+    if due and not qc_state["running"]:
+        qc_state["running"] = True
+        qc_state["last_run_at"] = now_ts
+        qc_state["task"] = task_supervisor.supervise(
+            _run_quality_coordination_background,
+            component="quality_coordination", operation="run",
+        )
 ```
 
-Wire the call into the existing tick loop: in `main.py`, the line `_maybe_check_signal_resolutions(cfg)`
-(inside the same tick body as `_maybe_scan_catalog_batch(cfg)` and `_maybe_run_backup(cfg)`, shown
-by `grep -n "_maybe_check_signal_resolutions(cfg)" main.py`) gains one new line immediately after
-it:
+Wire the call into the existing tick loop exactly like `_maybe_run_backup`: in `main.py`,
+the line `_maybe_check_signal_resolutions(cfg)` (inside the same tick body as
+`_maybe_scan_catalog_batch(cfg)` and `_maybe_run_backup(cfg)`, shown by
+`grep -n "_maybe_check_signal_resolutions(cfg)" main.py`) gains one new line immediately
+after it. This call is now cheap and non-blocking regardless of `enabled` — it either
+returns immediately (disabled, not due, or already running) or fires a supervised
+background task and returns immediately, never a synchronous fetch/audit:
 
 ```python
             _maybe_check_signal_resolutions(cfg)
@@ -1011,13 +1109,31 @@ it:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `ddev exec -s fastapi pytest tests/test_quality_coordination_scheduler.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (5 tests)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Noninterference measurement (do not skip — this is the actual point of the
+      correction above, not paperwork)**
+
+Before ever setting `enabled: true` in a real config (even paper-mode), reproduce the same
+check backup.py's own incident writeup used: enable it in a `ddev` dev run, trigger a
+handful of coordination cycles (temporarily short `interval_sec`), and compare
+`tick_phase_timings` (or the equivalent current tick-timing diagnostic — check
+`GET /api/health/pipeline` first, per CLAUDE.md's "Start investigations here") before vs.
+during. A passing bar: tick timing during an active coordination run is not measurably
+different from a quiet baseline. If it is, `asyncio.to_thread` alone wasn't sufficient
+(e.g. the audit pass itself holds the GIL for long stretches doing CPU-bound work, which
+`to_thread` does not fix) and the "prefer standalone scheduled CLI/process" option from
+the execution program's required-correction list is the fallback, not this in-loop design
+— `run_coordination_cycle`'s signature (`repo_root: Path`) and
+`services/quality_coordination.py`'s own `if __name__ == "__main__":` block (add one,
+mirroring backup.py's) already make that fallback a small change, not a rewrite, if
+measurement shows it's needed.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add services/app_state.py services/quality_coordination.py main.py config/settings.yaml tests/test_quality_coordination_scheduler.py
-git commit -m "feat: wire quality coordination into the scheduler tick, cold-start-safe"
+git commit -m "feat: wire quality coordination into the scheduler tick via asyncio.to_thread, cold-start-safe"
 ```
 
 ---
@@ -1330,6 +1446,23 @@ smoothed over (same discipline the spec's own self-review, §12, already applied
   correct. Fixed by using a realistic epoch constant (`EPOCH = 1_800_000_000.0`) in the tests
   instead, with the reasoning recorded inline as a comment so a future editor doesn't revert it
   back to a "cleaner-looking" small number.
+- **Task 6's original scheduler also called `fetch_branch_signals()` (blocking `urlopen`) and
+  `observe_main()` (a full `tools.quality_audit` pass) synchronously, inline, directly inside the
+  trading-critical tick** — caught later, during the personal-production execution program's
+  plan-safety review (2026-08-26,
+  `docs/kalshi-personal-production-execution-program-2026-08-26.md` §5.3), after this plan had
+  already been written and merged but before any of it was implemented. This is the same failure
+  shape the independent realtime data-plane investigation root-caused as the actual cause of this
+  app's own event-loop stalls/candidate backlog — unrelated synchronous work starving the shared
+  trading loop. Fixed by following `_maybe_run_backup`'s *other* established pattern (not just its
+  cold-start-safe interval tracking, already covered above): fire the work as a
+  `task_supervisor.supervise`-wrapped background task whose body awaits
+  `asyncio.to_thread(run_coordination_cycle, ...)`, exactly mirroring
+  `_run_backup_background`'s `await asyncio.to_thread(run_backup_cycle, ...)`. Also flipped the
+  config default from `enabled: true` to `enabled: false` — this correction fixes the mechanism but
+  doesn't substitute for actually measuring tick-timing impact with it live, so Task 6 gained an
+  explicit "Step 5: Noninterference measurement" that must pass before ever setting `enabled: true`
+  outside a disposable dev check.
 
 **1. Spec coverage** (against `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md`):
 

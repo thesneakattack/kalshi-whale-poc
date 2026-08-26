@@ -35,12 +35,19 @@ already (837 → 1300+ → 979 → this).
 
 ## Path to production
 
-P0 — the code-level gates around real money (order schema verified against
-the official SDK, typed in-app confirmation phrase, restricted CORS, real
-account field names, kill switch + bankroll persisting across restarts) —
-is **fully shipped**. That's necessary, not sufficient: going from "the
-gate works" to "flip it for real" still has these open operational
-questions.
+P0 — the code-level *safety-primitive* gates around real money (order
+schema verified against the official SDK, typed in-app confirmation
+phrase, restricted CORS, real account field names, kill switch + bankroll
+persisting across restarts) — is **fully shipped**. That's necessary, not
+sufficient, and it does not mean the remaining distance to real capital is
+purely operational: most items below are (deployment target, auth model,
+sizing/kill-switch numbers, category legal risk), but the entry-gate
+adverse-selection item is a live strategy/code defect, not an ops
+question, and substantive code-level work still sits ahead of this
+checklist too — realtime data-plane correctness, economic/strategy
+validation, and canonical decision/execution semantics. See
+`docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
+that work is sequenced.
 
 - [x] Runway/exit gates: a position could open with almost no time left
       before its market's close and ride unmanaged to settlement. Fixed via
