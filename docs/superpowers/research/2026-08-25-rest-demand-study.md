@@ -83,15 +83,30 @@ snapshot), with exact per-endpoint-family window counts added
 (`kalshi_rest_endpoint.<family>.*`) so demand and duplicate-polling questions no longer
 depend on the per-tick `kalshi_rest.<family>.*` snapshots, which sample ~1 tick in 10.
 
-### Milestone / live-data duplicate demand (H9)
+### Milestone / live-data duplicate demand (H9) — measured
 
-Not yet measurable to the standard this study requires: the only exact per-endpoint
-counts start accumulating with this task's fix. The probe's `milestone_duplicate_estimate`
-compares observed milestone-family calls (`get_milestones`, `get_live_datas`,
-`get_live_data`, `get_event_live_data`) against the minimum the app's own repoll intervals
-imply for the tracked events (one poll per event per 60 s); run
-`--demand --demand-hours 1 --tracked-events N` after a hands-off hour (the I9 research
-task is one) and record the factor here before I11 weighs a shared milestone cache.
+`python -m tools.kalshi_rate_limit_probe --demand --demand-hours 0.4 --tracked-events 28`,
+run after 25 minutes of untouched samples with the exact per-endpoint window counts this
+task added (2026-08-25, evening session):
+
+| | |
+|---|---|
+| calls in the window | 3,359 (2.33/s); background 76.0%, critical 22.1% |
+| by class | live_status 30.9% · resolution 23.0% · catalog 22.0% · position 15.4% · whale 6.7% · other 1.9% |
+| by endpoint | `get_markets` 1,207 · `get_milestones` 793 · `get_market` **790** · `get_exchange_status` 157 · `get_event_live_data` 135 · `get_live_datas` 99 · balance/fills/positions 56 each |
+| milestone-family calls observed | 1,027 (`get_milestones` 793 + `get_live_datas` 99 + `get_event_live_data` 135) |
+| minimum for 28 tracked events at one poll per event per 60 s | 672 |
+| **duplicate factor** | **1.53** |
+
+Two findings. (1) **H9 is real but moderate**: the three independent caches (catalog scan,
+live status, event live data) poll the milestone/live-data surface ~1.5× more than one
+shared cache would need — material for a budget that spends its waits in bursts, not a
+dominant cost. (2) A demand this study did not expect: `get_market` at 790 calls in
+24 minutes (0.55/s) is the lifecycle `settled` re-read in `_process_stream_lifecycle`
+(`background_resolution`, 23% of all calls) — one extra REST read per settlement event,
+exchange-wide, which the 2026-08-23 docstring estimated at ~0.06/s. It is the second-largest
+single endpoint and a candidate for elimination or batching in I11 (the `determined` event
+already carries `result`; a batched finalized-status read would replace N singles).
 
 ## Hypothesis status after I8
 
@@ -99,8 +114,9 @@ task is one) and record the factor here before I11 weighs a shared milestone cac
   filters (docs), flat 10-token cost for every endpoint this app calls (account), and a
   200-ticker request measured complete and un-throttled. The local limiter runs at 40% of
   the verified sustained rate and 13% of the verified burst.
-- **H9 inconclusive** until the exact endpoint-family counts have accumulated (method and
-  tool in place).
+- **H9 confirmed, moderate**: duplicate factor 1.53 on the milestone/live-data surface; and the
+  lifecycle `settled` re-read is 23% of all REST demand (0.55/s), far above its documented
+  estimate — both are demand-reduction inputs for I11.
 - **H7 reinforced, not yet causal**: background classes hold ~73% of calls and nearly all
   of the limiter time and errors; the local 8-token burst, not Kalshi's 60-request burst,
   is what critical calls queue behind.
