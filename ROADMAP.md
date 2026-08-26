@@ -58,6 +58,56 @@ semantics (fully open). See
 `docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
 that work is sequenced.
 
+- [ ] **The event loop stalls for 17-38+ seconds at a stretch, live,
+      post-P0-P2 — root cause now proven via a real stack trace.** Found
+      2026-08-26 while trying to gather Program 1's "runtime-measured"
+      evidence: the local dev instance was unreachable for 4.5+ minute
+      stretches at a time. `loop_watchdog` (P0 Task 1's own diagnostic)
+      confirmed real stalls, not a hunch: `stall_max_ms` sat at
+      17,800-38,000ms, main thread pegged ~100-120% CPU throughout, every
+      other thread idle. Two hypotheses tried first and ruled out (kept
+      here, struck through in spirit per this file's own discipline of
+      recording how a finding evolved): ~~`_maybe_prune_capture_stores()`
+      pruning `series_watcher.db`~~ - restarting to test it only made
+      things worse (20+ more minutes down), and `series_watcher.prune()`
+      turned out to only touch a small, indexed, 180K-row table, not the
+      19.5M-row `raw_trades` table that's actually never pruned by design.
+      **Proven root cause** (added `cap_add: [SYS_PTRACE]` to
+      `.ddev/docker-compose.fastapi.yaml` so `py-spy dump` could attach to
+      the live stalled process): the main thread is stuck inside
+      `candidate_log.population_gate_summary()` (`services/candidate_log.py:316`),
+      called directly and synchronously - no `asyncio.to_thread`/
+      `tick_executor` offload at all - from `GET /api/candidate-log/summary`
+      (`services/analytics/routes.py:94`), a route the dashboard polls
+      routinely. That function runs `SELECT strategy, gate_name, side,
+      result, resolved, unit_cost FROM rejection_events` with **no WHERE
+      clause, no LIMIT** and no retention/pruning ever applied to that
+      table, then loops over every returned row in pure Python to group
+      and aggregate. **`rejection_events` currently holds 6,228,399
+      rows** and grows without bound (`record_rejection()` inserts one row
+      per gate check on every rejected candidate, undeduped, by design -
+      services/candidate_log.py's own "POPULATION STATISTICS" section).
+      Every dashboard poll of this endpoint re-triggers a full 6.2M-row
+      scan + Python-level grouping loop directly on the event loop,
+      blocking every other request and background task for the whole
+      duration - which is also why restarting didn't help: the dashboard
+      polls this route again almost immediately. **Fix, not yet
+      implemented**: offload `population_gate_summary()`'s call the same
+      way every other heavy DB call already is (`asyncio.to_thread` or
+      `tick_executor.run`) as a minimal first step to stop it blocking the
+      loop; separately decide whether `rejection_events` needs real
+      retention/aggregation (a rolling window, a pre-aggregated summary
+      table, or a sample cap) given it has no bound today and this table
+      is already 20x the row count that made `resolved_signals_with_factors`'s
+      own "small enough to scan" assumption fail for `signal_log.db`'s
+      much smaller `signals` table. Remove the temporary `SYS_PTRACE`
+      grant once this is fixed and verified - it was added purely to get
+      this stack trace. Whale-signal handling itself
+      (`whale_provider.fetch_signals`) was confirmed a *victim* of the
+      stall, not its cause - its own inner stage timers
+      (resolve/thread_wait/sync) stayed near-zero while its outer
+      wall-clock ballooned to match the same stall window.
+
 - [x] Runway/exit gates: a position could open with almost no time left
       before its market's close and ride unmanaged to settlement. Fixed via
       `strategy.min_seconds_to_close` (entry-side floor) and
