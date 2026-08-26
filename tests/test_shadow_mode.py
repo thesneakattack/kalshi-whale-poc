@@ -1,3 +1,4 @@
+import calendar
 import time
 
 from services import shadow_mode as sm
@@ -6,6 +7,15 @@ from services import shadow_mode as sm
 def _trader(tmp_path, monkeypatch, default_bankroll=10000.0):
     monkeypatch.setattr(sm, "DB_PATH", tmp_path / "shadow_mode.db")
     return sm.ShadowTrader(default_bankroll=default_bankroll)
+
+
+def _noon_of_seeded_day(trader) -> float:
+    """A `now` guaranteed to fall on the UTC calendar date the trader itself
+    seeded day_start_date from - same fix as tests/test_risk_manager.py's
+    helper of the same name: sampling time.time() here raced the trader's
+    own wall-clock seed across UTC midnight (see that helper's docstring for
+    the Woodpecker run that caught it)."""
+    return calendar.timegm(time.strptime(trader.day_start_date, "%Y-%m-%d")) + 12 * 3600
 
 
 def _signal(**overrides):
@@ -216,8 +226,8 @@ def test_reset_day_clears_halt(tmp_path, monkeypatch):
 # --- automatic daily rollover (same fix class as services/risk_manager.py) --
 
 def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch):
-    day1 = time.time()
     trader = _trader(tmp_path, monkeypatch, default_bankroll=1000.0)
+    day1 = _noon_of_seeded_day(trader)
     trader.check_daily_loss(890.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1)
     assert trader.halted is True
     assert trader.check_daily_loss(1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1 + 60) is False
@@ -225,8 +235,8 @@ def test_check_daily_loss_stays_halted_within_the_same_day(tmp_path, monkeypatch
 
 
 def test_check_daily_loss_auto_rolls_over_on_a_new_utc_day(tmp_path, monkeypatch):
-    day1 = time.time()
     trader = _trader(tmp_path, monkeypatch, default_bankroll=1000.0)
+    day1 = _noon_of_seeded_day(trader)
     trader.check_daily_loss(890.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, now=day1)
     assert trader.halted is True
     day2 = day1 + 86400
