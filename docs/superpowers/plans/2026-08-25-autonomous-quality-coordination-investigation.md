@@ -268,15 +268,15 @@ This is throwaway/experimental until I10 selects architecture. Do not wire it in
 - `systematic-debugging` for unexpected behavior
 - subagent modification only inside the explicit worktree if parallelism is justified
 
-- [ ] Write failing scenario tests for branch-only finding, main observation, repeated main observation, line-shift identity, exact PR claim, path-overlap PR, stale branch, merge resolves, merge does not resolve, recurrence, two concurrent claims, ambiguous local-only work.
-- [ ] Implement the smallest pure coordinator state machine needed to exercise I1–I3 policies; no network writes.
-- [ ] Feed recorded/synthetic GitHub state snapshots rather than calling GitHub inside core decision logic.
-- [ ] Prove repeated identical input is idempotent.
-- [ ] Prove a claim/overlap can only suppress/delay, never mark resolved.
-- [ ] Prove branch-only findings cannot become repository escalation candidates.
-- [ ] Record decision explanations so every suppression/escalation is inspectable.
-- [ ] Measure whether the policy would have created duplicate work against the I2 historical sample.
-- [ ] Commit prototype and research result separately if the repo's task discipline requires; mark prototype status clearly.
+- [x] Write failing scenario tests for branch-only finding, main observation, repeated main observation, line-shift identity, exact PR claim, path-overlap PR, stale branch, merge resolves, merge does not resolve, recurrence, two concurrent claims, ambiguous local-only work. (Confirmed red first: `ModuleNotFoundError` before `coordinator.py` existed.)
+- [x] Implement the smallest pure coordinator state machine needed to exercise I1–I3 policies; no network writes. (~150 lines, stdlib only.)
+- [x] Feed recorded/synthetic GitHub state snapshots rather than calling GitHub inside core decision logic. (`Observation` is caller-supplied; no GitHub/Woodpecker client exists in the package.)
+- [x] Prove repeated identical input is idempotent.
+- [x] Prove a claim/overlap can only suppress/delay, never mark resolved. (Dedicated test, 50-audit replay.)
+- [x] Prove branch-only findings cannot become repository escalation candidates.
+- [x] Record decision explanations so every suppression/escalation is inspectable.
+- [x] Measure whether the policy would have created duplicate work against the I2 historical sample. (Real I2 §6 episode timestamps + live-fetched PR #12 merge time — zero duplicate-work events.)
+- [x] Commit prototype and research result separately if the repo's task discipline requires; mark prototype status clearly. (Prototype status marked EXPERIMENTAL/THROWAWAY in package docstring and research doc header.)
 
 **Acceptance**
 The coordination policy survives the scenario matrix without GitHub write authority and produces explainable decisions.
