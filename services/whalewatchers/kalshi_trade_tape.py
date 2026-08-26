@@ -428,6 +428,32 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # Anything over the cap is simply not resolved this round; the next
         # print on that market gets another chance.
         batch = sorted(wanted)[:_MAX_ONDEMAND_MARKET_FETCH]
+        # Code-review fix (finding #7, /code-review high pass against PR
+        # #23): a ticker bumped out of `batch` by the cap above never got a
+        # lookup ATTEMPT this round - not a confirmed negative, and (before
+        # this fix) not treated as a failure either, since
+        # self._resolve_failed_tickers was only ever populated in the
+        # except branch below. _process_trades_sync's own mark_seen gate
+        # only skips marking seen when a ticker is IN _resolve_failed_
+        # tickers; a truncated-out ticker was in neither markets_by_ticker
+        # nor _resolve_failed_tickers, so it got marked seen anyway - the
+        # exact trade_id that could never resolve this round became
+        # permanently unresolvable, with no retry (candidate_retry.enqueue
+        # is also only called in the except branch below) and no counter
+        # anywhere reflecting it - the same silent-loss shape H4 (Task 11)
+        # closed for the exception case, reopened here via capacity
+        # instead of exception. Treated identically to a transient lookup
+        # failure: unmarked-seen and durably retried.
+        truncated = wanted - set(batch)
+        if truncated:
+            self._resolve_failed_tickers |= truncated
+            if counts is not None:
+                counts["batch_capacity_truncated"] = counts.get("batch_capacity_truncated", 0) + len(truncated)
+            for ticker in truncated:
+                for trade in trades_by_ticker.get(ticker, []):
+                    candidate_retry.enqueue(
+                        trade, failure=Exception(f"market fetch batch capacity exceeded for {ticker}"),
+                    )
         if counts is not None:
             counts["resolve_calls"] = counts.get("resolve_calls", 0) + 1
         try:

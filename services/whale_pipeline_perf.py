@@ -49,6 +49,7 @@ COUNTERS: tuple[str, ...] = (
     "rejection_writes",   # candidate_log.record_rejection calls (each a real SQLite write)
     "resolve_calls",      # get_markets_by_tickers REST calls issued for enrichment
     "resolve_failures",   # ...of which raised
+    "batch_capacity_truncated",  # off-list tickers bumped out of a resolve batch by _MAX_ONDEMAND_MARKET_FETCH (finding #7)
     "signals_emitted",    # WhaleSignals returned to the handler
 )
 
