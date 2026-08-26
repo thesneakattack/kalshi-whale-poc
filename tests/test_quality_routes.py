@@ -17,6 +17,7 @@ import pytest  # noqa: E402
 import main  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from services.storage_health import storage_health  # noqa: E402
+import services.quality_coordination as qc  # noqa: E402
 
 client = TestClient(main.app)
 
@@ -28,6 +29,7 @@ def _isolated_storage_health(tmp_path, monkeypatch):
     composition (QCP Task 11) would open real data/*.db files, which
     tests/support/runtime_isolation.py's sqlite3.connect guard hard-blocks."""
     monkeypatch.setattr(storage_health, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
 
 
 def test_quality_summary_returns_the_documented_top_level_shape():
@@ -57,3 +59,33 @@ def test_quality_summary_makes_no_kalshi_network_calls(monkeypatch):
     resp = client.get("/api/quality/summary")
 
     assert resp.status_code == 200
+
+
+def test_quality_coordination_route_returns_items_and_log(tmp_path, monkeypatch):
+    import services.quality_coordination as qc
+
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
+    conn = qc._connect()
+    conn.execute(
+        """INSERT INTO coordination_items
+           (automation_key, state, level, first_observed_at, last_observed_at,
+            observation_count, reopen_count, scope_paths, source_finding_id, source_check)
+           VALUES ('k1', 'escalation_eligible', 'warning', '2026-01-01T00:00:00',
+                   '2026-01-01T06:00:00', 3, 0, 'a.py', 'fid', 'check')"""
+    )
+    conn.commit()
+    conn.close()
+    resp = client.get("/api/quality/coordination")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"][0]["automation_key"] == "k1"
+    assert body["items"][0]["state"] == "escalation_eligible"
+
+
+def test_quality_summary_gains_coordination_rollup(tmp_path, monkeypatch):
+    import services.quality_coordination as qc
+
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "q.db")
+    resp = client.get("/api/quality/summary")
+    assert resp.status_code == 200
+    assert set(resp.json()["coordination"]) == {"escalation_eligible", "suppressed", "observed"}
