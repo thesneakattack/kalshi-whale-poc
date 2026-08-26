@@ -252,6 +252,19 @@ class KalshiStreamGateway:
         self._server_error_last: dict | None = None
         self._error_25_total = 0
         self._error_25_window = 0
+        # Subscription-set churn (realtime data-plane investigation, new
+        # hypothesis found 2026-08-26 investigating a direct report: "the
+        # way the websocket subscriptions per Market change after every
+        # Market discovery scan is also a major problem"). Nothing tracked
+        # how often _sync_subscriptions actually sends an add_markets/
+        # delete_markets diff, or how many tickers churn per sync, before
+        # this - see ROADMAP.md.
+        self._subscription_syncs_total = 0
+        self._subscription_syncs_window = 0
+        self._subscription_tickers_added_total = 0
+        self._subscription_tickers_added_window = 0
+        self._subscription_tickers_removed_total = 0
+        self._subscription_tickers_removed_window = 0
         # Reader-side whale-size gate shadow counters (realtime data-plane
         # remediation P0 Task 3). Shadow mode never drops anything on their
         # account - gate_would_reject just counts what a live gate WOULD
@@ -721,6 +734,9 @@ class KalshiStreamGateway:
         self._wait_buckets = empty_buckets()
         self._handler_window = {cls: LatencyAgg() for cls in self._handler_lifetime}
         self._fault_logged_classes_this_window.clear()
+        self._subscription_syncs_window = 0
+        self._subscription_tickers_added_window = 0
+        self._subscription_tickers_removed_window = 0
 
     def _oldest_message_age(self, now: float) -> float | None:
         queue = self._queue
@@ -787,6 +803,14 @@ class KalshiStreamGateway:
                 "connects": self._connects,
                 "reconnects": self._reconnects,
                 "last_disconnect": dict(self._last_disconnect) if self._last_disconnect else None,
+            },
+            "subscription_churn": {
+                "syncs_total": self._subscription_syncs_total,
+                "syncs_window": self._subscription_syncs_window,
+                "tickers_added_total": self._subscription_tickers_added_total,
+                "tickers_added_window": self._subscription_tickers_added_window,
+                "tickers_removed_total": self._subscription_tickers_removed_total,
+                "tickers_removed_window": self._subscription_tickers_removed_window,
             },
         }
 
@@ -885,6 +909,13 @@ class KalshiStreamGateway:
         # construction, not merely unwanted.
         market_channels = ("ticker",) if self.exchange_wide_trades else ("trade", "ticker")
         market_channel_sids = [self._subscription_sids[c] for c in market_channels if c in self._subscription_sids]
+        if to_add or to_remove:
+            self._subscription_syncs_total += 1
+            self._subscription_syncs_window += 1
+            self._subscription_tickers_added_total += len(to_add)
+            self._subscription_tickers_added_window += len(to_add)
+            self._subscription_tickers_removed_total += len(to_remove)
+            self._subscription_tickers_removed_window += len(to_remove)
         if to_add:
             for sid in market_channel_sids:
                 await self._send({

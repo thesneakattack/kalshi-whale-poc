@@ -342,6 +342,17 @@ def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
     out[f"{p}.error_25_total"] = float(im.get("error_25_total") or 0)
     out[f"{p}.error_25_window"] = float(im.get("error_25_window") or 0)
     out[f"{p}.reconnects"] = float((im.get("connection") or {}).get("reconnects") or 0)
+    # subscription_churn (2026-08-26, investigating a direct report that
+    # WS-subscription churn per market-discovery scan is "taxing everything
+    # downstream and upstream") - how often _sync_subscriptions actually
+    # sent an add_markets/delete_markets diff this window, and how many
+    # tickers churned. Zero-window omitted like every other window metric
+    # here, since "no churn this window" is a real, common, honest state.
+    churn = im.get("subscription_churn") or {}
+    if churn.get("syncs_window"):
+        out[f"{p}.subscription_churn.syncs_window"] = float(churn["syncs_window"])
+        out[f"{p}.subscription_churn.tickers_added_window"] = float(churn.get("tickers_added_window") or 0)
+        out[f"{p}.subscription_churn.tickers_removed_window"] = float(churn.get("tickers_removed_window") or 0)
     return out
 
 

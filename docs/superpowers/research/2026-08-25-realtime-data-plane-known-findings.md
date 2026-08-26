@@ -218,6 +218,52 @@ oldest-message age
 A good solution must increase sustainable throughput, reduce unnecessary work, isolate
 critical traffic, or some combination.
 
+## Hypothesis H11 — market-discovery-driven watchlist churn forces repeated
+   WebSocket resubscription, cost currently unmeasured
+
+Direct report (2026-08-26): "the way the websocket subscriptions per Market change after
+every Market discovery scan is also a major problem. its taxing everything downstream and
+upstream." Not yet confirmed as a root cause of any specific symptom above - recorded as a
+distinct, previously-untracked mechanism, separate from H1-H10.
+
+Current mechanism (`kalshi.live_markets_only: true`, the active config): every trading tick
+(`poll_interval_sec: 6`) rebuilds the full watchlist from scratch via
+`services/market_watch/market_fetch.py`'s `live_markets_only` branch -
+`market_catalog.candidates_in_window()` (`ORDER BY volume_24h_fp DESC`, time-windowed) ->
+`_fetch_live_status()` (already cached/bounded per a 2026-08-15 incident fix) ->
+`selection.round_robin_select()` (a **deterministic top-150-series-by-volume cut**, not an
+actual rotation despite the name) -> `trade_stream.set_market_tickers(...)` ->
+`services/kalshi/websocket.py`'s `_sync_subscriptions()`, which diffs desired vs. subscribed
+tickers and sends `update_subscription` (`add_markets`/`delete_markets`) for the delta.
+
+Live-measured (2026-08-26), not assumed:
+- The underlying catalog data (`volume_24h_fp` etc.) refreshes via a background scan on its
+  own ~15s interval (`catalog_scan._CATALOG_SCAN_MIN_INTERVAL_SEC = 15`), decoupled from the
+  6s tick - so `round_robin_select`'s *input* does not change every tick.
+- A direct 10-sample measurement of the live watchlist (`GET /api/state`'s `markets` field,
+  confirmed via `main.py`'s own comment to be the real live watchlist) showed it holding
+  stable at 8 tickers for 3 consecutive ~6s ticks, then jumping to 13 in one step - **churn
+  is real but bursty, aligned with the catalog-refresh cadence, not a continuous per-tick
+  thrash.**
+- No observability existed for this at all before 2026-08-26 - confirmed via a direct query
+  against `data/observability.db`. A first, minimal, additive instrumentation pass now
+  exists (`KalshiStreamGateway._sync_subscriptions` counts a sync + ticker-add/remove deltas
+  only when the diff is non-empty; surfaced as `<stream>.ingest.subscription_churn.*` via the
+  existing `ingest_metrics()`/`reset_ingest_window()`/`capture_from_runtime` pipeline - no
+  new metrics subsystem). Live-confirmed working: one real sync captured 5 tickers added, 0
+  removed, in a single window.
+- **Not yet measured**: the actual downstream/upstream *cost* of a churn burst - how many
+  WS frames one `_sync_subscriptions` call sends (recall it replicates the same
+  add/delete_markets payload across both the `trade` and `ticker` channel sids in scoped
+  mode), whether Kalshi's `send_initial_snapshot: True` ticker resubscribe behavior applies
+  per-add or only on first subscribe, whether a burst measurably correlates with ingest
+  queue depth/latency or REST demand, and whether a distinct, not-yet-traced app
+  unresponsiveness event observed live immediately after an 8->13 burst was actually caused
+  by this mechanism or was coincidental/a different bug (two unrelated event-loop-blocking
+  bugs were found and fixed the same day in unrelated modules - `candidate_log.
+  population_gate_summary` and `whale_calibration` routes - so a third, distinct cause is not
+  ruled out).
+
 ## What the investigation must not assume
 
 Do not assume any of the following is automatically correct:
