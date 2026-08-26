@@ -658,9 +658,12 @@ same day (§5.1). The "Exit" criteria below are about the *full* plan
 clean, defect-free foundation to build P3+ on. Program 2's own entry gate
 ("Program 1 merged and runtime-measured") has its "merged" half satisfied
 for P0-P2; "runtime-measured" still needs live observation this repo
-hasn't done yet, and Program 2's *other* gate (Program 2R's research)
-remains unmet regardless (cancelled, §Program 2R below) — so Program 2
-still cannot start on either front.
+hasn't done yet. Program 2's *other* gate (Program 2R's research) is now
+**merged as research leverage** (resumed 2026-08-26, §Program 2R below) —
+but that research's own findings are explicitly provisional pending
+post-Program-1 data, and its remediation plan still needs explicit human
+design-approval — so Program 2 still cannot start implementation on
+either front, for different reasons than before.
 
 ### Owner
 
@@ -712,15 +715,26 @@ At minimum demonstrate:
 
 ## Program 2R — Economic research lane, concurrent with Program 1
 
-**Status (2026-08-26): CANCELLED.** Launched, produced 5 commits
-(scoping, E1-E7 research, E11-E12 adversarial review, a Program 2
-candidate design/plan, and a new orchestrator skill) in
-`research/economic-strategy-effectiveness`, then stopped by direct user
-action before pushing to origin or opening a PR. Treat as not authoritative
-— do not resume, push, or build on that work without an explicit request
-to do so. Program 2's own entry gate below ("Program 2R plan approved")
-is therefore unmet on this front too, independent of Program 1's own
-gate.
+**Status (2026-08-26): RESUMED AND MERGED AS RESEARCH LEVERAGE.**
+Launched, produced 5 commits (scoping, E1-E7 research, E11-E12
+adversarial review, a Program 2 candidate design/plan, and a new
+orchestrator skill) in `research/economic-strategy-effectiveness`, then
+stopped by direct user action before pushing to origin or opening a PR.
+Resumed same day once the immediate-queue fork point (§11) was reconciled
+in Program 1's favor already having happened: the branch was merged
+forward onto post-Program-1 `main`, and its status report got a dated
+addendum (`docs/superpowers/research/2026-08-26-economic-strategy-
+effectiveness-status-report.md`) recording that the report's own
+Program-1-dependency caveat cannot yet be closed — only ~5.4 hours had
+elapsed since Program 1's merge, nowhere near the "several hundred
+entries" re-run trigger the report itself already specified. This is
+**MERGED RESEARCH LEVERAGE** (§2's taxonomy), not implementation
+approval: Program 2's own entry gate below ("Program 2R plan approved")
+still requires explicit human review/approval of the remediation design
+doc, which merging the research does not itself grant, and E1-E7's
+queries still need re-running against then-current data before
+implementation starts (the remediation plan's own instruction, unchanged
+by this merge).
 
 Allowed concurrency only if:
 
@@ -1065,7 +1079,8 @@ For frontend, refresh/execute the existing plan rather than reopening framework 
 # 11. Exact immediate queue
 
 **Outcome as of 2026-08-26 (this queue has now run its course; all three
-items are closed, none re-queued automatically):**
+items closed, the post-queue fork explicitly reconciled rather than left
+open):**
 
 - **Immediate 1 (doctrine)** — done, merged (PR #21).
 - **Immediate 2 (realtime execution)** — done. Ran through P0–P2, review
@@ -1080,20 +1095,21 @@ items are closed, none re-queued automatically):**
 - **Immediate 3 (parallel research)** — started, produced 5 real,
   never-pushed commits on `research/economic-strategy-effectiveness`
   (scoping, E1–E7 research, E11–E12 adversarial review, a Program 2
-  candidate design, a new orchestrator skill), then stopped by direct
-  user action before opening a PR (§ Program 2R status). That branch
-  still exists locally with its commits intact; its worktree was removed
-  during session cleanup. Not resumed, not authoritative — do not push,
-  rebase, or build on it without an explicit request to do so.
-- **"After realtime merges" (below)** — the literal trigger (P0–P2 on
-  `main`) has now happened, but the subsection's original text assumed
-  Program 2R would still be live to rebase against. It isn't (cancelled).
-  So this is **not** an auto-executing next step: there are two genuinely
-  open, human-level decisions sitting side by side with no ordering
-  between them forced by evidence yet — (a) resume/discard/review
-  `research/economic-strategy-effectiveness` and let Program 2 proceed on
-  that front, or (b) authorize Program 1's P3. Neither is queued; both
-  require an explicit request before work starts on either.
+  candidate design, a new orchestrator skill), stopped by direct user
+  action before opening a PR, then **resumed same day** on direct
+  instruction to reconcile the fork below rather than leave it open (§
+  Program 2R status). Merged forward onto post-Program-1 `main`, its
+  status report given a dated addendum, then opened as a PR and merged as
+  research leverage — not implementation authorization.
+- **"After realtime merges" fork — reconciled toward (a), not (b).** The
+  fork was two genuinely open options: (a) resume the preserved economic
+  research, or (b) authorize Program 1's P3. Resolved in favor of (a):
+  the program's own governing dependency order (§1 — economic decision
+  validity precedes real execution) puts research resumption ahead of a
+  live-behavior-changing gate flip, and P3 carries an explicit
+  separate-authorization requirement (§5.1's verdict) that a general
+  instruction to reconcile a documentation fork does not itself satisfy.
+  P3 remains exactly as unauthorized as before this reconciliation.
 
 ## Immediate 1 — tiny doctrine branch (closed)
 
@@ -1105,24 +1121,28 @@ further queued here.
 Branch `feat/realtime-data-plane-remediation` ran P0–P2 through review,
 fix, and merge (PR #23, `main`@`22d1a79`); branch and worktree deleted
 post-merge. Do not re-open this slot to "begin Task 1" — Task 1 already
-ran. The next real task under this plan is P3, gated as described above.
+ran. The next real task under this plan is P3, which stays gated behind
+its own separate authorization requirement (§5.1) — resolving the
+Immediate-3/Program-2R fork toward research resumption does not touch
+this gate either way.
 
-## Immediate 3 — parallel research worktree (stopped, not closed)
+## Immediate 3 — parallel research worktree (resumed and merged)
 
-Branch `research/economic-strategy-effectiveness` holds 5 real commits,
-never pushed to `origin`, worktree already removed. Preserved as-is
-pending an explicit decision — do not modify, rebase, or delete without
-one.
+Branch `research/economic-strategy-effectiveness` — 5 original commits,
+merged forward onto post-Program-1 `main`, status report addended, opened
+as a PR, merged as MERGED RESEARCH LEVERAGE (§Program 2R). Its own
+remediation plan is unaffected by the merge: still not approved for
+execution, still requires explicit human design-approval plus a fresh
+E1-E7 re-run against then-current data before any Program 2 task starts.
 
-## After realtime merges
+## After realtime merges (resolved)
 
-Now that P0–P2 are on `main`, this is a live fork point rather than a
-future one: either resume the preserved economic research (rebase it
-against current `main`, incorporate P0–P2's measurement implications,
-open a PR, then execute Program 2 on it) or authorize Program 1's P3
-first. Both remain unauthorized until requested — this section records
-what "after realtime merges" now means in practice, it does not itself
-authorize either path.
+The fork this heading originally posed is closed: research resumed
+(Immediate 3 above), P3 stays gated (Immediate 2 above). Program 2
+implementation itself remains a separate, larger, not-yet-started
+initiative — reconciling this fork advanced Program 2R to merged research
+leverage, it did not open Program 2's own entry gate (§7's "Program 2"
+section), which still needs explicit design-doc approval regardless.
 
 ---
 
@@ -1140,7 +1160,7 @@ authorize either path.
 | AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
-| Economic strategy effectiveness | INVESTIGATION CANCELLED MID-FLIGHT (2026-08-26) — real E1-E7/E11-E12 output exists on an unpushed local branch (`research/economic-strategy-effectiveness`, worktree since removed, branch preserved); not authoritative until explicitly resumed | Program 2R |
+| Economic strategy effectiveness | MERGED RESEARCH LEVERAGE (2026-08-26) — E1-E7/E11-E12 resumed and merged forward onto post-Program-1 `main`; findings' Program-1-dependency caveat explicitly still open pending elapsed-time re-verification, not implementation-approved | Program 2R (done) → Program 2 |
 | Realistic execution simulation | INVESTIGATION REQUIRED | Program 2R/2 |
 | Full strategy replay | INVESTIGATION REQUIRED | Program 2R/2 |
 | Canonical TradeIntent | INVESTIGATION REQUIRED | Program 3R |

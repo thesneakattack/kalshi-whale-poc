@@ -8,6 +8,22 @@ for; read the four documents it draws from for full evidence
 `...-gate-marginal-contribution.md`, `...-advisory-calibration-execution-audit.md`,
 `...-adversarial-review.md`).
 
+**Addendum (2026-08-26, resumed after this branch was stopped mid-flight):** Program 1
+(realtime data-plane remediation) merged into `main`@`22d1a79` at 2026-08-26T12:01:39-05:00
+— the dependency §5's conflict check named as still-open. This branch has been merged
+forward onto current `main` and carries that code. **The re-verification §5 called for
+cannot be done yet, and that is a calendar-time fact, not unfinished work:** Program 1's
+capture-side fixes (candidate dedup, WAL journaling, the `series_watcher` cross-thread
+race fix, batch-capacity-truncation retry) affect data captured going forward from the
+merge, not retroactively, and as of this addendum only ~5.4 hours have elapsed since
+merge — nowhere near the "several hundred `entries`" re-run trigger §4 already specifies
+for even the pre-existing 90-trades/3.2-days post-cutover sample. E4/E5's post-cutover
+findings therefore remain exactly as provisional as this document originally said; nothing
+here should be read as having resolved that caveat. Re-run against `origin/main` when this
+is next picked up, per the remediation plan's own "when this plan is picked up for real"
+instruction, rather than trusting either this addendum's or the original findings' numbers
+as still-current.
+
 ## 1. Answer to the core question, as far as current evidence supports it
 
 > Where is economic edge created or destroyed between the raw exchange event and an
