@@ -28,6 +28,40 @@
 when:
   - event: [push, pull_request]
 
+# Full-history clone override, required by ci-fast-path-check below.
+#
+# Real bug found 2026-08-26: Woodpecker's default clone plugin sets
+# `partial: true`, which its own docs.md documents as "fetch the one
+# commit and its blob objects... overwrite depth with 1" - it silently
+# forces `--depth=1` no matter what `depth:` is configured to, and adds
+# `--filter=tree:0` on top. Confirmed live via the actual clone step log
+# on two separate pipelines (a docs-only push and a main-branch merge):
+# `git fetch --no-tags --depth=1 --filter=tree:0 origin +<sha>:` in both
+# cases - a shallow, single-commit checkout with zero parent history.
+#
+# ci-fast-path-check's git merge-base (feature branches) and HEAD^1 diff
+# (main pushes) both require real ancestor history that a depth=1 clone
+# cannot have - a shallow repo has no relationship to any other commit,
+# so `git merge-base origin/main HEAD` (or `HEAD^1`) fails every time,
+# silently, and the script's own fail-safe rule ("any ambiguity means
+# RUN, never SKIP") swallows the failure into a permanent RUN verdict.
+# Net effect: this fast path has computed RUN on 100% of runs since it
+# shipped (PR #13) - the "0 new" claim in status docs about it working
+# was never actually exercised. Confirmed via plugin-git's own source
+# (github.com/woodpecker-ci/plugin-git plugin.go's fetch()): `depth: 0`
+# means the `--depth` flag is omitted entirely (unlimited history), and
+# `partial: false` is required or `partial`'s own default overwrites any
+# depth value back to 1 regardless. This repo has no real git-lfs content
+# (no .gitattributes LFS rules), so the plugin's default LFS steps stay
+# fast no-ops either way - full clone cost here is git history transfer
+# only, not blob/LFS data.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
 steps:
   # Tiny, git-capable image (python:3.13-slim below has no git binary at
   # all - see quality-architecture-audit.yml's own comment on this) that

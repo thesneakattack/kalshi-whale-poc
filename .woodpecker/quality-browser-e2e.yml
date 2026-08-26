@@ -20,6 +20,23 @@
 when:
   - event: [push, pull_request]
 
+# Full-history clone override, required by ci-fast-path-check below - see
+# tests-pytest.yml's matching clone: block for the full explanation. Short
+# version: Woodpecker's default clone plugin's `partial: true` forces a
+# `--depth=1` checkout regardless of any `depth:` setting, which leaves
+# zero ancestor history for ci-fast-path-check's git merge-base/HEAD^1
+# checks - confirmed live, this made the fast path compute RUN on every
+# single run since it shipped (PR #13). `depth: 0` + `partial: false`
+# gives full history (plugin-git's own source: depth=0 omits `--depth`
+# entirely); this repo has no real git-lfs content, so clone cost here is
+# git history only.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
 steps:
   # Tiny, git-capable image (the three steps below have no confirmed git
   # binary - python:3.13-slim per quality-architecture-audit.yml's own
