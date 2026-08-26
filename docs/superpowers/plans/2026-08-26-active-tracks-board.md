@@ -110,14 +110,22 @@ visible in one place.
 | 4 — canonical shadow qualification | 3 exit | not started |
 | 5 — frontend operator console | plan refresh (spec stale) | not started |
 | 6 — personal production operations | 3/4 exit + human capital-policy decision | not started |
-| 7 — revised AQC implementation | plan refresh (spec stale) | not started |
+| 7 — revised AQC implementation | none — plan corrected 2026-08-26 (`d015733`), safe to execute | **in progress** |
 | 8 — capital qualification (Stages A–F) | 6 exit + each stage's own human gate | not started |
 
 Programs 5 and 7 have no technical dependency on Track A/B — they're
-sequenced late by priority, not by a hard gate. If there's ever a reason
-to parallelize further (a separate session/worktree with nothing else to
-do), either could be picked up independently; say so explicitly rather
-than assuming this table's order is a hard constraint for those two.
+sequenced late by priority, not by a hard gate, which is why Program 7
+(AQC implementation) was picked up out of order on 2026-08-26 with no
+issue. Program 5 remains available for the same reason if there's ever
+a reason to parallelize further.
+
+**Program 7 status (2026-08-26):** in progress on
+`feat/autonomous-quality-coordination`, following
+`docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s
+9 tasks via `superpowers:subagent-driven-development`/`executing-plans`.
+Re-ground against that plan's own checkboxes and this branch's commits,
+not this line, before resuming — this line just says a session is (or
+was) working it.
 
 ---
 

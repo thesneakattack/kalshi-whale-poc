@@ -402,7 +402,11 @@ The operator console must ultimately represent backend concepts that earlier pro
 ## 5.3 Autonomous Quality Coordination implementation
 
 **Plan:** `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`  
-**State:** **PLAN REQUIRES ARCHITECTURAL CORRECTION**.
+**State:** ~~PLAN REQUIRES ARCHITECTURAL CORRECTION~~ **CORRECTED, safe to
+execute** (commit `d015733`, same day — Task 6 was rewritten in place to
+match the "Required correction" list below before any of it shipped; this
+section's own Verdict was just never refreshed to say so until now,
+2026-08-26 later the same day).
 
 ### Keep
 
@@ -442,7 +446,18 @@ That conflicts with the later realtime investigation's key invariant: unrelated 
 
 ### Verdict
 
-> **Do not execute as written. Preserve the investigation; revise runtime integration only.**
+> ~~Do not execute as written. Preserve the investigation; revise runtime
+> integration only.~~ **Superseded (2026-08-26, later the same day):** the
+> revision this verdict called for already happened, in the plan document
+> itself, before this section was updated to say so. Task 6 as currently
+> written satisfies all four "Required correction" bullets above —
+> `asyncio.to_thread` isolation (the named second-choice, justified
+> because the iteration is fully self-contained), `enabled: false` by
+> default until a real runtime-cost measurement, and a mandatory
+> noninterference-measurement step before that default is ever flipped.
+> **Execute as written**, starting at Task 1, via the plan's own header
+> instruction (`superpowers:subagent-driven-development` or
+> `superpowers:executing-plans`).
 
 ---
 
@@ -1196,7 +1211,7 @@ earlier judgment call that this update reverses.
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
 | Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3 AUTHORIZED not started (2026-08-26); P4-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
-| AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
+| AQC persisted coordinator | PLAN CORRECTED, IMPLEMENTATION STARTING (2026-08-26) | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
 | Economic strategy effectiveness | MERGED RESEARCH LEVERAGE (2026-08-26) — E1-E7/E11-E12 resumed and merged forward onto post-Program-1 `main`; findings' Program-1-dependency caveat explicitly still open pending elapsed-time re-verification, not implementation-approved | Program 2R (done) → Program 2 |
