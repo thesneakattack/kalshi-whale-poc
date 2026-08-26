@@ -1416,6 +1416,310 @@ git commit -m "docs: point CLAUDE.md and the capability router at quality coordi
 
 ---
 
+## Addendum (2026-08-26, post-PR-#43): closing the pre-activation blockers
+
+Tasks 1-9 above are the original plan, executed and merged as-is. The final whole-branch
+review (before merge) found 3 spec-level gaps and flagged them as **pre-activation
+blockers** — real, but deliberately deferred rather than rushed into the same fix wave,
+since fixing them meant a genuine design change rather than a mechanical patch. Direct
+user instruction, same day: "address what's parked and fix it." Tasks 10-12 below close
+those three; Task 13 closes the remaining genuinely-Minor findings in the same pass.
+Same TDD/review discipline as Tasks 1-9 — each is its own commit, its own task review.
+
+### Task 10: Scope run-idempotence to the immediately-preceding run, not all history
+
+**Problem:** `observe_main`'s idempotence check (`services/quality_coordination.py:309-314`)
+looks up `audit_fingerprint` across ALL of `coordination_runs` history
+(`WHERE audit_fingerprint=?` with no ordering/limit), and the column itself is
+`UNIQUE`. Consequence, proven empirically by the final review: once the audit's
+finding-set returns to ANY previously-seen state, the short-circuit fires and
+`apply_observation` never runs again for that fingerprint — so a finding that gets
+fixed, then regresses, then gets fixed again is never marked `resolved` after the first
+occurrence. Fix-then-regress-then-fix is the normal shape of a repo's finding set, not
+an edge case.
+
+**Files:**
+- Modify: `services/quality_coordination.py`
+- Test: `tests/test_quality_coordination.py`
+
+**Fix:**
+1. In `_connect()`, drop `UNIQUE` from `coordination_runs.audit_fingerprint` — the same
+   fingerprint must be allowed to recur in non-consecutive rows now.
+2. In `observe_main`, change the idempotence check from "has this fingerprint ever been
+   seen" to "is this fingerprint identical to the immediately-preceding run's
+   fingerprint" — query `SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1`
+   instead of `WHERE audit_fingerprint=?`, and short-circuit only if that latest row's
+   `audit_fingerprint` matches the freshly computed one.
+3. Apply the identical "compare to the most recent row, skip insert if it matches"
+   pattern to the error path too (replacing `INSERT OR IGNORE`, which relied on the
+   `UNIQUE` constraint this task removes) — this keeps "don't spam a repeating identical
+   error" working without the global constraint, and as a natural side effect also
+   resolves the separately-parked Minor finding that a permanently-broken coordinator's
+   `latest_run_at()` used to freeze at the first failure forever (any change — a
+   different error, or a success squeezed in between — now re-logs).
+
+```python
+# services/quality_coordination.py — _connect(), coordination_runs table:
+    conn.execute("""CREATE TABLE IF NOT EXISTS coordination_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        audit_fingerprint TEXT NOT NULL,
+        commit_sha TEXT,
+        ran_at TEXT NOT NULL,
+        items_observed INTEGER NOT NULL,
+        items_resolved INTEGER NOT NULL,
+        error TEXT
+    )""")
+```
+
+```python
+# services/quality_coordination.py — observe_main, replacing lines 296-330:
+        try:
+            report = _run_static_audit(repo_root)
+        except Exception as exc:
+            fp = hashlib.sha256(f"error:{exc}".encode()).hexdigest()
+            last = conn.execute(
+                "SELECT audit_fingerprint FROM coordination_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if last is None or last["audit_fingerprint"] != fp:
+                conn.execute(
+                    """INSERT INTO coordination_runs
+                       (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+                       VALUES (?, ?, ?, 0, 0, ?)""",
+                    (fp, _current_commit_sha(repo_root), at.isoformat(), str(exc)),
+                )
+                conn.commit()
+            return RunResult(fp, None, 0, 0, {}, str(exc))
+
+        fp = _fingerprint(report)
+        last = conn.execute(
+            "SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if last is not None and last["audit_fingerprint"] == fp:
+            return RunResult(fp, last["commit_sha"], 0, 0, {}, last["error"])
+
+        signals = [
+            Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)
+            for f in report.findings
+        ]
+        states = apply_observation(conn, signals, branches, claims, at)
+        resolved = sum(1 for s in states.values() if s == "resolved")
+        sha = _current_commit_sha(repo_root)
+        conn.execute(
+            """INSERT INTO coordination_runs
+               (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+               VALUES (?, ?, ?, ?, ?, NULL)""",
+            (fp, sha, at.isoformat(), len(signals), resolved),
+        )
+        conn.commit()
+        return RunResult(fp, sha, len(signals), resolved, states, None)
+```
+
+**Tests to add** (`tests/test_quality_coordination.py`):
+- `test_observe_main_reprocesses_a_fingerprint_that_recurs_non_consecutively` — run with
+  `{A}`, then `{A,B}`, then back to `{A}` (three distinct `at` timestamps): the third
+  call's fingerprint equals the first's, but is NOT the immediately-preceding run's
+  fingerprint, so it must reprocess (not short-circuit) and mark `B` `resolved`.
+- `test_observe_main_still_short_circuits_on_true_back_to_back_repeat` — two consecutive
+  identical-fingerprint calls: the second must still short-circuit (`items_observed == 0`,
+  only one `coordination_runs` row) — this is the existing Task 4 idempotence test,
+  keep it green.
+- `test_observe_main_error_path_does_not_spam_identical_consecutive_errors` — same
+  scanner exception raised twice in a row: only one `coordination_runs` row for it.
+- `test_observe_main_error_path_logs_a_new_row_when_the_error_changes` — two different
+  exceptions in a row: two separate rows.
+
+**Commit:** `fix: scope quality-coordination run-idempotence to the immediately-preceding run`
+
+---
+
+### Task 11: Filter the coordinator's input to non-baseline-accepted findings
+
+**Problem:** `observe_main` feeds `report.findings` — ALL static findings, unfiltered —
+into the coordinator (`services/quality_coordination.py:316-318`). `tools/quality_audit/
+baseline.json` currently has ~196 already-reviewed, intentionally-accepted findings (see
+`tools/quality_audit/baseline.py`'s existing `load_baseline`/`compare_to_baseline`,
+already used by the CLI path in `tools/quality_audit/__main__.py`, never wired into this
+module). First real enable would report ~196 already-accepted findings as
+`escalation_eligible` noise on `GET /api/quality/summary`'s headline field — the
+opposite of this module's whole purpose.
+
+**Files:**
+- Modify: `services/quality_coordination.py`
+- Test: `tests/test_quality_coordination.py`
+
+**Fix:** import `load_baseline`/`compare_to_baseline` from `tools.quality_audit.baseline`
+(already exists, already proven by the CLI path — no new scanner logic). In
+`observe_main`, after `report = _run_static_audit(repo_root)`, compute the baseline path
+as `repo_root / "tools" / "quality_audit" / "baseline.json"` (same relative location the
+CLI uses, matching `tools/quality_audit/__main__.py`'s own `_DEFAULT_BASELINE_PATH`
+convention) and feed only `comparison.new` into `Signal` construction instead of
+`report.findings`. A finding that WAS tracked (because it used to be new) but has since
+been baseline-accepted by a human naturally stops appearing in `.new` and is correctly
+picked up as "resolved" by `apply_observation`'s existing absent-from-present logic — no
+extra plumbing needed for that direction.
+
+```python
+# services/quality_coordination.py — new import near the top, alongside the existing
+# tools.quality_audit.__main__ import:
+from tools.quality_audit.baseline import compare_to_baseline, load_baseline
+
+# inside observe_main, after `report = _run_static_audit(repo_root)` succeeds:
+        baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
+        comparison = compare_to_baseline(report, load_baseline(baseline_path))
+        fp = _fingerprint_findings(comparison.new)   # see note below on _fingerprint
+        ...
+        signals = [
+            Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)
+            for f in comparison.new
+        ]
+```
+
+Note: `_fingerprint(report)` currently takes a `QualityReport` and reads `report.findings`
+directly (`services/quality_coordination.py`, near line 250-ish — grep for `def
+_fingerprint`). Since idempotence must now be computed over the FILTERED set (matching
+what's actually fed to `apply_observation`, so Task 10's dedup logic stays correct
+against what this task changes), either refactor `_fingerprint` to accept a
+`list[QualityFinding]` directly (rename or add a thin wrapper) and pass
+`comparison.new`, or reconstruct a throwaway `QualityReport(findings=comparison.new)` and
+fingerprint that — implementer's call, whichever reads more cleanly; keep the existing
+`_fingerprint` used by nothing else changed if the wrapper approach is cleaner.
+
+**Tests to add:**
+- `test_observe_main_excludes_baseline_accepted_findings_from_signals` — a report with
+  two findings, one baseline-accepted (via a temp baseline.json fixture), one not: only
+  the non-accepted one produces a tracked item.
+- `test_observe_main_uses_the_real_baseline_json_path_convention` — confirm the baseline
+  path is computed as `repo_root/tools/quality_audit/baseline.json`, not hardcoded
+  elsewhere or misaligned with the CLI's own path.
+- `test_observe_main_resolves_an_item_once_it_becomes_baseline_accepted` — a finding
+  tracked as `observed` in one run, then baseline-accepted before the next run: the next
+  run must mark it `resolved` (proves the "absent from `.new`" path works end to end,
+  not just that `.new` excludes it).
+
+**Commit:** `fix: filter quality-coordination input to non-baseline-accepted findings`
+
+---
+
+### Task 12: Paginate and de-N+1 the `GET /api/quality/coordination` route
+
+**Problem:** `services/quality/routes.py`'s `get_quality_coordination()` (lines 51-65)
+fetches ALL `coordination_items` unbounded, then runs one additional query PER ITEM for
+its full log history. The spec deliberately chose unbounded retention (storage growth
+is by design), but this route wasn't designed against that choice — at real scale this
+is an ever-growing, N+1, fully-synchronous-on-the-shared-event-loop response.
+
+**Files:**
+- Modify: `services/quality/routes.py`
+- Test: `tests/test_quality_routes.py`
+
+**Fix:**
+1. Add an optional `?limit=` query param (default 200), applied to the items query,
+   ordered `last_observed_at DESC` (most recently active items first — the ones anyone
+   actually cares about).
+2. Cap log rows per item (last 20, most recent first) using a single window-function
+   query instead of a per-item round-trip:
+
+```python
+@router.get("/api/quality/coordination")
+async def get_quality_coordination(limit: int = 200):
+    conn = _qc._connect()
+    try:
+        items = [
+            dict(r) for r in conn.execute(
+                "SELECT * FROM coordination_items ORDER BY last_observed_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+        keys = [item["automation_key"] for item in items]
+        logs_by_key: dict[str, list[dict]] = {k: [] for k in keys}
+        if keys:
+            placeholders = ",".join("?" * len(keys))
+            rows = conn.execute(
+                f"""SELECT automation_key, at, message FROM (
+                        SELECT automation_key, at, message,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY automation_key ORDER BY at DESC
+                               ) AS rn
+                        FROM coordination_log
+                        WHERE automation_key IN ({placeholders})
+                    ) WHERE rn <= 20
+                    ORDER BY automation_key, at""",
+                keys,
+            ).fetchall()
+            for r in rows:
+                logs_by_key[r["automation_key"]].append({"at": r["at"], "message": r["message"]})
+        for item in items:
+            item["log"] = logs_by_key[item["automation_key"]]
+        return {"items": items}
+    finally:
+        conn.close()
+```
+
+**Tests to add:**
+- `test_quality_coordination_route_respects_limit` — more items than `limit` in the db;
+  response returns exactly `limit`, most-recently-observed first.
+- `test_quality_coordination_route_caps_log_entries_per_item` — an item with more than
+  20 log rows; response's `log` for that item has exactly 20, most recent first.
+- `test_quality_coordination_route_makes_one_log_query_not_n_plus_one` — with multiple
+  items present, patch `sqlite3.Connection.execute` (or count via a wrapping spy) to
+  assert exactly 2 queries run (one for items, one for all logs), not `1 + len(items)`.
+- Keep the existing `test_quality_coordination_route_returns_items_and_log` passing
+  unmodified (it exercises the single-item case, `limit`'s default should not change its
+  behavior).
+
+**Commit:** `fix: paginate and de-N+1 the quality coordination read route`
+
+---
+
+### Task 13: Batch the remaining Minor findings (mechanical, same-shape edits)
+
+Per this session's own subagent-driven-development convention ("batch small
+same-shape work" — several small, independent, same-kind edits in one dispatch rather
+than one task per line). None of these change behavior in a way that needs its own
+test; each gets a one-line self-check instead.
+
+**Files:** `services/quality_coordination.py`, `main.py`, `services/quality/routes.py`
+
+1. **`STALENESS_HARD_CAP_HOURS` is unconditionally redundant** given
+   `STALENESS_IDLE_HOURS` (24 >= 3 always wins first) — a faithful port of the same
+   redundancy already present in `tools/quality_coordination_sim/coordinator.py`, so this
+   is a real, if harmless, dead condition inherited from the prototype. Collapse
+   `if idle_hours >= STALENESS_HARD_CAP_HOURS or idle_hours >= STALENESS_IDLE_HOURS:` to
+   `if idle_hours >= STALENESS_IDLE_HOURS:` and remove the now-unused constant (or keep
+   the constant but add a comment explaining it's currently unreachable, if removing it
+   risks losing the documented intent — implementer's judgment, note which was chosen).
+2. **Lazy-import `tools.quality_audit.__main__`** inside `observe_main` (or
+   `run_coordination_cycle`) instead of at module scope, so `main.py` importing
+   `services.quality_coordination` doesn't pull all 9 scanner modules into the trading
+   app's startup path unconditionally — decouples `main.py`'s ability to start from
+   `tools/` ever being present in a deployment image.
+3. **`_coordination_rollup()` has no exception guard** (`services/quality/routes.py`) —
+   a sqlite error there currently 500s the entire `/api/quality/summary` composite
+   health read, not just the coordination sub-section. Wrap it to degrade to a
+   safe-default rollup (`{"escalation_eligible": 0, "suppressed": 0, "observed": 0}`) on
+   any exception, matching the "one broken sub-section shouldn't break the whole
+   summary" principle the rest of that route already follows for its other sections.
+4. **`main.py`'s `last_run_at` naming** — set at dispatch time ("last started"), while
+   `latest_run_at()` seeds from "last completed" — cosmetic drift vs. `backup.py`'s own
+   `last_started_at` naming. Rename the in-memory field to `last_started_at` for
+   consistency (state dict key, all read/write sites) — purely a rename, no behavior
+   change.
+5. **Unencoded branch name in the GitHub compare URL** (`fetch_branch_signals`) — add
+   `urllib.parse.quote` around the branch name before interpolating into
+   `f"{base}/compare/main...{name}"`.
+6. **Mid-file imports** — now that all 9 original tasks plus Tasks 10-12 are in and the
+   "don't touch a prior task's code" constraint no longer applies, consolidate the
+   imports scattered through `services/quality_coordination.py` (added incrementally,
+   task by task) to the top of the file, in one pass, with no behavior change.
+
+**Verification:** run the full existing test suite for all three touched files after
+these 6 edits — no new tests required, but zero regressions permitted. Confirm item 4's
+rename didn't miss a read/write site by grepping for the old name after the edit.
+
+**Commit:** `refactor: batch cleanup of remaining minor quality-coordination findings`
+
+---
+
 ## Self-Review
 
 **0. Two real bugs caught and fixed while drafting this plan, not before it — recorded rather than
