@@ -173,6 +173,192 @@ def test_quarantined_window_marks_captured_trades_excluded():
         assert conn.execute("SELECT excluded FROM raw_trades").fetchone()[0] == 1
 
 
+# --------------------------------------------------------------- concurrency
+#
+# Code-review finding #2 (/code-review high pass against PR #23): this PR's
+# own P1 work made record_trade/record_book and flush() genuinely
+# cross-thread - a tick_executor worker thread (main.py's
+# _flush_trade_capture_async) and the main asyncio event-loop thread
+# (services/whale_stream/whale_stream_handlers.py's _process_stream_trade,
+# which calls series_watcher.record_trade() directly and synchronously per
+# WS message) both touch _trade_buffer/_book_buffer and flush()'s
+# swap-and-clear, which was never synchronized. book_snapshots has no
+# unique constraint (only an AUTOINCREMENT surrogate key), so a genuine
+# flush-vs-flush race - record_trade's own batch-triggered inline flush()
+# on the event-loop thread racing the tick_executor's scheduled flush() on
+# a worker thread - can grab the SAME buffer twice (duplicate rows) or
+# orphan an appended row into a buffer nothing ever flushes again (a
+# silently lost row, no error, no drop counter increment).
+#
+# Root-cause note on the test design below: the actual vulnerable window is
+# two adjacent plain statements inside flush() (capture the old lists, then
+# reassign to new ones) with no function call or loop between them - under
+# CPython's GIL, that is a genuinely hard window to hit via pure scheduling
+# luck even with sys.setswitchinterval cranked way down (measured directly:
+# 3/3 clean runs of a 400-iteration record_book()-vs-flush() burst, and
+# 3/3 clean runs of a two-threads-both-calling-flush()-via-Barrier variant,
+# neither ever reproduced a lost or duplicated row on this build/machine).
+# That is a real property of GIL-scheduled CPython, not proof the race is
+# safe - it is still a genuine TOCTOU bug (real on a free-threaded/no-GIL
+# Python build, and not something anyone should rely on GIL incidental
+# protection for). So the primary proof here is a DETERMINISTIC test of the
+# fix's actual mechanism (sw._buffer_lock provides real mutual exclusion
+# over every _trade_buffer/_book_buffer touch, verified by forcing the
+# exact interleaving rather than hoping to get lucky with it) - the
+# volume-based tests are kept below as secondary smoke coverage that the
+# fixed system also behaves correctly under real concurrent load, not as
+# the primary regression proof.
+
+def test_flush_and_record_book_are_mutually_exclusive_via_the_buffer_lock():
+    """The direct proof of the fix's synchronization mechanism (code-review
+    finding #2): record_book() (and, by the same code path, record_trade()
+    and flush()) must acquire sw._buffer_lock around every touch of
+    _trade_buffer/_book_buffer. Proven by holding the lock from this test
+    thread and confirming a concurrent record_book() call genuinely blocks
+    until the lock is released - not "usually doesn't interleave badly,"
+    a real mutual-exclusion guarantee that holds regardless of GIL
+    scheduling timing (and would still hold on a free-threaded Python
+    build, where the GIL's incidental protection disappears entirely)."""
+    import threading
+
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def _blocked_writer() -> None:
+        entered.set()
+        sw.record_book(
+            {"market_ticker": "KXBTC15M-LOCKTEST", "price_dollars": "0.50"}, CFG, now=1000.0,
+        )
+        finished.set()
+
+    with sw._buffer_lock:
+        t = threading.Thread(target=_blocked_writer)
+        t.start()
+        assert entered.wait(timeout=2.0)
+        # The writer thread has started and is trying to record - it must
+        # NOT be able to finish while this thread still holds the lock.
+        # (finished.wait returning False here means "still not set after
+        # waiting" - the writer is genuinely blocked, not just fast.)
+        assert finished.wait(timeout=0.2) is False
+    # Lock released here (context manager exit) - the writer can now proceed.
+    t.join(timeout=2.0)
+    assert finished.is_set()
+
+
+def test_flush_holds_the_buffer_lock_too_not_just_record_calls():
+    """The other half of the same guarantee: flush()'s own swap-and-clear
+    must also go through sw._buffer_lock, or a concurrent record_book()
+    could still interleave with flush()'s reassignment even though
+    record_book() itself is lock-protected."""
+    import threading
+
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def _blocked_flusher() -> None:
+        entered.set()
+        sw.flush()
+        finished.set()
+
+    with sw._buffer_lock:
+        t = threading.Thread(target=_blocked_flusher)
+        t.start()
+        assert entered.wait(timeout=2.0)
+        assert finished.wait(timeout=0.2) is False
+    t.join(timeout=2.0)
+    assert finished.is_set()
+
+def test_concurrent_record_and_flush_loses_no_rows_and_creates_no_duplicates(monkeypatch):
+    import sys
+    import threading
+
+    n_records = 400
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.00001)  # yield far more often - makes the race reliably observable
+    try:
+        errors: list[Exception] = []
+
+        def _writer() -> None:
+            try:
+                for i in range(n_records):
+                    ok = sw.record_book(
+                        {"market_ticker": f"KXBTC15M-RACE-{i}", "price_dollars": "0.50"},
+                        CFG, now=1000.0 + i,
+                    )
+                    assert ok is True
+            except Exception as exc:  # pragma: no cover - surfaced via errors list
+                errors.append(exc)
+
+        def _flusher(stop: threading.Event) -> None:
+            try:
+                while not stop.is_set():
+                    sw.flush()
+            except Exception as exc:  # pragma: no cover - surfaced via errors list
+                errors.append(exc)
+
+        stop_flushing = threading.Event()
+        writer = threading.Thread(target=_writer)
+        flusher = threading.Thread(target=_flusher, args=(stop_flushing,))
+        writer.start()
+        flusher.start()
+        writer.join()
+        stop_flushing.set()
+        flusher.join()
+        sw.flush()  # catch anything left buffered after both threads finished
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == []
+    with sqlite3.connect(sw.DB_PATH) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM book_snapshots").fetchone()[0]
+        distinct = conn.execute("SELECT COUNT(DISTINCT ticker) FROM book_snapshots").fetchone()[0]
+    assert count == n_records  # no row lost, and no row duplicated
+    assert distinct == n_records
+
+
+def test_concurrent_two_flushers_never_double_write_the_same_buffered_rows():
+    """The more specific shape of the bug: two threads calling flush() at
+    the same time (record_trade's own batch-triggered inline flush racing
+    the tick_executor's scheduled one) must partition the buffered rows
+    between them, never both grab the same rows."""
+    import sys
+    import threading
+
+    n_records = 300
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.00001)
+    try:
+        for i in range(n_records):
+            assert sw.record_book(
+                {"market_ticker": f"KXBTC15M-DBLFLUSH-{i}", "price_dollars": "0.50"},
+                CFG, now=1000.0 + i,
+            ) is True
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(2)
+
+        def _flush_after_barrier() -> None:
+            try:
+                barrier.wait()
+                sw.flush()
+            except Exception as exc:  # pragma: no cover - surfaced via errors list
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_flush_after_barrier)
+        t2 = threading.Thread(target=_flush_after_barrier)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == []
+    with sqlite3.connect(sw.DB_PATH) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM book_snapshots").fetchone()[0]
+    assert count == n_records  # never double-written, never dropped
+
+
 # ------------------------------------------------------------------ analysis
 
 def _seed_signal(ticker, side, seen_at, price, resolved=1, correct=1, notional=5000.0):
