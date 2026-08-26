@@ -1,0 +1,61 @@
+  <section id="config">
+    <p class="eyebrow">every knob, where it lives, what it defaults to</p>
+    <h3>Configuration Reference</h3>
+    <p class="lede"><code style="color:var(--whale); font-family:var(--mono);">config/settings.yaml</code> — non-secret tuning, committed to git, editable live from the dashboard's Controls panel:</p>
+    <div class="cfg-grid">
+      <div class="cfg-cell"><span class="p">mode</span><span class="v">paper</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.poll_interval_sec</span><span class="v">15s</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.watchlist_size</span><span class="v">50 parent series (round-robin)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.max_children_per_parent</span><span class="v">null (unlimited)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.markets_watchlist</span><span class="v">[] (auto)</span></div>
+      <div class="cfg-cell"><span class="p">kalshi.live_markets_only</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.signal_frequency_sec</span><span class="v">~12s avg</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.whale_size_range</span><span class="v">5,000–50,000</span></div>
+      <div class="cfg-cell"><span class="p">whale_signal.bias</span><span class="v">random</span></div>
+      <div class="cfg-cell"><span class="p">strategy.entry_threshold</span><span class="v">0.65 confidence</span></div>
+      <div class="cfg-cell"><span class="p">strategy.longshot_price_threshold</span><span class="v">0.15 (&le;15&cent;/&ge;85&cent;)</span></div>
+      <div class="cfg-cell"><span class="p">strategy.longshot_entry_threshold_bonus</span><span class="v">+0.15 confidence</span></div>
+      <div class="cfg-cell"><span class="p">strategy.max_position_pct</span><span class="v">5% of bankroll</span></div>
+      <div class="cfg-cell"><span class="p">strategy.cooldown_sec</span><span class="v">300s</span></div>
+      <div class="cfg-cell"><span class="p">strategy.take_profit_pct</span><span class="v">null (off)</span></div>
+      <div class="cfg-cell"><span class="p">strategy.stop_loss_pct</span><span class="v">null (off)</span></div>
+      <div class="cfg-cell"><span class="p">strategy.auto_exit_enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">strategy.auto_exit_threshold</span><span class="v">0.6 confidence</span></div>
+      <div class="cfg-cell"><span class="p">risk.starting_bankroll</span><span class="v">$10,000</span></div>
+      <div class="cfg-cell"><span class="p">risk.max_daily_loss_pct</span><span class="v">10%</span></div>
+      <div class="cfg-cell"><span class="p">risk.kill_switch_enabled</span><span class="v">true</span></div>
+      <div class="cfg-cell"><span class="p">kalshi_account.trading_enabled</span><span class="v" style="color:var(--danger);">false</span></div>
+      <div class="cfg-cell"><span class="p">advisory.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">advisory.min_resolved_trades_per_variant</span><span class="v">30</span></div>
+      <div class="cfg-cell"><span class="p">market_strategy.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">market_strategy.starting_bankroll</span><span class="v">$10,000</span></div>
+      <div class="cfg-cell"><span class="p">whale_watcher_kalshi.min_contracts</span><span class="v">5,000 contracts</span></div>
+      <div class="cfg-cell"><span class="p">confidence_calibration.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">confidence_calibration.min_resolved_signals</span><span class="v">50</span></div>
+      <div class="cfg-cell"><span class="p">confidence_calibration.snapshot_interval_sec</span><span class="v">21,600 (6h)</span></div>
+      <div class="cfg-cell"><span class="p">market_analyst.enabled</span><span class="v">false</span></div>
+      <div class="cfg-cell"><span class="p">market_analyst.model</span><span class="v">claude-sonnet-5</span></div>
+      <div class="cfg-cell"><span class="p">market_analyst.reanalyze_cooldown_sec</span><span class="v">1800s</span></div>
+    </div>
+
+    <p class="lede" style="margin-top:24px;"><code style="color:var(--whale); font-family:var(--mono);">.env</code> — secrets and URLs, gitignored, every variable optional:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Variable</th><th>Default if blank</th><th>Unlocks</th></tr></thead>
+        <tbody>
+          <tr><td class="mod">KALSHI_API_KEY_ID</td><td class="note">stays paper-only</td><td class="note">real account read access (with the key below)</td></tr>
+          <tr><td class="mod">KALSHI_PRIVATE_KEY_PATH</td><td class="note">stays paper-only</td><td class="note">real account read access (with the key above)</td></tr>
+          <tr><td class="mod">GOOGLE_CLIENT_ID</td><td class="note">app stays fully open</td><td class="note">part of the Google login gate (needs all 3)</td></tr>
+          <tr><td class="mod">GOOGLE_CLIENT_SECRET</td><td class="note">app stays fully open</td><td class="note">part of the Google login gate (needs all 3)</td></tr>
+          <tr><td class="mod">APP_SECRET_KEY</td><td class="note">app stays fully open</td><td class="note">session signing + Connected Accounts encryption</td></tr>
+          <tr><td class="mod">ALLOWED_GOOGLE_EMAIL</td><td class="note">any Google account can sign in</td><td class="note">restricts login to one address</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_PROVIDER</td><td class="note">kalshi_trade_tape (real data, no setup needed — was generic_rest)</td><td class="note">which services/whalewatchers/ provider is active</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_API_URL</td><td class="note">only read if WHALE_WATCHER_PROVIDER=generic_rest</td><td class="note">generic_rest provider's live feed</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_API_KEY</td><td class="note">unauthenticated request to the feed</td><td class="note">auth header for the live feed</td></tr>
+          <tr><td class="mod">WHALE_WATCHER_*_FIELD</td><td class="note">ticker/side/size/price</td><td class="note">field-name mapping for non-matching feed JSON</td></tr>
+          <tr><td class="mod">ANTHROPIC_API_KEY</td><td class="note">Market Analyst stays inert even if <code>market_analyst.enabled</code> is true</td><td class="note">the LLM call in <code>market_analyst_agent.analyze_market()</code> — dual-gated with the config flag</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+

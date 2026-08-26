@@ -1,0 +1,922 @@
+      <div class="t-phase">
+        <div class="tag">phase 125 · lifecycle-driven settlement</div>
+        <h4>market_lifecycle_v2 now reaches the persisted catalog and the real outcome pipeline</h4>
+        <p>Closes the second half of a gap phase 122 (2026-08-17) deliberately left open: that phase wired
+          <code>close_date_updated</code> into <code>main.py</code>'s in-memory <code>state["markets"]</code>
+          overlay only, and left <code>determined</code>/<code>settled</code> completely unwired - "re-routing
+          this app's real outcome/P&amp;L resolution onto a channel with zero live-verified message history"
+          was judged too risky to rush. Verified that precondition before touching anything this time, not just
+          reading the docs: <code>/api/state</code>'s <code>lifecycle_stream_stats</code> already showed 2,256+
+          real <code>determined</code> and 2,372+ real <code>settled</code> events processed, and
+          <code>kalshi_trade_ws.py</code>'s own "first real shape" log (in <code>ddev logs</code>) confirmed the
+          real captured payloads match <code>docs/kalshi/market-and-event-lifecycle.md</code>'s documented schema
+          exactly - <code>determined</code> carries <code>result</code>/<code>determination_ts</code>/
+          <code>settlement_value</code>, <code>settled</code> carries only <code>settled_ts</code>, no
+          <code>result</code>. That made <code>determined</code> the correct (and only) trigger. Two real gaps
+          closed: (1) <code>services/market_catalog/market_catalog.py</code>'s persisted SQLite rows never got
+          these events at all, only the next incremental per-series scan (potentially hours away) - new
+          <code>apply_lifecycle_update(ticker, *, close_ts=None, status=None)</code> does a targeted single-row
+          UPDATE, called from <code>services/whale_stream/whale_stream_handlers.py</code>'s
+          <code>_process_stream_lifecycle</code> for all three event types (<code>close_date_updated</code> ->
+          <code>close_ts</code>, <code>determined</code> -> <code>status="determined"</code>, <code>settled</code>
+          -> <code>status="finalized"</code>, the same values a real REST market object's own <code>status</code>
+          would show). (2) <code>market_history.record_outcome</code>/<code>settlement_edge.resolve_window</code>/
+          <code>market_analyst_agent.resolve_from_market_results</code>/
+          <code>candidate_log.resolve_from_market_results</code> were fed exclusively from that tick's
+          REST-fetched <code>markets</code> list - structurally blind to any ticker that rotates off the live
+          watchlist/discovery scope before it settles (routine for short-lived series like KXBTC15M), no matter
+          how fast the poll ran. <code>market_lifecycle_v2</code> is exchange-wide, so firing all four from the
+          <code>determined</code> event closes that blind spot - done in addition to, not instead of, the
+          existing REST-tick path, safe because all four are idempotent (<code>INSERT OR IGNORE</code> /
+          <code>WHERE resolved = 0</code> / <code>WHERE settled_yes IS NULL</code>). A real test-isolation bug
+          was caught along the way, not just new tests added: <code>tests/test_trading_gate.py</code>'s
+          <code>_process_stream_lifecycle</code> tests redirected <code>market_catalog</code>/
+          <code>market_history</code>'s <code>DB_PATH</code> to a tmp dir but not <code>settlement_edge</code>/
+          <code>market_analyst_agent</code>/<code>candidate_log</code>'s - since the new <code>determined</code>
+          handling now calls all three, the existing test would have queried the real, live
+          <code>data/settlement_edge.db</code>/<code>data/market_analyst.db</code>/<code>data/candidate_log.db</code>
+          on every run (harmless that specific time since the test ticker never matched a real row, but a real
+          violation of this project's test-isolation rule and a real WAL-lock contention risk against the running
+          dev server). Fixed by extending the file's existing pre-import <code>DB_PATH</code>-redirect block to
+          all three; confirmed no contamination by grepping the real databases for the exact test ticker
+          afterward. Also added: two new <code>lifecycle_stream_stats</code> counters
+          (<code>catalog_updates_applied</code>, <code>outcomes_resolved_via_lifecycle</code>) on
+          <code>/api/state</code>, so this path's real activity is directly observable rather than trusted
+          blind. Full suite (1,146 tests, up from 1,144) green. Verified against real production traffic after
+          shipping: <code>catalog_updates_applied</code> incremented on real events while
+          <code>close_time_updates_applied</code> stayed lower for the same events - direct proof the persisted-
+          catalog path reaches markets the in-memory-only overlay from phase 122 could not.</p>
+        <div class="files"><code>services/market_catalog/market_catalog.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> · <code>services/app_state.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>services/market_catalog/CHEATSHEET.md</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 126 · silent infrastructure failures</div>
+        <h4>A 16-hour-broken discovery cache and a 5+ hour resource leak, both found by actually reading ddev logs</h4>
+        <p>Direct correction, same day as phase 125: a summary calling the remaining roadmap work "mostly
+          operational decisions" got pushed back on - "its not just that. there are crucial infrastructure items
+          that need to be fixed." Re-examined <code>ddev logs</code>/<code>fault_log</code> instead of assuming,
+          and found two real, currently-active bugs neither the roadmap nor status.html had ever named. First:
+          <code>discovery_cache.refresh</code> throwing <code>KeyError: 'base_url'</code> 198 times over ~16
+          hours - almost exactly one failure per <code>_DISCOVERY_REFRESH_SEC</code> (300s) cycle, meaning
+          <em>every single discovery refresh had been failing</em>, not an occasional blip, until a coincidental
+          restart happened to land on a clean read. <code>services/config_store.py</code>'s 2026-08-17 fix made
+          <code>update()</code>'s own writes atomic (tmp file + rename), but this project runs under ddev/Docker
+          Desktop on WSL2, and a bind-mounted filesystem doesn't necessarily give a reader in a different
+          process/container the same torn-read immunity a same-host POSIX rename would - <code>get()</code>'s
+          mtime-triggered re-read had no validation that a "successful" read actually parsed to a well-formed
+          dict, so a torn/empty read got accepted outright as the new config, silently corrupting every field
+          until the next real file change gave it another chance. <code>get()</code> now rejects a read that
+          parses to <code>None</code> or a non-dict, keeps serving the last known-good config, logs a warning,
+          and deliberately leaves <code>self._mtime</code> unset so the very next call retries instead of getting
+          stuck. Second: "Unclosed connector"/"Unclosed client session" warnings firing on a clean ~15-minute
+          cadence for 5+ hours straight with zero process restarts in between - ruled out as a dev-reload
+          artifact by checking the restart timestamps directly, not assumed. Root-caused to
+          <code>index_stream_handlers.py</code>'s <code>_spec_for</code>: a fresh <code>KalshiClient</code> on
+          every settlement-spec cache miss, never closed on any path. Its own docstring already knew the cadence
+          - "the 15-minute series rotates its ticker every quarter hour" - independently for each of
+          BTC/ETH/SOL/DOGE/HYPE, which matches the observed pattern exactly. Fixed with <code>try/finally</code>.
+          Audited every other <code>KalshiClient()</code> call site in the codebase for the same shape rather
+          than stopping at one fix: found one more real instance in <code>diagnostics/routes.py</code>'s
+          <code>GET /api/index/settlement/{ticker}</code> (zero current callers anywhere, confirmed by grep, so
+          not the source of this incident, but the same bug ready to fire on any real hit) and fixed it too;
+          every other of the dozen-plus call sites already had a correct <code>try/finally</code>. Neither
+          leaking module had any test coverage before this - both incidents shipped with dedicated regression
+          tests (a fake client recording whether <code>close()</code> was actually called, across success/
+          exception/cache-hit paths). Full suite (1,154 tests, up from 1,146) green.</p>
+        <div class="files"><code>services/config_store.py</code> · <code>tests/test_config_store.py</code> ·
+          <code>services/whale_stream/index_stream_handlers.py</code> ·
+          <code>services/diagnostics/routes.py</code> · <code>tests/test_index_stream_handlers.py</code> ·
+          <code>tests/test_diagnostics_routes.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 127 · backup, and a 5.7GB bug found while sizing it</div>
+        <h4>data/*.db backup/retention ships; sizing it against real data finds and fixes a real bug</h4>
+        <p>ROADMAP.md's "Path to production" section named backup/retention as a real gap - "single-file
+          SQLite with no backup/retention policy... not once a lost file means lost real financial state." New
+          <code>services/backup/</code> package: <code>sqlite3.Connection.backup()</code> (the stdlib's own
+          online-backup API, safe against a torn/inconsistent snapshot regardless of journal mode - the same
+          failure class phase 126's <code>config_store</code> fix just closed for a different file) snapshots
+          every <code>data/*.db</code> file into a timestamped directory under <code>data/backups/</code>, prunes
+          old snapshots by retention count, and records every run in a new <code>data/backup_log.db</code> (same
+          audit-trail idiom as <code>reset_log.py</code>/<code>fault_log.py</code>). Runs two ways: a config-gated
+          background task in the trading loop (same <code>_maybe_*</code> idiom as
+          <code>catalog_scan.py</code>/<code>discovery_cache.py</code>, zero setup under <code>ddev</code>) and a
+          standalone CLI (<code>python -m services.backup.backup</code>) for a real deployment's own cron/
+          systemd timer, since this app has no real host/process supervisor yet. <code>GET /api/backup/status</code>/
+          <code>history</code> and a synchronous manual <code>POST /api/backup/run</code> round out the
+          informativeness half - verified live, a real run against the full <code>data/</code> directory
+          completed in 25s via <code>asyncio.to_thread</code> with zero trading-loop stall.
+          Sizing the retention default against real file sizes (rather than assuming) found something worth
+          finding: <code>data/game_state.db</code> was 5.5GB, with 14,204 of its 37,801 rows
+          (<code>event_type='crypto'</code>) averaging 403KB each - 99.4% of the table. Root cause: a crypto
+          live-data payload carries OHLC candlesticks plus a price timeseries that only grow over a market's
+          life, and every write re-stored the array's FULL history, not just the delta -
+          <code>_MIN_INTERVAL_SEC</code> (added the same day this was first wired, 2026-08-17) rate-limits write
+          frequency but does nothing about per-write payload redundancy. Confirmed via grep this was pure waste,
+          not disclosed forward capture: zero callers of this module's own <code>timeline()</code> exist anywhere
+          in the codebase - nothing has ever read one of these rows back - and the underlying price data is
+          already captured with far better fidelity by the WS-based <code>services/index_feed.py</code>.
+          <code>record()</code> now refuses <code>event_type='crypto'</code> outright; sports/commodity payloads
+          are unaffected (commodity's own footprint measured negligible - 576 rows, 30MB). The existing 7-day
+          <code>prune()</code> was independently confirmed already working correctly throughout (oldest crypto
+          row was 6.31 days old, right at that window's edge) - this was write-side redundancy within an
+          already-compliant retention window, never a "retention broken" bug. New
+          <code>prune_crypto_backlog()</code>, a one-time cleanup companion (not wired into any recurring loop),
+          ran live against the real database with direct user approval - <code>data/game_state.db</code>: 5.81GB
+          -&gt; 0.07GB, 14,205 rows deleted, recorded in <code>reset_log.db</code> for the audit trail.
+          <code>data/</code>'s total footprint: 34GB (with stray backup-testing snapshots) -&gt; 8.3GB.
+          Full suite (1,155 tests) green throughout.</p>
+        <div class="files"><code>services/backup/backup.py</code> · <code>services/backup/routes.py</code> ·
+          <code>services/backup/__init__.py</code> · <code>services/backup/CHEATSHEET.md</code> ·
+          <code>services/app_state.py</code> · <code>main.py</code> · <code>.gitignore</code> ·
+          <code>config/settings.yaml</code> · <code>services/game_state.py</code> ·
+          <code>tests/test_game_state.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 128 · monitoring/alerting</div>
+        <h4>Kill-switch trips, crashes, and connectivity loss now detect and log themselves</h4>
+        <p>ROADMAP.md's "Path to production" section named these three cases directly: "a kill-switch trip,
+          crash, or connectivity loss currently notifies no one." New <code>services/alerting/</code> package,
+          same session as phase 127's backup work. Transition-based, not level-based: an alert fires once when a
+          condition goes from OK to bad, and resolves once it goes back to OK - never re-fires every tick while
+          something stays broken, which is what would happen from naive level-checking a condition like
+          <code>risk.halted</code> every 6 seconds. Kill switch and WS connectivity
+          (<code>trade_stream_status</code>/<code>index_stream_status</code>) are polled once per tick via
+          <code>check_and_alert(cfg)</code>, called from <code>main.py</code>'s trading loop next to the other
+          <code>_maybe_*</code> checks. Crash detection deliberately isn't polled at all - it's a direct hook
+          inside <code>services/task_supervisor.py</code>'s own exception handler, the exact moment a crash
+          happens and already carrying the component/operation/exception this needs, gated to
+          <code>restart=True</code> tasks only (<code>trading_loop</code>/<code>trade_stream</code>/
+          <code>index_stream</code> - the loops that must never just stay dead; a one-shot task's own failure
+          already degrades gracefully and retries next cycle on its own). Every alert persists to a new
+          <code>data/alert_log.db</code> (same audit-trail idiom as <code>reset_log.py</code>/
+          <code>fault_log.py</code>), visible via <code>GET /api/alerts/active</code>/<code>history</code>.
+          Notification delivery is a single generic opt-in webhook POST (<code>alerting.webhook_url</code>,
+          unset by default - same "ships fully built, opt-in" precedent as
+          <code>risk.max_total_exposure_pct</code>), fire-and-forget via <code>task_supervisor.supervise</code>
+          so a slow or unreachable endpoint can never stall the trading loop, always best-effort - a failed
+          delivery still leaves the alert recorded and visible even if notification delivery itself is broken.
+          Payload is Slack-compatible (top-level <code>text</code> field) plus full structured fields for a
+          custom consumer - see <code>services/alerting/CHEATSHEET.md</code> for per-destination compatibility
+          notes (Discord/ntfy/PagerDuty need their own adapter shape). Which channel to actually point it at is
+          a separate, still-open decision - this ships the detection/logging/dispatch mechanism only.
+          Caught a real test-isolation gap while wiring the crash hook, not just added tests:
+          <code>tests/test_task_supervisor.py</code>'s <code>restart=True</code> crash simulation wrote real
+          rows into the live <code>data/alert_log.db</code> before its own <code>DB_PATH</code> redirect was
+          added - caught via <code>GET /api/alerts/active</code> showing synthetic <code>"test_component..."</code>
+          rows live, fixed the test file, and cleaned the 10 contaminated rows directly, verified clean via a
+          second full-suite run. Verified live end to end beyond just tests: real trade_stream disconnect/
+          reconnect cycles during this session's own dev-reload churn correctly created and resolved alerts.
+          Full suite (1,168 tests) green.</p>
+        <div class="files"><code>services/alerting/alerting.py</code> · <code>services/alerting/routes.py</code> ·
+          <code>services/alerting/__init__.py</code> · <code>services/alerting/CHEATSHEET.md</code> ·
+          <code>services/task_supervisor.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> ·
+          <code>tests/test_alerting.py</code> · <code>tests/test_task_supervisor.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 129 · settlement-edge entry</div>
+        <h4>The settlement-projection edge measured itself real - shipped the "act on it" half</h4>
+        <p><code>services/settlement_edge.py</code>'s own verdict flipped from <code>insufficient</code> to
+          <code>projection_beats_market</code>: 27,534 scored observations across 478 distinct settlement windows,
+          market Brier 0.1046 vs projection Brier 0.0171 overall, widening to 0.002 vs 0.1021 once 46-59 of the 60
+          settlement observations are known (<code>GET /api/diagnostics/settlement-edge</code>). That module is
+          explicit it "never trades... records and scores," so acting on a confirmed edge is a deliberate, separate
+          step - new <code>services/settlement_edge_entry.py</code>, off by default
+          (<code>settlement_edge_entry.enabled</code>). This is a second, independent entry path alongside
+          <code>FollowTheWhaleStrategy.evaluate()</code> - triggered by the index feed's own tick
+          (<code>index_stream_handlers._record_settlement_observations</code>, once/sec while a settlement window is
+          open) rather than a whale print, and deliberately allowed to enter inside
+          <code>strategy.min_seconds_to_close</code>'s floor, because unlike whale-follow it never tries to manage
+          the position afterward - it holds to the real $1/$0 settlement on purpose. New
+          <code>Position.hold_to_settlement</code> field (additive migration, <code>services/paper_broker.py</code>)
+          marks these so <code>exit_engine</code>'s runway-floor forced exit (the very rule that would otherwise
+          close it early at a market price that hasn't yet converged) leaves it alone; take-profit/stop-loss still
+          apply unchanged. Three independent gates before it trades: enough of the window known
+          (<code>min_observations_known</code>, default 45 - the bucket the Brier comparison actually validated),
+          a confident projection (<code>min_probability</code>, default 0.95 - not just "better than the market's
+          guess" on a near-coin-flip), and a real gap versus the market's own price
+          (<code>min_edge</code>, default 0.05) worth paying the taker fee on. Also fixed a real bug found while
+          reading <code>settlement_edge.py</code> to build this: <code>record_observation</code>'s except clause
+          didn't bind <code>exc</code> (<code>except Exception:</code>, not <code>except Exception as exc:</code>),
+          so a genuine failure would have raised a fresh <code>NameError</code> right there instead of being logged
+          - the exact "renamed helper left a NameError here" incident that function's own comment already
+          described, reintroduced by omission and never actually exercised (<code>record_errors</code> had sat at
+          0). Verified live against the real running app, not just tests: enabled the feature for ~7 minutes against
+          the real trade/index streams, covering 2 real settlement windows (observations 27,542 -> 27,653), zero
+          new <code>record_errors</code>, then reverted - caught along the way that <code>config_store.update()</code>
+          (the live <code>/api/config</code> write path every dashboard Controls-panel save and auto-apply already
+          goes through) round-trips the whole file through <code>yaml.safe_dump()</code>, which cannot preserve
+          hand-written comments - stripped every comment in <code>config/settings.yaml</code>, not just the touched
+          section, confirmed by cross-checking against git history's own repeated comment churn on that file.
+          Restored from git and reapplied cleanly; logged as a new, previously-undiagnosed ROADMAP.md item rather
+          than fixed in passing, since a real fix touches the config store's core load/save mechanism. 13 new tests
+          in <code>tests/test_settlement_edge_entry.py</code> plus a regression test for the except-clause bug in
+          <code>tests/test_settlement_edge.py</code>; full suite (1,182 tests) green.</p>
+        <div class="files"><code>services/settlement_edge_entry.py</code> · <code>services/settlement_edge.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/exits/exit_engine.py</code> ·
+          <code>services/whale_stream/index_stream_handlers.py</code> ·
+          <code>services/whale_stream/decision_bridge.py</code> ·
+          <code>services/whale_stream/CHEATSHEET.md</code> · <code>config/settings.yaml</code> ·
+          <code>tests/test_settlement_edge_entry.py</code> · <code>tests/test_settlement_edge.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 130 · candidate-log population stats</div>
+        <h4>Rejected-candidate counterfactual data stops undercounting itself</h4>
+        <p>ROADMAP.md's entry-gate adverse-selection finding (whale signals resolved 88.8% correct but the ones
+          actually traded won only 58.3%) named the exact thing blocking a per-gate root cause:
+          <code>services/candidate_log.py</code>'s <code>rejected_candidates</code> table dedups on
+          <code>(ticker, strategy, gate_name)</code>, so a ticker rejected fifty times by the same gate over its
+          life counted as one data point, not fifty - "unusable for population statistics." Fixed additively, not
+          by changing the existing table: a new <code>rejection_events</code> table carries no dedup key at all -
+          the true population - while every current consumer of <code>gate_summary()</code>/
+          <code>rejected_candidates</code> (advisory_engine, the dashboard) keeps reading the deduped view
+          unchanged. <code>record_rejection()</code> now dual-writes both tables;
+          <code>resolve_from_market_results()</code> dual-resolves, batching the new table's resolution by ticker
+          (one indexed <code>UPDATE ... WHERE ticker = ?</code>) rather than by row, since a busy ticker can carry
+          far more event rows than the deduped table ever would. New
+          <code>candidate_log.population_gate_summary()</code> answers the same "what would this gate's rejects
+          have done" question from the real population, reporting <code>"insufficient"</code> per gate rather than
+          a win rate earned from too few samples - same honesty convention <code>services/settlement_edge.py</code>'s
+          <code>edge_report()</code> already uses. Exposed via <code>GET /api/candidate-log/summary</code>'s new
+          <code>population_gates</code> key. <code>clear_all</code>/<code>clear_range</code>/<code>count_range</code>
+          updated to cover both tables, so a Danger Zone purge (or its preview count) doesn't leave the population
+          table stale or undercounted. Verified live, not just in tests: within minutes of shipping,
+          <code>whale_watcher_kalshi.min_contracts</code> rejects already showed a well-calibrated 49.9%
+          hypothetical win rate over ~5,300 resolved samples - directionally sane (a good gate should reject near
+          a coin flip), unlike <code>entry_threshold</code>'s old deduped 73% figure. Important caveat documented
+          rather than fixed: this (and <code>advisory_engine</code>'s existing, separate rejected-candidate
+          recommendation mechanism, which already has 4 live unapplied suggestions to loosen
+          <code>entry_threshold</code>/<code>min_whale_winrate_pct</code>/<code>close_window_sec</code>/
+          <code>special_market_min_seconds_to_close</code>) compares win rate alone, no cost term -
+          <code>services/advisory/CHEATSHEET.md</code> already flags this exact trap, and
+          <code>record_rejection()</code> never captured the rejected candidate's price/unit_cost to begin with, so
+          this can't yet be made cost-aware without new instrumentation. 20 new/updated tests in
+          <code>tests/test_candidate_log.py</code>; full suite (1,188 tests) green.</p>
+        <div class="files"><code>services/candidate_log.py</code> · <code>services/analytics/routes.py</code> ·
+          <code>tests/test_candidate_log.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 131 · config comment preservation</div>
+        <h4>Every live config edit was silently deleting every comment in settings.yaml</h4>
+        <p>Found live verifying the settlement-edge item (phase 129): one <code>POST /api/config</code> toggle
+          rewrote the entire <code>config/settings.yaml</code> through PyYAML's <code>safe_load</code>/
+          <code>safe_dump</code> pair, which cannot preserve comments - every hand-written explanation in the file
+          (the whale-threshold reasoning, the backup retention rationale, the alerting webhook pointer, ...)
+          vanished after one save. <code>git log -p</code> on the file confirmed this wasn't new: the same comments
+          had been repeatedly re-added and re-stripped across this file's whole history, unnoticed because whoever
+          next hand-edited it usually restored them without realizing why they'd gone missing - every dashboard
+          Controls-panel save and every advisory/confidence-calibration auto-apply had been doing this all along.
+          Fixed the same day: <code>services/config_store.py</code> now loads and writes through
+          <code>ruamel.yaml</code>'s round-trip mode instead, which attaches comment metadata to the loaded
+          structure and keeps it through mutation and re-dump. Given how central this module is - every service
+          reads live config through it - checked directly against the real file before landing rather than assumed
+          safe: <code>CommentedMap</code> is a genuine <code>dict</code> subclass (isinstance/equality/JSON
+          serialization all behave normally, including its scalar-wrapper types like <code>ScalarFloat</code>/
+          <code>ScalarInt</code>, which still pass <code>isinstance(x, float)</code> and behave normally in
+          arithmetic); a configured indent plus a custom <code>None</code> representer reproduce the real file's
+          existing formatting byte-for-byte except one harmless <code>null</code>-vs-blank cosmetic difference on a
+          single pre-existing line; and exception-raising behavior on a truncated/malformed read was sampled at 179
+          truncation points of the real file and found identical between PyYAML and <code>ruamel.yaml</code> - the
+          existing torn-read guard in <code>get()</code> needed no logic change. That same check surfaced a
+          separate, previously-latent gap: <code>get()</code> never caught a YAML parse error at all, only
+          <code>OSError</code> - a torn read landing on genuinely malformed syntax (rather than the empty/wrong-type
+          shapes <code>fault_log</code> had actually captured) would have raised straight out of <code>get()</code>
+          uncaught. Fixed by also catching <code>YAMLError</code>. Verified live against the real running app, not
+          just tests: the exact original incident (toggling <code>settlement_edge_entry.enabled</code> via
+          <code>POST /api/config</code>) now touches only that one line - every other comment in the ~200-line file,
+          including ones in sections nowhere near the patched key, survived untouched. New dependency
+          <code>ruamel.yaml==0.18.17</code>, checked clean against <code>pip-audit</code> before pinning. 3 new
+          tests plus 4 existing tests retargeted to the new engine; full suite (1,191 tests) green.</p>
+        <div class="files"><code>services/config_store.py</code> · <code>requirements.txt</code> ·
+          <code>tests/test_config_store.py</code> · <code>config/settings.yaml</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 132 · dependency audit</div>
+        <h4>Closed the pip-audit gap the CI job had been carrying red on purpose</h4>
+        <p>The <code>dependency-audit</code> CI job (<code>.github/workflows/tests.yml</code>) had been
+          deliberately red since it was added: 20 known vulnerabilities across 5 pinned dependencies
+          (<code>python-dotenv</code>, <code>cryptography</code> &times;6, <code>pytest</code>, <code>requests</code>
+          &times;2, <code>starlette</code> &times;9), left unfixed on purpose rather than bumped blind, given how
+          central <code>cryptography</code> (signs every Kalshi request) and <code>starlette</code> (via
+          <code>fastapi</code>) are. Verified before touching either requirements file, not assumed compatible: a
+          scratch venv's <code>pip install --dry-run --report</code> resolved the full target set cleanly, then a
+          second <code>pip-audit</code> pass against that exact resolved set confirmed zero known vulnerabilities
+          before it landed. <code>fastapi</code> 0.115.0&rarr;0.134.0 - the lowest release that pulls in
+          <code>starlette</code>&gt;=1.x, found by dry-run resolving every intervening minor version
+          (0.132.0 still resolved <code>starlette</code> 0.52.1); three of the seven <code>starlette</code> CVEs
+          were never backported to its 0.x line, only fixed starting at 1.x. That bump forces <code>pydantic</code>
+          2.9.2&rarr;2.13.4 as a side effect of fastapi's own floor, not a CVE on pydantic's own account.
+          <code>cryptography</code> 43.0.3&rarr;50.0.0 - one release past the 49.0.0 pip-audit's own findings
+          required, after landing exactly on <code>PYSEC-2026-3552</code>, a PKCS7/S-MIME Bleichenbacher timing
+          oracle introduced in 44.0.0 that only became reachable by clearing the other six CVEs; not applicable to
+          this app's actual usage (RSA-PSS request signing in <code>services/kalshi_account_client.py</code>, not
+          PKCS7/S-MIME) but fixed for free rather than landing one CVE short. <code>python-dotenv</code>
+          1.0.1&rarr;1.2.2. Dev-only: <code>pytest</code> 8.3.3&rarr;9.0.3 (no plugins pinned in this repo to check
+          compatibility against - no <code>conftest.py</code>, no <code>pytest-asyncio</code>) and
+          <code>requests</code> 2.32.3&rarr;2.33.0 (used only for two plain <code>.get()</code> calls in
+          <code>tests/test_e2e_terminal_static_and_api.py</code>). Verified after landing: a plain <code>pip
+          install</code> alone doesn't reload packages already imported into the live <code>uvicorn --reload</code>
+          process, so a full <code>ddev restart</code> was required to actually exercise the new versions - the app
+          came back up clean and kept processing real live Kalshi market data with no import or runtime errors; full
+          suite (1,191 tests) green. One new, non-blocking observation: <code>starlette.testclient</code>'s
+          <code>httpx</code> integration now emits a <code>StarletteDeprecationWarning</code> about a future
+          <code>httpx2</code> package - left alone, a warning rather than a failure.</p>
+        <div class="files"><code>requirements.txt</code> · <code>requirements-dev.txt</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 133 · candidate-log cost capture</div>
+        <h4>record_rejection() finally captures the price a gate rejected at</h4>
+        <p>ROADMAP.md's "entry gates select a worse subset than the pool they draw from" item named its own
+          real next step directly: <code>services/candidate_log.py</code>'s <code>record_rejection()</code>
+          never captured a rejected candidate's price/unit_cost at all - only <code>observed_value</code>,
+          which means something different per gate (confidence for <code>entry_threshold</code>, contract count
+          for <code>min_contracts</code>) - so there was no way to tell "this gate's rejects would have won more
+          because the signal was better" from "...because it's mechanically priced into the near-certainty band"
+          (CLAUDE.md's HARD COMMANDMENT table: the &ge;0.95 unit-cost band wins 96.3% of the time and *loses*
+          money, forever). Fixed: a new nullable <code>unit_cost</code> column on both <code>rejected_candidates</code>
+          and <code>rejection_events</code> (guarded <code>ALTER TABLE</code>, same idiom as
+          <code>risk_manager.py</code>/<code>paper_broker.py</code>), threaded through all 12
+          <code>record_rejection()</code> call sites across <code>services/strategy_engine.py</code> (unit_cost
+          computed once near the top of <code>evaluate()</code> from <code>signal.price</code>/side, reused by
+          every rejection call and the existing sizing step, replacing a duplicate computation) and
+          <code>services/whalewatchers/kalshi_trade_tape.py</code>. The <code>min_contracts</code> gate - the one
+          the parent ROADMAP item already named as showing live signal (49.9% hypothetical win rate, near a
+          coin flip) - needed a reorder to get it: <code>yes_price_dollars</code> now parses before the
+          <code>min_contracts</code> gate instead of after, a second free field-read on a trade dict already in
+          hand, not a new API/DB call, so it costs nothing on the hot path. <code>gate_summary()</code>/
+          <code>population_gate_summary()</code> both now report <code>avg_unit_cost</code>/<code>avg_unit_cost_n</code>
+          per gate, wired all the way to the dashboard: a new "Avg Unit Cost" column in
+          <code>frontend/src/js/advisory-calibration.js</code>'s Rejected Candidates table. Verified live, not just
+          in tests: <code>uvicorn --reload</code> picked the change up with no restart needed, and
+          <code>GET /api/candidate-log/summary</code> showed real non-null <code>avg_unit_cost</code> for
+          <code>whale_watcher.min_contracts</code> (0.41 over 58 samples) and five other gates within minutes.
+          Deliberately not further than this: still only a per-gate mean, not a banded, sample-size-gated
+          cost-aware hypothetical win rate the way <code>confidence_calibration.py</code>'s
+          <code>_confidence_calibration_bands</code> buckets confidence - the column is brand new, so there's no
+          accumulated history yet to bucket and trust. That's the next step once it has had time to build up.</p>
+        <div class="files"><code>services/candidate_log.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/whalewatchers/kalshi_trade_tape.py</code> ·
+          <code>frontend/src/js/advisory-calibration.js</code> · <code>static/index.html</code> ·
+          <code>static/js/dashboard.bundle.js</code> · <code>tests/test_candidate_log.py</code> ·
+          <code>tests/test_strategy_engine.py</code> · <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 134 · resolve on finalized, not determined</div>
+        <h4>closes the disputed-and-reversed-result gap named by services/exits/CHEATSHEET.md's own audit</h4>
+        <p>Per-module audit finding, fixed: Kalshi sets a market's <code>result</code> the instant it's
+          <code>determined</code>, but <code>docs/kalshi/market_lifecycle.md</code> is explicit the result "may be
+          disputed" during the settlement-timer window that follows, and can flip via
+          <code>determined</code> &rarr; <code>disputed</code> &rarr; <code>amended</code> before
+          <code>finalized</code> ("Settlement complete... Terminal state"). <code>exit_engine.close_if_settled</code>
+          closed positions and locked in P&amp;L at <code>determined</code>, with no correction path if a dispute
+          later reversed the result - and <code>services/whale_stream/whale_stream_handlers.py</code>'s
+          <code>_process_stream_lifecycle</code> had grown the identical bug independently the same day (an earlier
+          phase 125 pass wired <code>determined</code>, not <code>settled</code>, as the trigger for
+          <code>market_history</code>/<code>settlement_edge</code>/<code>market_analyst_agent</code>/
+          <code>candidate_log</code> outcome resolution, reasoning purely from data availability - "only determined
+          carries a result field" - not from what's actually terminal). Fixed at the source:
+          <code>propagate_milestone_winners</code> (<code>services/market_watch/catalog_scan.py</code>) now only
+          includes a market's <code>result</code> in <code>market_results</code> once
+          <code>status == "finalized"</code> - free for open positions, since their ticker already keeps flowing
+          through every tick via <code>main.py</code>'s <code>extra_tickers</code> regardless of watchlist
+          rotation, so it simply stays open through the dispute window instead of needing a separate correction
+          mechanism. The same gate was added to <code>main.py</code>'s own REST-tick
+          <code>record_outcome</code>/<code>resolve_window</code> loop. <code>_process_stream_lifecycle</code> now
+          resolves on <code>settled</code> instead of <code>determined</code>: since the <code>settled</code>
+          WebSocket payload itself carries no <code>result</code> field, and Kalshi's lifecycle channel emits no
+          distinct event for a dispute/amendment at all, the only way to get a truly final, dispute-corrected
+          result is one fresh single-ticker <code>client.get_market(ticker)</code> REST read at that moment,
+          gated on that read confirming <code>finalized</code> - one extra call at the ~0.06/s measured live
+          <code>settled</code> rate, negligible against Kalshi's rate budget. Verified live post-ship, not just in
+          tests: <code>/api/state</code>'s <code>lifecycle_stream_stats</code> showed
+          <code>outcomes_resolved_via_lifecycle</code> incrementing off real <code>settled</code> traffic within
+          minutes, zero exceptions in <code>ddev logs</code>.</p>
+        <div class="files"><code>services/market_watch/catalog_scan.py</code> · <code>main.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> ·
+          <code>services/exits/CHEATSHEET.md</code> · <code>services/market_catalog/CHEATSHEET.md</code> ·
+          <code>services/whale_stream/CHEATSHEET.md</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>tests/test_winner_propagation.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 135 · backup's cold-start restart bug</div>
+        <h4>every uvicorn --reload cycle was re-triggering a full 9.4GB backup</h4>
+        <p>Per-module efficiency finding, fixed: live <code>tick_phase_timings</code> showed
+          <code>market_fetch</code> consistently at 6-8s against a 6s <code>poll_interval_sec</code> - the tick
+          loop couldn't keep up with its own configured cadence. Root-caused to
+          <code>services/backup/backup.py</code>'s <code>_maybe_run_backup</code>: its "due" check compared
+          <code>now</code> against <code>state["backup"]["last_started_at"]</code>, pure in-memory state that
+          resets to its <code>app_state.py</code> default (<code>0.0</code>) on every process start - not just a
+          real reboot, but every single <code>uvicorn --reload</code> cycle this dev environment does routinely on
+          any <code>.py</code> edit, including files under <code>tests/</code>. Each reset made the very next tick
+          read "never backed up" and fire an immediate full snapshot of every <code>data/*.db</code> file (9.4GB
+          across 29 files, ~40-50s in a background thread via <code>asyncio.to_thread</code>), regardless of how
+          recently one had actually finished. Confirmed directly against <code>data/backup_log.db</code>'s own run
+          history, not just inferred: 37 runs in a 4.4h window against a configured 6h <code>interval_sec</code> -
+          median gap ~94s, 28 of 36 gaps under 200s, only one over an hour - each one's real disk I/O contending
+          with the live trading loop's own SQLite reads/writes on the same disk. Fixed by seeding
+          <code>last_started_at</code> from the already-persisted <code>backup_runs</code> history
+          (<code>backup.latest()</code>) the first time <code>_maybe_run_backup</code> runs in a given process,
+          instead of trusting in-memory state alone on a cold start - a restart now means "go check what actually
+          happened," not "assume the worst and re-backup immediately." Verified live: after the fix landed (itself
+          via three more real reload cycles), no spurious run appeared and <code>last_tick_duration_sec</code>
+          dropped from a sustained 12-15s to ~2-3s within seconds. <code>tests/test_backup.py</code> is new -
+          this module had zero test coverage before this session - covering both the regression (recent
+          persisted history &rarr; no refire) and the cases it must not break (old/missing history &rarr; still
+          fires promptly, disabled &rarr; never fires).</p>
+        <div class="files"><code>services/backup/backup.py</code> · <code>services/backup/CHEATSHEET.md</code> ·
+          <code>tests/test_backup.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 136 · whale accuracy's own finalized-vs-determined gap</div>
+        <h4>the third occurrence of phase 134's bug, this time on the accuracy metric itself</h4>
+        <p>Per-module audit finding, fixed: <code>services/whale_calibration/CHEATSHEET.md</code> had already
+          named this exact gap while documenting the module ("the single most important thing a future audit of
+          this module's numbers should check first") but left it unfixed, distinct from phase 134's same-day fix
+          to <code>exit_engine.close_if_settled</code> and <code>whale_stream_handlers._process_stream_lifecycle</code>.
+          <code>main.py</code>'s <code>_check_signal_resolutions</code> - the function that ultimately produces
+          every row <code>confidence_calibration.py</code>'s bands and every whale-tracking win-rate filter are
+          computed from - marked a logged signal <code>correct</code>/incorrect the instant
+          <code>market.result</code> was set, which Kalshi sets at the <code>determined</code> transition, not
+          <code>finalized</code> (<code>docs/kalshi/market_lifecycle.md</code>: the result "may be disputed" and
+          can flip via <code>determined</code> &rarr; <code>disputed</code> &rarr; <code>amended</code> before
+          finally reaching <code>finalized</code>). <code>signal_log.mark_resolved</code> is a one-way write with
+          no re-check, so a live-but-rare dispute reversal would have silently corrupted the exact
+          <code>correct</code> field the whole calibration/advisory stack is built on, with no mechanism to notice
+          or repair it. Fixed the same way as phase 134's two call sites: <code>_check_signal_resolutions</code>
+          now only trusts a market's <code>result</code> once <code>status == "finalized"</code> - a ticker still
+          in the dispute window simply stays in <code>unresolved_batch</code>'s pool and gets rechecked later,
+          the same degrade path already used for a market Kalshi hasn't returned data for at all.
+          <code>tests/test_signal_resolution.py</code> gained a direct regression test (a
+          <code>determined</code>-but-not-<code>finalized</code> market must not resolve) and two existing
+          fixtures were updated to carry <code>status: "finalized"</code>, matching what a genuinely settled
+          market now needs to actually resolve.</p>
+        <div class="files"><code>main.py</code> · <code>services/whale_calibration/CHEATSHEET.md</code> ·
+          <code>tests/test_signal_resolution.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 137 · a test run wrote real trades into the live paper account</div>
+        <h4>tests/conftest.py closes a collection-order gap in the test-isolation convention itself</h4>
+        <p>Found while pulling up <code>/api/diagnostics</code> to look for other live anomalies after phases
+          135-136: <code>price_band_adherence</code> reported 2 real entries below <code>min_unit_cost</code> in
+          the running app's own paper account. The offending tickers - <code>KXTICK-A</code>, <code>OTHER-B</code> -
+          matched <code>tests/test_trading_gate.py</code>'s <code>test_build_series_context_scopes_stats_and_
+          trades_to_the_series</code> fixture data byte-for-byte, at a timestamp landing inside this session's own
+          test runs. Confirmed directly against <code>data/paper_broker.db</code>: those exact rows were really
+          there. This is precisely the failure CLAUDE.md's "Tests always redirect DB_PATH... never touch a real
+          data/*.db file" rule exists to prevent. Root cause: that convention is enforced per-file (each test file
+          redirects <code>DB_PATH</code> on the relevant modules before its own <code>import main</code>), but
+          <code>services.app_state</code>'s <code>broker</code>/<code>risk</code> singletons - and
+          <code>services.config_store</code>'s <code>config_store</code> - are constructed exactly once per
+          process, the first time anything imports them. Only whichever test file pytest happens to collect
+          *first* actually determines which redirect wins; every other file's own block is inert for that
+          singleton. <code>tests/test_signal_resolution.py</code> does <code>import main</code> with no redirection
+          of its own at all - safe only because some other file has always happened to import first. Most likely
+          trigger: <code>.claude/hooks/run_tests.py</code>'s post-edit pytest invocation, whose 60s
+          <code>subprocess.run</code> timeout was well under the suite's real ~95-110s runtime (measured directly,
+          repeatedly, this same session) - a host-side kill on timeout does not reliably kill the process
+          <code>ddev exec</code> spawned inside the container, so an orphaned full-suite run could keep executing,
+          racing whichever collection order it happened to get. Fixed at the root: new <code>tests/conftest.py</code>
+          performs the same redirect pytest already guarantees runs before any test file in the directory is
+          collected, so the very first import of these singletons - regardless of which file, or whether the suite
+          runs whole or as an isolated subset - always lands on a throwaway tmp dir. <code>.claude/hooks/
+          run_tests.py</code>'s timeout raised 60s &rarr; 240s so it stops guaranteeing its own timeout on every
+          run. Verified directly: constructing <code>main.broker</code> via a bare <code>import conftest; import
+          main</code> (no other test file involved) now resolves to the tmp dir, not
+          <code>data/paper_broker.db</code>; full suite (1,207 tests) still green; the real file's row count was
+          unchanged (still 8) after a full run post-fix. The 2 contaminating open/close pairs themselves were a
+          separate, deliberately-not-silent cleanup: confirmed with the user before touching live financial
+          records, then removed by reconstructing the exact bankroll delta they caused (-$0.3502, computed from
+          <code>open_position</code>/<code>close_position</code>'s own cost/fee/cash-back formulas applied to the
+          rows' stored values, not eyeballed from the rounded "realized" string) in one atomic transaction, followed
+          by a real <code>ddev restart</code> - required because <code>PaperBroker</code>'s <code>bankroll</code>/
+          <code>trade_log</code> are loaded into memory once at construction, so a DB-only edit wouldn't have
+          reached the already-running process. Verified post-restart: <code>/api/state</code>'s <code>recent_
+          trades</code> shows only real tickers, bankroll reflects only genuine trades, and the backup fix
+          (phase 135) held through the real restart with no spurious re-trigger.</p>
+        <div class="files"><code>tests/conftest.py</code> · <code>.claude/hooks/run_tests.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 138 · confidence_scoring.py split out of whale_simulator.py</div>
+        <h4>the live confidence-scoring formula shouldn't live in a file named "simulator"</h4>
+        <p>Direct instruction (2026-08-23): "there are several things that need to be modularized still in the
+          services/ folder" - a survey of remaining flat files found this as the clearest cohesion problem, not
+          just a size one. <code>services/whale_simulator.py</code> held both <code>WhaleSignal</code>/
+          <code>WhaleSimulator</code> (the actual simulated-signal generator for paper/demo mode) and
+          <code>ConfidenceBreakdown</code>/<code>composite_confidence_breakdown</code>/<code>composite_confidence</code>/
+          <code>DEFAULT_WEIGHTS</code> - the live composite-confidence formula every real whale-watcher provider
+          scores an actual trade through (<code>services/whalewatchers/kalshi_trade_tape.py</code> and friends), a
+          pure function of its inputs with no randomness, deliberately shared as-is between real and simulated
+          signals. A live, production scoring algorithm importing from a file literally named "simulator" was a
+          real informativeness problem this app's own code had been carrying since the formula was first written.
+          New <code>services/confidence_scoring.py</code> now owns <code>WhaleSignal</code>/
+          <code>ConfidenceBreakdown</code>/<code>DEFAULT_WEIGHTS</code>/<code>composite_confidence_breakdown</code>/
+          <code>composite_confidence</code>; <code>whale_simulator.py</code> keeps only <code>WhaleSimulator</code>
+          itself (the paced, randomized print generator) and its own noise-adding <code>_score_confidence</code>
+          layer, importing the shared formula rather than owning it. Flat files, not a package - matches the
+          existing precedent for pure-computation modules with no API surface of their own
+          (<code>kalshi_fees.py</code>, <code>market_lookup.py</code>). Every real call site updated directly, no
+          re-export shim: <code>main.py</code>, <code>strategy_engine.py</code>, all four
+          <code>services/whalewatchers/*.py</code> files, <code>whale_calibration/confidence_calibration.py</code>,
+          plus every stale docstring reference across <code>market_analyst_agent.py</code>,
+          <code>signal_log.py</code>, <code>market_events/event_lifecycle.py</code>, and
+          <code>whale_calibration/CHEATSHEET.md</code>. <code>tests/test_whale_simulator.py</code> split
+          accordingly: new <code>tests/test_confidence_scoring.py</code> owns the formula's own factor-behavior
+          tests, rewritten to call <code>composite_confidence</code> directly instead of going through
+          <code>WhaleSimulator._score_confidence</code>'s 200-draw noise-averaging - simpler and more precise now
+          that the formula is directly testable on its own. Verified live post-split, including through an
+          unrelated mid-session Docker Desktop restart: full suite (1,207 tests) green, app boots and ticks
+          cleanly with zero errors, backup's phase-135 fix still holding.</p>
+        <div class="files"><code>services/confidence_scoring.py</code> · <code>services/whale_simulator.py</code> ·
+          <code>tests/test_confidence_scoring.py</code> · <code>tests/test_whale_simulator.py</code> ·
+          <code>main.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/whalewatchers/</code> · <code>services/whale_calibration/</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 139 · a redundant per-poll refresh was resetting scroll position</div>
+        <h4>refreshActiveViewPanels() duplicated refreshHistoryInsightsIfActive() and contradicted its own neighboring comments</h4>
+        <p>Direct report (2026-08-23): scrollbar position resetting on the History tab, and any Apply button
+          there feeling "super lagg[y]" - suspected to be the graphs/polling. Confirmed: <code>frontend/src/js/
+          main.js</code>'s <code>refreshActiveViewPanels()</code> called <code>loadTradingHistory()</code> on
+          <em>every single 5s poll</em> while the History tab was open, right alongside
+          <code>refreshHistoryInsightsIfActive()</code> - which already refreshes the same ~10 "live" sub-panels
+          (advisory, calibration, regime, candidate-log, backtest, series-evaluator, market-analyst) every poll,
+          deliberately <em>without</em> touching <code>loadTradingHistory()</code>. That function's own docstring
+          says why: it "only ever ran once, on tab-open, deliberately preserving the paginated trade-log table's
+          current page." <code>refreshActiveViewPanels()</code> called it anyway, every poll, wholesale
+          rebuilding the P&amp;L chart, trade table, narrative, and summary cards (<code>el.innerHTML = ...</code>)
+          on top of duplicating all ~10 of <code>refreshHistoryInsightsIfActive()</code>'s own fetches a second
+          time - real wasted work explaining the lag, and a real DOM teardown explaining the scroll reset, twice
+          per poll tick instead of never. The same function's <code>whale</code> branch had the identical shape
+          (<code>loadSignalHistory()</code>/<code>loadSignalClusters()</code> every poll), contradicting
+          <code>showView()</code>'s own comment two lines above: "load fresh whenever the tab is opened, rather
+          than every 5s poll, so paging/sorting doesn't reset itself out from under someone actively browsing
+          it." Traced via <code>git log</code>: both functions were introduced together, unchanged, since before
+          this project's git history begins - a longstanding redundancy, not a recent regression. Removed
+          <code>refreshActiveViewPanels()</code> entirely (function, export, <code>window</code> exposure, its
+          one call site in <code>polling-and-websocket.js</code>'s <code>refresh()</code>) rather than patched -
+          <code>showView()</code>'s own tab-open call already covers the initial load for both tabs, and neither
+          tab loses any data that was ever the point of a periodic refresh: the "live" sub-panels stay live via
+          <code>refreshHistoryInsightsIfActive()</code>/<code>refresh()</code>'s own per-poll DOM updates, and the
+          paginated tables now behave exactly as their own removed neighbor's comment always said they should.
+          Verified live in a real browser via the project's own <code>selenium-chrome</code> container, not just
+          statically: zero runtime errors captured (a global <code>error</code>/<code>unhandledrejection</code>
+          listener injected before navigation) across 13s on both the History and Whale Watch tabs, with real
+          live data still rendering correctly (3 closed trades, 100% win rate, real dollar figures matching the
+          account). <code>eslint</code> clean (would have caught a missed reference).</p>
+        <div class="files"><code>frontend/src/js/main.js</code> ·
+          <code>frontend/src/js/polling-and-websocket.js</code> ·
+          <code>static/js/dashboard.bundle.js</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 140 · index_feed/ split into ingestion vs. settlement algebra</div>
+        <h4>second of three planned modularization passes - a package this time, not two flat files</h4>
+        <p>Continuation of the services/ modularization survey (phase 138's whale_simulator split was the
+          first). <code>services/index_feed.py</code> (551 lines) already self-marked its own boundary with a
+          <code># --- settlement algebra</code> section comment: tick ingestion (<code>record_cfbenchmarks</code>/
+          <code>record_pyth</code>/the buffered-write DB layer) vs. the settlement-projection math built on top
+          of it (<code>required_remaining_average</code>/<code>settlement_projection</code>/<code>settlement_
+          spec</code>/<code>resolve_index_id</code>/<code>window_matches_close</code>/<code>recent_volatility</code>).
+          Unlike whale_simulator's split, ~10 files import <code>index_feed</code> as a whole module and call
+          both halves interleaved in the same file (<code>whale_stream/index_stream_handlers.py</code>,
+          <code>settlement_edge.py</code>) - rewriting every call site to pick a new module per function would
+          have been large and error-prone for no real benefit. Followed this project's own
+          <code>services/market_watch/</code> precedent instead: a real package
+          (<code>services/index_feed/ingestion.py</code> + <code>settlement_algebra.py</code>), with
+          <code>__init__.py</code> re-exporting every name external callers need so
+          <code>from services import index_feed</code> / <code>index_feed.settlement_projection(...)</code> etc.
+          keep working with zero call-site changes outside the package itself.
+          <code>DB_PATH</code>'s own <code>.parent</code> chain gained a third <code>.parent</code> (the
+          "DB_PATH relative-move gotcha" this project has hit before, moving one directory deeper).
+          <b>A real, non-hypothetical monkeypatch trap found and fixed while writing this split</b>: re-exporting
+          <code>DB_PATH</code>/<code>_latest</code>/<code>_tick_buffer</code>/<code>_dropped_rows</code> at the
+          package level creates a *separate* name binding from ingestion.py's own module globals - a function
+          defined in <code>ingestion.py</code> always resolves those names against <code>ingestion.py</code>'s
+          own namespace regardless of which import path called it, so <code>monkeypatch.setattr(index_feed,
+          "DB_PATH", tmp_path)</code> silently patches a binding nothing reads, leaving the real
+          <code>data/index_feed.db</code> exposed. <code>tests/test_index_feed.py</code> and <code>tests/
+          test_settlement_edge.py</code> both did exactly this - fixed to monkeypatch
+          <code>services.index_feed.ingestion</code> directly, the same "test isolation must target where the
+          code actually reads/writes, not wherever it happens to be re-exported" lesson phase 137's
+          <code>tests/conftest.py</code> fix was about, now confirmed to generalize beyond that one incident.
+          Function-level monkeypatches (<code>index_feed.recent_volatility</code> in two other test files) needed
+          no change - real callers also do a fresh whole-module attribute lookup at call time, so those stay
+          correctly patchable through the re-export. Verified: full suite (1,207 tests) green, the 42
+          index_feed/settlement_edge/settlement_edge_entry tests specifically re-run and confirmed passing
+          post-fix, live app ticking with zero errors post-restart, <code>GET /api/diagnostics/settlement-edge</code>
+          confirmed working end to end through the new package.</p>
+        <div class="files"><code>services/index_feed/__init__.py</code> ·
+          <code>services/index_feed/ingestion.py</code> · <code>services/index_feed/settlement_algebra.py</code> ·
+          <code>tests/test_index_feed.py</code> · <code>tests/test_settlement_edge.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 141 · market_analyst_agent/ split into per-market/per-series/full-spectrum</div>
+        <h4>third and last of three approved modularization passes - same package shape, three independent
+          modes instead of two</h4>
+        <p>Continuation of the same services/ modularization survey (phase 138 whale_simulator, phase 140
+          index_feed). <code>services/market_analyst_agent.py</code> (814 lines) bundled three independent LLM
+          analysis modes behind one shared SQLite file (<code>data/market_analyst.db</code>): the original
+          single-ticker mode (<code>analyze_market</code>), per-series (<code>analyze_series</code>, Item 3B),
+          and "Feed the Analyst" full-spectrum (<code>analyze_full_spectrum</code>, Item 3C). Confirmed by a
+          full read before touching anything: the only genuinely cross-mode code is <code>_connect()</code>
+          (creates all three tables in one call) and <code>clear_all()</code> (wipes all three) - no per-series
+          function ever calls a per-market or full-spectrum function or vice versa, so the 3-way split was
+          clean. Scope note, checked directly rather than assumed: <code>services/analytics/CHEATSHEET.md</code>
+          had previously deferred splitting this file, but that deferral was about
+          <code>market_analyst_orchestrator.py</code>'s own entanglement with <code>advisory_engine</code>/
+          <code>series_evaluator</code> (it imports <code>advisory_engine.generate_recommendations</code>
+          directly and exposes <code>_series_evaluator_overview_with_crosscheck</code>, which <code>main.py</code>'s
+          <code>trading_loop</code> also imports) - not about this file's own internal cohesion, which has zero
+          import relationship with either. This pass splits only <code>market_analyst_agent.py</code>;
+          <code>market_analyst_orchestrator.py</code> stays untouched, still deferred for its own still-valid
+          reason (see <code>services/analytics/CHEATSHEET.md</code>).</p>
+        <p>Same package shape as <code>market_watch/</code>/<code>index_feed/</code>: <code>services/
+          market_analyst_agent/_db.py</code> (<code>DB_PATH</code>, <code>_connect()</code>, <code>clear_all()</code>
+          - kept together deliberately, since a function's global-name lookups resolve against the module it's
+          <i>defined</i> in, not wherever a caller imported the name from), plus one file per mode
+          (<code>per_market.py</code>/<code>per_series.py</code>/<code>full_spectrum.py</code>).
+          <code>__init__.py</code> re-exports every name external callers need (including the three tool-schema
+          constant pairs), so <code>from services import market_analyst_agent</code> keeps working unchanged for
+          every real caller - <code>market_analyst_orchestrator.py</code>'s heaviest usage (all three modes,
+          cleanly one-mode-per-section, confirmed via full read) needed zero edits. <code>DB_PATH</code>'s
+          <code>.parent</code> chain gained a third <code>.parent</code>, same "relative-move gotcha" as every
+          split before it. Deliberately did NOT factor out the LLM-client-construction block duplicated
+          verbatim across all three <code>analyze_*</code> functions - kept the diff a pure code-motion (matching
+          this session's own "verified byte-for-byte" bar for phase 138/140), leaving any real dedup as a later,
+          separately-reviewed step.</p>
+        <p><b>The same monkeypatch-through-reexport trap phase 137/140 already found, caught proactively this
+          time before any test ran</b>: six spots across the test suite assigned/monkeypatched
+          <code>market_analyst_agent.DB_PATH</code> directly as plain data (not through a function call) -
+          <code>tests/conftest.py</code> (the collection-order safety net itself), <code>tests/
+          test_trading_gate.py</code> (two spots, one a module-scope redirect added the same day this pass
+          started, guarding the real "determined"-handling path through <code>_connect()</code>), <code>tests/
+          test_whalewatchers_kalshi_trade_tape.py</code> (a fixture plus a generic <code>for mod in (...)</code>
+          loop that would otherwise have produced a wrong filename, <code>_db.db</code>, from the submodule's
+          own <code>__name__</code>), and <code>tests/test_strategy_engine.py</code>. All six retargeted to
+          <code>services.market_analyst_agent._db</code> before running anything - every plain function-call
+          site (<code>.record_analysis</code>, <code>.analyze_market</code>, etc.) needed no change, same
+          distinction phase 140's own writeup draws. <code>tests/test_market_analyst_agent.py</code> (647 lines,
+          already organized in three mode-based sections) replaced by four files matching the new package
+          layout, <code>test_market_analyst_agent_db.py</code>/<code>_per_market.py</code>/<code>_per_series.py</code>/
+          <code>_full_spectrum.py</code> - the three <code>clear_all()</code> tests, the only genuinely
+          cross-mode tests, moved into the <code>_db</code> file. Verified: the 49 new/moved tests pass in
+          isolation, the three edited existing test files (328 tests) pass, full suite (1,207 tests, same count
+          as pre-split) green, live <code>data/market_analyst.db</code> untouched by the test run.</p>
+        <div class="files"><code>services/market_analyst_agent/__init__.py</code> ·
+          <code>services/market_analyst_agent/_db.py</code> ·
+          <code>services/market_analyst_agent/per_market.py</code> ·
+          <code>services/market_analyst_agent/per_series.py</code> ·
+          <code>services/market_analyst_agent/full_spectrum.py</code> ·
+          <code>tests/test_market_analyst_agent_db.py</code> ·
+          <code>tests/test_market_analyst_agent_per_market.py</code> ·
+          <code>tests/test_market_analyst_agent_per_series.py</code> ·
+          <code>tests/test_market_analyst_agent_full_spectrum.py</code> ·
+          <code>tests/conftest.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> · <code>tests/test_strategy_engine.py</code> ·
+          <code>services/analytics/market_analyst_orchestrator.py</code> ·
+          <code>services/analytics/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 142 · effective close time, second sub-unit + a live-found gap</div>
+        <h4>event_schedule.py's 4-source resolver finally gets called, and a live sanity check catches
+          expected_expiration_time lying for one real market class</h4>
+        <p>Second and third sub-units of the close-time fix (first sub-unit: phase 138's sibling commit,
+          <code>services/market_lookup.py</code>'s <code>effective_close_time()</code> - not yet its own phase
+          entry when this was written, folded in here). Direct "MAJOR MAJOR" bug report: entry/exit gates that
+          reason about "time until this market closes" used Kalshi's raw <code>close_time</code> only, which can
+          sit a month+ out for an event-style market whose real outcome is already known.
+          <code>services/strategy_engine.py</code>'s <code>FollowTheWhaleStrategy.evaluate()</code> - the
+          entry-side <code>close_window_sec</code>/<code>min_seconds_to_close</code> gates - now looks up this
+          tick's market dict once and calls <code>effective_close_time()</code> on it, falling back to
+          <code>signal.close_time</code> when the market isn't found (load-bearing for
+          <code>test_strategy_gate.py</code>'s existing fixtures); reused the same lookup for the adjacent
+          <code>can_close_early</code> check, removing a duplicate loop. Local import inside <code>evaluate()</code>,
+          not module top level - <code>app_state.py</code> imports <code>strategy_engine</code> before its own
+          <code>state</code> dict exists.</p>
+        <p><code>services/market_events/event_schedule.py</code>'s 4-source event-schedule waterfall
+          (<code>strike_date</code> → milestone → rules text → web search) existed fully built but had zero
+          callers - flagged the same day in ROADMAP.md's "use relevant data before trimming" item. Built the
+          missing <code>_maybe_resolve_event_schedules</code>/<code>_resolve_event_schedules_background</code>/
+          <code>_resolve_event_schedules</code> trio, same <code>_maybe_*</code>-background-task shape as
+          <code>catalog_scan.py</code>/<code>backup.py</code>, wired into <code>main.py</code>'s tick loop. Scoped
+          to long-window events (<code>_LONG_WINDOW_THRESHOLD_SEC</code>, 48h) that are also due per
+          <code>needs_resolution</code>'s own TTL, capped at <code>event_schedule.max_resolutions_per_tick</code>
+          (config default 5), resolved sequentially since the web-search leg hits an external host. Texts sourced
+          opportunistically from <code>state["market_object_cache"]</code>'s already-cached
+          <code>rules_primary</code>/<code>rules_secondary</code> at zero extra network cost. Second, independent
+          circular-import trap alongside <code>strategy_engine</code>'s: <code>app_state.py</code> imports
+          <code>event_schedule</code> at top level too (for <code>load_all()</code>), so <code>state</code> is
+          imported locally inside the two new trigger/background functions only. New
+          <code>state["event_schedule_scan"]</code> tracker in <code>app_state.py</code>.</p>
+        <p>Live-verified, not just tested: the resolver actually ran and populated <code>data/event_schedule.db</code>
+          with 5 real events within minutes of deploy, correctly resolving <code>KXMAYORLA-26</code>'s real election
+          night (2026-11-03/04) via the milestone API. A second live check - the plan's own flagged follow-up,
+          "no independent live-verification of <code>expected_expiration_time</code> values yet" - found a real
+          gap: for that same <code>KXMAYORLA-26</code> (a runoff-eligible race), Kalshi sets
+          <code>expected_expiration_time</code> identical to raw <code>close_time</code> (the same far placeholder,
+          ~7 months past the real election) rather than a genuine forecast, which would have silently shadowed the
+          correct milestone-resolved answer since tier 1 was trusted unconditionally. Fixed:
+          <code>effective_close_time()</code> now skips tier 1 when it equals <code>close_time</code> exactly,
+          falling through to tier 2. <code>services/market_events/CHEATSHEET.md</code>'s "Handoff" section
+          corrected - it previously falsely claimed <code>resolve_one</code>/<code>needs_resolution</code> were
+          already called from <code>main.py</code>; <code>trade_window_is_open</code> remains deliberately
+          unwired, noted as a separate open gap. <code>docs/kalshi/CHEATSHEET.md</code> gained an entry on
+          <code>expected_expiration_time</code> (REST) vs. <code>expected_expiration_ts</code>
+          (<code>market_lifecycle_v2</code> WS, a different field entirely) after spotting the WS one live in
+          <code>ddev logs</code> while verifying this.</p>
+        <p>New <code>tests/test_event_schedule.py</code> (38 tests, zero coverage existed before), plus new tests
+          in <code>test_market_lookup.py</code> and <code>test_strategy_engine.py</code>. Found and fixed a real
+          test-isolation gap along the way: <code>event_schedule.py</code>'s <code>DB_PATH</code> was missing
+          from <code>conftest.py</code>'s protected-singleton list - the same collection-order bug class as the
+          2026-08-23 <code>paper_broker.db</code> incident (phase 137), added now because this session gave the
+          module its first real write path. Also fixed, unrelated but found in the same file: 8 phase entries
+          (134-141) used <code>class="phase"</code> instead of <code>class="t-phase"</code> - only the latter has
+          any CSS rule, so all 8 were rendering completely unstyled on this very page. Full suite: 1,265 passed
+          (up from 1,222 at session start).</p>
+        <div class="files"><code>services/market_lookup.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/market_events/event_schedule.py</code> · <code>services/app_state.py</code> ·
+          <code>main.py</code> · <code>services/market_events/CHEATSHEET.md</code> ·
+          <code>docs/kalshi/CHEATSHEET.md</code> · <code>tests/test_event_schedule.py</code> ·
+          <code>tests/test_market_lookup.py</code> · <code>tests/test_strategy_engine.py</code> ·
+          <code>tests/conftest.py</code> · <code>static/status.html</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 143 · Quality Control Plane begins: shared finding model, hard isolation, baseline-ratcheted audit</div>
+        <h4>QCP Tasks 1-3 — the foundation every later quality/observability module builds on</h4>
+        <p>New standing initiative (2026-08-24, superseding the retired 70%-accuracy/70%-win-rate objective — see
+          this file's own top-of-page note and <code>CLAUDE.md</code>'s "Current objective"): audit each
+          <code>services/&lt;name&gt;/</code> package for effectiveness/efficiency/informativeness rather than chase
+          a single P&amp;L number. Driven end-to-end by the <code>quality-plan-task</code> Claude Code skill against
+          <code>docs/superpowers/plans/2026-08-24-quality-control-plane.md</code>'s 23 numbered tasks — one task per
+          working session turn, TDD, verify, commit, stop.</p>
+        <p>Task 1: <code>services/quality/models.py</code>'s <code>QualityFinding</code>/<code>QualityReport</code>/
+          <code>severity_rank</code> — one shared serialization/severity contract every later runtime-diagnostic and
+          CI-audit producer/consumer reuses, rather than each inventing its own finding shape. Task 2: replaced
+          <code>conftest.py</code>'s old inline, hand-maintained DB_PATH redirect list (11 of 27 real persistence
+          modules covered) with <code>tests/support/runtime_isolation.py</code> — a complete
+          <code>PERSISTENCE_MODULE_PATHS</code> registry plus a global <code>sqlite3.connect</code> guard that hard-
+          blocks any path under repo <code>data/</code> regardless of whether the caller is registered, closing the
+          exact collection-order gap phase 137's real incident exposed. Task 3: <code>tools/quality_audit</code>, a
+          registry of static scanners gated against <code>tools/quality_audit/baseline.json</code> (accepted finding
+          IDs only, not full evidence, so it stays reviewable in a PR diff) — exits nonzero only for new high-
+          confidence errors by default, <code>--strict</code> also fails on new warnings. No scanners registered
+          yet at this point; Tasks 4-5 are the producers.</p>
+        <div class="files"><code>services/quality/models.py</code> · <code>tests/support/runtime_isolation.py</code> ·
+          <code>tools/quality_audit/</code> · <code>tools/quality_audit/baseline.json</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 144 · six AST-based static scanners + CI wiring</div>
+        <h4>QCP Tasks 4-7 — router/background wiring, persistence/lifecycle/config/API-usage, frontend↔backend contract</h4>
+        <p>Six scanners registered into <code>tools/quality_audit</code>'s <code>_SCANNERS</code>, each reading
+          source via <code>ast</code> rather than regex/string-matching: unmounted <code>APIRouter</code>s, orphaned
+          <code>_maybe_*</code> background schedulers, a <code>DB_PATH</code> owner missing from
+          <code>PERSISTENCE_MODULE_PATHS</code>, a Kalshi client constructed inside a function and never closed,
+          a <code>config/settings.yaml</code> key with no matching <code>cfg[...]</code>/<code>.get(...)</code> read,
+          every <code>client.*</code>/<code>account.*</code> Kalshi call site (informational inventory), and
+          <code>scan_frontend_contract</code> — cross-checks every <code>fetchJSON(...)</code>/<code>fetch(...)</code>
+          call in <code>frontend/src/js/*.js</code> against every <code>@router.&lt;method&gt;</code>/
+          <code>@app.&lt;method&gt;</code> route decorator (a stale/typo'd frontend call is error/high; an unused
+          backend route is info-only — legitimate for OAuth navigation, <code>accounts.html</code>'s own inline
+          script, or non-fetch consumers). Found and fixed a real bug in the scanner itself before trusting its
+          output: method detection used a fixed-size lookahead window that missed a real call shape.</p>
+        <p>Task 6 wired the CLI into CI: <code>.github/workflows/quality.yml</code> gained an
+          <code>architecture-audit</code> job running the full scanner set with a baseline-gated exit code, JSON
+          report uploaded as a build artifact on every run (<code>if: always()</code>).</p>
+        <div class="files"><code>tools/quality_audit/routers.py</code> · <code>tools/quality_audit/persistence.py</code> ·
+          <code>tools/quality_audit/config_usage.py</code> · <code>tools/quality_audit/frontend_contract.py</code> ·
+          <code>.github/workflows/quality.yml</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 145 · real headless-Chrome E2E smoke + persisted runtime observability</div>
+        <h4>QCP Tasks 8-9 — the true end-to-end path, and a queryable history instead of only "whatever's in state right now"</h4>
+        <p>Task 8: <code>tests/support/e2e_server.py</code> serves the real FastAPI app plus the actual built static
+          frontend from one isolated process, so headless Chrome (Selenium, the ddev <code>selenium-chrome</code>
+          grid locally / <code>browser-actions/setup-chrome</code> in CI) exercises the true chain: HTML → built JS
+          bundle → <code>fetchJSON</code> → route — something <code>test_e2e_terminal_static_and_api.py</code>'s
+          <code>TestClient</code>-based coverage deliberately can't reach outside DDEV. Covers dashboard load, all
+          tab switches, the built bundle actually executing, and a regression guard for the historical
+          <code>fetchJSON</code> bug (a 4xx silently reading as success). <code>state["running"]</code> forced off
+          before serving — zero real Kalshi network calls, satisfying the design spec's explicit requirement.</p>
+        <p>Task 9: <code>services/observability/observability.py</code> — <code>capture_from_runtime</code> is a
+          pure mapping (no I/O) from already-computed in-memory counters (tick duration, rate-limit hits, per-phase
+          timings, trade/index-stream throughput and drop counts) to stable metric names, persisted to
+          <code>data/observability.db</code> once a minute and readable live via
+          <code>GET /api/observability/current|history|summary</code> with zero DB round-trip on the live path.
+          Restart-safe the same way <code>backup.py</code>'s own cold-start fix works: the sample-interval gate
+          seeds from the most recently <i>persisted</i> sample on first check in a process, not a trusted-at-zero
+          in-memory default.</p>
+        <div class="files"><code>tests/support/e2e_server.py</code> · <code>tests/test_browser_e2e.py</code> ·
+          <code>services/observability/observability.py</code> · <code>services/observability/routes.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 146 · runtime anomaly findings, storage/backup health, and the unified quality summary</div>
+        <h4>QCP Tasks 10-11 — turning raw metrics into judged findings, and the first "start here" endpoint</h4>
+        <p>Task 10: <code>observability.runtime_findings</code> — small, separately-testable pure rules (tick
+          duration vs. configured poll interval, WS dropped messages, stream disconnection, repeated rate-limit
+          hits over a rolling window) each emitting a <code>QualityFinding</code> or nothing at all when there isn't
+          yet enough evidence to judge — the same "unknown is better than fabricated" discipline as everywhere else
+          in this app. <code>GET /api/quality/summary</code> (<code>services/quality/routes.py</code>) composes
+          these findings plus active alerts, recent faults, and a storage summary into one response — deliberately
+          the first read a future investigating agent should reach for, per <code>CLAUDE.md</code>.</p>
+        <p>Task 11: <code>services/storage_health/storage_health.py</code> — three cost tiers for inspecting
+          <code>data/*.db</code> files (cheap file-stat inventory on every poll, an on-demand deep scan with real
+          <code>PRAGMA quick_check</code> integrity verification, and growth-rate/backup-staleness findings derived
+          from the inventory history), every connection opened strictly read-only. <code>GET /api/health/storage</code>
+          and <code>POST /api/health/storage/scan</code> expose it; folded into
+          <code>GET /api/quality/summary</code>'s own storage section.</p>
+        <div class="files"><code>services/observability/observability.py</code> · <code>services/quality/routes.py</code> ·
+          <code>services/storage_health/storage_health.py</code> · <code>services/storage_health/routes.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 147 · Kalshi docs content-drift, contract fixtures (three real bugs found), and a public-API canary</div>
+        <h4>QCP Tasks 12-14 — ground-truth checking against Kalshi's own docs and live API, not memory</h4>
+        <p>Task 12: <code>tools/kalshi_docs_drift.py</code> upgrades the old "does each URL still 200" curl loop to
+          real SHA256 content-drift detection against <code>docs/kalshi/upstream-manifest.json</code>. First real
+          <code>--check</code> run against the internet found 111 of 197 content-checked pages had genuinely
+          drifted since the 2026-08-16 mirror — logged as a one-time backlog in <code>ROADMAP.md</code>, not fixed
+          inline. Task 13: <code>tests/test_kalshi_contracts.py</code> feeds fixture JSON built directly from
+          <code>docs/kalshi/</code> pages into the real production parsers — building it found and fixed three real,
+          previously-undetectable bugs (WS fill identity keyed on a field the real message doesn't have; WS
+          position dispatch checking the plural channel name instead of the real singular per-message
+          <code>type</code>; WS position ticker extraction reading the wrong field name), all three only reachable
+          because <code>trading_enabled</code> has always been <code>false</code> so no real account message had
+          ever exercised these handlers before. Task 14: <code>tools/kalshi_public_canary.py</code> — a scheduled,
+          read-only check against Kalshi's real <code>/exchange/status</code> and <code>/markets</code> endpoints
+          (both public, no API key), validating only stable structural invariants, never volatile values.</p>
+        <div class="files"><code>tools/kalshi_docs_drift.py</code> · <code>tests/test_kalshi_contracts.py</code> ·
+          <code>services/kalshi_trade_ws.py</code> · <code>services/account_positions.py</code> ·
+          <code>services/whale_stream/whale_stream_handlers.py</code> · <code>tools/kalshi_public_canary.py</code> ·
+          <code>docs/kalshi/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 148 · Kalshi REST usage telemetry and an evidence-triggered research sweep</div>
+        <h4>QCP Tasks 15-16 — "how many REST calls is this actually making," and a persisted cross-module snapshot</h4>
+        <p>Task 15: <code>services/http_client.py</code>'s <code>call_with_backoff</code> — the one real chokepoint
+          every Kalshi REST call passes through — now records per-endpoint-family calls/errors/rate-limited/average
+          latency, instrumented inside the retry loop itself so every real HTTP attempt (including a retried 429)
+          counts once. Reset-and-stash once per tick into <code>state["last_tick_http_metrics"]</code>, flattened by
+          <code>observability.capture_from_runtime</code> into <code>kalshi_rest.&lt;endpoint&gt;.*</code> metrics —
+          live-verified showing real per-endpoint call counts and latencies within seconds of restart.</p>
+        <p>Task 16: <code>services/research/research.py</code> orchestrates seven existing read-only analyzers
+          (diagnostics, trade analytics, confidence calibration, advisory recommendations — the exact same
+          read-only assembly as <code>GET /api/advisory/recommendations</code>, never the auto-apply path —
+          candidate population gates, series-evaluator overview, settlement edge, config epoch metadata) into one
+          persisted snapshot, evidence-triggered (100 new resolved signals or 50 new closed trades since the last
+          checkpoint, OR semantics) rather than a fixed timer. Cold-start-safe the same way <code>backup.py</code>'s
+          own fix works. Never applies anything. Disabled by default until manually reviewed.</p>
+        <div class="files"><code>services/http_client.py</code> · <code>services/observability/observability.py</code> ·
+          <code>services/research/</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 149 · generated build metadata for this page, and a System Health panel in the Terminal</div>
+        <h4>QCP Tasks 17-18 — status.html stops hardcoding mechanical facts, and /api/quality/summary gets its first UI consumer</h4>
+        <p>Task 17: <code>tools/project_manifest.py</code> mechanically counts Python/JS/HTML files+lines, service
+          packages, route decorators, frontend modules, tests, and CI workflow files/jobs — this page's own
+          "headline status" header (the block right below the title) now fetches
+          <code>static/project-manifest.json</code> live rather than the "5,189 lines / 29 files / 20 routes"
+          figures hardcoded here since this page was first written, which had drifted wildly stale (real count by
+          this phase: 222 Python files, 93 routes). Also corrected two stale claims found live in that same header:
+          "no order-execution path exists" (false — real order placement is implemented and gated) and "Dashboard
+          views: 5" (actually 6 — History was added and never reflected here).</p>
+        <p>Task 18: <code>frontend/src/js/system-health.js</code> — a read-only panel in the Terminal tab's
+          Controls column, backed by <code>GET /api/quality/summary</code>, fetched only while that tab is active
+          (no second poll timer). Building its required browser test surfaced a real bug: that route 500'd in the
+          isolated E2E harness because <code>tests/support/runtime_isolation.py</code>'s central registry covered
+          <code>DB_PATH</code> constants but not <code>DATA_DIR</code> (a directory-glob constant
+          <code>backup.py</code>/<code>storage_health.py</code> each separately own) — fixed with the same
+          centralized-registry treatment, plus a direct regression test. Also found and logged, not fixed here
+          (own <code>ROADMAP.md</code> entry): <code>alerting.py</code>'s "crash" category has no resolution path
+          at all, so <code>GET /api/alerts/active</code> included every historical crash forever — see phase 151
+          for the fix, and a correction to this entry's own original claim that it pinned the summary's overall
+          status to "error" (it doesn't; that field never reads alerts at all).</p>
+        <div class="files"><code>tools/project_manifest.py</code> · <code>static/project-manifest.json</code> ·
+          <code>frontend/src/js/system-health.js</code> · <code>tests/support/runtime_isolation.py</code></div>
+      </div>
+

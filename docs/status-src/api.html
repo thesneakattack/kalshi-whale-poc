@@ -1,0 +1,44 @@
+  <section id="api">
+    <p class="eyebrow">every route main.py serves</p>
+    <h3>API Reference</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Auth gate</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="mod">GET</td><td class="mod">/</td><td class="note">if configured</td><td class="note">trading terminal (6-view dashboard)</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/status</td><td class="note">if configured</td><td class="note">this page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/login</td><td class="note">public</td><td class="note">Google sign-in page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/accounts</td><td class="note">if configured</td><td class="note">Connected Accounts management page</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/session</td><td class="note">public</td><td class="note">current login state, for the header</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/auth/login</td><td class="note">public</td><td class="note">redirects to Google's consent screen</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/auth/callback</td><td class="note">public</td><td class="note">exchanges code, verifies ID token, opens session</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/auth/logout</td><td class="note">public</td><td class="note">clears session</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/state</td><td class="note">if configured</td><td class="note">everything the dashboard polls every 5s</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/config</td><td class="note">if configured</td><td class="note">current settings.yaml</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/config</td><td class="note">if configured</td><td class="note">patch + persist settings.yaml</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/toggle</td><td class="note">if configured</td><td class="note">pause/resume the trading loop</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/risk/halt</td><td class="note">if configured</td><td class="note">manual kill switch</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/risk/resume</td><td class="note">if configured</td><td class="note">clear a halt</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/reset</td><td class="note">if configured</td><td class="note">reset paper broker, stats, equity history</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/trading-history</td><td class="note">if configured</td><td class="note">paginated closed-trade log + summary stats + config-tuning insights for the History tab</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/trading/enable</td><td class="note">if configured</td><td class="note">flip real trading on — requires a connected account + typed confirmation phrase</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/trading/disable</td><td class="note">if configured</td><td class="note">flip real trading off — always allowed, no confirmation</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/status</td><td class="note">if configured</td><td class="note">per-variant resolved-trade progress toward the recommendation threshold</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/recommendations</td><td class="note">if configured</td><td class="note">current recommendations, or a gated_reason if under threshold / disabled</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/advisory/recommendations/apply</td><td class="note">if configured</td><td class="note">apply one recommendation by id — always a human click, re-validates fresh, writes an audit row</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/advisory/applied-changes</td><td class="note">if configured</td><td class="note">paginated audit log of applied recommendations</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-strategy/state</td><td class="note">if configured</td><td class="note">MarketNativeStrategy's own broker state + summary — no dashboard panel yet, debug-only</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-history/summary</td><td class="note">if configured</td><td class="note">tracked-ticker/snapshot/resolved-outcome counts</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-history/hypothetical-trades</td><td class="note">if configured</td><td class="note">retrospective, explicitly-hypothetical entry-outcome analysis from logged market data</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-analyst/status</td><td class="note">if configured</td><td class="note">enabled/api-key-configured flags + hit-rate/Brier-score stats for the History tab's Market Analyst panel</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/market-analyst/analyze</td><td class="note">if configured</td><td class="note">on-demand: spends one real API call analyzing the given ticker right now (phase 56) — the "🔎 Analyze this market" button in the market detail modal</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/market-analyst/analyses</td><td class="note">if configured</td><td class="note">paginated log of past LLM market analyses</td></tr>
+          <tr><td class="mod">GET</td><td class="mod">/api/accounts</td><td class="note">if configured</td><td class="note">connected-account status per provider</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/accounts/connect</td><td class="note">if configured</td><td class="note">save encrypted provider credentials</td></tr>
+          <tr><td class="mod">POST</td><td class="mod">/api/accounts/{provider}/disconnect</td><td class="note">if configured</td><td class="note">remove stored credentials</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="margin-top:10px;">"if configured" means: open to anyone while <code style="color:var(--whale); font-family:var(--mono);">GOOGLE_CLIENT_ID</code>/<code style="color:var(--whale); font-family:var(--mono);">GOOGLE_CLIENT_SECRET</code>/<code style="color:var(--whale); font-family:var(--mono);">APP_SECRET_KEY</code> aren't all set (today's default); requires a valid session once they are.</p>
+  </section>
+

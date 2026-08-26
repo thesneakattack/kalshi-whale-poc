@@ -1,0 +1,45 @@
+  <section id="limitations">
+    <p class="eyebrow">honest, not optimistic</p>
+    <h3>Known Limitations</h3>
+    <div class="limitation">
+      <div class="h">Every currently open Kalshi market is a multi-leg combo contract</div>
+      <div class="b">Verified by paginating 500 live open markets from Kalshi's real API — zero simple single-outcome
+        markets exist right now. Titles are formatted as "<code>N-leg parlay: A, B +N more</code>" to stay scannable,
+        but that's the ceiling on readability given the actual data, not a partial fix.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">Order-placement request schema was wrong — now fixed (verified 2026-08-07)</div>
+      <div class="b">This used to be an open question; it turned out the original implementation targeted Kalshi's
+        <i>legacy</i> order shape (<code>POST /portfolio/orders</code>, integer-cents <code>yes_price</code>/
+        <code>no_price</code>). Fetched docs.kalshi.com directly and found the endpoint moved to
+        <code>POST /portfolio/events/orders</code>, with <code>action</code>+<code>side(yes/no)</code> collapsed
+        into one <code>side</code> field (<code>"bid"</code>/<code>"ask"</code>), string-typed
+        <code>count</code>/<code>price</code> instead of integer cents, and two newly-required fields
+        (<code>time_in_force</code>, <code>self_trade_prevention_type</code>) with no old equivalent. Kalshi's own
+        docs note the legacy endpoint's migration deadline was "no earlier than May 6, 2026" — already past — so
+        the old code could have failed outright the first time it was ever used. Rewritten and covered by 4 tests
+        that verify the exact request shape against a faked HTTP client (no network, no real credentials). Still
+        true: no live order has ever actually been placed with this code, and Kalshi's docs can move again — don't
+        treat this as a permanent guarantee.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">No "close position" flow</div>
+      <div class="b">The paper broker opens positions but nothing ever explicitly closes one — equity reflects
+        mark-to-market unrealized P&amp;L on whatever's still open. There's no realized-P&amp;L concept yet, so none
+        is shown.</div>
+    </div>
+    <div class="limitation">
+      <div class="h">Real account connection: verified 2026-08-07, and the auth signing itself was broken</div>
+      <div class="b">A real key made it possible to test this for the first time, and it surfaced a genuine bug, not
+        just an unconfirmed guess: every signed request 401'd, on both production and demo — the signed message
+        omitted the <code>/trade-api/v2</code> prefix Kalshi's own docs example includes. Fixed in
+        <code>services/kalshi_account_client.py</code>. Once auth worked, several field-name guesses turned out
+        wrong too — <code>market_positions</code> uses <code>position_fp</code>/<code>market_exposure_dollars</code>,
+        fills use <code>count_fp</code>/<code>yes_price_dollars</code>/<code>no_price_dollars</code> — none of
+        which existed under the old guessed names, so those rows silently rendered blank before. All fixed and
+        verified against a real connected account in a real browser session. Raw JSON stays visible everywhere
+        regardless, since Kalshi's docs can still drift again — this is now confirmed-correct, not guaranteed
+        permanent.</div>
+    </div>
+  </section>
+

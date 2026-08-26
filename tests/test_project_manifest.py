@@ -46,8 +46,9 @@ def _build_mini_repo(root):
     _write(root / "static" / "js" / "dashboard.bundle.js", "// generated\n" * 50)
     _write(root / "frontend" / "node_modules" / "some-pkg" / "index.js", "module.exports = {};\n")
 
-    # --- html: 2 real pages ---
+    # --- html: 1 real page + 1 status.html fragment (source) + 1 generated status.html (excluded) ---
     _write(root / "static" / "index.html", "<html></html>\n")
+    _write(root / "docs" / "status-src" / "head.html", "<html>\n")
     _write(root / "static" / "status.html", "<html>\n<body></body>\n</html>\n")
 
     # --- workflow files: 1 GitHub Actions (2 jobs), 1 Woodpecker (3 steps) ---
@@ -109,10 +110,13 @@ def test_javascript_excludes_generated_bundle_and_node_modules(mini_repo):
     assert manifest["lines"]["javascript"] == 3  # 1 + 2 lines
 
 
-def test_html_file_and_line_counts(mini_repo):
+def test_html_excludes_generated_status_page_counts_its_source_fragments(mini_repo):
     manifest = project_manifest.build_manifest(mini_repo)
+    # index.html (real page) + docs/status-src/head.html (status.html's source
+    # fragment) count; the generated static/status.html itself is excluded,
+    # same treatment as static/js/dashboard.bundle.js above.
     assert manifest["files"]["html"] == 2
-    assert manifest["lines"]["html"] == 1 + 3  # index.html (1 line) + status.html (3 lines)
+    assert manifest["lines"]["html"] == 1 + 1  # index.html (1 line) + head.html (1 line)
 
 
 # --- build_manifest: services / routes / frontend modules -----------------

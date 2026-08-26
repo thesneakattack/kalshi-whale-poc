@@ -1,0 +1,1151 @@
+      <div class="t-phase">
+        <div class="tag">phase 25 · a real LIVE badge (not a guess), and Portfolio finally looks like Kalshi's own</div>
+        <h4>Chasing down the actual milestone/live-data system, then a full positions-table rewrite</h4>
+        <p>A direct instruction to spend the effort and not guess on the "LIVE" badge paid off. First attempt was a
+          timestamp-only heuristic - openly flagged as not the same guarantee as Kalshi's real signal - and pushed
+          further instead of stopping there. Kalshi's live status turned out to be powered by a separate milestone/
+          live-data system, not exposed on the market or event object at all: <code>get_milestones
+          (related_event_ticker=...)</code> is the missing link, returning the actual scheduled game/match tied to
+          an event, whose id/type then feed <code>get_live_data()</code> for the real status. One hypothesis tested
+          and killed before it shipped: a milestone's <code>end_date</code> stays null forever, even for a fully
+          settled game, so it can't be used as a live-window boundary. The real signal, confirmed by watching a
+          real AFL match go live at its actual scheduled start time: <code>details.widget_status</code> goes
+          "none" → "live" → "finished." New <code>_fetch_live_status()</code> checks this only for markets whose
+          <code>occurrence_datetime</code> falls in a plausible live window, replaced wholesale every poll tick
+          rather than accumulated (a stale "live" is actively wrong, not just incomplete). Verified against real
+          production data mid-build: a genuine in-progress tennis match was correctly flagged live in the running
+          app, not just a synthetic test.</p>
+        <p>Second half of the same request round, with a real screenshot of Kalshi's own positions table:
+          <code>renderPositions</code> rewritten from one flat line item per position into a real grouped table -
+          positions sharing an event grouped under one market header with a Total row, matching the screenshot's
+          exact columns (Position, Contracts, Entry, Now, Cost, Payout if right, Value, Return) rather than
+          invented ones. Added a whale-confidence badge per position (reusing <code>computeWhaleLean</code>,
+          already built for Whale Watch's cards, never applied to Portfolio) and a 🐋 icon expanding to show
+          <i>why</i> a position was opened - <code>Trade.reason</code> had already been computed, persisted, and
+          sent to the frontend in <code>broker.recent_trades</code> the whole time, just never displayed. Also
+          investigated, on request, whether Kalshi exposes a "largest open positions on this market" dataset -
+          confirmed three independent ways (SDK method introspection, Kalshi's own API reference endpoint index,
+          and Kalshi's LLM-oriented docs index, which states outright that no such endpoint exists) that this data
+          genuinely isn't public; the real "Kalshi Leaderboard" ranks overall trader performance, unrelated to
+          per-market position size. Not built, since there's no data to build it from -
+          <code>open_interest_fp</code> (aggregate, not per-holder) is the closest real substitute, noted for
+          later. Verified end-to-end through a real Chrome session: correct grouping, a Total row only on the
+          multi-position group, correct sums, and the reason details expanding to real trade data on click.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_milestones_for_event</code>,
+          <code>get_live_data</code>) · <code>main.py</code> (<code>_fetch_live_status</code>) ·
+          <code>static/index.html</code> (<code>isLive</code>, <code>liveBadgeHTML</code>, rewritten
+          <code>renderPositions</code>, <code>whaleConfidenceBadgeHTML</code>, <code>reasonDetailsHTML</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 26 · sortable trade/decision tables, an observe-live-only gate, and a self-serve reset</div>
+        <h4>Three separate direct requests, all shipped and tested in one pass</h4>
+        <p>Trade Log and Strategy Decisions both got an Advanced mode: <code>renderTrades</code>/
+          <code>renderDecisions</code> now offer a real sortable, filterable table alongside the existing
+          plain-English card feed, reusing the same Simple/Advanced toggle every other panel already uses.
+          Trade Log's table adds a P&amp;L column (current price vs. fill price, the same math
+          <code>renderPositions</code> already does) and a Confidence column pulled out of
+          <code>Trade.reason</code>'s formatted text via a new <code>parseConfidence()</code> - that number
+          had only ever existed embedded in a sentence, never its own field. Strategy Decisions' table adds
+          an action filter (trade/skip). Both share new small <code>sortRows</code>/<code>toggleSort</code>/
+          <code>sortHeaderHTML</code> helpers - click a column header to sort by it, click again to reverse.
+          Verified through a real Chrome session with synthetic data: correct P&amp;L math, correct sort
+          order and direction toggling, and both filters actually excluding the rows they should.</p>
+        <p>Second request: a configurable "live markets only" trading gate, so real-world strategy accuracy
+          can be observed in isolation from thin/pre-market signal noise. New
+          <code>strategy.live_markets_only</code> config field (off by default) makes both
+          <code>FollowTheWhaleStrategy.evaluate()</code> and <code>ShadowTrader.evaluate()</code> skip/decline
+          any signal on a market that isn't currently live - deliberately reusing the exact same live-status
+          lookup the LIVE badge already shows (<code>state["live_status"]</code>) rather than inventing a
+          second definition of "live." <code>main.py</code>'s trading loop resolves ticker &rarr;
+          event_ticker &rarr; live status once per signal and passes it to both evaluators. Config tab gets a
+          matching checkbox; 5 new tests cover on/off and live/not-live for both evaluators.</p>
+        <p>Third request: a self-serve "Reset Paper Account &amp; Logs" button in a new Config tab Danger
+          Zone group - the exact same <code>POST /api/reset</code> Terminal's Controls button already calls
+          (paper bankroll/positions/trade log, daily-loss baseline, in-memory signal/decision feed; persisted
+          whale track record and shadow trades are deliberately untouched, since those track long-run
+          accuracy across resets), just reachable without asking for it every time. No new endpoint needed.
+          Also folded in: a project-scoped Claude Code hook (<code>.claude/hooks/run_tests.py</code>) that
+          runs the test suite automatically after editing <code>main.py</code> or any <code>services/*.py</code>
+          file, and a pass condensing this file's sibling, <code>ROADMAP.md</code>, down from ~820 lines to
+          keep completed-item narrative from crowding out the still-open to-do list - the full detail for
+          every condensed item is still exactly this page, plus <code>git log</code> for anything committed.</p>
+        <div class="files"><code>services/strategy_engine.py</code>, <code>services/shadow_mode.py</code>
+          (<code>live_markets_only</code> gate) · <code>main.py</code> (is_live resolution, <code>/api/reset</code>
+          already existed) · <code>static/index.html</code> (Advanced trade/decision tables, sort helpers,
+          Danger Zone) · <code>tests/test_strategy_engine.py</code>, <code>tests/test_shadow_mode.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 27 · selectable-domain reset, and Open Positions &rarr; full market detail</div>
+        <h4>Two more direct requests</h4>
+        <p>First: phase 26's Danger Zone reset was paper-only, with shadow trades and the whale track record
+          deliberately untouched - useful as a default, but there was no way to also wipe those short of
+          asking for it. <code>POST /api/reset</code> now takes an optional JSON body
+          (<code>{paper, shadow, signal_log}</code>, each independently toggleable, <code>paper</code>
+          defaulting <code>true</code> so the Terminal Controls button's old no-body call still behaves
+          exactly as before) and reports back which domains it actually cleared. New
+          <code>ShadowTrader.clear()</code> wipes every logged shadow trade and resets the shadow daily-loss
+          baseline; new <code>signal_log.clear_all()</code> wipes the whale track record. The Config tab's
+          Danger Zone is now three checkboxes (Paper checked by default, Shadow and Whale track record
+          opt-in) behind a single "Reset Selected" button, with a <code>confirm()</code> prompt naming exactly
+          what's about to be wiped. Verified: new unit tests for both <code>clear()</code> methods (including
+          that a fresh instance re-reading the same on-disk DB sees the wipe, not just the in-memory object),
+          plus live <code>curl</code> proving each flag combination reports back the right domain list.</p>
+        <p>Second: "essentially all the data on the market landing page on Kalshi itself," reachable by
+          clicking a market straight from Open Positions - previously the per-market drill-down modal (phase
+          19-ish: order book, price chart, recent trades) existed but wasn't wired up from Portfolio at all,
+          and even where it was reachable it never showed event context, current prices, volume, or sibling
+          outcomes the way Kalshi's own market page does. New <code>GET /api/markets/{ticker}/detail</code>
+          bundles one <code>get_market()</code> call with one <code>get_event()</code> call - for a
+          multi-outcome event, every sibling market's own live price comes back as part of that same event
+          payload, no per-sibling round trip needed. Open Positions' group-title row and every individual
+          position row are now clickable into the modal. New <code>renderMarketInfoHTML()</code> renders a
+          category tag, event title/subtitle, current Yes/No prices with a 24h change arrow, 24h volume/open
+          interest/status/close time, the rules text, and - for multi-outcome events - an "Other Outcomes In
+          This Event" list (reusing the existing <code>.outcome-row</code> styling from
+          <code>eventGroupCardHTML</code>), each row clickable to jump the modal straight to that sibling.
+          Verified live against a real multi-outcome event (an ITF tennis match) via a synthetic paper
+          position: the group title opened the modal, the sibling row's price/name matched the real
+          exchange, clicking it re-fetched into that sibling, and no console errors at any step.</p>
+        <div class="files"><code>main.py</code> (<code>ResetBody</code>, <code>/api/markets/{ticker}/detail</code>,
+          <code>_slim_detail_market</code>) · <code>services/shadow_mode.py</code> (<code>clear()</code>) ·
+          <code>services/signal_log.py</code> (<code>clear_all()</code>) · <code>static/index.html</code>
+          (Danger Zone checkboxes, <code>renderPositions</code> click-through, <code>renderMarketInfoHTML</code>)
+          · <code>tests/test_shadow_mode.py</code>, <code>tests/test_signal_log.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 28 · /api/state efficiency pass, plus two real bugs caught live along the way</div>
+        <h4>"Make data consumption, storage, and retrieval hyper-efficient" - measured before touching anything</h4>
+        <p>Direct request, but deliberately investigated before implementing anything - the request named
+          "storage" as a concern, and <code>data/*.db</code> turned out to be a red herring: 332KB total, and
+          <code>PRAGMA freelist_count</code> showed most of even <code>signal_log.db</code>'s share was empty
+          pages left over from testing phase 27's reset-domains feature minutes earlier, not organic growth.
+          The real weight was <code>GET /api/state</code> itself: 43.8KB per fetch, polled every 5s
+          (<code>setInterval(refresh, 5000)</code>) regardless of whether the backend's own
+          <code>poll_interval_sec</code> (15s default) had produced anything new - meaning roughly two of
+          every three polls re-sent and re-parsed byte-for-byte identical data. Follow-up clarification from
+          the requester ("keeping polling intervals as short as possible... it's data latency I'm concerned
+          about, not space") ruled out the tempting-but-wrong fix (just slow the frontend poll down) in favor
+          of making an unchanged poll cheap instead of infrequent.</p>
+        <p>Fix: a <code>state["generation"]</code> counter, bumped once at the end of every trading-loop poll
+          tick and by every control endpoint that mutates state outside the loop (<code>/api/toggle</code>,
+          <code>/api/risk/halt</code>, <code>/api/risk/resume</code>, <code>/api/reset</code>,
+          <code>/api/config</code>, <code>/api/trading/enable</code>, <code>/api/trading/disable</code>, and -
+          caught by audit, see the bug below - <code>GET /api/markets/search</code>), used as
+          <code>/api/state</code>'s ETag. An unchanged poll now gets a 304 with no body instead of 43.8KB
+          re-fetched and re-parsed; live <code>curl</code> confirmed a real 304 round trip. The response body
+          itself is memoized per generation too, so <code>signal_log.stats()</code>/<code>shadow.recent()</code>/
+          <code>shadow.stats()</code> - real SQLite queries - now run once per actual change instead of once
+          per HTTP request. One real-environment wrinkle caught live, not assumed: nginx's gzip module
+          rewrites a strong ETag to weak (<code>"2"</code> &rarr; <code>W/"2"</code>) on the way out, which
+          silently broke a first, naive exact-string comparison - fixed with an RFC-7232-style weak comparison
+          that strips a <code>W/</code> prefix before comparing. Separately, <code>account.fills</code>/
+          <code>account.positions</code> - full raw Kalshi objects, 13.4KB of the 43.8KB, mostly serving debug
+          tooltips and the raw-JSON detail view rather than the rendered rows themselves - got the same
+          <code>_slim_market</code>-style trim (new <code>_slim_position</code>/<code>_slim_fill</code>, field
+          names taken from exactly what <code>renderRealPositions</code>/<code>renderRealFills</code> already
+          read, not re-guessed). WebSockets came up as an alternative and were deliberately deferred: the
+          dominant latency source here is <code>poll_interval_sec</code> itself, not the polling transport, so
+          the marginal win didn't clear the added complexity (reconnect/backoff, multi-tab fanout, an nginx
+          Upgrade-handshake config change) - worth revisiting only if 15s-granularity updates still feel slow
+          after this pass.</p>
+        <p>Two real bugs turned up during live verification of the above, both confirmed via Selenium, not
+          assumed fixed from reading the diff. First, a genuine regression from the new caching itself:
+          <code>GET /api/markets/search</code> writes into <code>state["market_titles"]</code> but wasn't
+          bumping the new generation counter, so a freshly-searched market's resolved title wouldn't
+          propagate to <code>/api/state</code> - and therefore to Open Positions or the detail modal - until
+          the next real poll tick caught up some 15s later, reported live as titles "reverting" to raw
+          tickers like <code>KXITFMATCH-26AUG08PLEPAP-PAP</code>. Fixed by adding the missing bump. Second, a
+          pre-existing bug, unrelated to this pass but surfaced during the same live testing: the market-
+          detail modal's "click outside to dismiss" backdrop handler only checked the click event's final
+          target, but <code>refreshMarketDetail()</code> replaces the modal body's <code>innerHTML</code> on
+          every poll tick while the modal is open - so a mousedown-then-mouseup that straddled one of those
+          replacements got its click event retargeted by the browser to the backdrop itself (the nearest
+          ancestor still in the DOM), silently closing the modal mid-interaction. Reported live as "refresh
+          forces closing of modals while I'm trying to examine them." Fixed by also requiring mousedown to
+          have started on the backdrop itself (new <code>__backdropMouseDownOnSelf</code> flag) before a click
+          counts as "outside" - verified with a real mousedown &rarr; DOM-swap &rarr; mouseup race via
+          Selenium ActionChains (modal stayed open) alongside a genuine outside click (still closes it, so the
+          fix didn't just disable the feature).</p>
+        <div class="files"><code>main.py</code> (<code>state["generation"]</code>, <code>_bump_generation</code>,
+          <code>_build_state_body</code>, <code>_if_none_match_hits</code>, <code>_slim_position</code>,
+          <code>_slim_fill</code>) · <code>static/index.html</code> (<code>__backdropMouseDownOnSelf</code> +
+          the backdrop's mousedown/click handlers)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 29 · whale simulator: relative sizing, volume-weighted selection, composite confidence</div>
+        <h4>"More accurately reflect real-world behavior and volatility" - built from research already on file</h4>
+        <p>Direct request, pointed explicitly at reusing research already sitting in ROADMAP.md from an
+          earlier pass rather than re-deriving it: two long-open P2 items had already confirmed, by reading
+          real Kalshi/Polymarket whale-tracker products directly, that (1) WhaleScanr sizes a "whale" relative
+          to each market's own trade-size distribution - "roughly the top few percent of that market's own
+          trades, plus an absolute dollar floor" - not one flat number across every market, and (2)
+          Polywhaler's "Insider Score" is a composite of trade size relative to market depth, how unusual the
+          price/timing is, proximity to resolution, and broader market context, not a single factor. Both
+          items had already flagged <code>whale_simulator.py</code>'s flat <code>size_range</code> pick and
+          single size-based confidence score as exactly the gap.</p>
+        <p>Implemented both, scoped to the simulator only (the request named "the fake whale watcher service"
+          specifically - <code>whalewatchers/generic_rest.py</code>'s matching single-factor score is real-
+          provider code, left as its own still-open item). New <code>_pick_market()</code> weights market
+          selection by <code>volume_24h_fp</code> instead of a flat <code>random.choice</code>, so simulated
+          whale attention concentrates where a market actually has liquidity and price action - the
+          "volatility" half of the request. New <code>_size_for()</code> draws log-normal (real large-trade
+          sizes cluster with a heavy right tail, not uniformly) centered on 3% of the chosen market's own 24h
+          volume, with the configured <code>size_range</code> reinterpreted as an absolute floor/cap rather
+          than a flat pick range. New <code>_score_confidence()</code> replaces the single size-based number
+          with Polywhaler's four weighted factors (depth 40%, price-unusualness 25%, close-time proximity
+          20%, market-context 15%) plus noise. Verified against the live app, not just unit tests: real
+          near-resolved markets (3&cent;/90&cent; prices) now correctly score low confidence (0.11-0.18)
+          despite large sizes, where the old size-only version would have scored a big print on a foregone
+          conclusion the same as one on a genuine toss-up. 12 new tests in
+          <code>tests/test_whale_simulator.py</code>, one per factor plus edge cases (zero-volume markets,
+          missing/malformed <code>close_time</code>) - this module had no dedicated tests before.</p>
+        <div class="files"><code>services/whale_simulator.py</code> (<code>_pick_market</code>,
+          <code>_size_for</code>, <code>_score_confidence</code>) · new
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 30 · connectivity/staleness badge and price-change indicators</div>
+        <h4>Working through ROADMAP.md's remaining Phase 0.5 items in order, autonomously</h4>
+        <p>First of a self-directed pass through the roadmap's still-open items, in the order they already
+          appear in the file. Visible staleness/connectivity state: <code>refresh()</code>'s catch block used
+          to be a silent <code>console.error</code> and nothing else - for an app whose whole premise is
+          "watch this and trust what it shows you," a dead connection deserved the same loud treatment the
+          exchange-open/closed badge already gets. New <code>#connectivity-badge</code> in the header tracks
+          consecutive <code>refresh()</code> failures and seconds since the last real success, shows a
+          pulsing "&#9888; CONNECTION LOST &middot; Ns" once anything fails, clears on the next success. Along
+          the way, switched <code>refresh()</code>'s own <code>/api/state</code> fetch off the shared
+          <code>fetchJSON</code> helper to add an explicit <code>res.ok</code> check -
+          <code>fetchJSON</code> doesn't check status, so a 500 with a valid-JSON error body (FastAPI's
+          default unhandled-exception shape) would otherwise parse "successfully" and silently masquerade as
+          a real update. Verified live via Selenium: a simulated network failure, a simulated
+          500-with-JSON-body, and recovery back to a clean badge.</p>
+        <p>Price-change indicators: every price in the app used to silently replace on each 5s poll with zero
+          acknowledgment it moved. New shared <code>priceChangeHTML(ticker, price)</code> compares against
+          <code>previousPrices</code> (last poll's snapshot, updated at the end of <code>refresh()</code>
+          only after every render that needed the old value has run) and emits a brief flash + arrow + &cent;
+          /% delta - but only on the tick where the price actually changed, so it disappears again on its own
+          once the price settles, no separate timer needed. Wired into the three highest-value spots -
+          Terminal's compact list, Markets/Whale Watch cards, and Portfolio's positions "Now" column -
+          deliberately simplified from the roadmap item's original Simple-flash/Advanced-delta split into one
+          universal compact format, since the Advanced tier's real destination (the screener table further
+          down this same roadmap section) doesn't exist yet. Skipped the compact multi-outcome
+          <code>eventGroupCardHTML</code> rows on purpose - already dense, a flashing badge per row read as
+          clutter rather than signal. Verified live: three synthetic price sequences (up, down, unchanged)
+          across all three render paths, confirming the correct arrow/delta and correct disappearance, zero
+          console errors.</p>
+        <div class="files"><code>static/index.html</code> (<code>#connectivity-badge</code>,
+          <code>renderConnectivity</code>, <code>priceChangeHTML</code>, <code>previousPrices</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 31 · signal feed filters, sort, grouping, and card enrichment</div>
+        <h4>Continuing the self-directed roadmap pass</h4>
+        <p><code>renderSignals</code>/the Terminal signal feed had zero filter or sort controls and a thin
+          card (ticker &middot; side &middot; size &middot; confidence%). Matched against Polywhaler's proven
+          set rather than invented from scratch (researched directly, same research already on file from the
+          whale-simulator pass): a filter bar (reusing the existing <code>.table-filter-row</code> styling)
+          for time range (1h/6h/24h/7d/30d/all) and side (Yes/No), a sort toggle between recency and
+          "impact," and a position-grouping checkbox. "Impact" isn't a field this app tracks - defined as
+          <code>size &times; confidence</code>, tiered low/medium/high <i>relative to the currently visible
+          feed</i> rather than a flat cutoff, the same relative-not-flat lesson the whale-simulator sizing fix
+          just applied one phase earlier. Position-grouping combines every signal on the same ticker+side into
+          one card with a "N&times; prints" tag - a light, client-side, non-persisted taste of real
+          accumulation detection, explicitly not a replacement for the P2 stretch item's actual same-actor
+          clustering.</p>
+        <p>Card enrichment, same pass: added position size in both $ (new) and contracts (already shown)
+          alongside the new impact tag. Deliberately skipped 24h price change, not silently - this app has no
+          per-ticker historical price data available in bulk (candlesticks are fetched on-demand per market in
+          the drill-down modal, one API call per ticker, not something to fan out across every ticker on a
+          live feed), so faking that number wasn't an option. Verified live via synthetic signals spanning old/
+          new timestamps and both sides: time-range and side filters correctly excluded what they should,
+          impact sort correctly ordered highest-impact first, and group-by-market correctly combined two
+          same-ticker signals into one 2&times;-prints card, zero console errors throughout.</p>
+        <div class="files"><code>static/index.html</code> (<code>renderSignals</code> rewrite,
+          <code>signalFilter</code>, <code>signalImpact</code>, <code>.impact-tag</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 32 · a real, browsable signal history</div>
+        <h4>WhaleScanr's framing, copied directly: "every flag and how it settled, misses included"</h4>
+        <p>The Whale Watch tab's "Whale Track Record" cards only ever showed the rolled-up percentage - win
+          rate, resolved count - even though <code>services/signal_log.py</code> has persisted every
+          individual signal and its resolution outcome since it was built. No UI existed to actually browse
+          them. New <code>signal_log.recent(limit, offset, resolved_only)</code> and
+          <code>signal_log.total_count()</code>, backing a new <code>GET /api/signals/history</code> endpoint
+          - deliberately a separate, on-demand/paginated fetch, <i>not</i> folded into the <code>/api/state</code>
+          poll cycle the way most of this dashboard's data is. That distinction mattered: a live-refreshing
+          history table would fight with someone actively paging or sorting through it, resetting their place
+          every 5 seconds.</p>
+        <p>New "Signal History" panel on Whale Watch, right below the existing track-record cards: a
+          "Resolved only" checkbox, sortable columns (market/side/size/confidence/seen-at, reusing the
+          existing <code>sortRows</code>/<code>toggleSort</code>/<code>sortHeaderHTML</code> helpers built for
+          the Trade Log/Decisions tables), a pending/correct/miss outcome column, and Prev/Next pagination.
+          Loads once when the tab opens (hooked into <code>showView()</code>) and again only on filter/sort/
+          page changes. 4 new tests in <code>tests/test_signal_log.py</code> covering ordering, pagination,
+          and the resolved-only filter - including that an unresolved signal's <code>correct</code> comes back
+          <code>null</code>, not conflated with a resolved-and-wrong <code>0</code>. Verified live against the
+          real, already-populated <code>signal_log.db</code> (100+ logged signals): correct pagination count,
+          working sort toggle, working filter, zero console errors.</p>
+        <div class="files"><code>services/signal_log.py</code> (<code>recent</code>,
+          <code>total_count</code>) · <code>main.py</code> (<code>GET /api/signals/history</code>) ·
+          <code>static/index.html</code> (<code>#signal-history</code> panel, <code>loadSignalHistory</code>,
+          <code>renderSignalHistory</code>) · <code>tests/test_signal_log.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 33 · shared screener table, and Phase 0.5's remaining items closed out</div>
+        <h4>One renderer, three panels, and a resolved Markets-vs-Whale-Watch split</h4>
+        <p>Three separate market-list renderers existed before this - <code>renderMarkets</code> for
+          Terminal's compact column (the thinnest of the three: ticker, YES price, volume, nothing else),
+          <code>renderMarketCards</code> for Markets and Whale Watch's card grids, and nothing shared between
+          any of them. New <code>renderScreenerTable</code>/<code>renderScreenerTableFromState</code>: a
+          dense, sortable table (Market/Category/Yes/No/Spread/24h Volume, plus a Whale Lean column when
+          <code>includeWhale</code> is set) reused across all three former call sites as each panel's Advanced
+          mode, each with its own independent sort state (<code>screenerState</code>, keyed by panel id - same
+          pattern as <code>tradeLogFilter</code>/<code>decisionFilter</code>). Two Kalshi-Pro-screener columns
+          were deliberately left out rather than faked: real order-book depth would cost one extra API call
+          per market per poll tick (the exact kind of request-fan-out growth the earlier <code>/api/state</code>
+          efficiency pass worked to avoid), and "5-minute volume" would need far more trade data than
+          <code>_fetch_trade_tape</code> actually pulls (5 trades/market, 30 total across the whole watchlist -
+          nowhere near enough for a real rolling figure). 24h volume is shown instead of a number that would
+          quietly be wrong on anything busier than a handful of trades. Spread came for free -
+          <code>yes_ask_dollars</code> was already on every market object <code>_fetch_markets</code> fetches,
+          just never exposed through <code>_MARKET_FIELDS</code> before.</p>
+        <p>That table also resolved the standing "reassess the Markets vs. Whale Watch split" question, which
+          had sat open since Phase 0.5 began - both tabs rendered near-identical cards off the same function.
+          Decided for "give them a genuinely distinct job," not "fold them into one filtered tab": the merge
+          option would have meant cramming Whale Watch's now-substantial whale-specific content (Track Record
+          cards, the new browsable Signal History panel, Trade Tape) alongside general market discovery behind
+          a toggle, awkward for both jobs. Instead, Markets stayed pure discovery
+          (<code>includeWhale=false</code> everywhere); Whale Watch keeps its three whale-specific sections
+          <i>and</i> renders its cards/table whale-annotated (<code>includeWhale=true</code> - lean blocks in
+          Simple, a Whale Lean column in Advanced). Same renderer, same code, genuinely different output per
+          tab now - not just a different label over identical content. This also closes out Phase 0.5 as a
+          whole: every remaining open item in that section is now checked off except the polling-model item,
+          which was already deliberately left open pending a WebSockets decision two phases back. Verified
+          live across all three panels: Advanced renders the table, a header click re-sorts, toggling back to
+          Simple restores the original card/list view exactly, and the Whale Lean column appears only on
+          Whale Watch's table.</p>
+        <div class="files"><code>main.py</code> (<code>_MARKET_FIELDS</code> + <code>yes_ask_dollars</code>)
+          · <code>static/index.html</code> (<code>renderScreenerTable</code>,
+          <code>renderScreenerTableFromState</code>, <code>screenerState</code>,
+          <code>screenerRowData</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 34 · a live-markets-only toggle one level upstream, on the simulator itself</div>
+        <h4>Direct follow-up to phase 22's strategy-level gate</h4>
+        <p>The existing <code>strategy.live_markets_only</code> gate (built a few phases back) only decides
+          whether a signal that already exists gets <i>acted on</i> - a thin/pre-market print still shows up
+          in the feed, it just never becomes a trade. Direct request for a matching toggle one level upstream:
+          whether the simulator <i>generates a print at all</i> for a non-live market in the first place. New
+          <code>whale_signal.live_markets_only</code> (default off, config-only - deliberately a separate flag
+          from the strategy one, not a shared name, since they gate genuinely different stages of the
+          pipeline). <code>WhaleSimulator.maybe_generate()</code> takes new <code>live_status</code>/
+          <code>live_only</code> params and filters candidate markets down to
+          <code>live_status.get(event_ticker) == "live"</code> before picking one - same
+          <code>state["live_status"]</code> lookup the LIVE badge and the strategy gate both already use, no
+          third definition of "live" introduced. If the filtered set comes up empty, no signal fires that
+          tick at all, rather than quietly falling back to a non-live market. One subtlety worth a real fix,
+          not left as a rough edge: <code>_score_confidence()</code>'s "market context" factor (how busy this
+          market is relative to the rest of the batch) now compares against the same live-filtered candidate
+          set when the toggle is on, not the full unfiltered watchlist - otherwise a live market's "context"
+          score would be diluted by comparison against quiet markets it was never actually competing with for
+          selection.</p>
+        <p>Config tab gets a matching checkbox under Whale Signal (simulated), next to the existing size-range
+          fields. 4 new tests in <code>tests/test_whale_simulator.py</code>: on with a live market present, on
+          with none available (correctly emits nothing rather than falling back), off ignores live_status
+          entirely, and the parameter-omitted default behaves as off. Verified live end to end - toggled via
+          the Config tab UI, confirmed the flip round-tripped correctly through <code>GET /api/config</code>,
+          reverted back to off afterward so the test didn't leave the running app in a changed state.</p>
+        <div class="files"><code>services/whale_simulator.py</code> (<code>maybe_generate</code> live-status
+          filtering) · <code>main.py</code> (both <code>maybe_generate</code> call sites) ·
+          <code>config/settings.yaml</code> (<code>whale_signal.live_markets_only</code>) ·
+          <code>static/index.html</code> (Config tab checkbox) ·
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 35 · watchlist diversification: round-robin across events, not a flat volume sort</div>
+        <h4>A real bug caught live via direct report: "the only market that shows up isn't even live"</h4>
+        <p>Reported directly against the running app: only one market visible, and it wasn't even live, despite
+          Kalshi itself showing 50 live markets at the time. Diagnosed against real data, not guessed - the
+          entire 8-market watchlist turned out to be every sub-market of one Wyndham Championship golf
+          tournament, starting in ~15 hours (well outside the live-detection window), while
+          <code>live_status</code> came back completely empty. Root cause: <code>get_top_volume_markets</code>
+          (phase "market discovery" a while back) fixed <i>what</i> gets browsed but still picked the final
+          watchlist via a flat top-n-by-volume sort with zero diversification - one high-volume multi-outcome
+          event, every sub-market individually ranking in the global top 8, can silently fill the entire
+          watchlist and crowd out every other series, confirmed live, not hypothetical.</p>
+        <p>First fix tried and explicitly replaced before shipping: a flat per-event cap (max 2 markets per
+          event). It solves the crowding-out case but creates the mirror problem - a genuinely multi-outcome
+          event's own legitimate sub-markets get needlessly truncated to 2 even when nothing else is competing
+          for the remaining slots, caught by the requester asking "would there be a way to dynamically adjust
+          caps... to avoid cutoffs." Shipped instead: round-robin selection across distinct events (still
+          highest-volume-first <i>within</i> each event) - no hardcoded per-event number at all. The effective
+          share per event self-sizes: it shrinks automatically as more distinct events compete for the same n
+          slots, and grows toward the full watchlist size when one event genuinely has no real competition.
+          Verified directly against the live Kalshi API (not just unit tests): the watchlist went from 1
+          distinct event / 0 confirmed-live markets to 20 distinct events (tennis, MLB, Bitcoin, UFC, WNBA)
+          / 4 confirmed-live. 6 new tests in a first dedicated <code>tests/test_kalshi_client.py</code> (this
+          module had none before) - including the "only one real event available" case explicitly, so the
+          round-robin behavior doesn't regress back toward either extreme.</p>
+        <p>Same pass, direct follow-up request ("increase the caps throughout the API to something more
+          sensible"): audited every numeric limit in the poll loop and bumped the ones sized for an 8-market
+          watchlist that hadn't been revisited since - <code>watchlist_size</code> 8&rarr;20, top-series
+          candidates 15&rarr;30, per-market trade-tape fetch 5&rarr;10 (total tape cap 30&rarr;50),
+          unresolved-signal-resolution batch 3&rarr;10 per tick (and switched that function from sequential to
+          concurrent fetching in the same change, so the bigger batch doesn't stack up round-trip latency
+          within one poll tick), real-account fills page size 25&rarr;50, the long-run
+          <code>market_titles</code>/<code>event_titles</code> caps 300&rarr;500, and
+          <code>equity_history</code>/<code>real_balance_history</code> 200&rarr;500 points.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_top_volume_markets</code>
+          round-robin rewrite) · <code>main.py</code> (cap bumps,
+          <code>_check_signal_resolutions</code> concurrency) ·
+          <code>config/settings.yaml</code> (<code>watchlist_size</code>) · new
+          <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 36 · P1 closed out: Help modal, plain-English skip reasons, a real-money banner</div>
+        <h4>"A first-timer understands what's happening" - all five P1 items, one pass</h4>
+        <p>First-run walkthrough, persistent glossary, and a "how prediction markets work" explainer were three
+          separate roadmap bullets but really the same job - built as one combined Help modal instead of three
+          surfaces. New <code>#help-backdrop</code> reuses the market-detail modal's exact chrome and
+          mousedown-guard outside-click fix (phase 30-ish) rather than a new pattern: a plain-English
+          prediction-markets primer (what a price means as a probability, why Yes + No &asymp; 100&cent;, what
+          settlement means) plus an 11-term glossary written in terms of how <i>this app</i> actually uses each
+          word, not textbook definitions pulled from nowhere. Auto-opens once on a genuinely fresh browser
+          (a <code>localStorage</code> flag set the same way whether it opened itself or someone clicked the
+          new util-bar "Help" link), never reopens itself automatically after that. Deliberately scoped down
+          from "walkthrough" in the step-by-step-guided-tour sense - highlighting individual UI elements one at
+          a time needs real positioning/overlay machinery this app doesn't have; reading one reference page
+          once is an honest, smaller bar, not the full ask. Verified live with real localStorage clearing: opens
+          fresh, stays closed after being dismissed once, reopens on demand.</p>
+        <p>Plain-English skip reasons: <code>strategy_engine.py</code>'s <code>_skip()</code> reasons stayed
+          exactly as they were (concise technical strings, correct for logs and Advanced mode) - a new
+          <code>plainEnglishSkipReason()</code> pattern-matches all five real shapes into full sentences for
+          Simple mode client-side, the same Simple/Advanced split as every other panel in this app. Falls back
+          to the raw string for anything unrecognized rather than hiding or guessing at it, verified directly
+          alongside the five known shapes.</p>
+        <p>The real-money indicator: today's PAPER tag lives inside the header's equity strip, easy to miss
+          amid everything else there, and the account-connection bar only speaks to connection status, not
+          real-order risk. New full-width, sticky <code>#real-money-banner</code> above the util-bar - the
+          very top of the page, impossible to scroll past unnoticed. Exactly two states, keyed off
+          <code>account.trading_enabled</code> specifically (the field that actually gates whether
+          <code>create_order</code> can ever fire, confirmed by reading
+          <code>kalshi_account_client.py</code>'s <code>_require_trading_enabled</code> - not "is an account
+          connected," which is still fully safe on its own under this app's architecture): calm green by
+          default, a pulsing red warning only once real orders are genuinely possible. Loud specifically when
+          it needs to be, not desensitizing by crying wolf the rest of the time. Verified live in both states
+          via a synthetic <code>trading_enabled</code> flip.</p>
+        <div class="files"><code>static/index.html</code> (<code>#help-backdrop</code>, <code>openHelp</code>/
+          <code>closeHelp</code>, <code>GLOSSARY_TERMS</code>, <code>plainEnglishSkipReason</code>,
+          <code>#real-money-banner</code>, <code>renderRealMoneyBanner</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 37 · manual series exclusion, smooth feed updates, persistent price deltas, Markets-tab search</div>
+        <h4>A batch of direct corrections and one deliberately-planned feature</h4>
+        <p>Manual whale/source exclusion (P2), planned before writing any code per direct instruction to lay
+          out intermediary steps first: Kalshi's trade tape is anonymous, so a literal per-whale denylist isn't
+          implementable - resolved to series-level exclusion, the same grouping the automatic win-rate filter
+          already uses. <code>signal_log._series_of</code> promoted to public <code>series_of()</code> so both
+          filters share one series definition rather than risking two that drift apart. New
+          <code>strategy.excluded_series</code>, checked in both evaluators (mirroring the
+          <code>live_markets_only</code> pattern), a Config denylist editor, a plain-English skip-reason case,
+          and 6 new tests.</p>
+        <p>Then four direct corrections against the running app. Terminal's signal/decision feeds flickered on
+          every poll and felt non-scrollable - actually scrollable, but a full <code>innerHTML</code> rebuild
+          every 5s reset <code>scrollTop</code> to 0 each time. New <code>renderFeedListSmooth()</code>
+          exploits that new items are only ever prepended server-side: the common case only inserts the new
+          items' HTML, leaving existing DOM nodes (and scroll position) completely undisturbed, falling back to
+          a full rebuild only when a filter/sort/grouping change (or a Simple/Advanced switch) actually changes
+          what should be visible. Verified live via a planted DOM marker surviving an update untouched and
+          scrollTop never resetting to 0. Scrollbars everywhere got a thin, semi-transparent restyle. Price-
+          change badges (phase 30) were redesigned around a persistent per-ticker session baseline instead of
+          last-poll comparison, after direct correction that they should stay visible and keep updating rather
+          than flash once and vanish - dropped the pulse animation that made sense for a flash but not a
+          steady badge. And the Markets tab gets its own search/browse panel (a real, previously-unmet request)
+          - same <code>GET /api/markets/search</code> Config's watchlist manager already used, but purposed for
+          looking (click into the real detail modal) rather than configuring, with a secondary Pin button as a
+          bridge into watchlist management rather than the point of the panel.</p>
+        <div class="files"><code>services/signal_log.py</code> (<code>series_of</code>) ·
+          <code>services/strategy_engine.py</code>, <code>services/shadow_mode.py</code>
+          (<code>excluded_series</code>) · <code>static/index.html</code>
+          (<code>renderFeedListSmooth</code>, scrollbar CSS, <code>priceChangeHTML</code> rewrite,
+          <code>searchMarketsTab</code>) · <code>tests/test_strategy_engine.py</code>,
+          <code>tests/test_shadow_mode.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 38 · real series metadata, and persistent flow clustering</div>
+        <h4>Two P2 items closed out - "proceed with as much as you can without real whale watch data"</h4>
+        <p>Series/category grouping had sat open waiting on "better Kalshi series metadata" - checked directly
+          rather than assumed still missing, and it turned out <code>get_series_list()</code> already carries a
+          real title and a real, clean 18-category taxonomy (via <code>category</code>, e.g. "Sports") plus
+          finer tags ("Tennis", "Soccer") per series, already being fetched and cached hourly for the
+          watchlist/search and then discarded. The grouping key itself
+          (<code>signal_log.series_of</code>'s ticker-prefix heuristic) checked out fine - every real prefix
+          matched a real series ticker exactly - what was missing was just a name for it. New
+          <code>main.py:_series_meta_map()</code> builds a ticker&rarr;{title, category, tags} lookup from the
+          already-cached series list. Caught and fixed a real mistake before it shipped: the first version
+          exposed the <i>entire</i> ~9,400-entry cache through <code>/api/state</code>, measured (not assumed
+          safe) at over 1MB - a 20x+ regression against the whole earlier efficiency pass. Fixed by scoping to
+          just the series actually on the current watchlist, landing at ~49KB. Now used in the whale win-rate
+          block and its matching skip reason ("ITF Women's Match (Tennis)-type markets" instead of a raw
+          <code>"KXITFWMATCH"</code>), falling back to the raw ticker whenever a series isn't in the scoped map
+          yet.</p>
+        <p>Persistent flow clustering (P2 stretch item), the real/lasting version of the ephemeral client-side
+          position-grouping toggle the signal feed already had: WhaleScanr's real methodology (researched
+          directly) groups same-ticker/same-side prints close in time and size into probable-same-actor
+          clusters, without ever claiming verified identity - Kalshi's real trade tape is anonymous, no
+          account data exists. New <code>signal_log.find_clusters()</code> walks the persisted signal log
+          ordered by ticker/side/time and greedily joins consecutive signals within a time window (30min) and
+          a size-similarity ratio (4x), so a lone small print never gets lumped in with an unrelated large one
+          just for sharing a ticker/side. Cluster confidence scales with print count and timing tightness,
+          capped at 0.95. New <code>GET /api/signals/clusters</code> and a "Possible Accumulation" panel on
+          Whale Watch. 7 new tests. Verified live against the real simulated signal log - a genuine 16-print,
+          408,645-contract, 95%-confidence cluster on a real market, clicking it opens the real detail
+          modal.</p>
+        <div class="files"><code>main.py</code> (<code>_series_meta_map</code>,
+          <code>GET /api/signals/clusters</code>) · <code>services/signal_log.py</code>
+          (<code>find_clusters</code>) · <code>static/index.html</code> (<code>seriesLabelHTML</code>,
+          <code>#signal-clusters</code> panel) · <code>tests/test_signal_log.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 39 · mobile/responsive pass, a partial accessibility pass, and a modal-bubbling bug</div>
+        <h4>P3 closed out, plus a direct bug report caught in the same pass</h4>
+        <p>This app had zero <code>@media</code> breakpoints before this - the Terminal view's fixed 3-column
+          grid in particular was unusable on a phone. New <code>@media (max-width: 860px)</code>: <code>.layout</code>
+          stacks into one naturally-scrolling column instead of three independently-scrolling panes pinned to
+          <code>calc(100vh - 57px)</code> - itself a desktop-only assumption, since mobile browser chrome
+          resizes the visible viewport as you scroll and fights a fixed vh height. Header, util-bar, and the
+          equity strip wrap instead of overflowing; wide sortable tables get their own horizontal scroll
+          instead of taking the whole page sideways with them. Verified live at real narrow viewports
+          (375-500px) by measuring <code>document.body.scrollWidth</code> directly, not read off the CSS and
+          assumed correct - which caught two genuine overflow bugs neither look at the CSS alone would have
+          surfaced: a classic flexbox gotcha (a flex item's default <code>min-width: auto</code> refusing to
+          let <code>.account-bar .msg</code> shrink/wrap below its own unbroken text width) and one
+          <code>white-space: nowrap</code> status tag simply too wide for a narrow screen. Both fixed and
+          re-verified at zero horizontal overflow across Portfolio, Terminal, Markets, and Config.</p>
+        <p>Accessibility pass, deliberately scoped and reported as partial rather than overclaimed:
+          <code>aria-label</code>s added to icon-only controls (modal close buttons, the &#128040; "why this
+          position was opened" disclosure). Colorblind fallback checked, not assumed adequate - every yes/no
+          indicator in this app already pairs color with a "YES"/"NO" text label, confirmed by reading every
+          call site, not just the CSS variables. Full keyboard navigation for the many clickable
+          <code>&lt;div onclick=...&gt;</code> cards/rows across this app (no <code>tabindex</code> or keydown
+          handling today) is a real, larger gap - left open rather than claimed done off a handful of
+          <code>aria-label</code> additions.</p>
+        <p>Direct bug report caught in the same pass: the &#128040; disclosure sits inside a
+          <code>&lt;tr onclick="openMarketDetail(...)"&gt;</code> (see <code>renderPositions</code>) -
+          expanding it also opened the market-detail modal underneath, since the click bubbled up to the row.
+          Fixed with <code>event.stopPropagation()</code> on the <code>&lt;details&gt;</code> element. Verified
+          live: the icon expands without opening the modal; the row itself still opens it as before.</p>
+        <div class="files"><code>static/index.html</code> (<code>@media (max-width: 860px)</code>,
+          <code>.account-bar .msg</code>/<code>.tag</code> fixes, <code>reasonDetailsHTML</code>
+          <code>stopPropagation</code>, <code>aria-label</code>s)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 40 · active position management, an automated exit algorithm, and a Trading History tab</div>
+        <h4>Positions were never touched after entry - direct report: "once positions are opened they are never
+          monitored/changed to better reflect whale trends and minimize potential losses/maximize gains... this
+          needs to be adjusted," plus "kalshi lets you set sell prices so if say you open a position at 50c you
+          can set to cash out at 75c instead of 99c and profit."</h4>
+        <p>New <code>PaperBroker.close_position(ticker, exit_price, reason)</code> - sells back at a given price
+          instead of only holding to $1/$0 settlement, reusing the existing <code>trades</code> table exactly (a
+          close is just a trade whose <code>reason</code> starts with <code>"closed: "</code>, no schema change).
+          New <code>FollowTheWhaleStrategy.check_exits()</code>, run every trading-loop tick regardless of new
+          signals, checked per open position in priority order: (1) <b>market settlement</b> - unconditional, not
+          opt-in, closes at the terminal $1/$0 price the instant <code>market.result</code> is set, which is also
+          the correctness fix for "left open forever" above; (2) <code>take_profit_pct</code>; (3)
+          <code>stop_loss_pct</code>; (4) <code>exit_on_sentiment_reversal</code> (same <code>_whale_lean</code>
+          math the dashboard's own whale-lean already uses); (5) <b><code>auto_exit_enabled</code></b> - a further
+          direct request for "an automated, tweakable algorithm based on sensible factors from kalshi and whale
+          watch data." <code>_exit_confidence()</code> blends three independently-weighted 0-1 factors (unrealized
+          P&amp;L magnitude, whale-sentiment reversal strength, and staleness - time since the last whale print on
+          the ticker) into one composite score against a configurable threshold, the same "confidence" mental
+          model the entry side already uses; a factor with no data is omitted from the average, never scored as
+          zero. All opt-in checks default off/null - existing behavior is unchanged unless configured. 30 new
+          tests. Config tab gets a new "Position Management (Exits)" section for all twelve new
+          <code>strategy.*</code> fields.</p>
+        <p>New <b>Trading History tab</b>, direct request: "a trading history tab that shows graphs, positions
+          made, win loss rates, times auto management changed positions or sold at a price less than what a full
+          win would provide..., with relevant whale data and relevant config metadata." New
+          <code>services/trade_analytics.py</code> (pure functions, no new persistence) classifies each closed
+          trade's <code>close_type</code> by parsing the reason-string conventions already written, pairs each
+          close back to its entry trade, and computes side-aware <code>cost_basis</code>/<code>cash_back</code>
+          (actual dollars in/out) and <code>left_on_table</code> - the "sold at 75c instead of $1" figure,
+          computed only for a genuine early profit-take and explicitly framed as a hypothetical, never a claim
+          about what would actually have happened. New <code>GET /api/trading-history</code> returns per-trade
+          rows, aggregate summary stats, a cumulative realized-P&amp;L curve, and sample-size-hedged
+          <b>insights</b> - heuristic config-tuning hints (e.g. win rate by entry-confidence bucket, average
+          left-on-table on take-profit closes), each tagged with a trade count and a low/moderate/higher
+          confidence label. Resolved directly with the user rather than assumed: explicitly not a recommendation
+          engine and never writes config - full config-versioned performance tracking and any auto-generated
+          tuning recommendation stay out of scope until there's real trade volume to make either trustworthy. 18
+          new tests. New tab renders summary cards, a cumulative P&amp;L chart (<code>renderEquityChart</code>
+          generalized to take a target element id), a by-close-type breakdown, an insights panel, and a paginated
+          trade table with per-row dollar cost/payout - verified live via Selenium with synthetic data covering
+          every close type and zero console errors.</p>
+        <p>Direct bug report caught mid-build: "im still seeing strings like
+          <code>KXITFWMATCH-26AUG08MILYOS-MIL</code> in the possible accumulation section, signal history..., and
+          positions section." Root cause: <code>state["market_titles"]</code>/<code>state["event_titles"]</code>
+          were in-memory only, wiped on every <code>uvicorn --reload</code> restart (routine during development),
+          and only ever refreshed for whatever's in the current top-volume watchlist rotation - a ticker whose
+          title was learned before the last restart, or that had since rotated off the watchlist, permanently lost
+          its title. New <code>services/title_cache.py</code> persists both caches to <code>data/title_cache.db</code>,
+          write-through on every update, so a title learned once survives restarts and watchlist rotation for the
+          rest of the app's life; <code>_build_state_body</code> still scopes what <code>/api/state</code> actually
+          sends to what's currently relevant (same reasoning as the series-metadata payload-size fix in an earlier
+          phase), while <code>/api/signals/history</code> and <code>/api/signals/clusters</code> now separately
+          enrich their own responses from the full, unbounded cache. Also fixed the closely-related gap that made
+          this matter for exit management specifically: <code>_fetch_markets</code> now always includes every
+          currently-open position's ticker even if it's rotated out of the top-volume selection, so
+          <code>latest_prices</code> - and therefore every take-profit/stop-loss/auto-exit check above - never goes
+          stale for a position that's still genuinely held.</p>
+        <p>Found and fixed, via direct live-data investigation, not hypothetical: the settlement code above
+          initially computed <code>terminal_price</code> from whether the position <i>won</i> rather than from
+          the actual settled YES price, which for a <b>no</b> position double-applies <code>close_position</code>'s
+          own side inversion and silently pays $0 on a real win. A failing test caught it, but it had already run
+          live for a few ticks and mis-paid 2 real trades. While tracing that, found a much larger, genuinely
+          pre-existing bug (not introduced this session): <code>PaperBroker.open_position()</code> charged
+          <code>size * price</code> unconditionally, but <code>price</code> is always the <i>yes</i> price by
+          convention - a <b>no</b> position's real cost is <code>size * (1 - price)</code>. This under-charged
+          every no-side entry the app has ever opened and manufactured phantom profit on any no position that
+          never even moved. Fixed in <code>open_position</code> (plus its bankroll-capping math, which had the
+          identical bug) and the same bug in <code>evaluate()</code>'s/<code>ShadowTrader.evaluate()</code>'s
+          position sizing, where it also silently blew past the intended <code>max_position_pct</code> risk cap
+          for a no-side trade. New <code>PaperBroker.cost_basis(ticker)</code> is now the one place this math
+          lives. Asked directly rather than assumed: user chose to fix the code and reset the paper account
+          (<code>POST /api/reset</code>) over trying to retroactively correct historical no-side trades.</p>
+        <p>Found and fixed, via a deep-scan review requested directly after the above ("make sure you're not
+          missing any gaps or errors" across market data, whale data, positions, management): <code>evaluate()</code>
+          had no check for a ticker that already had an open position - only cooldown was checked, so a signal
+          could silently overwrite an existing position via <code>self.positions[ticker]</code>, discarding its
+          cost basis with zero accounting trail (confirmed this had actually happened in live trade history, not
+          hypothetical) - now skipped as "position already open on this market." Neither <code>evaluate()</code>
+          nor <code>ShadowTrader.evaluate()</code> checked whether a market had already resolved before opening a
+          position on it - now skipped via the same settlement data <code>check_exits</code> already uses. Four
+          more frontend instances of the same no-side dollar-math bug class turned up (Positions panel Cost/
+          Value/Return, the Explain-Like-I'm-5 panel's capital-at-risk, the whale signal card's dollar-size, the
+          paper Trade Log's cost figure), plus a distinct sign-flip variant in the Advanced Trade Log's per-row
+          P&amp;L, which had no <code>direction</code> term at all. And the whale-print "why this position was
+          opened" disclosure was silently snapping shut on every dashboard refresh - same class of bug as phase
+          39's modal-bubbling one, direct report - <code>renderPositions</code> now preserves which tickers were
+          expanded across its rebuild. All fixed, all covered by new/updated tests. Full suite: 171 passing (was
+          127 immediately before this batch).</p>
+        <div class="files"><code>services/paper_broker.py</code> (<code>close_position</code>,
+          <code>cost_basis</code>, side-aware <code>open_position</code>), <code>services/strategy_engine.py</code>
+          (<code>check_exits</code>, <code>_exit_confidence</code>, already-open/already-resolved guards),
+          <code>services/shadow_mode.py</code> (matching fixes), <code>services/trade_analytics.py</code> (new),
+          <code>services/title_cache.py</code> (new, see phase 40's title-persistence fix below), <code>main.py</code>
+          (<code>check_exits</code> wiring, <code>market_results</code>, <code>/api/trading-history</code>),
+          <code>config/settings.yaml</code> (12 new <code>strategy.*</code> fields),
+          <code>static/index.html</code> (History tab, Config tab additions, 4 dollar-math fixes,
+          <code>renderPositions</code> disclosure-state fix)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 41 · a rule-based advisory engine, and the config-fingerprinting it needed first</div>
+        <h4>"I want a recommendation engine/advisory system... keep it disabled until that data threshold has been reached"</h4>
+        <p>Phase 40's Trading History tab shipped <code>compute_insights()</code> as deliberately descriptive-only
+          - hedged prose, never a suggested value, never scoped per config. This phase built the real thing on top
+          of it, in two steps requested and confirmed directly: rule-based, not ML (explainable, no training
+          pipeline needed for a POC's data volume), and it must not surface a real recommendation until there's
+          enough data to trust it - not as a UI nicety, but as a property of the function itself.</p>
+        <p>Step one: new <code>services/config_performance.py</code> - <code>fingerprint()</code> hashes
+          <code>strategy.*</code> minus <code>name</code> (so a newly added tunable field joins the fingerprint
+          with zero code change here), <code>config_variants</code>/<code>applied_changes</code> tables in
+          <code>data/config_performance.db</code>. <code>services/paper_broker.py</code>'s <code>Position</code>/
+          <code>Trade</code> gained <code>config_fingerprint</code> via an idempotent <code>ALTER TABLE</code>
+          migration (the trades/positions tables already had live rows). A closed position always inherits the
+          fingerprint active at <i>entry</i>, even if config changed mid-hold - a documented limitation, not a bug,
+          since the entry gates are what a variant comparison is actually about.</p>
+        <p>Step two: new <code>services/advisory_engine.py</code> - <code>variant_summaries()</code> groups
+          resolved trades by fingerprint (reusing <code>trade_analytics.compute_summary()</code>, not
+          reimplementing it); <code>generate_recommendations()</code> upgrades <code>compute_insights()</code>'s
+          hedged prose into a concrete suggested value (e.g. the actual confidence-bucket boundary for
+          <code>entry_threshold</code>, an adjusted <code>take_profit_pct</code>/<code>stop_loss_pct</code> from
+          observed left-on-table/overshoot), plus cross-variant comparison once two variants each individually
+          clear the threshold. The gate lives inside this function, not the route or the UI - there is no code
+          path that can hand back a real recommendation for an under-sampled variant. New <code>advisory.*</code>
+          config (<code>enabled</code> default <code>false</code>), <code>GET /api/advisory/status</code>,
+          <code>GET /api/advisory/recommendations</code>, <code>POST /api/advisory/recommendations/apply</code>
+          (always a human click, re-validates fresh against a freshly recomputed list rather than trusting the
+          request body, writes an audit row), <code>GET /api/advisory/applied-changes</code>, and a
+          <code>POST /api/config</code> rejection guard for <code>advisory.auto_apply_enabled</code> - same shape
+          as the existing <code>kalshi_account.trading_enabled</code> guard, since opt-in auto-apply's actual
+          confirmation-phrase <i>enable</i> endpoint was deliberately left unbuilt, a separate and more carefully
+          reviewed follow-up once the manual-apply path has run for a while. New "Advisory Recommendations" panel
+          on the Trading History tab, directly below "Config Tuning Hints" (left unchanged - the permanent
+          descriptive layer, not replaced).</p>
+        <p>Direct follow-up in the same session, added deliberately as scaffolding rather than built out: "eventually
+          I want to be able to feed this heuristic suggestion data, market data, historical data, portfolio data,
+          recommendation engine data, to a machine-learning agent that will work WITH these things, not as a
+          replacement... let's not pursue that until the project is already finished." New
+          <code>services/ml_feed.py</code> - one pure, dependency-free function,
+          <code>build_context_snapshot()</code>, assembling exactly that bundle out of data every existing service
+          already produces. Not wired into any route or called from anywhere in the app; only
+          <code>tests/test_ml_feed.py</code> exercises it, specifically so it can't silently drift out of sync
+          with the shapes it wraps while nothing else calls it.</p>
+        <div class="files"><code>services/config_performance.py</code> (new) ·
+          <code>services/advisory_engine.py</code> (new) · <code>services/ml_feed.py</code> (new, scaffolding) ·
+          <code>services/paper_broker.py</code> (<code>config_fingerprint</code>) ·
+          <code>services/strategy_engine.py</code> (fingerprint threading) ·
+          <code>services/trade_analytics.py</code> (<code>config_fingerprint</code> on rows,
+          <code>confidence_label</code> made public) · <code>main.py</code> (<code>/api/advisory/*</code>,
+          config guard) · <code>config/settings.yaml</code> (<code>advisory.*</code>) ·
+          <code>static/index.html</code> (Advisory Recommendations panel) ·
+          <code>docs/advisory-engine-plan.md</code> (new, full design) ·
+          <code>tests/test_config_performance.py</code>, <code>tests/test_advisory_engine.py</code>,
+          <code>tests/test_ml_feed.py</code> (all new)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 42 · the Config tab becomes an actual control panel</div>
+        <h4>"The config tab is hard to make sense of for a like-I'm-5 user"</h4>
+        <p>Direct report: every setting in the app lived on one long flat scroll, all expanded at once regardless
+          of how often it's actually touched - the opposite of the app's own dummy-proof guiding principle applied
+          to its own settings screen. Rebuilt as ten collapsible <code>&lt;details class="config-section"&gt;</code>
+          accordions (native, not a hand-rolled JS toggle - free keyboard support) - Mode and Strategy open by
+          default, the rest collapsed, each with a one-line plain-English subtitle instead of a bare heading.</p>
+        <p>Second half of the same report: "highlight config options that aren't fully baked yet due to data
+          limitations (like not real/complete whale watch data or lack of trade history)." New three-badge system,
+          explained once in a legend box at the top of the tab rather than repeated inline: 🧪 sim data (tuned
+          against the built-in whale <i>simulator</i>, not a real feed - the whale win-rate filter fields, the
+          sentiment-reversal exit block, the auto-exit sentiment/staleness weights, the whole Whale Signal section);
+          📉 needs history (the Advisory Engine section from phase 41 - needs more of a user's own resolved trades
+          before its output is trustworthy); 🆕 new (the Market-Native Strategy section from phase 43 below - a
+          brand-new feature with zero track record yet, a different concern from data quality entirely). Verified
+          live via Selenium: all ten sections present and expand/collapse correctly, all three badge types render,
+          Save Config still round-trips every field through <code>/api/config</code> unchanged.</p>
+        <div class="files"><code>static/index.html</code> (Config tab restructure, accordion + badge CSS,
+          <code>#config-badge-legend</code>)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 43 · real market data, logged now, and a second strategy that never touches whale data</div>
+        <h4>"Market data is real, the whale data is fake... there's no reason why I shouldn't start storing and analyzing market data now"</h4>
+        <p>Direct request, with a stated longer-term plan: start building a real, whale-independent dataset from
+          this app's real Kalshi market data today, and once a real whale-watcher feed is connected, incorporate
+          those genuinely-real whale-driven trades alongside it rather than waiting. Asked directly which shape
+          "storing and analyzing" should take rather than assumed: passive logging only, or an actual second live
+          automated strategy - the answer was the latter, kept backend-only for now (no dashboard panel yet).</p>
+        <p>New <code>services/market_history.py</code>: a real per-market snapshot log
+          (price/spread/volume/time-to-close, <code>data/market_history.db</code>) populated every trading-loop
+          tick from the market data already fetched for the whale-follow strategy - zero extra API cost, and
+          completely independent of whale signals or of whether either strategy ever trades a given market.
+          <code>momentum()</code> computes real price movement over a trailing window, with a minimum-window-
+          coverage guard so a ticker with only seconds of logged history can't report a confident-looking
+          "30-minute momentum" reading computed from noise. <code>compute_hypothetical_trades()</code> - explicitly
+          labeled retrospective/hypothetical, never a claim about a real position - characterizes what a simple
+          "buy the side the price already favored" entry would have returned, per lookback window, against real
+          settlement outcomes.</p>
+        <p>New <code>services/market_strategy.py</code>: <code>MarketNativeStrategy</code>, a second, fully
+          independent automated paper strategy - momentum continuation gated by a price band, a max spread, a
+          minimum volume floor, and a minimum time-to-close, composite entry confidence blending
+          momentum/liquidity/spread (same weighted-factor mental model as <code>whale_simulator._score_confidence</code>
+          and phase 40's <code>_exit_confidence</code>). Zero whale-signal input anywhere in it. Off by default
+          (<code>market_strategy.enabled: false</code>), same ship-disabled precedent as phase 41's
+          <code>advisory.enabled</code>.</p>
+        <p>Running a second strategy safely needed a real architecture fix first: <code>PaperBroker</code> and
+          <code>RiskManager</code> both only supported one hardcoded module-level <code>DB_PATH</code> each - a
+          second live instance would have silently shared (and corrupted) the whale-follow broker's own
+          <code>broker_meta</code>/<code>positions</code>/<code>trades</code> rows. Both gained an optional
+          per-instance <code>db_path</code>, resolved at call time so existing tests'
+          <code>monkeypatch.setattr(..., "DB_PATH", ...)</code> pattern keeps working unchanged; <code>main.py</code>
+          derives the new <code>market_broker</code>/<code>market_risk</code> pair's paths from the whale-follow
+          pair's own already-redirectable <code>db_path</code> attribute (not a fresh path lookup of their own)
+          specifically so <code>tests/test_trading_gate.py</code>'s real-file-safety guarantee still holds for the
+          second pair too. Also extracted <code>strategy_engine.py</code>'s settlement-closing math - the
+          <code>terminal_price = 1.0 if result == "yes" else 0.0</code> fix from phase 40, a real bug that shipped
+          and was fixed once already - into a shared <code>close_if_settled()</code>, so a second strategy
+          couldn't silently reintroduce that exact bug class by duplicating the old inline version.
+          <code>trade_analytics.py</code> gained a <code>momentum_reversal</code> close-type pattern, the
+          market-native analog of <code>sentiment_reversal</code>. <code>main.py</code>'s market fetch now
+          includes both brokers' open positions in <code>extra_tickers</code>, the same "a held position shouldn't
+          go stale after rotating off the top-volume watchlist" fix phase 40 already made for the whale broker,
+          applied proactively here before it could recur.</p>
+        <p>Caught and fixed a real bug while writing this phase's own tests, not hypothetical:
+          <code>market_history.py</code>'s <code>_connect()</code> originally defaulted its <code>db_path</code>
+          parameter at function-definition time (<code>db_path: Path = DB_PATH</code>) - Python binds a default
+          argument value once, when the function is defined, not per call, so monkeypatching <code>DB_PATH</code>
+          afterward in a test had no effect at all and every write silently went to whatever path was live at
+          import time. Fixed by requiring an explicit argument and having every internal caller pass the
+          module-level name (resolved dynamically, at call time, the same way <code>PaperBroker</code>/
+          <code>RiskManager</code>'s own default already worked correctly). New
+          <code>tests/test_market_history.py</code>, <code>tests/test_market_strategy.py</code> (13 + 24 tests),
+          <code>db_path</code>-isolation tests added to <code>tests/test_paper_broker.py</code>/
+          <code>tests/test_risk_manager.py</code>, route smoke tests added to <code>tests/test_trading_gate.py</code>.
+          Full suite: 262 passing. Verified live: <code>curl</code> against the real running app confirmed
+          <code>market_history</code> was already logging real snapshots (21 tickers, 120 rows) within seconds of
+          the reload.</p>
+        <div class="files"><code>services/market_history.py</code> (new) ·
+          <code>services/market_strategy.py</code> (new) · <code>services/paper_broker.py</code> (per-instance
+          <code>db_path</code>) · <code>services/risk_manager.py</code> (per-instance <code>db_path</code>) ·
+          <code>services/strategy_engine.py</code> (<code>close_if_settled()</code> extracted) ·
+          <code>services/trade_analytics.py</code> (<code>momentum_reversal</code>) · <code>main.py</code>
+          (<code>market_broker</code>/<code>market_risk</code>/<code>market_strategy</code> wiring,
+          <code>/api/market-strategy/state</code>, <code>/api/market-history/summary</code>,
+          <code>/api/market-history/hypothetical-trades</code>) · <code>config/settings.yaml</code>
+          (<code>market_strategy.*</code>) · <code>static/index.html</code> (Market-Native Strategy Config
+          section) · <code>tests/test_market_history.py</code>, <code>tests/test_market_strategy.py</code> (new)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 44 · a real whale-watcher provider, and the simulator steps aside</div>
+        <h4>"Is there a website we can scrape kalshi leaderboard data for whale watching, or an api I can access
+          that gives it?"</h4>
+        <p>Researched before building anything, not assumed: Kalshi has no public trader identity or leaderboard -
+          trades are anonymous member-to-member, confirmed across multiple independent sources. Unlike Polymarket's
+          on-chain wallet data (the actual data source behind real third-party "whale trackers" studied this
+          session, see <code>docs/simmer-integration-research.md</code>), there is no reputation-based whale signal
+          available for Kalshi through any legitimate channel. But size-based detection turned out to already be
+          sitting in this app, unused for anything but display: <code>services/kalshi_client.py</code>'s public,
+          no-auth <code>get_trades()</code> - the real exchange-wide trade tape, already fetched every trading-loop
+          tick for the UI's trade tape panel.</p>
+        <p>New <code>services/whalewatchers/kalshi_trade_tape.py</code>: <code>KalshiTradeTapeProvider</code>
+          classifies a real trade as a whale print once its notional dollar size clears a configurable threshold
+          (<code>whale_watcher_kalshi.min_notional_usd</code>, default $2500) - side-aware
+          (<code>count_fp * yes_price_dollars</code> or <code>no_price_dollars</code>), deliberately applying the
+          same lesson phase 40 already paid for once (a no-side position's real cost uses the *no* price, not the
+          yes price). Needs zero credentials and costs zero extra API calls: a new optional
+          <code>market_context</code> param on <code>WhaleWatcherProvider.fetch_signals()</code> (added to every
+          provider for interface consistency, only this one reads it) lets it reuse the tick's already-fetched
+          market/trade data instead of an independent fetch. Deduplicates by real <code>trade_id</code> (a bounded
+          seen-set) so a trade sitting in <code>get_trades()</code>'s rolling last-10 window doesn't re-fire as a
+          "new" signal every tick until it ages out. Confidence scoring reuses
+          <code>WhaleSimulator</code>'s existing four-factor "Insider Score" formula exactly - newly extracted into
+          a shared, noise-free <code>composite_confidence()</code> in <code>services/whale_simulator.py</code>, since
+          a real trade's confidence shouldn't have the simulator's synthetic randomness mixed into it.</p>
+        <p>Verified against real, live data before trusting it, not just fixtures: ran the classifier directly
+          against the real trade tape mid-session (top real trade at the time, $850 notional, correctly produced
+          zero signals against the $2500 default; temporarily lowering the threshold to $1 produced 46 real,
+          well-formed signals). Then verified the full path, not just the provider in isolation - set
+          <code>WHALE_WATCHER_PROVIDER=kalshi_trade_tape</code>, did a real <code>ddev restart</code> (a genuine
+          process restart, not just <code>--reload</code>), confirmed <code>state["whale_source"]</code> correctly
+          reported <code>"kalshi_trade_tape"</code> with no errors, then temporarily lowered the live threshold via
+          the real <code>/api/config</code> endpoint and watched one real trade flow all the way through
+          <code>signal_log</code> → <code>strategy.evaluate</code> → the decision feed (correctly skipped for a
+          legitimate "market is not currently live" reason) before reverting both back to defaults.</p>
+        <p>Direct follow-up once the real provider was proven working: "there's no reason to have the simulator
+          enabled by default." <code>services/whalewatchers/__init__.py</code>'s default flipped from
+          <code>generic_rest</code> (which silently ran the simulator whenever no URL was configured - true for
+          every fresh checkout) to <code>kalshi_trade_tape</code> - a real signal now needs no setup at all, and
+          simulator-only behavior becomes the opt-*out* path
+          (<code>WHALE_WATCHER_PROVIDER=generic_rest</code> with no URL) instead of the default. The Config tab's
+          "Whale Signal" section split into a simulator half and a real half, the inactive one visually grayed out
+          based on which is actually running that tick (<code>updateWhaleProviderStatus()</code>). Caught and fixed
+          a real bug while wiring this: the status note was computed once in <code>loadConfig()</code> at page
+          load, before the first <code>/api/state</code> poll could possibly have completed, so it was permanently
+          stuck reading "checking..." - fixed by calling the same status function from every poll tick inside
+          <code>refresh()</code> too, not just once at load.</p>
+        <p>13 new tests (<code>tests/test_whalewatchers_kalshi_trade_tape.py</code>) plus 2 locking in the
+          <code>composite_confidence()</code> extraction's behavior. Full suite: 275 passing (was 262). Closes the
+          long-open P2 roadmap item for a second real whale-watcher provider.</p>
+        <div class="files"><code>services/whalewatchers/kalshi_trade_tape.py</code> (new) ·
+          <code>services/whale_simulator.py</code> (<code>composite_confidence()</code> extracted) ·
+          <code>services/whalewatchers/__init__.py</code> (new default) ·
+          <code>services/whalewatchers/base.py</code>, <code>generic_rest.py</code>, <code>template_provider.py</code>
+          (<code>market_context</code> param) · <code>main.py</code> (wiring) · <code>config/settings.yaml</code>
+          (<code>whale_watcher_kalshi.*</code>) · <code>static/index.html</code> (split Whale Signal sections,
+          live status/gray-out) · <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> (new),
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 45 · wider coverage, and LIVE-only filtering pushed upstream</div>
+        <h4>"You're not looking at trades from nearly enough markets even with the round robin... you should be
+          monitoring closer to 50."</h4>
+        <p>Direct report following straight from phase 44's real whale provider - more markets watched means more
+          real trade-tape coverage for it to actually classify. <code>kalshi.watchlist_size</code> 20 → 50, with the
+          dependent caps that scale with it bumped in tandem, same discipline as the earlier 8 → 20 change:
+          <code>_get_top_series</code>'s candidate-series pool 30 → 40 (series diversity feeding the round-robin, not
+          just more slots from the same handful), and <code>_fetch_trade_tape</code>'s total cap 50 → 100 (promoted to
+          a named <code>_TRADE_TAPE_TOTAL_CAP</code>) - this cap stopped being just cosmetic for the UI panel once
+          phase 44 shipped, since it's now the entire input to the real whale classifier too. Verified live across
+          several ticks: 50 distinct markets, 100-entry trade tape, no errors, no 429s.</p>
+        <p>Two direct corrections to phase 44's "gray out the inactive whale-signal section" work, caught by real
+          usage: "by gray out that section... I also mean disable it from any input/selection" (opacity alone still
+          left the simulator's fields editable while the real provider was running - new
+          <code>setSectionInputsDisabled()</code>, called from the same per-tick <code>updateWhaleProviderStatus()</code>,
+          actually disables them, leaving only the accordion's own expand/collapse clickable) and "update the badges
+          on the config page to reflect current status" (the Strategy section's seven "sim data" badges were
+          hardcoded regardless of which whale-signal source was actually active, stale ever since a real provider
+          became the default - now a shared <code>whale-dependent-badge</code> class hidden live whenever a real
+          provider is confirmed active).</p>
+        <p>Then a real, separate gap surfaced by direct testing: "even if I set the whale threshold low to say, 100,
+          I'm not seeing any signals show up." Investigated live rather than assumed - signals were actually flowing
+          fine (196 seen); the real blockers were two independent downstream gates doing exactly what they were
+          built to do (<code>strategy.live_markets_only</code> skipping non-live markets, <code>strategy.entry_threshold</code>
+          sitting well above what real trade-derived confidence scores were producing) plus <code>whale_watcher_kalshi.min_notional_usd</code>
+          having drifted to 0 during testing, admitting literally every real trade as a "whale." Cleared via
+          <code>POST /api/reset</code>'s <code>signal_log</code> domain once confirmed directly, paper/shadow
+          untouched.</p>
+        <p>Which led to the actual new feature: "for market discovery and watchlist I want to have the option to
+          only include LIVE markets" - a third, genuinely different gate from the two that already existed
+          (<code>strategy.live_markets_only</code> only gates whether the strategy acts on a signal;
+          <code>whale_signal.live_markets_only</code> is simulator-only); this one filters which markets get
+          selected into the watchlist/candidate pool in the first place. Two real design forks resolved directly
+          before writing any code: fallback behavior when too few markets are live (shrink the watchlist, even to
+          zero, never backfill with non-live markets to hit <code>watchlist_size</code>) and the cost/latency
+          tradeoff of checking live status across the *wider candidate pool* before round-robin selection rather
+          than only the final watchlist afterward (accepted - checking just the already-narrowed watchlist would
+          have meant "only live" really meant "only live among whichever markets already won on volume," which
+          could easily be zero of them). <code>services/kalshi_client.py</code>'s <code>get_top_volume_markets()</code>
+          split into two composable, independently-testable pieces - <code>get_candidate_markets()</code> (fetch,
+          filter, sort, no cutoff) and a new static <code>round_robin_select()</code> (the existing selection logic,
+          now a pure function of its input) - with <code>get_top_volume_markets()</code> itself becoming both
+          composed together, fully behavior-preserving. New <code>kalshi.live_markets_only</code> config (default
+          <code>false</code>); when on, <code>main.py</code>'s <code>_fetch_markets()</code> fetches the full
+          candidate pool, checks live status across all of it, filters to live-only, then round-robins the final
+          watchlist from that subset. Extended to <code>GET /api/markets/search</code> too, direct request ("same
+          for market search") - a new <code>live_only</code> query param, reused by both search UIs (the Markets
+          tab browse panel and the Config tab's watchlist-management search).</p>
+        <p>Verified live across several ticks: watchlist correctly shrank to 6, then 12 markets with the flag on
+          (100% actually live each time, per <code>state.live_status</code>), back to 50 with it off; search's
+          <code>live_only=true</code> returned 12 real, currently-live results; all three new checkboxes render
+          correctly via Selenium, zero console errors. 6 new tests (<code>tests/test_kalshi_client.py</code>). Full
+          suite: 281 passing (was 275).</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>get_candidate_markets</code>,
+          <code>round_robin_select</code>) · <code>main.py</code> (<code>_fetch_markets</code> live-only branch,
+          <code>/api/markets/search</code> <code>live_only</code> param, <code>_TRADE_TAPE_TOTAL_CAP</code>,
+          <code>_get_top_series</code> default) · <code>config/settings.yaml</code> (<code>kalshi.watchlist_size</code>,
+          <code>kalshi.live_markets_only</code>) · <code>static/index.html</code> (discovery checkbox, two search-UI
+          checkboxes, disabled-input + badge-visibility fixes) · <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 46 · hardened confidence scoring, and a gated calibration tool</div>
+        <h4>"The confidence level algorithm is decent i guess, a bit basic... id also like an agent to study whale
+          prints and their actual outcomes so as to create a more accurate formula."</h4>
+        <p>Two tracks, both confirmed directly (<code>AskUserQuestion</code>) before writing anything - "more
+          robust" and "an agent to learn from outcomes" are genuinely different problems with different
+          prerequisites, so they got separated rather than bundled into one vague pass.</p>
+        <p><b>Track 1</b> hardened <code>services/whale_simulator.py</code>'s <code>composite_confidence</code> in
+          the three specific ways named as real weaknesses up front, not a general rewrite. The depth factor's hard
+          cap (<code>min(size/volume, 1.0)</code>) meant a print of exactly one day's volume and one 100x bigger
+          scored identically - replaced with exponential saturation (<code>1 - e^(-k·ratio)</code>) that still lands
+          at ~0.9 for one day's volume (preserving roughly where the old cap used to bind) but never plateaus beyond
+          it. The context factor's raw ratio against the single busiest market in the batch was fragile to one
+          outlier crushing every other market's score toward zero - replaced with percentile rank among the batch,
+          robust to that by construction. A new fifth factor, agreement (15% weight): do recent real whale prints on
+          this *same market* agree with this one - independent same-direction prints plausibly share a real
+          catalyst, the same thesis behind
+          <code>docs/kalshi-whale-provider-and-strategy-porting-plan.md</code> Part 2's whale-consensus idea, folded
+          into the base score itself. Computed by the caller via a new
+          <code>signal_log.recent_sides_for_ticker()</code> query (6h lookback) since the scoring function itself
+          has no access to signal history; neutral 0.5 (not agreement or disagreement) when there's no recent print
+          to compare against, or for the simulator, which has no real history to check. Weights rebalanced (depth
+          40→35%, unusualness 25→20%, proximity 20→15%, context unchanged 15%, agreement new at 15%). New
+          <code>composite_confidence_breakdown()</code> returns every factor plus the final score;
+          <code>composite_confidence()</code> itself kept its existing plain-float contract as a thin wrapper, so
+          the simulator and every existing caller/test needed zero changes.</p>
+        <p><b>Track 2</b> re-confirmed the exact rule-based-over-ML reasoning
+          <code>docs/advisory-engine-plan.md</code> made at the very start of this whole advisory-engine effort - but
+          checked live with real numbers this time before deciding, not just by analogy: 5,738 real signals seen,
+          only 9 resolved. Nowhere near enough to fit anything. New
+          <code>services/confidence_calibration.py</code> needed a real data-model addition first -
+          <code>signal_log</code>'s <code>signals</code> table gained a nullable <code>factors_json</code> column
+          (idempotent <code>ALTER TABLE</code>, the same migration pattern <code>paper_broker.py</code>'s
+          <code>config_fingerprint</code> already used) so individual factor values persist per signal, not just the
+          blended number that was already there - there'd be nothing to calibrate *from* otherwise. Only real
+          providers populate it (<code>kalshi_trade_tape.py</code>, via the new breakdown function); simulator rows
+          leave it null, which doubles as the "real signals only" filter for calibration with no second, driftable
+          source-string match to maintain. <code>generate_calibration_report()</code> is gated *inside the function
+          itself* (the same precedent <code>advisory_engine.generate_recommendations</code> already set) - splits
+          resolved real signals into low/mid/high tertiles per factor and reports each bucket's win rate and the gap
+          between them. A real bug, caught by this module's own tests, not hypothetical: a near-constant factor
+          (<code>proximity_factor</code> is often exactly 0.0) with plain index-based tertiles would silently
+          reflect insertion order instead of the factor itself, since a stable sort of tied values doesn't actually
+          separate them - fixed by requiring at least 3 *distinct* values before a factor gets split at all,
+          reporting "not enough variance to say" honestly instead of a fabricated gap. Proposes concrete
+          <code>suggested_weights</code> (proportional to each factor's own discrimination gap, floored so nothing
+          goes to zero off one report) rather than only descriptive stats - matching <code>advisory_engine</code>'s
+          "emit an actual value, not just hedged prose" ethos while staying fully deterministic, never a fitted
+          model. New <code>confidence_calibration</code> config (<code>enabled: false</code>,
+          <code>min_resolved_signals: 50</code>) and two read-only routes - deliberately no apply endpoint at all in
+          v1, unlike <code>advisory_engine</code>'s manual-apply button: the weights aren't config-editable today,
+          just hardcoded constants, so there's no live value yet to <code>PATCH</code>.</p>
+        <p>Verified live: fresh real signals confirmed carrying full factor breakdowns with sane values (no more
+          hard-capped 1.0s, percentile-style context values), the migration applied cleanly to the live
+          <code>data/signal_log.db</code> with zero data loss (older rows correctly <code>factors_json=null</code>,
+          new ones populated), both new routes confirmed correctly gated/dormant
+          (<code>resolved_count</code> starts at 0 for factor-carrying signals, since the 9 previously-resolved
+          signals predate this change). 24 new tests. Full suite: 297 passing (was 285).</p>
+        <div class="files"><code>services/whale_simulator.py</code> (<code>composite_confidence_breakdown</code>,
+          rebalanced weights) · <code>services/confidence_calibration.py</code> (new) ·
+          <code>services/signal_log.py</code> (<code>factors_json</code> migration,
+          <code>recent_sides_for_ticker</code>, <code>resolved_signals_with_factors</code>) ·
+          <code>services/whalewatchers/kalshi_trade_tape.py</code> (agreement-factor lookup, breakdown persistence)
+          · <code>main.py</code> (<code>/api/confidence-calibration/status</code>, <code>.../report</code>) ·
+          <code>config/settings.yaml</code> (<code>confidence_calibration.*</code>) ·
+          <code>tests/test_confidence_calibration.py</code> (new),
+          <code>tests/test_signal_log.py</code>, <code>tests/test_whalewatchers_kalshi_trade_tape.py</code>,
+          <code>tests/test_whale_simulator.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 47 · light polling, and a market catalog that finally finds what's live</div>
+        <h4>"They should have scheduled open and close times for you to do some light polling... otherwise use
+          the schedule and its previous live status" - then, after real data proved that wasn't the whole
+          problem: "you really must have done something wrong... i'm seeing 72-86 live markets on Kalshi."</h4>
+        <p>Started as a polling-efficiency request. <code>_fetch_live_status</code> was re-deriving live status
+          from 2 fresh API calls per candidate event on <i>every</i> 15s tick with zero memory of prior results -
+          investigated directly and also found a real, pre-existing bug along the way: the window-bounds comment
+          claimed "started up to 6h ago, or starting within the next hour," but the actual inequality did the
+          opposite (hand-derived, not assumed - included events starting hours in the future, dropped anything
+          that had been running more than about an hour). New <code>state["live_status_cache"]</code> (survives
+          across ticks, unlike <code>state["live_status"]</code> itself, still wholesale-replaced per tick for the
+          current view) - a market is only re-polled after <code>_LIVE_STATUS_REPOLL_SEC</code> (5 min, ~20x fewer
+          calls than every tick), a market past its own <code>close_time</code> is treated as finished from the
+          schedule alone with no poll, and a terminal status is never polled again for the process's life. Window
+          bounds corrected alongside it. A schedule-based fallback was added per the original request, for when a
+          real poll happens but Kalshi's milestone/live-data system has nothing to say - then tightened after a
+          direct correction ("just because a market is open doesn't mean it's live like sports or mentions or
+          award shows - be careful how you infer"): the fallback only infers "live" for events Kalshi has
+          <i>confirmed</i> are milestone-tracked (a real game/mention/show) but whose live-data confirmation
+          didn't land this particular tick; a market with no milestone registered at all is left out of the
+          result entirely, never guessed at either way.</p>
+        <p>Then real-world pushback that turned out to be the actual bug: real Kalshi showed 72-86 live markets,
+          almost all sports, while this app's live-only watchlist found effectively zero. Investigated directly
+          rather than defending the polling logic already shipped - ran discovery's actual candidate selection
+          against real Kalshi data and found the true root cause sat entirely upstream of live-status checking:
+          <code>kalshi.live_markets_only</code> discovery only ever sampled the top 40 series by 24h trading
+          volume, and of ~775 real candidates in that sample, only ~30 fell in any plausible live time window, 0
+          confirmed live. A series being high-volume overall and "has a game live right now" are genuinely
+          different things - volume-ranking the candidate pool was quietly the whole problem.</p>
+        <p>Fix, shaped directly by the user: "fetch a complete list of markets... paginate api fetches and
+          populate/store data in a usable manner until all markets are scanned," then scoped back down once the
+          size of that got named out loud: "maybe it doesn't have to be a FULL catalog... within days or weeks,
+          not 6 months or a year from now." New <code>services/market_catalog.py</code>, an incrementally-scanned,
+          near-term-only catalog (<code>data/market_catalog.db</code>). <code>get_series_list()</code> already
+          returns Kalshi's full ~9,400-series catalog in one call, no pagination problem there - the actual gap
+          was market-level fetching only ever sampling the top 40 of those. New per-tick
+          <code>_scan_catalog_batch()</code> fetches a bounded batch (40 series/tick) of the least-recently-
+          scanned series - a self-healing rotation with no fragile cursor to keep in sync with a series list that
+          itself changes size - storing only markets within a near-term horizon (1 week past through 3 weeks
+          future, <code>occurrence_datetime</code>/<code>close_time</code> parsed to unix timestamps up front for
+          cheap SQL range queries instead of per-row Python parsing on every read) per the explicit scope
+          correction. Gated entirely behind <code>kalshi.live_markets_only</code> - zero extra API cost for
+          anyone who hasn't opted in. Both <code>_fetch_markets</code>' live-only discovery and
+          <code>GET /api/markets/search</code>'s <code>live_only</code> path rewired to draw candidates from this
+          catalog instead of a fresh top-N-series fetch - a second real bug caught and fixed while rewiring
+          search: it still truncated to the top-30-by-volume series before ever checking the catalog, discarding
+          most of the catalog's own breadth advantage whenever search had no text query narrowing anything down;
+          fixed to only apply that narrowing when a real <code>q</code>/<code>category</code> filter is actually
+          active. New <code>GET /api/market-catalog/status</code> debug endpoint.</p>
+        <p>Verified live against the real running app, not just in tests: before this shipped, live-only
+          discovery found 0 confirmed-live markets against real data - the user's exact complaint, reproduced
+          directly. After: watched the catalog build in real time (0 → 680+ series scanned, 7,500+ near-term
+          markets, across a few minutes of real ticks) and the live watchlist grow alongside it (0 → 24
+          confirmed-live real markets - real PGA head-to-head golf matchups, a live CS2 esports match, and a
+          milestone-tracked MrBeast mention market, confirming the milestone-gated fallback correctly covers
+          mention-type markets too, not just sports). Search's <code>live_only</code> confirmed working both with
+          and without a query after the truncation fix. Zero errors in logs throughout. 26 new tests. Full suite:
+          323 passing (was 297).</p>
+        <div class="files"><code>main.py</code> (<code>_fetch_live_status</code> caching/fallback rewrite,
+          <code>_scan_catalog_batch</code>, <code>/api/market-catalog/status</code>) ·
+          <code>services/market_catalog.py</code> (new) ·
+          <code>tests/test_market_catalog.py</code> (new), <code>tests/test_trading_gate.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 48 · what "parent market" actually means, and a detour through Kalshi's own docs to find out</div>
+        <h4>"I don't mean each individual position as a 'market' - I mean the overall parent market - ex: Wyndham
+          Championship... only parent markets should count against the watchlist."</h4>
+        <p>Confirmed live before building anything: 42 of 47 real watchlist slots (89%) were individual
+          <code>KXPGAH2H</code> golf head-to-head pairings. <code>round_robin_select()</code> grouped candidates by
+          <code>event_ticker</code>, and each pairing has its own distinct <code>event_ticker</code> - round-robin's
+          "one per group before a second from any" fairness never noticed all 23 pairings were one tournament.</p>
+        <p>Two designs were tried and rejected before this shipped, each for a real reason. First, grouping by
+          ticker prefix (series) directly - fixed the golf case cleanly, but live-verifying it (rather than
+          trusting the synthetic tests, which happened not to catch this) surfaced a real regression: two
+          genuinely different, concurrently-live matches sharing one series - two separate Dota2 games, both under
+          <code>KXDOTA2MAP</code> - got merged into one inflated fake "parent." Rather than guess at a third
+          heuristic, went to Kalshi's own API documentation directly, per direct instruction ("please review the
+          kalshi API documentation thoroughly and revisit"). Confirmed Kalshi's real hierarchy is only Category →
+          Series → Event → Market - no tournament/competition/bracket level exists - and that Event is explicitly
+          documented as "the basic unit that members should interact with." Checked whether <code>get_event()</code>'s
+          <code>product_metadata.competition</code> field could substitute for a real "tournament" field - it's
+          tournament-specific for golf ("Wyndham Championship") but sport-generic for esports ("Dota 2", identical
+          for both unrelated matches, confirmed live) - not usable as a universal grouping key. Second design,
+          shaped by that research: kept <i>event</i> as the selection unit (matching Kalshi's documented model
+          exactly) but round-robinned across <i>series</i> to decide which events filled the watchlist - correct
+          by the book, and it did stop golf from crowding everyone else out, but it still let those two different
+          Dota2 matches each cost their own separate watchlist slot. Direct override once that tradeoff was named
+          out loud: "i dont want those pairings to count against the watchlist count, only the parent series."</p>
+        <p>Shipped design: <code>series</code> (<code>services/signal_log.series_of</code>'s ticker-prefix
+          definition, already used everywhere else in this app) is the parent/watchlist unit - the top-most level
+          of Kalshi's own hierarchy that still represents one cohesive market, one below the broader Category
+          grouping that spans unrelated market types entirely. Once a series is selected, every event and market
+          under it - an entire tournament's worth of pairings - is included for free and doesn't count separately
+          against <code>kalshi.watchlist_size</code>, highest-volume child first (direct request: "I want the
+          ability to cap but for now i want every child, and i want these children markets prioritized by
+          volume"), optionally capped by new <code>kalshi.max_children_per_parent</code> (default <code>null</code>
+          = unlimited). The known, explicitly-accepted tradeoff: two unrelated matches sharing one series are
+          watched together under that series's single slot rather than counted as two - a deliberate choice this
+          time, not an oversight. Threaded through both <code>_fetch_markets</code> branches and both
+          <code>GET /api/markets/search</code> branches; new Config tab field ("Max markets watched per parent
+          series").</p>
+        <p>Verified live: <code>KXPGAH2H</code>'s 23 real pairings no longer individually dominate the watchlist -
+          the whole tournament now costs one slot, and real series diversity holds alongside it. 13 tests in
+          <code>tests/test_kalshi_client.py</code>, including a direct regression mirroring the real Wyndham
+          scenario and one confirming same-series concurrent matches are watched together by design. Full suite:
+          326 passing.</p>
+        <div class="files"><code>services/kalshi_client.py</code> (<code>round_robin_select</code>,
+          <code>get_top_volume_markets</code>) · <code>main.py</code> (<code>_fetch_markets</code>,
+          <code>search_markets</code>) · <code>config/settings.yaml</code>
+          (<code>kalshi.max_children_per_parent</code>) · <code>static/index.html</code> (Config tab field) ·
+          <code>tests/test_kalshi_client.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 49 · the dashboard catches up to what "parent" now means</div>
+        <h4>"The UI presentation needs to be updated to reflect these groupings across all the tabs and sections
+          as necessary. For example in the terminal under market these markets are grouped the same way but
+          should be [grouped by series]."</h4>
+        <p>Phase 48 changed what the watchlist <i>selects</i> and counts, but shipped with no matching change to
+          how the dashboard <i>displays</i> it. Terminal's compact Markets list (<code>renderMarkets</code>) was a
+          flat row per individual ticker with no grouping at all - a whole tournament's 42 markets still showed as
+          42 disconnected rows. Markets/Whale Watch's card view (<code>renderMarketCards</code>) already grouped
+          by <code>event_ticker</code> (one pairing) but not a level higher, so those same 42 markets rendered as
+          ~23 separate, unrelated-looking cards with nothing tying them together as one series.</p>
+        <p>New shared <code>seriesOf()</code>/<code>seriesLabel()</code> JS helpers - <code>seriesOf()</code>
+          mirrors <code>services/signal_log.series_of</code>'s exact ticker-prefix definition, kept textually
+          identical rather than a second one that could drift; <code>seriesLabel()</code> looks up the real title
+          via <code>series_meta</code> (already sent by <code>main.py</code> from an earlier phase) instead of
+          showing a raw ticker prefix. <code>renderMarkets</code> now inserts a <code>.series-header</code>
+          divider (title, market count, total volume) above a run of same-series rows - relies on
+          <code>state.markets</code> already arriving grouped consecutively by series (see
+          <code>round_robin_select</code>), so this is just a "series changed since the last row" check, no
+          client-side re-sorting. <code>renderMarketCards</code> nests a series' event-cards inside a new
+          <code>.series-section</code> wrapper the same way, but only when that series actually has more than one
+          event - a series with a single live event (the common case) renders exactly as it did before, no added
+          clutter, matching the precedent <code>eventGroupCardHTML</code> already set for the event-vs-solo-card
+          split. The Advanced screener table (shared by all three panels) isn't nested the same way - grouping
+          would fight its whole reason for existing, flexible column sorting - so it gained a new sortable
+          "Series" column instead, alongside the existing "Category" one.</p>
+        <p>No browser was available in this sandbox to drive Selenium directly, so verified differently:
+          extracted the real render functions verbatim out of <code>static/index.html</code> and executed them in
+          Node against a live <code>/api/state</code> snapshot with minimal DOM stubs (a fake
+          <code>document.getElementById</code> capturing <code>innerHTML</code>). Confirmed all 69 real markets
+          rendered with the correct row/card count, the real Wyndham series collapsed to one "23 events · 42
+          markets" header instead of 42 disconnected rows, and only the three series that actually had multiple
+          concurrent events at the time (WTA Set Winner, PGA Head-to-Head Matchups, BTTS) got a visible
+          <code>.series-section</code> wrapper - every single-event series rendered as a plain card/row,
+          unchanged, confirmed by diffing card/row counts against the raw market count.</p>
+        <div class="files"><code>static/index.html</code> (<code>seriesOf</code>, <code>seriesLabel</code>,
+          <code>renderMarkets</code>, <code>renderMarketCards</code>, <code>screenerRowData</code>,
+          <code>renderScreenerTableFromState</code>, <code>.series-header</code>/<code>.series-section</code>
+          CSS)</div>
+      </div>
+
