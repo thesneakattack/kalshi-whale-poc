@@ -49,7 +49,9 @@ purely operational: most items below are (deployment target, auth model,
 sizing/kill-switch numbers, category legal risk), but substantive
 code-level work still sits ahead of this checklist too — realtime
 data-plane correctness (P0-P2 of a 6-phase plan merged 2026-08-26; P3's
-live-gate flip and beyond remain open, separately gated, not authorized),
+live-gate flip **authorized 2026-08-26** in a reprioritization pass
+(ahead of Program 2R, since it's data-completeness work rather than a
+trading-decision change) but not yet started; P4-P6 remain open),
 economic/strategy validation (investigated 2026-08-26 — the originally-
 reported entry-gate adverse-selection defect below turned out not to
 reproduce in its original form, replaced by a different, still-open,
