@@ -413,3 +413,244 @@ def test_runtime_findings_composes_every_applicable_rule():
         "observability:stream-disconnected:trade_stream",
         "observability:repeated-rate-limit-hits:kalshi_client",
     }
+
+
+# --- WebSocket ingest queue-health metrics (realtime data-plane task I1) ---
+
+def _fake_ingest_metrics() -> dict:
+    return {
+        "messages_received": 500, "dropped_messages": 4, "dropped_window": 1, "malformed_messages": 2,
+        "received_by_class": {"trade": 480, "ticker": 20},
+        "processed_by_class": {"trade": 476, "ticker": 20},
+        "dropped_by_class": {"trade": 4},
+        "handler_exceptions_total": 3, "handler_exceptions_by_class": {"trade": 3},
+        "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75},
+        "queue_wait": {
+            "last_sec": 0.2,
+            "lifetime": {"count": 496, "max_sec": 9.0, "avg_sec": 0.3},
+            "window": {"count": 100, "max_sec": 2.5, "avg_sec": 0.4, "p95_upper_bound_sec": 1.0},
+            "buckets": {"le_1ms": 10, "le_10ms": 40, "le_100ms": 30, "le_1s": 15, "le_10s": 5, "gt_10s": 0},
+        },
+        "handler_time_by_class": {
+            "trade": {"window": {"count": 96, "avg_ms": 2.5, "max_ms": 40.0},
+                      "lifetime": {"count": 476, "avg_ms": 2.1, "max_ms": 793.0}},
+            "ticker": {"window": {"count": 4, "avg_ms": 0.5, "max_ms": 0.9},
+                       "lifetime": {"count": 20, "avg_ms": 0.4, "max_ms": 1.0}},
+        },
+        "server_errors": {"total": 2, "by_code": {"25": 1, "6": 1}, "last": None},
+        "error_25_total": 1, "error_25_window": 1,
+        "connection": {"connects": 3, "reconnects": 2, "last_disconnect": None},
+    }
+
+
+def _fake_stream_with_ingest(**kwargs):
+    stream = _fake_stream(**kwargs)
+    stream.ingest_metrics = lambda: _fake_ingest_metrics()
+    stream.reset_calls = 0
+
+    def reset_ingest_window():
+        stream.reset_calls += 1
+
+    stream.reset_ingest_window = reset_ingest_window
+    return stream
+
+
+def test_capture_from_runtime_flattens_ws_ingest_metrics_under_the_stream_prefix():
+    trade_stream = _fake_stream_with_ingest(dropped_messages=4, messages_received=500)
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert metrics["trade_stream.ingest.received.trade"] == 480.0
+    assert metrics["trade_stream.ingest.received.ticker"] == 20.0
+    assert metrics["trade_stream.ingest.processed.trade"] == 476.0
+    assert metrics["trade_stream.ingest.dropped.trade"] == 4.0
+    assert "trade_stream.ingest.dropped.ticker" not in metrics  # zero counts omitted, not fabricated
+    assert metrics["trade_stream.ingest.dropped_window"] == 1.0
+    assert metrics["trade_stream.ingest.malformed_messages"] == 2.0
+    assert metrics["trade_stream.ingest.handler_exceptions"] == 3.0
+    assert metrics["trade_stream.ingest.queue_depth"] == 12.0
+    assert metrics["trade_stream.ingest.queue_high_water"] == 900.0
+    assert metrics["trade_stream.ingest.oldest_message_age_sec"] == 0.75
+    assert metrics["trade_stream.ingest.queue_wait.window_max_sec"] == 2.5
+    assert metrics["trade_stream.ingest.queue_wait.window_avg_sec"] == 0.4
+    assert metrics["trade_stream.ingest.queue_wait.window_p95_upper_bound_sec"] == 1.0
+    assert metrics["trade_stream.ingest.queue_wait.window_count"] == 100.0
+    assert metrics["trade_stream.ingest.queue_wait.bucket.le_10ms"] == 40.0
+    assert metrics["trade_stream.ingest.handler.trade.window_avg_ms"] == 2.5
+    assert metrics["trade_stream.ingest.handler.trade.window_max_ms"] == 40.0
+    assert metrics["trade_stream.ingest.handler.ticker.window_count"] == 4.0
+    assert metrics["trade_stream.ingest.server_errors"] == 2.0
+    assert metrics["trade_stream.ingest.error_25_window"] == 1.0
+    assert metrics["trade_stream.ingest.reconnects"] == 2.0
+    # Pre-existing names are unchanged.
+    assert metrics["trade_stream.dropped_messages"] == 4.0
+    assert metrics["trade_stream.messages_received"] == 500.0
+
+
+def test_capture_from_runtime_omits_window_latency_metrics_when_the_window_is_empty():
+    trade_stream = _fake_stream_with_ingest()
+    empty = _fake_ingest_metrics()
+    empty["queue_wait"]["window"] = {"count": 0, "max_sec": None, "avg_sec": None, "p95_upper_bound_sec": None}
+    empty["handler_time_by_class"]["ticker"]["window"] = {"count": 0, "avg_ms": None, "max_ms": None}
+    trade_stream.ingest_metrics = lambda: empty
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert metrics["trade_stream.ingest.queue_wait.window_count"] == 0.0
+    assert "trade_stream.ingest.queue_wait.window_max_sec" not in metrics
+    assert "trade_stream.ingest.queue_wait.window_p95_upper_bound_sec" not in metrics
+    assert "trade_stream.ingest.handler.ticker.window_avg_ms" not in metrics
+    assert metrics["trade_stream.ingest.handler.trade.window_avg_ms"] == 2.5
+
+
+def test_capture_from_runtime_still_works_for_streams_without_ingest_metrics():
+    metrics = observability.capture_from_runtime({}, {}, _fake_stream(dropped_messages=1, messages_received=9), None)
+    assert metrics["trade_stream.dropped_messages"] == 1.0
+    assert not any(k.startswith("trade_stream.ingest.") for k in metrics)
+
+
+def test_maybe_capture_resets_ingest_windows_only_after_a_sample_is_persisted():
+    cfg = {"observability": {"enabled": True, "sample_interval_sec": 60}}
+    trade_stream = _fake_stream_with_ingest()
+    index_stream = _fake_stream_with_ingest()
+    state = {"observability": {"last_sample_at": time.time()}}
+
+    observability.maybe_capture(cfg, state, trade_stream, index_stream)  # within interval - no sample
+    assert trade_stream.reset_calls == 0 and index_stream.reset_calls == 0
+
+    state["observability"]["last_sample_at"] = time.time() - 999
+    observability.maybe_capture(cfg, state, trade_stream, index_stream)  # sample persisted
+    assert trade_stream.reset_calls == 1 and index_stream.reset_calls == 1
+    assert observability.history("trade_stream.ingest.queue_depth", since_ts=0)[0]["value"] == 12.0
+
+
+def test_server_error_25_finding_warns_when_kalshi_reported_subscription_overflow_this_window():
+    trade_stream = _fake_stream_with_ingest()
+    findings = observability.runtime_findings(_POLL_CFG, {}, trade_stream, None)
+    ids = {f.finding_id for f in findings}
+    assert "observability:ws-server-error-25:trade_stream" in ids
+    finding = next(f for f in findings if f.finding_id == "observability:ws-server-error-25:trade_stream")
+    assert finding.severity == "warning"
+    assert finding.evidence["error_25_window"] == 1
+
+
+def test_server_error_25_finding_absent_when_no_overflow_reported_or_no_ingest_metrics():
+    quiet = _fake_stream_with_ingest()
+    im = _fake_ingest_metrics()
+    im["error_25_window"] = 0
+    quiet.ingest_metrics = lambda: im
+    ids = {f.finding_id for f in observability.runtime_findings(_POLL_CFG, {}, quiet, _fake_stream())}
+    assert not any("ws-server-error-25" in i for i in ids)
+
+
+# --- whale pipeline stage timing (realtime data-plane task I2) -------------
+
+def test_capture_from_runtime_flattens_whale_pipeline_perf(monkeypatch):
+    from services import whale_pipeline_perf as wpp
+    fresh = wpp.WhalePipelinePerf()
+    monkeypatch.setattr(wpp, "perf", fresh)
+    fresh.record_stage("provider", 0.004)
+    fresh.record_stage("provider", 0.010)
+    fresh.record_stage("receive_to_decision", 0.3)
+    fresh.record_count("trades", 40)
+    fresh.record_count("candidates", 2)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["whale_pipeline.stage.provider.window_count"] == 2.0
+    assert metrics["whale_pipeline.stage.provider.window_avg_ms"] == 7.0
+    assert metrics["whale_pipeline.stage.provider.window_max_ms"] == 10.0
+    assert metrics["whale_pipeline.stage.capture.window_count"] == 0.0
+    assert "whale_pipeline.stage.capture.window_avg_ms" not in metrics
+    assert metrics["whale_pipeline.counter.trades"] == 40.0
+    assert metrics["whale_pipeline.counter.candidates"] == 2.0
+    assert metrics["whale_pipeline.receive_to_decision.window_p95_upper_bound_sec"] == 1.0
+    assert metrics["whale_pipeline.receive_to_decision.bucket.le_1s"] == 1.0
+
+
+def test_maybe_capture_resets_the_whale_pipeline_window_after_persisting(monkeypatch):
+    from services import whale_pipeline_perf as wpp
+    fresh = wpp.WhalePipelinePerf()
+    monkeypatch.setattr(wpp, "perf", fresh)
+    fresh.record_count("trades", 5)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert observability.history("whale_pipeline.counter.trades", since_ts=0)[0]["value"] == 5.0
+    assert fresh.snapshot()["counters"]["window"]["trades"] == 0
+    assert fresh.snapshot()["counters"]["lifetime"]["trades"] == 5
+
+
+# --- REST latency by caller class (realtime data-plane task I5) ------------
+
+def _fake_rest_latency():
+    def agg(count, avg, mx):
+        return {"window": {"count": count, "avg_ms": avg, "max_ms": mx},
+                "lifetime": {"count": count, "avg_ms": avg, "max_ms": mx}}
+    return {
+        "by_class": {
+            "critical_whale": {
+                "calls": 300, "attempts": 400, "rate_limited": 100, "errors": 7,  # lifetime
+                "window": {"calls": 3, "attempts": 4, "rate_limited": 1, "errors": 0},
+                "limiter_wait": agg(4, 120.0, 300.0), "network": agg(4, 80.0, 200.0),
+                "backoff": agg(1, 500.0, 500.0), "total": agg(3, 400.0, 900.0),
+            },
+            "background_catalog": {
+                "calls": 1000, "attempts": 1000, "rate_limited": 0, "errors": 100,
+                "window": {"calls": 10, "attempts": 10, "rate_limited": 0, "errors": 1},
+                "limiter_wait": agg(10, 900.0, 2500.0), "network": agg(10, 60.0, 90.0),
+                "backoff": agg(0, None, None), "total": agg(10, 960.0, 2600.0),
+            },
+        },
+        "by_endpoint": {"get_markets": {"calls": 9, "rate_limited": 1, "errors": 0},
+                        "get_milestones": {"calls": 4, "rate_limited": 0, "errors": 1}},
+        "limiter": {
+            "read": {"waiters": 2, "waiters_high_water": 7, "tokens": 0.5},
+            "write": {"waiters": 0, "waiters_high_water": 0, "tokens": 1.0},
+        },
+    }
+
+
+def test_capture_from_runtime_flattens_rest_latency_by_caller_class(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    # Window counts (summable across persisted samples), never the lifetime ones.
+    assert metrics["kalshi_rest_class.critical_whale.calls"] == 3.0
+    assert metrics["kalshi_rest_class.critical_whale.attempts"] == 4.0
+    assert metrics["kalshi_rest_class.critical_whale.rate_limited"] == 1.0
+    assert metrics["kalshi_rest_class.critical_whale.errors"] == 0.0
+    assert metrics["kalshi_rest_endpoint.get_markets.calls"] == 9.0
+    assert metrics["kalshi_rest_endpoint.get_markets.rate_limited"] == 1.0
+    assert metrics["kalshi_rest_endpoint.get_milestones.errors"] == 1.0
+    assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_avg_ms"] == 120.0
+    assert metrics["kalshi_rest_class.critical_whale.limiter_wait.window_max_ms"] == 300.0
+    assert metrics["kalshi_rest_class.critical_whale.network.window_avg_ms"] == 80.0
+    assert metrics["kalshi_rest_class.critical_whale.backoff.window_avg_ms"] == 500.0
+    assert metrics["kalshi_rest_class.critical_whale.total.window_max_ms"] == 900.0
+    assert metrics["kalshi_rest_class.background_catalog.limiter_wait.window_max_ms"] == 2500.0
+    assert "kalshi_rest_class.background_catalog.backoff.window_avg_ms" not in metrics  # empty window omitted
+    assert metrics["kalshi_rest_limiter.read.waiters"] == 2.0
+    assert metrics["kalshi_rest_limiter.read.waiters_high_water"] == 7.0
+    assert metrics["kalshi_rest_limiter.write.waiters_high_water"] == 0.0
+
+
+def test_capture_from_runtime_omits_rest_latency_when_nothing_has_called_yet(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot",
+                        lambda: {"by_class": {}, "limiter": _fake_rest_latency()["limiter"]})
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+    assert not any(k.startswith("kalshi_rest_class.") or k.startswith("kalshi_rest_limiter.") for k in metrics)
+
+
+def test_maybe_capture_resets_the_rest_latency_window_after_persisting(monkeypatch):
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    resets = []
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]
+    assert observability.history("kalshi_rest_class.critical_whale.calls", since_ts=0)[0]["value"] == 3.0

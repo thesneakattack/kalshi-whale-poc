@@ -147,7 +147,7 @@ class KalshiPublicGateway:
     # even though it only drains this app's own local rate limiter once.
     # 50/chunk (500 tokens) leaves real margin under that 600-token ceiling.
 
-    async def get_markets_by_tickers(self, tickers: list[str]) -> dict[str, dict]:
+    async def get_markets_by_tickers(self, tickers: list[str], batch_size: int | None = None) -> dict[str, dict]:
         """Batched market lookup - one call per up-to-50 tickers instead of
         N individual get_market() calls (docs/kalshi/get-markets.md's
         documented `tickers` filter, confirmed via the installed SDK's own
@@ -162,8 +162,14 @@ class KalshiPublicGateway:
         if not tickers:
             return {}
         out: dict[str, dict] = {}
-        for i in range(0, len(tickers), self._MARKETS_BY_TICKERS_BATCH_SIZE):
-            chunk = tickers[i:i + self._MARKETS_BY_TICKERS_BATCH_SIZE]
+        # batch_size (I8, 2026-08-25): explicit per-request chunk for the
+        # rate-limit probe's 50/100/200 measurements - docs/kalshi/
+        # get-markets.md documents `tickers` as a comma-separated filter
+        # with no per-call cap. Production callers leave it None and keep
+        # the conservative default.
+        step = int(batch_size) if batch_size else self._MARKETS_BY_TICKERS_BATCH_SIZE
+        for i in range(0, len(tickers), step):
+            chunk = tickers[i:i + step]
             resp = await call_with_backoff(
                 self._client.get_markets, tickers=",".join(chunk), limit=len(chunk),
             )
@@ -320,6 +326,7 @@ class KalshiPublicGateway:
 
     async def get_trades(
         self, ticker: str | None = None, limit: int = 25, min_ts: int | None = None, cursor: str | None = None,
+        max_ts: int | None = None,
     ) -> dict:
         # min_ts (real, SDK-confirmed param - "filter items after this Unix
         # timestamp") lets a caller fetch every trade since a known
@@ -329,8 +336,14 @@ class KalshiPublicGateway:
         # pagination token (empty string on the response = no more pages) -
         # see main.py's _fetch_trade_tape, which pages through every
         # ticker's full result set rather than keeping only the first page.
+        # max_ts (I4, 2026-08-25): docs/kalshi/get-trades.md's MaxTsQuery -
+        # "Filter items before this Unix timestamp", int64 seconds, the
+        # counterpart of min_ts above; accepted by the installed SDK's
+        # MarketApi.get_trades (verified by introspection, 3.27.0). Lets a
+        # caller bound a reconciliation window on both ends instead of
+        # paging forward from min_ts until it runs past the end.
         resp = await call_with_backoff(
-            self._client.get_trades, ticker=ticker, limit=limit, min_ts=min_ts, cursor=cursor,
+            self._client.get_trades, ticker=ticker, limit=limit, min_ts=min_ts, cursor=cursor, max_ts=max_ts,
         )
         return resp.model_dump(mode="json")
 

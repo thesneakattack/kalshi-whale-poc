@@ -152,7 +152,8 @@ def recent(limit: int = 50, component: str | None = None,
     try:
         with _connect() as conn:
             conn.row_factory = sqlite3.Row
-            where, params = [], []
+            where: list[str] = []
+            params: list[object] = []
             if component:
                 where.append("component = ?")
                 params.append(component)

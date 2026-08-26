@@ -10,6 +10,7 @@ reached into it there.
 """
 import asyncio
 import time
+from services import http_client
 
 from services.app_state import account
 
@@ -150,6 +151,7 @@ _ACCOUNT_SNAPSHOT_REFRESH_SEC = 20  # 2026-08-15 "no stone unturned" API audit -
 _account_snapshot_cache: dict = {"fetched_at": 0.0, "snapshot": None}
 
 
+@http_client.classify("critical_position")
 async def _fetch_account_snapshot(cfg: dict) -> dict:
     account.trading_enabled = cfg["kalshi_account"]["trading_enabled"]
     if not account.enabled:

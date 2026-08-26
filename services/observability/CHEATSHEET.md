@@ -114,6 +114,289 @@ these are Task 10/11 territory, not this module:
   to read *through* this module's `history()`/`summary()` rather than
   duplicate its persistence.
 
+### `<stream>.ingest.*` — WebSocket queue health (realtime data-plane I1, 2026-08-25)
+
+Source: `services/kalshi/websocket.py`'s `KalshiStreamGateway.ingest_metrics()`
+(pure read), flattened by `_flatten_ingest_metrics` for both `trade_stream`
+and `index_stream`. Exists because the I0 baseline
+(`docs/superpowers/research/2026-08-25-realtime-data-plane-baseline.md` §4)
+found the four failure points the investigation must tell apart — Kalshi
+server-side subscription overflow (error 25), the `websockets` receive
+buffer, the app queue overflowing (`QueueFull`), and downstream backlog —
+collapsed into one lifetime `dropped_messages` int plus an ephemeral status
+string.
+
+Names (all `float`; zero-count classes are omitted, never fabricated):
+
+- `…ingest.received.<class>` / `…ingest.processed.<class>` /
+  `…ingest.dropped.<class>` — lifetime counters by bounded message class
+  (`trade`, `ticker`, `fill`, `position`, `lifecycle`, `index`, `control`,
+  `other` — `_CLASS_BY_MESSAGE_TYPE` in websocket.py; unknown `type`s land
+  in `other` so the label set cannot grow with vendor changes).
+- `…ingest.dropped_window`, `…ingest.malformed_messages`,
+  `…ingest.handler_exceptions` — the last is the count of handler
+  exceptions the consumer used to swallow with a bare `except: pass`; each
+  class is also fault-logged (`kalshi_websocket` / `handle_message:<class>`)
+  once per window, never once per message.
+- `…ingest.queue_depth`, `…ingest.queue_high_water`,
+  `…ingest.oldest_message_age_sec` — the head-of-queue age is the direct
+  "received promptly but processed stale" measurement.
+- `…ingest.queue_wait.window_count|window_max_sec|window_avg_sec|window_p95_upper_bound_sec`
+  and `…ingest.queue_wait.bucket.<le_1ms|le_10ms|le_100ms|le_1s|le_10s|gt_10s>`
+  — queue wait = monotonic dequeue time − monotonic enqueue time, per
+  message. The p95 figure is the smallest finite bucket bound at/above the
+  p95 rank (`services/latency_agg.py`), `None`/omitted when the p95 sits in
+  `gt_10s` — the overflow count is persisted so that case is visible.
+- `…ingest.handler.<class>.window_count|window_avg_ms|window_max_ms` —
+  handler time by class. Complements (does not replace) the
+  application-level `trade_stream.avg_handler_ms`, which times only the
+  trade callback.
+- `…ingest.server_errors`, `…ingest.error_25_total`, `…ingest.error_25_window`,
+  `…ingest.reconnects`.
+
+**Window semantics — who resets what.** Every `window`/`_window` figure
+covers exactly one persisted sample's span: `maybe_capture` calls each
+gateway's `reset_ingest_window()` immediately *after* `record_samples_bulk`
+succeeds. `capture_from_runtime` (shared with the on-demand `/current`
+route) never resets anything — the same rule as `kalshi_rest.*`. Lifetime
+counters are monotone; difference two persisted samples for a rate.
+
+**Runtime finding.** `observability:ws-server-error-25:<scope>` (warning)
+fires when `error_25_window > 0` — Kalshi reported its own outbound buffer
+overflowed for this subscription. Deliberately separate from the existing
+`ws-dropped-messages` error, which is local `QueueFull` only.
+
+**Measured hot-path cost (in-container, 50k synthetic trade messages ×5,
+2026-08-25):** old path (parse + dispatch) 5.41 µs/msg → new path (parse +
+classify + timestamps + aggregation) 8.04 µs/msg, i.e. **+2.63 µs/msg**
+(~0.1% of the 3.2 ms p50 trade handler cost measured in the I0 baseline);
+`ingest_metrics()` snapshot 7 µs. JSON parsing moved from the consumer to
+the reader (still one parse per message) so a drop can be attributed to a
+class and the enqueue timestamp is taken at receive time.
+
+**First live reading after deploy (≈60 s after the `--reload`, cold
+caches — not a controlled window):** queue depth 2,841 / high-water 2,888,
+oldest message 20.3 s, every wait in the window in `gt_10s`, trade handler
+window avg 5.7 ms with a lifetime max of 4,360 ms, ticker handler avg
+~30 ms. Recorded here as the instrumentation's acceptance evidence
+("received promptly but processed stale" is now a number); the controlled
+baseline is task I7's job.
+
+### `whale_pipeline.*` — whale-trade pipeline stage timing (realtime data-plane I2, 2026-08-25)
+
+Source: `services/whale_pipeline_perf.py` (pure module singleton, not
+`services.app_state`), recorded by `services/whale_stream/
+whale_stream_handlers.py::_process_stream_trade` and
+`services/whalewatchers/kalshi_trade_tape.py::fetch_signals`. Exists so the
+most expensive stages of the per-message hot path are measured rather than
+inferred from code shape (H3 in the known-findings file).
+
+Names (`float`; the whole group is omitted until the pipeline has recorded
+anything in this process — poll mode and most tests never do):
+
+- `whale_pipeline.stage.<stage>.window_count|window_avg_ms|window_max_ms`
+  for `capture` (trade_tape insert + `series_watcher.record_trade`),
+  `config` (`config_store.get()` + `config_performance.fingerprint`),
+  `provider` (the whole `fetch_signals` call), `resolve`
+  (`_resolve_unknown_markets`, incl. any REST wait), `thread_wait`
+  (`asyncio.to_thread` submitted → worker started), `sync`
+  (`_process_trades_sync` on the worker, i.e. all SQLite work), `signals`
+  (`_handle_signal` + `check_exits`, only when a signal was emitted),
+  `handler_total`, `receive_to_handler_end` (gateway enqueue timestamp →
+  handler end, every stream trade), `receive_to_decision` (same, only for
+  trades that produced a signal).
+- `whale_pipeline.counter.<name>` — per-window counts: `trades`,
+  `below_threshold`, `offlist_skipped`, `unresolved_market`, `candidates`,
+  `offlist_candidates`, `to_thread_entries`, `rejection_writes`,
+  `resolve_calls`, `resolve_failures`, `signals_emitted`.
+- `whale_pipeline.receive_to_decision.window_p95_upper_bound_sec` and
+  `…receive_to_decision.bucket.<le_1ms…gt_10s>` (same fixed buckets as
+  `<stream>.ingest.queue_wait`).
+
+**How receive time reaches the handler.** The gateway's `_process_item`
+sets `services/kalshi/websocket.py::MESSAGE_ENQUEUED_AT` (a contextvar)
+to the message's monotonic enqueue timestamp for the duration of the
+callback and resets it after — no private key stamped into the vendor
+payload (which would leak into `series_watcher`'s archival `raw_json`).
+
+**Window ownership.** Same rule as `<stream>.ingest.*`: `maybe_capture`
+calls `whale_pipeline_perf.perf.reset_window()` only after a sample is
+persisted; `capture_from_runtime` never resets. Lifetime aggregates stay
+monotone. The worker thread returns its clocks/counts to the event loop
+(never records from the thread), so `snapshot()` never races a writer.
+`tests/conftest.py` gives every test a fresh singleton — this is
+process-global mutable state, the same isolation hazard as the DBs.
+
+**Per-message constant costs measured in-container (2026-08-25):**
+`config_store.get()` 9.3 µs/call (an `os.stat` + lock; its own docstring
+says "a handful of times per tick, not per message" — the stream handler
+calls it twice per trade message), `config_performance.fingerprint(cfg)`
+28.9 µs (json.dumps + sha256, once per trade message, needed only if a
+signal is emitted), `signal_log.series_of` 0.24 µs,
+`series_watcher.watched_series(cfg)` 3.1 µs. Total ≈ 48 µs/msg ≈ 1.5% of
+the I0 p50 handler cost: pure waste on the ~99.9% non-whale flow, but not
+where the time goes.
+
+**First live window (2026-08-25, 692 s of monotone samples across a 773 s
+read-only capture; 77,807 trades ≈ 112 trades/s — a quieter period than
+the I0 baseline's 148 msg/s p50, and interrupted by four `--reload`
+restarts caused by editing `.py` files during the capture — lesson for I7:
+a capture window must be hands-off, since every reload zeroes the lifetime
+counters):**
+
+| Stage (per trade, avg) | ms | window-max |
+|---|---|---|
+| capture | 0.064 | 59 |
+| config | 0.072 | 1.1 |
+| provider (= resolve + thread_wait + sync + loop re-entry) | **3.25** | **4,926** |
+| · resolve | 0.24 | 4,329 |
+| · thread_wait | 0.12 | 21 |
+| · sync (worker thread, all SQLite) | 1.58 | 277 |
+| · unattributed remainder ≈ loop re-entry after the worker finishes | ≈1.3 | — |
+| signals (per emitted signal, n=61) | 69.6 | 110 |
+| handler_total | 3.44 | 4,926 |
+| receive → handler end (every trade) | **649** | **9,624** |
+| receive → decision (n=61 candidates with a signal) | **727** | **5,294** |
+
+Counters: `to_thread_entries/trade = 1.000` vs `candidates/trade = 0.0030`
+(234 candidates, 198 of them off-watchlist, 198 resolve calls, 0 failures,
+19 `unresolved_market`); `offlist_skipped` 85.7% of trades;
+`rejection_writes/trade = 0.142` (11,042 SQLite write pairs in 692 s ≈ 16/s
+on the worker, one per sub-threshold print on a *watched* market — 12
+markets at the time; this scales with watchlist size, not with candidates).
+
+What it says, and what it does not:
+
+- **H3 confirmed.** The per-message floor is ≈3.3 ms of thread hop +
+  worker + loop re-entry, paid on 100% of trades, while the cheap
+  contract-count rejection that decides 99.7% of them costs microseconds
+  and already runs *inside* the hop. `provider` is 94% of handler time.
+- **Receive→decision is queue time, not handler time**: 649 ms average
+  wait versus 3.4 ms of work, at ~40% nominal utilization. Queue depth was
+  usually tiny (p50 1, max 71) with oldest-age spikes to 5 s — so the wait
+  is built by *stalls*, not by steady overload.
+- **The multi-second stalls sit in the unattributed remainder**: the
+  3.8–4.9 s `provider` maxima recur in windows where `resolve`, `thread_wait`
+  and `sync` maxima are all small, and the tick series shows 4.0 s and
+  7.99 s ticks in the same capture. The remainder is exactly the time a
+  finished worker's result waits for the event loop to be free — the
+  signature of the loop being blocked by synchronous work elsewhere (the
+  trading tick's SQLite phases are the obvious candidate). Correlation
+  only; I7 must pin it with tick-phase timestamps aligned to the stall
+  windows before it is called a cause.
+- `capture` max 59 ms and `sync` max 277 ms show SQLite contention on both
+  the loop (series_watcher flush) and the worker.
+
+
+### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
+
+Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),
+flattened by `_flatten_rest_latency`. Exists because the I0 baseline found
+the only REST latency the app recorded (`kalshi_rest.<endpoint>.avg_latency_ms`)
+is timed from *after* `limiter.acquire()` returns, success-only — local
+limiter wait was not conflated into it, it was **invisible**, so H6/H7
+could not be judged at all.
+
+Every `call_with_backoff` call is attributed to one bounded caller class
+(`http_client.CALLER_CLASSES`: `critical_whale`, `critical_position`,
+`interactive`, `background_discovery`, `background_catalog`,
+`background_live_status`, `background_resolution`, `other`), set by the
+`caller_class(name)` context manager or the `@classify(name)` decorator on
+the calling async function; the contextvar propagates into `gather`/
+`create_task` children. Annotated sites: the provider's off-list market
+enrichment (`critical_whale`); `_fetch_markets` / `_fetch_account_snapshot`
+/ `_fetch_exchange_status` (`critical_position`); `_fetch_live_status` /
+`_fetch_event_live_data` (`background_live_status`); `_fetch_event_titles` /
+`_fetch_category_metadata` / catalog scan (`background_catalog`); discovery
+refresh (`background_discovery`); signal-resolution checker, event-schedule
+resolver, lifecycle `settled` re-read (`background_resolution`); the
+coverage and trade-capture diagnostics routes (`interactive`). Anything
+unannotated is `other` — a non-trivial `other` share is a to-do, not noise.
+
+Names (`float`; the whole group is omitted until something has called
+Kalshi in this process; classes never used are omitted):
+
+- `kalshi_rest_class.<class>.calls|attempts|rate_limited|errors` — **window**
+  counts (summable across persisted samples); `calls` are logical calls,
+  `attempts` include every 429 retry, `errors` are logical calls that ended
+  in an exception (non-429 or exhausted retries). Lifetime counts stay in
+  the in-memory snapshot (`/api/health/pipeline`'s `rest_latency`) only.
+  (Corrected 2026-08-25 by I8: the first I5 cut persisted the *lifetime*
+  counters under these names, so summing per-minute samples inflated demand
+  ~30x — the probe that consumed them caught it.)
+- `kalshi_rest_endpoint.<family>.calls|rate_limited|errors` — exact
+  per-window counts by endpoint family (the same labels as
+  `kalshi_rest.<family>.*`, which remain per-*tick* snapshots reset by the
+  trading loop and therefore sample only ~1 tick in 10 at a 60 s cadence).
+  Use these for demand shares and the milestone/live-data duplicate estimate.
+- `kalshi_rest_class.<class>.limiter_wait.window_avg_ms|window_max_ms` —
+  time inside `limiter.acquire()` per attempt (**local queueing**).
+- `…network.window_avg_ms|window_max_ms` — per attempt, including 429/error
+  round trips (the per-endpoint number stays success-only).
+- `…backoff.window_avg_ms|window_max_ms` — 429 retry sleep summed per
+  logical call (only calls that slept are samples).
+- `…total.window_avg_ms|window_max_ms` — caller-experienced elapsed per
+  logical call = limiter wait + network + backoff over all attempts.
+- `kalshi_rest_limiter.read|write.waiters|waiters_high_water` — callers
+  currently inside `acquire()` and the most that ever were (lifetime
+  high-water; not reset).
+
+**Window ownership.** Same rule as the other I-series groups:
+`maybe_capture` calls `http_client.reset_rest_latency_window()` after a
+sample is persisted; `capture_from_runtime` never resets. Lifetime
+aggregates are monotone. `tests/conftest.py` gives every test a fresh
+`_rest_class_stats` dict.
+
+**Reading it.** A slow call is local queueing if `limiter_wait` carries it,
+upstream if `network` does, retry sleep if `backoff` does. Contention shows
+as `limiter_wait` rising for `critical_*` classes while `background_*`
+classes hold most of the `calls` — that is H7's signature; the endpoint
+averages alone can never show it.
+
+**First live window (2026-08-25, 796 s hands-off, one monotone segment,
+1,393 logical calls ≈ 1.75 calls/s against the 8/s read bucket):**
+
+| class | calls (share) | attempts | 429 | errors | limiter wait avg / max (ms) | network avg / max (ms) | backoff avg (ms) | total avg / max (ms) |
+|---|---|---|---|---|---|---|---|---|
+| background_catalog | 404 (29.0%) | 404 | 0 | 0 | **224** / 3,699 | 179 / 3,786 | — | 403 / 3,786 |
+| other (unannotated) | 285 (20.5%) | 285 | 0 | 2 | **533** / 4,548 | 57 / 3,571 | — | 590 / 4,576 |
+| critical_position | 275 (19.7%) | 276 | 1 | 0 | 164 / 3,704 | **643** / 3,780 | 506 | 812 / 3,869 |
+| background_live_status | 184 (13.2%) | 184 | 0 | **78** | 352 / 4,022 | 74 / 3,874 | — | 426 / 4,045 |
+| critical_whale | 159 (11.4%) | 161 | **2** | 0 | 61 / **1,826** | 46 / 3,601 | 609 | 116 / 3,601 |
+| background_resolution | 86 (6.2%) | 87 | 1 | 0 | 88 / 1,898 | 182 / 3,762 | 608 | 280 / 3,762 |
+
+Read-bucket gauges across the 41 samples: `waiters_high_water` 14 → 19;
+`tokens` at sample time was ≤ 3 of 8 in 12 of 41 samples and 0.0 once;
+`waiters` > 0 in 5 samples. Ticks: p50 1.75 s, max 4.79 s.
+
+What it says:
+
+- **H6 confirmed as a measurement.** Average demand is ~22% of the local
+  budget, yet limiter wait is the *majority* of caller-experienced latency
+  for four of six classes and reaches 1.8–4.5 s. The budget is depleted by
+  *bursts* (a catalog batch's gather, the tick's own gather), not by the
+  average rate — exactly the number that was invisible before I5.
+- **Whale enrichment is not insulated**: `critical_whale` waited up to
+  1.8 s in the local limiter and drew 2 of the window's 4 upstream 429s
+  (backoff ~0.6 s each) while background classes held 69% of calls.
+  Consistent with H7; causality (critical waits *because of* background
+  bursts) is I8/I11's to pin with demand-share timelines and fault
+  injection, not this table's.
+- **Upstream is the story only for `critical_position`** (network avg
+  643 ms, i.e. the account/markets/exchange-status calls themselves are
+  slow) — the one class where a "Kalshi is slow" reading would be right.
+- **42% of `background_live_status` calls failed** (78 of 184, non-429
+  errors) — a real effectiveness finding for I8, previously visible only
+  as per-endpoint error counts with no caller attribution.
+- **20.5% of calls are unattributed** (`other`): `propagate_milestone_winners`
+  in the tick was the missing annotation (added `background_live_status`
+  after this window); anything still landing in `other` is a to-do.
+- Four upstream 429s in 13 minutes at ≤ 8 calls/s locally: the anonymous
+  market-data ceiling is being brushed by bursts even under the
+  conservative local cap — a data point for I8's endpoint-cost/limit
+  study, not a limiter change.
+
+
 ## Persistence
 
 `data/observability.db`, one `metric_samples` table (`observed_at`,

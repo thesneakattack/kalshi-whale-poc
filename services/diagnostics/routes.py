@@ -26,8 +26,11 @@ from fastapi import APIRouter, HTTPException
 
 from services import index_feed, series_watcher, settlement_edge, trade_archive
 from services.diagnostics import diagnostics
+from services.diagnostics import trade_capture_reconciliation
 from services.app_state import state, trade_stream, whale_provider
-from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS
+from services import whale_pipeline_perf
+from services import http_client
+from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
 from services.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 
@@ -43,6 +46,7 @@ async def get_diagnostics(hours: float = 24.0):
 
 
 @router.get("/api/diagnostics/coverage")
+@http_client.classify("interactive")
 async def get_diagnostics_coverage(pages: int = 2):
     """The one check the app cannot answer from its own stores: how much
     real exchange-wide whale flow it never sees. Makes 1-2 real API calls
@@ -52,6 +56,51 @@ async def get_diagnostics_coverage(pages: int = 2):
     watched = {m["ticker"] for m in (state.get("markets") or []) if m.get("ticker")}
     check = await diagnostics.check_coverage(cfg, watched, pages=pages)
     return check.to_dict()
+
+
+@router.get("/api/diagnostics/trade-capture")
+@http_client.classify("interactive")
+async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float = 60.0, max_pages: int = 10):
+    """REST-vs-WebSocket capture completeness by trade_id over a bounded,
+    recent exchange-time window (realtime data-plane task I4, hypothesis
+    H5 - services/diagnostics/trade_capture_reconciliation.py).
+
+    Manual only - never scheduled. Costs at most `max_pages` exchange-wide
+    GET /markets/trades pages of 1000 (docs/kalshi/get-trades.md), read-only.
+    The window ends `lag_sec` before now so a print still sitting in the
+    ingest queue is not mistaken for a miss; the current oldest-message age
+    is attached so a too-small lag is visible rather than silent."""
+    cfg = config_store.get()
+    now = time.time()
+    window_end = now - max(lag_sec, 0.0)
+    window_start = window_end - max(minutes, 0.1) * 60.0
+    seen_by_id = getattr(whale_provider, "seen_exchange_ts_by_id", None)
+    if not callable(seen_by_id):
+        return {"error": f"active whale provider {getattr(whale_provider, 'name', '?')!r} keeps no seen-record; "
+                         "reconciliation needs kalshi_trade_tape"}
+    wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
+    ingest = trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else {}
+    evidence = {
+        "dropped_messages": ingest.get("dropped_messages"),
+        "dropped_window": ingest.get("dropped_window"),
+        "error_25_total": ingest.get("error_25_total"),
+        "reconnects": (ingest.get("connection") or {}).get("reconnects"),
+        "oldest_message_age_sec": (ingest.get("queue") or {}).get("oldest_message_age_sec"),
+        "queue_depth": (ingest.get("queue") or {}).get("depth"),
+        "lag_sec": lag_sec,
+    }
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"].get("request_timeout_sec", 10))
+    try:
+        return await trade_capture_reconciliation.reconcile_window(
+            client, window_start=window_start, window_end=window_end,
+            seen_exchange_ts_by_id=seen_by_id(),
+            min_contracts_for=lambda ticker: min_contracts_for(ticker, wwk_cfg),
+            max_pages=max(1, min(max_pages, 50)),
+            ingest_evidence=evidence,
+            seen_horizon_ts=whale_provider.seen_horizon_ts(),
+        )
+    finally:
+        await client.close()
 
 
 @router.get("/api/diagnostics/series/{series}")
@@ -153,8 +202,21 @@ async def get_pipeline_health():
             "dedup_ids_held": len(getattr(whale_provider, "_seen_trade_ids", ())),
             "dedup_cap": _MAX_SEEN_TRADE_IDS,
             "provider_stats": getattr(whale_provider, "stats", None),
+            # Live queue-health snapshot (I1, services/kalshi/websocket.py's
+            # ingest_metrics): per-class counts, depth/high-water, oldest
+            # message age, queue-wait and handler-time windows, server
+            # error 25 vs local drops, reconnects. Pure read.
+            "queue_health": trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else None,
         },
         "index_stream": state.get("index_stream_status"),
+        # Whale-pipeline stage timers/counters (I2, services/whale_pipeline_
+        # perf.py): where a trade message's time goes, and how many messages
+        # enter the thread hop versus how many are real candidates.
+        "whale_pipeline": whale_pipeline_perf.perf.snapshot(),
+        # REST latency decomposition by caller class + token-bucket waiter
+        # gauges (I5, services/http_client.py's rest_latency_snapshot):
+        # limiter wait vs network vs backoff, so a slow call is attributable.
+        "rest_latency": http_client.rest_latency_snapshot(),
         "stores": {
             "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),
             "book_snapshots": _age(series_watcher.DB_PATH, "book_snapshots", "observed_at"),
