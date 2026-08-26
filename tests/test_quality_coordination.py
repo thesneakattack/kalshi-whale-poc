@@ -387,3 +387,93 @@ def test_observe_main_error_path_logs_a_new_row_when_the_error_changes(tmp_path,
     runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
     assert runs == 2
     conn.close()
+
+
+import json
+
+
+def _write_baseline(repo_root, accepted_ids):
+    """Task 11 fixture: a temp baseline.json shaped like the real
+    tools/quality_audit/baseline.json ({"version", "notes", "accepted_finding_ids"}), written
+    at the exact repo_root/tools/quality_audit/baseline.json convention observe_main is
+    expected to read from — only accepted_finding_ids matters for these tests."""
+    baseline_dir = repo_root / "tools" / "quality_audit"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    baseline_path = baseline_dir / "baseline.json"
+    baseline_path.write_text(json.dumps({
+        "version": 1,
+        "notes": {"example": "test fixture, not the real baseline"},
+        "accepted_finding_ids": list(accepted_ids),
+    }))
+    return baseline_path
+
+
+def test_observe_main_excludes_baseline_accepted_findings_from_signals(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    _write_baseline(tmp_path, ["accepted-1"])
+    report = QualityReport(findings=[
+        _finding(check="config-usage", scope="a.b", finding_id="accepted-1"),
+        _finding(check="config-usage", scope="c.d", finding_id="new-1"),
+    ])
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        result = observe_main(tmp_path, at=T0)
+
+    assert result.items_observed == 1  # only the non-accepted finding produced a tracked item
+    conn = _connect()
+    keys = {
+        row["automation_key"]
+        for row in conn.execute("SELECT automation_key FROM coordination_items").fetchall()
+    }
+    conn.close()
+    assert keys == {"config-usage|c.d|"}  # not "config-usage|a.b|" — that one is baseline-accepted
+
+
+def test_observe_main_uses_the_real_baseline_json_path_convention(tmp_path, monkeypatch):
+    """Confirms the baseline path is computed as repo_root/tools/quality_audit/baseline.json —
+    the exact same file tools/quality_audit/__main__.py's own _DEFAULT_BASELINE_PATH resolves
+    to (Path(__file__).resolve().parent / "baseline.json", from that module's own directory) —
+    not hardcoded elsewhere or misaligned with the CLI's own convention."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[_finding(check="config-usage", scope="a.b", finding_id="x")])
+    expected_path = tmp_path / "tools" / "quality_audit" / "baseline.json"
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None), \
+         patch("services.quality_coordination.load_baseline", wraps=qc.load_baseline) as mock_load:
+        observe_main(tmp_path, at=T0)
+
+    mock_load.assert_called_once_with(expected_path)
+
+
+def test_observe_main_resolves_an_item_once_it_becomes_baseline_accepted(tmp_path, monkeypatch):
+    """Proves the "absent from .new" path works end to end, not just that .new excludes a
+    baseline-accepted finding: a finding tracked as observed in one run, then baseline-accepted
+    before the next run, must be marked resolved by that next run (apply_observation's existing
+    absent-from-present logic, fed by the now-filtered signal list — no extra plumbing)."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[
+        _finding(check="config-usage", scope="a.b", finding_id="soon-accepted"),
+    ])
+
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        r1 = observe_main(tmp_path, at=T0)
+    assert r1.items_observed == 1
+    conn = _connect()
+    row = conn.execute(
+        "SELECT state FROM coordination_items WHERE automation_key='config-usage|a.b|'"
+    ).fetchone()
+    conn.close()
+    assert row["state"] == "observed"
+
+    _write_baseline(tmp_path, ["soon-accepted"])  # now baseline-accepted by a human
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        r2 = observe_main(tmp_path, at=T0 + timedelta(hours=1))
+
+    conn = _connect()
+    row = conn.execute(
+        "SELECT state FROM coordination_items WHERE automation_key='config-usage|a.b|'"
+    ).fetchone()
+    conn.close()
+    assert row["state"] == "resolved"

@@ -239,8 +239,8 @@ import hashlib
 import subprocess
 from datetime import timezone
 
-from services.quality.models import QualityReport
 from tools.quality_audit.__main__ import run_audit as _run_static_audit
+from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 
 def _current_commit_sha(repo_root: Path) -> str | None:
@@ -253,8 +253,12 @@ def _current_commit_sha(repo_root: Path) -> str | None:
         return None
 
 
-def _fingerprint(report: QualityReport) -> str:
-    parts = sorted(f"{f.finding_id}:{f.severity}" for f in report.findings)
+def _fingerprint(findings: list[QualityFinding]) -> str:
+    """Fingerprints the FILTERED (non-baseline-accepted) set actually fed to
+    apply_observation, not the raw report — Task 11. `_fingerprint` has exactly one caller
+    in this repo (observe_main below), so this is a safe, contained signature change rather
+    than a reconstruction workaround."""
+    parts = sorted(f"{f.finding_id}:{f.severity}" for f in findings)
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -310,7 +314,10 @@ def observe_main(repo_root: Path, at: datetime | None = None,
                 conn.commit()
             return RunResult(fp, None, 0, 0, {}, str(exc))
 
-        fp = _fingerprint(report)
+        baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
+        comparison = compare_to_baseline(report, load_baseline(baseline_path))
+
+        fp = _fingerprint(comparison.new)
         last = conn.execute(
             "SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -319,7 +326,7 @@ def observe_main(repo_root: Path, at: datetime | None = None,
 
         signals = [
             Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)
-            for f in report.findings
+            for f in comparison.new
         ]
         states = apply_observation(conn, signals, branches, claims, at)
         resolved = sum(1 for s in states.values() if s == "resolved")
