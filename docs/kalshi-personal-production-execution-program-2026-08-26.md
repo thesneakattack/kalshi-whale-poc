@@ -241,11 +241,60 @@ Therefore AQC has improved **execution discipline**, not delivered runtime auton
 ## 5.1 Realtime Data-Plane Remediation
 
 **Plan:** `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`  
-**State:** **IMPLEMENTATION PLAN READY**, subject to short HEAD preflight.
+**State:** **PARTIALLY IMPLEMENTED (P0–P2), NOT MERGEABLE — 5 confirmed defects found by code review.**
 
-### Why ready
+### What actually happened (2026-08-26, updated from the "ready to execute" read above)
 
-Its investigation measured real busy-hour behavior, reproduced it deterministically, separated handler cost from loop-stall cost, falsified misleading fixes, corrected its own replay artifacts, identified correctness defects, and selected a feature-flagged architecture with rollback boundaries.
+P0, P1, and P2 were implemented, fully tested (1912 local, CI green on all
+10 push+PR contexts), and pushed to `feat/realtime-data-plane-remediation`
+(PR #23, open, unmerged). Execution was deliberately stopped at that
+checkpoint rather than continuing into P3 (Task 17 flips the reader gate
+from shadow to live filtering — a materially bigger step into live
+behavior change), specifically so a human could review the accumulated
+diff before that happened.
+
+That review (`/code-review high` against PR #23, 8-angle finder pass +
+direct re-verification of every high-severity claim against the actual
+`pr-23` code) found **5 CONFIRMED real defects**, not style
+issues — full detail in the PR's review comments / this session's
+`ReportFindings` output, condensed here:
+
+1. **`candidate_retry.py`'s "recovery" path claims the ledger slot and
+   reports success without ever evaluating the trade** — for the real
+   production scenario (an off-watchlist trade delivered via WS with no
+   natural re-presentation), a recovered signal is permanently and
+   silently dropped, indistinguishable in the metrics from a genuine
+   success.
+2. **A real, unsynchronized cross-thread race** on `series_watcher`'s
+   trade/book capture buffers (`_trade_buffer`/`_book_buffer`), now
+   reachable from both the new `tick_executor` worker thread and the main
+   event-loop thread for the first time — `book_snapshots` has no unique
+   constraint, so a double-flush produces literal duplicate rows
+   corrupting the whale-accuracy dataset.
+3. **`tick_executor.connection_for()`'s bounded busy_timeout is dead
+   code** — zero production callers; the P1 goal ("a bounded busy_timeout
+   instead of the sqlite3 default 5s sleep") is not actually delivered.
+4. **`candidate_ledger._connect()` is missing `PRAGMA journal_mode=WAL`**,
+   present in every sibling module specifically because of a real
+   documented 2026-08-11 production outage, and its calls run
+   synchronously on the event loop rather than through this PR's own
+   `tick_executor`.
+5. **The `generic_rest` whale-watcher provider's dedup is completely
+   defeated** by a random UUID (`str(uuid.uuid4())[:8]`) instead of a
+   stable trade id — the exact duplicate-print bug this PR exists to fix
+   goes unfixed for that registered, selectable provider.
+
+Plus 4 lower-confidence findings worth checking before merge (a
+per-message `config_store.get()` lock+syscall added to the WS reader hot
+path; a 100-ticker truncation cap that can reopen the same silent-loss
+shape the H4 fix closed; a module-level `asyncio.Semaphore` that can bind
+to the wrong event loop under concurrent test/production paths; and
+`connection_for()` itself being a second, undocumented persistence
+mechanism alongside CLAUDE.md's one documented idiom).
+
+### Original "why ready" reasoning — still valid for the investigation, not the implementation
+
+Its investigation measured real busy-hour behavior, reproduced it deterministically, separated handler cost from loop-stall cost, falsified misleading fixes, corrected its own replay artifacts, identified correctness defects, and selected a feature-flagged architecture with rollback boundaries. That evidence-gathering work is unaffected by the defects above — the *design* was sound; specific *implementation* details (P1's connection-reuse claim, P2's retry-recovery wiring, the new cross-thread capture path) introduced new bugs the plan itself didn't anticipate.
 
 ### Current measured evidence
 
@@ -260,20 +309,18 @@ Its investigation measured real busy-hour behavior, reproduced it deterministica
 - transient enrichment can permanently lose a candidate;
 - critical REST traffic can wait behind background work despite low aggregate budget usage.
 
-### Preflight only
-
-Before Task 1:
-
-- branch from current `main`;
-- verify referenced source paths/signatures;
-- update status-doc instructions for `docs/status-src/`;
-- mark anything independently satisfied later;
-- verify no later merge contradicts the chosen architecture;
-- do not redesign merely because the plan predates a few docs merges.
-
 ### Verdict
 
-> **Execute first. Do not reinvestigate.**
+> **Do not merge PR #23 as-is. Fix the 5 confirmed defects (§ above), check
+> the 4 plausible ones, re-verify, then re-request review before merging
+> or resuming Phase P3.** This supersedes the original "Execute first, do
+> not reinvestigate" verdict below, which was correct for *starting*
+> implementation but did not anticipate defects surfacing only under real
+> review, not under the plan's own unit/integration tests.
+>
+> ~~Execute first. Do not reinvestigate.~~ (original verdict, kept struck
+> through rather than deleted per this doc's own §9 self-review discipline
+> — record contradiction, don't silently overwrite it)
 
 ---
 
@@ -584,6 +631,13 @@ A fresh Claude session can no longer infer that production is primarily an ops/d
 
 ## Program 1 — Realtime Foundation
 
+**Status (2026-08-26): IN PROGRESS, BLOCKED ON REWORK.** P0–P2 implemented
+and pushed (PR #23), but code review found 5 confirmed defects (§5.1) —
+the "Exit" criteria below are not yet met and the PR is not mergeable as
+of this update. See §5.1 for the specific gaps. Do not treat this program
+as "on track toward Entry for Program 2" until PR #23 is fixed,
+re-reviewed, and actually merged.
+
 ### Owner
 
 Existing realtime remediation plan.
@@ -633,6 +687,16 @@ At minimum demonstrate:
 ---
 
 ## Program 2R — Economic research lane, concurrent with Program 1
+
+**Status (2026-08-26): CANCELLED.** Launched, produced 5 commits
+(scoping, E1-E7 research, E11-E12 adversarial review, a Program 2
+candidate design/plan, and a new orchestrator skill) in
+`research/economic-strategy-effectiveness`, then stopped by direct user
+action before pushing to origin or opening a PR. Treat as not authoritative
+— do not resume, push, or build on that work without an explicit request
+to do so. Program 2's own entry gate below ("Program 2R plan approved")
+is therefore unmet on this front too, independent of Program 1's own
+gate.
 
 Allowed concurrency only if:
 
@@ -976,6 +1040,21 @@ For frontend, refresh/execute the existing plan rather than reopening framework 
 
 # 11. Exact immediate queue
 
+**Outcome as of 2026-08-26 (this queue has now run once):**
+
+- **Immediate 1 (doctrine)** — done, merged (PR #21).
+- **Immediate 2 (realtime execution)** — ran through P0–P2, but do not
+  re-enter this as "begin Task 1" — it's mid-flight with confirmed defects
+  to fix first (§5.1, Program 1 status). The actual next immediate action
+  is **fix PR #23's 5 confirmed defects, re-verify, re-review, then either
+  merge or continue P3** — not a fresh preflight.
+- **Immediate 3 (parallel research)** — started, produced real research
+  output, then cancelled by direct user action before merging (§ Program
+  2R status). Not resumed; do not restart without an explicit request.
+- **"After realtime merges" (below)** is therefore not reachable yet on
+  either front — realtime hasn't merged (defects unfixed) and the
+  research it would rebase against no longer exists in a usable state.
+
 ## Immediate 1 — tiny doctrine branch
 
 Branch:
@@ -1033,15 +1112,16 @@ Rebase/finalize economic research as needed, incorporate post-remediation measur
 | Capability | Current state | Next owner |
 |---|---|---|
 | QCP/static health tooling | MERGED + OPERATIONAL | Maintain/extend only when gaps found |
-| Docs/research CI fast path | MERGED + OPERATIONAL | Existing CI |
+| Docs/research CI fast path | MERGED + OPERATIONAL (real as of 2026-08-26 — was merged but silently never engaging since PR #13; root-caused and fixed same day, PR #24) | Existing CI |
+| Push-scoped pytest via testmon | MERGED + OPERATIONAL (new 2026-08-26, PR #25) | Existing CI |
 | Generated status workflow | MERGED + OPERATIONAL | `/sync-status-docs` |
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
-| Realtime architecture fix | IMPLEMENTATION PLAN READY | Program 1 |
+| Realtime architecture fix | PARTIALLY IMPLEMENTED (P0-P2), BLOCKED ON REWORK — 5 confirmed defects, PR #23 not mergeable (§5.1) | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
 | AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
-| Economic strategy effectiveness | INVESTIGATION REQUIRED | Program 2R |
+| Economic strategy effectiveness | INVESTIGATION CANCELLED MID-FLIGHT (2026-08-26) — real E1-E7/E11-E12 output exists in an unmerged, unpushed worktree; not authoritative until explicitly resumed | Program 2R |
 | Realistic execution simulation | INVESTIGATION REQUIRED | Program 2R/2 |
 | Full strategy replay | INVESTIGATION REQUIRED | Program 2R/2 |
 | Canonical TradeIntent | INVESTIGATION REQUIRED | Program 3R |
