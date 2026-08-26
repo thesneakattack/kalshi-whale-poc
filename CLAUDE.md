@@ -1,12 +1,51 @@
 # autotrade / kalshi-whale-poc
 
-Kalshi whale-signal paper trading terminal. Real Kalshi market data + a
-simulated-or-live whale order-flow signal + a fake broker. Safety-first POC:
-no real order ever gets placed unless `kalshi_account.trading_enabled` is
-explicitly flipped in `config/settings.yaml` plus a typed in-app confirmation
-phrase. All P0 code-level safety gates are done; what's still open before
-real capital should depend on this is operational — see ROADMAP.md's "Path
-to production" section.
+Kalshi whale-signal trading terminal: real Kalshi market data + a
+simulated-or-live whale order-flow signal + a broker layer, currently
+running in paper mode. Safety-first, incremental: no real order ever gets
+placed unless `kalshi_account.trading_enabled` is explicitly flipped in
+`config/settings.yaml` plus a typed in-app confirmation phrase. All P0
+code-level safety gates are done; what's still open before real capital
+should depend on this is operational — see ROADMAP.md's "Path to
+production" section, which is the authoritative checklist for that
+transition.
+
+## Standing goal — personal-use, real-money production (2026-08-26)
+
+Direct standing instruction (2026-08-26): this is no longer a proof of
+concept kept in paper mode indefinitely — the purpose is a personal-use,
+real-money trading system. Equally direct, same instruction: **"we still
+need to progress safely until we reach the goal"** — this sets the
+destination, it does not authorize shortcutting any safety gate, and it
+does not by itself flip `kalshi_account.trading_enabled` or any config
+default. Getting there runs through ROADMAP.md's "Path to production"
+checklist — each open item there is a precondition, not a suggestion, and
+several (real position-size/kill-switch numbers, the sports-category legal
+exposure, the auth model, deployment target) are decisions only a human
+makes, not something a commit can complete on its own.
+
+This goal sits above, not in place of, the per-module quality objective
+immediately below: a module has to actually be trustworthy before real
+capital can depend on it, so that audit work is how this goal gets
+reached, not a separate track from it.
+
+Known specific gaps still open toward this goal (stubs — full detail in
+ROADMAP.md's "Path to production" section and the relevant module
+`CHEATSHEET.md`, not restated here):
+- Entry-gate adverse selection — KXBTC15M whale signals resolved 88.8%
+  correct across 394 settled signals, but the 12 the gates actually traded
+  resolved only 58.3%. Not yet root-caused.
+- `services/shadow_mode.py` output has never been reviewed for a real
+  evaluation stretch — that review, not the code existing, is the actual
+  gate before ever flipping `trading_enabled`.
+- No real deployment target yet (local `ddev` on one machine only), no
+  human-set real position-size/kill-switch numbers, and the single-operator
+  auth model hasn't been explicitly confirmed as sufficient for real money.
+- Sports-category contracts carry unresolved multi-state legal exposure
+  (`docs/prediction-markets-research-reference.md` Part 3); this app has
+  zero category-level legal-risk awareness today.
+- `advisory`/`confidence_calibration` auto-apply has only ever tuned
+  against paper-mode trade history.
 
 ## Current objective — per-module quality, not a P&L target
 
