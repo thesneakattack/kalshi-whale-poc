@@ -38,7 +38,19 @@ from pathlib import Path
 
 import yaml
 
-_EXCLUDED_DIR_NAMES = {".git", "node_modules", "__pycache__", ".pytest_cache", "data", ".ddev", ".ruff_cache"}
+_EXCLUDED_DIR_NAMES = {
+    ".git", "node_modules", "__pycache__", ".pytest_cache", "data", ".ddev", ".ruff_cache",
+    # A directory literally named "worktrees" holds full nested git worktree
+    # checkouts (this repo's own convention - see .claude/worktrees/<name>,
+    # CLAUDE.md's "Use a worktree when the checkout is busy" memory) - each
+    # one is a complete duplicate copy of tools/, tests/, services/, etc.
+    # Found live 2026-08-26: two concurrent sessions' worktrees inflated
+    # every count 200-700% (files.html +700%, files.python +266%) versus the
+    # last-committed manifest, which was accurate before those worktrees
+    # existed. Excluded by bare name (matches anywhere in the tree, not just
+    # .claude/worktrees) since _excluded() already matches on path parts.
+    "worktrees",
+}
 
 # static/js/dashboard.bundle.js (frontend/'s esbuild output) is the one real
 # generated-output file in this repo as of 2026-08-24 - excluded from

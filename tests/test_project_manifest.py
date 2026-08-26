@@ -63,6 +63,16 @@ def _build_mini_repo(root):
     # --- data dir noise: must never be scanned for python/line counts ---
     _write(root / "data" / "junk.py", "this must never be counted\n" * 10)
 
+    # --- a nested git worktree checkout: must never be double-counted ---
+    _write(
+        root / ".claude" / "worktrees" / "some-investigation" / "main.py",
+        "this is a full duplicate checkout, must never be counted\n" * 10,
+    )
+    _write(
+        root / ".claude" / "worktrees" / "some-investigation" / "static" / "index.html",
+        "<html>duplicate</html>\n",
+    )
+
 
 @pytest.fixture
 def mini_repo(tmp_path):
@@ -81,6 +91,16 @@ def test_python_file_and_line_counts_exclude_pycache_and_data_dir(mini_repo):
     assert manifest["files"]["python"] > 0
     # data/junk.py and services/__pycache__/*.pyc must never be counted
     assert manifest["files"]["python"] < 20  # sanity: nowhere near counting the excluded junk
+
+
+def test_nested_git_worktree_checkout_is_never_double_counted(mini_repo):
+    # Found live 2026-08-26: a directory literally named "worktrees" (this
+    # repo's own convention, .claude/worktrees/<name>) holds a full nested
+    # duplicate checkout - without this exclusion, main.py (7 lines) and
+    # index.html would each be counted twice.
+    manifest = project_manifest.build_manifest(mini_repo)
+    assert manifest["files"]["html"] == 2  # not 3 - the worktree's index.html excluded
+    assert manifest["files"]["python"] < 20  # the worktree's main.py excluded
 
 
 def test_javascript_excludes_generated_bundle_and_node_modules(mini_repo):
