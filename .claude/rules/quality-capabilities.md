@@ -31,6 +31,32 @@ to the current task and load/use the relevant skill before acting.
   itself). No GitHub write authority exists anywhere in that plan either —
   see `.claude/rules/autonomous-quality-coordination-evidence.md` for the
   governing constraints any future write-lane decision must still satisfy.
+- **economic-strategy-effectiveness-investigation** — **substantially complete**
+  (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
+  executed or closed-infeasible —
+  `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-
+  investigation.md`'s status table). Investigated where economic edge is
+  created or destroyed between a raw Kalshi whale print and an actually
+  executable trade — gate marginal contribution, adverse-selection root
+  cause, advisory/calibration objective alignment, execution realism,
+  capture-health-tagged replay gaps. Finding: the originally-reported
+  88.8%/394-signal vs. 58.3%/12-trade adverse-selection gap
+  (`ROADMAP.md`, measured 2026-08-17) does not currently reproduce — that
+  exact trade sample is unrecoverable (`paper_broker.db` was reset twice
+  since) and the gate configuration that produced it no longer exists;
+  under the live configuration, `selection_delta_pts` is currently
+  *positive* —
+  `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-
+  status-report.md`. A banded, cost-aware gate-EV design and four other
+  remediation candidates are specified but **not implemented**:
+  `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-
+  design.md` / `docs/superpowers/plans/2026-08-26-economic-strategy-
+  remediation.md` — one of that plan's two preconditions (Program 1
+  merged) is now satisfied (`main`@`22d1a79`, 2026-08-26); the other
+  (explicit human review/approval of the design doc) is not, and E1-E7's
+  underlying queries still need re-running against then-current data
+  before implementation starts, per that plan's own "when this plan is
+  picked up for real" instruction.
 - **root-cause-debugging** — unexpected bug, failing test, live incident,
   contradictory metrics, strange behavior, performance anomaly, or anything
   tempting a speculative patch. Prove root cause before changing behavior.
