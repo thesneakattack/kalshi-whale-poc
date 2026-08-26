@@ -217,10 +217,27 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   mid-run — exactly what "Cancel previous pipelines" below is for — rather
   than a systemic failure: pipeline numbers kept climbing normally into
   the high 20s across the same window with real passing/failing statuses
-  reported throughout. Not confirmed against the server's actual
-  cancellation events (needs a `WOODPECKER_TOKEN` to query pipeline state
-  directly) — re-open this if a push's real, non-superseded workflow ever
-  shows this error instead of a clean pass/fail.
+  reported throughout.
+  **Confirmed 2026-08-26** (this doc's own "re-open this" trigger fired):
+  `curl -H "Authorization: Bearer $WOODPECKER_TOKEN"
+  .../pipelines/<n>` on two consecutive push-event pipelines for the same
+  commit/branch (`docs/reconcile-execution-program-state`, pipelines 240
+  and 241, created one second apart — a duplicate GitHub webhook delivery
+  for the same push, not two real pushes) showed `"cancel_info":
+  {"superseded_by": <the other one's number>}` on **both** — a genuine
+  mutual-cancellation race, not a one-sided supersede. Net effect: the
+  push-event pytest/architecture-audit/etc. checks never ran at all for
+  that commit (GitHub's status API is left showing stale `pending`
+  indefinitely, not a real failure or the actual `canceled` state).
+  Harmless for merge purposes — the PR-event pipeline for the same commit
+  ran and posted a clean pass, and PR-event is what branch protection
+  actually requires (see below) — but confirms this repo's
+  "Cancel previous pipelines" setting really is on and really can
+  self-cancel a legitimate single push under a duplicate-webhook race, not
+  just a rapid double-push. If a *push-only* signal (no matching PR yet)
+  ever needs to be trusted and shows stale `pending`, check the pipeline's
+  own `cancel_info` via the API before assuming it failed or is still
+  running.
 - `main` has real GitHub branch protection, configured 2026-08-25 (was
   unconfigured/404 before that) — see
   `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" section
@@ -240,18 +257,16 @@ GitHub webhook this required was created automatically by
 `WOODPECKER_GITHUB` OAuth on activation; no manual webhook configuration
 was needed.
 
-Two sub-items from the original activation checklist remain genuinely
-unconfirmed (neither is checkable without a personal `WOODPECKER_TOKEN` or
-the web UI, so state that honestly rather than assuming):
+One sub-item from the original activation checklist is now confirmed, one
+remains open:
 
-- Whether "Cancel previous pipelines" is enabled in the repo's Woodpecker
-  project settings — the "queue: task not found" pattern above is
-  consistent with it being on, but that's circumstantial, not confirmed.
-- Whether anyone has generated a personal CLI/API token
-  (Settings → CLI/API Access Token, `export WOODPECKER_TOKEN=...` in your
-  own shell profile, never in this repo) — needed for
-  `scripts/woodpecker-status`/`woodpecker-trigger`'s authenticated
-  features and for pulling a failing step's raw log text.
+- **"Cancel previous pipelines" is confirmed enabled** — see the
+  2026-08-26 update above (real `cancel_info` evidence from the API, not
+  circumstantial).
+- A personal `WOODPECKER_TOKEN` does exist and works (used to pull the
+  `cancel_info` evidence above) — whether that's the same token for
+  everyone who might work in this repo, or something to (re)generate
+  per-operator, remains unconfirmed.
 
 ## Operating the shared instance itself
 
