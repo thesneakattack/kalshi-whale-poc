@@ -394,13 +394,13 @@ The production plan is executable by a fresh agent and grants authority incremen
 - `/checkpoint`
 - `session-handoff`
 
-- [ ] Re-run the investigation evidence checklist and confirm every open research question has an answer or an explicitly bounded unknown.
-- [ ] Run integration audit over the investigation artifacts/prototype and ensure no production runtime/CI write behavior was accidentally enabled.
-- [ ] Review active QCP baseline debt and ensure the investigation did not hide a new real error by baseline edits.
-- [ ] Run final verification proportional to changed code; if the prototype modified runnable code, include safe fault injection and the repo's complete final matrix per `final-verification`.
-- [ ] Push and inspect actual Woodpecker statuses for the final investigation commit/PR.
-- [ ] Perform a final fresh-eyes review of credential assumptions, event filters, active-work handling, stable identity, protected paths, outage semantics, and rollout gates.
-- [ ] Sync ROADMAP/status/appropriate capability router only where repo conventions require and no parallel branch owns those files.
+- [x] Re-run the investigation evidence checklist and confirm every open research question has an answer or an explicitly bounded unknown. (All 8 design-spec §14 questions, all 11 §15 outputs, all 10 evidence-rule completion bullets — verified doc §1.)
+- [x] Run integration audit over the investigation artifacts/prototype and ensure no production runtime/CI write behavior was accidentally enabled. (Zero touches to `data/`/`.env`/`config/`/`.woodpecker/`/`.github/`/`main.py`/`services/` across the whole branch — verified doc §2.)
+- [x] Review active QCP baseline debt and ensure the investigation did not hide a new real error by baseline edits. (`baseline.json` untouched; live re-run shows 0 new/193 existing/0 resolved — verified doc §3.)
+- [x] Run final verification proportional to changed code; if the prototype modified runnable code, include safe fault injection and the repo's complete final matrix per `final-verification`. (Every prior task's push already independently CI-verified 5/5 green; I8/I9's mutation-injection proofs already satisfy fault injection for the only runnable prototype code — verified doc §4.)
+- [x] Push and inspect actual Woodpecker statuses for the final investigation commit/PR.
+- [x] Perform a final fresh-eyes review of credential assumptions, event filters, active-work handling, stable identity, protected paths, outage semantics, and rollout gates. (Cross-checked across I1/I3/I4/I6/I7/I9/I10/I11/I12 — verified doc §5, no drift found.)
+- [x] Sync ROADMAP/status/appropriate capability router only where repo conventions require and no parallel branch owns those files. (ROADMAP.md gains one P4 entry; `.claude/rules/quality-capabilities.md`'s router entry updated to complete; `static/status.html` deliberately left untouched, matching the confirmed precedent of the comparable prior investigation — verified doc §6.)
 - [ ] Merge the **investigation** PR only after green CI and review. This does not activate the future autonomous system.
 - [ ] Use `session-handoff` to leave the chosen production spec/plan and exact next implementation step reconstructable.
 

@@ -15,14 +15,22 @@ to the current task and load/use the relevant skill before acting.
   migration, schema-driven Config tab, charts module); reconstruct progress
   from `frontend/src/js/{panels,legacy}` and the `frontend-*` baseline
   ratchets, one task at a time, TDD, verify, commit, stop.
-- **autonomous-quality-coordination-investigation** — investigating (not
-  implementing) how Quality Control Plane findings could be reported,
+- **autonomous-quality-coordination-investigation** — **complete** (I0-I13,
+  `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`).
+  Investigated how Quality Control Plane findings could be reported,
   escalated, or mechanically remediated without stepping on active
-  branches/PRs or adding GitHub write authority; execute one numbered `I<n>`
-  task from `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
-  per session, re-ground active work and CI first, no GitHub writes, no
-  credentials, no auto-merge — see
-  `.claude/rules/autonomous-quality-coordination-evidence.md`.
+  branches/PRs or adding GitHub write authority. Decision: report-only stays
+  correct today (zero durable findings measured in the sample) —
+  `docs/superpowers/research/2026-08-25-autonomous-quality-architecture-decision.md`.
+  A persisted, read-only observation series is fully specified and planned
+  but **not implemented**: `docs/superpowers/specs/2026-08-26-autonomous-
+  quality-coordination-design.md` / `docs/superpowers/plans/2026-08-26-
+  autonomous-quality-coordination.md` (9 TDD tasks, execute via
+  `superpowers:executing-plans` or `superpowers:subagent-driven-development`
+  when picked up — no bespoke orchestrator needed, unlike the investigation
+  itself). No GitHub write authority exists anywhere in that plan either —
+  see `.claude/rules/autonomous-quality-coordination-evidence.md` for the
+  governing constraints any future write-lane decision must still satisfy.
 - **root-cause-debugging** — unexpected bug, failing test, live incident,
   contradictory metrics, strange behavior, performance anomaly, or anything
   tempting a speculative patch. Prove root cause before changing behavior.
