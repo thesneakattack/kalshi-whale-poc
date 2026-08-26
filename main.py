@@ -278,7 +278,11 @@ def _flush_trade_capture(trade_tape: list, cfg: dict) -> dict:
 
 async def _flush_trade_capture_async(trade_tape: list, cfg: dict) -> dict:
     """Awaitable wrapper: runs _flush_trade_capture via tick_executor
-    instead of the calling event loop (P1 Task 7)."""
+    instead of the calling event loop (P1 Task 7). Still uses series_
+    watcher's own _connect(), not tick_executor.connection_for() - see
+    tick_executor.py's own docstring ("connection_for() status") for why
+    that swap was investigated and deliberately not made (code-review
+    finding #3)."""
     return await tick_executor.run(lambda: _flush_trade_capture(trade_tape, cfg))
 
 
@@ -341,7 +345,11 @@ def _resolve_and_record_settlements(markets: list, market_results: dict, tick_no
 
 async def _resolve_and_record_settlements_async(markets: list, market_results: dict, tick_now: float) -> list:
     """Awaitable wrapper: runs _resolve_and_record_settlements via
-    tick_executor instead of the calling event loop (P1 Task 8)."""
+    tick_executor instead of the calling event loop (P1 Task 8). The
+    market_analyst_agent/candidate_log/market_history/settlement_edge
+    calls inside still use their own modules' _connect(), not
+    tick_executor.connection_for() - see tick_executor.py's own docstring
+    ("connection_for() status") for why (code-review finding #3)."""
     return await tick_executor.run(
         lambda: _resolve_and_record_settlements(markets, market_results, tick_now)
     )
@@ -351,7 +359,10 @@ async def _build_series_track_record_async(tickers: list, days: int = 30) -> dic
     """Awaitable wrapper: runs signal_log.series_stats_bulk via
     tick_executor instead of the calling event loop - root-cause report
     C1's specifically named series_stats N+1 at main.py:736, one
-    _connect() per watched market before this (P1 Task 8)."""
+    _connect() per watched market before this (P1 Task 8). Still uses
+    signal_log's own _connect(), not tick_executor.connection_for() - see
+    tick_executor.py's own docstring ("connection_for() status") for why
+    (code-review finding #3)."""
     return await tick_executor.run(lambda: signal_log.series_stats_bulk(tickers, days=days))
 
 
