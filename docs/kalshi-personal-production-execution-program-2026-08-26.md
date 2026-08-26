@@ -241,7 +241,7 @@ Therefore AQC has improved **execution discipline**, not delivered runtime auton
 ## 5.1 Realtime Data-Plane Remediation
 
 **Plan:** `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`  
-**State:** **PARTIALLY IMPLEMENTED (P0–P2), NOT MERGEABLE — 5 confirmed defects found by code review.**
+**State:** **P0–P2 MERGED (2026-08-26, `main`@`22d1a79`) — all 9 code-review findings fixed and verified first.** P3 (Task 14 onward — writer thread, reader capture contract, flipping the reader gate live) has not started; that remains the next, materially bigger, still-not-yet-authorized step.
 
 ### What actually happened (2026-08-26, updated from the "ready to execute" read above)
 
@@ -284,13 +284,27 @@ issues — full detail in the PR's review comments / this session's
    stable trade id — the exact duplicate-print bug this PR exists to fix
    goes unfixed for that registered, selectable provider.
 
-Plus 4 lower-confidence findings worth checking before merge (a
+Plus 4 lower-confidence findings, all subsequently confirmed real (a
 per-message `config_store.get()` lock+syscall added to the WS reader hot
-path; a 100-ticker truncation cap that can reopen the same silent-loss
-shape the H4 fix closed; a module-level `asyncio.Semaphore` that can bind
-to the wrong event loop under concurrent test/production paths; and
+path; a 100-ticker truncation cap that could reopen the same silent-loss
+shape the H4 fix closed; a module-level `asyncio.Semaphore` that could
+bind to the wrong event loop, reproduced standalone; and
 `connection_for()` itself being a second, undocumented persistence
 mechanism alongside CLAUDE.md's one documented idiom).
+
+**Update — all 9 fixed and merged (2026-08-26, same day).** A dedicated
+fix pass addressed every finding with real TDD (failing test confirmed
+against the original code, then the fix, then passing) — 8 commits,
+`de46e32`→`17ababe`. One finding (`connection_for()`, #3/#9) was
+deliberately left unwired after investigation found two concrete reasons
+wiring it blind would be unsafe (no schema-init DDL, and it would convert
+today's harmless lock-wait into new `database is locked` exceptions under
+the real cross-thread contention finding #2's own fix introduced) —
+documented in the module docstring rather than forced in, consistent with
+`.claude/rules/realtime-data-plane-evidence.md`'s rule against tuning
+concurrency parameters without measuring the actual bottleneck. Full
+local suite (1936 tests) and CI (10/10 required + push contexts) both
+green independently. Merged as PR #23 into `main`@`22d1a79`.
 
 ### Original "why ready" reasoning — still valid for the investigation, not the implementation
 
@@ -311,16 +325,21 @@ Its investigation measured real busy-hour behavior, reproduced it deterministica
 
 ### Verdict
 
-> **Do not merge PR #23 as-is. Fix the 5 confirmed defects (§ above), check
-> the 4 plausible ones, re-verify, then re-request review before merging
-> or resuming Phase P3.** This supersedes the original "Execute first, do
-> not reinvestigate" verdict below, which was correct for *starting*
-> implementation but did not anticipate defects surfacing only under real
-> review, not under the plan's own unit/integration tests.
+> **P0–P2 merged and fixed. Phase P3 is the next open question, not yet
+> authorized.** Task 17 flips the reader gate from shadow to live
+> filtering — a materially bigger step into live behavior change than
+> anything merged so far. Whoever picks this up next should re-ground
+> against current `main` (per `.claude/rules/branching-and-ci.md`'s
+> "Resuming work" section) before starting P3, not assume this doc's
+> earlier "execute first" framing still applies unmodified — it was
+> written before this same PR's own review found 5 real defects despite
+> fully green CI, which is exactly the kind of surprise P3's higher stakes
+> warrant being more careful about, not less.
 >
-> ~~Execute first. Do not reinvestigate.~~ (original verdict, kept struck
-> through rather than deleted per this doc's own §9 self-review discipline
-> — record contradiction, don't silently overwrite it)
+> ~~Do not merge PR #23 as-is...~~ / ~~Execute first. Do not
+> reinvestigate.~~ (prior verdicts, kept struck through rather than
+> deleted per this doc's own §9 self-review discipline — record how the
+> verdict actually evolved, don't silently overwrite it)
 
 ---
 
@@ -631,12 +650,17 @@ A fresh Claude session can no longer infer that production is primarily an ops/d
 
 ## Program 1 — Realtime Foundation
 
-**Status (2026-08-26): IN PROGRESS, BLOCKED ON REWORK.** P0–P2 implemented
-and pushed (PR #23), but code review found 5 confirmed defects (§5.1) —
-the "Exit" criteria below are not yet met and the PR is not mergeable as
-of this update. See §5.1 for the specific gaps. Do not treat this program
-as "on track toward Entry for Program 2" until PR #23 is fixed,
-re-reviewed, and actually merged.
+**Status (2026-08-26): P0–P2 MERGED, P3 NOT STARTED.** Code review found 5
+confirmed defects post-merge-readiness-check; all 9 findings (5 confirmed
++ 4 plausible, all confirmed real) were fixed with real TDD and merged
+same day (§5.1). The "Exit" criteria below are about the *full* plan
+(through P6) — P0–P2 alone don't claim to satisfy them yet, only to be a
+clean, defect-free foundation to build P3+ on. Program 2's own entry gate
+("Program 1 merged and runtime-measured") has its "merged" half satisfied
+for P0-P2; "runtime-measured" still needs live observation this repo
+hasn't done yet, and Program 2's *other* gate (Program 2R's research)
+remains unmet regardless (cancelled, §Program 2R below) — so Program 2
+still cannot start on either front.
 
 ### Owner
 
@@ -1116,7 +1140,7 @@ Rebase/finalize economic research as needed, incorporate post-remediation measur
 | Push-scoped pytest via testmon | MERGED + OPERATIONAL (new 2026-08-26, PR #25) | Existing CI |
 | Generated status workflow | MERGED + OPERATIONAL | `/sync-status-docs` |
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
-| Realtime architecture fix | PARTIALLY IMPLEMENTED (P0-P2), BLOCKED ON REWORK — 5 confirmed defects, PR #23 not mergeable (§5.1) | Program 1 |
+| Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
 | AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
