@@ -44,3 +44,15 @@ def test_decision_for_is_none_for_an_unclaimed_or_undecided_trade_id():
     assert candidate_ledger.decision_for("never-claimed") is None
     candidate_ledger.claim("claimed-not-decided")
     assert candidate_ledger.decision_for("claimed-not-decided") is None
+
+
+def test_connect_enables_wal_mode():
+    """Code-review fix (finding #4): every sibling persistence module
+    (signal_log, risk_manager, paper_broker) enables WAL mode - this one
+    was missed, despite claim()/record_decision() sitting on the
+    exchange-wide hot path (a claim per whale-sized print), the same
+    bursty-write shape the 2026-08-11 rollback-journal-mode outage was."""
+    from services import candidate_ledger
+    with candidate_ledger._connect() as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"

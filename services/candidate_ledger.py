@@ -20,6 +20,17 @@ _duplicate_count = 0
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect. Added
+    # here (code-review fix, finding #4) - every sibling persistence module
+    # already has this; this one was missed, and claim()/record_decision()
+    # are called on the exchange-wide hot path (a claim per whale-sized
+    # print), the same write-volume shape the original incident was.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS candidates ("
         "trade_id TEXT PRIMARY KEY, ticker TEXT, claimed_at REAL NOT NULL, decision TEXT)"

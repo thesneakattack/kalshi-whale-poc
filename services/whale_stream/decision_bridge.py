@@ -9,7 +9,7 @@ importing from the whale-stream module just for its own loop body.
 """
 import asyncio
 
-from services import candidate_ledger, signal_log, trade_category
+from services import candidate_ledger, signal_log, tick_executor, trade_category
 from services.market_events import event_lifecycle
 from services.app_state import shadow, state, strategy
 from services.market_lookup import _category_by_ticker, _sport_for_event, _subcategory_by_ticker
@@ -53,7 +53,17 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     # so a true duplicate is a full no-op here, not just skipped at the
     # strategy layer - a duplicate re-presentation isn't a new signal to
     # show the user or count.
-    if not candidate_ledger.claim(signal.id, ticker=signal.ticker):
+    #
+    # Routed through tick_executor.run() (code-review fix, finding #4 -
+    # /code-review high pass against PR #23), consistent with this plan's
+    # own P1 work moving blocking SQLite calls off the event loop: this is
+    # the exchange-wide hot path (a claim() per whale-sized print), and a
+    # plain synchronous _connect() here was the same shape as the other
+    # per-tick stalls P1 measured and fixed. Still synchronous from this
+    # function's own perspective - awaited before proceeding - so the
+    # dedup-check semantics below are unchanged; only the thread the
+    # blocking work executes on moves.
+    if not await tick_executor.run(lambda: candidate_ledger.claim(signal.id, ticker=signal.ticker)):
         return {"action": "skip", "signal": signal.to_dict(), "reason": "duplicate_trade_id"}
 
     state["signal_feed"].insert(0, signal.to_dict())
@@ -101,7 +111,8 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
         latest_prices=state["latest_prices"], category=category, me_complement=me_complement,
         market_titles=state["market_titles"], event_titles=state["event_titles"], markets=state["markets"],
     )
-    candidate_ledger.record_decision(signal.id, decision.get("action", "unknown"))
+    # Same off-loop routing as the claim() call above (finding #4).
+    await tick_executor.run(lambda: candidate_ledger.record_decision(signal.id, decision.get("action", "unknown")))
     state["decision_feed"].insert(0, decision)
     state["decision_feed"] = state["decision_feed"][:50]
     # limit_order_placed (2026-08-15, strategy.use_limit_orders) is neither

@@ -86,3 +86,58 @@ def test_handle_signal_records_skip_action_in_the_ledger(monkeypatch):
     asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
 
     assert candidate_ledger.decision_for("skip1") == "skip"
+
+
+def test_handle_signal_routes_claim_and_record_decision_through_tick_executor(monkeypatch):
+    """Code-review fix (finding #4): candidate_ledger.claim()/
+    record_decision() are on the exchange-wide hot path (a claim per
+    whale-sized print) and must run via tick_executor.run() (off the
+    event loop), not called directly on it, consistent with this plan's
+    own P1 work. Proven by spying on tick_executor.run and asserting it
+    was actually invoked for both calls (not bypassed), with the real
+    candidate_ledger writes still landing correctly through it."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+
+    routed_fns = []
+
+    async def _spy_run(fn):
+        routed_fns.append(fn)
+        return fn()
+
+    monkeypatch.setattr(decision_bridge.tick_executor, "run", _spy_run)
+
+    signal = _make_signal(id="viatickexec1")
+    result = asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert len(routed_fns) == 2  # claim() and record_decision(), both routed
+    assert result is decision
+    assert fake_strategy.calls == 1
+    # And the real ledger effects still happened correctly through that routing.
+    assert candidate_ledger.decision_for("viatickexec1") == "trade"
+    assert candidate_ledger.claim("viatickexec1") is False
+
+
+def test_handle_signal_skip_still_only_routes_the_claim_check(monkeypatch):
+    """A duplicate must never reach record_decision() at all - claim()
+    alone (routed through tick_executor.run) is enough to know it's a
+    skip, so only one call should be routed for this path."""
+    candidate_ledger.claim("dup-tickexec")  # pre-claim it
+    fake_strategy = _FakeStrategy({"action": "skip", "signal": {}, "reason": "should never run"})
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+
+    routed_fns = []
+
+    async def _spy_run(fn):
+        routed_fns.append(fn)
+        return fn()
+
+    monkeypatch.setattr(decision_bridge.tick_executor, "run", _spy_run)
+
+    signal = _make_signal(id="dup-tickexec")
+    result = asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert result["reason"] == "duplicate_trade_id"
+    assert len(routed_fns) == 1  # only the claim() check - never reaches record_decision
+    assert fake_strategy.calls == 0
