@@ -24,6 +24,7 @@ from services.advisory import advisory_engine
 from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
+from services import candidate_retry
 from services.diagnostics import diagnostics
 from services import regime_analytics
 from services.whale_calibration import confidence_calibration
@@ -652,6 +653,14 @@ async def trading_loop():
                     _fetch_live_status(client, markets),
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
+            if _streaming_trade_tape_enabled():
+                # P2 Task 13: retries H4-unmarked candidates (services/
+                # candidate_retry.py) once per tick, stream mode only -
+                # mirrors the trade-tape branch above since a retry's own
+                # market lookup is only meaningful when the exchange-wide
+                # stream is what feeds whale candidates in the first
+                # place. Normally a near-instant no-op (nothing due).
+                await candidate_retry.run_pending(client)
             phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["event_titles"].update(event_titles)

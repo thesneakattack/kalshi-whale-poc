@@ -415,6 +415,27 @@ def test_runtime_findings_composes_every_applicable_rule():
     }
 
 
+# --- candidate_retry abandonment (realtime data-plane remediation P2 Task 13) ---
+
+def test_candidate_retry_abandoned_finding_absent_when_zero(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 0)
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+    assert not [f for f in findings if f.check == "candidate-retry-abandoned"]
+
+
+def test_candidate_retry_abandoned_finding_warns_when_nonzero(monkeypatch):
+    from services import candidate_retry
+    monkeypatch.setattr(candidate_retry, "_window_abandoned", 2)
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    matches = [f for f in findings if f.check == "candidate-retry-abandoned"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert matches[0].confidence == "high"
+    assert matches[0].evidence == {"abandoned": 2}
+
+
 # --- WebSocket ingest queue-health metrics (realtime data-plane task I1) ---
 
 def _fake_ingest_metrics() -> dict:

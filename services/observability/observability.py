@@ -493,6 +493,27 @@ def _repeated_rate_limit_hits_finding(now: float | None = None) -> QualityFindin
     )
 
 
+def _candidate_retry_abandoned_finding() -> QualityFinding | None:
+    """P2 Task 13's own gate criterion: an abandoned retry must be counted,
+    not silent (design spec). candidate_retry.snapshot()'s window counter
+    already resets via maybe_capture like every other window metric here -
+    this just turns a nonzero window into a visible finding instead of
+    something only a deliberate metric query would ever surface."""
+    abandoned = candidate_retry.snapshot().get("abandoned") or 0
+    if not abandoned:
+        return None
+    return QualityFinding(
+        finding_id="observability:candidate-retry-abandoned:kalshi_trade_tape",
+        check="candidate-retry-abandoned", severity="warning", confidence="high", source="runtime",
+        scope="kalshi_trade_tape",
+        summary=(
+            f"{abandoned} whale candidate(s) abandoned this window after exhausting the retry "
+            "budget (~91.5s) - a market lookup never recovered in time"
+        ),
+        evidence={"abandoned": abandoned},
+    )
+
+
 def runtime_findings(
     cfg: dict, state: dict, trade_stream, index_stream, now: float | None = None,
 ) -> list[QualityFinding]:
@@ -508,4 +529,7 @@ def runtime_findings(
     rate_limit_finding = _repeated_rate_limit_hits_finding(now=now)
     if rate_limit_finding is not None:
         findings.append(rate_limit_finding)
+    abandoned_finding = _candidate_retry_abandoned_finding()
+    if abandoned_finding is not None:
+        findings.append(abandoned_finding)
     return findings

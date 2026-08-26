@@ -156,3 +156,24 @@ def test_build_series_track_record_uses_series_stats_bulk_not_per_ticker(monkeyp
     assert bulk_calls == [["A-1", "B-1"]]
     assert per_ticker_calls == []  # the old N+1 path must never run
     assert set(result.keys()) == {"A-1", "B-1"}
+
+
+def test_trading_loop_calls_candidate_retry_run_pending_in_stream_mode():
+    """P2 Task 13: candidate_retry.run_pending must run once per tick, in
+    stream mode only. trading_loop() is a single giant while-True
+    coroutine driven by real network calls end to end - no existing test
+    in this repo drives one full tick (confirmed: nothing greps
+    "trading_loop(" as a call, only as a string/comment) - so this is a
+    structural check on the real source, the same shape
+    tests/test_quality_audit.py's background-wiring scanner already uses
+    for main.py's other per-tick scheduler calls, rather than a pretense
+    of runtime coverage this repo has no harness for."""
+    import inspect
+    source = inspect.getsource(main.trading_loop)
+    assert "candidate_retry.run_pending(client)" in source
+    # Mirrors the trade-tape branch's own conditional (Task 13's own
+    # instruction) - both must be gated the same way, not just present.
+    guard_line = "if _streaming_trade_tape_enabled():"
+    call_index = source.index("candidate_retry.run_pending(client)")
+    guard_index = source.rindex(guard_line, 0, call_index)
+    assert source[guard_index:call_index].count("\n") <= 8  # the call is inside that same guard's block, not a distant one
