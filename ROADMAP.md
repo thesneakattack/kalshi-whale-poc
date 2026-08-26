@@ -50,7 +50,20 @@ questions.
 - [ ] `services/shadow_mode.py` logs what the strategy *would* trade against
       real signal data, but hasn't been run for a real evaluation stretch
       and reviewed — that review, not the code existing, is the actual
-      "trust it" gate before ever flipping `trading_enabled`.
+      "trust it" gate before ever flipping `trading_enabled`. **Verified
+      2026-08-26: `data/shadow_mode.db`'s `shadow_trades` table currently
+      holds zero rows.** `mode` has only ever been switched to `shadow`
+      twice in this repo's history — commit `715ba42` (2026-08-07,
+      incidental to an SDK migration, reverted ~6h later) and `f3691a9`
+      (2026-08-09 23:42, whose own message says "for a real evaluation
+      stretch"), but that second attempt was reverted back to `paper`
+      ~15.5h later (`d1b81e0`, 2026-08-10 15:20) with no shadow trades
+      logged.
+      Evaluation only runs at all when `mode` is `shadow`/`live`
+      (`services/whale_stream/decision_bridge.py`'s `shadow.evaluate()`
+      call is gated on exactly that) — this isn't "run it, then review
+      it," it's that no sustained run has ever happened, and `mode: paper`
+      today means none is in progress.
 - [x] Risk enforcement lived only in strategy code, not the execution layer
       (a gate skipped at one call site had no backstop). Fixed 2026-08-22,
       commit `a8de034`: `PaperBroker.open_position()` and
@@ -87,13 +100,23 @@ questions.
       fine for "just me," but confirm that's still the model before real
       money sits behind it. No user table, no session-invalidation UI, no 2FA.
 - [ ] `advisory.auto_apply_enabled`/`confidence_calibration.auto_apply_enabled`
-      have only ever run against paper-mode trade history — confirm they
-      should stay on (or get a stricter/zero floor) before real capital is
-      ever behind the config they're tuning.
+      have only ever run against paper-mode trade history — confirm what
+      should govern either flag (a stricter/zero floor, a manual-only
+      posture) before real capital is ever behind the config they're
+      tuning. Both currently read `false` in `config/settings.yaml` (they
+      have flipped back and forth repeatedly over this repo's history, most
+      recently landing off) — the open question is what should govern
+      re-enabling them, not "stay on" as this item's original phrasing
+      implied, since neither is on right now.
 - [ ] Have a human, not a default, set real position-size/kill-switch
       numbers in `config/settings.yaml` before the first live dollar —
       today's defaults were picked for exercising paper-mode logic, not
-      sized for real capital.
+      sized for real capital. **Concretely, verified 2026-08-26:
+      `risk.max_daily_loss_pct` is `0.85`** —
+      `RiskManager.check_daily_loss()` (`services/risk_manager.py:162`)
+      only halts once **85% of the day's starting bankroll is gone**. As
+      configured today this is not a meaningfully protective real-money
+      kill switch, not merely an unconfirmed one.
 - [ ] **Sports-category contracts are in genuinely live, multi-state legal
       dispute** (`docs/prediction-markets-research-reference.md` Part 3) —
       Nevada/Massachusetts geofencing, other states' suits unresolved.
