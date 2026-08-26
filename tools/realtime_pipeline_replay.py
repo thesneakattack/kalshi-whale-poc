@@ -199,7 +199,14 @@ class Workload:
                 if t >= self.duration_sec:
                     break
                 service = model.sample(rng)
-                if kind == "trade" and self.enrichment and rng.random() < self.enrichment.probability:
+                # Without a candidate model every trade may need the market
+                # lookup (the I6 baselines, kept byte-identical); with one,
+                # enrichment belongs to the candidates alone - only a
+                # whale-sized print ever resolves a market (I12 review: the
+                # old draw put every REST stall on prints a prefilter
+                # discards, so a staged design could never show one).
+                if (kind == "trade" and self.enrichment and self.candidate_fraction == 0.0
+                        and rng.random() < self.enrichment.probability):
                     service += self.enrichment.latency_sec
                 raw.append((t, kind, service))
         raw.sort(key=lambda r: (r[0], r[1]))
@@ -215,6 +222,8 @@ class Workload:
                 candidate = True
                 if self.candidate_service is not None:
                     service = self.candidate_service.sample(aux)
+                if self.enrichment and aux.random() < self.enrichment.probability:
+                    service += self.enrichment.latency_sec
             msgs.append(Msg(i, kind, t, service, kind in CRITICAL_KINDS, key, candidate))
         return msgs
 
@@ -496,7 +505,14 @@ def _stats(samples: list[float]) -> dict:
     }
 
 
-def simulate(workload: Workload, topology: Topology) -> dict:
+def simulate(workload: Workload, topology: Topology, *, single_loop: bool = False,
+             service_order: tuple[str, ...] | None = None) -> dict:
+    """`single_loop=True` serves every class group on one server in
+    `service_order` priority - the production shape, where per-class
+    consumers are coroutines on one asyncio loop whose handlers are
+    synchronous. The default (one independent server per group) is an
+    upper bound that only a multi-process design could reach (I12 review).
+    """
     msgs = workload.messages()
     events: list[tuple[float, int, int, object]] = []
     for m in msgs:
@@ -509,6 +525,8 @@ def simulate(workload: Workload, topology: Topology) -> dict:
 
     groups = topology.groups()
     trade_group = topology.trade_group()
+    order = [g for g in (service_order or ()) if g in groups] + [g for g in groups if g not in (service_order or ())]
+    candidates_generated = sum(1 for m in msgs if m.candidate)
     received_by_kind: dict[str, int] = {}
     processed_by_kind: dict[str, int] = {}
     dropped_by_kind: dict[str, int] = {}
@@ -532,6 +550,7 @@ def simulate(workload: Workload, topology: Topology) -> dict:
     processed_seqs: set[int] = set()
     upstream: deque[Msg] = deque()
     busy_until: dict[str, float | None] = dict.fromkeys(groups, None)
+    loop_busy = False  # single_loop: any group running blocks every other
     stalled_consumer = 0
     stalled_loop = 0
     loop_stall_end = 0.0
@@ -567,8 +586,10 @@ def simulate(workload: Workload, topology: Topology) -> dict:
         return bool(stalled_loop) or (bool(stalled_consumer) and group == trade_group)
 
     def try_start(group: str, now: float) -> None:
-        nonlocal ordering_violations, duplicate_processed
+        nonlocal ordering_violations, duplicate_processed, loop_busy
         if busy_until[group] is not None or consumer_stalled(group) or not topology.size(group):
+            return
+        if single_loop and loop_busy:
             return
         msg, enqueued_at = topology.pop(group)
         wait = now - enqueued_at
@@ -591,10 +612,11 @@ def simulate(workload: Workload, topology: Topology) -> dict:
         processed_by_kind[msg.kind] = processed_by_kind.get(msg.kind, 0) + 1
         busy_sec[group] += msg.service
         busy_until[group] = now + msg.service
+        loop_busy = True
         heapq.heappush(events, (busy_until[group], _DONE, msg.seq, (group, msg)))
 
     def try_start_all(now: float) -> None:
-        for group in groups:
+        for group in order:
             try_start(group, now)
 
     while events:
@@ -620,9 +642,13 @@ def simulate(workload: Workload, topology: Topology) -> dict:
                 heapq.heappush(events, (max(now, loop_stall_end) + 1e-9, _DONE, msg.seq, payload))
                 continue
             busy_until[group] = None
+            loop_busy = False
             note_oldest(now)
             note_recovery(now)
-            try_start(group, now)
+            if single_loop:
+                try_start_all(now)  # the freed loop picks by priority, not by the group that finished
+            else:
+                try_start(group, now)
         elif etype == _STALL_START:
             if payload.scope == "loop":
                 stalled_loop += 1
@@ -651,12 +677,22 @@ def simulate(workload: Workload, topology: Topology) -> dict:
     processed = sum(processed_by_kind.values())
     dropped = sum(dropped_by_kind.values())
     remaining_by_kind: dict[str, int] = {}
+    candidates_queued = 0
     for group in groups:
         while topology.size(group):
             msg, _ = topology.pop(group)
             remaining_by_kind[msg.kind] = remaining_by_kind.get(msg.kind, 0) + 1
+            candidates_queued += int(msg.candidate)
     remaining = sum(remaining_by_kind.values())
-    sustained = dropped == 0 and remaining <= _SUSTAINED_REMAINING_FRACTION * max(received, 1)
+    candidates_served = len(candidate_latencies)
+    # Not served by the horizon for any reason: still queued, dropped, lost
+    # on reconnect or missed during the gap.
+    candidates_stranded = candidates_generated - candidates_served
+    # The prefilter's discards are not work the consumers still owe (the
+    # old denominator counted them and could call 83% stranded work
+    # 'sustained' - I12 review); a stranded candidate is never sustained.
+    sustained = (dropped == 0 and candidates_stranded == 0
+                 and remaining <= _SUSTAINED_REMAINING_FRACTION * max(received - prefiltered, 1))
     duration = workload.duration_sec
     return {
         "topology": topology.name,
@@ -684,6 +720,12 @@ def simulate(workload: Workload, topology: Topology) -> dict:
         "critical_wait": _stats(critical_waits),
         "critical_latency": _stats(critical_latencies),
         "candidate_latency": _stats(candidate_latencies),
+        "candidates_generated": candidates_generated,
+        "candidates_served": candidates_served,
+        "candidates_stranded": candidates_stranded,
+        "candidates_queued_at_horizon": candidates_queued,
+        "single_loop": single_loop,
+        "service_order": order,
         "ticker_latency": _stats(latencies.get("ticker", [])),
         "ordering_violations": ordering_violations,
         "duplicate_processed": duplicate_processed,
@@ -780,7 +822,8 @@ VARIANTS: dict[str, Callable[[Workload], Workload]] = {
 
 
 def compare(presets: list[str], seed: int = 1, candidates: tuple[str, ...] = CANDIDATES,
-            variants: tuple[str, ...] | None = None) -> dict:
+            variants: tuple[str, ...] | None = None, single_loop: bool = False,
+            service_order: tuple[str, ...] | None = None) -> dict:
     """Every candidate topology against every preset (and variant) on
     literally the same message stream - the fingerprint proves it. With no
     `variants`, results[candidate][preset] is a result; with variants,
@@ -792,10 +835,13 @@ def compare(presets: list[str], seed: int = 1, candidates: tuple[str, ...] = CAN
         fingerprints[preset] = base.fingerprint()
         for name in candidates:
             if variants is None:
-                results[name][preset] = simulate(base, TOPOLOGIES[name]())
+                results[name][preset] = simulate(base, TOPOLOGIES[name](), single_loop=single_loop,
+                                                 service_order=service_order)
             else:
                 results[name][preset] = {
-                    variant: simulate(VARIANTS[variant](base), TOPOLOGIES[name]()) for variant in variants
+                    variant: simulate(VARIANTS[variant](base), TOPOLOGIES[name](), single_loop=single_loop,
+                                      service_order=service_order)
+                    for variant in variants
                 }
     combined = hashlib.sha1("|".join(f"{p}:{h}" for p, h in sorted(fingerprints.items())).encode()).hexdigest()[:16]
     return {"seed": seed, "presets": list(presets), "candidates": list(candidates),
@@ -846,10 +892,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--topology", choices=sorted(TOPOLOGIES), default="single_queue")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--single-loop", action="store_true",
+                        help="serve every class group on one loop (the production shape) instead of one server per group")
+    parser.add_argument("--order", default="critical,trade,ticker",
+                        help="single-loop service priority, highest first (group names as the topology defines them)")
     args = parser.parse_args(argv)
     if args.compare:
         matrix = compare([p for p in args.presets.split(",") if p], seed=args.seed,
-                         variants=tuple(v for v in args.variants.split(",") if v))
+                         variants=tuple(v for v in args.variants.split(",") if v),
+                         single_loop=args.single_loop, service_order=tuple(g for g in args.order.split(",") if g))
         print(json.dumps(matrix, indent=1) if args.json else _format_matrix(matrix))
     elif args.all:
         results = {name: run_preset(name, args.topology, args.seed) for name in PRESETS}

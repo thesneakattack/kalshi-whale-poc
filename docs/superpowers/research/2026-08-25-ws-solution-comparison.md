@@ -169,3 +169,14 @@ queue model (the gateway counts them; I1).
 - `seq` on trade envelopes (I9 open item 1) for gap accounting.
 - The REST side (critical enrichment behind background bursts, candidate loss on
   transient failure) is I11's matrix.
+
+## 9. I12 addendum — read §4 with the single-loop model
+
+The adversarial review (`2026-08-25-realtime-architecture-review.md` §3.1, W1–W2) found
+that this comparison served every class group on an independent server and counted
+prefiltered messages in the `sustained` denominator. Both are fixed in the harness
+(`simulate(..., single_loop=True, service_order=...)`; `--single-loop` on the CLI). The
+corrected `busy_hour` numbers are in the review's §3.3: `staged`+hygiene candidate p95 is
+~20 ms (max 117–172 ms), not 0 ms, and one prefiltered consumer is within 1–3 ms of it.
+The direction of every conclusion in §5 stands; the magnitudes in §4.1 for
+`class_groups`/`staged` are upper bounds.

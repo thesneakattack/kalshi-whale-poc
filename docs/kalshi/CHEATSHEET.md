@@ -514,3 +514,37 @@ solution comparison (I11); don't re-derive the 500-token reasoning.
 `get-markets.md` (`TickersQuery`: "Comma-separated list", no cap).
 **Found:** 2026-08-25, realtime data-plane task I8
 (`tools/kalshi_rate_limit_probe.py`, `docs/superpowers/research/2026-08-25-rest-demand-study.md`).
+**Discrepancy (2026-08-25, I12 review):** `rate_limits.md` says Basic-tier
+Read buckets "hold up to two seconds of budget" (= 400 tokens / 40 requests
+at 200 tokens/s), but this account's live `GET /account/limits` reported a
+600-token capacity. Also, every rate-limit sentence in the mirror is written
+for **authenticated** requests; the app's market-data client is
+unauthenticated, and the mirror says nothing about the anonymous ceiling —
+treat 20 req/s / 60-burst as the account's numbers, not this traffic's, until
+the anonymous ceiling is probed (carried as an open verification into the
+remediation design). Docs/live disagreement recorded here rather than
+resolved by guessing.
+
+## Does the lifecycle `settled` WS message carry the market's result?
+**Answer:** No. `market-and-event-lifecycle.md` (the `market_lifecycle_v2`
+channel) gives the `determined` message a `result` field (plus the
+determination timestamp and settlement value), while the `settled` message
+carries only `settled_ts`. `market_lifecycle.md` adds that the WS `settled`
+event "corresponds to settlement being processed" and that in REST a settled
+market ends at status `finalized` with `settlement_ts` populated — so a REST
+read issued the instant `settled` arrives can still see a not-yet-`finalized`
+market. The channel lists no `amended`/`disputed` event; whether a
+re-determination re-fires `determined` is not stated.
+**Gotcha:** `services/whale_stream/whale_stream_handlers.py`'s settled
+handler re-reads the market immediately and drops the ticker if it isn't
+`finalized` yet (leaving it to "the REST-tick fallback path ... if it ever
+resurfaces on the watchlist") — that immediate read was 23% of all REST
+demand in I8, and the settlement-processing race means part of it is wasted.
+The remediation design (I13) batches and defers it (`GET /markets?tickers=…`
+for N settlements after a delay, with retry) rather than removing it: the app
+deliberately grades on `finalized`, not `determined` (2026-08-23 correction,
+"disputed-and-reversed-result gap"), so some REST read stays necessary.
+**Source:** `market-and-event-lifecycle.md` (message field tables),
+`market_lifecycle.md` ("Transitions", "Settlement").
+**Found:** 2026-08-25, realtime data-plane task I12 (adversarial review of the
+REST demand-reduction item).

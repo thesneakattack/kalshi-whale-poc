@@ -157,3 +157,17 @@ wire copies are lost or delayed 90 s during two saturation windows. `restart_mid
 - Whether the tick's gather should be de-burst in code (C1) regardless of policy: the
   375 ms position wait under strict priority is caused by coroutine launch order, which
   no scheduler sees.
+
+## 6. I12 addendum — the "375 ms position wait" was a tie-break artifact
+
+The adversarial review (`2026-08-25-realtime-architecture-review.md` §3.2, R1–R3, R5)
+found that `Demand.requests()` broke same-instant ties alphabetically, placing live-status
+ahead of the position fetch although `main.py` fetches live-status a phase later; that
+`ReservedCapacity` carves its reserve out of the shared rate (8 → 5/s) and borrows without
+bound; and that "inside the existing limiter" is a rewrite of `acquire()` (which holds its
+lock while sleeping). The tie-break now mirrors the tick's launch order and live-status is
+phased 0.5 s later. The corrected §2 numbers are in the review's §3.3: under today's FIFO
+bucket the position fetch waits p95 1.1 s (quiet) / 4.9 s (catalog storm) behind the
+catalog batch the tick spawns *before* its critical gather — a code-order finding, worse
+than the artifact. The `reserved` rows in §2 carry the 5/s-shared caveat; the leading
+design's "shared bucket stays at 8/s" was not what this harness modelled.

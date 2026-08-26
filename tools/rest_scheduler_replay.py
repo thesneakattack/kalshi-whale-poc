@@ -63,6 +63,21 @@ class Req:
     network: float
 
 
+# Same-instant tie-break mirrors the trading tick's real launch order
+# (main.py): the catalog / resolution / backup / research tasks are spawned
+# just before the critical gather (markets, account, exchange status), and
+# live-status is fetched a phase later, after the market fetch. The I11
+# harness broke ties alphabetically, which put live-status ahead of the
+# position fetch - the whole source of its "375 ms position wait" finding
+# (I12 review).
+LAUNCH_ORDER = ("background_catalog", "background_resolution", "critical_position", "critical_whale",
+                "background_live_status", "interactive", "other")
+
+
+def _launch_rank(cls: str) -> int:
+    return LAUNCH_ORDER.index(cls) if cls in LAUNCH_ORDER else len(LAUNCH_ORDER)
+
+
 class Demand:
     def __init__(self, seed: int, duration_sec: float, classes: dict[str, ClassDemand]):
         self.seed = seed
@@ -87,7 +102,7 @@ class Demand:
                     for _ in range(spec.burst_size):
                         raw.append((t, cls, spec.network.sample(rng)))
                     t += spec.burst_every
-        raw.sort(key=lambda r: (r[0], r[1]))
+        raw.sort(key=lambda r: (r[0], _launch_rank(r[1]), r[1]))
         return [Req(i, cls, t, net) for i, (t, cls, net) in enumerate(raw)]
 
 
@@ -685,7 +700,9 @@ def _classes(scale: float = 1.0, whale_net=Fixed(0.047), bg_net=None) -> dict[st
     return {
         "critical_whale": ClassDemand(rate=0.15 * scale, network=whale_net),
         "critical_position": ClassDemand(burst_size=3, burst_every=6.0, network=bg_net.get("critical_position", Fixed(0.090))),
-        "background_live_status": ClassDemand(burst_size=int(round(6 * scale)), burst_every=6.0, network=bg_net.get("background_live_status", Fixed(0.074))),
+        # One market-fetch phase after the tick starts: main.py gathers
+        # live-status only after the critical gather has returned.
+        "background_live_status": ClassDemand(burst_size=int(round(6 * scale)), burst_every=6.0, burst_phase=0.5, network=bg_net.get("background_live_status", Fixed(0.074))),
         "background_catalog": ClassDemand(burst_size=int(round(10 * scale)), burst_every=15.0, network=bg_net.get("background_catalog", Fixed(0.179))),
         "background_resolution": ClassDemand(burst_size=int(round(4 * scale)), burst_every=30.0, network=bg_net.get("background_resolution", Fixed(0.180))),
         "interactive": ClassDemand(rate=0.02, network=Fixed(0.180)),
