@@ -434,7 +434,6 @@ async def trading_loop():
             # fetch.
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
-            _maybe_scan_catalog_batch(cfg)
             _maybe_check_signal_resolutions(cfg)
             _maybe_run_backup(cfg)
             _maybe_run_research(cfg)
@@ -444,6 +443,16 @@ async def trading_loop():
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
                 _fetch_exchange_status(client),
             )
+            # Root-cause report C3/R1 (realtime data-plane remediation plan,
+            # P1 Task 9): this used to fire BEFORE the critical gather above,
+            # so the background catalog-scan task it spawns (up to
+            # PACE_LIMIT concurrent get_markets calls even after Task 9's
+            # own pacing fix) could start competing for the same REST
+            # token bucket the position/account/exchange-status fetch was
+            # about to need. Triggering it only after that gather returns
+            # means the critical fetch's own calls are already dispatched
+            # first.
+            _maybe_scan_catalog_batch(cfg)
             await _fetch_category_metadata(client)
             phase_timings["market_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()

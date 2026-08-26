@@ -276,6 +276,22 @@ async def _get_top_series(client: KalshiPublicGateway, categories: list[str] | N
 # series/markets from an earlier scanning period).
 _CATALOG_SCAN_BATCH_SIZE = 10
 
+# Root-cause report C3 / realtime data-plane remediation plan P1 Task 9:
+# an unbounded asyncio.gather() of up to _CATALOG_SCAN_BATCH_SIZE
+# concurrent get_markets calls, all in the same background REST caller
+# class, delayed the tick-critical position/account fetch behind it in
+# the shared token bucket. PACE_LIMIT bounds how many of this batch's own
+# calls run concurrently - independent of _CATALOG_SCAN_BATCH_SIZE, which
+# stays the same (still scans the same series per tick, just not all at
+# once).
+PACE_LIMIT = 4
+_pace_sem = asyncio.Semaphore(PACE_LIMIT)
+
+
+async def _paced_get_markets(client: KalshiPublicGateway, **kwargs):
+    async with _pace_sem:
+        return await client.get_markets(**kwargs)
+
 
 async def _scan_catalog_batch(client: KalshiPublicGateway, cfg: dict):
     """Incrementally builds market_catalog's near-term market catalog, a
@@ -305,7 +321,7 @@ async def _scan_catalog_batch(client: KalshiPublicGateway, cfg: dict):
     if not batch:
         return
     results = await asyncio.gather(
-        *(client.get_markets(limit=100, status="open", series_ticker=s["ticker"]) for s in batch),
+        *(_paced_get_markets(client, limit=100, status="open", series_ticker=s["ticker"]) for s in batch),
         return_exceptions=True,
     )
     now = time.time()
