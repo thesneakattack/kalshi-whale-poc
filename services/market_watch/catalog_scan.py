@@ -285,11 +285,32 @@ _CATALOG_SCAN_BATCH_SIZE = 10
 # stays the same (still scans the same series per tick, just not all at
 # once).
 PACE_LIMIT = 4
-_pace_sem = asyncio.Semaphore(PACE_LIMIT)
 
-
-async def _paced_get_markets(client: KalshiPublicGateway, **kwargs):
-    async with _pace_sem:
+# Deliberately NOT a module-level asyncio.Semaphore(PACE_LIMIT) singleton
+# (code-review fix, finding #8 - /code-review high pass against PR #23,
+# confirmed real and reproduced directly, not just plausible: two
+# sequential asyncio.run() calls in the same process, each contending the
+# same module-level Semaphore instance past PACE_LIMIT, deterministically
+# raised "RuntimeError: ... is bound to a different event loop" on the
+# second call - asyncio.Semaphore only binds to the running loop lazily,
+# the first time acquire() actually has to wait, via its
+# _LoopBoundMixin._get_loop(); an uncontended acquire() never touches it,
+# which is exactly why the two pre-existing tests that happened to
+# exercise this coexisted safely by accident - only one of them was ever
+# contended enough to trigger the bind). Confirmed low risk in real
+# production use (main.py's own _maybe_scan_catalog_batch already guards
+# against overlapping batches via state["catalog_scan"]["scanning"], and
+# uvicorn runs one event loop for the whole process lifetime - no
+# cross-loop reuse ever happens there), but a genuine test-isolation
+# landmine: any future test exercising this with >= PACE_LIMIT concurrent
+# series, run in the same pytest worker process after another such test,
+# would crash non-deterministically depending on xdist's scheduling that
+# day. Fixed with the standard pattern for this class of bug - a fresh
+# Semaphore per call, scoped to the one batch that's ever in flight at a
+# time in production anyway - rather than a lazy-rebind-per-loop
+# workaround, since there is no cross-invocation pacing to preserve here.
+async def _paced_get_markets(client: KalshiPublicGateway, pace_sem: asyncio.Semaphore, **kwargs):
+    async with pace_sem:
         return await client.get_markets(**kwargs)
 
 
@@ -320,8 +341,20 @@ async def _scan_catalog_batch(client: KalshiPublicGateway, cfg: dict):
     batch = market_catalog.next_series_to_scan(all_series, _CATALOG_SCAN_BATCH_SIZE)
     if not batch:
         return
+    # Fresh per call (finding #8 - see _paced_get_markets' own docstring):
+    # asyncio.Semaphore binds lazily to whatever loop is running when it's
+    # first actually contended, so a module-level singleton reused across
+    # separate asyncio.run() calls (each its own loop) can raise once
+    # contended a second time. Constructing it here, scoped to this one
+    # batch, sidesteps that entirely - there is only ever one batch in
+    # flight at a time in production anyway (_maybe_scan_catalog_batch's
+    # own state["catalog_scan"]["scanning"] guard).
+    pace_sem = asyncio.Semaphore(PACE_LIMIT)
     results = await asyncio.gather(
-        *(_paced_get_markets(client, limit=100, status="open", series_ticker=s["ticker"]) for s in batch),
+        *(
+            _paced_get_markets(client, pace_sem, limit=100, status="open", series_ticker=s["ticker"])
+            for s in batch
+        ),
         return_exceptions=True,
     )
     now = time.time()
