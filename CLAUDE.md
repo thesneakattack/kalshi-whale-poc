@@ -39,6 +39,17 @@ immediately below: a module has to actually be trustworthy before real
 capital can depend on it, so that audit work is how this goal gets
 reached, not a separate track from it.
 
+**Clarification (2026-08-26, same day): the destination hasn't changed,
+but current work stays focused on paper trading.** The execution program
+(`docs/kalshi-personal-production-execution-program-2026-08-26.md`) lists
+programs all the way through live execution and capital qualification —
+that's the map, not a schedule to march through with urgency. Don't read
+"the end goal is real money" as license to prioritize Program 3 onward
+(canonical decision/live execution, shadow qualification, capital
+qualification) over the realtime/economic correctness work directly in
+front of them (Programs 1-2). Paper mode stays the default and the actual
+focus for now; nothing about this goal moves that up.
+
 Known specific gaps still open toward this goal (stubs — full detail in
 ROADMAP.md's "Path to production" section and the relevant module
 `CHEATSHEET.md`, not restated here):
