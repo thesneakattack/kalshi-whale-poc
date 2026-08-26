@@ -281,6 +281,79 @@ async def _flush_trade_capture_async(trade_tape: list, cfg: dict) -> dict:
     return await tick_executor.run(lambda: _flush_trade_capture(trade_tape, cfg))
 
 
+def _resolve_and_record_settlements(markets: list, market_results: dict, tick_now: float) -> list:
+    """The tick's synchronous market-result resolution + market-history
+    recording - root-cause report C1's ~1-5s 'resolve_and_record' phase
+    (realtime data-plane remediation plan, P1 Task 8). Single-connect
+    calls (market_analyst_agent/candidate_log resolution, the batched
+    market_history.record_snapshots executemany) plus a per-finalized-
+    market outcome/settlement-window write - a smaller N+1 shape than
+    series_stats' (Task 8's other target) since it only touches markets
+    that actually finalized this tick, not every watched market, but the
+    same _connect()-per-call cost either way. A plain sync function,
+    directly unit-testable and directly callable from tick_executor's
+    worker thread. Returns the slimmed markets list state["markets"]
+    should be set to (unchanged from what the inline block used to
+    compute)."""
+    slimmed = [_slim_market(m) for m in markets]
+    # Cheap, pure-DB checks (no new API calls) - run every tick regardless
+    # of market_analyst.enabled/whether a market ever traded, so analyses
+    # made while a feature was on still get graded after it's turned off.
+    market_analyst_agent.resolve_from_market_results(market_results)
+    candidate_log.resolve_from_market_results(market_results)
+    # Real market data logging (docs/advisory-engine-plan.md §9) -
+    # independent of whale signals, independent of whether either strategy
+    # ever trades a given market. Same real fields already fetched by the
+    # caller, zero extra API cost.
+    market_history.record_snapshots(
+        [
+            {
+                "ticker": m["ticker"],
+                "yes_price": float(m.get("yes_bid_dollars") or 0.5),
+                "spread": max(
+                    float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
+                ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
+                "volume_24h": float(m.get("volume_24h_fp") or 0.0),
+                "time_to_close_sec": market_history.seconds_to_close(m.get("close_time"), tick_now),
+            }
+            for m in markets if m.get("ticker")
+        ],
+        timestamp=tick_now,
+    )
+    for m in markets:
+        result = (m.get("result") or "").strip().lower()
+        # status=="finalized" gate: 2026-08-23 fix, same reasoning as
+        # propagate_milestone_winners' own docstring - result is set at
+        # "determined" but can still flip (disputed -> amended) before
+        # "finalized" is truly terminal.
+        if result in ("yes", "no") and m.get("ticker") and m.get("status") == "finalized":
+            market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
+            # Close the loop on any settlement-window observations taken
+            # for this market (services/settlement_edge.py) - the realised
+            # outcome is written onto the rows that forecast it, so scoring
+            # can never pair an observation with a different window's
+            # result. No-op (0 rows) for the overwhelming majority of
+            # markets, which are not index-settled and were never observed.
+            settlement_edge.resolve_window(m["ticker"], result == "yes")
+    return slimmed
+
+
+async def _resolve_and_record_settlements_async(markets: list, market_results: dict, tick_now: float) -> list:
+    """Awaitable wrapper: runs _resolve_and_record_settlements via
+    tick_executor instead of the calling event loop (P1 Task 8)."""
+    return await tick_executor.run(
+        lambda: _resolve_and_record_settlements(markets, market_results, tick_now)
+    )
+
+
+async def _build_series_track_record_async(tickers: list, days: int = 30) -> dict:
+    """Awaitable wrapper: runs signal_log.series_stats_bulk via
+    tick_executor instead of the calling event loop - root-cause report
+    C1's specifically named series_stats N+1 at main.py:736, one
+    _connect() per watched market before this (P1 Task 8)."""
+    return await tick_executor.run(lambda: signal_log.series_stats_bulk(tickers, days=days))
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -388,55 +461,17 @@ async def trading_loop():
             # _MARKET_FIELDS (that trimming is only for the /api/state
             # payload, not internal use).
             market_results = await propagate_milestone_winners(client, markets)
-            state["markets"] = [_slim_market(m) for m in markets]
-            # Cheap, pure-DB check (no new API calls - see the docstring on
-            # resolve_from_market_results) - runs every tick regardless of
-            # market_analyst.enabled, so analyses made while it was on still
-            # get graded after it's turned back off.
-            market_analyst_agent.resolve_from_market_results(market_results)
-            # Same zero-extra-API-call resolution shape - grades every
-            # rejected candidate (services/candidate_log.py, Gap 1 of
-            # docs/config-tuning-data-gaps-2026-08-10.md) against how its
-            # market actually resolved.
-            candidate_log.resolve_from_market_results(market_results)
-
-            # Real market data logging (docs/advisory-engine-plan.md §9,
-            # direct request: "start storing and analyzing market data
-            # now") - independent of whale signals, independent of whether
-            # either strategy ever trades a given market. Same real fields
-            # already fetched above, zero extra API cost.
+            # _resolve_and_record_settlements bundles everything that used
+            # to run inline here (root-cause report C1's ~1-5s
+            # "resolve_and_record" phase) - state["markets"] slimming, the
+            # market_analyst_agent/candidate_log resolution, the batched
+            # market_history.record_snapshots write, and the per-finalized-
+            # market outcome/settlement-window write - onto one
+            # tick_executor worker thread instead of this loop (P1 Task 8).
+            # propagate_milestone_winners above stays on the loop: it's an
+            # awaited network call, not sync work tick_executor can run.
             tick_now = time.time()
-            market_history.record_snapshots(
-                [
-                    {
-                        "ticker": m["ticker"],
-                        "yes_price": float(m.get("yes_bid_dollars") or 0.5),
-                        "spread": max(
-                            float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
-                        ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
-                        "volume_24h": float(m.get("volume_24h_fp") or 0.0),
-                        "time_to_close_sec": market_history.seconds_to_close(m.get("close_time"), tick_now),
-                    }
-                    for m in markets if m.get("ticker")
-                ],
-                timestamp=tick_now,
-            )
-            for m in markets:
-                result = (m.get("result") or "").strip().lower()
-                # status=="finalized" gate: 2026-08-23 fix, same reasoning as
-                # propagate_milestone_winners' own docstring - result is set
-                # at "determined" but can still flip (disputed -> amended)
-                # before "finalized" is truly terminal.
-                if result in ("yes", "no") and m.get("ticker") and m.get("status") == "finalized":
-                    market_history.record_outcome(m["ticker"], result, resolved_at=tick_now)
-                    # Close the loop on any settlement-window observations
-                    # taken for this market (services/settlement_edge.py) -
-                    # the realised outcome is written onto the rows that
-                    # forecast it, so scoring can never pair an observation
-                    # with a different window's result. No-op (0 rows) for
-                    # the overwhelming majority of markets, which are not
-                    # index-settled and were never observed.
-                    settlement_edge.resolve_window(m["ticker"], result == "yes")
+            state["markets"] = await _resolve_and_record_settlements_async(markets, market_results, tick_now)
             phase_timings["resolve_and_record"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
@@ -751,9 +786,13 @@ async def trading_loop():
             title_cache.save_market_titles(new_market_titles)
             # Computed once per poll tick (not per /api/state request, which is polled
             # more often) since it's the same until the next tick anyway.
-            state["series_track_record"] = {
-                m["ticker"]: signal_log.series_stats(m["ticker"], days=30) for m in markets if m.get("ticker")
-            }
+            # series_stats_bulk (P1 Task 8) replaces what used to be one
+            # signal_log.series_stats() call - and one _connect() - per
+            # market: root-cause report C1's specifically named series_stats
+            # N+1. One connection, one query pair per unique series, run
+            # off the loop via tick_executor.
+            _tracked_tickers = [m["ticker"] for m in markets if m.get("ticker")]
+            state["series_track_record"] = await _build_series_track_record_async(_tracked_tickers, days=30)
             phase_timings["capture_flush_and_titles"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["last_poll"] = time.time()

@@ -122,6 +122,35 @@ def test_all_series_stats_groups_every_series_in_one_call(tmp_path, monkeypatch)
     assert stats["BBB"]["win_rate"] == 0.0
 
 
+def test_series_stats_bulk_matches_series_stats_per_ticker(tmp_path, monkeypatch):
+    """realtime data-plane remediation plan, P1 Task 8: main.py's per-market
+    series_stats N+1 loop (main.py:736, root-cause report C1) opens one
+    _connect() per market ticker. series_stats_bulk must return exactly
+    what calling series_stats(ticker, days) once per ticker would - same
+    keys, same values - just on one connection with one query per unique
+    series instead of N connections."""
+    log = _log(tmp_path, monkeypatch)
+    now = time.time()
+    log.log_signal("AAA-1", "yes", 1000, 0.8, "simulated", seen_at=now - 100)
+    log.log_signal("AAA-2", "no", 1000, 0.7, "simulated", seen_at=now - 50)
+    log.log_signal("BBB-1", "yes", 1000, 0.9, "simulated", seen_at=now - 10)
+    batch = log.unresolved_batch(limit=10, older_than_sec=0)
+    for row in batch:
+        log.mark_resolved(row["id"], correct=(row["ticker"] == "AAA-1"))
+
+    tickers = ["AAA-1", "AAA-3", "BBB-1", "CCC-1"]  # AAA-3: same series, no signals of its own
+    bulk = log.series_stats_bulk(tickers, days=30)
+
+    assert set(bulk.keys()) == set(tickers)
+    for ticker in tickers:
+        assert bulk[ticker] == log.series_stats(ticker, days=30)
+
+
+def test_series_stats_bulk_empty_list_returns_empty_dict(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    assert log.series_stats_bulk([], days=30) == {}
+
+
 def test_all_series_stats_excludes_out_of_window_series(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     now = time.time()

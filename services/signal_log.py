@@ -316,6 +316,52 @@ def series_stats(ticker: str, days: int = 30) -> dict:
     }
 
 
+def series_stats_bulk(tickers: list[str], days: int = 30) -> dict[str, dict]:
+    """Same per-ticker result series_stats(ticker, days) would return for
+    each of tickers, computed on one connection instead of one _connect()
+    per ticker (main.py's series_track_record build, root-cause report
+    C1's specifically named series_stats N+1 at main.py:736 - realtime
+    data-plane remediation plan P1 Task 8). _connect() alone costs ~12.6ms;
+    with N markets watched that's N x 12.6ms of loop-blocking connection
+    overhead for what is, after series_of() collapses tickers to their
+    series, usually a handful of distinct queries.
+
+    Also deduplicates by series (many tickers - e.g. every BTC 15-minute
+    market - share one series), so two tickers in the same series cost one
+    query pair, not two: same output shape as calling series_stats()
+    individually, fewer redundant round-trips (CLAUDE.md's efficiency
+    axis), not a behavior change."""
+    if not tickers:
+        return {}
+    since = time.time() - days * 86400
+    series_by_ticker = {ticker: series_of(ticker) for ticker in tickers}
+    stats_by_series: dict[str, dict] = {}
+    with _connect() as conn:
+        for series in set(series_by_ticker.values()):
+            total = conn.execute(
+                "SELECT COUNT(*) FROM signals WHERE series = ? AND seen_at >= ?", (series, since)
+            ).fetchone()[0]
+            resolved_count, correct_sum = conn.execute(
+                "SELECT COUNT(*), SUM(correct) FROM signals WHERE series = ? AND seen_at >= ? AND resolved = 1 "
+                "AND excluded = 0",
+                (series, since),
+            ).fetchone()
+            resolved_count = resolved_count or 0
+            correct_count = correct_sum or 0
+            stats_by_series[series] = {
+                "series": series,
+                "window_days": days,
+                "total_signals": total,
+                "resolved": resolved_count,
+                "correct": correct_count,
+                "win_rate": round(correct_count / resolved_count * 100, 1) if resolved_count else None,
+            }
+    # dict(...) per ticker: two tickers sharing a series must not share the
+    # same dict object, or an in-place mutation by one caller would leak
+    # into the other's "independent" entry.
+    return {ticker: dict(stats_by_series[series]) for ticker, series in series_by_ticker.items()}
+
+
 def resolved_signals_with_series(days: int = 30) -> list[dict]:
     """Every resolved signal's series + outcome, no factors_json filter
     (unlike resolved_signals_with_factors, which exists for confidence
