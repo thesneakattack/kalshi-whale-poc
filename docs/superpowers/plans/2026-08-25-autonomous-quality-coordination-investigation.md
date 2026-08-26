@@ -50,15 +50,15 @@
 - GitNexus only after index sanity check
 - GitHub/`gh` for authoritative remote-work state
 
-- [ ] Record current branch, HEAD, dirty state, `git worktree list`, origin/main divergence, open PRs, remote initiative branches, and changed-path ownership.
-- [ ] Identify any files this initiative must not touch because another branch currently changes them.
-- [ ] Record current Woodpecker/GitHub Actions topology and required status contexts from repo policy/current remote state where accessible.
-- [ ] Inventory current Claude hooks/skills/plugins by **capability state**, not installation state; record ACTIVE/LIMITED/BLOCKED/NOT_NEEDED for this investigation.
-- [ ] Sanity-check GitNexus; if the known corrupted-index smell occurs, repair according to `tooling-plugins.md` before any structural query.
-- [ ] Use parallel read-only tracks for (a) QCP map, (b) active-work map, and (c) external platform research only if doing so reduces context load without sharing mutable state.
-- [ ] Main Claude synthesizes one baseline containing authoritative paths, active contention, current detector/CI flow, and explicit unknowns.
-- [ ] If `.claude/rules/quality-capabilities.md` is no longer contested, add only a small routing entry for this orchestrator in a separate focused commit; otherwise record the deferral and leave it untouched.
-- [ ] Commit the baseline (and router entry only if conflict-free): `docs: baseline autonomous quality coordination investigation`.
+- [x] Record current branch, HEAD, dirty state, `git worktree list`, origin/main divergence, open PRs, remote initiative branches, and changed-path ownership. (Baseline doc §1.)
+- [x] Identify any files this initiative must not touch because another branch currently changes them. (Baseline doc §2 — contention map.)
+- [x] Record current Woodpecker/GitHub Actions topology and required status contexts from repo policy/current remote state where accessible. (Baseline doc §3.)
+- [x] Inventory current Claude hooks/skills/plugins by **capability state**, not installation state; record ACTIVE/LIMITED/BLOCKED/NOT_NEEDED for this investigation. (Baseline doc §5.)
+- [x] Sanity-check GitNexus; if the known corrupted-index smell occurs, repair according to `tooling-plugins.md` before any structural query. (Baseline doc §5/§6.)
+- [x] Use parallel read-only tracks for (a) QCP map, (b) active-work map, and (c) external platform research only if doing so reduces context load without sharing mutable state. (Baseline doc §6.)
+- [x] Main Claude synthesizes one baseline containing authoritative paths, active contention, current detector/CI flow, and explicit unknowns. (Baseline doc §7/§8.)
+- [x] If `.claude/rules/quality-capabilities.md` is no longer contested, add only a small routing entry for this orchestrator in a separate focused commit; otherwise record the deferral and leave it untouched. (Router entry landed as its own commit, `e55b1e8`.)
+- [x] Commit the baseline (and router entry only if conflict-free): `docs: baseline autonomous quality coordination investigation`. (`0853c41`, router entry `e55b1e8`.)
 
 **Acceptance**
 A cold reviewer can see exactly what is active, what is contested, which tools are actually usable, and which repository files/services constitute the current QCP/CI control plane.
@@ -78,15 +78,15 @@ A cold reviewer can see exactly what is active, what is contested, which tools a
 - `root-cause-debugging` if observed identity behavior is surprising
 - parallel agents may independently inventory disjoint scanners
 
-- [ ] Enumerate every registered scanner and every `QualityFinding` shape it can emit: `check`, severity, confidence, source, scope, evidence fields, remediation, and exact `finding_id` construction.
-- [ ] Classify each ID as semantic-stable, location-sensitive, content-sensitive, aggregate/inventory, or unsuitable for external state.
-- [ ] Write synthetic mutation experiments that insert harmless lines before a finding and record whether the ID changes.
-- [ ] Test multiple same-rule findings in one file/scope so a proposed normalized identity cannot collapse distinct defects.
-- [ ] Test recurrence after resolution and a plausible file/symbol rename where the scanner supports it.
-- [ ] Compare three identity strategies: raw `finding_id`; separate normalized `automation_key`; reporting-surface-native correlation such as SARIF rule+location.
-- [ ] Quantify baseline-migration cost if existing `finding_id`s were changed.
-- [ ] Recommend an identity contract **without implementing it**, including collision and recurrence semantics.
-- [ ] Commit: `research: characterize quality finding identity stability`.
+- [x] Enumerate every registered scanner and every `QualityFinding` shape it can emit: `check`, severity, confidence, source, scope, evidence fields, remediation, and exact `finding_id` construction. (Doc §3 — 16 CI-scanner shapes + 7 runtime-producer shapes.)
+- [x] Classify each ID as semantic-stable, location-sensitive, content-sensitive, aggregate/inventory, or unsuitable for external state. (Doc §5.)
+- [x] Write synthetic mutation experiments that insert harmless lines before a finding and record whether the ID changes. (Doc §4, Appendix A harness.)
+- [x] Test multiple same-rule findings in one file/scope so a proposed normalized identity cannot collapse distinct defects. (Doc §4/§5.2.)
+- [x] Test recurrence after resolution and a plausible file/symbol rename where the scanner supports it. (Doc §5.3/§5.4.)
+- [x] Compare three identity strategies: raw `finding_id`; separate normalized `automation_key`; reporting-surface-native correlation such as SARIF rule+location. (Doc §7.)
+- [x] Quantify baseline-migration cost if existing `finding_id`s were changed. (Doc §8.)
+- [x] Recommend an identity contract **without implementing it**, including collision and recurrence semantics. (Doc §9 — specification only, later implemented externally at I11 §3 rather than by modifying scanners.)
+- [x] Commit: `research: characterize quality finding identity stability`. (`07398bd`.)
 
 **Acceptance**
 The investigation can state exactly which existing IDs are safe for durable state and whether a separate automation identity is required, backed by mutation tests rather than intuition.
@@ -103,15 +103,15 @@ The investigation can state exactly which existing IDs are safe for durable stat
 - parallel read-only agent for historical extraction if useful
 - no GitNexus needed unless a code-path question unexpectedly arises
 
-- [ ] Define a reproducible sampling window from available git/PR history (prefer enough recent initiatives to include current multi-session behavior).
-- [ ] Measure time from first initiative commit to PR creation and merge/close where data exists.
-- [ ] Measure overlap: number of simultaneously active initiative branches/PRs and their changed-path intersections.
-- [ ] Identify short-lived branch findings/manifest/baseline transitions that would have generated noisy escalation if acted on immediately.
-- [ ] Measure stale branch tail separately from normal active-work duration.
-- [ ] Simulate candidate persistence policies based on observation count, elapsed time, audit cadence, and active-work suppression.
-- [ ] Compare false early escalation and excessive delay; do not optimize only one side.
-- [ ] Produce candidate threshold ranges and explain confidence/data limitations; do not encode them in production code.
-- [ ] Commit: `research: measure quality coordination cadence`.
+- [x] Define a reproducible sampling window from available git/PR history (prefer enough recent initiatives to include current multi-session behavior). (Doc §2, 41h window.)
+- [x] Measure time from first initiative commit to PR creation and merge/close where data exists. (Doc §3.)
+- [x] Measure overlap: number of simultaneously active initiative branches/PRs and their changed-path intersections. (Doc §4.)
+- [x] Identify short-lived branch findings/manifest/baseline transitions that would have generated noisy escalation if acted on immediately. (Doc §6, the 3 replayed episodes.)
+- [x] Measure stale branch tail separately from normal active-work duration. (Doc §8.)
+- [x] Simulate candidate persistence policies based on observation count, elapsed time, audit cadence, and active-work suppression. (Doc §9, P0-P-k2+T6h policies.)
+- [x] Compare false early escalation and excessive delay; do not optimize only one side. (Doc §9 table.)
+- [x] Produce candidate threshold ranges and explain confidence/data limitations; do not encode them in production code. (Doc §9 "Candidate ranges," §11 bounded unknowns.)
+- [x] Commit: `research: measure quality coordination cadence`. (`39f0655`.)
 
 **Acceptance**
 Any recommended persistence/grace policy is derived from this repo's observed cadence and simulated trade-offs, not a generic 24/48-hour guess.
@@ -129,16 +129,16 @@ Any recommended persistence/grace policy is derived from this repo's observed ca
 - Superpowers brainstorming for alternatives
 - parallel agents may model independent strategy families
 
-- [ ] Define synthetic scenarios: exact finding claimed in PR; same-path unrelated PR; directory overlap; remote branch without PR; draft PR; stale branch; branch closed unmerged; merge fixes finding; merge does not fix finding; local unpushed work; two active PRs overlap one finding.
-- [ ] Evaluate exact finding claims in PR body/structured marker.
-- [ ] Evaluate open-PR changed-path/scope overlap.
-- [ ] Evaluate active remote-branch overlap and staleness.
-- [ ] Evaluate delay/observation-only suppression as the minimal control.
-- [ ] Research Claude WorktreeCreate/WorktreeRemove/SessionEnd/Subagent lifecycle hooks and prototype on paper whether local advisory state could represent unpushed work without pretending remote CI can read it.
-- [ ] Compare doing **no local registry** against a local advisory registry; include stale-state cleanup and operational burden.
-- [ ] Define precedence: exact claim > strong semantic/path evidence > weak overlap > persistence only, if evidence supports that order.
-- [ ] Assert that suppression never becomes resolution; a fresh `main` audit is the only resolver.
-- [ ] Commit: `research: compare active work suppression strategies`.
+- [x] Define synthetic scenarios: exact finding claimed in PR; same-path unrelated PR; directory overlap; remote branch without PR; draft PR; stale branch; branch closed unmerged; merge fixes finding; merge does not fix finding; local unpushed work; two active PRs overlap one finding. (Doc §4, scenario matrix.)
+- [x] Evaluate exact finding claims in PR body/structured marker. (Doc §6, signal A.)
+- [x] Evaluate open-PR changed-path/scope overlap. (Doc §7, signal B.)
+- [x] Evaluate active remote-branch overlap and staleness. (Doc §8, signal C.)
+- [x] Evaluate delay/observation-only suppression as the minimal control. (Doc §10, signal E.)
+- [x] Research Claude WorktreeCreate/WorktreeRemove/SessionEnd/Subagent lifecycle hooks and prototype on paper whether local advisory state could represent unpushed work without pretending remote CI can read it. (Doc §9, signal F.)
+- [x] Compare doing **no local registry** against a local advisory registry; include stale-state cleanup and operational burden. (Doc §9 — rejected, ≤2.3-min real coverage window.)
+- [x] Define precedence: exact claim > strong semantic/path evidence > weak overlap > persistence only, if evidence supports that order. (Doc §11.)
+- [x] Assert that suppression never becomes resolution; a fresh `main` audit is the only resolver. (Doc §11 invariant, later proven executably in I8.)
+- [x] Commit: `research: compare active work suppression strategies`. (`4fb265e`.)
 
 **Acceptance**
 The selected coordination signals have known false-positive/false-negative behavior and no claim of omniscience over local unpushed work.
@@ -161,14 +161,14 @@ The selected coordination signals have known false-positive/false-negative behav
 - C: GitHub-native coordination controller + Woodpecker verifier
 - D: report-only/no autonomous write
 
-- [ ] For each candidate draw event flow, trust boundaries, credentials, token lifetime, minimum permissions, retry/idempotence point, and failure/recovery path.
-- [ ] Verify from current Woodpecker docs that `branch: main` also matches PRs targeting main; require explicit event filtering in any privileged Woodpecker design.
-- [ ] Verify current Woodpecker secret behavior for pull-request events and record why PR lanes stay secretless.
-- [ ] Research GitHub App installation-token scope/expiry and minimum permission model.
-- [ ] Research GitHub Actions job-scoped token as a competing write-side credential, including permission configuration relevant to candidate actions.
-- [ ] Compare key-management burden, secret exposure, platform coupling, and auditability.
-- [ ] Keep any live credential/API proof read-only or use existing user auth; do not create/store a bot private key in this task.
-- [ ] Commit: `research: compare quality control plane credential topologies`.
+- [x] For each candidate draw event flow, trust boundaries, credentials, token lifetime, minimum permissions, retry/idempotence point, and failure/recovery path. (Doc §3, Candidates A-D.)
+- [x] Verify from current Woodpecker docs that `branch: main` also matches PRs targeting main; require explicit event filtering in any privileged Woodpecker design. (Doc §2.1; re-verified live against real pipeline data at I9.)
+- [x] Verify current Woodpecker secret behavior for pull-request events and record why PR lanes stay secretless. (Doc §2.1; re-verified live at I9.)
+- [x] Research GitHub App installation-token scope/expiry and minimum permission model. (Doc §2.2.)
+- [x] Research GitHub Actions job-scoped token as a competing write-side credential, including permission configuration relevant to candidate actions. (Doc §2.3.)
+- [x] Compare key-management burden, secret exposure, platform coupling, and auditability. (Doc §4, comparison matrix.)
+- [x] Keep any live credential/API proof read-only or use existing user auth; do not create/store a bot private key in this task. (No credential created anywhere in this investigation, confirmed again at I13.)
+- [x] Commit: `research: compare quality control plane credential topologies`. (`a4521e7`.)
 
 **Acceptance**
 There is no unexamined assumption that Woodpecker+App, GitHub Actions, or autonomous writing is inherently best.
@@ -185,14 +185,14 @@ There is no unexamined assumption that Woodpecker+App, GitHub Actions, or autono
 - existing QCP JSON output and Woodpecker status/log behavior
 - Chrome DevTools only if an actual browser-facing presentation question is chosen; otherwise record NOT_NEEDED
 
-- [ ] Inventory current QCP/CI output visible on branch pushes and PRs.
-- [ ] Build a finding-class matrix: source-located deterministic error, aggregate architecture error, heuristic warning, inventory/info, runtime anomaly, persistent actionable defect.
-- [ ] Prototype QCP→SARIF conversion **offline only** for representative source-located findings; do not upload.
-- [ ] Verify how SARIF identity/location semantics interact with I1's stable automation identity requirements.
-- [ ] Compare CI log/status, SARIF, PR annotation/comment/check, and GitHub issue for each finding class.
-- [ ] Simulate a week of repeated observations using I2 cadence and estimate issue/comment churn under each policy.
-- [ ] Define a "silent intermediate state" rule so observations/suppression do not generate repetitive comments.
-- [ ] Commit: `research: select quality finding reporting surfaces`.
+- [x] Inventory current QCP/CI output visible on branch pushes and PRs. (Doc §2.)
+- [x] Build a finding-class matrix: source-located deterministic error, aggregate architecture error, heuristic warning, inventory/info, runtime anomaly, persistent actionable defect. (Doc §3.)
+- [x] Prototype QCP→SARIF conversion **offline only** for representative source-located findings; do not upload. (Doc §4, Appendix A converter — never uploaded, confirmed again at I10/I11.)
+- [x] Verify how SARIF identity/location semantics interact with I1's stable automation identity requirements. (Doc §4.)
+- [x] Compare CI log/status, SARIF, PR annotation/comment/check, and GitHub issue for each finding class. (Doc §5.)
+- [x] Simulate a week of repeated observations using I2 cadence and estimate issue/comment churn under each policy. (Doc §6, Appendix B simulation.)
+- [x] Define a "silent intermediate state" rule so observations/suppression do not generate repetitive comments. (Doc §7; implemented executably at I8, reused unchanged at I11 §6.)
+- [x] Commit: `research: select quality finding reporting surfaces`. (`dcaf475`.)
 
 **Acceptance**
 GitHub issues, if retained, represent durable actionable work rather than becoming another telemetry stream.
@@ -210,17 +210,17 @@ GitHub issues, if retained, represent durable actionable work rather than becomi
 - official GitHub/Woodpecker docs
 - second-opinion/42Crunch remain skipped if still BLOCKED_EXTERNAL
 
-- [ ] Threat-model malicious/untrusted PR code attempting credential exfiltration.
-- [ ] Threat-model PR-target-branch filter mistakes.
-- [ ] Threat-model unstable identity causing issue/PR storms.
-- [ ] Threat-model stale detector result/replay after main moves.
-- [ ] Threat-model self-modification: remediator weakens scanner/baseline/policy/workflow/branch protection to make itself green.
-- [ ] Threat-model protected economic domains and accidental real-money semantic change.
-- [ ] Threat-model prompt injection through issue/PR text if an AI candidate-remediation path is ever introduced.
-- [ ] Define protected paths/capabilities and immutable/external policy boundaries for any later fixer.
-- [ ] Define fail-open vs fail-closed behavior for detection failure, GitHub API outage, token failure, active-work ambiguity, and identity ambiguity.
-- [ ] Add veto conditions to the architecture scoring matrix.
-- [ ] Commit: `research: threat model autonomous quality authority`.
+- [x] Threat-model malicious/untrusted PR code attempting credential exfiltration. (Doc T1.)
+- [x] Threat-model PR-target-branch filter mistakes. (Doc T2; re-verified live at I9.)
+- [x] Threat-model unstable identity causing issue/PR storms. (Doc T3.)
+- [x] Threat-model stale detector result/replay after main moves. (Doc T4; the "stale-SHA" property proven executably at I9's `write_gate.py`.)
+- [x] Threat-model self-modification: remediator weakens scanner/baseline/policy/workflow/branch protection to make itself green. (Doc T5.)
+- [x] Threat-model protected economic domains and accidental real-money semantic change. (Doc T6.)
+- [x] Threat-model prompt injection through issue/PR text if an AI candidate-remediation path is ever introduced. (Doc T7.)
+- [x] Define protected paths/capabilities and immutable/external policy boundaries for any later fixer. (Doc §3; reused unchanged at I7/I11 §8.)
+- [x] Define fail-open vs fail-closed behavior for detection failure, GitHub API outage, token failure, active-work ambiguity, and identity ambiguity. (Doc §4; the GitHub-outage case implemented at I11 §10.)
+- [x] Add veto conditions to the architecture scoring matrix. (Doc §5, V1-V8; applied to Candidates A/C/D at I10 §1.)
+- [x] Commit: `research: threat model autonomous quality authority`. (`c8fe088`.)
 
 **Acceptance**
 No architecture can win merely by averaging well while retaining a fatal credential/contention/self-modification flaw.
@@ -401,8 +401,8 @@ The production plan is executable by a fresh agent and grants authority incremen
 - [x] Push and inspect actual Woodpecker statuses for the final investigation commit/PR.
 - [x] Perform a final fresh-eyes review of credential assumptions, event filters, active-work handling, stable identity, protected paths, outage semantics, and rollout gates. (Cross-checked across I1/I3/I4/I6/I7/I9/I10/I11/I12 — verified doc §5, no drift found.)
 - [x] Sync ROADMAP/status/appropriate capability router only where repo conventions require and no parallel branch owns those files. (ROADMAP.md gains one P4 entry; `.claude/rules/quality-capabilities.md`'s router entry updated to complete; `static/status.html` deliberately left untouched, matching the confirmed precedent of the comparable prior investigation — verified doc §6.)
-- [ ] Merge the **investigation** PR only after green CI and review. This does not activate the future autonomous system.
-- [ ] Use `session-handoff` to leave the chosen production spec/plan and exact next implementation step reconstructable.
+- [x] Merge the **investigation** PR only after green CI and review. This does not activate the future autonomous system. (PR #15, merged `79ea790`; all 5 required PR contexts and all 5 required post-merge push contexts green. No write lane, credential, or autonomous system activated by the merge — confirmed by the integration audit above.)
+- [x] Use `session-handoff` to leave the chosen production spec/plan and exact next implementation step reconstructable. (Handoff delivered: next unit is Task 1 of `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`, no bespoke orchestrator required.)
 
 **Acceptance**
 The repository contains a validated research record, architecture decision, production spec, and production implementation plan, while autonomous write/remediation authority remains disabled until that separate implementation initiative begins.
