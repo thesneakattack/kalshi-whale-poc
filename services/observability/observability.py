@@ -24,7 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import http_client, whale_pipeline_perf
+from services import http_client, loop_watchdog, whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -199,7 +199,26 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # rest_latency_snapshot, pure read; window rolled by maybe_capture).
     metrics.update(_flatten_rest_latency(http_client.rest_latency_snapshot()))
 
+    # loop_watchdog.* (realtime data-plane remediation P0 Task 1) - whether
+    # the asyncio loop itself is stalling, independent of any one
+    # subsystem's own counters. Same "no evidence, no rows" contract as
+    # whale_pipeline: omitted entirely until the watchdog has taken at
+    # least one sample in this process.
+    metrics.update(_flatten_loop_watchdog(loop_watchdog.snapshot()))
+
     return metrics
+
+
+def _flatten_loop_watchdog(snapshot: dict) -> dict:
+    if not snapshot.get("samples"):
+        return {}  # watchdog hasn't sampled yet in this process - no evidence, no rows
+    out = {
+        "loop_watchdog.samples": float(snapshot["samples"]),
+        "loop_watchdog.stall_count": float(snapshot.get("stall_count") or 0),
+    }
+    if snapshot.get("stall_max_ms") is not None:
+        out["loop_watchdog.stall_max_ms"] = float(snapshot["stall_max_ms"])
+    return out
 
 
 def _flatten_rest_latency(snapshot: dict) -> dict:
@@ -335,6 +354,7 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
                 pass
     whale_pipeline_perf.perf.reset_window()
     http_client.reset_rest_latency_window()
+    loop_watchdog.reset_window()
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------

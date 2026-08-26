@@ -654,3 +654,37 @@ def test_maybe_capture_resets_the_rest_latency_window_after_persisting(monkeypat
 
     assert resets == [1]
     assert observability.history("kalshi_rest_class.critical_whale.calls", since_ts=0)[0]["value"] == 3.0
+
+
+def test_loop_watchdog_metrics_flow_into_the_snapshot():
+    from services import loop_watchdog
+    loop_watchdog.reset_window()
+    # simulate a stall having been recorded without running the real task
+    loop_watchdog._stall_max_ms, loop_watchdog._stall_count, loop_watchdog._samples = 300.0, 1, 10
+    try:
+        metrics = observability.capture_from_runtime({}, {}, None, None)
+        assert metrics["loop_watchdog.stall_max_ms"] == 300.0
+        assert metrics["loop_watchdog.stall_count"] == 1.0
+        assert metrics["loop_watchdog.samples"] == 10.0
+    finally:
+        loop_watchdog.reset_window()
+
+
+def test_loop_watchdog_metrics_omitted_when_never_sampled():
+    from services import loop_watchdog
+    loop_watchdog.reset_window()
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+    assert not any(k.startswith("loop_watchdog.") for k in metrics)
+
+
+def test_maybe_capture_resets_the_loop_watchdog_window_after_persisting(monkeypatch):
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    resets = []
+    monkeypatch.setattr(loop_watchdog, "reset_window", lambda: resets.append(1))
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert resets == [1]

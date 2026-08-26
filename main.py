@@ -40,6 +40,7 @@ from services import series_cache
 from services import series_evaluator
 from services import series_watcher
 from services import fault_log
+from services import loop_watchdog
 from services import task_supervisor
 from services import game_state
 from services import index_feed
@@ -917,6 +918,9 @@ async def lifespan(app: FastAPI):
     # not just vanish. See task_supervisor.py's own docstring for the
     # incidents (6973974, a31ae51, 12323cc) this is meant to catch.
     task = task_supervisor.supervise(trading_loop, component="trading_loop", operation="run", restart=True)
+    loop_watchdog_task = task_supervisor.supervise(
+        lambda: loop_watchdog.start_forever(), component="loop_watchdog", operation="run", restart=True,
+    )
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
@@ -949,6 +953,7 @@ async def lifespan(app: FastAPI):
         await index_stream.close()
         index_stream_task.cancel()
     task.cancel()
+    loop_watchdog_task.cancel()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data
     # client) holding its own SDK-managed aiohttp session — needs its own

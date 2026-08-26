@@ -288,6 +288,39 @@ What it says, and what it does not:
   the loop (series_watcher flush) and the worker.
 
 
+### `loop_watchdog.*` — event-loop stall detector (realtime data-plane remediation P0 Task 1, 2026-08-26)
+
+Source: `services/loop_watchdog.py`, a standalone periodic-wakeup timer
+started via `task_supervisor.supervise` in `main.py`'s `lifespan`, wholly
+independent of `whale_pipeline`/`<stream>.ingest`'s own counters. Where
+those measure *symptoms* correlated with a stall (queue wait, provider
+max), this measures the stall itself: it schedules an `asyncio.sleep`
+every `sample_interval_sec` (default 0.1 s) and records how much later than
+expected each wakeup actually ran. Anything scheduled on the same loop —
+the trading tick's synchronous SQLite phases being the leading suspect per
+the whale_pipeline section above — shows up directly as stall time here,
+falsifying (or confirming) that correlation without depending on any one
+subsystem's own instrumentation.
+
+Names (`float`; omitted entirely until the watchdog has taken at least one
+sample in this process — same "no evidence, no rows" contract as
+`whale_pipeline.*`):
+
+- `loop_watchdog.samples` — total wakeups observed in the window.
+- `loop_watchdog.stall_count` — wakeups that ran more than 50 ms
+  (`_STALL_THRESHOLD_SEC`) late.
+- `loop_watchdog.stall_max_ms` — the worst lateness observed in the window.
+
+**Window ownership.** Same rule as every other module in this file:
+`maybe_capture` calls `loop_watchdog.reset_window()` only after a sample is
+durably persisted; `capture_from_runtime`/`snapshot()` never reset.
+
+**Use.** The realtime data-plane remediation plan's P0 gate reads this via
+`GET /api/health/pipeline` as the primary evidence that later phases (the
+tick executor, the reader gate, the two-consumer split) actually reduce
+loop stalls rather than only moving where the same blocking work runs.
+
+
 ### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
 
 Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),
