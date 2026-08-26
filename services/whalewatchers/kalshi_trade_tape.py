@@ -235,6 +235,15 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # exchange-wide and needs to be observable rather than assumed.
         self.stats = {"prescanned": 0, "whale_sized_offlist": 0, "markets_resolved": 0,
                       "resolve_failures": 0}
+        # Tickers whose _resolve_unknown_markets lookup raised THIS ROUND
+        # (H4 fix, realtime data-plane remediation plan P2 Task 11) - reset
+        # every fetch_signals() call, consulted only by _process_trades_sync
+        # within that same call to tell "this market's lookup transiently
+        # failed" apart from "no lookup was ever attempted" (a sub-threshold
+        # print, or a genuinely confirmed-absent market via _market_cache).
+        # Only the former must be left unmarked-seen; the latter two keep
+        # today's behavior unchanged.
+        self._resolve_failed_tickers: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -356,6 +365,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         market. A missing market means the confidence score would have to
         be fabricated, and CLAUDE.md's standing rule is that this app
         skips rather than guesses."""
+        # Reset every call (H4 fix, P2 Task 11) - stale state from a prior
+        # tick must never leak into this one's mark-seen decision.
+        self._resolve_failed_tickers = set()
         wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
         wanted: set[str] = set()
         for trade in trade_tape:
@@ -396,6 +408,12 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             self.stats["resolve_failures"] += 1
             if counts is not None:
                 counts["resolve_failures"] = counts.get("resolve_failures", 0) + 1
+            # H4 fix (P2 Task 11): every ticker this round was trying to
+            # resolve is now a TRANSIENT miss, not a confirmed negative -
+            # _process_trades_sync must not mark_seen these trade_ids, or
+            # a real whale print is lost forever to a 429/timeout that had
+            # nothing to do with the trade itself.
+            self._resolve_failed_tickers |= set(batch)
             return
         for ticker in batch:
             market = fetched.get(ticker)
@@ -452,9 +470,6 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             trade_id = trade.get("trade_id")
             if not trade_id or trade_id in self._seen_trade_ids:
                 continue
-            # Evaluated once, regardless of outcome below; exchange time kept
-            # for REST-vs-WS reconciliation (I4).
-            self._mark_seen(trade_id, exchange_ts=trade_contract.trade_exchange_ts(trade) or now)
             _bump("trades")
 
             ticker = trade.get("ticker")
@@ -462,6 +477,21 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 series = signal_log.series_of(ticker)
                 trades_observed_by_series[series] = trades_observed_by_series.get(series, 0) + 1
             market = markets_by_ticker.get(ticker)
+            # H4 fix (realtime data-plane remediation plan, P2 Task 11):
+            # mark_seen only once the market lookup has produced a DEFINITE
+            # outcome - found, or a genuine negative (this ticker was never
+            # even attempted this round, e.g. a sub-threshold print, or
+            # _resolve_unknown_markets' own negative cache already confirmed
+            # Kalshi's response omits it). A ticker whose lookup was
+            # attempted THIS round and raised (self._resolve_failed_tickers)
+            # stays unmarked - a transient 429/timeout must never
+            # permanently short-circuit a real whale print via the seen
+            # dedupe ring; it gets a real chance on a later presentation
+            # instead (this trade_id's next appearance in the trade tape,
+            # or Task 12's retry queue).
+            if market is not None or ticker not in self._resolve_failed_tickers:
+                # Exchange time kept for REST-vs-WS reconciliation (I4).
+                self._mark_seen(trade_id, exchange_ts=trade_contract.trade_exchange_ts(trade) or now)
             if not market:
                 # Can't score confidence without this market's own
                 # volume/close_time - skip, don't fabricate. Post
