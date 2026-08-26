@@ -368,16 +368,16 @@ An implementation agent can build the selected architecture without inventing po
 **Required skill**
 - Superpowers `writing-plans`
 
-- [ ] Re-ground current HEAD/active branches again; implementation may begin days after I10.
-- [ ] Translate the approved production spec into bite-sized TDD tasks with exact files/interfaces/tests/commands/commit boundaries.
-- [ ] Stage rollout in this order unless the selected architecture proves a safer/simpler sequence: local/dry-run state → branch/main reporting → persistent integrated-state observation → external reporting/SARIF → issue escalation → deterministic draft PR creation.
-- [ ] Auto-merge is excluded; enabling it requires a later explicit design decision.
-- [ ] Every privilege increase has its own task and rollback condition rather than being bundled into initial scaffolding.
-- [ ] Include deliberate fault-injection proofs for identity, PR secret isolation, stale SHA, self-modification protection, duplicate retry, suppression, and non-resolution by claims.
-- [ ] Include Woodpecker required-context/branch-protection updates only if the selected architecture requires them and only after current CI state is read.
-- [ ] Include docs/rules/orchestrator updates without duplicating existing project policy.
-- [ ] Self-review the plan against the production spec for full coverage and no placeholders.
-- [ ] Commit: `docs: plan autonomous quality coordination implementation`.
+- [x] Re-ground current HEAD/active branches again; implementation may begin days after I10. (Fetched/checked before starting; still synced with `main`, no open PRs.)
+- [x] Translate the approved production spec into bite-sized TDD tasks with exact files/interfaces/tests/commands/commit boundaries. (9 tasks, real complete code throughout, no placeholders.)
+- [x] Stage rollout in this order unless the selected architecture proves a safer/simpler sequence: local/dry-run state → branch/main reporting → persistent integrated-state observation → external reporting/SARIF → issue escalation → deterministic draft PR creation. (Only the first two stages are built — SARIF/issue/draft-PR are correctly out of scope since I10/I11 never activated them; stated explicitly in the plan's Self-Review rather than silently omitted.)
+- [x] Auto-merge is excluded; enabling it requires a later explicit design decision. (No write lane exists anywhere in this plan at all.)
+- [x] Every privilege increase has its own task and rollback condition rather than being bundled into initial scaffolding. (N/A beyond Task 6's single `enabled` flag — no privilege increase exists in a report-only plan; the kill switch is that one flag.)
+- [x] Include deliberate fault-injection proofs for identity, PR secret isolation, stale SHA, self-modification protection, duplicate retry, suppression, and non-resolution by claims. (Task 8: identity/self-modification/suppression/non-resolution proven directly; PR-secret-isolation/stale-SHA/duplicate-retry marked N/A with reason — no write lane exists to prove those against, I9's write_gate.py prototype already proved them for the design that would need them.)
+- [x] Include Woodpecker required-context/branch-protection updates only if the selected architecture requires them and only after current CI state is read. (Read current `.woodpecker/*.yml` state first — confirmed none needed, module runs in-process not in CI.)
+- [x] Include docs/rules/orchestrator updates without duplicating existing project policy. (Task 9 — one line each in CLAUDE.md and quality-capabilities.md, pointing at the real routes rather than restating design detail.)
+- [x] Self-review the plan against the production spec for full coverage and no placeholders. (Self-Review section — caught and fixed two real bugs during drafting: a dotted-scope-vs-file-path suppression-matching bug, and a bare in-memory scheduler global repeating this repo's own already-fixed cold-start-reload bug class.)
+- [x] Commit: `docs: plan autonomous quality coordination implementation`.
 
 **Acceptance**
 The production plan is executable by a fresh agent and grants authority incrementally rather than all at once.
