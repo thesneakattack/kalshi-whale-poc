@@ -9,7 +9,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from services.quality.models import QualityFinding
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "quality_coordination.db"
+
+_HOST_SNIPPET_MAX = 80
 
 
 def _connect() -> sqlite3.Connection:
@@ -46,3 +50,32 @@ def _connect() -> sqlite3.Connection:
         error TEXT
     )""")
     return conn
+
+
+def derive_automation_key(f: QualityFinding) -> str:
+    """<check>/<rule>|<scope-without-line>|<subject>, per I1 §9 and I11 §3. Computed entirely
+    from QualityFinding's existing fields — no scanner file is read or modified to produce this.
+    Two named fallbacks (resource-lifecycle, kalshi-boundary host snippet) documented in I11 §3;
+    both degrade to a still-usable, just more line-sensitive, key rather than raising."""
+    check = f.check
+    evidence = f.evidence or {}
+
+    if check == "frontend-api-contract" and "raw" in evidence:
+        scope_no_line = f.scope.split(":")[0]
+        subject = evidence["raw"].strip()
+        return f"{check}|{scope_no_line}|{subject}"
+
+    if check == "kalshi-boundary":
+        if "imported" in evidence:
+            return f"{check}|{f.scope}|{evidence['imported']}"
+        if "module" in evidence:
+            return f"{check}|{f.scope}|{evidence['module']}"
+        if "field" in evidence:
+            return f"{check}|{f.scope}|{evidence['field']}"
+        if "snippet" in evidence:
+            return f"{check}|{f.scope}|{evidence['snippet'][:_HOST_SNIPPET_MAX]}"
+
+    if check == "resource-lifecycle":
+        return f"{check}|{f.scope}|{f.finding_id}"
+
+    return f"{check}|{f.scope}|"
