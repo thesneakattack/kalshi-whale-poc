@@ -58,6 +58,41 @@ semantics (fully open). See
 `docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
 that work is sequenced.
 
+- [ ] **The event loop still stalls for 17-38 seconds at a stretch, live,
+      post-P0-P2** — found 2026-08-26 while trying to gather Program 1's
+      "runtime-measured" evidence (the local dev instance itself was
+      unreachable for 4.5+ minute stretches at a time). `loop_watchdog`
+      (P0 Task 1's own diagnostic) confirmed real stalls, not a hunch:
+      `stall_max_ms` sat at 17,800-38,000ms across the whole ~20-minute
+      observation window, main thread pegged ~100-120% CPU the entire
+      time, every other thread idle. Root cause not proven via a stack
+      trace (this container has no `SYS_PTRACE`; `py-spy` can't attach),
+      but strongly implicated by source + behavior: `main.py`'s
+      `_maybe_prune_capture_stores()` runs its four stores' `prune()`
+      calls (`series_watcher`, `index_feed`, `game_state`, `observability`)
+      fully synchronously on the event loop — no `tick_executor`/
+      `asyncio.to_thread` offload, unlike every other heavy DB call P0-P2
+      already migrated. `data/series_watcher.db` has grown to **14.1GB**
+      (~100x the ~130MB CLAUDE.md's own history recorded when this
+      retention sweep was added, 2026-08-17) - a sweep of that size would
+      easily explain multi-second-to-tens-of-seconds blocking. Confirmed
+      this isn't a one-off: `_last_capture_prune_at` (main.py:145) inits
+      to `0.0`, so the sweep re-fires immediately on the very first tick
+      after *every* process restart regardless of when it last ran -
+      restarting the stuck process (`docker restart
+      ddev-kalshi-whale-poc-fastapi`) reproduced the identical stall
+      within seconds, confirmed via block-I/O growth (37MB -> 562MB+
+      inside the container while unresponsive). **Needs its own
+      root-cause-debugging pass**: offload the four `prune()` calls the
+      same way other heavy work was migrated, and separately investigate
+      why `series_watcher.db` reached 14.1GB when retention was supposed
+      to keep it bounded (wrong `retention_hours`, a `prune()` bug, or
+      write volume that's outgrown the assumption). Whale-signal handling
+      itself (`whale_provider.fetch_signals`) is very likely a *victim*
+      of this stall, not its cause - its own inner stage timers
+      (resolve/thread_wait/sync) stayed near-zero while its outer
+      wall-clock ballooned to match the same 17-38s window.
+
 - [x] Runway/exit gates: a position could open with almost no time left
       before its market's close and ride unmanaged to settlement. Fixed via
       `strategy.min_seconds_to_close` (entry-side floor) and
