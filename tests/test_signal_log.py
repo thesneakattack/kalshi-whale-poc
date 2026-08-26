@@ -411,6 +411,23 @@ def test_resolved_signals_with_factors_excludes_unresolved_rows(tmp_path, monkey
     assert log.resolved_signals_with_factors() == []  # never resolved
 
 
+def test_resolved_with_factors_count_matches_len_of_resolved_signals_with_factors(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})
+    log.log_signal("TICK-B", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.7})
+    log.log_signal("TICK-C", "yes", 500, 0.6, "simulated")  # no factors - excluded either way
+    log.mark_resolved(1, correct=True)
+    log.mark_resolved(2, correct=False)
+    log.mark_resolved(3, correct=True)
+    assert log.resolved_with_factors_count() == len(log.resolved_signals_with_factors()) == 2
+
+
+def test_resolved_with_factors_count_excludes_unresolved_rows(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})
+    assert log.resolved_with_factors_count() == 0  # never resolved
+
+
 def test_connect_enables_wal_mode(tmp_path, monkeypatch):
     # Real live incident (2026-08-11) - signal_log.py is on the exact hot
     # path (recent_sides_for_ticker/cluster_factor read from it on every

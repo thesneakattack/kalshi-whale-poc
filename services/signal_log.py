@@ -540,6 +540,20 @@ def total_count(resolved_only: bool = False) -> int:
         return conn.execute(f"SELECT COUNT(*) FROM signals {where}").fetchone()[0]
 
 
+def resolved_with_factors_count() -> int:
+    """Same filter as resolved_signals_with_factors() below, but a COUNT(*)
+    instead of fetching and JSON-parsing every matching row - added
+    2026-08-26 for GET /api/confidence-calibration/status (services/
+    whale_calibration/routes.py), which only ever needed the count. Proven
+    live via a py-spy stack trace (ROADMAP.md's event-loop-stall entry)
+    that this route was fetching+parsing every resolved-with-factors row
+    on every dashboard poll just to call len() on the result."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL",
+        ).fetchone()[0]
+
+
 def resolved_signals_with_factors() -> list[dict]:
     """services/whale_calibration/confidence_calibration.py's entire input: resolved signals
     that carry a real per-factor confidence breakdown. factors_json IS NOT
