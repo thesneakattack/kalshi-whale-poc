@@ -75,3 +75,95 @@ def test_line_shift_does_not_change_identity():
     f1 = _finding(check="config-usage", scope="alerting.crash_auto_resolve_after_sec")
     f2 = _finding(check="config-usage", scope="alerting.crash_auto_resolve_after_sec")
     assert derive_automation_key(f1) == derive_automation_key(f2)
+
+
+from datetime import datetime, timedelta, timezone
+
+from services.quality_coordination import (
+    BranchSignal, Claim, Signal, apply_observation, _connect,
+)
+
+T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _sig(key="k1", level="info", paths=("services/x.py",)):
+    return Signal(automation_key=key, level=level, scope_paths=paths,
+                  source_finding_id="fid", source_check="check")
+
+
+def test_new_signal_creates_observed_item(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    result = apply_observation(conn, [_sig()], [], [], T0)
+    conn.commit()
+    assert result["k1"] == "observed"
+    row = conn.execute("SELECT * FROM coordination_items WHERE automation_key='k1'").fetchone()
+    assert row["observation_count"] == 1
+    conn.close()
+
+
+def test_absent_signal_resolves_previously_tracked_item(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    apply_observation(conn, [_sig()], [], [], T0)
+    conn.commit()
+    result = apply_observation(conn, [], [], [], T0 + timedelta(hours=1))
+    conn.commit()
+    assert result["k1"] == "resolved"
+    conn.close()
+
+
+def test_exact_claim_suppresses(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    apply_observation(conn, [_sig()], [], [], T0)
+    conn.commit()
+    result = apply_observation(
+        conn, [_sig()], [], [Claim(automation_key="k1", source="PR#1")], T0 + timedelta(minutes=5)
+    )
+    conn.commit()
+    assert result["k1"] == "suppressed_pending_work"
+    conn.close()
+
+
+def test_path_overlap_branch_suppresses(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    apply_observation(conn, [_sig()], [], [], T0)
+    conn.commit()
+    branch = BranchSignal(name="fix/x", changed_paths=("services/x.py",),
+                           last_commit_at_iso=(T0 + timedelta(minutes=5)).isoformat())
+    result = apply_observation(conn, [_sig()], [branch], [], T0 + timedelta(minutes=5))
+    conn.commit()
+    assert result["k1"] == "suppressed_pending_work"
+    conn.close()
+
+
+def test_floor_met_with_no_signal_is_escalation_eligible(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    apply_observation(conn, [_sig(level="warning")], [], [], T0)
+    conn.commit()
+    result = apply_observation(conn, [_sig(level="warning")], [], [], T0 + timedelta(hours=7))
+    conn.commit()
+    assert result["k1"] == "escalation_eligible"
+    conn.close()
+
+
+def test_recurrence_reopens_same_key_with_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    conn = _connect()
+    apply_observation(conn, [_sig()], [], [], T0)
+    conn.commit()
+    apply_observation(conn, [], [], [], T0 + timedelta(hours=1))  # resolved
+    conn.commit()
+    result = apply_observation(conn, [_sig()], [], [], T0 + timedelta(hours=5))
+    conn.commit()
+    assert result["k1"] == "observed"
+    row = conn.execute("SELECT reopen_count FROM coordination_items WHERE automation_key='k1'").fetchone()
+    assert row["reopen_count"] == 1
+    log_count = conn.execute(
+        "SELECT COUNT(*) c FROM coordination_log WHERE automation_key='k1'"
+    ).fetchone()["c"]
+    assert log_count >= 3  # observed, resolved, reopened — history retained, not truncated
+    conn.close()

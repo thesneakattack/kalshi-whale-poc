@@ -79,3 +79,151 @@ def derive_automation_key(f: QualityFinding) -> str:
         return f"{check}|{f.scope}|{f.finding_id}"
 
     return f"{check}|{f.scope}|"
+
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+FLOOR_HOURS = {"error": 2.0, "warning": 6.0, "info": 6.0}
+DEBURST_GAP_HOURS = 1.0
+DEBURST_COUNT = 2
+STALENESS_IDLE_HOURS = 3.0
+STALENESS_HARD_CAP_HOURS = 24.0
+
+
+@dataclass(frozen=True)
+class Signal:
+    automation_key: str
+    level: str
+    scope_paths: tuple[str, ...]
+    source_finding_id: str
+    source_check: str
+
+
+@dataclass(frozen=True)
+class BranchSignal:
+    name: str
+    changed_paths: tuple[str, ...]
+    last_commit_at_iso: str
+
+
+@dataclass(frozen=True)
+class Claim:
+    automation_key: str
+    source: str
+
+
+def _log(conn: sqlite3.Connection, key: str, at: datetime, message: str) -> None:
+    conn.execute(
+        "INSERT INTO coordination_log (automation_key, at, message) VALUES (?, ?, ?)",
+        (key, at.isoformat(), message),
+    )
+
+
+def _suppressing_signal(conn: sqlite3.Connection, key: str, scope_paths: tuple[str, ...],
+                         branches: list[BranchSignal], claims: list[Claim], at: datetime):
+    for c in claims:
+        if c.automation_key == key:
+            return ("claim", c.source)
+    for b in branches:
+        idle_hours = (at - datetime.fromisoformat(b.last_commit_at_iso)).total_seconds() / 3600
+        if idle_hours >= STALENESS_HARD_CAP_HOURS or idle_hours >= STALENESS_IDLE_HOURS:
+            continue
+        if any(p in b.changed_paths for p in scope_paths):
+            return ("branch", b.name)
+    return None
+
+
+def _deburst_count(conn: sqlite3.Connection, key: str) -> int:
+    times = [
+        datetime.fromisoformat(r["at"])
+        for r in conn.execute(
+            "SELECT at FROM coordination_log WHERE automation_key=? ORDER BY at", (key,)
+        ).fetchall()
+    ]
+    if not times:
+        return 0
+    count, last = 1, times[0]
+    for t in times[1:]:
+        if (t - last).total_seconds() / 3600 >= DEBURST_GAP_HOURS:
+            count += 1
+            last = t
+    return count
+
+
+def _floor_met(conn: sqlite3.Connection, key: str, level: str, first_observed_at: datetime, at: datetime) -> bool:
+    elapsed_hours = (at - first_observed_at).total_seconds() / 3600
+    floor = FLOOR_HOURS.get(level, FLOOR_HOURS["info"])
+    if elapsed_hours >= floor:
+        return True
+    return _deburst_count(conn, key) >= DEBURST_COUNT and elapsed_hours >= DEBURST_GAP_HOURS
+
+
+def apply_observation(conn: sqlite3.Connection, signals: list[Signal], branches: list[BranchSignal],
+                       claims: list[Claim], at: datetime) -> dict[str, str]:
+    present = {s.automation_key: s for s in signals}
+    result: dict[str, str] = {}
+
+    tracked = conn.execute("SELECT * FROM coordination_items").fetchall()
+    for row in tracked:
+        key = row["automation_key"]
+        if key not in present and row["state"] != "resolved":
+            conn.execute(
+                "UPDATE coordination_items SET state='resolved', resolved_at=? WHERE automation_key=?",
+                (at.isoformat(), key),
+            )
+            _log(conn, key, at, "resolved: absent from fresh main audit")
+
+    for key, sig in present.items():
+        row = conn.execute(
+            "SELECT * FROM coordination_items WHERE automation_key=?", (key,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """INSERT INTO coordination_items
+                   (automation_key, state, level, first_observed_at, last_observed_at,
+                    observation_count, reopen_count, scope_paths, source_finding_id, source_check)
+                   VALUES (?, 'observed', ?, ?, ?, 1, 0, ?, ?, ?)""",
+                (key, sig.level, at.isoformat(), at.isoformat(),
+                 "\n".join(sig.scope_paths), sig.source_finding_id, sig.source_check),
+            )
+            _log(conn, key, at, "new item observed on main")
+            first_observed_at = at
+        elif row["state"] == "resolved":
+            conn.execute(
+                """UPDATE coordination_items SET state='observed', first_observed_at=?,
+                   last_observed_at=?, observation_count=observation_count+1,
+                   reopen_count=reopen_count+1, level=?, scope_paths=? WHERE automation_key=?""",
+                (at.isoformat(), at.isoformat(), sig.level, "\n".join(sig.scope_paths), key),
+            )
+            _log(conn, key, at, f"reopened (recurrence #{row['reopen_count'] + 1}); prior history retained")
+            first_observed_at = at
+        else:
+            conn.execute(
+                """UPDATE coordination_items SET last_observed_at=?, observation_count=observation_count+1,
+                   level=?, scope_paths=? WHERE automation_key=?""",
+                (at.isoformat(), sig.level, "\n".join(sig.scope_paths), key),
+            )
+            _log(conn, key, at, "repeated observation on main")
+            first_observed_at = datetime.fromisoformat(row["first_observed_at"])
+
+        signal = _suppressing_signal(conn, key, sig.scope_paths, branches, claims, at)
+        if signal is not None:
+            kind, source = signal
+            conn.execute("UPDATE coordination_items SET state='suppressed_pending_work' WHERE automation_key=?", (key,))
+            reason = f"suppressed: exact claim from {source}" if kind == "claim" else f"suppressed: path overlap with live branch {source}"
+            _log(conn, key, at, reason)
+            result[key] = "suppressed_pending_work"
+        elif _floor_met(conn, key, sig.level, first_observed_at, at):
+            conn.execute("UPDATE coordination_items SET state='escalation_eligible' WHERE automation_key=?", (key,))
+            _log(conn, key, at, "escalation-eligible: persistence floor met, no active-work signal")
+            result[key] = "escalation_eligible"
+        else:
+            conn.execute("UPDATE coordination_items SET state='observed' WHERE automation_key=?", (key,))
+            result[key] = "observed"
+
+    for row in tracked:
+        if row["automation_key"] not in present and row["state"] != "resolved":
+            result[row["automation_key"]] = "resolved"
+
+    return result
