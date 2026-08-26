@@ -38,17 +38,26 @@ backoff gap.
 
 ## Baseline results — current topology, seed 1, 120 s per preset
 
-| preset | received | dropped | queue high-water | oldest age (s) | trade wait p95 (ms) | trade latency p95 (ms) | critical wait p95 (ms) | sustained |
+> Refined in I10 (same arrival streams — every `received` count is unchanged — but the
+> presets now carry the measured whale-candidate path: 0.25% of trades cost ~30 ms
+> (log-normal, p95 100 ms) instead of the plain trade handler, so the queue/latency columns
+> below moved by a few percent from the first I6 cut. The `busy_hour` preset was added from
+> I7's measurements. `python -m tools.realtime_pipeline_replay --all --seed 1` reproduces
+> this table exactly.)
+
+
+| preset | received | dropped | queue high-water | oldest age (s) | whale-candidate latency p95 (ms) | note | critical latency p95 (ms) | sustained |
 |---|---|---|---|---|---|---|---|---|
-| measured_normal (148/s) | 18,711 | 0 | 60 | 0.34 | 23 | 23 | 24 | yes |
-| measured_p95 (322/s) | 39,450 | 0 | 3,220 | 10.1 | **9,180** | 9,180 | **9,043** | **no** (3,214 still queued at the horizon) |
-| measured_burst (148/s, ×2.6 for 20 s) | 23,378 | 0 | 1,827 | 6.2 | 5,362 | 5,362 | 4,797 | yes (drains after the burst) |
-| mixed_trade_ticker (+50 ticker/s) | 24,039 | 0 | 113 | 0.51 | 153 | 153 | 153 | yes |
-| mixed_critical (322/s + fills/positions/lifecycle) | 40,874 | 0 | 4,782 | 14.2 | 13,406 | 13,406 | **13,465** | **no** (4,779 still queued) |
-| slow_handler (two consumer stalls) | 18,711 | 0 | 742 | 4.9 | 2,890 | 2,890 | 2,765 | yes |
-| enrichment_stall (0.25% × 1.1 s) | 18,582 | 0 | 894 | 5.8 | 4,643 | 4,643 | 4,750 | yes (670 queued at horizon) |
-| reconnect (3 s stall, reconnect, 1 s gap) | 18,555 | 0 | 474 | 3.0 | 23 | 23 | 23 | yes — but 227 lost on reconnect + 220 missed in the gap |
-| loop_stall (4 s and 8 s) | 18,711 | 0 | 1,230 | 4.4 | 2,793 | **5,238** | 2,655 | yes |
+| measured_normal (148/s) | 18,711 | 0 | 60 | 0.34 | 23 | 23 | 28 | yes |
+| measured_p95 (322/s) | 39,450 | 0 | 3,623 | 11.2 | **10,317** (candidate p95) | — | **10,496** | **no** (3,618 still queued at the horizon) |
+| measured_burst (148/s, ×2.6 for 20 s) | 23,378 | 0 | 1,952 | 6.7 | 5,815 (candidate p95) | — | 5,178 | yes (drains after the burst) |
+| mixed_trade_ticker (+50 ticker/s) | 24,039 | 0 | 113 | 0.51 | 105 (candidate p95) | — | 156 | yes |
+| mixed_critical (322/s + fills/positions/lifecycle) | 40,874 | 0 | 5,234 | 15.6 | 13,813 (candidate p95) | — | **14,667** | **no** (5,228 still queued) |
+| slow_handler (two consumer stalls) | 18,711 | 0 | 742 | 4.9 | 3,091 (candidate p95) | — | 2,906 | yes |
+| enrichment_stall (0.25% × 1.1 s) | 18,582 | 0 | 939 | 6.1 | 4,343 (candidate p95) | — | 4,806 | yes (742 queued at horizon) |
+| reconnect (3 s stall, reconnect, 1 s gap) | 18,555 | 0 | 474 | 3.0 | 35 (candidate p95) | — | 26 | yes — but 227 lost on reconnect + 220 missed in the gap |
+| loop_stall (4 s and 8 s) | 18,711 | 0 | 1,230 | 4.5 | 4,321 (candidate p95) | queue wait under-reports by the stall length (see below) | 4,884 | yes |
+| busy_hour (I7 compressed: 129 trades/s, 4.5 s loop stall every 10 s, one reconnect; 600 s) | 81,804 | 0 | **15,460** | **112.7** | **108,594** (candidate p95; p50 52,623) | — | **106,300** | **no** (30,100 still queued) |
 
 ## What the baseline establishes
 
