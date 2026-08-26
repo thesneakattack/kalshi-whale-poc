@@ -237,15 +237,15 @@ No architecture can win merely by averaging well while retaining a fatal credent
 - TDD/property-style deterministic tests in an isolated temp/worktree
 - dimensional-analysis only if a candidate reaches financial/trading math; expected default is NOT_NEEDED
 
-- [ ] Inventory existing repository generators/autofixers/codemods rather than inventing new ones.
-- [ ] Test `tools.project_manifest --write`/`--check` behavior for idempotence and exact path output in a disposable tree/worktree.
-- [ ] Test frontend bundle generation only after re-grounding against any merged frontend-modularization work; record its exact input/output path set.
-- [ ] Inventory formatter/import tools actually configured by the repo and reject any merely hypothetical fixer.
-- [ ] For each candidate run twice and require an empty second diff.
-- [ ] Test dirty-tree/preexisting-change behavior and define refusal semantics.
-- [ ] Test path containment and diff-size bounds.
-- [ ] Mark every candidate AUTO_DRAFT_PR, REPORT_ONLY, or REJECTED with evidence. No candidate gets auto-merge authority.
-- [ ] Commit: `research: prove deterministic remediation candidates`.
+- [x] Inventory existing repository generators/autofixers/codemods rather than inventing new ones.
+- [x] Test `tools.project_manifest --write`/`--check` behavior for idempotence and exact path output in a disposable tree/worktree.
+- [x] Test frontend bundle generation only after re-grounding against any merged frontend-modularization work; record its exact input/output path set. (Re-grounded: PR #11 was docs-only design, no implementation shipped. Verdict: no committed target exists — REJECTED as not applicable, not tested further.)
+- [x] Inventory formatter/import tools actually configured by the repo and reject any merely hypothetical fixer. (None configured — no pyproject.toml/setup.cfg/.flake8, eslint has no --fix.)
+- [x] For each candidate run twice and require an empty second diff. (Literal instruction unsatisfiable for a generator with an embedded timestamp — see doc §3 for the semantic-idempotence refinement actually applied, recorded as a negative result on the plan wording.)
+- [x] Test dirty-tree/preexisting-change behavior and define refusal semantics.
+- [x] Test path containment and diff-size bounds.
+- [x] Mark every candidate AUTO_DRAFT_PR, REPORT_ONLY, or REJECTED with evidence. No candidate gets auto-merge authority.
+- [x] Commit: `research: prove deterministic remediation candidates`.
 
 **Acceptance**
 Every proposed fixer has executable proof of determinism/idempotence/path scope; no semantic "engineering" fix is mislabeled mechanical.
