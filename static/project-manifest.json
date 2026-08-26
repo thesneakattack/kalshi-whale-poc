@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
-  "generated_at": 1787685818.3339734,
-  "generated_from_head": "d30d06b7e8907300b196919c35e15d5f55c164d6",
+  "generated_at": 1787714987.7506921,
+  "generated_from_head": "e797d8fbb81f8eb44fe6138ea2052620980fcae9",
   "files": {
-    "python": 252,
+    "python": 268,
     "javascript": 14,
     "html": 4
   },
   "lines": {
-    "python": 55181,
+    "python": 60855,
     "javascript": 6228,
-    "html": 7639
+    "html": 7669
   },
-  "services": 66,
-  "api_routes": 94,
+  "services": 68,
+  "api_routes": 95,
   "frontend_modules": 13,
   "workflow_files": 11,
-  "workflow_jobs": 18,
+  "workflow_jobs": 20,
   "tests": {
-    "files": 87,
-    "count": 1670
+    "files": 97,
+    "count": 1816
   }
 }

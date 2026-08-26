@@ -443,11 +443,18 @@ required... Other WebSocket libraries may require manual ping/pong
 implementation." `services/kalshi_trade_ws.py` uses the `websockets`
 library's own `connect(..., ping_interval=20, ping_timeout=20)` and does
 no manual ping/pong frame handling of its own — exactly the documented
-recommended pattern. No specific interval/timeout values are documented
+recommended pattern. No client-side interval/timeout values are documented
 upstream (just "the library handles it automatically"), so 20s/20s is
-this app's own choice within the library's supported knobs, not something
-that could be doc-verified further.
-**Source:** `quick_start_websockets.md`.
+this app's own choice within the library's supported knobs.
+**Correction (2026-08-25, I9):** `connection-keep-alive.md` — a page not
+read when this entry was written — documents the *server* side: "Kalshi
+sends Ping frames (0x9) every 10 seconds with body `heartbeat`"; clients
+must answer with Pong. And the `websockets` 17.x client's own keepalive
+closes the socket with 1011 "keepalive ping timeout" when *its* pong wait
+(`ping_timeout`) expires — which is exactly what an event-loop stall
+≥ 20 s produces (observed live in I7). So the 20 s knobs are also a
+loop-hygiene deadline, not merely a network setting.
+**Source:** `quick_start_websockets.md`, `connection-keep-alive.md`.
 **Found:** 2026-08-24, Kalshi Integration Phase A Task A1, verifying
 `services/kalshi_trade_ws.py` against documented suggested WS practices.
 
@@ -463,3 +470,81 @@ REST natively, WS via `services/kalshi/contracts/fill.py`'s gateway normalizatio
 presentation code (`services/state_view.py`) reads `ticker` alone, with no
 alias fallback. Don't reintroduce per-consumer `or market_ticker` fallbacks; the alias
 knowledge lives at the boundary.
+
+## Can `GET /markets/trades` fetch a bounded exchange-time window, and how big can a page be?
+**Answer:** Yes. `get-trades.md` documents `min_ts` **and** `max_ts` (both
+"Unix timestamp", `integer/int64` seconds — "after"/"before", inclusivity
+unstated, so enforce the window locally on each Trade's own `created_time`
+too), `limit` 1–1000 (default 100 — the SDK default this app used, 25, is
+its own choice), and cursor paging where an **empty** cursor means no more
+pages. Omitting `ticker` returns "all trades for all markets". Each REST
+`Trade` carries `trade_id`, `ticker`, `count_fp`, ISO `created_time`; the
+WS `trade` message carries the same `trade_id` plus `ts_ms` — so REST and
+WS records of one print share an identity key and a comparable clock
+(`services/kalshi/contracts/trade.py::trade_exchange_ts`).
+**Gotcha:** `services/kalshi/public.py`'s `get_trades` only passed `min_ts`
+until 2026-08-25 (I4); the installed SDK 3.27.0 `MarketApi.get_trades`
+accepts `max_ts` (and `is_block_trade`) — verified by introspection, not
+assumed — so the passthrough is a one-line addition, not a raw-HTTP bypass.
+**Source:** `get-trades.md` (`MinTsQuery`/`MaxTsQuery`/`MarketLimitQuery`/
+`CursorQuery`, `GetTradesResponse`, `Trade` schema), `pagination.md`,
+`public-trades.md` (WS field list).
+**Found:** 2026-08-25, realtime data-plane task I4 (REST-vs-WS capture
+reconciliation, `services/diagnostics/trade_capture_reconciliation.py`).
+
+## Is a `GET /markets?tickers=…` request billed per ticker, and what does this account's budget really allow?
+**Answer:** No per-ticker billing. `rate_limits.md`'s "Batch endpoints don't
+save tokens ... every item in the batch is billed separately" is written for
+the batch **order** endpoints (`25 orders = 25 × 10 tokens`); nothing in the
+mirror says a list filter is billed per item, and this account's own
+`GET /account/endpoint_costs` (`list-non-default-endpoint-costs.md`) reports
+`default_cost` 10 with none of the app's endpoints priced differently.
+Measured 2026-08-25 (I8 probe): 50-, 100- and 200-ticker requests each
+returned complete in one request (41 / 73 / 106 ms, no 429). This account
+(`GET /account/limits`, `get-account-api-limits.md`): tier `basic`, read
+200 tokens/s with a 600-token capacity → **20 req/s sustained, 60-request
+burst**; write 100/100.
+**Gotcha:** `services/kalshi/public.py`'s 50-per-chunk `get_markets_by_tickers`
+sizing was justified as "500 tokens under the 600 ceiling" — that arithmetic
+assumes per-item billing the docs don't state for this endpoint. The chunk is
+now an explicit `batch_size` parameter (default unchanged) pending the REST
+solution comparison (I11); don't re-derive the 500-token reasoning.
+**Source:** `rate_limits.md` ("Batch endpoints don't save tokens"),
+`list-non-default-endpoint-costs.md`, `get-account-api-limits.md`,
+`get-markets.md` (`TickersQuery`: "Comma-separated list", no cap).
+**Found:** 2026-08-25, realtime data-plane task I8
+(`tools/kalshi_rate_limit_probe.py`, `docs/superpowers/research/2026-08-25-rest-demand-study.md`).
+**Discrepancy (2026-08-25, I12 review):** `rate_limits.md` says Basic-tier
+Read buckets "hold up to two seconds of budget" (= 400 tokens / 40 requests
+at 200 tokens/s), but this account's live `GET /account/limits` reported a
+600-token capacity. Also, every rate-limit sentence in the mirror is written
+for **authenticated** requests; the app's market-data client is
+unauthenticated, and the mirror says nothing about the anonymous ceiling —
+treat 20 req/s / 60-burst as the account's numbers, not this traffic's, until
+the anonymous ceiling is probed (carried as an open verification into the
+remediation design). Docs/live disagreement recorded here rather than
+resolved by guessing.
+
+## Does the lifecycle `settled` WS message carry the market's result?
+**Answer:** No. `market-and-event-lifecycle.md` (the `market_lifecycle_v2`
+channel) gives the `determined` message a `result` field (plus the
+determination timestamp and settlement value), while the `settled` message
+carries only `settled_ts`. `market_lifecycle.md` adds that the WS `settled`
+event "corresponds to settlement being processed" and that in REST a settled
+market ends at status `finalized` with `settlement_ts` populated — so a REST
+read issued the instant `settled` arrives can still see a not-yet-`finalized`
+market. The channel lists no `amended`/`disputed` event; whether a
+re-determination re-fires `determined` is not stated.
+**Gotcha:** `services/whale_stream/whale_stream_handlers.py`'s settled
+handler re-reads the market immediately and drops the ticker if it isn't
+`finalized` yet (leaving it to "the REST-tick fallback path ... if it ever
+resurfaces on the watchlist") — that immediate read was 23% of all REST
+demand in I8, and the settlement-processing race means part of it is wasted.
+The remediation design (I13) batches and defers it (`GET /markets?tickers=…`
+for N settlements after a delay, with retry) rather than removing it: the app
+deliberately grades on `finalized`, not `determined` (2026-08-23 correction,
+"disputed-and-reversed-result gap"), so some REST read stays necessary.
+**Source:** `market-and-event-lifecycle.md` (message field tables),
+`market_lifecycle.md` ("Transitions", "Settlement").
+**Found:** 2026-08-25, realtime data-plane task I12 (adversarial review of the
+REST demand-reduction item).

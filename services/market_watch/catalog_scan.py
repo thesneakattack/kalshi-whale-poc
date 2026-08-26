@@ -11,6 +11,7 @@ import time
 from services import market_history, series_cache, task_supervisor
 from services.app_state import bump_generation, state
 from services.kalshi.public import KalshiPublicGateway
+from services import http_client
 from services.market_catalog import market_catalog
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
@@ -25,6 +26,7 @@ _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
 # reason to poll it again.
 
 
+@http_client.classify("background_live_status")
 async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list[dict]) -> dict:
     """Best-effort: fetch first milestone per event, inspect its live-data
     for a declared `details.winner`, map that winner to a related market
@@ -356,6 +358,7 @@ def _maybe_scan_catalog_batch(cfg: dict) -> None:
         )
 
 
+@http_client.classify("background_catalog")
 async def _scan_catalog_batch_background(cfg: dict) -> None:
     """Owns its own KalshiPublicGateway (not the calling tick's, which closes at
     the end of that same tick - see discovery_cache._refresh_discovery_cache's

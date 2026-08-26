@@ -13,6 +13,7 @@ import time
 from services import series_evaluator, signal_log
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
+from services import http_client
 from services.market_catalog import market_catalog
 from services.market_watch import selection
 from services.market_watch.discovery_cache import _cached_market_fetch, _maybe_refresh_discovery_cache
@@ -49,6 +50,7 @@ def _slim_market(m: dict) -> dict:
     return {k: m.get(k) for k in _MARKET_FIELDS}
 
 
+@http_client.classify("critical_position")
 async def _fetch_markets(client: KalshiPublicGateway, cfg: dict, extra_tickers: list[str] | None = None) -> list[dict]:
     # Real live report (2026-08-15): kalshi.markets_watchlist used to be a
     # strict either/or with discovery below - a non-empty pinned list

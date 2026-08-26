@@ -13,6 +13,9 @@ import asyncio
 import time
 
 from services import candidate_log, config_performance, market_analyst_agent, market_history, series_watcher, settlement_edge
+from services import whale_pipeline_perf
+from services import http_client
+from services.kalshi import websocket as kalshi_websocket
 from services.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
 from services.config_store import config_store
@@ -140,8 +143,17 @@ async def _process_stream_trade(trade: dict) -> None:
     # exchange-wide subscription, so its own per-message cost is measured
     # (not guessed) via a real timer around every real invocation, cheap
     # trade_id discards above excluded since those never do any real work.
+    #
+    # Stage timers (I2, services/whale_pipeline_perf.py) split that cost
+    # into capture / config / provider / signals, and the gateway's enqueue
+    # timestamp (kalshi_websocket.MESSAGE_ENQUEUED_AT, set by _process_item
+    # for the duration of this callback) turns "handler time" into the
+    # true receive->decision figure the design spec asks for.
+    perf = whale_pipeline_perf.perf
+    enqueued_at = kalshi_websocket.MESSAGE_ENQUEUED_AT.get()
     _handler_started_at = time.monotonic()
     _fetch_signals_elapsed: float | None = None
+    signals_emitted = 0
     try:
         state["trade_tape"].insert(0, trade)
         state["trade_tape"] = state["trade_tape"][:_TRADE_TAPE_UI_CAP]
@@ -152,6 +164,8 @@ async def _process_stream_trade(trade: dict) -> None:
         # that dies with the process, so without this there is no record of what
         # the exchange actually printed - only of what survived the filters.
         series_watcher.record_trade(trade, config_store.get())
+        _capture_done_at = time.monotonic()
+        perf.record_stage("capture", _capture_done_at - _handler_started_at)
         if not state["running"] or not _streaming_trade_tape_enabled():
             bump_generation()
             return
@@ -159,6 +173,7 @@ async def _process_stream_trade(trade: dict) -> None:
         cfg_now = config_store.get()
         config_fp = config_performance.fingerprint(cfg_now)
         _fetch_signals_started_at = time.monotonic()
+        perf.record_stage("config", _fetch_signals_started_at - _capture_done_at)
         signals = await whale_provider.fetch_signals(
             market_context={
                 "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
@@ -173,10 +188,12 @@ async def _process_stream_trade(trade: dict) -> None:
             },
         )
         _fetch_signals_elapsed = time.monotonic() - _fetch_signals_started_at
+        perf.record_stage("provider", _fetch_signals_elapsed)
         if not signals:
             bump_generation()
             return
 
+        _signals_started_at = time.monotonic()
         now = time.time()
         for signal in signals:
             await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
@@ -185,9 +202,18 @@ async def _process_stream_trade(trade: dict) -> None:
             category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
         ):
             await _handle_close_decision(close_decision)
+        signals_emitted = len(signals)
+        perf.record_stage("signals", time.monotonic() - _signals_started_at)
+        perf.record_count("signals_emitted", signals_emitted)
         bump_generation()
     finally:
-        _record_trade_perf(time.monotonic() - _handler_started_at, _fetch_signals_elapsed)
+        _ended_at = time.monotonic()
+        _record_trade_perf(_ended_at - _handler_started_at, _fetch_signals_elapsed)
+        perf.record_stage("handler_total", _ended_at - _handler_started_at)
+        if enqueued_at is not None:
+            perf.record_stage("receive_to_handler_end", _ended_at - enqueued_at)
+            if signals_emitted:
+                perf.record_stage("receive_to_decision", _ended_at - enqueued_at)
 
 
 async def _process_stream_ticker(ticker_msg: dict) -> None:
@@ -473,7 +499,8 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         # fallback path to catch if it ever resurfaces on the watchlist.
         try:
             client = _stream_market_client(config_store.get())
-            market = await client.get_market(ticker)
+            with http_client.caller_class("background_resolution"):
+                market = await client.get_market(ticker)
         except Exception:
             return
         if (market.get("status") or "") != "finalized":
