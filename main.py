@@ -41,6 +41,7 @@ from services import series_evaluator
 from services import series_watcher
 from services import fault_log
 from services import loop_watchdog
+from services import tick_executor
 from services import task_supervisor
 from services import game_state
 from services import index_feed
@@ -261,6 +262,23 @@ async def _check_signal_resolutions(client: KalshiPublicGateway):
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
             signal_log.mark_resolved(item["id"], correct=(result == item["side"]))
+
+
+def _flush_trade_capture(trade_tape: list, cfg: dict) -> dict:
+    """Synchronous batched write into series_watcher's raw_trades table -
+    root-cause report C1's specifically measured 0.65-1.6s executemany on
+    essentially every tick. A plain sync function so it is directly
+    unit-testable and directly callable from tick_executor's worker thread
+    (realtime data-plane remediation plan, P1 Task 7)."""
+    for tape_trade in trade_tape:
+        series_watcher.record_trade(tape_trade, cfg)
+    return series_watcher.flush()
+
+
+async def _flush_trade_capture_async(trade_tape: list, cfg: dict) -> dict:
+    """Awaitable wrapper: runs _flush_trade_capture via tick_executor
+    instead of the calling event loop (P1 Task 7)."""
+    return await tick_executor.run(lambda: _flush_trade_capture(trade_tape, cfg))
 
 
 async def trading_loop():
@@ -651,13 +669,13 @@ async def trading_loop():
             # would under-report exactly when the stream is the thing
             # that's broken. record_trade dedupes on trade_id, so the
             # deliberate overlap between the two paths costs nothing.
-            for tape_trade in trade_tape:
-                series_watcher.record_trade(tape_trade, cfg)
-            # One batched write per tick for everything the websocket path
-            # buffered in between (see series_watcher.flush) - the capture
-            # layer never writes per message, which is what makes it safe
-            # to run against an exchange-wide subscription.
-            series_watcher.flush()
+            # The record loop + batched flush (see series_watcher.flush) is
+            # root-cause report C1's specifically measured 0.65-1.6s
+            # synchronous executemany into the 16.9M-row raw_trades table on
+            # essentially every tick - routed through tick_executor (P1
+            # Task 7) so it runs off this loop instead of starving the WS
+            # consumer for that whole stretch.
+            await _flush_trade_capture_async(trade_tape, cfg)
             # Same per-tick batched write for index ticks. Without this the
             # buffer only drained when it hit its own _FLUSH_BATCH, which at
             # ~1 tick/sec/index meant minutes of data sitting unwritten -
