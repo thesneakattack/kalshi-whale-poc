@@ -7,9 +7,15 @@ placed unless `kalshi_account.trading_enabled` is explicitly flipped in
 `config/settings.yaml` plus a typed in-app confirmation phrase. All P0
 code-level safety **primitives** (the trading gate itself, the kill
 switch, CORS) are shipped — but that is not the same claim as "real
-capital is ready to depend on this." Realtime data-plane correctness,
-economic/strategy validation, and canonical decision/execution semantics
-are still open, substantive, code-level work, not merely operational
+capital is ready to depend on this." Realtime data-plane correctness is
+partially addressed (P0-P2 of the 6-phase remediation plan merged
+2026-08-26, `main`@`22d1a79` — candidate-duplication, WAL, and a real
+cross-thread race fixed; P3's reader-gate live-filtering flip and beyond
+remain open and separately gated, not authorized); economic/strategy
+validation research has been done but not acted on (a resumed
+investigation merged 2026-08-26 as research leverage, not implementation —
+see the gap below); and canonical decision/execution semantics remain
+fully open, substantive, code-level work, not merely operational
 follow-up — see `docs/kalshi-personal-production-execution-program-
 2026-08-26.md` for the current program-level sequencing, and ROADMAP.md's
 "Path to production" section for the itemized checklist.
@@ -36,9 +42,21 @@ reached, not a separate track from it.
 Known specific gaps still open toward this goal (stubs — full detail in
 ROADMAP.md's "Path to production" section and the relevant module
 `CHEATSHEET.md`, not restated here):
-- Entry-gate adverse selection — KXBTC15M whale signals resolved 88.8%
-  correct across 394 settled signals, but the 12 the gates actually traded
-  resolved only 58.3%. Not yet root-caused.
+- Entry-gate adverse selection — the original finding (KXBTC15M whale
+  signals resolved 88.8% correct across 394 settled signals, but the 12
+  the gates actually traded resolved only 58.3%) does not currently
+  reproduce: investigated 2026-08-26, both that trade sample and the gate
+  configuration that produced it no longer exist. Under the *current*
+  (contract-count) gate, selection is currently *better* than population
+  accuracy — the opposite direction. The real current shortfall
+  (-$169.81 over 90 trades in ~3.2 days) traces to a pricing/edge gap, not
+  selection or exit. A genuine, still-open, differently-shaped pattern:
+  rejected candidates in the 0.60-0.95 unit-cost band show negative
+  hypothetical EV across every gate with enough samples — a real gate-
+  tuning target, designed but not implemented. All of this is itself
+  provisional pending a larger post-2026-08-26-realtime-fix sample — see
+  `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-
+  status-report.md`.
 - `services/shadow_mode.py` has never produced a trade to review, not just
   "unreviewed" — `mode` has been switched to `shadow` only twice ever, both
   reverted within 24h, zero rows logged either time. No sustained real
