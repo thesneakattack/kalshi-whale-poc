@@ -157,7 +157,8 @@ Direct standing instruction (2026-08-25). When instructed to "resume",
      (`git log main..HEAD --oneline`, or `git log origin/main..HEAD` if
      `main` isn't checked out locally);
    - `ROADMAP.md`;
-   - `static/status.html` where relevant;
+   - `docs/status-archive-2026-08-26.html` where relevant (frozen historical
+     record; `static/status.html` itself retired that day — see CLAUDE.md);
    - relevant module `CHEATSHEET.md` files;
    - plans/notes tied to the active initiative (numbered task plans
      under `docs/superpowers/plans/`, the matching orchestrator skill's

@@ -106,8 +106,9 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    neither is reachable, say so rather than silently skipping this step.
 
 7. **Roadmap sync check.** If this checkpoint closes out a `ROADMAP.md`
-   item, run `/sync-status-docs` now, before moving on — cheap, and keeps
-   `status.html` from quietly drifting the way it already has once before.
+   item, run `/close-roadmap-item` now, before moving on — cheap, and keeps
+   the checklist from quietly drifting out of sync with what's actually
+   shipped.
 
 8. **PR check — only when this checkpoint completes the initiative, not
    every mid-initiative checkpoint.** If the branch has no open PR yet and
@@ -130,5 +131,5 @@ This assumes CLAUDE.md's standing instruction authorizing proactive
 commit/push at verified checkpoints (dated 2026-08-16) — it doesn't
 re-litigate whether that's OK, only when/how. It never commits a failing
 or half-finished state, and it doesn't decide what counts as "done" — that
-judgment happens first, same boundary `/sync-status-docs` already draws
+judgment happens first, same boundary `/close-roadmap-item` already draws
 for itself.

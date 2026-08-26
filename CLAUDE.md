@@ -177,43 +177,43 @@ exist and remain the primary source for the *why* behind pre-git work:
 - **`ROADMAP.md`** — forward-looking, living to-do list, kept short. Check
   items off in place (`- [x]`), add new ones as they turn up. Shipped work
   gets folded into the "Shipped (condensed)" section as a one-line pointer,
-  not a narrative — the real detail belongs in `status.html`. Check the
+  not a narrative — the real detail belongs in `git log`. Check the
   **"Path to production"** section before touching anything safety-adjacent
   (kill switch, real trading, CORS, auth) — P0 itself is fully shipped, so
   that's where the remaining open safety/correctness-adjacent questions
   (shadow-mode review, deployment target, auth model, real position sizing,
   category-level legal risk) actually live now.
-- **`static/status.html`** (served at `/status`) — backward-looking historical
-  record. A chronological timeline of build phases, plus reference tables
-  (components, API routes, config, known limitations). The prose is
-  hand-written describing what was built and why, and can and does go stale
-  if a change doesn't update it — but **the file itself is generated**
-  (2026-08-26 modularization, done for exactly this session's own
-  efficiency: it had grown to 6358 lines/156 phases in one file). Never edit
-  `static/status.html` directly — edit the small source fragments under
-  **`docs/status-src/`** (one file per reference section, plus
-  `timeline/`, chunked at a fixed 25 phases per file so no single file
-  grows without bound as the timeline keeps extending) and regenerate with
-  `python -m tools.build_status_page --write static/status.html`. A CI step
-  (`quality-architecture-audit.yml`) fails the build if the two drift. See
-  `tools/build_status_page.py`'s own docstring for the exact fragment
-  layout and the `/sync-status-docs` skill for the edit workflow.
+- **`docs/status-archive-2026-08-26.html`** — a frozen, final snapshot of
+  `static/status.html`, the backward-looking build-timeline page (156
+  chronological phases + reference tables) this project maintained by hand
+  from before it was a git repository through 2026-08-26. **Retired that
+  day, not maintained going forward** — it stopped paying for itself once
+  everything it recorded was already git-tracked: continuously growing
+  (6358 lines/156 phases, chunked into `docs/status-src/` fragments earlier
+  the same day, already needing a second pass), and every phase added after
+  the 2026-08-07 git cutover just re-narrated what `git log` already had.
+  The genuinely irreplaceable part — the pre-git narrative, which has no
+  commit-by-commit record anywhere else — is preserved intact in the
+  archive, not lost; only the ongoing hand-maintenance stopped. The
+  `/status` route, `docs/status-src/`, `tools/build_status_page.py`, and
+  the CI drift check that kept the two in sync are all gone with it —
+  consult the archive file directly (a plain, self-contained HTML file) for
+  anything it covers that isn't in `git log`.
 - **`docs/roadmap-archive-2026-08-09.md`** — a frozen, one-time snapshot of
   `ROADMAP.md`'s full pre-condensing detail (it had grown to 837 lines of
   mostly-shipped narrative). Not maintained going forward; consult it (or
   `git log`/`git show` on `ROADMAP.md`) for the full story behind anything
-  checked off before 2026-08-09 that `status.html` doesn't already cover.
+  checked off before 2026-08-09 that the status archive doesn't already
+  cover.
 
-For anything committed going forward, prefer `git log` / `git blame` / `git
-diff` as the primary source of "what changed and why" — that's real history,
-not reconstructed prose. Keep using `ROADMAP.md` and `status.html` as the
-living, human-readable layer on top: check "Path to production" before
-safety-adjacent work, and still update both when a roadmap item ships.
-
-**When a roadmap item ships, update both.** Use the `/sync-status-docs` skill
-for this — it checks the item off in `ROADMAP.md` and adds the matching
-timeline phase + component-table rows to `status.html` in one pass, matching
-the existing phases' tone and structure.
+For anything committed going forward, `git log` / `git blame` / `git diff`
+are the primary — now the *only* actively maintained — source of "what
+changed and why": that's real history, not reconstructed prose, and no
+longer has a second hand-narrated copy running alongside it. Keep using
+`ROADMAP.md` as the living, forward-looking layer on top: check "Path to
+production" before safety-adjacent work, and still check an item off there
+when it ships (`/close-roadmap-item` skill) — that's the one doc left to
+update, not two.
 
 ## Dev workflow — this is a ddev project, not bare uvicorn
 
@@ -389,7 +389,7 @@ is exactly where both of these bug classes happened.
 - `.claude/` — Claude Code project config: hooks (`hooks/` — test-on-edit,
   syntax check, `data/*.db` write guard, session orientation, pre-compact
   and checkpoint reminders) and project skills (`skills/` — `run`,
-  `sync-status-docs`, `checkpoint`, `config-field-edit`).
+  `close-roadmap-item`, `checkpoint`, `config-field-edit`).
 - `.woodpecker/*.yml` — the authoritative CI pipelines (one file per named
   check), run by a shared Woodpecker instance defined outside this repo at
   `portfolio/ci-cd/`. See `docs/woodpecker-ci.md` for the full operational
@@ -527,7 +527,7 @@ run is specifically wanted.
 
 The `/checkpoint` skill runs this sequence end to end (verify tests green →
 review diff scope → commit → push → report CI status → flag whether a
-`ROADMAP.md` item just shipped, in which case run `/sync-status-docs`
+`ROADMAP.md` item just shipped, in which case run `/close-roadmap-item`
 too). Two hooks back this so it doesn't depend purely on remembering
 across a long session — both verified against the primary Claude Code
 hooks docs first, since `PreCompact`/`Stop` hooks' stdout is only
