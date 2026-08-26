@@ -155,10 +155,20 @@ exist and remain the primary source for the *why* behind pre-git work:
   (shadow-mode review, deployment target, auth model, real position sizing,
   category-level legal risk) actually live now.
 - **`static/status.html`** (served at `/status`) — backward-looking historical
-  record. A manually maintained, chronological timeline of build phases, plus
-  reference tables (components, API routes, config, known limitations). This
-  is hand-written prose describing what was built and why, not generated —
-  it can and does go stale if a change doesn't update it.
+  record. A chronological timeline of build phases, plus reference tables
+  (components, API routes, config, known limitations). The prose is
+  hand-written describing what was built and why, and can and does go stale
+  if a change doesn't update it — but **the file itself is generated**
+  (2026-08-26 modularization, done for exactly this session's own
+  efficiency: it had grown to 6358 lines/156 phases in one file). Never edit
+  `static/status.html` directly — edit the small source fragments under
+  **`docs/status-src/`** (one file per reference section, plus
+  `timeline/`, chunked at a fixed 25 phases per file so no single file
+  grows without bound as the timeline keeps extending) and regenerate with
+  `python -m tools.build_status_page --write static/status.html`. A CI step
+  (`quality-architecture-audit.yml`) fails the build if the two drift. See
+  `tools/build_status_page.py`'s own docstring for the exact fragment
+  layout and the `/sync-status-docs` skill for the edit workflow.
 - **`docs/roadmap-archive-2026-08-09.md`** — a frozen, one-time snapshot of
   `ROADMAP.md`'s full pre-condensing detail (it had grown to 837 lines of
   mostly-shipped narrative). Not maintained going forward; consult it (or
@@ -514,8 +524,10 @@ getting heavy) or `/clear` (the next thing is materially unrelated to what
 was just finished). This is a suggestion to surface, not a decision to make
 unilaterally. Concrete trigger, not just a vibe check (direct data,
 2026-08-16 usage review — see below): right after `/sync-status-docs` or
-any other full read of `ROADMAP.md`/`static/status.html` (both large,
-frequently-touched files), and generally once a session has been open
+any other full read of `ROADMAP.md` (still 1200+ lines; `static/status.html`
+itself was the other large file this trigger originally named, until the
+2026-08-26 modularization split it into small `docs/status-src/` fragments
+— see that section above), and generally once a session has been open
 8+ hours or is running noticeably slower to respond — both measured as the
 real drivers of this project's heaviest usage sessions, not hypothetical.
 

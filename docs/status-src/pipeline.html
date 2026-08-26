@@ -1,0 +1,36 @@
+  <section id="pipeline">
+    <p class="eyebrow">signal → decision → fill, plus everything that gates it</p>
+    <h3>Architecture</h3>
+    <div class="pipeline">
+      <div class="node"><span class="pill good">done</span><span class="name">Kalshi market data</span><span class="sub">read-only, unauthenticated</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Whale-watcher library</span><span class="sub">generic_rest active · template for more</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Strategy engine</span><span class="sub">threshold + cooldown</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Risk manager</span><span class="sub">daily-loss kill switch</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Paper broker</span><span class="sub">simulated fills</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">Active exit management</span><span class="sub">settlement + take-profit/stop-loss/reversal/auto-exit, every tick</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><span class="pill good">done</span><span class="name">6-view dashboard</span><span class="sub">polls /api/state · 5s</span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ gated off the paper broker —</span>
+      <div class="node dashed"><span class="pill gated" style="margin-right:8px;">gated</span><span class="sub">real order execution — implemented, refuses to run unless <code>trading_enabled: true</code></span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ parallel, mode: shadow/live —</span>
+      <div class="node dashed"><span class="pill good" style="margin-right:8px;">done</span><span class="sub">shadow mode — logs intended real trades sized against a real bankroll, never executes</span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ parallel, real-account read path —</span>
+      <div class="node dashed"><span class="pill good" style="margin-right:8px;">done</span><span class="sub">Kalshi account client → balance/positions/fills, shown on dashboard header</span></div>
+    </div>
+    <div class="branch">
+      <span class="stem">↳ optional front door —</span>
+      <div class="node dashed"><span class="pill dormant" style="margin-right:8px;">dormant</span><span class="sub">Google sign-in → session → Connected Accounts store, inert until 3 env vars are set</span></div>
+    </div>
+  </section>
+

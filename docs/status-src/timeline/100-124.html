@@ -1,0 +1,1055 @@
+      <div class="t-phase">
+        <div class="tag">phase 100 · half price, twice the bug</div>
+        <h4>The entire MLB proposition family was overcharged 2x in fees</h4>
+        <p>Direct request mid-session, after mentioning Kalshi's real per-series API documentation: "consume samples
+          of the category endpoints to get a better picture of each market." Live-sampled Kalshi's real
+          <code>GET /series</code> endpoint (not just the bulk list this app already used) across all 13,029 real
+          series. Found the phase-97-era fee model - a 10-series zero-fee list sourced from a static PDF - had two
+          real gaps: 4 more genuinely zero-fee series the PDF pass missed (<code>KXEXPAND</code>,
+          <code>KXNEXTIRANLEADER</code>, <code>KXTRUMPOUT</code>, <code>KXGDPYEAR</code>), and, previously entirely
+          unmodeled, a real 0.5x fee multiplier on the ENTIRE MLB proposition-market family (spread, total, outs,
+          HR, hits, F5/F3/F7 innings, RBI, stolen bases, strikeouts, ...) - one of this app's most actively-traded
+          series families. Every MLB trade before this fix had been charged double the real fee.</p>
+        <p><code>services/kalshi_fees.py</code> fixed with the live-verified multiplier table. Direct follow-up
+          instruction: "correct the data in storage as you are able using all your knowledge." Wrote a read-only
+          audit pass first (matched entry/close trade pairs per ticker, recomputed each leg's correct fee via the
+          now-fixed <code>taker_fee()</code>), reviewed the numbers, then applied the correction directly to both
+          <code>data/paper_broker.db</code> (whale-follow, $163.23 refunded across 171 affected trade pairs) and
+          <code>data/market_broker.db</code> (market-native, $352.20 across 996 pairs) - both the stored
+          <code>fee</code> columns and each affected close trade's embedded "(realized X.XX)" P&amp;L text were
+          corrected, then bankroll adjusted by the total refund. A full <code>ddev restart</code> followed, since
+          the running process's in-memory broker state doesn't see a direct file-level correction until reload -
+          verified live afterward against a specific corrected trade.</p>
+        <p>810 tests passing (unchanged - this was a data correction, not new logic beyond the fee-table fix
+          itself, which shipped its own new tests).</p>
+        <div class="files"><code>services/kalshi_fees.py</code> · <code>tests/test_kalshi_fees.py</code> ·
+          <code>data/paper_broker.db</code> (corrected in place) ·
+          <code>data/market_broker.db</code> (corrected in place)</div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 101 · maker orders and a floor above the average</div>
+        <h4>Four real bugs, a global gate that punished good series, and a from-scratch maker-order path</h4>
+        <p>Direct request to re-read the handoff doc, assess the whole app for logic holes/gaps/quirks/bugs, and
+          produce a profit-maximization plan given the real 68.4% win rate - then, same session, "fix the bugs, act
+          on the data-driven recommendations, implement new analyzers if needed." Four confirmed bugs, all fixed
+          and tested: (1) <code>strategy.kelly_fraction_of_cap: null</code> crashed <code>kelly_scaled_max_size()</code>
+          (<code>None &lt;= 0</code> TypeError) - <code>null</code> is this app's own established "disabled"
+          convention for sibling fields, but this function had no guard for it, and a crash here also skipped that
+          tick's <code>check_exits</code>/<code>position_netting.review</code> since all three share one
+          <code>try</code> block in <code>main.py</code>'s loop. Fixed with a real <code>None</code>-guard inside
+          the function itself, not just at the call sites. (2) The real-account (not paper) header's "Change
+          (session)" figure diffed current <code>portfolio_value</code> (cash+positions) against a cash-only
+          historical baseline - <code>main.py</code> now persists <code>portfolio_value</code> history alongside
+          <code>balance</code>, and <code>renderHeaderStrip</code> diffs like-for-like. (3) A latent, currently-
+          unreachable no-side fallback in two spots in <code>static/index.html</code>
+          (<code>p.cost_basis ?? (p.size * p.entry_price)</code>) - dropped entirely, since
+          <code>PaperBroker.state()</code> already guarantees <code>cost_basis</code> is always present. (4) The
+          advisory engine's rejected-candidate comparability check turned out to be a systemic pattern, not one
+          call site: the same flat 15-point tolerance with no reference to sample size
+          (<code>_COMPARABLE_MIN_WIN_RATE_GAP</code>) was reused across six different suggestion generators in
+          <code>services/advisory_engine.py</code>. All six now go through a new
+          <code>_comparability_margin_pts()</code> helper built on <code>services/stats_power.py</code>'s existing
+          real margin-of-error math - the same rigor this app's own sigma-vetted per-series analysis already uses,
+          not a second, weaker standard living alongside it.</p>
+        <p>Three data-driven config changes applied via <code>POST /api/config</code> (real audit trail each time),
+          with two real corrections along the way. <code>strategy.min_whale_winrate_pct</code>: reverted 76.5→85
+          first (the z-test above showed today's applied 76.5 change rested on evidence that was genuinely
+          borderline, not the clean violation it first looked like) - then, later the same session, dropped much
+          further to 50 after a live-reported symptom ("why is the system avoiding crypto markets with super high
+          whale winrates") led straight to a real design flaw: this field is a flat <em>global</em> floor
+          (<code>strategy_engine.py</code>'s entry gate compares every series' own win rate against it), and at 85%
+          it was flagging <code>KXBTCD</code> - 80.5% win rate, a proven top performer already sized up via its own
+          <code>strategy_overrides</code> entry - as "avoiding," simply because a flat floor set above the book's
+          own 68.4% average is guaranteed to reject roughly half of all series by construction. 50 stays
+          comfortably below every currently-tracked series while still catching genuinely broken ones; the
+          surgical, single-series cases stay the job of <code>strategy_overrides.by_series</code>, not the blunt
+          global gate. <code>strategy.take_profit_pct</code>: enabled at 0.2, corrected down from an
+          originally-considered ~0.5-0.95 once closer inspection found all 28 historical <code>take_profit</code>
+          trades were priced <em>outside</em> the current 0.5-0.8 <code>unit_cost</code> band - that track record
+          doesn't transfer to what the strategy can even trade today. <code>strategy.kelly_fraction_of_cap</code>:
+          raised to 0.3 (<code>market_strategy.*</code> left at 0, control group untouched).</p>
+        <p>New: a full maker/limit-order path for the paper book, not just a scoping note - fees were consuming
+          ~60% of gross profit on the whale-follow book, and this app had no maker-order simulation at all before
+          now. <code>services/kalshi_fees.py</code> gained <code>maker_fee()</code> (1/4 the taker rate, same
+          formula/rounding/per-series-multiplier convention). <code>services/paper_broker.py</code> gained a new
+          <code>PendingOrder</code> dataclass, its own <code>pending_orders</code> SQLite table (same persistence
+          idiom as positions/trades - survives a restart), <code>place_limit_order()</code>, and
+          <code>check_pending_fills()</code> (side-aware fill check against a tick's real bid/ask, fills at the
+          real available price when it's better than the limit, never worse; an order past its own expiry cancels
+          unfilled rather than chasing a stale price as a market order). <code>main.py</code> gained a genuinely-
+          missing-when-absent <code>state["latest_asks"]</code> (never defaulted, since guessing an ask would mean
+          guessing whether a resting order should fill) and wired <code>check_pending_fills</code> into the tick
+          loop right after signal handling. <code>services/strategy_engine.py</code> gained opt-in
+          <code>strategy.use_limit_orders</code>/<code>limit_order_timeout_sec</code> - off by default, same
+          "ships fully built, opt-in" precedent as every other risk-adjacent mechanism in this app. Deliberately
+          not extended to the real-account order path this pass (real trading stays gated behind
+          <code>trading_enabled</code> regardless), and no dashboard panel yet for the two new fields.</p>
+        <p>Two background diagnostics resolved open questions from the original assessment. <code>market_native</code>'s
+          apparent 27σ <code>min_momentum_delta</code> inversion turned out to be a confound, not a backwards
+          thesis: the comparison mixed eventual-settlement-match win rate against realized-P&amp;L win rate, where
+          <code>stop_loss</code> mechanically scores 0% by construction (54.4% of that whole book closes that way).
+          Recomputed on the same basis, the real gap is 10.1pts/z=5.12 - real, far smaller. A genuine side-finding
+          surfaced along the way: 44.9% of <code>market_native</code>'s stop-lossed trades would have gone on to
+          win - not acted on, control group. Separately, <code>depth_factor</code>'s failure to discriminate now
+          has a confirmed root cause for <code>KXBTC15M</code> specifically: Kalshi's own <code>volume_24h_fp</code>
+          field jumps in large discrete steps unrelated to that 15-minute contract's own trading (one ticker
+          observed jumping 25x in 65 seconds) rather than accumulating like real per-contract volume - its current
+          0.03 live weight (vs. a 0.18 shipped default) stands confirmed-correct. Finally, direct request to re-run
+          the full sigma-vetted series/category t-stat/z-score methodology against the fresh 607-trade book:
+          honest conclusion, no new <code>strategy_overrides</code> entry is currently warranted - all three
+          existing ones (<code>KXBTC15M</code>, <code>KXMLBSPREAD</code>, <code>KXBTCD</code>) reconfirm at
+          essentially unchanged strength, <code>KXMLBGAME</code>'s bimodal pattern reconfirms real but still
+          correctly unshippable (no unit_cost-bucket-scoped override tier exists in
+          <code>config_overrides.py</code>), and <code>by_category</code> should stay empty since Crypto's
+          near-significant blended signal is fully explained by, and would actively conflict with, the two already-
+          correct oppositely-signed series underneath it.</p>
+        <p>17 new tests, 827 passing (was 810). Verified live throughout: every config change confirmed via its own
+          <code>config_performance</code> audit-trail row, <code>GET /api/state</code> checked clean (no tick
+          errors) after each round of edits, persistence of the new <code>pending_orders</code> table confirmed
+          surviving an in-process <code>--reload</code> restart triggered naturally by the session's own edits.</p>
+        <div class="files"><code>services/strategy_engine.py</code> · <code>services/market_strategy.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/kalshi_fees.py</code> ·
+          <code>services/advisory_engine.py</code> · <code>main.py</code> · <code>static/index.html</code> ·
+          <code>config/settings.yaml</code> · <code>tests/test_strategy_engine.py</code> ·
+          <code>tests/test_paper_broker.py</code> · <code>tests/test_advisory_engine.py</code> ·
+          <code>docs/profit-maximization-assessment-2026-08-15.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 102 · significance scores and a name for the thing you're changing</div>
+        <h4>Advisory recommendations gain staleness awareness and real statistics</h4>
+        <p>Direct report: "the advisory recommendations arent even telling me the names of the values
+          theyre proposing to change" — true: the setting's actual <code>config_path</code> was buried
+          inside a collapsed "technical details" section, with only a plain-English paraphrase visible
+          by default. Now shown directly under the headline on every card. Separately, direct request:
+          "i want to make sure the advisory and whale-signal are never running on stale data... the
+          advisory should also take into consideration how many samples have been logged after the
+          change... also give me a statistical significance score in addition to the semantics."
+          <code>_drop_stale_recommendations</code> already existed as a binary keep/drop gate (a
+          recommendation whose config field changed more recently than any evidence behind it got
+          dropped entirely) — upgraded to attach a real <code>fresh_samples_since_change</code> count to
+          every surviving recommendation instead, shown as a ⚠ warning when thin (e.g. "2 samples logged
+          since you last changed this setting"). <code>services/stats_power.py</code> gained
+          <code>two_proportion_z_score</code> (win-rate comparisons) and <code>one_sample_t_score</code>
+          (avg-P&amp;L-vs-zero comparisons) — the two real statistical tests behind every comparison this
+          engine's 9 recommendation functions already made informally, wired into all of them and shown
+          on every card ("z = 1.57 — not statistically significant yet" style verdicts, 90/95/99%
+          confidence bands). Also shipped in the same pass: <code>strategy_overrides</code>
+          (per-series/category tuning) is now directly editable from the Config tab — add/edit/remove,
+          backed by a new <code>config_overrides.remove_override()</code> pairing the existing
+          <code>merge_override()</code>'s preserve-siblings contract — instead of only reachable via
+          <code>POST /api/config</code> or hand-editing the YAML; and 10 previously-missing
+          <code>strategy.*</code> Config-tab fields were added (min/max unit cost, close-window timings,
+          the maker-order fields, 3 auto-exit weights) after a systematic diff of every field in
+          <code>config/settings.yaml</code>'s <code>strategy:</code> block against what the Config tab
+          actually exposed. 893 tests passing.</p>
+        <div class="files"><code>services/advisory_engine.py</code> · <code>services/stats_power.py</code> ·
+          <code>services/config_overrides.py</code> · <code>static/index.html</code> ·
+          <code>tests/test_advisory_engine.py</code> · <code>tests/test_stats_power.py</code> ·
+          <code>tests/test_config_overrides.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 103 · the rate limit was never a concurrency problem</div>
+        <h4>Real incident: signal-resolution stall, a wrong rate-limit model, and a full API-usage audit</h4>
+        <p>Direct live report: "why are there SO MANY unresolved signals???" Root cause:
+          <code>signal_log.unresolved_batch()</code> was pure head-of-line blocking — <code>ORDER BY
+          seen_at ASC LIMIT N</code> with no memory of ever having tried a row. A handful of genuinely
+          long-horizon signals (a market closing in 2027, a Fed decision weeks out) sorted to the front
+          of every batch forever, since nothing ever resolved them — confirmed live: 31,833 of 32,101
+          logged signals unresolved, 31,469 of those over 24h old. Fixed with a <code>last_checked_at</code>
+          cooldown column so the query actually progresses through the backlog. That fix made
+          <code>_check_signal_resolutions</code> do real, sustained work for the first time — running
+          concurrently with discovery in the same tick pushed <code>tick_duration</code>/
+          <code>rate_limit_hits</code> to ~40s/200+, repeatedly. A concurrency <code>Semaphore</code> (the
+          same fix pattern used earlier for <code>get_candidate_markets</code>) did not help — confirmed
+          live, still spiking with <code>Semaphore(5)</code>. Reading Kalshi's actual rate-limit docs
+          (<code>docs.kalshi.com/getting_started/rate_limits</code>, at direct instruction rather than
+          continuing to guess) found the real cause: it's a token-bucket <strong>throughput</strong>
+          system (tokens/sec), not concurrency-based at all — a concurrency cap bounds simultaneous
+          requests but does nothing to slow the <em>rate</em> new ones fire. Replaced with a real
+          token-bucket limiter, split into independent read/write buckets matching Kalshi's own
+          architecture (real order placement/cancel now correctly routes to the more conservative write
+          bucket). Fixing the rate limit <em>correctly</em> then exposed a third, bigger problem: discovery's
+          per-refresh <code>get_candidate_markets</code> fetch (12-120 series depending on config) now took
+          proportionally longer under a correctly-conservative limit, blocking the whole tick loop every
+          time a refresh was due — direct report: "you made the market watch list and whale watching
+          grind to a halt and markets aren't even appearing anymore," confirmed live (watchlist collapsed
+          to 7 markets). Direct instruction: "review the api documentation, implement best and recommended
+          practices, and do a full audit of the api usage for the application. no stone unturned." Fixed at
+          the architecture level: discovery, catalog-scanning, and signal-resolution are now independent
+          background tasks (their own cadence, an overlap guard, never awaited by the tick loop);
+          <code>services/market_catalog.py</code> gained <code>open_candidates()</code> (a pure SQLite
+          read) and discovery now reads from it instead of a fresh REST fetch — zero network calls once
+          the catalog is warm; <code>_scan_catalog_batch</code> is no longer gated behind the unused
+          <code>live_markets_only</code> flag (it turned out to already have 4,160+ series scanned from an
+          earlier period, just sitting unused); <code>_fetch_account_snapshot</code> (balance/positions/
+          fills) was found making 3 uncached REST calls every single tick, now interval-cached. Verified
+          live: markets recovered from the crisis low of 7 to a stable ~32, zero rate-limit errors
+          throughout. Real open item, not yet root-caused: <code>tick_duration</code> stabilized around
+          ~27s, not the pre-incident ~3s baseline (leading hypothesis — uncached open-position tickers —
+          checked directly and ruled out). A WS-based real-position-feed (direct request: "the open
+          positions should feed from the websocket stream") was deliberately deferred rather than shipped
+          unverified — <code>fill</code> events cannot occur while <code>trading_enabled</code> is off, so
+          there is no live message to confirm parsing against; see <code>docs/next-steps-2026-08-15-pt2.md</code>
+          for the three ways forward. 899 tests passing.</p>
+        <div class="files"><code>services/signal_log.py</code> · <code>services/http_client.py</code> ·
+          <code>services/kalshi_account_client.py</code> · <code>services/market_catalog.py</code> ·
+          <code>main.py</code> · <code>tests/test_signal_log.py</code> · <code>tests/test_http_client.py</code> ·
+          <code>tests/test_market_catalog.py</code> ·
+          <code>docs/next-steps-2026-08-15-pt2.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 104 · four background loops, one starved rate limiter</div>
+        <h4>tick_duration root-caused: not one bug, four independent uncapped call sites sharing a budget</h4>
+        <p>Picks up phase 103's own open item. Rather than keep guessing, instrumented the tick loop
+          directly (temporary per-phase timing prints, removed once done) and let it run live. Found four
+          separate, real problems, each contributing: <code>propagate_milestone_winners</code> called
+          <code>get_milestones_for_event()</code> for every event on the watchlist, every tick, forever,
+          unconditionally — most events (crypto, politics, ...) never have a milestone at all, so this was
+          pure waste; <code>_fetch_event_live_data</code> called <code>get_event_live_data()</code> the same
+          way — confirmed live, <em>every</em> event on the real watchlist 404s from that endpoint (it
+          turned out to be the wrong endpoint for sports entirely, see phase 105); <code>_fetch_live_status</code>'s
+          per-tick poll batch had no cap at all, so a large fraction of the in-window candidate pool (measured
+          up to 2,549 rows) becoming simultaneously due for its 5-minute repoll fired dozens-to-hundreds of
+          concurrent calls in one tick, measured up to 48.78s alone; and <code>_scan_catalog_batch</code>'s
+          background task (40 series/batch) shared the exact same rate limiter as the tick's own reads —
+          running as a background task decouples control flow, not resource contention, and with the
+          overlap guard letting a new batch start the moment the previous one finished draining, it ran
+          back-to-back continuously, confirmed starving <code>_fetch_account_snapshot</code> (19-33s stalls
+          measured on affected ticks despite its own already-correct 20s cache). Fixed all four: repoll
+          caches for the first two (<code>state["milestone_cache"]</code>/<code>state["event_live_data_cache"]</code>,
+          60s), a bounded oldest-checked-first batch cap for the third (<code>_LIVE_STATUS_MAX_POLL_PER_TICK
+          = 10</code>, same shape <code>_check_signal_resolutions</code> already used), and a straight batch-size
+          cut for the fourth (<code>_CATALOG_SCAN_BATCH_SIZE</code> 40→10). Verified live, repeatedly:
+          <code>tick_duration</code> dropped from a stable ~24-33s plateau to mostly 1-5s, occasional spikes
+          to ~14s from residual background contention. Zero rate-limit errors throughout. 917 tests passing.</p>
+        <div class="files"><code>main.py</code> · <code>tests/test_winner_propagation.py</code> ·
+          <code>tests/test_event_live_data.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>docs/next-steps-2026-08-15-pt3.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 105 · the elections host was never elections-only</div>
+        <h4>Default API host switched + a full documentation audit, with live-verified findings</h4>
+        <p>Direct instruction: "use llm.txt to review the documentation and then audit the api calls
+          themselves, the data it's fetching, its parsing, etc, see where a reapproach might be better" —
+          plus a follow-up to build real helper tooling rather than keep guessing. The local
+          <code>docs/kalshi/llms.txt</code> snapshot was explicitly partial; fetched the current full index
+          and every page relevant to this app's real call sites (all saved under <code>docs/kalshi/</code>).
+          Built a live diagnostic script (scratchpad, not committed — see
+          <code>docs/next-steps-2026-08-15-pt3.md</code> for why) using the app's own real client/credentials
+          to verify documented behavior against the live API rather than trust prose alone. Immediate,
+          applied finding: <code>kalshi.base_url</code> was set to the legacy <code>api.elections.kalshi.com</code>
+          alias — confirmed via docs and live testing that <strong>no category-specific hosts exist at all</strong>
+          (resolving an open question from earlier the same session), and that <code>external-api.kalshi.com</code>
+          is the documented recommended default. Switched live via <code>POST /api/config</code> at direct
+          instruction ("i insist you use the default api endpoint"); verified afterward with zero errors.
+          Deeper findings, live-verified but deliberately <em>not</em> applied this session (flagged for a
+          prioritization decision rather than a second unreviewed rewrite of the same tick-loop area in one
+          day): <code>get_event_live_data</code> is documented and confirmed-live to serve crypto/commodity/
+          weather data only — for sports it 404s 100% of the time, not a bug, just the wrong endpoint; the
+          real sports live-data source is the milestone-based <code>get_live_data</code> this app already
+          calls but only reads <code>widget_status</code>/<code>winner</code> from, discarding real score/
+          quarter/clock/down-distance already sitting in the same response; three real batching
+          opportunities confirmed live (<code>get_events(tickers=...)</code>, <code>get_live_datas(milestone_ids=...)</code>,
+          category-scoped <code>get_milestones</code> covering 1,483 event tickers in one call); and — via
+          this account's own real <code>get_account_api_limits()</code>/<code>get_account_endpoint_costs()</code> —
+          confirmation that every endpoint this app calls costs the flat default (10 tokens), and that the
+          real Basic-tier budget (200 read tokens/sec, 600-token burst) is roughly 7x more headroom than
+          the current limiter (3.0/sec, burst 2.0) uses.</p>
+        <div class="files"><code>config/settings.yaml</code> · <code>tests/test_kalshi_trade_ws.py</code> ·
+          <code>docs/kalshi/api_environments.md</code> · <code>docs/kalshi/get-events.md</code> ·
+          <code>docs/kalshi/get-event-metadata.md</code> · <code>docs/kalshi/get-milestones.md</code> ·
+          <code>docs/kalshi/get-live-data.md</code> · <code>docs/kalshi/get-game-stats.md</code> ·
+          <code>docs/kalshi/rate_limits.md</code> · <code>docs/kalshi/llms.txt</code> ·
+          <code>docs/kalshi/README.md</code> · <code>docs/next-steps-2026-08-15-pt3.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 106 · put the audit into practice</div>
+        <h4>Phase 105's flagged batching, category routing, and rate limit applied — plus a real signal-resolution backlog found along the way</h4>
+        <p>Direct instruction: "in an earlier session you mentioned how the api docs gave you a gold mine on
+          how to redesign, reapproach api calls, shapes, analyzers, engines, everything. put the knowledge
+          into practice and fix the backend." New batched <code>KalshiClient</code> methods
+          (<code>get_events</code>, <code>get_live_datas</code>, <code>get_milestones_bulk</code>,
+          <code>get_markets_by_tickers</code>) replaced individual-call gathers at every real call site —
+          event-title fetching, live-status confirmation, milestone-winner propagation. Category routing
+          applied: <code>_fetch_event_live_data</code> now skips Sports outright (confirmed 100%-404) instead
+          of calling it every category. Real game-state surfacing: <code>state["live_game_state"]</code> —
+          score/clock/quarter/down-distance data phase 105 found was already being fetched via the
+          milestone-based calls but discarded. Read-rate limiter raised 3.0→8.0 req/sec, reasoned headroom
+          below the confirmed 20 req/sec account ceiling rather than the full jump, since most of this app's
+          read traffic is unauthenticated market data, not the authenticated account calls that ceiling was
+          measured against. The biggest real find applying all this: signal-resolution's backlog — 26,903 of
+          32,480 logged signals sat unresolved, checked at only 10-per-30s (~22h for one pass); batching cuts
+          that to ~200/check, ~1h. 947 tests passing.</p>
+        <div class="files"><code>main.py</code> · <code>services/kalshi_client.py</code> ·
+          <code>services/http_client.py</code> · <code>tests/test_kalshi_client.py</code> ·
+          <code>tests/test_event_live_data.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>tests/test_winner_propagation.py</code> · <code>tests/test_signal_resolution.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 107 · a 15-minute market needs a 15-minute memory</div>
+        <h4>Stale/already-closed catalog rows were reaching the real watchlist</h4>
+        <p>Direct live report: "we need to account for extremely short market times like the BTC 15min
+          markets so their live status is accurate... im not seeing any positions being opened or signals
+          being read or anything. it was in fact responsible for much of my success rates earlier on."
+          Root-caused: <code>market_catalog.candidates_in_window</code>/<code>open_candidates</code> never
+          filtered by <code>close_ts &gt; now</code>, so a market whose catalog row predates its own close
+          kept showing up as a valid candidate indefinitely — confirmed live, 3 real <code>KXBTC15M</code>
+          instances sitting 2-8h stale, still reading <code>status="active"</code>. Fixed the query filter,
+          then found the deeper reason it kept happening: pure least-recently-scanned ordering has no way to
+          know a series that gets a brand-new market every 15 minutes needs revisiting far sooner than one
+          whose markets each run for weeks — a full scan cycle across every configured-category series was
+          taking 2-8h regardless of batch-size tuning. New <code>series_with_expired_data</code> +
+          <code>next_series_to_scan</code> two-tier priority (expired-data series first, regardless of recency,
+          least-recently-scanned within each tier) — confirmed live: <code>KXBTC15M</code> picked up its
+          actual current live window within ~6 minutes of the fix, down from 2-8h.</p>
+        <div class="files"><code>services/market_catalog.py</code> · <code>tests/test_market_catalog.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 108 · a stale row and a stale field agree with each other</div>
+        <h4>close_time itself can be wrong, not just old — plus a self-review pass that found two more real gaps</h4>
+        <p>Investigating a further, more urgent report ("im seeing absolutely no signals and i know for a
+          fact its not due to filtering") surfaced something deeper than phase 107's own fix: a real
+          finalized MLB market's catalog row still read <code>status=active</code>, <code>close_time</code>
+          2.5 days out, 24 minutes after Kalshi's own API had already moved it to <code>finalized</code> with
+          the true, earlier close time. <code>docs/kalshi/market_lifecycle.md</code>, read as this investigation's
+          own focused follow-up, confirmed the exact mechanism: a <code>close_date_updated</code> WebSocket
+          event fires "when a market is closed ahead of its scheduled close time" — this app doesn't listen
+          for it, so a catalog row scanned before that event fires keeps its stale close_time/status
+          indefinitely, which phase 107's <code>close_ts &gt; now</code> filter can never catch since it
+          trusts the same column that's wrong. Fixed with a real-time confirmation pass in
+          <code>main._refresh_discovery_cache</code>: one batched <code>get_markets_by_tickers</code> call
+          per refresh cycle against the final, already-narrowed watchlist selection, dropping anything Kalshi
+          now reports past <code>active</code> before it ever reaches the watchlist. Also closed a related
+          dead-code finding from the same doc: the catalog's status filter checked for the literal string
+          <code>"open"</code> — never a real API response value, only ever a query-filter one. Direct
+          efficiency instruction mid-session ("a lot of efficiency could be gained by using batch calls to
+          the API vs individual calls for specific markets") led to batching three more per-ticker gather
+          sites the same way: <code>_cached_market_fetch</code>, <code>_fetch_markets</code>' live-only
+          fallback, and <code>propagate_milestone_winners</code>' related-market lookup (previously one
+          gather per event with a declared winner, now one call across every such event in the tick). A
+          routine self-review of open <code>ROADMAP.md</code> items against actual code state (direct
+          instruction: "many things in the roadmap may have been addressed at this point, do a scan/self-review")
+          found two more real things: the 2026-08-11 whale-exit stale-price fix had in fact been committed
+          and was live (the roadmap entry saying otherwise was documentation drift, not a code gap) — live-
+          verified directly against real trade history for the first time, 11 real round-trips since with a
+          392.9s shortest hold, nowhere near the original 0.146s bug signature; and <code>_process_stream_ticker</code>
+          was the one of <code>check_exits</code>' three call sites missing that same fix's <code>opened_since</code>
+          guard, fixed with the same idiom. Separately, an efficiency review of this session's own Claude
+          Code usage (direct instruction, with a `/usage` screenshot) found <code>/sync-status-docs</code>
+          — this skill — at 21% of a week's total usage, root-caused to implied full reads of both this file
+          and <code>ROADMAP.md</code> every invocation; rewritten to use targeted <code>grep</code> + scoped
+          reads instead, same output quality at a fraction of the context cost. 953 tests passing.</p>
+        <div class="files"><code>main.py</code> · <code>services/market_catalog.py</code> ·
+          <code>tests/test_market_catalog.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>tests/test_winner_propagation.py</code> ·
+          <code>.claude/skills/sync-status-docs/SKILL.md</code> · <code>CLAUDE.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 109 · connected doesn't mean subscribed</div>
+        <h4>The trade stream reported connected the whole time — it just never subscribed to any market</h4>
+        <p>Direct live report, picking up right where phase 108 left off: "the whale watching stream has
+          halted completely. no signals at all." <code>GET /api/state</code>'s <code>trade_stream_status</code>
+          showed <code>connected: true</code> throughout, which is exactly what made phase 108's own fix look
+          sufficient — it wasn't. A standalone diagnostic script, reusing the same
+          <code>KalshiTradeWebSocketClient</code> class and real credentials outside the running app, proved
+          Kalshi's API was delivering plenty of real trades for the app's own live watchlist tickers (58 in
+          30s) while the live app's own <code>trade_tape</code> stayed at zero for the same window — the break
+          was inside the app's subscription bookkeeping, not the network or Kalshi's side. Root cause, caught
+          via temporary print tracing: <code>_sync_subscriptions</code> used
+          <code>not self._subscription_sids</code> — a dict shared across every subscribed channel — to mean
+          "no real per-ticker trade/ticker subscribe sent yet." On every fresh connect, that initial
+          force-subscribe fires before the trading loop's first <code>set_market_tickers()</code> call (desired
+          tickers still empty), so it correctly no-ops — but the account-wide <code>fill</code>/
+          <code>market_positions</code> channels subscribe immediately after and populate that same dict with
+          their own sids. The trading loop's first real ticker-set update then read the dict as non-empty and
+          took the incremental add/remove path instead, sending <code>update_subscription</code> against the
+          fill/market_positions sids — <code>trade</code>/<code>ticker</code> never got a real subscription,
+          deterministically on every process start, since the raw WS handshake always beats the REST-based
+          discovery pipeline that feeds the ticker list. Fixed with a dedicated
+          <code>_market_channels_subscribed</code> flag, decoupled from <code>_subscription_sids</code>'s
+          unrelated bookkeeping; also fixed a second bug in the same function found along the way — the
+          incremental path looped over <em>every</em> sid instead of just the trade/ticker ones. Verified live:
+          <code>trade_tape</code> went from stuck-at-zero to its 100-item cap within seconds of the fix
+          landing, and <code>data/candidate_log.db</code> showed real-time <code>min_notional_usd</code>
+          rejections logging again — the whole detection pipeline running end to end, just correctly filtering
+          sub-threshold trades. A separate, real client-lifecycle race noticed along the way
+          (<code>main._refresh_discovery_cache</code>'s background task reusing a per-tick
+          <code>KalshiClient</code> the same tick closes) was flagged, not fixed — see <code>ROADMAP.md</code>'s
+          P4 list. 2 new tests, 955 passing.</p>
+        <div class="files"><code>services/kalshi_trade_ws.py</code> · <code>tests/test_kalshi_trade_ws.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 110 · the other half of "own your client"</div>
+        <h4>Discovery's background refresh reused a client the calling tick had already closed</h4>
+        <p>Direct instruction right after phase 109 landed: "you found another race bug. fix it then keep going
+          down the todos and roadmap." <code>_maybe_refresh_discovery_cache</code> scheduled
+          <code>_refresh_discovery_cache</code> as a fire-and-forget background task but handed it the calling
+          tick's own <code>KalshiClient</code> — and that same tick's own
+          <code>finally: await client.close()</code> closes it at the end of that tick regardless of whether the
+          background task has finished with it, producing the repeated
+          <code>[discovery] background refresh failed</code> log lines cycling through
+          <code>RuntimeError('Session is closed')</code> / <code>ClientConnectionError('Connector is closed.')</code>
+          / <code>AssertionError()</code> noticed while diagnosing phase 109. The fix already existed elsewhere in
+          the same file: <code>_check_signal_resolutions_background</code> owns and closes its own client for this
+          exact shape of problem — its own docstring even described <code>_refresh_discovery_cache</code> as
+          already following that pattern, which is what surfaced the gap on review. Split
+          <code>_refresh_discovery_cache</code> into a pure worker (still takes <code>client</code> as a param, so
+          the existing tests calling it directly with a fake client needed no changes) and a new
+          <code>_refresh_discovery_cache_background</code> wrapper that creates and closes its own client,
+          mirroring the established split exactly. First verification pass gave a false alarm — a
+          <code>Monitor</code> watching <code>ddev logs -f</code> without <code>--tail 0</code> replayed the
+          container's full historical log buffer, including pre-fix failures, before following live; a
+          timestamp check confirmed the last real failure (16:56:00 UTC) predated the fix's reload
+          (17:02:48–17:04:24 UTC) by several minutes and refresh cycles, and a clean re-run with
+          <code>--tail 0</code> showed a genuine 60-second failure-free window. 2 new regression tests (success
+          and failure paths, asserting the background wrapper's client is always closed). 957 tests passing.</p>
+        <div class="files"><code>main.py</code> · <code>tests/test_trading_gate.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 111 · a real click beats a fake call</div>
+        <h4>Signal feed sorts by divergence now — and its filter controls quietly weren't working at all</h4>
+        <p>Continuing straight down the roadmap after phase 110: shipped the P4 item asking for the signal
+          feed to sort/filter by divergence size (bet vs. market price), not just recency or raw whale size.
+          Added a "Sort: divergence" option next to the existing recency/impact sorts, computing each signal's
+          own divergence in probability points via a new <code>divergencePts()</code> — the whale print's
+          implied YES price against the market's current live price — reusing the exact math and "Betting is
+          N pts more bullish/bearish than the market implies" framing <code>marketCardHTML</code>'s own
+          <code>divergenceLine</code> already validated, just at individual-signal granularity. Each row now
+          shows its own divergence badge (≥5pt threshold, matching the market card's) so the new sort is
+          actually legible.
+          Browser-verified via the <code>selenium-chrome</code> ddev service (CLAUDE.md's frontend-testing
+          requirement) and found two real bugs in the process. First, a self-inflicted one:
+          <code>divergencePts</code> initially read a bare <code>state.latest_prices</code>, assuming
+          <code>state</code> was global the way other call sites in this file seemed to imply — a live
+          <code>typeof state</code> check proved it's actually local to <code>refresh()</code>. Fixed by
+          threading <code>latestPrices</code> through as an explicit parameter, backed by a new
+          <code>terminalLatestPrices</code> global (mirroring <code>terminalSignalFeed</code>/
+          <code>terminalDecisionFeed</code>) for the inline handlers that need it. Second, a pre-existing bug
+          this session didn't cause: all 5 of the feed's filter/sort <code>onchange</code> handlers called
+          <code>renderSignalDecisionFeed(signalFeed, decisionFeed)</code> with bare identifiers that were never
+          actually declared anywhere. Invisible to a direct function call in a test script — it only surfaced
+          via a real simulated click (Selenium's <code>Select().select_by_value()</code>, which fires inline
+          handlers in the browser's real global scope, not the closure that generated the HTML), producing
+          <code>Uncaught ReferenceError: signalFeed is not defined</code>. Because the filter-state assignment
+          runs before the broken re-render call in the same handler, the dropdown's value still updated
+          internally, so the feed just silently caught up on the next 5-second poll instead of re-rendering
+          instantly — invisible in normal use, with the console error nobody was watching for. Fixed by
+          pointing all 5 handlers at the real <code>terminalSignalFeed</code>/<code>terminalDecisionFeed</code>
+          globals this file's own websocket push-update path already used correctly. 957 tests passing (no
+          Python touched this pass — pure frontend, verified via the browser instead of pytest).</p>
+        <div class="files"><code>static/index.html</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 112 · a market that can never grow up</div>
+        <h4>KXBTC15M was structurally locked out of the watchlist by a 24-hour clock on a 15-minute market</h4>
+        <p>Direct report while checking the app's own standing stability test case after an unrelated
+          infra session (moving ddev's router off host 80/443 to free it for a separate Traefik stack —
+          see <code>ddev-kalshi-whale-poc-integration.md</code> in the portfolio repo, outside this one):
+          KXBTC15M — the series specifically kept in the watchlist to verify the full whale/trade/close
+          lifecycle every 15 minutes — wasn't in <code>state["markets"]</code> at all. Root-caused against
+          <code>market_catalog.db</code> directly rather than guessed: <code>kalshi.min_volume_24h</code>
+          (100k) filters on a 24-hour rolling volume figure, but every still-open KXBTC15M instance sat at
+          <code>volume_24h_fp = 0.0</code> — real rows showed volume only turning up (600k–1.3M) after
+          <code>close_ts</code>, by which point <code>open_candidates</code>'s own <code>close_ts &gt;
+          now</code> filter had already excluded it as closed. A 24-hour window can never be satisfied by a
+          market whose entire tradeable life is 15 minutes — not a regression, a standing structural
+          mismatch between the filter and this series' shape.
+          Fixed generally, not with a KXBTC15M-only special case: <code>market_catalog.open_candidates</code>
+          now takes an optional <code>min_volume_by_series</code> dict, applied via a SQL <code>CASE</code>
+          per <code>series_ticker</code> against the blanket <code>min_volume</code> for everyone else —
+          zero behavior change for any existing caller that doesn't pass it. Wired through a new
+          <code>kalshi.min_volume_24h_by_series: {KXBTC15M: 0}</code> config entry, so covering another
+          fast-rotating series later is a one-line config change, not a code change. Verified live:
+          <code>KXBTC15M-26AUG161415-15</code> appeared in <code>state["markets"]</code> and started
+          picking up real WS ticker-price updates within one discovery-cache refresh. 959 tests passing.</p>
+        <div class="files"><code>services/market_catalog.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> · <code>tests/test_market_catalog.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 113 · the whole exchange, and the number it settles on</div>
+        <h4>Exchange-wide trade stream, the CF Benchmarks settlement feed, and the measurement that decides whether it's an edge</h4>
+        <p>Started from a direct question — "if whales are winning at 70% I shouldn't be winning at 40" — and the
+          answer needed a tool that didn't exist. <code>services/series_watcher.py</code> reconciles the two numbers
+          per series and decomposes the gap: on KXBTC15M over 24h, whales resolved 88.8% correct while the realised
+          win rate was 47.1%, of which <strong>−30.6pts is selection</strong> (the 12 signals the gates actually
+          traded resolved only 58.3% correct against an 88.8% pool — the gates pick worse than the pool they draw
+          from) and −11.2pts is exits. It also captures what the app had been discarding: <code>_process_stream_ticker</code>
+          received 15 documented <code>ticker</code> fields and kept two, dropping <code>yes_bid_size_fp</code>,
+          <code>open_interest_fp</code> and <code>ts_ms</code> — exactly the fields needed to ask why a
+          directionally-correct signal still lost money. Raw payloads are now persisted whole, <code>raw_json</code>
+          included, so a field Kalshi adds next month is captured the day it appears.
+          <br><br>
+          Coverage was the other half. <code>docs/kalshi/public-trades.md</code> states market specification is
+          optional on the <code>trade</code> channel, so it now subscribes with no <code>market_tickers</code> at
+          all — push, not poll, zero REST tokens, and it closes a gap where 425 markets traded in a 30-second window
+          against 15 watched. Three things had to change for that to produce signals rather than noise: the provider
+          used to skip any print whose ticker wasn't in the watchlist one line into scoring, so the notional gate now
+          runs <em>first</em> (pure arithmetic, no I/O) and only survivors get a market resolved — 2 of 5,162 prints on
+          KXBTC15M, so the fetch is paid for the 2; <code>kalshi_trade_ws</code> tracked trade and ticker with one
+          shared flag, which would have duplicated or blocked the firehose; and per-message SQLite writes would have
+          re-triggered the 2026-08-11 freeze, so captures batch.
+          <br><br>
+          The largest find came from reading the settlement rules instead of the prices. KXBTC15M resolves on
+          <em>"the simple average of the sixty seconds of CF Benchmarks' BRTI before close"</em>, with
+          <code>floor_strike</code> carrying the previous quarter's average — already fixed and known. Kalshi streams
+          that exact average as it accumulates (<code>cfbenchmarks_value</code>'s
+          <code>last_60s_windowed_average_15min</code>), so <code>services/index_feed.py</code> is not a signal about
+          the outcome but <strong>partial knowledge of it</strong>, and
+          <code>required_remaining_average()</code> inverts it exactly. Verified against a real 06:00:00Z boundary:
+          the window opened at 05:59:00 and counted 3 → 58 of 60 second-by-second, with 31 of the 60 settlement
+          observations known 29 seconds before close.
+          <br><br>
+          Nothing about it was assumed. A sweep of eight crypto series found they contradict each other —
+          <code>strike_type</code> is <code>greater_or_equal</code> on the 15-minute series but <code>greater</code>
+          on the dailies; the same index is named <code>BRTI</code>, <code>ETHUSDRTI</code> and <code>ERTI</code>
+          across different rules; <code>KXBTCMAXY</code> passes both the strike and operator checks but is a
+          year-long barrier market with no averaging window; <code>KXDOGED</code> has no strike at all — so
+          <code>settlement_spec()</code> refuses rather than guesses on each. Wiring it also exposed a real
+          starvation bug: subscribed alone the channel delivers exactly 50 messages in 50 seconds, but multiplexed
+          behind the trade firehose it delivered ~20 and froze, because the single reader loop awaited each message's
+          full handler before reading the next. <code>run()</code> now splits ingest from processing over a bounded
+          queue with counted overflow, and the index feed gets its own connection.
+          <br><br>
+          Whether any of that is an <em>edge</em> is a separate question, so <code>services/settlement_edge.py</code>
+          answers it by measurement instead of assertion: both forecasts of the same event — the market's own yes
+          price and the projection — recorded at the same instant, Brier-scored once the outcome stamps onto those
+          same rows. It reports <code>insufficient</code> rather than a verdict until the data earns one, and nothing
+          trades on it. Inspecting its captured rows immediately found two bugs that the wiring had hidden: the q15
+          window opens before <em>every</em> quarter-hour, so matching on index alone had recorded 1,003 observations
+          against KXBTCD markets whose close was 863 minutes away; and resolution driven from the trading loop's
+          market list never fired, because the 15-minute series rotates its ticker out of the watchlist before
+          <code>result</code> populates — a market was found <code>finalized</code> six minutes after close with 59
+          observations still pending. Both fixed and verified live: bad rows purged, 59/59 resolved.
+          <br><br>
+          Two supporting pieces landed alongside. <code>services/trade_archive.py</code> copies every trade,
+          position and summary metric into an append-only epoch before <code>POST /api/reset</code> touches anything,
+          because a prior reset had left <code>paper_broker.db</code> reaching back only six hours and made every
+          earlier trade-level question unanswerable; its <code>compare()</code> ranks epochs by <code>edge_pts</code>,
+          not win rate. And <code>min_unit_cost</code> moved 0.50 → 0.65 on measurement, not taste: across 593
+          resolved signals the 0.50–0.65 band runs −35.2% per dollar risked while 0.65–0.80 is the only positive
+          window at +2.2%. 1,084 tests passing.</p>
+        <div class="files"><code>services/index_feed.py</code> · <code>services/settlement_edge.py</code> · <code>services/series_watcher.py</code> · <code>services/trade_archive.py</code> · <code>services/kalshi_trade_ws.py</code> · <code>services/whalewatchers/kalshi_trade_tape.py</code> · <code>services/diagnostics.py</code> · <code>main.py</code> · <code>config/settings.yaml</code> · <code>CLAUDE.md</code> · <code>docs/kalshi/CHEATSHEET.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 114 · breaking up main.py</div>
+        <h4>Shared state and the first route group move out of a 5,400-line module</h4>
+        <p>Direct request: <em>"main.py is now almost 6k lines long, it would be worth it to make it more
+          modular/less monolithic for better logic targeting and also session efficiency."</em> Measured before
+          cutting anything: 3,615 lines of imports/state/loop/handlers, then 1,800 lines holding 79 routes.
+          The blocker was never file size — it was that essentially every route and stream handler reads or writes
+          the module-level <code>state</code> dict and the long-lived singletons, so nothing could be lifted out
+          without a circular import.
+          So the enabling move came first: <code>services/app_state.py</code> now owns <code>state</code> plus
+          broker/risk/strategy/shadow, the market-native pair, the account client and both websocket connections.
+          <code>main.py</code> imports them by name, which leaves all ~500 existing <code>state[...]</code>
+          references in that file untouched — a move, not a rewrite. The module imports nothing from
+          <code>main</code>, and that acyclic direction is the entire point.
+          <code>routers/diagnostics_routes.py</code> is the first group out and the template for the rest: ten
+          routes become <code>@router.*</code> on an <code>APIRouter</code>, pull shared state from
+          <code>app_state</code>, and are re-attached with <code>include_router</code> — so every path stays
+          byte-identical and no client or test moves. They belong together because between them they answer one
+          question, and share one discipline: read-only with respect to trading, and an explicit "unknown" rather
+          than a fabricated number. 5,415 → 5,124 lines, 1,084 tests passing unchanged, and all four extracted
+          paths verified serving 200 against the live app.</p>
+        <div class="files"><code>services/app_state.py</code> · <code>routers/__init__.py</code> · <code>routers/diagnostics_routes.py</code> · <code>main.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 115 · main.py modularization complete</div>
+        <h4>Seven phases later: main.py goes from ~5,450 lines to 1,716</h4>
+        <p>Phase 114's enabling move (<code>app_state.py</code> + <code>diagnostics_routes.py</code>) got main.py to
+          5,124 lines; new routes and features added since pushed it back up to ~5,450 by the time this seven-phase
+          plan started. Six phases landed first, each its own commit and live smoke check: killing
+          <code>strategy_engine.py</code>'s last <code>import main</code> reach-around; four shared read-side helpers
+          (<code>state_view.py</code>, <code>market_lookup.py</code>, <code>account_positions.py</code>,
+          <code>ws_manager.py</code>); a <code>services/config/</code> module added mid-execution on direct request
+          ("the config section itself also needs to be modular"); <code>services/position/routes.py</code>;
+          <code>services/history/</code> and <code>services/analytics/</code> (including the market-analyst/
+          series-evaluator orchestration — the one part of "analytics" that's real logic, not routing); and the
+          whale/index stream callback layer (<code>services/whale_stream/</code>), the one phase touching the app's
+          single long-lived background task. Restructured into <code>services/&lt;concern&gt;/</code> folders
+          partway through on another direct request ("restructure the folders... so I could scope these modules
+          individually... in their own git repos or at least Claude sessions"), each with its own
+          <code>routes.py</code> and a <code>CHEATSHEET.md</code> (module ownership, relevant
+          <code>docs/kalshi/</code> pages, handoff to adjacent modules).
+          Phase 7 — market watch/discovery, ~1,300 lines, the largest single extraction and the current
+          tick-duration bottleneck — landed last on purpose, so every helper it might reach for already existed.
+          Moved verbatim into <code>services/market_watch/market_watch.py</code>: catalog scanning, discovery-cache
+          refresh, live market/status/milestone fetching. A full AST free-variable scan of the moved block (not just
+          the plan's own pre-extraction guess) turned up one real cross-module dependency the plan hadn't pinned
+          down — <code>market_lookup._sport_for_event</code>. This phase also finally ran the full
+          <code>pytest</code> suite for the first time since phase 2 (deliberately deferred — "skip expensive
+          testing until the end" — while phases 3-6 relied on fast static checks plus live curl smoke tests alone):
+          it surfaced two real, pre-existing gaps, neither caused by this phase's own code move.
+          <code>_process_stream_lifecycle</code> (phase 6) was called qualified in <code>lifespan()</code> but never
+          re-imported bare into <code>main.py</code>, so <code>main._process_stream_lifecycle</code> didn't exist
+          for four tests that reached for it. And <code>monkeypatch.setattr(main, "KalshiClient", ...)</code>
+          silently stopped reaching <code>_refresh_discovery_cache_background</code> the moment that function's
+          home module changed — a name rebound in <code>main</code>'s namespace doesn't follow code that moved
+          elsewhere and now resolves <code>KalshiClient</code> from its own module globals instead, the same
+          underlying Python semantics as the <code>_full_spectrum_analyzing</code> gotcha from phase 5, just via
+          monkeypatch instead of a direct reassignment. Fixed by patching
+          <code>services.market_watch.market_watch.KalshiClient</code> directly. All 1,158 tests green afterward,
+          and a live tick-timing sample (<code>/api/health/pipeline</code>) confirmed
+          <code>tick_phase_timings.market_fetch</code>/<code>last_tick_duration_sec</code> statistically unchanged —
+          same numbers, not improved; improving them is separate, future work. <code>main.py</code>: 3,016 → 1,716
+          lines this phase. <code>trading_loop</code>'s control flow and phase ordering stay in <code>main.py</code>
+          by design — its phase bodies are now mostly thin delegations into the modules above.</p>
+        <div class="files"><code>services/market_watch/market_watch.py</code> · <code>services/market_watch/CHEATSHEET.md</code> · <code>main.py</code> · <code>tests/test_trading_gate.py</code> · <code>services/state_view.py</code> · <code>services/market_lookup.py</code> · <code>services/account_positions.py</code> · <code>services/ws_manager.py</code> · <code>services/config/</code> · <code>services/position/routes.py</code> · <code>services/history/</code> · <code>services/analytics/</code> · <code>services/whale_stream/</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 116 · epoch-aware diagnostics</div>
+        <h4>Judging history against the config that was actually live, not today's</h4>
+        <p><code>services/diagnostics.py</code>'s <code>check_threshold_integrity</code> and
+          <code>check_price_band_adherence</code> judged every historical row against <em>today's</em> live config —
+          a config change made hours after a signal or trade was recorded made that row look like a violation it
+          never actually was. <code>performance_by_epoch</code>, in the same file, already solved the equivalent
+          problem correctly for a different question (win rate per config epoch), by reading
+          <code>config_performance.applied_changes</code> — every live tuning change, timestamped, with its old and
+          new value. Reused that same data source for point-in-time lookups instead: two new helpers,
+          <code>_fetch_path_changes(paths, since_ts)</code> (one query per check, not one per row) and
+          <code>_historical_value(cfg, path, ts, changes)</code> — the value at a given <code>"section.field"</code>
+          path at time <code>ts</code> is the <code>old_value</code> of the earliest recorded change to that exact
+          path after <code>ts</code>, or today's live value (via <code>services/config/config_paths.py</code>'s
+          <code>_config_value_at_path</code>) if nothing has changed since. <code>check_threshold_integrity</code>
+          now rewinds <code>whale_watcher_kalshi.min_notional_usd</code>/<code>.min_notional_usd_by_series</code> per
+          signal, keyed on its own <code>seen_at</code>; <code>check_price_band_adherence</code> rewinds all four
+          layers <code>config_overrides.resolve()</code> reads — <code>strategy.min_unit_cost</code>/
+          <code>.max_unit_cost</code> plus both <code>strategy_overrides</code> tiers — per trade, keyed on its own
+          <code>timestamp</code>. Caught two bugs in the first draft before they ever ran: a nonexistent import
+          path (<code>services.config</code> has no <code>config_performance</code> — that's the flat
+          <code>services/config_performance.py</code>, already imported correctly elsewhere in the file) and a
+          missing <code>_config_value_at_path</code> import entirely — both found by re-reading the diff, not by
+          the test suite. Three new tests in <code>tests/test_diagnostics.py</code> prove the fix in both
+          directions — a stale-config false positive now clears, and a real violation from before a later config
+          change still gets caught — and all 11 pre-existing tests in that file pass unchanged (with no
+          <code>applied_changes</code> rows seeded, the new lookups return nothing and both checks fall back to
+          today's value exactly as before — backward compatibility fell out of the design, it didn't need its own
+          special case). Full suite: 1,161 passed. Live-verified against <code>GET /api/diagnostics</code>: both
+          checks report <code>epoch_aware: true</code>, and getting the epoch right immediately surfaced a
+          genuine, previously-uninterpretable finding rather than resolving to zero — <code>check_threshold_
+          integrity</code> still reports 1,169/1,900 signals (61.5%) below the floor that was truly live for their
+          series, spot-checked against real evidence (a $2,297 print judged against a contemporaneous, unchanged
+          $5,000 floor) to confirm this is a real number, not the same epoch-attribution bug reappearing. Not
+          root-caused — captured as its own new ROADMAP.md item.</p>
+        <div class="files"><code>services/diagnostics.py</code> · <code>tests/test_diagnostics.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 117 · index.html → real frontend build (esbuild)</div>
+        <h4>A file-per-concern split first, then a correction: bring in real tooling, not just files</h4>
+        <p><code>static/index.html</code> was one file: markup, an 894-line inline <code>&lt;style&gt;</code>, and a
+          5,758-line inline <code>&lt;script&gt;</code> defining 150+ top-level functions and globals for all 7
+          dashboard tabs — the frontend's own version of the exact bloat <code>main.py</code>'s seven-phase
+          modularization (phase 115) just spent a whole session fixing on the backend. First pass: a pure
+          byte-range split into 12 plain <code>&lt;script src&gt;</code> files sharing one global scope, deliberately
+          <em>not</em> real ES modules — reasoning at the time was "no build step, no bundler" per CLAUDE.md's
+          description of this project's other static pages. Direct correction from the user mid-session: that was
+          never an actual instruction, and the frontend-separation roadmap item already said the framework/bundler
+          question was undecided — "we can use libraries and plugins and tools to help achieve our goals." Given a
+          straight choice between a lightweight bundler (real modules, npm libraries, no framework) and a full UI
+          framework rewrite, went with the bundler.
+          <br><br>
+          <b><code>frontend/</code> is now a real npm project</b> (<code>esbuild</code> + <code>eslint</code>,
+          <code>frontend/package.json</code>): <code>frontend/src/js/*.js</code> are the same 12 files, now genuine
+          ES modules with real <code>import</code>/<code>export</code> — no shared global scope, an actual enforced
+          dependency graph — bundled into the single file <code>index.html</code> now loads,
+          <code>static/js/dashboard.bundle.js</code>. <code>index.html</code>: 7,716 → 1,073 lines.
+          <code>.ddev/config.yaml</code> runs <code>npm install</code> on every <code>ddev start</code>
+          (<code>hooks.post-start</code>, so a fresh clone doesn't need a manual setup step) and esbuild's own watch
+          mode as a background daemon (<code>web_extra_daemons</code>), so editing <code>frontend/src/js/*.js</code>
+          rebuilds the bundle automatically — the same save-and-it-just-works loop <code>uvicorn --reload</code>
+          already gives the backend.
+          <br><br>
+          Converting to real modules surfaced a correctness class classic scripts never had to deal with, and each
+          was worked through methodically rather than guessed at: <b>(1)</b> inline HTML
+          <code>onclick=</code>/<code>onchange=</code>/<code>oninput=</code> handlers — some built indirectly through
+          a function parameter, e.g. <code>renderSuggestionCard(rec, acceptOnclickJS)</code> — resolve identifiers
+          against <code>window</code>, not module scope. Found the full set with an acorn AST walk over every
+          handler string across all 12 files (not by re-grepping the same regex and assuming it was complete this
+          time); every top-level function now gets a blanket <code>window.fn = fn</code> exposure per file, and the
+          specific state objects handlers mutate by property (<code>decisionFilter</code>,
+          <code>screenerState</code>, <code>realPositionsState</code>, …) get the same, individually. <b>(2)</b> Five
+          values (<code>lastSignals</code>, <code>lastTradeTape</code>, <code>terminalSignalFeed</code>,
+          <code>terminalDecisionFeed</code>, <code>tradeTapeMinSize</code>) get wholesale-<em>reassigned</em>
+          elsewhere, which a one-time <code>window.x = x</code> would silently go stale after — replaced their
+          inline reads/writes with small same-module wrapper functions instead (<code>_rerenderSignalsFilter()</code>
+          etc). <b>(3)</b> The real ES-module-specific one: an importer only gets a read-only live view of an
+          imported binding, so a variable can only be <em>reassigned</em> by the file that declares it. A second
+          AST script found every case where the first pass's byte-range split had left a <code>let</code> in one
+          file with its only reassignment happening in another — ten variables the split had scattered across
+          <code>shared-utils.js</code>/<code>trading-gate-and-connectivity.js</code> that all actually belong to
+          <code>polling-and-websocket.js</code>'s poll loop — and relocated each declaration to its real owner
+          (or added a setter where two files legitimately mutate the same one, like <code>accountMode</code>).
+          <code>eslint</code>'s <code>no-undef</code> (this project's JS equivalent of the backend's
+          <code>pyflakes</code> check, wired as <code>npm run lint</code>) then caught what none of that manual
+          analysis did: a <b>genuine pre-existing bug</b>, unrelated to the split — <code>comboLegsHTML()</code> read
+          a bare <code>state</code> variable that has never existed anywhere in this codebase (confirmed against the
+          last commit, predates this session entirely). Its own comment already named the intended source ("the
+          same … latest global <code>prices</code> caches"), so fixed to read <code>terminalLatestPrices</code>
+          instead of guessing at new behavior.
+          <br><br>
+          Verified throughout, not just at the end: a <code>diff</code> against a reconstructed concatenation of the
+          original inline script (no code lost or reordered) before any conversion began; an AST script
+          cross-checking every file's real import/export graph; <code>eslint --no-undef</code> and
+          <code>node --check</code> both clean on every generated module; the watch-mode auto-rebuild verified live
+          end to end (edited a source file, confirmed the served bundle changed within seconds — and confirmed a
+          dangling trailing <em>comment</em> genuinely doesn't survive esbuild's output, catching a false alarm
+          before it became a wrong conclusion). Full suite (1,161 tests) green throughout; the one test coupled to
+          the old file layout (<code>tests/test_e2e_terminal_static_and_api.py</code>, asserting a JS helper's name
+          in <code>index.html</code>'s own response body) fixed to fetch <code>js/dashboard.bundle.js</code>
+          instead. <code>.ddev/nginx/kalshi-proxy.conf</code> gained a <code>no-store</code> rule for
+          <code>*.css</code>/<code>*.js</code>, same stale-asset-after-edit risk this project already hit once for
+          <code>.html</code>.</p>
+        <div class="files"><code>static/index.html</code> · <code>static/css/dashboard.css</code> ·
+          <code>frontend/package.json</code> · <code>frontend/eslint.config.js</code> ·
+          <code>frontend/src/js/*.js</code> (12 files) · <code>static/js/dashboard.bundle.js</code> (generated) ·
+          <code>.ddev/config.yaml</code> · <code>.ddev/nginx/kalshi-proxy.conf</code> ·
+          <code>tests/test_e2e_terminal_static_and_api.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 118 · framework-alternatives audit</div>
+        <h4>Not a framework migration: three narrow fixes mapped 1:1 to diagnosed bugs</h4>
+        <p>Direct question: given the bugs already found, should the app move off its "handspun logic" onto a
+          framework that does state management, task orchestration, or frontend reactivity better? Investigated
+          before writing any code — three <code>Explore</code> agents covered the backend concurrency/execution
+          model, the position-lifecycle/gate logic, and the post-esbuild frontend state. None of the diagnosed bugs
+          turned out to be the class a heavy framework (Temporal/Celery, an ORM, a full SPA framework) actually
+          solves — they were a missing task-death detector, a specific gate re-validation gap, and duplicated
+          derivation logic. Adopting one of those would also have conflicted with this repo's standing
+          one-SQLite-file-per-concern, no-ORM instruction. Three narrow, in-house patterns shipped instead, each
+          traced to a real measured bug rather than chosen speculatively.
+          <br><br>
+          <b>Task supervision + logging</b> (commit <code>aa6d98b</code>): every <code>asyncio.create_task()</code>
+          call site in <code>main.py</code>/<code>market_watch.py</code> was fire-and-forget — an unhandled
+          exception just silently ended the task, no restart, no trace. The exact shape behind three already-
+          diagnosed live incidents (<code>6973974</code>'s subscription-flag bug, <code>a31ae51</code>'s stale-
+          session reuse, <code>12323cc</code>'s duplicate-LLM-call race). New <code>services/task_supervisor.py</code>
+          wraps a coroutine, logs and records any exception into the existing <code>services/fault_log.py</code>,
+          and optionally restarts — used for the three long-running loops (<code>trading_loop</code>,
+          <code>trade_stream</code>, <code>index_stream</code>) that must never just stay dead. Also added a
+          one-line stdlib <code>logging</code> setup (<code>services/logging_config.py</code>) — the app had zero
+          <code>logging</code> usage anywhere before this, only <code>print()</code> and <code>fault_log</code>.
+          <br><br>
+          <b>The "four-entry gate bypass" fix</b> (commit <code>6921543</code>): root-caused a ROADMAP.md item open
+          since 2026-08-17 (four real entries at unit costs 0.97, 1.00, 0.20, 0.97, one at <code>conf 0.25</code>
+          against a 0.495 threshold). <code>PaperBroker.check_pending_fills()</code> called
+          <code>open_position()</code> for a filled limit order using only the fill-time price —
+          <code>entry_threshold</code>/the tradeable-price-range floor/<code>min_unit_cost</code>/
+          <code>max_unit_cost</code> were only ever checked once, at placement time, against the price the order
+          asked for. Since price can move between placement and fill, a resting order could fill at a price a
+          fresh signal at that price would have been gate-rejected for. Fixed by extracting those gates from
+          <code>strategy_engine.evaluate()</code> into a shared <code>_validate_entry_price()</code>, called both
+          by <code>evaluate()</code> itself and by a new <code>FollowTheWhaleStrategy.validate_pending_fill()</code>,
+          wired into <code>check_pending_fills</code> via a <code>validate_fn</code> callback (defaults to
+          <code>None</code>, so every pre-existing caller/test is unaffected). A rejected fill now cancels the
+          resting order and records a <code>"fill_rejected"</code> decision instead of opening a position.
+          <code>market_strategy.py</code>'s <code>MarketNativeStrategy</code> has no limit-order path at all, so
+          needed no changes. No new position-status enum/state machine added — the fix is "validate right before
+          <code>open_position()</code> is called," at both call sites, nothing more.
+          <br><br>
+          <b>Frontend no-side-price centralization</b> (commit <code>d64b633</code>): even right after phase 117's
+          esbuild modularization, the exact no-side inversion formula CLAUDE.md's "Bug pattern to watch for"
+          section warns about (<code>side === 'yes' ? price : 1 - price</code>) was still hand-copied at 13
+          confirmed call sites across 6 module files — modularization split the files but never centralized this
+          one recurring piece of logic. New <code>sideAdjustedPrice(side, price)</code> in
+          <code>shared-utils.js</code> replaces every inline reimplementation. <code>costHTML()</code>'s signature
+          deliberately left unchanged — <code>trade-log-and-real.js</code> has one call site that already passes an
+          already-side-correct price sourced directly from Kalshi's own <code>yes</code>/<code>no_price_dollars</code>
+          fields, so folding the inversion into <code>costHTML</code> itself would have double-inverted that site.
+          <br><br>
+          Full suite green throughout (1,178 tests after 13 new ones — 4 for <code>task_supervisor</code>, 9 across
+          <code>test_paper_broker.py</code>/<code>test_strategy_engine.py</code> for the fill-revalidation fix), CI
+          confirmed green on <code>pytest</code> (dependency-audit's 20 pre-existing tracked CVEs unaffected, same
+          count as before), and the live <code>ddev</code> app spot-checked post-reload (<code>GET /api/state</code>
+          returning clean, no new errors, structured log lines now visible in <code>ddev logs -s fastapi</code>).</p>
+        <div class="files"><code>services/task_supervisor.py</code> · <code>services/logging_config.py</code> ·
+          <code>main.py</code> · <code>services/market_watch/market_watch.py</code> ·
+          <code>services/market_analyst_agent.py</code> · <code>services/game_state.py</code> ·
+          <code>services/kalshi_trade_ws.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/whale_stream/decision_bridge.py</code> ·
+          <code>frontend/src/js/shared-utils.js</code> · <code>frontend/src/js/signals-feed.js</code> ·
+          <code>frontend/src/js/equity-and-cards.js</code> · <code>frontend/src/js/advisory-calibration.js</code> ·
+          <code>frontend/src/js/trade-log-and-real.js</code> ·
+          <code>frontend/src/js/trading-gate-and-connectivity.js</code> ·
+          <code>tests/test_task_supervisor.py</code> · <code>tests/test_paper_broker.py</code> ·
+          <code>tests/test_strategy_engine.py</code> · <code>tests/test_kalshi_trade_ws.py</code> ·
+          <code>tests/test_market_analyst_agent.py</code> · <code>tests/test_trading_gate.py</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 119 · continued modularization, nine phases</div>
+        <h4>Exits, whale calibration, advisory, backtest, market catalog, market events, diagnostics — plus
+          splitting the modularization's own largest file</h4>
+        <p>Direct instruction to continue the roadmap's modularization work past phase 115, naming concerns still
+          left as oversized flat files or lumped under the wrong package: exit position management, whale signal
+          calibration, advisory engine, market catalog, market events, backtesting — "bridges" was already shipped
+          (<code>services/whale_stream/decision_bridge.py</code>, phase 115). Nine phases, each its own commit,
+          full <code>pytest</code> pass + CI green before the next started. <b>Phase 1</b>: exit-decision logic
+          (<code>check_exits</code>/<code>_whale_lean</code>/<code>_exit_confidence</code>/<code>close_if_settled</code>)
+          split out of <code>strategy_engine.py</code> (now entry-only) into new <code>services/exits/exit_engine.py</code>,
+          alongside <code>position_netting.py</code> moved in beside it — <code>FollowTheWhaleStrategy.check_exits</code>
+          stays a public method with an unchanged signature, delegating internally. <b>Phase 2</b>: <code>confidence_calibration.py</code>
+          + <code>calibration_history.py</code> (zero cross-imports with any analytics sibling, confirmed before
+          moving) into <code>services/whale_calibration/</code>, per an already-queued ROADMAP.md item. Caught a
+          real bug moving it: <code>calibration_history.py</code>'s <code>DB_PATH</code> is computed relative to
+          <code>__file__</code>, and the extra directory depth silently retargeted it to
+          <code>services/data/calibration_history.db</code> instead of <code>data/calibration_history.db</code> —
+          the real 53KB history file was untouched, but a live process would have started a fresh empty one in the
+          wrong place. Fixed and re-verified against the real path before committing; the same class of bug was
+          then checked for (and found twice more) on every later phase that moved a file with its own
+          <code>DB_PATH</code>. <b>Phase 3</b>: <code>advisory_engine.py</code> into <code>services/advisory/</code>,
+          same ROADMAP item — its one real cross-import (<code>regime_analytics</code>) stays a plain shared
+          dependency rather than dragged along. <b>Phase 4</b>: <code>backtest.py</code> (a leaf module, zero
+          cross-imports) into <code>services/backtest/</code>. <b>Phase 5</b>: docs-only — rewrote
+          <code>services/analytics/CHEATSHEET.md</code> for its new, smaller residual scope and recorded a new
+          deferred item (<code>market_analyst_agent.py</code>/<code>market_analyst_orchestrator.py</code> are real
+          split candidates too, but checked directly and found genuinely entangled with advisory and
+          series-evaluator — queued rather than rushed). <b>Phase 6</b>: <code>market_catalog.py</code> (13 real
+          importers updated) into <code>services/market_catalog/</code>, plus the market-detail/search route group
+          (<code>orderbook</code>/<code>candlesticks</code>/<code>trades</code>/<code>detail</code>/
+          <code>market-catalog/status</code>/<code>markets/search</code>, ~250 lines) that phase 115's own six named
+          concerns had never claimed, moved out of <code>main.py</code>. <b>Phase 7</b>: <code>event_lifecycle.py</code>/
+          <code>event_schedule.py</code>/<code>event_inspector.py</code> into <code>services/market_events/</code> —
+          the last one a standalone diagnostic script with zero programmatic importers, confirmed via grep before
+          assuming otherwise. <b>Phase 8</b>: normalized diagnostics — <code>services/diagnostics.py</code> plus
+          the top-level <code>routers/diagnostics_routes.py</code> (phase 115's own one-off Phase-0 template,
+          left inconsistent with every later concern's <code>services/&lt;name&gt;/</code> shape ever since) into
+          <code>services/diagnostics/</code>; the now-empty <code>routers/</code> directory deleted. Three bare
+          <code>from services import diagnostics</code> imports (<code>app_state.py</code> and two test files)
+          silently resolved to the new package's <code>__init__.py</code> instead of the moved file — Python
+          didn't error until the functions were actually called, so the first full-suite run caught it as 15 real
+          failures, not an import error; fixed and re-verified. <b>Phase 9</b>: <code>services/market_watch/market_watch.py</code>
+          itself — at 1,337 lines, the largest file in the whole tree, and phase 115's own largest single
+          extraction — split into five cohesion-based siblings (<code>catalog_scan.py</code>,
+          <code>discovery_cache.py</code>, <code>market_fetch.py</code>, <code>live_status.py</code>,
+          <code>event_metadata.py</code>), with <code>__init__.py</code> re-exporting every name external callers
+          need so <code>main.py</code>'s own import line only dropped the redundant <code>.market_watch</code>
+          module segment. A <code>KalshiClient</code> monkeypatch in <code>test_trading_gate.py</code> needed
+          retargeting from the old single-file module to <code>discovery_cache.py</code>, where
+          <code>_refresh_discovery_cache_background</code> actually lives now — same underlying Python semantics
+          phase 115 itself flagged for a near-identical monkeypatch gotcha. Every new module got a
+          <code>CHEATSHEET.md</code> written to an audit-oriented standard, not just a reference index: how the
+          module currently behaves, what the API docs say it should do, and any gap already visible while writing
+          it. Two real findings this surfaced: <code>services/exits/exit_engine.py</code>'s
+          <code>close_if_settled</code> closes a position at Kalshi's <code>determined</code> status, before
+          <code>finalized</code> — a disputed-and-reversed result during the settlement-timer window has no
+          correction path today; and the same gap in <code>services/whale_calibration/</code>'s signal-resolution
+          logic feeds directly into CLAUDE.md's HARD COMMANDMENT accuracy metric, not just P&amp;L. A caught, unrelated
+          UTC-midnight test flake (<code>test_check_daily_loss_stays_halted_within_the_same_day</code> in
+          <code>test_risk_manager.py</code>/<code>test_shadow_mode.py</code>) was confirmed via <code>date -u</code>
+          as pre-existing and outside every touched file, not a regression. 1,178 tests green throughout, CI green
+          on every one of the nine pushes, and every new route spot-checked live post-deploy (<code>GET
+          /api/state</code>, <code>/api/market-catalog/status</code>, <code>/api/position-netting/groups</code>,
+          <code>/api/confidence-calibration/status</code>, <code>/api/advisory/status</code>,
+          <code>/api/backtest/entry-threshold</code>, <code>/api/diagnostics</code> — all 200).</p>
+        <div class="files"><code>services/exits/</code> · <code>services/whale_calibration/</code> ·
+          <code>services/advisory/</code> · <code>services/backtest/</code> · <code>services/market_catalog/</code> ·
+          <code>services/market_events/</code> · <code>services/diagnostics/</code> ·
+          <code>services/market_watch/catalog_scan.py</code> · <code>services/market_watch/discovery_cache.py</code> ·
+          <code>services/market_watch/market_fetch.py</code> · <code>services/market_watch/live_status.py</code> ·
+          <code>services/market_watch/event_metadata.py</code> · <code>services/analytics/CHEATSHEET.md</code> ·
+          <code>main.py</code> · <code>services/app_state.py</code> · <code>services/strategy_engine.py</code> ·
+          <code>services/market_strategy.py</code> · <code>services/paper_broker.py</code> ·
+          <code>services/signal_log.py</code> · <code>services/task_supervisor.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 120 · docs catch-up</div>
+        <h4>ROADMAP #1's two runway gates were already shipped — the checkboxes and this page just never caught up</h4>
+        <p>Found while triaging ROADMAP.md's open items for what to work on next: the "#1 priority" entry describing
+          a position riding unmanaged to settlement with no runway gate on either side already had both of its named
+          sub-fixes shipped, six days earlier, in commit <code>2974e42</code> ("Ship ROADMAP #1's two missing runway
+          gates") — they just were never checked off or written up here. <code>strategy.min_seconds_to_close</code>
+          is the entry-side minimum runway check in <code>strategy_engine.py</code>'s <code>evaluate()</code>,
+          sitting right after the existing <code>close_window_sec</code> upper-bound check and skipped the same way
+          when <code>is_live</code>. <code>strategy.exit_min_seconds_to_close</code> is the exit-side forced
+          decision, now living in <code>services/exits/exit_engine.py</code> post phase-119 modularization: an
+          <code>elif</code> in the hard-rule exit chain that force-closes once remaining runway drops below the
+          floor regardless of where P&amp;L currently sits. Both configured live (<code>min_seconds_to_close: 300</code>,
+          <code>exit_min_seconds_to_close: 120</code> in <code>config/settings.yaml</code>). The parent bullet stays
+          open in ROADMAP.md — the stress-test's real-cost paragraph underneath (three chased re-entries,
+          -$590.76 on one market instance) is separate open commentary about that config, not an unshipped fix.</p>
+        <div class="files"><code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 121 · whale threshold: dollars &rarr; contracts</div>
+        <h4>The whale-detection gate is contract count now, not dollar notional — the single biggest measured lever on the 70%/70% target</h4>
+        <p>ROADMAP.md and <code>docs/next-session-pickup-2026-08-17.md</code> had already measured and documented
+          this fix on 2026-08-17 but left it unshipped deliberately, since it redefines what the app considers a
+          whale — a strategy call, not a bug fix. Confirmed with the user before shipping: a fixed dollar threshold
+          is geometrically biased toward near-certain prices ($2,500 buys 125,000 contracts at 2&cent; but only
+          2,505 at 99.8&cent;), so it was finding whoever could afford a near-certainty in size, not informed
+          traders — measured across 145,785 real prints, the dollar gate's picks sat at mean unit cost 0.926 (75.9%
+          of them &ge;0.95, the band that bleeds); a <code>count &gt;= 5,000</code> selector lands at mean 0.759,
+          with 27.3% inside the only profitable band versus 8.6% for the dollar gate. Chosen to fully replace
+          (not run alongside) <code>min_notional_usd</code>. <code>whale_watcher_kalshi.min_contracts</code> (default
+          5,000) and <code>min_contracts_by_series</code> are the new gate in
+          <code>services/whalewatchers/kalshi_trade_tape.py</code> — real dollar notional is still computed and
+          recorded in <code>raw_context</code> for diagnostics, it just no longer gates anything. Per-series
+          overrides were re-derived from real data rather than blindly renamed: <code>signal_log.db</code>'s own
+          logged whale-signal sizes for KXTRUMPSAY/KXTRUMPMENTION top out at 3,506/4,932 contracts, so a flat 5,000
+          global floor with no override would have silently gone dark on both — 2,500/500 (the old dollar tier's own
+          round numbers, reused deliberately) sit at or below every affected series' observed history, so the unit
+          switch doesn't zero out their signal flow. Every downstream consumer of the old dollar gate was updated in
+          the same pass: <code>check_threshold_integrity</code> (now checks <code>signals.size</code>, a NOT NULL
+          column every provider populates, using <code>factors_json IS NOT NULL</code> — the same idiom
+          <code>resolved_signals_with_factors</code> already used — as the "real provider row" filter that
+          <code>raw_notional_usd IS NOT NULL</code> used to serve) and <code>check_coverage</code> in
+          <code>services/diagnostics/diagnostics.py</code>, the <code>whale_sized_prints</code> funnel stage in
+          <code>services/series_watcher.py</code>, the per-series override shown to the series-analyst LLM
+          (<code>market_analyst_orchestrator.py</code>/<code>market_analyst_agent.py</code>), and the live
+          dashboard's Controls panel — <code>static/index.html</code>'s whale-threshold field and
+          <code>frontend/src/js/config-panel.js</code>'s load/save wiring really do drive live config, not just
+          document it, so both needed the same field rename the backend got (esbuild's watch daemon rebuilt
+          <code>static/js/dashboard.bundle.js</code> automatically; <code>npm run build</code> re-verified it).
+          The other roadmap item this
+          superseded (a not-yet-root-caused investigation into real <code>min_notional_usd</code> violations) was
+          closed as moot rather than resolved: the dollar floor it was checking no longer exists to be violated. 39
+          whale-watcher tests, 26 series-watcher tests, and 14 diagnostics tests updated for the new field names and
+          gate semantics; full suite (1,141 tests) green throughout.</p>
+        <div class="files"><code>services/whalewatchers/kalshi_trade_tape.py</code> ·
+          <code>services/diagnostics/diagnostics.py</code> · <code>services/series_watcher.py</code> ·
+          <code>services/analytics/market_analyst_orchestrator.py</code> · <code>services/market_analyst_agent.py</code> ·
+          <code>services/advisory/advisory_engine.py</code> · <code>services/backtest/backtest.py</code> ·
+          <code>services/candidate_log.py</code> · <code>config/settings.yaml</code> · <code>static/index.html</code> ·
+          <code>frontend/src/js/config-panel.js</code> · <code>tests/test_whalewatchers_kalshi_trade_tape.py</code> ·
+          <code>tests/test_series_watcher.py</code> · <code>tests/test_diagnostics.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>tests/test_market_analyst_agent.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 122 · module quality: data-consumption audit</div>
+        <h4>New standing goal (retiring the 70%/70% target): per-module effectiveness, efficiency, informativeness</h4>
+        <p>Direct instruction: "forget the 70% thing. now that things are modular the goal is to make sure each
+          module works at peak effectiveness, efficiency, and informativeness." CLAUDE.md's old "HARD COMMANDMENT"
+          section (2026-08-17: reproduce 70% whale accuracy AND 70% own win rate) was rewritten in place to state
+          this instead - the measured data stays in git history, but nothing gets judged against it going forward.
+          Picked up ROADMAP.md's "per-module data-consumption audit" item (2026-08-22) as the first work under the
+          new goal, since it already named four concrete, unfixed findings. Three were real bugs, fixed: (1)
+          <code>_fetch_markets</code>'s <code>live_markets_only</code> hydration fired an uncapped
+          <code>asyncio.gather</code> - one <code>client.get_markets(limit=100, series_ticker=s)</code> per distinct
+          selected series, no semaphore - at live <code>watchlist_size: 150</code> that's up to ~50 concurrent calls
+          every 6s tick, each one alone able to exceed Kalshi's entire 600-token read-burst budget (same failure
+          shape <code>live_status._fetch_live_status</code> already hit and fixed once, see phase 97's own
+          <code>_LIVE_STATUS_MAX_POLL_PER_TICK</code>). Replaced with one batched
+          <code>get_markets_by_tickers()</code> call - chunks to 50/request, sequential, never concurrent - which
+          also fixed a real correctness gap for free: no status filter, so an already-settled market hydrates on
+          the same call instead of needing the old per-ticker fallback branch. (2)
+          <code>series_evaluator.evaluate_pending()</code> opened a fresh SQLite connection per ready series inside
+          its own loop, the exact per-call overhead this file's own <code>record_trades_observed_bulk()</code> was
+          already written to avoid once before (2026-08-11 incident) - now one connection for the whole call, with
+          an explicit commit per verdict to keep the original per-verdict durability. (3)
+          <code>trade_analytics.compute_summary()</code> was computed twice inside
+          <code>advisory_engine.generate_recommendations()</code> itself (once for <code>gate_summaries</code>,
+          again for <code>category_rows</code> - every real caller passes both), and
+          <code>regime_analytics.by_category()</code> twice inside
+          <code>market_analyst_orchestrator._build_full_spectrum_context()</code> on the identical
+          <code>all_rows</code> input - both hoisted to compute once. The fourth finding -
+          <code>market_history.snapshots</code>' <code>spread</code>/<code>volume_24h</code>/
+          <code>time_to_close_sec</code> columns written every tick, read by nothing - was investigated and left
+          alone: <code>docs/advisory-engine-plan.md</code> §9 (2026-08-08 direct request) names exactly this shape
+          - persist real data ahead of a not-yet-built ML-agent consumer - as the intended design, not an
+          accident. Verified live throughout: real API confirmation of the whale-threshold rename (phase 121,
+          folded into this same push cycle), <code>_build_full_spectrum_context()</code> called directly against
+          real trade history with no exception, full suite (1,142 tests) green after every change.</p>
+        <div class="files"><code>services/market_watch/market_fetch.py</code> ·
+          <code>services/series_evaluator.py</code> · <code>services/advisory/advisory_engine.py</code> ·
+          <code>services/analytics/market_analyst_orchestrator.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>CLAUDE.md</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 123 · the caching half, not just the concurrency half</div>
+        <h4>Real REST rate limiting, direct report: phase 122's own live_markets_only fix was incomplete</h4>
+        <p>Direct report, same day as phase 122: "rest api rate limiting is happening in the history and especially
+          position sections. i've insisted multiple times on streams to inform those sections and using REST API
+          to only verify and act on decisions, not monitor data and make decisions every tick." Root-caused to the
+          exact branch phase 122 had just touched: that pass replaced an uncapped concurrent
+          <code>asyncio.gather</code> (one <code>get_markets(series_ticker=s)</code> call per selected series) with
+          one safe batched <code>get_markets_by_tickers</code> call - genuinely safer, but still fired
+          <b>unconditionally on every tick</b>, no caching, unlike the pinned-watchlist and <code>extra_tickers</code>
+          branches sitting right next to it in the same function, which already routed through
+          <code>_cached_market_fetch</code> - a 300-second structural-field cache with price freshness coming from
+          the WS ticker-channel overlay instead, exactly the "websocket stream everything you can... leave the api
+          calls for things that are absolutely necessary" instruction from 2026-08-15. Confirmed the gap was real,
+          not theoretical, via direct instrumentation (wrapping the fake client's own method to log calls, not just
+          reading the code) - the uncached call fired on every single <code>_fetch_markets</code> invocation.
+          Fixed by routing <code>live_markets_only</code> hydration through <code>_cached_market_fetch</code> too,
+          so all three branches now share one consistent pattern. Added a size cap + oldest-first eviction to that
+          shared cache (<code>_MAX_MARKET_OBJECT_CACHE = 2000</code>, same shape as
+          <code>kalshi_trade_tape.py</code>'s own <code>_MAX_MARKET_CACHE</code>) since it now serves a much larger,
+          faster-rotating population than the small pinned/open-position set it originally did. Also traced (no
+          change needed) the other two things "position sections" could plausibly have meant: real-account
+          balance/positions/fills (<code>_fetch_account_snapshot</code>) were already on a 20-second cache from an
+          earlier pass, and a private, authenticated <code>fill</code>/<code>market_positions</code> WebSocket
+          subscription already exists and is wired end to end
+          (<code>whale_stream_handlers._process_stream_fill</code>/<code>_process_stream_position</code>,
+          subscribed in <code>kalshi_trade_ws.py</code>'s <code>run()</code>) - neither needed a fix here. Three new
+          tests: caching actually prevents a second REST call within the TTL window (direct instrumentation, not
+          just "still passes"), the new eviction logic under a lowered cap, and cache-isolation fixes for three
+          existing hydration tests that started colliding once live_markets_only began sharing the cache (same
+          ticker, different hydrated values, across tests in the same file). Full suite (1,144 tests) green.</p>
+        <div class="files"><code>services/market_watch/market_fetch.py</code> ·
+          <code>services/market_watch/discovery_cache.py</code> · <code>tests/test_trading_gate.py</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 124 · risk-architecture backstop</div>
+        <h4>Execution-layer risk enforcement, flatten-all, portfolio-wide exposure cap</h4>
+        <p>Backfilled from commit <code>a8de034</code> (2026-08-22), the earlier of two Phase-N/9 sub-phases
+          from that day's continued-modularization session — shipped and tested at the time, but never carried
+          into this file, so it sat undocumented until this pass caught it via a stale-<code>ROADMAP.md</code>
+          check. Closed 3 gaps found via a gap-check against <code>docs/prediction-market-bot-research.md</code>'s
+          engineering-safety checklist. First: <code>RiskManager.check_daily_loss()</code>/<code>max_trade_size()</code>
+          were only ever consulted from <code>strategy_engine.py</code>'s own <code>evaluate()</code> — neither
+          <code>PaperBroker.buy</code>/<code>sell</code> nor <code>KalshiAccountClient.create_order()</code>
+          independently re-checked <code>risk.halted</code> or a position-size ceiling before executing, the same
+          shape of gap the four-entry gate bypass (phase 121) had already proven reachable once. Fixed by making
+          <code>PaperBroker.open_position()</code> itself refuse (return <code>None</code>) when the wired-in
+          <code>RiskManager</code> is halted or a new exposure cap (below) would be exceeded — the same choke
+          point both a market-order entry and a filled resting limit order already pass through, so a future bug
+          in either caller's own gate logic now has a backstop. <code>KalshiAccountClient.create_order()</code>
+          gets the same halt guard, with an <code>is_closing_order</code> escape hatch so a flatten/close order
+          still works during a live halt. Second: no portfolio-wide exposure cap existed — <code>max_position_pct</code>
+          caps one trade, <code>max_open_positions_per_series</code> caps count within one series, but nothing
+          capped total dollar exposure summed across concurrently-open positions in different series. New
+          <code>RiskManager.check_total_exposure(current_exposure, prospective_cost, bankroll)</code>, stateless
+          like <code>max_trade_size</code>, reads a new opt-in <code>risk.max_total_exposure_pct</code> config
+          field (default <code>null</code> = no cap), enforced at the same <code>open_position()</code> choke
+          point. Third: no single function closed every open position at once — if Kalshi access were cut off
+          suddenly or the kill switch tripped on a real account, flattening was manual, per-position action. New
+          <code>PaperBroker.close_all_positions()</code> plus <code>KalshiAccountClient.flatten_all()</code>
+          (side/price mapping verified against <code>docs/kalshi/create-order-v2.md</code>'s <code>BookSide</code>
+          description and <code>get-positions.md</code>'s <code>position_fp</code> sign convention — no
+          bulk-flatten endpoint exists on Kalshi's own API, so this iterates and closes each position
+          individually), wired into a new <code>POST /api/trading/flatten-all</code> route gated by the same
+          typed-confirmation-phrase mechanism as <code>/api/trading/enable</code>. Re-verified live this session
+          (2026-08-23), not just trusted from the commit message: re-read every call site above and re-ran the 4
+          relevant test files fresh — 261 passed, 0 failed.</p>
+        <div class="files"><code>config/settings.yaml</code> · <code>main.py</code> ·
+          <code>services/app_state.py</code> · <code>services/kalshi_account_client.py</code> ·
+          <code>services/paper_broker.py</code> · <code>services/risk_manager.py</code> ·
+          <code>services/strategy_engine.py</code> · <code>tests/test_kalshi_account_client.py</code> ·
+          <code>tests/test_paper_broker.py</code> · <code>tests/test_risk_manager.py</code> ·
+          <code>tests/test_trading_gate.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+

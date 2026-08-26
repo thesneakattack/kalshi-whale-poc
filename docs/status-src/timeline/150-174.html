@@ -1,0 +1,198 @@
+      <div class="t-phase">
+        <div class="tag">phase 150 · synthetic performance regression checks, and finalizing the whole CI topology</div>
+        <h4>QCP Tasks 19-20 — encoding two real historical performance incidents as permanent guards, then a verification pass</h4>
+        <p>Task 19: <code>tests/test_performance_regressions.py</code> (opt-in, never in the default
+          <code>pytest</code> run) — deliberately narrow to the two candidates with real documented historical
+          evidence at the time: <code>series_evaluator.evaluate_pending</code> gets a hard operation-count
+          assertion (exactly one <code>sqlite3.connect()</code> for 2,000 ready series, encoding a real 2026-08-11
+          fix), <code>advisory_engine.generate_recommendations</code> gets a hard assertion that the full-dataset
+          <code>trade_analytics.compute_summary</code> call happens exactly once (encoding a real 2026-08-23
+          duplicate-computation fix — the first draft of this test counted every call and had to be corrected once
+          it found <code>variant_summaries</code>' own legitimate per-fingerprint-group calls weren't the same
+          thing). Two more candidates get scaling-ratio checks instead, since neither has a natural operation-count
+          invariant. Every measured wall time is recorded to a gitignored JSON artifact rather than asserted
+          against a hardcoded number.</p>
+        <p>Task 20: a verification pass across every CI check this initiative built — added the missing
+          concurrency-cancellation blocks to the three newer scheduled workflows, corrected a stale "five
+          independent files" reference in <code>docs/woodpecker-ci.md</code>, and added a consolidated job-taxonomy
+          table confirming all 11 conceptual checks from the plan's own target list exist and that no workflow
+          anywhere references a secret.</p>
+        <div class="files"><code>tests/test_performance_regressions.py</code> ·
+          <code>.github/workflows/performance.yml</code> · <code>docs/woodpecker-ci.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 151 · crash-alert resolution, and a correction</div>
+        <h4>"crash" alerts can finally resolve — and a stale claim about why they mattered gets fixed</h4>
+        <p>Phase 149 logged, but didn't fix, a real gap: <code>services/alerting/alerting.py</code>'s "crash"
+          category (recorded by <code>task_supervisor.py</code>'s exception handler) had no resolution path
+          anywhere — <code>resolve_category</code> was only ever called for the two continuously-monitored
+          transition-based conditions (<code>kill_switch</code>, stream connectivity), so <code>active_alerts()</code>
+          included every historical crash forever. Fixed with two independent, TDD'd mechanisms:
+          <code>expire_old_alerts(category, max_age_sec, now)</code> ages each unresolved "crash" row out on its
+          own once older than the new <code>alerting.crash_auto_resolve_after_sec</code> config field (default
+          1800s), wired into <code>check_and_alert</code>'s existing per-tick cadence via
+          <code>_expire_stale_crash_alerts</code> — a crash-looping component still shows a live alert from its
+          most recent occurrence while older rows fall away on their own — plus
+          <code>resolve_alert(alert_id)</code> / <code>POST /api/alerts/{id}/resolve</code> for manual
+          acknowledgment, generic by id rather than crash-specific.</p>
+        <p>While designing the fix, checked phase 149's own claim against the actual code rather than taking it
+          at face value: it said a stuck crash alert "pins the summary's status to error permanently." False —
+          <code>services/quality/routes.py</code> composes <code>status</code>/<code>counts</code> only from
+          <code>observability.runtime_findings()</code> + <code>storage_health.storage_findings()</code>;
+          <code>alerting.active_alerts()</code> is a separate field that never feeds into <code>status</code> at
+          all. The real effect was <code>GET /api/alerts/active</code> and the Terminal's "Alerts: N active" line
+          staying wrong forever, which is what this fix actually corrects. Live-verified against the dev server:
+          <code>/api/quality/summary</code> was observed reporting <code>status: "error"</code> with zero active
+          alerts at the time, confirming the two are genuinely decoupled — and traced that live "error" to a
+          second, separate, previously-undiscovered bug (<code>kalshi_trade_ws.py</code>'s
+          <code>dropped_messages</code> counter is set once and only ever incremented, never reset, so a single
+          dropped message pins <code>overall_status()</code> to "error" until the next process restart — almost
+          certainly the real mechanism behind phase 149's "105 minutes stuck red" observation). Filed as a new
+          <code>ROADMAP.md</code> item rather than fixed here, along with a second new item on whether critical
+          alerts should be able to drive <code>overall_status()</code> at all.</p>
+        <div class="files"><code>services/alerting/alerting.py</code> · <code>services/alerting/routes.py</code> ·
+          <code>services/alerting/__init__.py</code> · <code>services/alerting/CHEATSHEET.md</code> ·
+          <code>config/settings.yaml</code> · <code>tests/test_alerting.py</code> · <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 152 · a Woodpecker CI audit that found CI itself was silently broken</div>
+        <h4>The documented "trust Woodpecker" policy had no working way to check Woodpecker</h4>
+        <p>Asked to audit the already-built Woodpecker CI setup (server/agent, six
+          <code>.woodpecker/*.yml</code> pipelines, the local-vs-CI verification policy) against a fresh
+          from-scratch build spec, direct pushback identified the real gap: full local test/E2E suites kept
+          running anyway despite the policy saying Woodpecker should own that. Root cause traced, not guessed —
+          the only documented way to check a pipeline's result, <code>scripts/woodpecker-status</code>, requires a
+          personal <code>WOODPECKER_TOKEN</code> that's never available in a Claude session by design (it belongs
+          in a human's shell profile, not the repo), and the <code>checkpoint</code> skill's own fallback when
+          that token is missing was "say so rather than silently skipping this step" — no working alternative, so
+          nothing ever actually checked. Fixed by wiring in <code>gh api repos/.../commits/&lt;sha&gt;/status</code>
+          as the primary check instead: Woodpecker already posts a commit status per workflow to GitHub, and
+          <code>gh</code> is authenticated in every session with zero extra setup.</p>
+        <p>Using that check for the first time immediately proved the point: <code>quality-architecture-audit</code>
+          had been failing on three consecutive real pushes (<code>d644034</code>, <code>21a303a</code>,
+          <code>b28a380</code>) with nobody noticing. Cause was a stale <code>static/project-manifest.json</code> —
+          new files landed (<code>tools/kalshi_census.py</code> and friends) without regenerating it, the same
+          failure class <code>fd0ba71</code> had already fixed once before. Regenerated it again. Also corrected
+          two stale claims in <code>docs/woodpecker-ci.md</code> (the agent's parallel-workflow count, and repo
+          activation being described as still-pending when pipeline history already proved it done), and, while in
+          there, resolved a real bug <code>ROADMAP.md</code> had already found and left open:
+          <code>quality-frontend-build.yml</code>'s bundle-sync check
+          (<code>git diff --exit-code -- static/js/dashboard.bundle.js</code>) could never fail, since that file is
+          gitignored and has zero commits ever. Removed the check rather than patch it onto a nonexistent
+          comparison — both this workflow's own <code>npm run build</code> and <code>quality-browser-e2e.yml</code>'s
+          <code>build-frontend</code> step already rebuild the bundle from source on every push, so a broken build
+          fails loudly on its own.</p>
+        <div class="files"><code>.claude/skills/ci-cd-guardrails/SKILL.md</code> ·
+          <code>.claude/skills/checkpoint/SKILL.md</code> · <code>docs/woodpecker-ci.md</code> ·
+          <code>.woodpecker/quality-frontend-build.yml</code> · <code>static/project-manifest.json</code> ·
+          <code>ROADMAP.md</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 153 · the CI guard from phase 152 was itself the noise source</div>
+        <h4>A check that cried wolf every fifth commit is why nobody noticed it was red</h4>
+        <p>Phase 152 found <code>quality-architecture-audit</code> red across three consecutive pushes
+          (<code>d644034</code>, <code>21a303a</code>, <code>b28a380</code>) with nobody noticing, and fixed the
+          instance by regenerating <code>static/project-manifest.json</code>. It did not ask why nobody noticed.
+          This phase did, after the same failure recurred twice more in one session.</p>
+        <p>Root cause was in <code>tools/project_manifest.py</code>, and it was a gap between a documented
+          intent and its implementation rather than a bug. <code>_CHURN_FIELDS</code>' own comment states the
+          goal — "the check should gate structural facts, not require a manifest commit on every unrelated code
+          commit merely because SHA changed" — but it excluded only <code>generated_from_head</code> and
+          <code>generated_at</code>. Line and test counts churn nearly as reliably as the SHA does, and they
+          were still compared for exact equality. Measured across 25 commits of <code>origin/main</code>:
+          <code>lines.python</code> changed on 21% of them and <code>tests.count</code> on 21%, each time by a
+          fraction of a percent. So roughly one commit in five reded this pipeline over a number no reader could
+          be misled by, and the only remedy was ever to re-run <code>--write</code> and commit the result —
+          <code>git log</code> on the manifest shows those chore commits accumulating verbatim
+          ("Regenerate stale project-manifest.json (fixes red architecture-audit CI)"). The alarm fatigue was
+          not a side effect of that; it <i>was</i> phase 152's unexplained "nobody noticed".</p>
+        <p><code>--check</code> now compares against a 10% relative tolerance instead of exact equality, and
+          prints sub-threshold drift rather than suppressing it, so accumulation stays visible instead of
+          appearing only when it trips. Thresholds were chosen from the same measurement, not picked: total
+          drift over those 25 commits was 3.1% (<code>lines.python</code>) and 4.1% (<code>tests.count</code>),
+          leaving real headroom. Verified by fault injection both ways — the actual historical staleness this
+          guard exists for ("5,189 lines / 29 files / 20 API routes" against a repo an order of magnitude
+          past it) still fails loudly at +896.4%/+682.8%/+370.0%, while the phase 152 case itself (four new
+          files, 1.8% drift) now passes with the drift reported. That second half is a deliberate trade, not an
+          oversight: four files in 227 misleads nobody, and treating it as a hard failure is precisely what
+          taught everyone to stop reading this check. Key sets, <code>schema_version</code>, and any 0→nonzero
+          change stay exact — a tolerance must never absorb a schema change. Comparison logic was extracted
+          into a pure, unit-tested <code>compare()</code> rather than left inside the CLI, per the
+          CI-guardrail rule that a checker's logic shouldn't live only in its command-line plumbing; nine new
+          tests pin the behavior. The failure message now also prints the regeneration command, including the
+          non-obvious part that it must run on the host — the container image has no <code>git</code> binary,
+          so <code>ddev exec</code> silently writes <code>generated_from_head: null</code>.</p>
+        <div class="files"><code>tools/project_manifest.py</code> · <code>tests/test_project_manifest.py</code> ·
+          <code>.woodpecker/quality-architecture-audit.yml</code> ·
+          <code>static/project-manifest.json</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 154 · Kalshi Integration Phase A — every vendor semantic behind one documented, CI-enforced boundary</div>
+        <p>The dual-phase Kalshi integration initiative's Phase A (tasks A3–A17, spec:
+          <code>docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md</code>) completed on the
+          <code>refactor/kalshi-integration-boundary</code> branch. A new <code>services/kalshi/</code> package now owns
+          every vendor-specific semantic the app had scattered across wrappers, handlers, and presentation code:
+          SDK-client construction (<code>transport.py</code>, the only <code>kalshi_python_async</code> import left),
+          the public read gateway (<code>public.py</code>; selection policy moved out to
+          <code>services/market_watch/</code>), the authenticated read/write split (<code>account.py</code> /
+          <code>orders.py</code> — a read object structurally cannot place orders, and the write gateway carries the
+          <code>trading_enabled</code> + risk-kill-switch gates itself, reading live facade state so the runtime
+          enable/disable routes keep working), the WebSocket transport (<code>websocket.py</code>), and per-channel
+          normalizers + canonical contracts (<code>contracts/</code>: canonical-first direction resolution that never
+          guesses a side, the <code>trade_id</code>-not-<code>fill_id</code> WS identity, the singular
+          <code>market_position</code> message type, settled-not-determined outcome resolution, BookSide-only order
+          vocabulary). Emergency-flatten orchestration moved <i>above</i> the adapter into
+          <code>services/execution.py</code>. Every operation declares its exact mirrored-doc sources
+          (<code>CONTRACT_DOCS</code>), enforced by the A3 scanner; a new A15 boundary ratchet
+          (<code>tools/quality_audit/kalshi_boundary.py</code>) makes leakage a CI failure: SDK imports and host
+          strings outside the boundary, legacy-facade import counts above the reviewed baseline (16/2/2), and
+          deprecated direction-alias reads anywhere but the one archival site. Census evidence: outside-boundary
+          direction-alias reads fell 11 → 3 (all archival copies in <code>series_watcher</code>). Contract fixtures
+          grew to 16, covering both REST and WS shapes of every high-risk surface. The A17 gate ran the full suite
+          (1,662 passed), the fixture pipeline command (158 passed), a clean docs-mirror drift check (after pulling
+          the 11 new upstream pages it caught — see <code>ROADMAP.md</code>'s now-closed index-staleness item), an
+          integration audit (no unmounted/unowned/dead capability; <code>contracts/order.py</code>'s canonical types
+          are deliberately production-idle until C5), performance evidence (hot dispatch unchanged at 2.92&#181;s/msg;
+          recent-era tick/handler averages better than the mixed 48h baseline), and a paper-mode soak with real
+          trading disabled throughout. Phase C (typed contracts, facade removal) stays blocked behind this gate's
+          record by design.</p>
+        <div class="files"><code>services/kalshi/</code> · <code>services/execution.py</code> ·
+          <code>services/kalshi/CHEATSHEET.md</code> · <code>tools/quality_audit/kalshi_boundary.py</code> ·
+          <code>tools/kalshi_census.py</code> · <code>tests/fixtures/kalshi/</code> ·
+          <code>docs/kalshi/used-contracts.json</code></div>
+      </div>
+
+      <div class="t-phase">
+        <div class="tag">phase 155 · Kalshi Integration Phase C — typed, final, facade-free</div>
+        <p>Phase C (tasks C0–C11) consolidated the Phase A boundary into final architecture, same day.
+          Scoped static type checking landed (<code>mypy.ini</code>, mypy 2.3.1 pinned, boundary +
+          <code>services/execution.py</code> only, full-annotation strictness on <code>contracts/</code>, a
+          separately identifiable CI step in the architecture audit). Closed semantics became Literal types
+          (<code>contracts/types.py</code>: <code>OutcomeSide</code>/<code>BookSide</code> with ONE shared
+          narrowing map — unknown resolves to None, never a guess) while open vendor values (fee_type,
+          lifecycle event types) deliberately stay tolerant strings. The canonical order contract now guards
+          the real write: <code>create_order</code> builds wire kwargs through <code>CreateOrderRequest</code>,
+          so a legacy yes/no/buy/sell side raises locally instead of reaching the SDK as a real-money order
+          (gates still first). Capability Protocols (<code>interfaces.py</code>:
+          <code>AccountReads</code>/<code>OrderWrites</code>/<code>FlattenCapable</code>) type consumers against
+          capabilities, asserted by isinstance tests — the read gateway structurally fails the write
+          capability. C8 then deleted every compatibility facade at zero callers: 16
+          <code>KalshiClient</code> importers migrated to <code>KalshiPublicGateway</code>,
+          <code>kalshi_trade_ws</code> callers to <code>KalshiStreamGateway</code>, and the composing account
+          connection moved into the boundary as <code>services/kalshi/account_client.py</code> — net −256
+          lines, census legacy count pinned at zero by test. C9 turned the migration ratchet into a final
+          invariant (any import of a deleted legacy module path is a hard error, file or no file) and proved
+          all five failure classes against their permanent CI owners (SDK import, raw host, legacy import,
+          undocumented operation, type error — each exit 1, clean tree exit 0). C10 re-ran the whole matrix
+          via Woodpecker plus a live paper-mode soak; C11 recorded the permanent add-an-endpoint workflow in
+          <code>services/kalshi/CHEATSHEET.md</code> and finalized the authority rule. The dual-phase
+          initiative is complete.</p>
+        <div class="files"><code>mypy.ini</code> · <code>services/kalshi/contracts/types.py</code> ·
+          <code>services/kalshi/interfaces.py</code> · <code>services/kalshi/account_client.py</code> ·
+          <code>tools/quality_audit/kalshi_boundary.py</code> · <code>services/kalshi/CHEATSHEET.md</code></div>
+      </div>
+

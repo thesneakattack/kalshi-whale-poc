@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whale Signal — Build Status</title>
+<style>
+  :root {
+    --bg: #0A0D10;
+    --panel: #12161C;
+    --panel-border: #1F252D;
+    --text: #E7EBEE;
+    --muted: #7C8794;
+    --yes: #2DD4BF;
+    --no: #F97066;
+    --whale: #F5B942;
+    --danger: #E5484D;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  a { color: var(--yes); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px 64px; }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+    margin-bottom: 32px;
+  }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0; }
+  header .back { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; }
+  header .back:hover { color: var(--text); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 11px;
+    color: var(--yes);
+    margin: 0 0 6px;
+  }
+  h2.title { font-size: 22px; font-weight: 600; margin: 0 0 10px; }
+  .dek { color: var(--muted); max-width: 74ch; margin: 0 0 20px; }
+  .dek .mono { font-family: var(--mono); color: var(--text); }
+
+  nav.jump { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 40px; font-family: var(--mono); font-size: 11px; }
+  nav.jump a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--panel-border); }
+  nav.jump a:hover { color: var(--text); }
+
+  section { margin: 40px 0; }
+  section > .panel-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px;
+  }
+  section > h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+  section > p.lede { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 74ch; }
+
+  /* stat strip */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 14px 16px; }
+  .stat .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .stat .n { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  /* timeline */
+  .timeline { position: relative; padding-left: 26px; }
+  .timeline::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 1px; background: var(--panel-border); }
+  .t-phase { position: relative; margin-bottom: 22px; }
+  .t-phase::before {
+    content: ""; position: absolute; left: -26px; top: 4px; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--yes);
+  }
+  .t-phase .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--yes); }
+  .t-phase h4 { margin: 3px 0 5px; font-size: 14px; }
+  .t-phase p { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; max-width: 70ch; }
+  .t-phase .files { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .t-phase .files code { color: var(--whale); }
+
+  /* pipeline */
+  .pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; row-gap: 14px; }
+  .node { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px 12px; min-width: 118px; flex: 1 1 118px; display: flex; flex-direction: column; gap: 6px; }
+  .node .name { font-weight: 600; font-size: 12.5px; }
+  .node .sub { font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+  .arrow { align-self: center; color: var(--muted); font-size: 16px; padding: 0 2px; }
+  .branch { margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .branch .stem { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .node.dashed { border-style: dashed; background: transparent; flex-direction: row; align-items: center; padding: 8px 12px; flex: 0 1 320px; }
+
+  .pill { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 7px; border-radius: 100px; width: fit-content; font-weight: 700; white-space: nowrap; }
+  .pill.good { background: rgba(45,212,191,0.15); color: var(--yes); }
+  .pill.dormant { background: rgba(245,185,66,0.15); color: var(--whale); }
+  .pill.planned { background: rgba(124,135,148,0.18); color: var(--muted); }
+  .pill.gated { background: rgba(249,112,102,0.15); color: var(--no); }
+
+  /* tables */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; background: var(--panel); }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--panel-border); font-size: 12px; vertical-align: top; }
+  thead th { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: #0D1116; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #161B22; }
+  td.mod { font-family: var(--mono); color: var(--text); }
+  td.loc { font-family: var(--mono); color: var(--muted); }
+  td.note { color: var(--muted); }
+  td code { font-family: var(--mono); color: var(--whale); background: none; }
+
+  /* stage tracker */
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 560px) { .stages { grid-template-columns: 1fr; } }
+  .stage { border: 1px solid var(--panel-border); border-radius: 8px; padding: 14px 16px; background: var(--panel); }
+  .stage.current { border-color: var(--whale); }
+  .stage .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .stage.current .tag { color: var(--whale); }
+  .stage h4 { margin: 6px 0; font-size: 14px; }
+  .stage p { margin: 0; font-size: 12px; color: var(--muted); }
+  .here { display: inline-block; margin-top: 8px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: #2A1D08; background: var(--whale); padding: 2px 7px; border-radius: 4px; font-weight: 700; }
+
+  /* checklist */
+  .checklist { display: flex; flex-direction: column; gap: 8px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--panel-border); border-left: 3px solid var(--danger); background: var(--panel); border-radius: 6px; padding: 10px 12px; }
+  .check .box { flex: 0 0 auto; width: 14px; height: 14px; border: 1.5px solid var(--muted); border-radius: 3px; margin-top: 2px; }
+  .check .txt { font-size: 12px; }
+  .check .txt .why { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .check.done { border-left-color: var(--yes); }
+  .check.done .box { border-color: var(--yes); background: var(--yes); position: relative; }
+  .check.done .box::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #06231F; font-weight: 700; }
+
+  /* config grid */
+  .cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+  .cfg-cell { background: var(--panel); padding: 10px 14px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .cfg-cell .p { font-size: 12px; color: var(--muted); }
+  .cfg-cell .v { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
+
+  .limitation { border: 1px solid var(--panel-border); border-left: 3px solid var(--whale); background: var(--panel); border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; }
+  .limitation .h { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .limitation .b { font-size: 12px; color: var(--muted); }
+  .limitation .b code { font-family: var(--mono); color: var(--whale); }
+
+  footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--panel-border); color: var(--muted); font-size: 12px; }
+  footer .mono { font-family: var(--mono); color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>WHALE SIGNAL — BUILD STATUS</h1>
+  <a class="back" href="/">← trading terminal</a>
+</header>
+
+<div class="wrap">
+
+  <p class="eyebrow">kalshi-whale-poc · extremely detailed build status</p>
+  <h2 class="title">Everything that's been built, in the order it was built, and exactly what state it's in</h2>
+  <p class="dek">A complete technical reference plus a development timeline — not just what exists today, but the
+    sequence of decisions that got here. Generated by reading the actual repository
+    (<span class="mono" id="pm-total-lines">…</span> lines across <span class="mono" id="pm-total-files">…</span> .py/.js/.html files — kept current by <span class="mono">tools/project_manifest.py</span>, not hand-counted), not from memory.
+    Everything through "phase 8 · durability" predates this project's git history (it became a git repo partway
+    through) — the timeline below remains the real, ordered record of that earlier work. From "phase 9" onward,
+    <span class="mono">git log</span> is the authoritative source; this page just keeps narrating it the same way.</p>
+
+  <nav class="jump">
+    <a href="#timeline">Development Timeline</a>
+    <a href="#pipeline">Architecture</a>
+    <a href="#components">Component Reference</a>
+    <a href="#api">API Reference</a>
+    <a href="#config">Configuration Reference</a>
+    <a href="#limitations">Known Limitations</a>
+    <a href="#stages">Path to Live</a>
+    <a href="#checklist">Safety Gates</a>
+  </nav>
+
+  <section aria-label="headline status">
+    <div class="stats">
+      <div class="stat"><div class="k">Total surface</div><div class="v" id="pm-surface-lines">…</div><div class="n" id="pm-surface-note">…</div></div>
+      <div class="stat"><div class="k">API routes</div><div class="v" id="pm-routes">…</div><div class="n" id="pm-routes-note">…</div></div>
+      <div class="stat"><div class="k">Dashboard views</div><div class="v">6</div><div class="n">Portfolio, Markets, Whale Watch, Terminal, History, Config</div></div>
+      <div class="stat"><div class="k">Real money moved</div><div class="v">$0</div><div class="n">real order placement is fully implemented (services/kalshi_account_client.py) but gated behind kalshi_account.trading_enabled: false plus a typed in-app confirmation phrase — paper mode remains the default, see CLAUDE.md</div></div>
+    </div>
+    <p class="dek" style="margin-top:10px;font-size:12px;">Mechanical counts above (lines, files, routes) are generated by <span class="mono">tools/project_manifest.py</span> from <span class="mono">static/project-manifest.json</span>, re-verified in CI (<span class="mono">.github/workflows/quality.yml</span>) so they can't silently go stale the way the pre-2026-08-24 hardcoded values did — everything else on this page (the timeline, the "Real money moved" note) stays hand-authored.</p>
+  </section>
+  <script>
+  (function () {
+    function fmt(n) { return (n || 0).toLocaleString('en-US'); }
+    fetch('/project-manifest.json').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (m) {
+      var totalLines = m.lines.python + m.lines.javascript + m.lines.html;
+      var totalFiles = m.files.python + m.files.javascript + m.files.html;
+      document.getElementById('pm-total-lines').textContent = fmt(totalLines);
+      document.getElementById('pm-total-files').textContent = fmt(totalFiles);
+      document.getElementById('pm-surface-lines').textContent = fmt(totalLines) + ' lines';
+      document.getElementById('pm-surface-note').textContent =
+        fmt(totalFiles) + ' .py/.js/.html files, 0 stubs left unimplemented';
+      document.getElementById('pm-routes').textContent = fmt(m.api_routes);
+      document.getElementById('pm-routes-note').textContent =
+        'across ' + fmt(m.services) + ' services/ packages · ' +
+        fmt(m.tests.count) + ' tests across ' + fmt(m.tests.files) + ' files';
+    }).catch(function (err) {
+      // No fabricated numbers on failure - leave the "…" placeholder rather
+      // than show a value that might be wrong (CLAUDE.md's "unknown is
+      // better than fabricated" rule applies to this page's own header too).
+      console.warn('project-manifest.json unavailable:', err);
+    });
+  })();
+  </script>
+
+  <section id="timeline">
+    <p class="eyebrow">chronological, not categorical</p>
+    <h3>Development Timeline</h3>
+    <p class="lede">Each phase was a distinct request, built on top of the last. Nothing here was planned upfront —
+      this is the actual order things happened in.</p>
+    <div class="timeline">
+
