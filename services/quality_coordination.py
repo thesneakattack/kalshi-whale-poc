@@ -324,3 +324,51 @@ def observe_main(repo_root: Path, at: datetime | None = None,
         return RunResult(fp, sha, len(signals), resolved, states, None)
     finally:
         conn.close()
+
+
+import json
+import urllib.error
+import urllib.request
+
+_GITHUB_API = "https://api.github.com/repos/{repo}"
+
+
+def derive_claims() -> list[Claim]:
+    """I11 §4: zero historical exact-claim coverage measured (I3 §6). Named extension point,
+    not a missing function — returns [] unconditionally until a claim mechanism is designed."""
+    return []
+
+
+def _http_get_json(url: str, timeout: float):
+    req = urllib.request.Request(url, headers={"User-Agent": "kalshi-whale-poc-quality-coordination"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def fetch_branch_signals(repo: str = "thesneakattack/kalshi-whale-poc", timeout: float = 5.0) -> list[BranchSignal]:
+    """Anonymous, unauthenticated GitHub reads only (I11 §4/§7 — no credential exists to use).
+    Degrades to [] on any failure — never raises, per I11 §10's outage-behavior design."""
+    base = _GITHUB_API.format(repo=repo)
+    try:
+        branches = _http_get_json(f"{base}/branches", timeout)
+    except Exception:
+        return []
+
+    signals: list[BranchSignal] = []
+    for b in branches:
+        name = b.get("name")
+        if not name or name == "main":
+            continue
+        try:
+            compare = _http_get_json(f"{base}/compare/main...{name}", timeout)
+        except Exception:
+            continue
+        paths = tuple(f["filename"] for f in compare.get("files", []))
+        commits = compare.get("commits", [])
+        last_commit_iso = (
+            commits[-1]["commit"]["committer"]["date"] if commits else None
+        )
+        if not paths or not last_commit_iso:
+            continue
+        signals.append(BranchSignal(name=name, changed_paths=paths, last_commit_at_iso=last_commit_iso))
+    return signals

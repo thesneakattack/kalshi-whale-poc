@@ -223,3 +223,38 @@ def test_scope_paths_falls_back_to_scope_for_aggregate_rules_with_no_path():
     from services.quality_coordination import _scope_paths
     f = _finding(check="api-usage-inventory", scope="KalshiClient.get_market", evidence={})
     assert _scope_paths(f) == ("KalshiClient.get_market",)
+
+
+import urllib.error
+
+from services.quality_coordination import derive_claims, fetch_branch_signals
+
+
+def test_derive_claims_returns_empty_list():
+    assert derive_claims() == []
+
+
+def test_fetch_branch_signals_degrades_to_empty_list_on_network_error(monkeypatch):
+    def _raise(*a, **kw):
+        raise urllib.error.URLError("no network")
+    monkeypatch.setattr("services.quality_coordination._http_get_json", _raise)
+    assert fetch_branch_signals() == []
+
+
+def test_fetch_branch_signals_parses_real_shaped_response(monkeypatch):
+    branches_payload = [{"name": "fix/x", "commit": {"sha": "abc"}}]
+    compare_payload = {
+        "files": [{"filename": "services/x.py"}],
+        "commits": [{"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}}],
+    }
+
+    def _fake_get(url, timeout):
+        if url.endswith("/branches"):
+            return branches_payload
+        return compare_payload
+
+    monkeypatch.setattr("services.quality_coordination._http_get_json", _fake_get)
+    result = fetch_branch_signals()
+    assert len(result) == 1
+    assert result[0].name == "fix/x"
+    assert result[0].changed_paths == ("services/x.py",)
