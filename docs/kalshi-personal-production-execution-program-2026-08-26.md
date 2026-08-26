@@ -235,7 +235,7 @@ Therefore AQC has improved **execution discipline**, not delivered runtime auton
 ## 5.1 Realtime Data-Plane Remediation
 
 **Plan:** `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`  
-**State:** **P0–P2 MERGED (2026-08-26, `main`@`22d1a79`) — all 9 code-review findings fixed and verified first.** P3 (Task 14 onward — writer thread, reader capture contract, flipping the reader gate live) has not started; that remains the next, materially bigger, still-not-yet-authorized step.
+**State:** **P0–P2 MERGED (2026-08-26, `main`@`22d1a79`) — all 9 code-review findings fixed and verified first.** P3 (Task 14 onward — writer thread, reader capture contract, flipping the reader gate live) has not started, but was **authorized** later the same day (see this section's own Verdict below) — it remains the next, materially bigger step, just no longer an unauthorized one.
 
 ### What actually happened (2026-08-26, updated from the "ready to execute" read above)
 
@@ -319,16 +319,33 @@ Its investigation measured real busy-hour behavior, reproduced it deterministica
 
 ### Verdict
 
-> **P0–P2 merged and fixed. Phase P3 is the next open question, not yet
-> authorized.** Task 17 flips the reader gate from shadow to live
-> filtering — a materially bigger step into live behavior change than
-> anything merged so far. Whoever picks this up next should re-ground
-> against current `main` (per `.claude/rules/branching-and-ci.md`'s
-> "Resuming work" section) before starting P3, not assume this doc's
-> earlier "execute first" framing still applies unmodified — it was
-> written before this same PR's own review found 5 real defects despite
-> fully green CI, which is exactly the kind of surprise P3's higher stakes
-> warrant being more careful about, not less.
+> **P3 is now authorized (direct instruction, 2026-08-26, same day as
+> P0-P2, in a reprioritization pass after two unrelated live incidents
+> were found and fixed via `candidate_log`/`whale_calibration` — see
+> ROADMAP.md).** Explicitly re-litigated at that reprioritization: P3 was
+> previously deferred behind resuming economic research (Program 2R) as a
+> judgment call, not a technical dependency — P3 is realtime data-plane
+> completeness work, not a trading-decision change, so it does not
+> actually need Program 2's economic semantics first. Direct instruction
+> was to run P3 *ahead of* Program 2R, not merely concurrently with it.
+> Authorization is scope-limited to Tasks 14-17 as specified in
+> `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`
+> (writer thread, reader capture contract, sub-threshold rejection
+> aggregation, then the live-gate flip itself) - it does not relax the
+> task-by-task TDD/verify/commit/stop discipline every other phase in
+> this program already follows, and does not itself authorize Program 2,
+> Program 3, or any other still-gated item. Whoever picks this up should
+> still re-ground against current `main` first (per
+> `.claude/rules/branching-and-ci.md`'s "Resuming work" section) - the
+> caution below about not assuming stale "execute first" framing applies
+> to the *task-execution* discipline (green CI still isn't proof, per
+> PR #23's own 5-defects-despite-green-CI history), not to whether P3 may
+> start at all, which this update resolves.
+>
+> ~~P0–P2 merged and fixed. Phase P3 is the next open question, not yet
+> authorized.~~ (prior verdict, kept per this doc's own §9 self-review
+> discipline of recording how a conclusion evolved rather than silently
+> overwriting it.)
 >
 > ~~Do not merge PR #23 as-is...~~ / ~~Execute first. Do not
 > reinvestigate.~~ (prior verdicts, kept struck through rather than
@@ -644,20 +661,30 @@ A fresh Claude session can no longer infer that production is primarily an ops/d
 
 ## Program 1 — Realtime Foundation
 
-**Status (2026-08-26): P0–P2 MERGED, P3 NOT STARTED.** Code review found 5
-confirmed defects post-merge-readiness-check; all 9 findings (5 confirmed
-+ 4 plausible, all confirmed real) were fixed with real TDD and merged
-same day (§5.1). The "Exit" criteria below are about the *full* plan
-(through P6) — P0–P2 alone don't claim to satisfy them yet, only to be a
-clean, defect-free foundation to build P3+ on. Program 2's own entry gate
-("Program 1 merged and runtime-measured") has its "merged" half satisfied
-for P0-P2; "runtime-measured" still needs live observation this repo
-hasn't done yet. Program 2's *other* gate (Program 2R's research) is now
-**merged as research leverage** (resumed 2026-08-26, §Program 2R below) —
-but that research's own findings are explicitly provisional pending
-post-Program-1 data, and its remediation plan still needs explicit human
-design-approval — so Program 2 still cannot start implementation on
-either front, for different reasons than before.
+**Status (2026-08-26): P0–P2 MERGED, P3 AUTHORIZED but NOT STARTED.**
+Code review found 5 confirmed defects post-merge-readiness-check; all 9
+findings (5 confirmed + 4 plausible, all confirmed real) were fixed with
+real TDD and merged same day (§5.1). Later the same day, in the same
+session that found and fixed two further, unrelated live incidents
+(`candidate_log.population_gate_summary`, `whale_calibration` routes -
+see ROADMAP.md), a reprioritization pass explicitly authorized P3 ahead
+of Program 2R (§5.1's Verdict, §11 below) - authorization only, no P3
+task has been implemented yet. The "Exit" criteria below are about the
+*full* plan (through P6) — P0–P2 alone don't claim to satisfy them yet,
+only to be a clean, defect-free foundation to build P3+ on. Program 2's
+own entry gate ("Program 1 merged and runtime-measured") has its
+"merged" half satisfied for P0-P2; "runtime-measured" still needs live
+observation this repo hasn't done yet (some live observation has
+happened - the two incidents above were found via exactly that - but not
+a structured, complete measurement pass). Program 2's *other* gate
+(Program 2R's research) is now **merged as research leverage** (resumed
+2026-08-26, §Program 2R below) — but that research's own findings are
+explicitly provisional pending post-Program-1 data, and its remediation
+plan still needs explicit human design-approval — so Program 2 still
+cannot start implementation on either front, for different reasons than
+before. P3's authorization does not change any of that - it is a
+separate, parallel-safe track (§8's concurrency matrix already allows
+"Economic research" concurrent with "Realtime implementation").
 
 ### Owner
 
@@ -1083,9 +1110,12 @@ open):**
   status). This branch and its worktree no longer exist — do not recreate
   `feat/realtime-data-plane-remediation` or re-run P0–P2's tasks; that
   work is on `main`. The only remaining item under this plan is P3
-  (Task 14 onward, the live-gate flip), which is a **new, separate,
-  not-yet-authorized decision** — see §5.1's verdict — not a continuation
-  of this queue slot.
+  (Task 14 onward, the live-gate flip) - ~~which is a new, separate,
+  not-yet-authorized decision~~ **now authorized** (2026-08-26, later the
+  same day, a reprioritization pass - see §5.1's Verdict) — still not a
+  continuation of this queue slot; treat it as its own initiative when
+  picked up, following Tasks 14-17 exactly as specified in the
+  remediation plan.
 - **Immediate 3 (parallel research)** — started, produced 5 real,
   never-pushed commits on `research/economic-strategy-effectiveness`
   (scoping, E1–E7 research, E11–E12 adversarial review, a Program 2
@@ -1095,15 +1125,26 @@ open):**
   Program 2R status). Merged forward onto post-Program-1 `main`, its
   status report given a dated addendum, then opened as a PR and merged as
   research leverage — not implementation authorization.
-- **"After realtime merges" fork — reconciled toward (a), not (b).** The
-  fork was two genuinely open options: (a) resume the preserved economic
-  research, or (b) authorize Program 1's P3. Resolved in favor of (a):
-  the program's own governing dependency order (§1 — economic decision
-  validity precedes real execution) puts research resumption ahead of a
-  live-behavior-changing gate flip, and P3 carries an explicit
-  separate-authorization requirement (§5.1's verdict) that a general
-  instruction to reconcile a documentation fork does not itself satisfy.
-  P3 remains exactly as unauthorized as before this reconciliation.
+- **"After realtime merges" fork — reconciled toward (a), not (b)... then
+  revisited the same day.** The fork was two genuinely open options: (a)
+  resume the preserved economic research, or (b) authorize Program 1's
+  P3. First resolved in favor of (a): the program's own governing
+  dependency order (§1 — economic decision validity precedes real
+  execution) puts research resumption ahead of a live-behavior-changing
+  gate flip, and P3 carries an explicit separate-authorization
+  requirement (§5.1's verdict) that a general instruction to reconcile a
+  documentation fork does not itself satisfy. ~~P3 remains exactly as
+  unauthorized as before this reconciliation.~~ **Superseded later the
+  same day**: a direct reprioritization pass (prompted by finding two
+  further live incidents while investigating a third, unrelated topic -
+  see ROADMAP.md) explicitly re-litigated this exact fork and reversed
+  it - P3 authorized, ahead of Program 2R, on the grounds that §1's
+  "economic decision validity precedes real execution" reasoning doesn't
+  actually apply to P3 (realtime data-plane completeness, not a trading
+  decision) the way it applies to Program 2/3. §8's concurrency matrix
+  already classified "Realtime implementation" concurrent with "Economic
+  research" as safe, so this reversal doesn't even require running them
+  sequentially.
 
 ## Immediate 1 — tiny doctrine branch (closed)
 
@@ -1115,10 +1156,10 @@ further queued here.
 Branch `feat/realtime-data-plane-remediation` ran P0–P2 through review,
 fix, and merge (PR #23, `main`@`22d1a79`); branch and worktree deleted
 post-merge. Do not re-open this slot to "begin Task 1" — Task 1 already
-ran. The next real task under this plan is P3, which stays gated behind
-its own separate authorization requirement (§5.1) — resolving the
-Immediate-3/Program-2R fork toward research resumption does not touch
-this gate either way.
+ran. The next real task under this plan is P3 (Task 14), which is now
+**authorized** (2026-08-26 reprioritization, §5.1's Verdict) - the
+Immediate-3/Program-2R fork resolution below is superseded on this point;
+P3 no longer needs to wait behind it.
 
 ## Immediate 3 — parallel research worktree (resumed and merged)
 
@@ -1129,14 +1170,18 @@ remediation plan is unaffected by the merge: still not approved for
 execution, still requires explicit human design-approval plus a fresh
 E1-E7 re-run against then-current data before any Program 2 task starts.
 
-## After realtime merges (resolved)
+## After realtime merges (resolved, then updated same day)
 
 The fork this heading originally posed is closed: research resumed
-(Immediate 3 above), P3 stays gated (Immediate 2 above). Program 2
+(Immediate 3 above), ~~P3 stays gated~~ **P3 authorized** (Immediate 2
+above, updated 2026-08-26 same-day reprioritization). Program 2
 implementation itself remains a separate, larger, not-yet-started
 initiative — reconciling this fork advanced Program 2R to merged research
 leverage, it did not open Program 2's own entry gate (§7's "Program 2"
 section), which still needs explicit design-doc approval regardless.
+P3's authorization is independent of Program 2's gate either way - they
+were never actually the same decision, just sequenced together by an
+earlier judgment call that this update reverses.
 
 ---
 
@@ -1149,7 +1194,7 @@ section), which still needs explicit design-doc approval regardless.
 | Push-scoped pytest via testmon | MERGED + OPERATIONAL (new 2026-08-26, PR #25) | Existing CI |
 | Generated status workflow | RETIRED (2026-08-26, same day) — frozen as `docs/status-archive-2026-08-26.html` | N/A — `git log` + `/close-roadmap-item` |
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
-| Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3-P6 not started | Program 1 |
+| Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3 AUTHORIZED not started (2026-08-26); P4-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
 | AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |

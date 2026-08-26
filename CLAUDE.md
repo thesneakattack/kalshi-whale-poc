@@ -10,8 +10,9 @@ switch, CORS) are shipped — but that is not the same claim as "real
 capital is ready to depend on this." Realtime data-plane correctness is
 partially addressed (P0-P2 of the 6-phase remediation plan merged
 2026-08-26, `main`@`22d1a79` — candidate-duplication, WAL, and a real
-cross-thread race fixed; P3's reader-gate live-filtering flip and beyond
-remain open and separately gated, not authorized); economic/strategy
+cross-thread race fixed; P3's reader-gate live-filtering flip was
+authorized 2026-08-26 in a reprioritization pass but has not started -
+P4-P6 remain open); economic/strategy
 validation research has been done but not acted on (a resumed
 investigation merged 2026-08-26 as research leverage, not implementation —
 see the gap below); and canonical decision/execution semantics remain
