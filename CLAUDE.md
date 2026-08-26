@@ -132,7 +132,10 @@ already know about itself" from scratch every time.
 
 1. `GET /api/quality/summary` — the single composite health read: overall
    status, active findings, alerts, faults, storage summary, latest
-   research-run status. Start here for "is something wrong."
+   research-run status, and a `coordination` rollup (escalation-eligible/
+   suppressed/observed counts from the persisted quality-coordination
+   observation series — `GET /api/quality/coordination` for the full
+   per-item detail and explanation log). Start here for "is something wrong."
 2. `GET /api/health/pipeline` — background-task/scheduler state (which
    `_maybe_*` schedulers are running, when each last fired).
 3. `GET /api/health/faults` — accumulated exception history by

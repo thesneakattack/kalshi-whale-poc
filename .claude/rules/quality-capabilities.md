@@ -31,6 +31,12 @@ to the current task and load/use the relevant skill before acting.
   itself). No GitHub write authority exists anywhere in that plan either —
   see `.claude/rules/autonomous-quality-coordination-evidence.md` for the
   governing constraints any future write-lane decision must still satisfy.
+- **quality-coordination-observation** — `services/quality_coordination.py`,
+  a read-only persisted observation series over `tools.quality_audit`'s
+  static findings (identity/persistence/suppression policy from the
+  autonomous-quality-coordination investigation, I8/I11). No GitHub write
+  authority exists — `GET /api/quality/coordination` for detail,
+  `GET /api/quality/summary`'s `coordination` field for the rollup.
 - **economic-strategy-effectiveness-investigation** — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —
