@@ -58,7 +58,10 @@ reproduce in its original form, replaced by a different, still-open,
 currently-unimplemented finding), and canonical decision/execution
 semantics (fully open). See
 `docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
-that work is sequenced.
+that work is sequenced, and
+`docs/superpowers/plans/2026-08-26-active-tracks-board.md` for the
+short, cross-session board tracking which of these tracks is next and
+which can run in parallel right now.
 
 - [x] **The event loop stalled for 17-38+ seconds at a stretch, live,
       post-P0-P2.** Found 2026-08-26 gathering Program 1's
