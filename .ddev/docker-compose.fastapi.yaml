@@ -31,7 +31,27 @@ services:
     # exposure at all - only other containers on this project's docker
     # network can reach it, so there's no way for an external client to
     # reach it directly and spoof those headers.
+    # --reload-exclude: "../:/app" bind-mounts the whole repo root, so
+    # uvicorn's watchfiles reloader recursively watches everything under
+    # /app by default - including .claude/worktrees/, the directory
+    # Claude Code's isolation:"worktree" agents use for parallel work (each
+    # is a full nested git checkout, .py files included). A background
+    # agent saving files inside its OWN isolated worktree was observed
+    # 2026-08-27 restarting this SHARED fastapi process 3x in a row,
+    # killing an unrelated ~15-minute live experiment another session had
+    # in flight. MUST be an absolute path, not "./.claude/worktrees" or
+    # ".claude/worktrees": uvicorn's FileFilter (uvicorn/supervisors/
+    # watchfilesreload.py) stores an exclude pattern that resolves to an
+    # existing directory as a bare Path(e) - unresolved, not made
+    # absolute - then checks `exclude_dir in changed_path.parents`; but
+    # watchfiles always yields absolute changed-file paths, and a relative
+    # Path never compares equal to an absolute one, so a relative
+    # --reload-exclude here would silently match nothing. Confirmed
+    # against the actual installed uvicorn 0.32.0/watchfiles 1.2.0 source
+    # and empirically (see the fix's commit message for the exact
+    # before/after FileFilter() results) - not guessed from CLI --help.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload",
+              "--reload-exclude", "/app/.claude/worktrees",
               "--proxy-headers", "--forwarded-allow-ips=*"]
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}

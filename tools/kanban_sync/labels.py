@@ -32,21 +32,35 @@ TYPE_TRACKING = "type:tracking"
 # plans/worktrees' phases") - a repo-local family, same status as type:*
 # above, not part of the installed skill's own label-scheme.json. Optional
 # on SyncItem (not every source can determine one - see each source's own
-# phase-detection docstring for what it can and can't infer). Deliberately
-# label-based, not a Projects V2 custom field: this repo's board already
-# supports grouping its view by Labels natively, and every sync source
-# already has a working label-reconciliation path - a new Projects V2 field
-# would mean new GraphQL surface this tool doesn't have today. No
-# PHASE_BRAINSTORMING constant: an idea with neither a research doc nor a
-# spec doc has nothing in the repo to detect it from, so this tool can only
-# ever label an initiative once it exists as text somewhere.
-PHASE_RESEARCH_EVIDENCE = "phase:research-evidence"
-PHASE_DESIGN_SPEC = "phase:design-spec"
-PHASE_IMPLEMENTATION_PLAN = "phase:implementation-plan"
-PHASE_IMPLEMENTED = "phase:implemented"
+# phase-detection docstring for what it can and can't infer). Renamed
+# 2026-08-27 to match superpowers' own lifecycle vocabulary (brainstorming/
+# spec/plan/implementing/verification/done) rather than the original
+# ad hoc wording - see docs/superpowers/specs/2026-08-27-kanban-sync-
+# project-status-field-design.md §4.1. Label-based, NOT because this
+# repo's board can group its view by Labels - it can't: GitHub Projects V2
+# board/table views can only be grouped by a single-select or iteration
+# *field* on the Project itself, confirmed against GitHub's own current
+# docs 2026-08-27 (a prior version of this comment claimed the opposite;
+# that was wrong). phase:* exists as issue metadata/filtering, not as the
+# mechanism that produces the board's visible columns - that's
+# project_status.py's job instead. PHASE_IMPLEMENTING/PHASE_VERIFICATION
+# are worktree-only, not general: a worktree already maps 1:1 to one
+# branch, but a plan/track item does not reliably correlate to a branch by
+# name (see the design doc's §4.1 for the empirical branch-name mismatches
+# that ruled this out for plan/track items). No PHASE_BRAINSTORMING
+# constant: an idea with neither a research doc nor a spec doc has nothing
+# in the repo to detect it from, so this tool can only ever label an
+# initiative once it exists as text somewhere.
+PHASE_RESEARCH = "phase:research"
+PHASE_SPEC = "phase:spec"
+PHASE_PLAN = "phase:plan"
+PHASE_IMPLEMENTING = "phase:implementing"
+PHASE_VERIFICATION = "phase:verification"
+PHASE_DONE = "phase:done"
 
 ALL_PHASE_LABELS = frozenset({
-    PHASE_RESEARCH_EVIDENCE, PHASE_DESIGN_SPEC, PHASE_IMPLEMENTATION_PLAN, PHASE_IMPLEMENTED,
+    PHASE_RESEARCH, PHASE_SPEC, PHASE_PLAN,
+    PHASE_IMPLEMENTING, PHASE_VERIFICATION, PHASE_DONE,
 })
 
 SYNC_MARKER_KIND_WORKTREE = "worktree"

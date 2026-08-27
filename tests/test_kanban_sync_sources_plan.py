@@ -40,7 +40,7 @@ def test_build_plan_items_emits_done_item_for_done_classification():
     assert items[0].key == "x.md"
     assert items[0].done is True
     assert items[0].status_label == labels.STATUS_DONE
-    assert items[0].phase_label == labels.PHASE_IMPLEMENTED
+    assert items[0].phase_label == labels.PHASE_DONE
 
 
 def test_build_plan_items_creates_item_for_in_progress():
@@ -62,16 +62,32 @@ def test_build_plan_items_has_acceptance_criteria():
     assert len(items[0].acceptance_criteria) >= 1
 
 
-def test_build_plan_items_not_started_and_in_progress_are_phase_implementation_plan():
+def test_build_plan_items_not_started_and_in_progress_are_phase_plan():
     """Every not-started/in-progress item reaching build_plan_items already
     has a real plan doc - that's how it became a candidate at all
     (list_plan_candidates only scans docs/superpowers/plans/*.md) - so phase
-    is always implementation-plan, never a lower phase. "done" classifications
-    get phase:implemented instead - see
+    is always plan, never a lower phase. "done" classifications get
+    phase:done instead - see
     test_build_plan_items_emits_done_item_for_done_classification."""
     items = build_plan_items({
         "not-started.md": {"status": "not-started", "note": ""},
         "in-progress.md": {"status": "in-progress", "note": ""},
     })
 
-    assert all(i.phase_label == labels.PHASE_IMPLEMENTATION_PLAN for i in items)
+    assert all(i.phase_label == labels.PHASE_PLAN for i in items)
+
+
+def test_build_plan_items_never_emits_implementing_or_verification_phase():
+    """phase:implementing/phase:verification are worktree-only (a worktree
+    maps 1:1 to one branch; a plan doc does not reliably correlate to a
+    branch by name - see the design doc's empirical evidence). Regression
+    guard against future drift on that decision."""
+    items = build_plan_items({
+        "a.md": {"status": "not-started", "note": ""},
+        "b.md": {"status": "in-progress", "note": ""},
+        "c.md": {"status": "done", "note": ""},
+    })
+
+    assert all(
+        i.phase_label in {labels.PHASE_PLAN, labels.PHASE_DONE} for i in items
+    )

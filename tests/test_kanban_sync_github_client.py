@@ -98,17 +98,17 @@ def test_create_issue_creates_a_missing_label_then_retries():
     failure on gh issue create --label too, not just gh issue edit
     --add-label."""
     runner = FakeRunner()
-    runner.queue("", returncode=1, stderr="'phase:design-spec' not found")
+    runner.queue("", returncode=1, stderr="'phase:implementing' not found")
     runner.queue("")  # gh label create
     runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/99\n")
     client = GithubClient(REPO, runner=runner)
 
-    result = client.create_issue("Title", "Body", ["status:claimable", "phase:design-spec"])
+    result = client.create_issue("Title", "Body", ["status:claimable", "phase:implementing"])
 
     assert result.number == 99
     assert runner.calls[0][:3] == ["gh", "issue", "create"]
     assert runner.calls[1][:3] == ["gh", "label", "create"]
-    assert "phase:design-spec" in runner.calls[1]
+    assert "phase:implementing" in runner.calls[1]
     assert runner.calls[2][:3] == ["gh", "issue", "create"]
 
 
@@ -273,6 +273,143 @@ def test_find_pr_state_returns_state_string():
     assert client.find_pr_state("feat/done") == "MERGED"
 
 
+def test_list_open_by_label_returns_matching_open_issues_with_body():
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {
+            "number": 98, "state": "OPEN",
+            "labels": [{"name": "type:tracking"}, {"name": "status:in-progress"}],
+            "body": "some body <!-- autotrade-sync: worktree:feat/x -->",
+        },
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.list_open_by_label("type:tracking")
+
+    assert len(result) == 1
+    assert result[0].number == 98
+    assert result[0].open is True
+    assert result[0].labels == frozenset({"type:tracking", "status:in-progress"})
+    assert result[0].body == "some body <!-- autotrade-sync: worktree:feat/x -->"
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "list"]
+    assert "--label" in call and "type:tracking" in call
+    assert "--state" in call and "open" in call
+    assert "--json" in call and "number,state,labels,body" in call
+
+
+def test_list_open_by_label_returns_empty_list_when_no_matches():
+    runner = FakeRunner()
+    runner.queue(json.dumps([]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.list_open_by_label("type:tracking")
+
+    assert result == []
+
+
+def test_list_open_by_label_is_not_scoped_by_a_search_term_unlike_find_by_marker():
+    runner = FakeRunner()
+    runner.queue(json.dumps([]))
+    client = GithubClient(REPO, runner=runner)
+
+    client.list_open_by_label("type:tracking")
+
+    assert "--search" not in runner.calls[0]
+
+
+def test_list_open_by_label_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.list_open_by_label("type:tracking")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_ensure_on_project_calls_gh_project_item_add_with_owner_and_url_not_repo():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"id": "PVTI_abc123", "content": {"number": 42}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.ensure_on_project(42)
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "project", "item-add"]
+    assert "--owner" in call and "thesneakattack" in call
+    assert "--url" in call and "https://github.com/thesneakattack/kalshi-whale-poc/issues/42" in call
+    assert "--format" in call and "json" in call
+    assert "--repo" not in call
+    assert result == "PVTI_abc123"
+
+
+def test_ensure_on_project_returns_the_projects_own_item_id_not_the_issue_id():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"id": "PVTI_xyz789", "content": {"number": 999}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.ensure_on_project(999)
+
+    assert result == "PVTI_xyz789"
+    assert result != 999
+
+
+def test_ensure_on_project_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.ensure_on_project(1)
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_set_project_status_calls_gh_project_item_edit_with_node_ids_not_names():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_project_status("PVTI_abc123", "Doing")
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "project", "item-edit"]
+    assert "--id" in call and "PVTI_abc123" in call
+    assert "--field-id" in call and "PVTSSF_lAHOAHYiPM4BhmnCzhghwaY" in call
+    assert "--project-id" in call and "PVT_kwHOAHYiPM4BhmnC" in call
+    assert "--single-select-option-id" in call and "3b0f9f3a" in call
+    assert "--field" not in call and "--value" not in call
+    assert "--repo" not in call
+
+
+def test_set_project_status_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.set_project_status("PVTI_abc123", "Doing")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_set_project_status_raises_a_clear_error_for_an_unknown_status_name():
+    runner = FakeRunner()
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.set_project_status("PVTI_abc123", "Bogus")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "Bogus" in str(exc)
+    assert runner.calls == []  # never even attempted the gh call
+
+
 def test_nonzero_returncode_raises_githubcliierror():
     runner = FakeRunner()
     runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
@@ -283,3 +420,149 @@ def test_nonzero_returncode_raises_githubcliierror():
         assert False, "expected GithubCliError"
     except GithubCliError as exc:
         assert "404" in str(exc)
+
+
+def test_create_milestone_posts_to_the_milestones_endpoint():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"number": 7, "title": "2026-08-27-some-plan.md"}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.create_milestone("2026-08-27-some-plan.md")
+
+    assert result == 7
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "api", "-X"]
+    assert "POST" in call
+    assert f"repos/{REPO}/milestones" in call
+    assert "-f" in call and "title=2026-08-27-some-plan.md" in call
+
+
+def test_create_milestone_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.create_milestone("x")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_find_milestone_by_title_returns_matching_number():
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {"number": 3, "title": "other-plan.md"},
+        {"number": 7, "title": "2026-08-27-some-plan.md"},
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_milestone_by_title("2026-08-27-some-plan.md")
+
+    assert result == 7
+    call = runner.calls[0]
+    assert call[:2] == ["gh", "api"]
+    assert f"repos/{REPO}/milestones" in call
+    assert "-X" in call and "GET" in call
+    assert "state=all" in call
+
+
+def test_find_milestone_by_title_returns_none_when_no_match():
+    runner = FakeRunner()
+    runner.queue(json.dumps([{"number": 3, "title": "other-plan.md"}]))
+    client = GithubClient(REPO, runner=runner)
+
+    assert client.find_milestone_by_title("2026-08-27-some-plan.md") is None
+
+
+def test_find_milestone_by_title_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.find_milestone_by_title("x")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_create_issue_with_parent_and_milestone_adds_both_flags():
+    runner = FakeRunner()
+    runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/50\n")
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.create_issue(
+        "Task 1: Title", "Body", ["status:claimable"],
+        parent=42, milestone="2026-08-27-some-plan.md",
+    )
+
+    assert result.number == 50
+    call = runner.calls[0]
+    assert "--parent" in call and "42" in call
+    assert "--milestone" in call and "2026-08-27-some-plan.md" in call
+
+
+def test_create_issue_without_parent_or_milestone_omits_both_flags():
+    """Backward-compatibility guard: every existing call site (worktree/
+    roadmap/track/plan item creation) never passes these - must produce
+    the exact same args as before this change."""
+    runner = FakeRunner()
+    runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/50\n")
+    client = GithubClient(REPO, runner=runner)
+
+    client.create_issue("Title", "Body", ["status:claimable"])
+
+    call = runner.calls[0]
+    assert "--parent" not in call
+    assert "--milestone" not in call
+
+
+def test_get_sub_issues_summary_returns_completed_and_total():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"subIssuesSummary": {"completed": 2, "total": 5, "percentCompleted": 40}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.get_sub_issues_summary(42)
+
+    assert result == (2, 5)
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "view"]
+    assert "42" in call
+    assert "--repo" in call and REPO in call
+    assert "--json" in call and "subIssuesSummary" in call
+
+
+def test_get_sub_issues_summary_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.get_sub_issues_summary(999)
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "404" in str(exc)
+
+
+def test_set_milestone_adds_the_milestone_flag():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_milestone(42, "2026-08-27-some-plan.md")
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "edit"]
+    assert "--milestone" in call and "2026-08-27-some-plan.md" in call
+
+
+def test_set_milestone_none_removes_the_milestone():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_milestone(42, None)
+
+    call = runner.calls[0]
+    assert "--remove-milestone" in call
