@@ -476,3 +476,126 @@ def run_cleanup_actions(
 
         ce.log_cleanup_action(conn, identity, action_type, at, dry_run=dry_run, outcome=outcome)
     conn.commit()
+
+
+"""CLI entrypoint (spec §5). Mirrors tools/project_manifest.py's --check/--write
+convention: default invocation is detect + report only (safe); --clean also executes
+eligible cleanup actions, always after a fresh detect pass in the same invocation."""
+import argparse
+import subprocess as _subprocess
+from datetime import timezone
+
+
+def _make_real_runner(cwd: Path) -> Runner:
+    """The one place this module constructs a real, concrete Runner (found in review,
+    2026-08-27 - see this task's own "Injectability gap" note above for what was wrong
+    with the version this replaces). Bound to `cwd` so every git/gh/woodpecker call made
+    through it actually runs against --repo-root, not the process's own working
+    directory."""
+    def _runner(args: list[str]) -> "subprocess.CompletedProcess[str]":
+        return _subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    return _runner
+
+
+_FLOOR_HOURS = {
+    "branch": FLOOR_HOURS_BRANCH,
+    "ledger": FLOOR_HOURS_LEDGER,
+    "process_hygiene": FLOOR_HOURS_PROCESS_HYGIENE,
+}
+
+# Which domains have a defined cleanup action at all (spec §8's three actions map onto a
+# subset of signal identities - e.g. process_hygiene findings have no corresponding
+# cleanup action, they are surfaced for a human to fix the baseline.json note by hand).
+_CLEANUP_ACTION_FOR_DOMAIN = {
+    "branch": "delete_merged_branch",
+}
+
+
+def run_detect_cycle(
+    repo_root: Path, *, at: datetime | None = None,
+    git_runner: Runner | None = None, http_getter: HttpGetter | None = None,
+) -> dict:
+    at = at or datetime.now(timezone.utc)
+    git_runner = git_runner or _make_real_runner(repo_root)
+    conn = ce._connect()
+
+    branch_list = git_runner(["git", "branch", "--format=%(refname:short)"]).stdout.splitlines()
+    branch_names = [b.strip() for b in branch_list if b.strip() and b.strip() != "main"]
+
+    branch_signals, suppressed, immediate = collect_branch_signals(
+        branch_names, git_runner=git_runner, gh_runner=git_runner,
+        woodpecker_runner=git_runner, conn=conn,
+        worktrees_root=repo_root / ".claude" / "worktrees", at=at,
+    )
+
+    ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
+        if (repo_root / ".superpowers" / "sdd").exists() else []
+    ledger_signals = collect_ledger_signals(ledger_paths, at=at)
+
+    baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
+    process_hygiene_signals = (
+        collect_process_hygiene_signals(baseline_path, baseline_path.read_text())
+        if baseline_path.exists() else []
+    )
+
+    all_signals = branch_signals + ledger_signals + process_hygiene_signals
+    states = ce.apply_observation(
+        conn, all_signals, at, _FLOOR_HOURS, suppressed_keys=suppressed, immediate_keys=immediate,
+    )
+
+    roadmap_path = repo_root / "ROADMAP.md"
+    docs_feed = (
+        collect_docs_roadmap_feed(roadmap_path.read_text(), [])
+        if roadmap_path.exists() else []
+    )
+
+    app_report = fetch_app_report("http://fastapi:8000", getter=http_getter)
+
+    escalated = sum(1 for s in states.values() if s == "escalation_eligible")
+    ce.record_run(conn, at, signals_observed=len(all_signals), signals_escalated=escalated)
+    conn.commit()
+
+    return {
+        "branch": {k: v for k, v in states.items() if k.startswith("branch:")},
+        "ledger": {k: v for k, v in states.items() if k.startswith("ledger:")},
+        "process_hygiene": {k: v for k, v in states.items() if k.startswith("process_hygiene:")},
+        "docs_roadmap_feed": docs_feed,
+        "app_report": app_report,
+    }
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m tools.quality_coordination")
+    parser.add_argument("--repo-root", type=Path, default=Path("."))
+    parser.add_argument("--clean", action="store_true", help="also execute eligible cleanup actions")
+    return parser.parse_args(argv)
+
+
+def main(
+    argv: list[str] | None = None, *,
+    git_runner: Runner | None = None, http_getter: HttpGetter | None = None,
+) -> int:
+    args = _parse_args(argv)
+    git_runner = git_runner or _make_real_runner(args.repo_root)
+    report = run_detect_cycle(args.repo_root, git_runner=git_runner, http_getter=http_getter)
+
+    if args.clean:
+        eligible = [
+            (identity, _CLEANUP_ACTION_FOR_DOMAIN[identity.split(":", 1)[0]])
+            for identity, state in report["branch"].items()
+            if state == "escalation_eligible" and identity.split(":", 1)[0] in _CLEANUP_ACTION_FOR_DOMAIN
+        ]
+        conn = ce._connect()
+        run_cleanup_actions(
+            eligible, git_runner=git_runner, repo_root=args.repo_root,
+            sdd_root=args.repo_root / ".superpowers" / "sdd", conn=conn,
+            at=datetime.now(timezone.utc), dry_run=False,
+        )
+
+    print(json.dumps(report, indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
