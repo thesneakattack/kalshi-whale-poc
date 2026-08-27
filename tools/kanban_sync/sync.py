@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
-from tools.kanban_sync import labels
+from tools.kanban_sync import labels, project_status
 from tools.kanban_sync.markers import build_marker, parse_marker
 from tools.kanban_sync.models import SyncItem, SyncReport
 
@@ -21,6 +21,8 @@ class SyncGithubClient(Protocol):
     def close_issue(self, number: int) -> None: ...
     def post_comment(self, number: int, body: str) -> None: ...
     def list_open_by_label(self, label: str): ...
+    def ensure_on_project(self, issue_number: int) -> str: ...
+    def set_project_status(self, item_id: str, status: str) -> None: ...
 
 
 def _desired_base_labels(item: SyncItem) -> set[str]:
@@ -97,6 +99,33 @@ def close_stale_worktree_issues(
     return report
 
 
+def _sync_project_status(
+    item: SyncItem, number: int, client: SyncGithubClient, *, dry_run: bool,
+) -> None:
+    """Drives the Project's native "Status" single-select field - the only
+    mechanism that actually produces the board's visible columns (Labels
+    cannot drive Projects V2 board/table grouping at all). Runs
+    unconditionally every time it's called, not gated on whether labels
+    changed this run - see the design doc's §4.3 for why (gating would
+    mean this never fires for a pre-existing item whose label already
+    matches what's computed today). dry_run makes zero project calls,
+    matching every other mutating operation in this module.
+
+    item.done is checked BEFORE item.status_label, not the other way
+    around: sources_tracks.py always sets status_label=STATUS_CLAIMABLE
+    regardless of done (unlike sources_roadmap.py/sources_plan.py, which
+    correctly flip it) - mapping via status_label alone would land a
+    just-finished track on "Next" instead of "Done"."""
+    if dry_run:
+        return
+    status = (
+        project_status.STATUS_DONE if item.done
+        else project_status.STATUS_LABEL_TO_PROJECT_STATUS[item.status_label]
+    )
+    item_id = client.ensure_on_project(number)
+    client.set_project_status(item_id, status)
+
+
 def sync_pass_one(
     items: Sequence[SyncItem],
     client: SyncGithubClient,
@@ -121,6 +150,7 @@ def sync_pass_one(
             issue = client.create_issue(item.title, _render_body(item), desired_labels)
             number_by_identity[identity] = issue.number
             report.created.append(f"#{issue.number} {item.title}")
+            _sync_project_status(item, issue.number, client, dry_run=dry_run)
             continue
 
         number_by_identity[identity] = existing.number
@@ -130,6 +160,7 @@ def sync_pass_one(
                 if not dry_run:
                     client.close_issue(existing.number)
                 report.closed.append(f"#{existing.number} {item.title}")
+                _sync_project_status(item, existing.number, client, dry_run=dry_run)
             continue
 
         if not existing.open:
@@ -149,6 +180,7 @@ def sync_pass_one(
             if not dry_run:
                 client.set_labels(existing.number, sorted(add), sorted(remove))
             report.updated.append(f"#{existing.number} {item.title}")
+        _sync_project_status(item, existing.number, client, dry_run=dry_run)
 
     return number_by_identity, report
 
