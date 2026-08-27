@@ -34,8 +34,18 @@ gated behind both; nothing in it should start yet.
 
 ## Track A — Realtime data plane (lead track)
 
-**Status (2026-08-26):** CH1 (measure a subscription-churn burst's real
-cost) is next. Not started. No blocking decision needed to begin.
+**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every
+axis checked: frame count bounded (<=2 raw WS frames per churn burst under
+the live exchange-wide config), no snapshot cost on churn-add
+(`send_initial_snapshot` isn't set on `add_markets`), no positive
+queue-depth/latency correlation with churn magnitude (weak negative, r =
+-0.217), and no measured rate-limit pressure. Full measurement: H11 in
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
+**CH2 is next, not started** — root-cause the still-untraced third
+instability event (the app-unresponsiveness observed live immediately
+after an 8->13 churn burst); CH1's negligible-cost result makes
+churn-as-direct-cause less likely on priors but does not rule it out, and
+CH3 cannot classify H11 until CH2 supplies the actual root cause.
 
 **Canonical docs**
 - Investigation plan: `docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`
@@ -110,7 +120,7 @@ visible in one place.
 | 4 — canonical shadow qualification | 3 exit | not started |
 | 5 — frontend operator console | plan refresh (spec stale) | not started |
 | 6 — personal production operations | 3/4 exit + human capital-policy decision | not started |
-| 7 — AQC implementation (workflow-health, corrected scope 2026-08-27) | none — write-lane question resolved (see below), spec approved | **not started** |
+| 7 — AQC implementation (workflow-health, corrected scope 2026-08-27) | none — write-lane question resolved (see below), spec approved | **implemented** (PR #86, merged 2026-08-27) |
 | 8 — capital qualification (Stages A–F) | 6 exit + each stage's own human gate | not started |
 
 Programs 5 and 7 have no technical dependency on Track A/B — they're
@@ -119,9 +129,19 @@ sequenced late by priority, not by a hard gate, which is why Program 7
 issue. Program 5 remains available for the same reason if there's ever
 a reason to parallelize further.
 
-**Program 7 status (2026-08-27): fresh spec approved, implementation not
-started.** History, newest first:
+**Program 7 status (2026-08-27): implemented.** All 10 tasks of
+`docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
+workflow.md` (`tools/quality_coordination.py` + `tools/coordination_engine.py`)
+merged via PR #86, with a same-day follow-up fix (git dubious-ownership
+under `ddev exec`, PR #87) and a CLAUDE.md/capability-router pointer
+update (PR #85). The plan file's own per-task checkboxes were never
+checked off in the commits that closed them — `git log` is the
+authoritative record for this initiative, not those checkboxes. History,
+newest first:
 
+- **2026-08-27 — planned and implemented.** `superpowers:writing-plans`
+  produced the 10-task plan against the approved spec below; all 10 tasks
+  executed and merged same day (see above). Program 7 is done.
 - **2026-08-27 — scope corrected a second time.** Direct user correction:
   even the original 9(+6)-task plan's *subject* was wrong — it audited the
   trading application's own static code findings, not "the automated
@@ -130,11 +150,10 @@ started.** History, newest first:
   ledgers). That original implementation is kept, fully merged, and
   renamed `tools/quality_ratchet.py` (PR #43) — a legitimate, working,
   differently-scoped capability, no longer Program 7. The real Program 7
-  is freshly designed at
+  was freshly designed at
   `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
-  workflow-design.md` — brainstormed and approved in chat, not yet
-  planned/implemented. Next step: `superpowers:writing-plans` against
-  that spec.
+  workflow-design.md` — brainstormed and approved in chat, then planned
+  and implemented the same day (see above).
 - **2026-08-26 — the write-lane gate below was resolved, not left open.**
   The user's mid-Task-4 request (install GitHub Issues Kanban + dispatch
   write-capable remediation) was generalized during brainstorming into
