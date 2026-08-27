@@ -1,9 +1,34 @@
 import json
+import subprocess
 
 from tests.support.fake_gh_runner import FakeRunner
 from tools.kanban_sync.github_client import GithubCliError, GithubClient
 
 REPO = "thesneakattack/kalshi-whale-poc"
+
+
+def test_default_runner_captures_stdout_as_text(monkeypatch):
+    """A GithubClient built without an explicit runner (the real path, never
+    exercised by any FakeRunner-based test above) must still call
+    subprocess.run with capture_output=True and text=True - otherwise
+    result.stdout is None and every _run() caller's json.loads(stdout)
+    crashes on the very first real invocation (found live via Task 13's
+    dry-run verification, spec §13)."""
+    calls = {}
+
+    def fake_subprocess_run(args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    client = GithubClient(REPO)
+
+    result = client.find_pr_state("some-branch")
+
+    assert result is None
+    assert calls["kwargs"].get("capture_output") is True
+    assert calls["kwargs"].get("text") is True
 
 
 def test_find_by_marker_returns_none_when_no_results():

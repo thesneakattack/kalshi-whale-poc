@@ -30,8 +30,12 @@ class GithubCliError(RuntimeError):
     pass
 
 
+def _default_runner(args: Sequence[str]) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(args, capture_output=True, text=True)
+
+
 class GithubClient:
-    def __init__(self, repo: str, runner: Runner = subprocess.run) -> None:
+    def __init__(self, repo: str, runner: Runner = _default_runner) -> None:
         self._repo = repo
         self._runner = runner
 
