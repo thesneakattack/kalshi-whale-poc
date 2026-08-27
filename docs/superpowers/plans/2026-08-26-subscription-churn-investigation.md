@@ -110,6 +110,13 @@ A reviewer can tell, from the doc alone, whether the rest of this plan should ev
 
 ## CH4 — Research and benchmark solution families *(only if CH3 = confirmed bottleneck)*
 
+**Note (2026-08-27):** a broader, churn-independent live watchlist-scale stress test now
+exists at `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`'s Phase
+P3.5 (`tools/watchlist_scale_stress_test.py`), sequenced ahead of that plan's P4/P5. If
+CH4 ever runs, reuse that tool rather than building a second scale-up harness — P3.5
+answers the general queue-depth/REST-demand/loop-health question at scale, CH4 (if it
+ever becomes relevant) would still need its own churn-specific benchmarking on top of it.
+
 Follow the parent skill's solution-selection workflow exactly (enumerate ≥3 families,
 research current authoritative practice, prototype outside the production path, benchmark
 against the same representative workload, fault-inject burst traffic/reconnect/queue

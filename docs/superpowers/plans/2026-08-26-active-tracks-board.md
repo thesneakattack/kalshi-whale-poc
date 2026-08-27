@@ -48,6 +48,13 @@ cost) is next. Not started. No blocking decision needed to begin.
   contract → sub-threshold rejection aggregation → the live reader-gate
   flip). Authorized 2026-08-26 (execution program doc §5.1 Verdict,
   reprioritization pass) — not yet started.
+- **New (2026-08-27), sequenced between P3 and P4**: Phase **P3.5 = Tasks
+  17a–17b**, a live (not replay-based) watchlist-scale stress test
+  (`tools/watchlist_scale_stress_test.py`) that widens `kalshi.
+  min_volume_24h`/`categories` and toggles `kalshi.live_markets_only`
+  (discovery) / `strategy.live_markets_only` (decision layer) to
+  empirically calibrate P4's two-consumer threshold and P5's REST-scheduler
+  presets before either is built, instead of after. Not started.
 - Orchestrator: `.claude/skills/realtime-data-plane-investigation/SKILL.md`
   for CH1–CH5; the remediation plan's own per-phase workflow for Tasks
   14–17.

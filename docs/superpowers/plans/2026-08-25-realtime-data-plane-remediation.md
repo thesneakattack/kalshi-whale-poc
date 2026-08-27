@@ -1670,6 +1670,344 @@ window), zero new exceptions in `fault_log` attributable to `whale_gate`. Full s
 
 ---
 
+## Phase P3.5 — Live watchlist-scale stress test (empirically informs P4/P5)
+
+Direct instruction (2026-08-27): P4 (Task 18's two-consumer split, Task 19's ticker
+coalescing) and P5 (Task 21-25's REST scheduler rewrite) are both designed against
+synthetic replay presets (`tools/realtime_pipeline_replay.py`'s `busy_hour`,
+`tools/rest_scheduler_replay.py`'s `measured_quiet`/`background_storm`/`429_storm`) -
+reasonable stand-ins, but none of them are calibrated against how this app's *own*
+pipeline actually behaves at a real watchlist scale larger than today's. Today's live
+watchlist holds only 8-13 tickers (H11's own measurement,
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`) despite
+`kalshi.watchlist_size: 150` already permitting up to 150 parent series - the gap is
+that few series currently pass `kalshi.min_volume_24h`/`categories`'s filters, not that
+the cap itself is low. This phase directly widens those filters live, in paper mode,
+for a bounded measurement window, to find out whether P4/P5's synthetic assumptions
+hold at real scale *before* implementing either - sequenced here, between P3 and P4,
+specifically so its findings can inform Task 18's two-consumer-mode threshold and
+Task 22's REST-scheduler preset calibration rather than arriving after those are
+already built.
+
+Distinct from, not a duplicate of, the subscription-churn-investigation plan's CH4
+(`docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`), which asks
+whether a *larger watchlist changes churn's own cost specifically* and is gated behind
+CH3 confirming churn is a material bottleneck (unlikely per CH1/CH2's results, both
+negative on that question). This phase asks the broader question - queue depth, REST
+demand, loop-health - at real scale, independent of churn, and runs regardless of CH3's
+outcome. If CH4 ever does run later, reuse this phase's `tools/
+watchlist_scale_stress_test.py` rather than building a second scale-up harness.
+
+Per `.claude/rules/realtime-data-plane-evidence.md`: this is the measurement the rule
+requires *before* any subscription-scope tuning decision, not the tuning decision
+itself - every config change here is temporary, reverted at the end of Task 17b's own
+Step 2 (`run_stress_steps`'s own `finally` block), and never touches
+`kalshi_account.trading_enabled` (blocked from `POST /api/config` entirely,
+`services/config/routes.py:29`) or any other safety-gated field. Paper mode
+(`mode: paper`) is unaffected and untouched throughout.
+
+### Task 17a: `tools/watchlist_scale_stress_test.py` - stress-step runner (tool, not app code)
+
+**Files:**
+- Create: `tools/watchlist_scale_stress_test.py`
+- Test: `tests/test_watchlist_scale_stress_test.py`
+
+**Interfaces:**
+- Produces: `run_stress_steps(base_url: str, steps: list[dict], *, getter: HttpGetter | None = None, poster: HttpPoster | None = None, sleep_fn: Callable[[float], None] | None = None, measure_after_sec: float = 120.0) -> dict` -
+  returns `{"original_config": dict, "results": [{"label": str, "patch": dict, "pipeline": dict, "observability": dict}, ...]}`.
+  Captures the pre-step config via `GET /api/config` before applying anything, applies
+  each step's `patch` via `POST /api/config`, sleeps `measure_after_sec` (via
+  `sleep_fn`, injectable so tests don't actually wait), snapshots
+  `GET /api/health/pipeline` and
+  `GET /api/observability/history?metric=loop_watchdog.stall_max_ms&hours=1` after each
+  step, and - in a `finally` block, regardless of any step raising - restores only the
+  top-level config sections the steps actually touched (deliberately never reposts the
+  *entire* captured config: that would include `kalshi_account`, which trips
+  `POST /api/config`'s own `trading_enabled` guard and would raise instead of
+  reverting, and would needlessly touch `advisory`/`confidence_calibration`
+  auto-apply flags this tool has no business changing).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_watchlist_scale_stress_test.py
+import copy
+
+from tools import watchlist_scale_stress_test as stress
+
+
+class _FakeAppClient:
+    """Fakes GET/POST against the live app's own API - same HttpGetter-injection
+    pattern tools/quality_coordination.py's fetch_app_report already uses. get()
+    returns a deep copy, not a live reference - matching what a real HTTP GET +
+    json.loads() round-trip always produces (an independent snapshot). Returning
+    self.config directly here would silently alias run_stress_steps' own captured
+    original_config to this fake's mutable state, corrupting the revert patch the
+    moment a later post() mutates self.config in place - a fake-only bug that a real
+    HTTP client could never actually exhibit, caught by tracing this exact test
+    through by hand before trusting it."""
+
+    def __init__(self):
+        self.config = {
+            "kalshi": {"live_markets_only": True, "min_volume_24h": 10000},
+            "kalshi_account": {"trading_enabled": False},
+        }
+        self.patches_applied = []
+
+    def get(self, url: str, timeout: float) -> dict:
+        if url.endswith("/api/config"):
+            return copy.deepcopy(self.config)
+        if "/api/health/pipeline" in url:
+            return {"markets_watched": len(self.patches_applied) + 8, "ingest": {}}
+        if "/api/observability/history" in url:
+            return {"metric": "loop_watchdog.stall_max_ms", "samples": []}
+        raise AssertionError(f"unexpected GET {url}")
+
+    def post(self, url: str, body: dict, timeout: float) -> dict:
+        assert url.endswith("/api/config")
+        patch = body["patch"]
+        assert "kalshi_account" not in patch  # must never be touched, not even on revert
+        self.patches_applied.append(patch)
+        for section, values in patch.items():
+            self.config.setdefault(section, {}).update(values)
+        return self.config
+
+
+def test_run_stress_steps_applies_measures_and_reverts_only_touched_sections():
+    client = _FakeAppClient()
+    steps = [{"label": "widen_scope", "patch": {"kalshi": {"min_volume_24h": 1000}}}]
+    slept = []
+    result = stress.run_stress_steps(
+        "http://fastapi:8000", steps,
+        getter=client.get, poster=client.post, sleep_fn=slept.append, measure_after_sec=5.0,
+    )
+    assert len(result["results"]) == 1
+    assert result["results"][0]["label"] == "widen_scope"
+    assert result["results"][0]["pipeline"]["markets_watched"] == 9
+    assert slept == [5.0]
+    # 2 posts total: the step's own patch, then the revert - both audited above for
+    # never containing kalshi_account.
+    assert len(client.patches_applied) == 2
+    assert client.patches_applied[-1] == {"kalshi": {"live_markets_only": True, "min_volume_24h": 10000}}
+    assert client.config["kalshi"]["min_volume_24h"] == 10000  # reverted
+
+
+def test_run_stress_steps_reverts_even_if_a_step_raises():
+    client = _FakeAppClient()
+
+    def _failing_get(url, timeout):
+        if "/api/health/pipeline" in url:
+            raise RuntimeError("connection reset")
+        return client.get(url, timeout)
+
+    steps = [{"label": "widen_scope", "patch": {"kalshi": {"min_volume_24h": 1000}}}]
+    try:
+        stress.run_stress_steps(
+            "http://fastapi:8000", steps,
+            getter=_failing_get, poster=client.post, sleep_fn=lambda s: None, measure_after_sec=0.0,
+        )
+    except RuntimeError:
+        pass
+    assert client.config["kalshi"]["min_volume_24h"] == 10000  # revert still happened
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_watchlist_scale_stress_test.py -v`
+Expected: FAIL - `ModuleNotFoundError: No module named 'tools.watchlist_scale_stress_test'`
+
+- [ ] **Step 3: Implement `run_stress_steps` and the CLI**
+
+```python
+# tools/watchlist_scale_stress_test.py
+"""Live (not replay-based) watchlist-scale stress test - applies a sequence of
+temporary config patches against the running app's own POST /api/config, measures
+GET /api/health/pipeline + GET /api/observability/history after each, and always
+restores only the config sections it touched. Standalone tool (CLAUDE.md's
+"Workflow/tooling and application code must never overlap" rule) - never imported by
+main.py/services/, reads/writes the live app only through its own public HTTP API,
+the same one-way coupling tools/quality_coordination.py's fetch_app_report already
+establishes.
+
+Realtime data-plane remediation plan, Phase P3.5 (Task 17a/17b) - feeds P4/P5's
+design with real-scale measurements before either is implemented."""
+from __future__ import annotations
+
+import json
+import time
+import urllib.request
+from typing import Callable
+
+HttpGetter = Callable[[str, float], dict]
+HttpPoster = Callable[[str, dict, float], dict]
+
+_PIPELINE_METRIC = "loop_watchdog.stall_max_ms"
+
+
+def _default_get(url: str, timeout: float) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "kalshi-whale-poc-stress-test"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _default_post(url: str, body: dict, timeout: float) -> dict:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": "kalshi-whale-poc-stress-test"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def run_stress_steps(
+    base_url: str, steps: list[dict], *,
+    getter: HttpGetter | None = None, poster: HttpPoster | None = None,
+    sleep_fn: Callable[[float], None] | None = None, measure_after_sec: float = 120.0,
+) -> dict:
+    get = getter or _default_get
+    post = poster or _default_post
+    sleep = sleep_fn or time.sleep
+
+    original_config = get(f"{base_url}/api/config", 5.0)
+    touched_sections = {key for step in steps for key in step["patch"]}
+    revert_patch = {s: original_config[s] for s in touched_sections if s in original_config}
+
+    results = []
+    try:
+        for step in steps:
+            post(f"{base_url}/api/config", {"patch": step["patch"]}, 5.0)
+            sleep(measure_after_sec)
+            pipeline = get(f"{base_url}/api/health/pipeline", 5.0)
+            observability = get(
+                f"{base_url}/api/observability/history?metric={_PIPELINE_METRIC}&hours=1", 5.0,
+            )
+            results.append({
+                "label": step["label"], "patch": step["patch"],
+                "pipeline": pipeline, "observability": observability,
+            })
+    finally:
+        if revert_patch:
+            post(f"{base_url}/api/config", {"patch": revert_patch}, 5.0)
+
+    return {"original_config": original_config, "results": results}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-url", default="http://fastapi:8000")
+    parser.add_argument("--measure-after-sec", type=float, default=120.0)
+    args = parser.parse_args()
+
+    # Task 17b's live steps - see that task for the reasoning behind each value.
+    live_steps = [
+        {"label": "widen_scope", "patch": {"kalshi": {"min_volume_24h": 1000, "categories": ["Sports", "Crypto"]}}},
+        {"label": "widen_scope_non_live_only", "patch": {"kalshi": {"live_markets_only": False}}},
+        {"label": "widen_scope_strategy_live_only", "patch": {"kalshi": {"live_markets_only": True}, "strategy": {"live_markets_only": True}}},
+    ]
+    output = run_stress_steps(args.base_url, live_steps, measure_after_sec=args.measure_after_sec)
+    print(json.dumps(output, indent=2))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_watchlist_scale_stress_test.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/watchlist_scale_stress_test.py tests/test_watchlist_scale_stress_test.py
+git commit -m "feat: add live watchlist-scale stress-test runner (P3.5 Task 17a)"
+```
+
+---
+
+### Task 17b: Run the stress test live, record findings, feed P4/P5
+
+**Files:**
+- Modify: `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md` (new dated entry)
+- Modify: `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md` (this file - annotate Task 18/22 with a pointer to the result)
+
+- [ ] **Step 1: Confirm paper mode and take a pre-test baseline**
+
+Run: `curl -s https://kalshi-whale-poc.ddev.site:8443/api/config | python3 -c "import json,sys; c=json.load(sys.stdin); print(c.get('mode'), c.get('kalshi_account',{}).get('trading_enabled'))"`
+Expected: `paper False` - do not proceed if either differs.
+
+Then snapshot `GET /api/health/pipeline` and
+`GET /api/observability/history?metric=loop_watchdog.stall_max_ms&hours=1` once,
+unpatched, as the baseline every step below gets compared against.
+
+- [ ] **Step 2: Run the live stress test**
+
+Run: `ddev exec -s fastapi python -m tools.watchlist_scale_stress_test --measure-after-sec 180 > /tmp/watchlist_stress_result.json`
+
+Three steps, each building on the last (see the CLI's `live_steps` in Task 17a):
+1. `widen_scope` - lowers `kalshi.min_volume_24h` from 10000 to 1000 and adds
+   `Crypto` to `kalshi.categories` (currently `["Sports"]` only), to admit more series
+   past the volume/category filter without touching `watchlist_size` (already 150,
+   already generous - see this phase's own header note).
+2. `widen_scope_non_live_only` - same widened scope, `kalshi.live_markets_only: false`
+   (today's default is `true`) - isolates whether *discovery mode* itself, not just
+   scale, changes behavior.
+3. `widen_scope_strategy_live_only` - same widened scope, `kalshi.live_markets_only`
+   back to `true`, `strategy.live_markets_only: true` (today's default is `false`) -
+   isolates the *decision-layer* counterpart (`services/strategy_engine.py:291`,
+   `services/shadow_mode.py:218`) from the discovery-layer one.
+
+Each step runs for `--measure-after-sec 180` (3 minutes) before the next - long enough
+to observe at least one `loop_watchdog` sample window and one subscription-churn
+catalog-refresh cycle (~15s cadence per H11), short enough that the whole run stays
+under 10 minutes end to end.
+
+- [ ] **Step 3: Compare against baseline and record the result**
+
+For each step, compare against Step 1's baseline: `markets_watched`, `queue.depth`/
+`queue_wait` (`GET /api/health/pipeline`'s `trade_stream.ingest` block),
+`server_errors`/`reconnects`, and `loop_watchdog.stall_max_ms`. Append a new dated
+entry to `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`
+(same format as H11's own CH1/CH2 entries) recording the real numbers - not a
+pass/fail verdict invented ahead of the data.
+
+- [ ] **Step 4: Confirm the revert took effect**
+
+Run: `curl -s https://kalshi-whale-poc.ddev.site:8443/api/config | python3 -c "import json,sys; c=json.load(sys.stdin); print(c['kalshi']['min_volume_24h'], c['kalshi']['live_markets_only'])"`
+Expected: `10000 True` - `run_stress_steps`' own `finally` block should have already
+done this; this step is the independent live confirmation, not a repeat of the same
+code path.
+
+- [ ] **Step 5: Feed the result into Task 18/22's own design**
+
+Add one line to Task 18's header (this file) and Task 22's header pointing at the new
+known-findings entry: whichever of `queue.depth`, `queue_wait`, or REST demand
+actually moved materially under the widened-scope steps is the one Task 18's
+two-consumer threshold and Task 22's REST-scheduler preset values should be
+calibrated against - name the real number, not the synthetic preset's assumed one,
+when either task is implemented. If nothing moved materially at this scale, say that
+explicitly in both places - it's a legitimate finding that lowers P4/P5's priority
+relative to P3, not a failed experiment.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md \
+  docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md
+git commit -m "docs: run the live watchlist-scale stress test, record findings (P3.5 Task 17b)"
+```
+
+---
+
+**P3.5 gate:** Task 17b's Step 2 has actually run against the live app at least once
+(not just Task 17a's unit tests) and its result is recorded in the known-findings doc;
+Task 18 and Task 22 each carry a pointer to that result before their own
+implementation starts. Config is back to its pre-test values (Step 4 confirms it
+live). No step touches `kalshi_account.trading_enabled` or leaves `mode` other than
+`paper`.
+
+---
+
 ## Phase P4 — Critical / market consumers, ticker coalescing, kept queue
 
 ### Task 18: Split the single consumer into `critical` and `market` queues
