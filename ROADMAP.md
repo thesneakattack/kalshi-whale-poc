@@ -551,20 +551,26 @@ which can run in parallel right now.
       not an observer of the trading app's own static findings). This
       module kept its implementation under the new `quality_ratchet` name;
       see the next item for what "AQC" now refers to.
-- [ ] **Autonomous Quality Coordination (workflow-health)** — spec'd
-      2026-08-27:
+- [ ] **Autonomous Quality Coordination (workflow-health)** — spec'd and
+      implemented 2026-08-27:
       `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
-      workflow-design.md`. An automated project-manager/janitor over this
-      repo's own engineering workflow — branch/PR/CI lifecycle, `superpowers`
+      workflow-design.md`,
+      `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
+      workflow.md`. An automated project-manager/janitor over this repo's
+      own engineering workflow — branch/PR/CI lifecycle, `superpowers`
       plan/ledger execution health, standing-rule/baseline hygiene, and
       (as context, not an audited target) the trading app's own
       self-reported diagnostics — plus a narrow, three-action deterministic
       cleanup layer (`git worktree prune`, deleting merged-and-remote-
       deleted local branches, deleting a finished plan's SDD scratch
-      workspace). Requires one small application-side change
-      (`services/auth.py`'s `PUBLIC_PATHS` gains the three read-only
-      diagnostic routes AQC reads as context) — everything else touches
-      only `tools/`, git, and the filesystem. Not yet planned/implemented.
+      workspace). 10 of the plan's 11 tasks are done and functional
+      (`tools/quality_coordination.py` + `tools/coordination_engine.py`);
+      the sole remaining item is Task 11 — one small application-side
+      change (`services/auth.py`'s `PUBLIC_PATHS` gains the three read-only
+      diagnostic routes AQC reads as context) — deliberately gated behind
+      live, in-the-moment human approval per the plan's own Task 11 text,
+      not routine follow-up work. Everything else already touches only
+      `tools/`, git, and the filesystem.
 
 ## Shipped
 
