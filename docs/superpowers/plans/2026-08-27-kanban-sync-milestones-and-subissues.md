@@ -222,6 +222,7 @@ def test_find_milestone_by_title_returns_matching_number():
     call = runner.calls[0]
     assert call[:2] == ["gh", "api"]
     assert f"repos/{REPO}/milestones" in call
+    assert "-X" in call and "GET" in call
     assert "state=all" in call
 
 
@@ -269,9 +270,14 @@ Add to `tools/kanban_sync/github_client.py`, after `set_project_status`
 
     def find_milestone_by_title(self, title: str) -> int | None:
         """state=all (not just open) so a milestone someone closed by hand
-        is still found - avoids creating a duplicate-titled milestone."""
+        is still found - avoids creating a duplicate-titled milestone.
+        -X GET is required alongside -f: gh api defaults to POST whenever
+        any -f/-F field is present unless -X explicitly overrides it -
+        confirmed live (a bare -f state=all here 422s, since it POSTs
+        {"state": "all"} as a body to a GET-only endpoint instead of
+        appending it as a query string)."""
         result = self._runner([
-            "gh", "api", f"repos/{self._repo}/milestones", "-f", "state=all",
+            "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones", "-f", "state=all",
         ])
         if result.returncode != 0:
             raise GithubCliError(f"gh api milestones list failed: {result.stderr or result.stdout}")
