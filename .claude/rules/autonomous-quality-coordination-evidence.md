@@ -106,6 +106,17 @@ Initial protected domains include:
 
 An autonomous actor must never "fix" a failed guard by weakening, deleting, baselining, or bypassing that guard.
 
+**Generalized scope note (2026-08-27):** this rule's authority-earning criteria
+(deterministic, path-contained, idempotent, independently verifiable, outside protected
+domains) apply unchanged to local git/filesystem mutation authority, not only GitHub write
+authority — see `tools/quality_coordination.py`'s three cleanup actions
+(`docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`
+§8), which this rule now also governs. The credential/event topology sections above remain
+GitHub-specific (there is no GitHub credential in this tool at all — see that spec's §2 and
+§11), but the core principle ("Automation may observe broadly, but it earns authority to
+act narrowly") and the Remediation authority rule's protected-domain list apply identically
+to this tool's own three actions.
+
 ## No auto-merge assumption
 
 Auto-merge is not part of the initial production rollout. If evidence later supports it for an exact mechanical allowlist, enabling it is a separate explicit decision with its own review and fault-injection proof.

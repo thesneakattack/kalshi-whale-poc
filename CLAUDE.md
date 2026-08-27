@@ -424,6 +424,10 @@ Amendment for the full account).
   persisted observation series over that scanner's findings; "Autonomous
   Quality Coordination" now names a different, separately-specified tool,
   see ROADMAP.md and `docs/superpowers/specs/2026-08-27-autonomous-
+  quality-coordination-workflow-design.md`),
+  `coordination_engine.py` + `quality_coordination.py` (the tool "Autonomous Quality
+  Coordination" now names — a project-manager/janitor over this repo's own engineering
+  workflow, not the trading app's code; see `docs/superpowers/specs/2026-08-27-autonomous-
   quality-coordination-workflow-design.md`), `project_manifest.py`, and
   others. Own persistence, own config (if any), own invocation — zero
   coupling with `main.py`/`services/`.
