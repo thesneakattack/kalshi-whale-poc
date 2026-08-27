@@ -51,5 +51,13 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"'done' on a future sync run.",
             ),
             done=False,
+            # Always PHASE_IMPLEMENTATION_PLAN, never a lower phase - every
+            # item that reaches this function already has a real plan doc
+            # (that's how it became a candidate at all; see
+            # list_plan_candidates). "done" classifications are filtered out
+            # above rather than reaching phase:implemented here, matching
+            # this function's own existing "skip, don't create-then-close"
+            # convention for done items.
+            phase_label=labels.PHASE_IMPLEMENTATION_PLAN,
         ))
     return items

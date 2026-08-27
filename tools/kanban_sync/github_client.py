@@ -74,11 +74,23 @@ class GithubClient:
         args = ["issue", "create", "--title", title, "--body", body]
         for label in labels:
             args += ["--label", label]
-        stdout = self._run(args)
-        match = _URL_NUMBER_RE.search(stdout.strip())
-        if not match:
-            raise GithubCliError(f"could not parse issue number from: {stdout!r}")
-        return IssueState(number=int(match.group(1)), open=True, labels=frozenset(labels))
+        # A brand-new label family's first-ever item (e.g. phase:* on its
+        # first ever creation, 2026-08-27) hits this path before any issue
+        # exists to retrofit via set_labels' own already-proven retry below -
+        # same "gh doesn't auto-create a missing label" risk, same fix.
+        for _ in range(len(labels) + 1):
+            try:
+                stdout = self._run(args)
+                match = _URL_NUMBER_RE.search(stdout.strip())
+                if not match:
+                    raise GithubCliError(f"could not parse issue number from: {stdout!r}")
+                return IssueState(number=int(match.group(1)), open=True, labels=frozenset(labels))
+            except GithubCliError as exc:
+                match = _LABEL_NOT_FOUND_RE.search(str(exc))
+                if not match:
+                    raise
+                self._run(["label", "create", match.group(1), "--color", "ededed"])
+        raise GithubCliError("gh issue create still failing after creating missing labels")
 
     def set_labels(self, number: int, add: Sequence[str], remove: Sequence[str]) -> None:
         if not add and not remove:

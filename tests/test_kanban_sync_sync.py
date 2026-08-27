@@ -34,12 +34,12 @@ class FakeGithubClient:
 
 
 def _item(kind="track", key="A", *, title="Track A", status=labels.STATUS_CLAIMABLE,
-          done=False, depends_on=()):
+          done=False, depends_on=(), phase=None):
     return SyncItem(
         kind=kind, key=key, title=title, status_label=status,
         type_label=labels.TYPE_TRACKING, context_body="## Context\nx",
         acceptance_criteria=("done when x happens",), done=done,
-        depends_on_keys=depends_on,
+        depends_on_keys=depends_on, phase_label=phase,
     )
 
 
@@ -103,6 +103,47 @@ def test_sync_pass_one_dry_run_makes_no_mutating_calls():
     assert client.issues == {}
     assert report.dry_run is True
     assert report.created
+
+
+def test_sync_pass_one_new_issue_includes_phase_label():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(phase=labels.PHASE_RESEARCH_EVIDENCE)], client, dry_run=False)
+
+    (issue,) = client.issues.values()
+    assert labels.PHASE_RESEARCH_EVIDENCE in issue["labels"]
+
+
+def test_sync_pass_one_no_phase_label_added_when_item_has_none():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(phase=None)], client, dry_run=False)
+
+    (issue,) = client.issues.values()
+    assert not (issue["labels"] & labels.ALL_PHASE_LABELS)
+
+
+def test_sync_pass_one_replaces_stale_phase_label_on_update():
+    client = FakeGithubClient()
+    sync_pass_one([_item(phase=labels.PHASE_RESEARCH_EVIDENCE)], client, dry_run=False)
+
+    _, report = sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+
+    (issue,) = client.issues.values()
+    assert issue["labels"] & labels.ALL_PHASE_LABELS == {labels.PHASE_DESIGN_SPEC}
+    assert report.updated
+
+
+def test_sync_pass_one_leaves_phase_label_alone_when_unchanged():
+    """No spurious update report when the phase hasn't actually changed -
+    same idempotency guarantee this file's own status/depends-on tests
+    already prove for those two label families."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+
+    _, report = sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+
+    assert report.updated == []
 
 
 def test_reconcile_sets_depends_on_label_using_real_issue_number():

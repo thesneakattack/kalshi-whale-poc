@@ -19,6 +19,7 @@ class SyncItem:
     scope_paths: tuple[str, ...] = ()
     depends_on_keys: tuple[tuple[str, str], ...] = ()  # (kind, key) pairs
     done: bool = False
+    phase_label: str | None = None  # labels.PHASE_* - None when a source can't determine one
 
 
 @dataclass
