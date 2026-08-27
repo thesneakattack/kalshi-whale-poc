@@ -176,8 +176,18 @@ def _git_head(repo_root: Path) -> str | None:
     if not (repo_root / ".git").exists():
         return None
     try:
+        # -c safe.directory=* : the ddev fastapi container has a real git
+        # binary but runs `ddev exec` as root while the bind-mounted repo
+        # (../:/app) is owned by the host's uid - git's dubious-ownership
+        # check (CVE-2022-24765) then refuses to touch it at all, which is
+        # what actually produced `generated_from_head: null` under
+        # `ddev exec`, not a missing binary. Scoped to this one invocation
+        # (not global git config) so it changes nothing about how git
+        # behaves for an interactive user on the host, where the owner
+        # already matches and the check never fires.
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, timeout=5,
+            ["git", "-c", "safe.directory=*", "rev-parse", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -370,8 +380,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "\nRegenerate with:\n"
             f"  python3 -m tools.project_manifest --write {args.check} --repo-root .\n"
-            "Run that on the host, not through `ddev exec` - the container image has no\n"
-            "git binary, so generated_from_head would be written as null."
+            "Works equally from the host or via `ddev exec -s fastapi` - _git_head passes\n"
+            "-c safe.directory=* so root running git against the bind-mounted repo doesn't\n"
+            "trip git's dubious-ownership check and silently null out generated_from_head."
         )
         return 1
 

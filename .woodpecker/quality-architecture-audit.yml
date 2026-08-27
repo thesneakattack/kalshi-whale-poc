@@ -24,7 +24,12 @@
 # does. Sub-threshold drift is printed in this step's log rather than
 # suppressed - if those lines are creeping up toward the threshold, run
 # `python3 -m tools.project_manifest --write static/project-manifest.json
-# --repo-root .` on the host (not via ddev exec: no git binary there).
+# --repo-root .` from the host or via `ddev exec -s fastapi` - either works
+# now that _git_head passes `-c safe.directory=*` (2026-08-27; the fastapi
+# container has a real git binary, the actual blocker was root running git
+# against a bind-mounted repo owned by the host uid, tripping git's
+# dubious-ownership check - this CI image genuinely has no git binary at
+# all, which is the unrelated reason generated_from_head stays null here).
 when:
   - event: [push, pull_request]
 
