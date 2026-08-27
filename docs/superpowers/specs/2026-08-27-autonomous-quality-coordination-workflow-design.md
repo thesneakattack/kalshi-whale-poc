@@ -404,6 +404,28 @@ SARIF/issue surface — none of that applies):
   beyond the read-only app-diagnostics calls in §6.4, and no code path
   that touches `services/`, `main.py`, `config/settings.yaml`, or any
   trading-application file.
+- **Must check its GitHub API rate-limit budget before any bulk
+  `gh`-backed read pass (§6.1's branch/PR/CI lifecycle signals), not
+  discover exhaustion mid-run.** Found live 2026-08-27, in the sibling
+  `tools/kanban_sync` tool (not this one, but the same underlying `gh`
+  surface AQC's own §6.1 reads from): a 33-item bulk operation exhausted
+  GitHub's 5000/5000 GraphQL quota partway through, leaving state
+  half-applied, and surfaced as a misleading, rate-limit-unrelated `gh`
+  CLI error rather than anything actionable — only diagnosable via
+  `GH_DEBUG=api` reading the raw GraphQL error body directly. `gh project`
+  and `gh issue edit`-family commands are GraphQL-backed despite looking
+  like plain CLI flags; `gh pr list`/`gh pr view` (what §6.1 actually
+  uses) are as well. Direct user feedback: this is exactly the kind of
+  operational blind spot a workflow-automation tool exists to catch in
+  itself, not fail into. AQC's implementation must check remaining
+  GraphQL budget (`gh api rate_limit`, a global, non-repo-scoped read)
+  against a conservative per-branch/PR call estimate before starting a
+  scan, and refuse or defer with a clear remaining/estimated/reset-time
+  message rather than proceed into a partial, confusing read pass — the
+  same fix already shipped for `tools/kanban_sync`
+  (`GithubClient.graphql_rate_limit()` + `_check_rate_limit_budget()`,
+  branch `fix/kanban-sync-rate-limit-guard`) is the reference
+  implementation to reuse or port, not re-derive.
 
 ## 12. Disposition of `tools/quality_coordination.py` (PR #43)
 
