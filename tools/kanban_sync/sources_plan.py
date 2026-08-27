@@ -27,17 +27,26 @@ def list_plan_candidates(plans_dir: Path, active_tracks_board_text: str) -> list
 def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     """`classifications` maps filename -> {"status": "done"|"in-progress"|
     "not-started", "note": str}, produced by the kanban-board-sync skill's
-    judgment-assisted classification step."""
+    judgment-assisted classification step.
+
+    A "done" classification still produces a SyncItem (done=True), rather
+    than being skipped outright - sync_pass_one's own create/close logic
+    already handles both ends of this correctly (no existing issue + done =>
+    nothing created; existing open issue + done => closed), so skipping the
+    item here would only lose the second case: a plan classified in-progress
+    when its tracking issue was first created, then later actually finished,
+    would never get that issue auto-closed. Found live 2026-08-27 (issue #96,
+    docs/superpowers/plans/2026-08-27-backend-services-modularization.md) and
+    fixed here instead of by hand every time it recurs."""
     items: list[SyncItem] = []
     for filename, info in classifications.items():
-        if info["status"] == "done":
-            continue
+        done = info["status"] == "done"
         note = info.get("note", "")
         items.append(SyncItem(
             kind=labels.SYNC_MARKER_KIND_PLAN,
             key=filename,
             title=f"Plan: {filename}",
-            status_label=labels.STATUS_CLAIMABLE,
+            status_label=labels.STATUS_DONE if done else labels.STATUS_CLAIMABLE,
             type_label=labels.TYPE_PLAN_TASK,
             context_body=(
                 f"## Context\nTracks `docs/superpowers/plans/{filename}` "
@@ -50,14 +59,11 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"`docs/superpowers/plans/{filename}` is reclassified "
                 f"'done' on a future sync run.",
             ),
-            done=False,
-            # Always PHASE_IMPLEMENTATION_PLAN, never a lower phase - every
-            # item that reaches this function already has a real plan doc
-            # (that's how it became a candidate at all; see
-            # list_plan_candidates). "done" classifications are filtered out
-            # above rather than reaching phase:implemented here, matching
-            # this function's own existing "skip, don't create-then-close"
-            # convention for done items.
-            phase_label=labels.PHASE_IMPLEMENTATION_PLAN,
+            done=done,
+            # PHASE_IMPLEMENTED for a done classification, otherwise always
+            # PHASE_IMPLEMENTATION_PLAN, never a lower phase - every item
+            # reaching this function already has a real plan doc (that's how
+            # it became a candidate at all; see list_plan_candidates).
+            phase_label=labels.PHASE_IMPLEMENTED if done else labels.PHASE_IMPLEMENTATION_PLAN,
         ))
     return items

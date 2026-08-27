@@ -15,17 +15,26 @@ Some prose paragraph that isn't a bullet at all.
 """
 
 
-def test_parse_roadmap_items_skips_checked_items():
+def test_parse_roadmap_items_includes_checked_items_as_done():
+    """A checked item still produces a SyncItem (done=True), not none at
+    all - sync_pass_one's own create/close logic already handles both ends
+    correctly (no existing issue + done => nothing created; existing open
+    issue + done => closed). Skipping checked items outright would lose the
+    second case: a bullet open when its tracking issue was first created,
+    then later checked off, would never get that issue auto-closed. Same
+    bug shape as sources_plan.py's build_plan_items - found and fixed
+    together 2026-08-27."""
     items = parse_roadmap_items(SAMPLE)
 
-    keys = [i.key for i in items]
-    assert not any("event-loop-stalled" in k for k in keys)
+    done_items = [i for i in items if "event-loop-stalled" in i.key]
+    assert len(done_items) == 1
+    assert done_items[0].done is True
 
 
-def test_parse_roadmap_items_returns_one_item_per_open_checkbox():
+def test_parse_roadmap_items_returns_one_item_per_checkbox_open_or_checked():
     items = parse_roadmap_items(SAMPLE)
 
-    assert len(items) == 2
+    assert len(items) == 3
 
 
 def test_parse_roadmap_items_uses_bold_lead_in_as_title_when_present():
@@ -52,10 +61,20 @@ def test_parse_roadmap_items_captures_multiline_continuation_in_body():
 
 def test_parse_roadmap_items_marks_status_claimable_and_type_feature():
     items = parse_roadmap_items(SAMPLE)
+    open_items = [i for i in items if not i.done]
 
-    assert all(i.status_label == labels.STATUS_CLAIMABLE for i in items)
-    assert all(i.type_label == labels.TYPE_FEATURE for i in items)
-    assert all(i.done is False for i in items)
+    assert all(i.status_label == labels.STATUS_CLAIMABLE for i in open_items)
+    assert all(i.type_label == labels.TYPE_FEATURE for i in open_items)
+    assert len(open_items) == 2
+
+
+def test_parse_roadmap_items_marks_checked_item_status_done():
+    items = parse_roadmap_items(SAMPLE)
+
+    done_items = [i for i in items if i.done]
+    assert len(done_items) == 1
+    assert done_items[0].status_label == labels.STATUS_DONE
+    assert done_items[0].type_label == labels.TYPE_FEATURE
 
 
 def test_parse_roadmap_items_always_has_acceptance_criteria():
