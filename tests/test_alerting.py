@@ -94,7 +94,7 @@ class _FakeHttpClient:
 
 
 def test_dispatch_notification_is_a_noop_when_webhook_url_unset(monkeypatch):
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     monkeypatch.setattr(config_store, "get", lambda: {"alerting": {"webhook_url": None}})
     fake = _FakeHttpClient()
     monkeypatch.setattr(alerting, "get_client", lambda: fake)
@@ -105,7 +105,7 @@ def test_dispatch_notification_is_a_noop_when_webhook_url_unset(monkeypatch):
 
 
 def test_dispatch_notification_posts_a_slack_compatible_payload_when_configured(monkeypatch):
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     monkeypatch.setattr(config_store, "get", lambda: {"alerting": {"webhook_url": "https://example.invalid/hook"}})
     fake = _FakeHttpClient()
     monkeypatch.setattr(alerting, "get_client", lambda: fake)
@@ -121,7 +121,7 @@ def test_dispatch_notification_posts_a_slack_compatible_payload_when_configured(
 
 
 def test_dispatch_notification_swallows_a_delivery_failure(monkeypatch):
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     monkeypatch.setattr(config_store, "get", lambda: {"alerting": {"webhook_url": "https://example.invalid/hook"}})
 
     class _BoomClient:
@@ -191,7 +191,7 @@ def test_resolve_alert_is_a_noop_on_unknown_id():
 # --- crash-alert resolution: check_and_alert wiring (_expire_stale_crash_alerts) --
 
 def test_expire_stale_crash_alerts_resolves_and_notifies(monkeypatch):
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     monkeypatch.setattr(config_store, "get", lambda: {"alerting": {"webhook_url": "https://example.invalid/hook"}})
     fake = _FakeHttpClient()
     monkeypatch.setattr(alerting, "get_client", lambda: fake)

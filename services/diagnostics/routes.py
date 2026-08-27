@@ -24,14 +24,15 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import index_feed, series_watcher, settlement_edge, trade_archive
+from services import index_feed, series_watcher, settlement_edge
+from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import trade_capture_reconciliation
 from services.app_state import state, trade_stream, whale_provider
 from services import whale_pipeline_perf
 from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
@@ -125,7 +126,7 @@ async def get_series_watcher(series: str, hours: float = 24.0):
 
 @router.get("/api/archive/epochs")
 async def get_archive_epochs(limit: int = 50):
-    """Every archived paper-trading epoch (services/trade_archive.py) -
+    """Every archived paper-trading epoch (services/reset/trade_archive.py) -
     the permanent record a reset can't destroy."""
     return {"epochs": trade_archive.epochs(limit)}
 

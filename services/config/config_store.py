@@ -31,7 +31,7 @@ from ruamel.yaml.error import YAMLError
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "settings.yaml"
 
 _yaml = YAML()
 _yaml.preserve_quotes = True

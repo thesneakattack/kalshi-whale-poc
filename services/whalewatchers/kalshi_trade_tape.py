@@ -30,7 +30,8 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import candidate_log, candidate_retry, config_bounds, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, candidate_retry, market_analyst_agent, market_history, series_evaluator, signal_log
+from services.config import config_bounds
 from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi.contracts import trade as trade_contract

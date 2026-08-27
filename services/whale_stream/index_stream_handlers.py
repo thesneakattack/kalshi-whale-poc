@@ -12,7 +12,7 @@ import time
 
 from services import index_feed, settlement_edge, settlement_edge_entry
 from services.app_state import broker, risk, state
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 from services.whale_stream import decision_bridge
 

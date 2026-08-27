@@ -273,7 +273,7 @@ def milestone_duplicate_estimate(by_endpoint: dict, tracked_events: int, hours: 
 
 async def _run(args) -> dict:
     from dotenv import load_dotenv
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     from services.kalshi.account_client import KalshiAccountClient
     from services.kalshi.public import KalshiPublicGateway
     load_dotenv()  # same optional .env the app reads (main.py) - credentials are never required

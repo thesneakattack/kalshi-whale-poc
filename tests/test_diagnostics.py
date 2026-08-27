@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from services import config_performance as cp_module
+from services.config import config_performance as cp_module
 from services.diagnostics import diagnostics
 from services.market_catalog import market_catalog as mc_module
 from services import paper_broker as pb_module

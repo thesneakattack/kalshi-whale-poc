@@ -57,7 +57,7 @@ services/config_bounds.is_tradeable_unit_cost - CLAUDE.md's "whale bets at
 cost 0 or 100c are just plain wrong" invariant applies to every strategy
 that opens a position, not just whale-follow.
 """
-from services.config_bounds import is_tradeable_unit_cost
+from services.config.config_bounds import is_tradeable_unit_cost
 from services import index_feed, settlement_edge
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager

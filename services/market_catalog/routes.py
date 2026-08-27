@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from services import title_cache
 from services.app_state import bump_generation, state
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_watch import (

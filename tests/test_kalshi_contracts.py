@@ -678,7 +678,7 @@ def test_process_stream_lifecycle_consumes_the_canonical_ticker_key():
 
 
 def test_rest_position_slims_to_the_documented_presentation_fields():
-    from services.account_positions import _slim_position
+    from services.position.account_positions import _slim_position
     position = _payload("rest_market_position.json")
     slimmed = _slim_position(position)
     assert slimmed["ticker"] == "FED-23DEC-T3.00"
@@ -719,7 +719,7 @@ def test_flatten_closes_a_doc_sourced_rest_no_position_by_buying_yes():
 
 
 def test_rest_fill_slims_with_both_documented_identity_spellings():
-    from services.account_positions import _slim_fill
+    from services.position.account_positions import _slim_fill
     fill = _payload("rest_fill.json")
     slimmed = _slim_fill(fill)
     # get-fills.md: trade_id is 'legacy field name, same as fill_id';

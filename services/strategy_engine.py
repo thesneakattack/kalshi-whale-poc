@@ -6,7 +6,8 @@ manager, or data sources.
 import time
 from typing import NamedTuple
 
-from services import candidate_log, config_overrides, market_history, signal_log
+from services import candidate_log, market_history, signal_log
+from services.config import config_overrides
 from services.confidence_scoring import WhaleSignal
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
@@ -14,7 +15,7 @@ from services.exits import exit_engine
 
 # One shared definition with the provider, which refuses to LOG such a
 # print in the first place - see config_bounds for the full reasoning.
-from services.config_bounds import (  # noqa: E402
+from services.config.config_bounds import (  # noqa: E402
     MAX_TRADEABLE_UNIT_COST, MIN_TRADEABLE_UNIT_COST, is_tradeable_unit_cost,
 )
 

@@ -358,7 +358,7 @@ def test_correct_erroneous_close_returns_none_for_unknown_trade_id(tmp_path, mon
 def test_correct_erroneous_close_excluded_trade_vanishes_from_build_trade_history(tmp_path, monkeypatch):
     """The actual point - a corrected close must stop being counted as a
     loss (or a win) anywhere trade_analytics reads it."""
-    from services import trade_analytics
+    from services.history import trade_analytics
 
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     broker.open_position("TICK-A", "yes", size=100, price=0.69, reason="entry")

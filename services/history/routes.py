@@ -9,7 +9,8 @@ app.include_router(...) at the same paths as before.
 """
 from fastapi import APIRouter
 
-from services import market_history, signal_log, trade_analytics
+from services import market_history, signal_log
+from services.history import trade_analytics
 from services.app_state import broker
 from services.state_view import _scoped_market_titles
 

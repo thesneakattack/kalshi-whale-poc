@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services import regime_analytics as ra
+from services.history import regime_analytics as ra
 from services import trade_category as tc
 
 

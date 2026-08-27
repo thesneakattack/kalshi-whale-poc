@@ -21,7 +21,8 @@ category.
 import time
 from collections import defaultdict
 
-from services import signal_log, trade_analytics, trade_category
+from services import signal_log, trade_category
+from services.history import trade_analytics
 
 
 def by_hour_of_day(rows: list[dict]) -> list[dict]:

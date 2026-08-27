@@ -11,9 +11,11 @@ import os
 import time
 
 from services import (
-    candidate_log, config_performance, market_analyst_agent, ml_feed,
-    regime_analytics, series_evaluator, signal_log, stats_power, suggestion_decisions, trade_analytics,
+    candidate_log, market_analyst_agent, ml_feed,
+    series_evaluator, signal_log, stats_power,
 )
+from services.config import config_performance
+from services.history import regime_analytics, suggestion_decisions, trade_analytics
 from services.advisory import advisory_engine
 from services.app_state import broker, bump_generation, state
 from services.config.config_paths import _types_compatible

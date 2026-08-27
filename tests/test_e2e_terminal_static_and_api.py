@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from services import risk_manager as rm_module
-from services import config_performance as cp_module
+from services.config import config_performance as cp_module
 from services import market_history as mh_module
 from services.market_catalog import market_catalog as mc_module
 from services import series_evaluator as se_module

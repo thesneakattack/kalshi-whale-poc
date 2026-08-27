@@ -23,7 +23,7 @@ from services import fault_log, tick_executor
 from services.alerting import alerting
 from services.app_state import index_stream, state, trade_stream
 from services.backup import backup
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.diagnostics import diagnostics
 from services.observability import observability
 from services.quality.models import QualityReport

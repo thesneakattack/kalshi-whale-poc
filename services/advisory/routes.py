@@ -20,11 +20,13 @@ without those moving either.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import candidate_log, config_performance, regime_analytics, suggestion_decisions, trade_analytics
+from services import candidate_log
+from services.config import config_performance
+from services.history import regime_analytics, suggestion_decisions, trade_analytics
 from services.advisory import advisory_engine
 from services.analytics.market_analyst_orchestrator import _series_evaluator_rows_for_advisory
 from services.app_state import broker, bump_generation
-from services.config_store import config_store
+from services.config.config_store import config_store
 
 router = APIRouter()
 

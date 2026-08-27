@@ -9,7 +9,7 @@ in services/position/.
 from fastapi import APIRouter
 
 from services.app_state import broker, state
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.exits import position_netting
 
 router = APIRouter()

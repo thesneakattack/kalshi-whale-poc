@@ -8,8 +8,9 @@ read by nearly every future module (position, history, and the /api/state
 builder itself), so they get their own shared home rather than being owned
 by any one of those.
 """
-from services import signal_log, trade_analytics
-from services.account_positions import _real_account_position_tickers
+from services import signal_log
+from services.history import trade_analytics
+from services.position.account_positions import _real_account_position_tickers
 from services.app_state import broker, state
 from services.paper_broker import PaperBroker
 

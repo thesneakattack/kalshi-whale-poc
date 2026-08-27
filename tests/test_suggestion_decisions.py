@@ -1,6 +1,6 @@
 import pytest
 
-from services import suggestion_decisions as sd
+from services.history import suggestion_decisions as sd
 
 
 @pytest.fixture(autouse=True)

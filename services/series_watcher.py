@@ -64,7 +64,8 @@ import time
 from pathlib import Path
 
 from services import fault_log
-from services import signal_log, trade_analytics
+from services import signal_log
+from services.history import trade_analytics
 from services import paper_broker as pb_module
 from services.diagnostics.diagnostics import Check
 from services.kalshi.contracts.trade import resolve_taker_outcome_side, taker_notional_usd, trade_exchange_ts

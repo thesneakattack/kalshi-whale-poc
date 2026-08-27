@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 from services import candidate_log as cl_module
-from services import config_performance as cp_module
-from services import config_store as config_store_module
+from services.config import config_performance as cp_module
+from services.config import config_store as config_store_module
 from services.market_catalog import market_catalog as mc_module
 from services import market_analyst_agent
 from services.market_analyst_agent import _db as maa_db_module
@@ -97,7 +97,7 @@ def _run_stream_ticker(msg):
         (msg,) = msg
     asyncio.run(main._process_stream_ticker(ticker_contract.normalize_ticker(msg)))
 from fastapi.testclient import TestClient  # noqa: E402
-from services import account_positions  # noqa: E402
+from services.position import account_positions  # noqa: E402
 from services.market_watch import discovery_cache  # noqa: E402
 from services.confidence_scoring import DEFAULT_WEIGHTS  # noqa: E402
 
@@ -116,7 +116,7 @@ def _reset_trading_state():
 def test_files_are_actually_redirected_away_from_the_real_repo():
     """Guards the guard: if this ever fails, every other test in this file
     could be touching real project files instead of the temp copies."""
-    import services.config_store as csm
+    import services.config.config_store as csm
     assert "sandbox/autotrade/config/settings.yaml" not in str(csm.config_store._path)
     assert "sandbox/autotrade/data" not in str(pb_module.DB_PATH)
     assert "sandbox/autotrade/data" not in str(rm_module.DB_PATH)
@@ -528,7 +528,7 @@ def test_reset_route_wires_market_catalog_and_market_history_flags():
 # positions' unrealized P&L into the archive uncredited) --------------------
 
 def test_reset_close_positions_first_closes_positions_and_archive_records_the_real_close():
-    from services import trade_archive as ta_module
+    from services.reset import trade_archive as ta_module
 
     main.broker.reset(starting_bankroll=10000.0)
     main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")

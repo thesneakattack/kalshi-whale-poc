@@ -49,7 +49,9 @@ requires the *current* variant specifically to have cleared any floor.
 """
 import hashlib
 
-from services import config_bounds, config_overrides, regime_analytics, signal_log, stats_power, trade_analytics, trade_category
+from services import signal_log, stats_power, trade_category
+from services.config import config_bounds, config_overrides
+from services.history import regime_analytics, trade_analytics
 
 # Real bug found live (2026-08-15, docs/profit-maximization-assessment-
 # 2026-08-15.md): every "is this win-rate gap big enough to act on"

@@ -5,7 +5,7 @@ ceiling on take_profit_pct and stop_loss_pct that nothing enforced before.
 """
 import pytest
 
-from services import config_bounds
+from services.config import config_bounds
 
 
 def test_max_gain_fraction_matches_the_settlement_arithmetic():

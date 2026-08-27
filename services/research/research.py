@@ -20,8 +20,10 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import candidate_log, config_performance, regime_analytics, series_evaluator
-from services import settlement_edge, signal_log, suggestion_decisions, trade_analytics
+from services import candidate_log, series_evaluator
+from services.config import config_performance
+from services import settlement_edge, signal_log
+from services.history import regime_analytics, suggestion_decisions, trade_analytics
 from services.advisory import advisory_engine
 from services.analytics.market_analyst_orchestrator import _series_evaluator_rows_for_advisory
 from services.diagnostics import diagnostics

@@ -166,7 +166,7 @@ def test_build_report_never_touches_config_store_or_logs_an_applied_change(monke
     update_calls = []
     log_calls = []
     monkeypatch.setattr(research.config_performance, "log_applied_change", lambda **kw: log_calls.append(kw))
-    from services.config_store import config_store
+    from services.config.config_store import config_store
     monkeypatch.setattr(config_store, "update", lambda *a, **kw: update_calls.append((a, kw)))
     cfg = {"advisory": {"enabled": True, "min_resolved_trades_per_variant": 30}, "confidence_calibration": {}}
 

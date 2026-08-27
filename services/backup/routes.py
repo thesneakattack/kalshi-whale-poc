@@ -11,7 +11,7 @@ from fastapi import APIRouter
 
 from services.app_state import state
 from services.backup import backup
-from services.config_store import config_store
+from services.config.config_store import config_store
 
 router = APIRouter()
 
