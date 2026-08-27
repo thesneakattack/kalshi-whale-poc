@@ -66,6 +66,15 @@ def test_build_worktree_items_merged_pr_is_done():
     assert items[0].done is True
 
 
+def test_build_worktree_items_closed_pr_is_in_progress():
+    worktrees = [WorktreeInfo(path="/x", branch="feat/x")]
+
+    items = build_worktree_items(worktrees, pr_state_by_branch={"feat/x": "CLOSED"})
+
+    assert items[0].status_label == labels.STATUS_IN_PROGRESS
+    assert items[0].done is False
+
+
 def test_collect_worktree_items_queries_pr_state_per_branch():
     runner = FakeRunner()
     runner.queue(json.dumps([{"state": "OPEN"}]))  # find_pr_state for feat/autonomous-quality-coordination
