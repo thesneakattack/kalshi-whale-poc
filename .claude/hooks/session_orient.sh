@@ -19,6 +19,18 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 fi
 
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Cheap, network-free count (no gh calls here - this hook has a 15s
+  # budget and scripts/cleanup-worktrees.sh's PR-state check is a network
+  # round-trip per worktree). Real staleness evaluation is that script's
+  # job, run via `/checkpoint` (acts) or `--dry-run` (reports) on demand.
+  other_worktrees=$(git worktree list --porcelain 2>/dev/null | grep -c '^worktree ')
+  other_worktrees=$((other_worktrees - 1))
+  if [ "$other_worktrees" -gt 0 ]; then
+    echo "worktrees: $other_worktrees besides the primary checkout - some may be stale (merged/closed); scripts/cleanup-worktrees.sh --dry-run reports which, /checkpoint's PR-check step cleans up the provably-merged ones automatically"
+  fi
+fi
+
 if command -v ddev >/dev/null 2>&1 && ddev describe >/dev/null 2>&1; then
   echo "ddev: running at https://kalshi-whale-poc.ddev.site - the app is probably already up, don't assume a venv is needed"
 else
