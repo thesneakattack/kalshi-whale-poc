@@ -1,7 +1,7 @@
 """
 Storage inventory, deep-scan, and integrity-check routes - the operator-
 facing surface for services/storage_health/storage_health.py's read-only DB
-diagnostics. Quality Control Plane Task 11; see this package's CHEATSHEET.md
+diagnostics. Quality Control Plane Task 11; see this package's README.md
 and storage_health.py's own module docstring for the three cost tiers these
 three routes map to.
 """

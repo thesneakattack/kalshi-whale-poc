@@ -74,7 +74,7 @@ Normally relevant:
 - `kalshi-contract-review` / `docs/kalshi/` — before interpreting any Kalshi
   lifecycle/result/fee field this investigation's queries touch (already done once for
   `determined`-vs-`finalized`, reused not re-derived — see the whale_calibration/exits
-  CHEATSHEETs)
+  READMEs)
 - `dimensional-analysis` — on any new EV/unit-cost/P&L derivation added (this investigation's
   existing `EV_per_contract = win_rate − mean_unit_cost` formula should be checked, not just
   new ones, if a future task changes it)
@@ -91,8 +91,8 @@ domain policy.
 ## Per-task workflow
 
 1. Read the plan file's status table, `CLAUDE.md`, the relevant research documents, the
-   relevant CHEATSHEET.md files, exact mirrored Kalshi docs where relevant, and recent git
-   history.
+   relevant module reference docs (`README.md`/`CHEATSHEET.md`), exact mirrored Kalshi docs
+   where relevant, and recent git history.
 2. Re-ground: branch, HEAD, working tree, current config values relevant to the task,
    whether `feat/realtime-data-plane-remediation` has merged yet.
 3. Determine whether current HEAD already answers the task (a later merge — e.g. Program 1

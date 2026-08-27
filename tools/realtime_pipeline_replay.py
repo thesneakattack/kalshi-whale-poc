@@ -72,7 +72,7 @@ class Fixed:
 @dataclass(frozen=True)
 class LogNormal:
     """Log-normal service time parameterised by its mean and p95 (the two
-    figures the observability CHEATSHEET records per stage), solved for
+    figures the observability README records per stage), solved for
     mu/sigma. If the requested tail is heavier than a log-normal can carry
     for that mean, sigma is clamped at the p95 z-score and the mean drifts
     upward - deliberately conservative for a capacity model."""
@@ -752,7 +752,7 @@ def sustainable_trade_rate(workload_for_rate: Callable[[float], Workload], topol
 #
 # Numbers from the I0 baseline (docs/superpowers/research/2026-08-25-realtime-
 # data-plane-baseline.md section 6), the I1/I2 windows recorded in
-# services/observability/CHEATSHEET.md, and the I7 busy hour
+# services/observability/README.md, and the I7 busy hour
 # (2026-08-25-realtime-live-baseline.md): trade-channel arrival p50 148 / p95
 # 322 / max 383 msg/s; trade handler mean ~3.3 ms (5.25 ms in the busy hour)
 # with a p95 near 10 ms; ticker handler ~2-25 ms; lifecycle ~2-6 ms; provider

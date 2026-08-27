@@ -51,7 +51,7 @@ index_feed/ splits before it:
   get_full_spectrum_analysis, last_full_spectrum_analyzed_at,
   recent_full_spectrum_analyses).
 
-Scope note: services/analytics/CHEATSHEET.md previously deferred splitting
+Scope note: services/analytics/README.md previously deferred splitting
 this file, bundled with market_analyst_orchestrator.py - but that deferral
 was about the *orchestrator's* entanglement with advisory_engine/
 series_evaluator (it imports advisory_engine.generate_recommendations

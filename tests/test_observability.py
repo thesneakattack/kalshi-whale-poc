@@ -10,7 +10,7 @@ services/backup/backup.py, no real-data-import guard is needed here for
 the pure observability.py tests.
 
 The maybe_capture cold-start seeding tests below mirror tests/test_backup.py's
-own shape on purpose: services/backup/backup.py's CHEATSHEET.md documents a
+own shape on purpose: services/backup/backup.py's README.md documents a
 real live bug (2026-08-23) where trusting in-memory-only last-run state made
 every uvicorn --reload cycle fire an immediate, unnecessary re-run. Task 9's
 own plan explicitly calls out the same restart-safety requirement for

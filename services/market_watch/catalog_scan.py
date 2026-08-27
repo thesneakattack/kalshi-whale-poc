@@ -43,7 +43,7 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
     completeness to the pre-caching behavior - only the network cost was cut.
 
     Only includes a market's own `result` once `status` is `finalized`
-    (2026-08-23 fix, services/exits/CHEATSHEET.md's audit finding). Kalshi
+    (2026-08-23 fix, services/exits/README.md's audit finding). Kalshi
     sets `result` the instant a market is `determined`, but the docs
     (docs/kalshi/market_lifecycle.md lines 21-24, 36-38, 68-72) are explicit
     that the result "may be disputed" during the settlement-timer window

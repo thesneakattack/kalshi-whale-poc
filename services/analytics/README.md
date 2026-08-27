@@ -1,4 +1,4 @@
-# Analytics module — cheat sheet
+# Analytics module — reference
 
 Owns: `routes.py` (`/api/suggestions/*` — shared decline/undecline/declined
 infrastructure, not advisory-owned; `/api/market-strategy-calibration/*` —
@@ -10,7 +10,7 @@ logic, not routing — LLM-based market/series/full-spectrum analysis, with
 its own in-flight guard sets). This is what's left after advisory
 (`services/advisory/`) and whale calibration (`services/whale_calibration/`)
 were split out 2026-08-22, per the ROADMAP.md item queued the same day —
-see those modules' own `CHEATSHEET.md` for what moved and why.
+see those modules' own `README.md` for what moved and why.
 `services/diagnostics.py`/`series_watcher.py`/`settlement_edge.py`/
 `config_performance.py` are already clean and stay flat for now.
 
@@ -39,7 +39,7 @@ Analytics reads this app's own derived data (trade history, signal log,
 config audit trail), not Kalshi directly. The one exception:
 `market_analyst_orchestrator._analyze_market_uncached` calls
 `client.get_market`/`client.get_event` (real Kalshi REST) before handing
-context to the LLM — see `services/position/CHEATSHEET.md` for the
+context to the LLM — see `services/position/README.md` for the
 account-side Kalshi docs; this is the market-data side
 (`docs/kalshi/get-market.md`, `get-event.md`).
 
@@ -71,7 +71,7 @@ real-money code path, not a plain analytics read.
   any) and every read-only route here return data only — no
   `config_store.update()` call anywhere in this residual module. The real
   write-back loops (`advisory`/`whale_calibration` auto-apply) moved with
-  those modules; see their own `CHEATSHEET.md`s. ROADMAP.md's P4 "move
+  those modules; see their own README.md files. ROADMAP.md's P4 "move
   analytics out of the live tick loop" item is about `trading_loop`'s
   `calibration_advisory` phase as a whole, spanning this module and its
   two siblings — read that entry before adding more work to that phase.

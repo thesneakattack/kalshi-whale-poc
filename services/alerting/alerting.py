@@ -26,7 +26,7 @@ opt-in webhook POST (alerting.webhook_url, unset/None by default - the
 same "ships fully built, opt-in" precedent as risk.max_total_exposure_pct
 and friends). A plain JSON POST is compatible with Slack/Discord incoming
 webhooks, ntfy.sh, PagerDuty's Events API, or a custom endpoint without
-this module needing to know which - see CHEATSHEET.md for exact payload
+this module needing to know which - see README.md for exact payload
 shapes per destination. Never blocks the caller: fired as an independent
 background task (task_supervisor.supervise, not restarted - a failed
 notification isn't worth retrying forever) so a slow or unreachable

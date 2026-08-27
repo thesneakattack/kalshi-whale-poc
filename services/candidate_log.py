@@ -289,7 +289,7 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     hypothetical_win_rate_n already uses, not raw rejected_count.
 
     PARTIALLY COST-BLIND, same root gap gate_summary() has - services/
-    advisory/CHEATSHEET.md's own audit finding names the general trap:
+    advisory/README.md's own audit finding names the general trap:
     comparing win rate alone, with no cost_basis/realized_pnl term, can't
     tell "this bucket wins more because the signal is better" from "this
     bucket wins more because it's mechanically priced into the near-

@@ -1,4 +1,4 @@
-# Config module — cheat sheet
+# Config module — reference
 
 Owns: `routes.py` (GET/POST `/api/config`) + `config_paths.py` (generic
 `_config_value_at_path`/`_types_compatible`). `services/config_store.py`

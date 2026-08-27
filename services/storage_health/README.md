@@ -1,4 +1,4 @@
-# Storage health module — cheat sheet
+# Storage health module — reference
 
 Owns: `storage_health.py` (inventory/growth/integrity logic, no I/O beyond
 sqlite reads and one `os.stat`-only sampler) + `routes.py`

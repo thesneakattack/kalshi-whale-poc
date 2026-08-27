@@ -123,8 +123,8 @@ front of them (Programs 1-2). Paper mode stays the default and the actual
 focus for now; nothing about this goal moves that up.
 
 Known specific gaps still open toward this goal (stubs — full detail in
-ROADMAP.md's "Path to production" section and the relevant module
-`CHEATSHEET.md`, not restated here):
+ROADMAP.md's "Path to production" section and the relevant module's own
+`README.md`, not restated here):
 - Entry-gate adverse selection — the original finding (KXBTC15M whale
   signals resolved 88.8% correct across 394 settled signals, but the 12
   the gates actually traded resolved only 58.3%) does not currently
@@ -190,12 +190,17 @@ above — a module also has to hold up on completeness, accuracy, flow
 rate, timeliness, fidelity, and speed of execution, which is where this
 project's silent failures actually live.
 
-Each `services/<name>/` package's own `CHEATSHEET.md` (where one exists —
+Each `services/<name>/` package's own reference doc (where one exists —
 several were written "to an audit-oriented standard... how the module
 currently behaves, what the API docs say it should do, and any gap already
 visible while writing it," per `static/status.html` phase 119) is real,
 pre-existing raw material for this — read it before assuming a module
-needs a fresh audit from scratch.
+needs a fresh audit from scratch. Named `README.md` for most packages;
+`CHEATSHEET.md` is reserved for `services/kalshi/` (the Kalshi integration
+boundary itself) and its direct raw-Kalshi-payload consumers
+(`market_catalog`, `market_watch`, `market_events`, `whale_stream`) —
+renamed 2026-08-27 after the name had drifted onto 14 unrelated packages
+that never touched the Kalshi layers at all.
 
 Investigations that produce real per-module findings should feed this same
 raw material forward, not just their own plan doc (2026-08-27 direct

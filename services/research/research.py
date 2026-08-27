@@ -3,7 +3,7 @@ Evidence-triggered read-only research sweep - Quality Control Plane Task 16
 (docs/superpowers/plans/2026-08-24-quality-control-plane.md). Orchestrates
 existing read-only analytics into one coherent, persisted snapshot so a
 human or agent doesn't have to re-run each one by hand - invents no new
-algorithm or statistic of its own. See this package's CHEATSHEET.md for the
+algorithm or statistic of its own. See this package's README.md for the
 full per-section provenance and the trigger-policy design notes.
 
 Never applies anything: build_report/run_and_store only ever call read
@@ -97,7 +97,7 @@ def current_counts() -> dict:
     not excluded by correct_erroneous_close) without paying for the full
     enrichment/pairing pass build_trade_history does - should_run only
     needs the count, not the rows themselves."""
-    from services.app_state import broker  # local import - see this module's own CHEATSHEET "Why this imports app_state lazily"
+    from services.app_state import broker  # local import - see this module's own README "Why this imports app_state lazily"
 
     closed = sum(
         1 for t in broker.trade_log
@@ -141,7 +141,7 @@ def build_report(cfg: dict, now: float | None = None) -> dict:
     matching diagnostics.run_offline's own "no network" contract, which
     this reuses directly). Every section here is exactly what a human
     would otherwise have to call by hand across seven different modules -
-    see this package's CHEATSHEET.md for the one-line reason each section
+    see this package's README.md for the one-line reason each section
     was chosen."""
     now = now if now is not None else time.time()
     from services.app_state import broker  # local import, same reason as current_counts above

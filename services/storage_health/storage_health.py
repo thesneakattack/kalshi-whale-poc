@@ -6,7 +6,7 @@ this module exists to make visible before a human notices disk usage by
 hand: game_state.db grew to 5.7GB from repeated full crypto payload
 persistence (git log, static/status.html phase 126), unnoticed until a
 direct 2026-08-23 investigation found it. docs/superpowers/plans/2026-08-24-
-quality-control-plane.md Task 11; see this package's CHEATSHEET.md.
+quality-control-plane.md Task 11; see this package's README.md.
 
 Three cost tiers, deliberately kept separate:
 - inventory_data_dir()/database_health(include_table_counts=False) - file
@@ -189,7 +189,7 @@ def maybe_capture_sizes(state: dict, data_dir: Path, now: float | None = None) -
     in-memory gate that resets to "never" on every restart. A stat() over
     every data/*.db file costs microseconds, so firing once extra after
     every uvicorn --reload is not worth the same seeding complexity - see
-    this package's CHEATSHEET.md for the full reasoning."""
+    this package's README.md for the full reasoning."""
     now = now if now is not None else time.time()
     sh_state = state.setdefault("storage_health", {"last_sampled_at": 0.0})
     if now - sh_state.get("last_sampled_at", 0.0) < _SIZE_SAMPLE_INTERVAL_SEC:
@@ -264,7 +264,7 @@ def backup_overdue_finding(
     ({"finished_at": ..., ...} | None), passed in by the routes layer
     rather than fetched here - see this module's docstring for why. No
     backup ever having run is not itself a finding here; that is backup's
-    own concern (services/backup/CHEATSHEET.md) - this only flags a backup
+    own concern (services/backup/README.md) - this only flags a backup
     that WAS running and then stopped."""
     if last_run is None:
         return None

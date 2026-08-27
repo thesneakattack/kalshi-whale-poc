@@ -1,4 +1,4 @@
-# Advisory module — cheat sheet
+# Advisory module — reference
 
 Owns: `advisory_engine.py` (rule-based config-tuning suggestion engine -
 per-field recommendations pulled directly out of observed trade history,

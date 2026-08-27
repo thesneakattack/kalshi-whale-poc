@@ -415,7 +415,7 @@ async def _process_stream_lifecycle(msg: dict) -> None:
        market_lifecycle_v2 is exchange-wide, so a lifecycle event reaches
        every ticker this app ever touched, watchlisted or not.
 
-    Corrected 2026-08-23, same day, later pass (services/exits/CHEATSHEET.md's
+    Corrected 2026-08-23, same day, later pass (services/exits/README.md's
     audit finding, cross-referenced against market_lifecycle.md lines 21-24/
     36-38/68-72): the first version of this fix fired the four resolvers on
     `determined`, reasoning "settled carries no result field, so determined
@@ -427,7 +427,7 @@ async def _process_stream_lifecycle(msg: dict) -> None:
     at `determined` meant a disputed-and-reversed market would already have
     graded a whale signal, an analyst call, and a rejected-candidate row
     against the wrong outcome, with no correction path - the exact gap
-    services/exits/CHEATSHEET.md flagged for close_if_settled (fixed the
+    services/exits/README.md flagged for close_if_settled (fixed the
     same pass, see propagate_milestone_winners' docstring), just for these
     four resolvers instead of paper P&L. `determined` now only updates the
     persisted catalog status and stats, same as close_date_updated. `settled`

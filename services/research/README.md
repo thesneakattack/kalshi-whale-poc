@@ -1,4 +1,4 @@
-# Research module — cheat sheet
+# Research module — reference
 
 Owns: `research.py` (evidence-triggered orchestration of seven existing
 read-only analyzers into one persisted snapshot, `data/research_reports.db`)

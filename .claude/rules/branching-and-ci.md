@@ -159,7 +159,8 @@ Direct standing instruction (2026-08-25). When instructed to "resume",
    - `ROADMAP.md`;
    - `docs/status-archive-2026-08-26.html` where relevant (frozen historical
      record; `static/status.html` itself retired that day — see CLAUDE.md);
-   - relevant module `CHEATSHEET.md` files;
+   - relevant module reference docs (`README.md`, or `CHEATSHEET.md` for
+     `services/kalshi/` and its direct raw-Kalshi-payload consumers);
    - plans/notes tied to the active initiative (numbered task plans
      under `docs/superpowers/plans/`, the matching orchestrator skill's
      own "reconstruct progress, don't maintain a ledger" guidance).

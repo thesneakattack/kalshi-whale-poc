@@ -8,5 +8,5 @@ See exit_engine.py (per-position rules: settlement, take-profit, stop-loss,
 time-to-close, sentiment-reversal, auto-exit composite scoring) and
 position_netting.py (group-level hedge/concentration management across
 confirmed mutually-exclusive events, runs after exit_engine's per-position
-pass). See CHEATSHEET.md.
+pass). See README.md.
 """

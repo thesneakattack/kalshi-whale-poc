@@ -1,4 +1,4 @@
-# Quality module — cheat sheet
+# Quality module — reference
 
 Owns: `models.py` (`QualityFinding`/`QualityReport`, the shared contract
 runtime diagnostics and CI audit tooling both produce — Task 1) +
@@ -23,7 +23,7 @@ One HTTP call, five existing read-only sources, zero new instrumentation:
 This route also fetches `services/backup/backup.py`'s `latest()` and the
 configured `backup.interval_sec` directly, to pass into
 `storage_findings()` for its `backup-overdue` rule — see
-`services/storage_health/CHEATSHEET.md`'s own note on why
+`services/storage_health/README.md`'s own note on why
 `storage_health.py` itself never imports `services.backup`.
 
 **Deliberately not included yet** — Task 16 territory, expected to be
@@ -54,7 +54,7 @@ duration vs. poll interval, non-zero dropped WS messages, enabled-but-
 disconnected streams, repeated recent rate-limit hits) and `services/
 storage_health/storage_health.py`'s `storage_findings` (storage growth,
 storage integrity, backup overdue) each live in their own module's
-CHEATSHEET.md for the full rule list, thresholds, and the "omit a finding
+README.md for the full rule list, thresholds, and the "omit a finding
 rather than fabricate a verdict" discipline every rule in both sets
 follows when evidence is insufficient (no sample yet, a feature never
 enabled, a single isolated blip).
