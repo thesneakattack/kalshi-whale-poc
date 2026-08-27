@@ -239,6 +239,14 @@ One `panels/<name>/` each (`useTabLoader('history', …, {everyTick:true})`); de
 ## T8b — Portfolio
 `panels/portfolio/` — equity chart, **one** `PositionsPanel` replacing both `positions-list` writers, netting groups, dummies/shadow, trading-gate confirm flow; delete `legacy/trade-log-and-real.js`.
 - [ ] Run `dimensional-analysis` on displayed P&L/cost/exposure; browser check paper↔real. Commit: `refactor(frontend): Portfolio panels; unify paper/real positions`
+- [ ] **Open question carried over from the realtime remediation plan's P3.5 (2026-08-27):** a live report ("having a large amount of open positions causes things to lag or crash") was traced backend-side to `exit_engine.check_exits` (see
+  `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`'s Task 20 and
+  Task 17c's benchmark) - whether `PositionsPanel`'s own render cost *also* scales
+  materially with open-position count is untested and was deliberately left for this
+  task rather than pinned to the current pre-modularization file, which this task
+  deletes anyway. Same measurement T8d already does for markets - measure tick-render
+  with a large (e.g. 200+) synthetic position fixture; add a per-row keyed store only
+  if it's actually slow, not preemptively.
 
 ## T8c — Terminal
 `panels/terminal/` — keyed signal/decision feed (delete `renderFeedListSmooth` and dead `renderSignals`), funnel, watchlist table, control buttons.

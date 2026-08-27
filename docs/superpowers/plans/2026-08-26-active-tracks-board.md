@@ -58,6 +58,22 @@ CH3 cannot classify H11 until CH2 supplies the actual root cause.
   contract → sub-threshold rejection aggregation → the live reader-gate
   flip). Authorized 2026-08-26 (execution program doc §5.1 Verdict,
   reprioritization pass) — not yet started.
+- **New (2026-08-27), sequenced between P3 and P4, scope widened same day**:
+  Phase **P3.5 = Tasks 17a–17c**, a live (not replay-based) watchlist-scale
+  stress test (`tools/watchlist_scale_stress_test.py`) covering six
+  dimensions: `kalshi.min_volume_24h`/`categories` (scope), `kalshi.
+  live_markets_only` (discovery) / `strategy.live_markets_only` (decision
+  layer), `kalshi.max_children_per_parent` (per-series child cap),
+  `whale_watcher_kalshi.min_contracts` (whale-signal density), `GET
+  /api/markets/search` (the distinct on-demand search route), and a
+  synthetic `check_exits` benchmark (Task 17c) quantifying a live-reported
+  crash ("large amount of open positions causes lag/crash", traced to
+  `main.py:958`). Feeds P4/P5's design and directly motivated relocating
+  **Task 20** (`check_exits` memoization) to the front of Phase P4, ahead
+  of Task 18/19. Findings get cross-posted to the relevant `services/
+  <name>/CHEATSHEET.md` files (CLAUDE.md's "Current objective" section, per
+  a 2026-08-27 standing instruction), not left findable only in this plan.
+  Not started.
 - Orchestrator: `.claude/skills/realtime-data-plane-investigation/SKILL.md`
   for CH1–CH5; the remediation plan's own per-phase workflow for Tasks
   14–17.
