@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import re
 
-_TASK_HEADING_RE = re.compile(r"^### Task (\d+):\s*(.+)$", re.MULTILINE)
+_TASK_HEADING_RE = re.compile(r"^### Task (\d+):[ \t]*(.+)$", re.MULTILINE)
+# Changed \s* to [ \t]* to match only same-line horizontal whitespace (space, tab),
+# not newlines. This prevents capturing text from subsequent paragraphs when a
+# heading has no inline title. A heading like "### Task 3:" with no title will
+# not match, which is the correct behavior — we only extract tasks that have
+# actual titles, not empty ones.
 
 
 def parse_canonical_tasks(text: str) -> list[tuple[int, str]]:
