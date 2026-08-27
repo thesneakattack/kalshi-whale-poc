@@ -71,7 +71,21 @@ async def reconcile_window(
 
     seen_horizon_ts: oldest exchange timestamp still retained on the WS side
     (the dedupe ring evicts). A window starting before it cannot distinguish
-    a real miss from an evicted id, so that case is flagged, not hidden."""
+    a real miss from an evicted id, so that case is flagged, not hidden.
+
+    ingest_evidence['received_by_class']: optional, the same top-level key
+    services/kalshi/websocket.py's ingest_metrics() returns (a class -> count
+    dict), passed through verbatim. Its 'trade' entry drives
+    exchange_wide_completeness (I4's count-based split): REST's trade count
+    for the window vs how many trade-class messages the WS reader actually
+    received, regardless of whether any given one ever made it into
+    seen_exchange_ts_by_id. That makes it a genuinely different signal from
+    capture_completeness/whale_capture_completeness (both id-based, and both
+    bounded by the same seen-record ring seen_exchange_ts_by_id/
+    seen_horizon_ts describe) - a reader-gate drop (P3 Task 17) is captured
+    here (the message was received) even though it never reaches the ring
+    and so reads as "missing" id-wise. Absent or missing its 'trade' key,
+    exchange_wide_completeness is None - never a fabricated ratio."""
     caveats: list[str] = []
     result: dict = {
         "window": {"start": window_start, "end": window_end, "seconds": round(window_end - window_start, 3)},
@@ -80,6 +94,7 @@ async def reconcile_window(
         "intersection": 0,
         "missing": {"count": 0, "ids": [], "whale_sized": {"count": 0, "ids": [], "tickers": []}},
         "capture_completeness": None,
+        "exchange_wide_completeness": None,
         "whale_capture_completeness": None,
         "caveats": caveats,
         "error": None,
@@ -165,6 +180,21 @@ async def reconcile_window(
         },
     }
     result["capture_completeness"] = (len(intersection) / len(rest_ids)) if rest_ids else None
+    # Count-based, exchange-wide (I4 split, P3 Task 17 Step 6) - deliberately
+    # NOT derived from rest_ids/seen_ids like capture_completeness above.
+    # received_by_class['trade'] counts every trade-class message the reader
+    # received, including ones a live reader-gate (Task 17) filtered before
+    # they ever reached seen_exchange_ts_by_id - this is the complementary
+    # check for "did the wire deliver it," not "did the whale pipeline keep
+    # it." Missing/non-numeric input degrades to None, never a guessed ratio.
+    received_trade_count = ((ingest_evidence or {}).get("received_by_class") or {}).get("trade")
+    exchange_wide_completeness = None
+    if rest_ids and received_trade_count is not None:
+        try:
+            exchange_wide_completeness = float(received_trade_count) / len(rest_ids)
+        except (TypeError, ValueError):
+            exchange_wide_completeness = None
+    result["exchange_wide_completeness"] = exchange_wide_completeness
     result["whale_capture_completeness"] = (
         (len(whale_ids) - len(whale_missing)) / len(whale_ids) if whale_ids else None
     )
