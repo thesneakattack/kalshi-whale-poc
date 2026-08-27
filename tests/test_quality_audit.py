@@ -15,6 +15,8 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from services.quality.models import QualityFinding, QualityReport
 from tools.quality_audit import __main__ as audit_cli
 from tools.quality_audit import (
@@ -629,6 +631,7 @@ def test_documented_method_on_class_produces_no_finding(tmp_path):
     assert kalshi_contract_docs.scan_kalshi_contract_docs(tmp_path) == []
 
 
+@pytest.mark.slow
 def test_real_repo_audit_has_no_new_high_confidence_errors():
     """Task 4 Step 6: run the real (now non-empty) scanner set against this
     repo and confirm no new high-confidence router/background-wiring
@@ -636,7 +639,20 @@ def test_real_repo_audit_has_no_new_high_confidence_errors():
     clean against current HEAD before this task was committed (all 12
     routers are mounted in main.py, all 5 real _maybe_* schedulers have a
     live external caller). Task 5 Step 8 extends this same shape to the
-    persistence/resource/config/API scanners it adds."""
+    persistence/resource/config/API scanners it adds.
+
+    marked slow (2026-08-26): this is the identical `audit_cli.main` call,
+    same repo root, same baseline.json, that
+    .woodpecker/quality-architecture-audit.yml's own `architecture-audit`
+    step already runs as its own independent, required PR-gate context -
+    measured at 73.7s alone here (over half this suite's -n4 wall time,
+    and over half the per-edit local hook's budget too), for zero
+    additional coverage beyond what that dedicated CI job already
+    enforces. Also non-hermetic in a way that job never is: it scans
+    whatever's really on disk, including gitignored local directories
+    (caught live: a concurrent session's .claude/worktrees/ checkout
+    tripped this at the same commit that CI passed clean on). Excluded
+    from the default run; still runnable on demand with `pytest -m slow`."""
     exit_code = audit_cli.main(
         [
             "--repo-root", str(REPO_ROOT),
@@ -742,9 +758,25 @@ def test_boundary_deprecated_read_in_the_archival_allowlist_passes(tmp_path):
     assert findings == []
 
 
-def test_boundary_scanner_is_registered_and_real_tree_is_clean():
+def test_boundary_scanner_is_registered():
     from tools.quality_audit import kalshi_boundary
     from tools.quality_audit import __main__ as audit_main
     assert kalshi_boundary.scan_kalshi_boundary in audit_main._SCANNERS
+
+
+@pytest.mark.slow
+def test_real_repo_tree_has_no_kalshi_boundary_violations():
+    """Split from the former test_boundary_scanner_is_registered_and_real_tree_is_clean
+    (2026-08-26) and marked slow for the same reason as
+    test_real_repo_audit_has_no_new_high_confidence_errors above: this
+    scanner is one of the set that
+    .woodpecker/quality-architecture-audit.yml's `architecture-audit` step
+    already runs against the identical real repo tree as its own
+    independent, required CI gate - this assertion adds no coverage beyond
+    that job, only wall time (measured ~12s here) and non-hermetic
+    exposure to local directories a fresh CI clone never has. The
+    registration check above is cheap and stays in the default run;
+    only the expensive real-tree scan moves to the slow tier."""
+    from tools.quality_audit import kalshi_boundary
     real_findings = kalshi_boundary.scan_kalshi_boundary(Path(__file__).resolve().parent.parent)
     assert [f for f in real_findings if f.severity == "error"] == []

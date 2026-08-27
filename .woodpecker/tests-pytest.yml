@@ -144,6 +144,26 @@ steps:
           # also runs the live ddev stack. Raise it here if the
           # agent's concurrency ever drops.
           #
+          # That 46s figure is stale - flagged here rather than silently
+          # left wrong (2026-08-26): the suite grew from 1574 to 2042
+          # tests since it was measured, and the real PR-event pytest
+          # step (which always runs unscoped -n 4, tier 2 above) actually
+          # took 196s wall including install, per
+          # `scripts/woodpecker-status --pipeline 231` on pipeline #231's
+          # `tests-pytest > pytest` step. Most of that growth traced to
+          # two tests/test_quality_audit.py tests that re-scan this whole
+          # repo tree with the exact same checks
+          # quality-architecture-audit.yml's own `architecture-audit` step
+          # already runs as an independent required PR-gate context (73.7s
+          # + 11.77s measured locally at -n 4) - now marked
+          # `@pytest.mark.slow` and excluded here via `-m "not slow"` (see
+          # scripts/ci-testmon-run.sh) for zero coverage loss, since that
+          # other job is unaffected and keeps enforcing the same checks.
+          # Local -n 4 measured 135.45s before this exclusion, 66.73s
+          # after - re-benchmark the -n 2/8/auto comparison above if this
+          # ever needs re-tuning; today's fix only removed genuine
+          # duplication, it didn't repeat that worker-count study.
+          #
           # -v dropped deliberately: xdist interleaves workers, so
           # per-test verbose output arrives out of order and is
           # harder to read than the progress line, not easier.

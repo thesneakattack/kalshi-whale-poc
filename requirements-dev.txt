@@ -6,12 +6,15 @@
 pytest==9.0.3
 # Parallel test execution. The suite is CPU-bound and almost entirely
 # independent, so this is close to linear: measured on a 16-core host,
-# 230s serial -> 72s (-n 2) -> 46s (-n 4) -> 29s (-n 8) -> 23s (-n auto),
-# 1574 passed every time. CI runs -n 4; see .woodpecker/tests-pytest.yml for
-# why not higher. Verified non-flaky across repeated full runs before being
-# adopted, which matters in this repo specifically - test isolation here has
-# failed before (a real run once wrote into a live data/*.db), and worker
-# processes are exactly the kind of change that would resurface it.
+# 230s serial -> 72s (-n 2) -> 46s (-n 4) -> 29s (-n 8) -> 23s (-n auto) at
+# 1574 tests (see .woodpecker/tests-pytest.yml's own comment for the
+# 2026-08-26 refresh against the suite's current size - that file, not
+# this one, is where a future re-benchmark belongs). CI runs -n 4; see
+# that same file for why not higher. Verified non-flaky across repeated
+# full runs before being adopted, which matters in this repo specifically
+# - test isolation here has failed before (a real run once wrote into a
+# live data/*.db), and worker processes are exactly the kind of change
+# that would resurface it.
 pytest-xdist==3.8.0
 # 2026-08-23 pip-audit fix: 2.32.3 had 2 known CVEs (PYSEC-2026-1872 fixed
 # at 2.32.4, PYSEC-2026-2275 only at 2.33.0). Dev-only usage
