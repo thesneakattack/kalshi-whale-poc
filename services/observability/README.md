@@ -416,6 +416,26 @@ a process that hasn't reached `capture_writer.start()` yet. `main.py`'s
 stretch visible in `/api/quality/summary` too, not just recoverable,
 same "counted, not silent" bar P2's own retry-abandonment finding set.
 
+**Update (2026-08-27) — "Unwired today" above is now stale; a real completeness
+gap found while live.** Task 15 has since shipped: `series_watcher.record_trade`'s
+row now does route through `capture_writer.submit()` for the `raw_trades` store,
+confirmed live (not from source alone) via `GET /api/health/faults` during Phase
+P3.5's stress-test session
+(`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s
+"Phase P3.5 live-scale attempt" entry has the full detail) — `capture_writer`/
+`flush`/`OperationalError: database is locked`, 178 occurrences, first_seen
+2026-08-27 20:22:15 UTC, still accumulating. Root cause: `capture_writer.py:122`'s
+`_flush_store` uses `PRAGMA busy_timeout=50` (50ms) on its `raw_trades` connection
+to `data/series_watcher.db`; `series_watcher.py`'s own `book_snapshots` flush
+writes to the *same physical file* via an independent connection, and a collision
+inside that 50ms window drops the **whole raw_trades batch** (by `_flush_store`'s
+own "never raises" design), counted only in `dropped_count()`, not retried and not
+currently surfaced as its own `writer.*` metric above (only depth/last-flush-age
+are). A real, ongoing raw_trades completeness gap per CLAUDE.md's data-plane HARD
+RULE — not fixed here, since the 50ms `busy_timeout` was a deliberate Task 14
+tradeoff needing its own dedicated investigation, not a fix folded into a
+measurement task.
+
 
 ### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
 

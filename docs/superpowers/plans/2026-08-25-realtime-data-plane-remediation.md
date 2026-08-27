@@ -2604,6 +2604,15 @@ Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker),
 
 ### Task 18: Split the single consumer into `critical` and `market` queues
 
+**Task 17b result (2026-08-27):** no real-scale calibration data available for this
+threshold - all 3 live `widen_scope` attempts crashed before producing comparable
+`queue.depth`/`queue_wait` data (root cause: concurrent Claude Code worktree sessions
+triggering `uvicorn --reload` mid-experiment, not the widened scope itself - see
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s "Phase
+P3.5 live-scale attempt" entry). Use CH1's existing negligible-cost baseline as the
+current best evidence until a successful rerun produces a real number to calibrate
+against.
+
 **Files:**
 - Modify: `services/kalshi/websocket.py` (`run`, `_consume`, queue construction, `_process_item`'s enqueue target)
 - Test: append to `tests/test_kalshi_ws_ingest_metrics.py`, new `tests/test_kalshi_ws_two_consumers.py`
@@ -2976,6 +2985,14 @@ with `two_consumer_mode`, `keep_queue_on_reconnect`, and `reader_gate_enabled` a
 ## Phase P5 — REST scheduler rewrite, settled resolver, shared caches
 
 ### Task 22: Critical-first waiter queues with background aging (no lock-held-while-sleeping)
+
+**Task 17b result (2026-08-27):** no real-scale REST-demand calibration data
+available - all 3 live `widen_scope` attempts crashed before completing any config
+step (root cause: concurrent Claude Code worktree sessions triggering `uvicorn
+--reload` mid-experiment, not the widened scope itself - see
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s "Phase
+P3.5 live-scale attempt" entry). Keep the synthetic `rest_scheduler_replay.py`
+presets as the current basis until a successful rerun produces a real number.
 
 **Files:**
 - Modify: `services/http_client.py` (`_TokenBucketRateLimiter`)

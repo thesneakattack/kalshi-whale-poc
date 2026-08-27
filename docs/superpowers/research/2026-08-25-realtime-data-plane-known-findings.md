@@ -403,11 +403,131 @@ Live-measured (2026-08-26), not assumed:
   addendum contract; check for that addendum before treating CH4/CH5 as permanently
   out of scope.
 
+  **CH3 addendum (2026-08-27) - provisional status not resolved by Phase P3.5's live
+  attempt.** Task 17b ran `tools/watchlist_scale_stress_test.py` live, 3 separate
+  times, specifically to test the "materially larger watchlist" condition named
+  above. All 3 attempts crashed before completing even the first (`widen_scope`)
+  step's measurement, for a confirmed reason unrelated to the widened scope itself -
+  see the dedicated "Phase P3.5 live-scale attempt" entry below for full detail and
+  root cause. **No real widened-scope pipeline or subscription-churn data was
+  captured in any attempt** - CH3's classification is therefore neither confirmed nor
+  reopened by this run; it remains exactly as stated above, genuinely untested at
+  wider scale, pending a future successful rerun.
+
   **H11 verdict, current state:** confirmed real (mechanism traced, observability
   live), confirmed bursty (not continuous, ~15s catalog-refresh cadence), confirmed
   negligible in cost at current scale (CH1), and confirmed uninvolved in the one
   concrete symptom that motivated the original report (CH2). Not a confirmed
   bottleneck today. Commit: `docs: classify H11 (CH3)`.
+
+## Phase P3.5 live-scale attempt (2026-08-27) - 3/3 runs failed before producing
+   comparable data
+
+Task 17b (`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`) ran
+`ddev exec -s fastapi python -m tools.watchlist_scale_stress_test --measure-after-sec 180`
+three times against the live paper-mode app. **Safety gate confirmed before and
+independently re-confirmed after all three attempts**: `GET /api/config` showed
+`mode: paper`, `kalshi_account.trading_enabled: False` throughout - never touched.
+
+**Baseline (pre-experiment, `GET /api/health/pipeline` at 2026-08-27 22:31 UTC)**, kept
+for reference since no widened-scope comparison could be completed: `markets_watched:
+12`, `ingest.queue_health.queue`: depth 0/capacity 20000/high_water 5699,
+`queue_wait.window`: avg 0.9788s/max 1.5241s, `server_errors.total: 0`, `connection`:
+connects 2/reconnects 1, `subscription_churn`: syncs_total 1/tickers_added_total 5/
+tickers_removed_total 0. `loop_watchdog.stall_max_ms` history (1h) mostly 160-2789ms,
+with one 91291.673ms outlier at the very tail of the baseline window (22:31:32 UTC) -
+not caused by the experiment (nothing had been patched yet); noted for completeness,
+not chased (out of this task's scope).
+
+**All 3 attempts failed identically**: `run_stress_steps` posts the `widen_scope`
+config patch (`kalshi.min_volume_24h: 1000`, `kalshi.categories: ["Sports",
+"Crypto"]`), sleeps 180s, then `GET /api/health/pipeline` (5.0s client timeout) -
+which timed out every time, raising `TimeoutError` inside `urlopen`, before any
+subsequent step ran. **Zero comparable data exists for any of the 5 config steps or
+the search probe** - `markets_watched`, `queue.depth`/`queue_wait`,
+`server_errors`/`reconnects`, `loop_watchdog.stall_max_ms`, and the 3
+`subscription_churn` counters cannot be compared against baseline at any
+widened-scope step from this run.
+
+**Root cause, confirmed via `ddev logs -s fastapi -t` timestamps, not assumed - not
+the widened Kalshi scope at all:**
+- **Attempt 1** (`POST /api/config` 22:32:07.386 UTC): during the 180s sleep, uvicorn
+  `--reload` restarted the shared `fastapi` process **twice** (`WatchFiles detected
+  changes in '.claude/worktrees/agent-a3b129ee5c937a06e/tests/test_http_client.py'`
+  at 22:34:33, then `.../test_trading_gate.py` at 22:34:55) - an unrelated concurrent
+  Claude Code session's own isolated worktree (branch
+  `fix/xdist-parallel-test-isolation`), not this experiment's own edits. `finally`'s
+  revert `POST /api/config` succeeded at 22:35:21.618 (200 OK).
+- **Attempt 2** (`POST /api/config` 22:38:36.007): landed mid-burst of **4** reload
+  cycles in 46s (22:37:32-22:38:18.7), from a *different* concurrent worktree session
+  (`.claude/worktrees/kanban-milestones-subissues`, branch
+  `feat/kanban-sync-milestones-subissues`). Revert POST succeeded at 22:41:52.025
+  (200 OK).
+- **Attempt 3** (`POST /api/config` 22:42:57.293): `GET /api/health/pipeline` timed
+  out again, and this time the `finally` block's own revert `POST` *also* raised
+  `TimeoutError` client-side - the tool's own exception-handling network call is not
+  immune to the same collision. The mutation still committed server-side despite the
+  client never reading the response (confirmed below) - FastAPI finished handling the
+  request before the socket closed, the client just didn't get to see it in time.
+
+**Independent re-confirmation after all 3 attempts** (Task 17b Step 4, run separately
+from the tool's own `finally` block each time, not assumed to have worked just
+because the code has a `finally`): `GET /api/config` showed
+`kalshi.min_volume_24h: 10000`, `kalshi.categories: ['Sports']`,
+`kalshi.live_markets_only: True`, `kalshi.max_children_per_parent: 5`,
+`strategy.live_markets_only: False`, `whale_watcher_kalshi.min_contracts: 10000`, and
+the full original `min_contracts_by_series` map (`KXBTC15M: 2500`, `KXBTCD: 2500`,
+`KXETH15M: 2500`, `KXETHD: 2500`, `KXTRUMPSAY: 500`, `KXTRUMPMENTION: 500`,
+`KXMAMDANIMENTION: 500`) - **correct and complete after every one of the 3 attempts**,
+including the one where the revert POST's own response was lost client-side. `mode:
+paper` / `trading_enabled: False` unaffected throughout.
+
+**New finding, more significant than the original queue-depth/REST-demand question
+this phase set out to answer**: live multi-minute measurements against this app's
+shared ddev `fastapi` service are not reliable while any other Claude Code session
+has its own in-repo worktree (`.claude/worktrees/<name>/`) open, because that
+worktree still lives inside ddev's bind-mounted repo tree, which `uvicorn --reload`'s
+`WatchFiles` watches recursively - **any `.py` file saved in *any* worktree, not just
+the primary checkout, restarts the one shared `fastapi` process** and drops in-flight
+connections. Measured twice with two different concurrent sessions across 3
+attempts, not a single coincidence. Same mechanism would apply to the real trading
+loop, not just this diagnostic tool - a concurrent worktree save mid-tick could drop
+an in-flight WS reconnect or REST call exactly as it dropped this experiment's HTTP
+calls; worth a dedicated follow-up (not attempted here - out of this task's docs-only
+scope) on whether `uvicorn --reload`'s watch path should exclude
+`.claude/worktrees/` (e.g. via `--reload-exclude`).
+
+**`services/capture_writer.py` / `services/series_watcher.py` SQLite lock contention
+- independently verified (2026-08-27), not this experiment's own doing.** `GET
+/api/health/faults` (checked directly, not taken on trust): `capture_writer`/`flush`/
+`OperationalError: database is locked`, count **178**, `first_seen` 2026-08-27
+20:22:15 UTC, `last_seen` 22:41:29 UTC. Already at 177 in this session's very first
+baseline pipeline read (22:31:39 UTC, before any config was touched) and only 178 by
+22:42 - i.e. this fault predates the P3.5 experiment by 2h+ and grew by exactly 1
+across all 3 (mostly-crashed) attempts combined, so **this run does not show evidence
+that widened scope materially changes the collision rate** - inconclusive rather than
+negative, since none of the 3 attempts sustained the widened config for more than the
+~180s sleep window before crashing, leaving no clean widened-vs-baseline window to
+compare. Root cause (`services/capture_writer.py:122`'s `_flush_store`, `PRAGMA
+busy_timeout=50` on its `raw_trades` connection to `data/series_watcher.db`,
+colliding with `series_watcher.py`'s independent `book_snapshots` connection to the
+same physical file): a real, ongoing raw_trades completeness gap under CLAUDE.md's
+data-plane HARD RULE - each collision drops the **whole batch**, by `_flush_store`'s
+own "never raises" design, counted only in `dropped_count()`, not retried. **Not
+fixed here** - the 50ms `busy_timeout` was a deliberate Task 14 tradeoff ("never
+sleeps five seconds on any thread that matters" per its own docstring); changing it
+needs its own dedicated investigation, not a fix folded into this measurement task.
+Cross-posted to `services/observability/README.md`'s `writer.*` section.
+
+**Cross-post disposition for the plan's other 4 named candidates**
+(`services/market_watch/CHEATSHEET.md`, `services/market_catalog/CHEATSHEET.md`,
+`services/kalshi/CHEATSHEET.md`, `services/quality/README.md`): **none received a
+cross-post.** None of the 5 `widen_scope*` config steps produced any comparable
+pipeline data for these domains - all 3 attempts crashed at Step 1 before any
+widened-scope measurement was captured, so there is no material result of their own
+to report into any of them. `services/observability/README.md` is the one exception
+(above) because the capture_writer finding materially updates something that doc
+already documents (its "Unwired today" framing, now stale).
 
 ## What the investigation must not assume
 
