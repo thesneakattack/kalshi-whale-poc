@@ -29,3 +29,22 @@ def test_sync_marker_kinds_are_lowercase_single_words():
     ):
         assert kind == kind.lower()
         assert " " not in kind
+
+
+def test_phase_labels_use_superpowers_skill_vocabulary():
+    assert labels.PHASE_RESEARCH == "phase:research"
+    assert labels.PHASE_SPEC == "phase:spec"
+    assert labels.PHASE_PLAN == "phase:plan"
+    assert labels.PHASE_DONE == "phase:done"
+
+
+def test_phase_labels_include_worktree_only_implementing_and_verification():
+    assert labels.PHASE_IMPLEMENTING == "phase:implementing"
+    assert labels.PHASE_VERIFICATION == "phase:verification"
+
+
+def test_all_phase_labels_contains_exactly_six_values():
+    assert labels.ALL_PHASE_LABELS == {
+        "phase:research", "phase:spec", "phase:plan",
+        "phase:implementing", "phase:verification", "phase:done",
+    }
