@@ -1706,6 +1706,44 @@ Step 2 (`run_stress_steps`'s own `finally` block), and never touches
 `services/config/routes.py:29`) or any other safety-gated field. Paper mode
 (`mode: paper`) is unaffected and untouched throughout.
 
+**Scope widened (2026-08-27), same day, direct follow-up instruction.** Four more real
+dimensions, each grounded in an actual config field or route rather than invented:
+
+1. `kalshi.max_children_per_parent` (currently `5`) - caps how many child
+   markets/events per selected parent series `selection.round_robin_select` includes
+   (`services/market_watch/selection.py:76`). Setting it to `None` removes the cap
+   entirely ("unlimited" per that function's own docstring) - a real, direct lever on
+   watched-market count independent of `watchlist_size`.
+2. `GET /api/markets/search` (`services/market_catalog/routes.py:177`) - a distinct,
+   user-facing on-demand search/browse route (fans out to up to 30 matched series,
+   each its own REST call, then `round_robin_select`s the result using the *same*
+   `max_children_per_parent` config above) - not part of the automatic watchlist
+   pipeline at all, so it needs its own explicit stress call, not a config patch.
+3. `whale_watcher_kalshi.min_contracts`/`min_contracts_by_series` (currently `10000`
+   global, e.g. `2500` for `KXBTC15M`) - the real whale-detection floor
+   (`services/whalewatchers/kalshi_trade_tape.py`, same field H11's own mechanism
+   description already named). Lowering it widens whale-signal density - more trades
+   qualify as candidates - independent of how many *markets* are watched.
+4. **Open-position count** - a live, direct 2026-08-27 report: "having a large amount
+   of open positions causes things to lag or crash." Traced to
+   `main.py:958`'s `strategy.check_exits(...)` - called synchronously, unoffloaded,
+   directly on the trading tick's hot path, *every tick* regardless of whether a new
+   signal arrived, iterating `broker.positions` (a dict). `services/exits/
+   exit_engine.py:229`'s `market_history.recent_price(...)` call runs
+   **unconditionally per open position** (not behind any of the three opt-in exit
+   rules - confirmed by reading the code, not assumed), so this cost exists today even
+   with `take_profit_pct`/`stop_loss_pct`/`exit_on_sentiment_reversal`/
+   `auto_exit_enabled` all off (today's default). This is the exact same shape of bug
+   as the three already found and fixed this session (`candidate_log.
+   population_gate_summary`, the `whale_calibration` routes, and CH2's
+   `series_watcher.funnel()`) - unoffloaded, per-item DB work on a hot path - except
+   this one runs on the single most central hot path of all (the trading tick itself)
+   and the live report names an actual crash, not just lag. `services/exits/
+   exit_engine.py`'s own Task 20 below (originally the third task of Phase P4) is
+   already the intended fix; Task 17c adds the missing measurement proving it, and
+   Task 20 is relocated ahead of Task 18/19 in Phase P4 as a direct result - see both
+   for the full reasoning.
+
 ### Task 17a: `tools/watchlist_scale_stress_test.py` - stress-step runner (tool, not app code)
 
 **Files:**
@@ -1809,6 +1847,31 @@ def test_run_stress_steps_reverts_even_if_a_step_raises():
     except RuntimeError:
         pass
     assert client.config["kalshi"]["min_volume_24h"] == 10000  # revert still happened
+
+
+def test_probe_market_search_times_the_call_and_brackets_it_with_pipeline_snapshots():
+    client = _FakeAppClient()
+    call_log = []
+
+    def _get(url, timeout):
+        call_log.append(url)
+        if "/api/markets/search" in url:
+            return {"markets": [{"ticker": "K1"}, {"ticker": "K2"}], "market_titles": {}}
+        return client.get(url, timeout)
+
+    result = stress.probe_market_search(
+        "http://fastapi:8000", limit=200, live_only=True,
+        getter=_get, sleep_fn=lambda s: None,
+    )
+    assert result["result_count"] == 2
+    assert result["elapsed_sec"] >= 0
+    assert "pipeline_before" in result and "pipeline_after" in result
+    # Order matters: pipeline snapshot, then the search call, then a second snapshot.
+    assert [u.split("?")[0] for u in call_log] == [
+        "http://fastapi:8000/api/health/pipeline",
+        "http://fastapi:8000/api/markets/search",
+        "http://fastapi:8000/api/health/pipeline",
+    ]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1893,6 +1956,40 @@ def run_stress_steps(
     return {"original_config": original_config, "results": results}
 
 
+def probe_market_search(
+    base_url: str, *, q: str = "", min_volume: float = 0, category: str = "",
+    limit: int = 200, live_only: bool = True,
+    getter: HttpGetter | None = None, sleep_fn: Callable[[float], None] | None = None,
+) -> dict:
+    """One direct, wide GET /api/markets/search call - a distinct, user-facing
+    on-demand search path (services/market_catalog/routes.py:177), not the automatic
+    watchlist pipeline `run_stress_steps` exercises, so it needs its own explicit
+    call rather than a config patch. Snapshots GET /api/health/pipeline immediately
+    before and 5s after, to see whether a broad, high-limit, live_only search
+    materially moves REST demand or queue health. Elapsed time via
+    time.monotonic() - unaffected by wall-clock adjustments, unlike time.time()."""
+    get = getter or _default_get
+    sleep = sleep_fn or time.sleep
+
+    pipeline_before = get(f"{base_url}/api/health/pipeline", 5.0)
+    t0 = time.monotonic()
+    url = (
+        f"{base_url}/api/markets/search?q={q}&min_volume={min_volume}"
+        f"&category={category}&limit={limit}&live_only={str(live_only).lower()}"
+    )
+    result = get(url, 30.0)  # a wide live_only search fans out to real REST calls - longer timeout than the config/pipeline reads above
+    elapsed_sec = time.monotonic() - t0
+    sleep(5.0)  # let any REST-demand blip show up in the next pipeline snapshot
+    pipeline_after = get(f"{base_url}/api/health/pipeline", 5.0)
+
+    return {
+        "elapsed_sec": round(elapsed_sec, 3),
+        "result_count": len(result.get("markets") or []),
+        "pipeline_before": pipeline_before,
+        "pipeline_after": pipeline_after,
+    }
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -1906,8 +2003,11 @@ if __name__ == "__main__":
         {"label": "widen_scope", "patch": {"kalshi": {"min_volume_24h": 1000, "categories": ["Sports", "Crypto"]}}},
         {"label": "widen_scope_non_live_only", "patch": {"kalshi": {"live_markets_only": False}}},
         {"label": "widen_scope_strategy_live_only", "patch": {"kalshi": {"live_markets_only": True}, "strategy": {"live_markets_only": True}}},
+        {"label": "widen_scope_cap_removed", "patch": {"kalshi": {"max_children_per_parent": None}}},
+        {"label": "widen_scope_whale_signal", "patch": {"whale_watcher_kalshi": {"min_contracts": 1000, "min_contracts_by_series": {"KXBTC15M": 500}}}},
     ]
     output = run_stress_steps(args.base_url, live_steps, measure_after_sec=args.measure_after_sec)
+    output["search_probe"] = probe_market_search(args.base_url)
     print(json.dumps(output, indent=2))
 ```
 
@@ -1944,7 +2044,8 @@ unpatched, as the baseline every step below gets compared against.
 
 Run: `ddev exec -s fastapi python -m tools.watchlist_scale_stress_test --measure-after-sec 180 > /tmp/watchlist_stress_result.json`
 
-Three steps, each building on the last (see the CLI's `live_steps` in Task 17a):
+Five config steps, each building on the last (see the CLI's `live_steps` in Task
+17a), plus one direct call:
 1. `widen_scope` - lowers `kalshi.min_volume_24h` from 10000 to 1000 and adds
    `Crypto` to `kalshi.categories` (currently `["Sports"]` only), to admit more series
    past the volume/category filter without touching `watchlist_size` (already 150,
@@ -1956,20 +2057,57 @@ Three steps, each building on the last (see the CLI's `live_steps` in Task 17a):
    back to `true`, `strategy.live_markets_only: true` (today's default is `false`) -
    isolates the *decision-layer* counterpart (`services/strategy_engine.py:291`,
    `services/shadow_mode.py:218`) from the discovery-layer one.
+4. `widen_scope_cap_removed` - same widened scope, `kalshi.max_children_per_parent:
+   None` (today's default is `5`) - removes the per-series child-market cap
+   (`selection.round_robin_select`), the direct lever on watched-market count this
+   phase's header names separately from `watchlist_size` itself.
+5. `widen_scope_whale_signal` - same widened scope, `whale_watcher_kalshi.
+   min_contracts: 1000` (today's default is `10000`) and `min_contracts_by_series:
+   {"KXBTC15M": 500}` (today's default is `2500`) - widens whale-signal density.
+   Note: `config_store.update()` merges one level deep only
+   (`services/config_store.py:158`), so this patch replaces the *entire*
+   `min_contracts_by_series` map for the step's duration, not just the `KXBTC15M`
+   key - harmless here since the revert restores the complete original section, but
+   worth knowing if this step's own intermediate state is ever inspected mid-run.
 
-Each step runs for `--measure-after-sec 180` (3 minutes) before the next - long enough
-to observe at least one `loop_watchdog` sample window and one subscription-churn
-catalog-refresh cycle (~15s cadence per H11), short enough that the whole run stays
-under 10 minutes end to end.
+Then, separately (not a config step - `GET /api/markets/search` is a distinct,
+user-facing route, not part of the automatic watchlist pipeline the five steps
+above exercise): `probe_market_search(base_url, limit=200, live_only=True)`, one
+wide search call fanning out to up to 30 matched series' worth of REST calls.
+
+Each config step runs for `--measure-after-sec 180` (3 minutes) before the next -
+long enough to observe at least one `loop_watchdog` sample window and one
+subscription-churn catalog-refresh cycle (~15s cadence per H11); the search probe
+adds one call plus a 5s settle. Whole run stays under 15 minutes end to end.
 
 - [ ] **Step 3: Compare against baseline and record the result**
 
-For each step, compare against Step 1's baseline: `markets_watched`, `queue.depth`/
-`queue_wait` (`GET /api/health/pipeline`'s `trade_stream.ingest` block),
-`server_errors`/`reconnects`, and `loop_watchdog.stall_max_ms`. Append a new dated
-entry to `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`
+For each config step, compare against Step 1's baseline: `markets_watched`,
+`queue.depth`/`queue_wait` (`GET /api/health/pipeline`'s `trade_stream.ingest`
+block), `server_errors`/`reconnects`, and `loop_watchdog.stall_max_ms`. For the
+search probe, record `elapsed_sec` and whether `pipeline_before`/`pipeline_after`
+differ materially on the same axes. Append a new dated entry to
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`
 (same format as H11's own CH1/CH2 entries) recording the real numbers - not a
 pass/fail verdict invented ahead of the data.
+
+**Cross-post, don't leave this findable only here (2026-08-27 direct instruction:
+this investigation should inform future refactors/writes and audits across every
+layer, not just P4/P5).** This repo's existing convention for that is each
+`services/<name>/CHEATSHEET.md` - CLAUDE.md's own "Current objective" section
+already tells a future audit to read a module's `CHEATSHEET.md` "before assuming
+a module needs a fresh audit from scratch," so a finding that never reaches one is
+effectively invisible to that workflow. Add a one-paragraph, dated summary (result
++ link back to the known-findings entry, not the full data) to whichever of
+`services/market_watch/CHEATSHEET.md`, `services/market_catalog/CHEATSHEET.md`,
+`services/kalshi/CHEATSHEET.md`, `services/quality/CHEATSHEET.md`, and
+`services/observability/CHEATSHEET.md` actually saw a material result for their
+own domain - skip the ones where nothing moved, and say so in the known-findings
+entry itself rather than writing a null cross-post. `services/whalewatchers/` has
+no `CHEATSHEET.md` yet (confirmed - only 19 of 27 `services/` packages have one);
+if the whale-signal-widening step produces a material finding, add a dated note to
+`services/whalewatchers/kalshi_trade_tape.py`'s own module docstring instead of
+creating a new file speculatively for one entry.
 
 - [ ] **Step 4: Confirm the revert took effect**
 
@@ -1982,12 +2120,13 @@ code path.
 
 Add one line to Task 18's header (this file) and Task 22's header pointing at the new
 known-findings entry: whichever of `queue.depth`, `queue_wait`, or REST demand
-actually moved materially under the widened-scope steps is the one Task 18's
-two-consumer threshold and Task 22's REST-scheduler preset values should be
-calibrated against - name the real number, not the synthetic preset's assumed one,
-when either task is implemented. If nothing moved materially at this scale, say that
-explicitly in both places - it's a legitimate finding that lowers P4/P5's priority
-relative to P3, not a failed experiment.
+actually moved materially under the widened-scope steps (including the
+`max_children_per_parent`/search-probe/whale-signal dimensions, not just the first
+three) is the one Task 18's two-consumer threshold and Task 22's REST-scheduler
+preset values should be calibrated against - name the real number, not the synthetic
+preset's assumed one, when either task is implemented. If nothing moved materially
+at this scale, say that explicitly in both places - it's a legitimate finding that
+lowers P4/P5's priority relative to P3, not a failed experiment.
 
 - [ ] **Step 6: Commit**
 
@@ -1999,16 +2138,199 @@ git commit -m "docs: run the live watchlist-scale stress test, record findings (
 
 ---
 
+### Task 17c: Benchmark `check_exits`'s cost vs. open-position count (synthetic, no live data touched)
+
+Use `root-cause-debugging` explicitly, same as CH2 - a live-reported symptom
+("having a large amount of open positions causes things to lag or crash",
+2026-08-27), quantified before Task 20 (relocated below) fixes it. Synthetic only -
+never touches the real `data/paper_broker.db`, per CLAUDE.md's persistence-safety
+rule (tests always redirect DB access, never a live `data/*.db` file).
+
+**Files:**
+- Create: `tests/test_check_exits_scale_benchmark.py`
+
+**Interfaces:**
+- Consumes: `services.exits.exit_engine.check_exits(broker, latest_prices,
+  signal_feed, cfg, market_results=None, ...)` (existing, unchanged) and
+  `services.paper_broker.Position` (existing dataclass:
+  `ticker, side, size, entry_price, opened_at, config_fingerprint=None,
+  entry_fee=0.0, hold_to_settlement=False`).
+
+- [ ] **Step 1: Write the benchmark**
+
+```python
+# tests/test_check_exits_scale_benchmark.py
+"""Benchmarks (not just tests) the CURRENT cost of exit_engine.check_exits at
+increasing open-position counts, before Task 20's tick_cache fix - quantifies the
+live-observed "large amount of open positions causes lag or crash" report
+(2026-08-27) with real numbers, the same "measure before fixing" discipline CH2
+just followed with py-spy against series_watcher.funnel(). Synthetic Position
+objects only - never touches the real data/paper_broker.db."""
+import time
+from unittest.mock import patch
+
+import pytest
+
+from services.exits import exit_engine
+from services.paper_broker import Position
+
+
+def _make_positions(n: int) -> dict:
+    return {
+        f"KXBTC15M-T{i}": Position(
+            ticker=f"KXBTC15M-T{i}", side="yes", size=10, entry_price=0.5, opened_at=time.time(),
+        )
+        for i in range(n)
+    }
+
+
+class _FakeBroker:
+    def __init__(self, positions: dict):
+        self.positions = positions
+
+
+@pytest.mark.parametrize("n", [10, 50, 200])
+def test_check_exits_hits_recent_price_once_per_open_position_today(n):
+    """Direct proof of the mechanism the live crash report points at:
+    market_history.recent_price runs unconditionally per open position
+    (exit_engine.py:229, outside all three opt-in exit rules) - N positions means
+    N calls today, not O(1). This is exactly what Task 20's tick_cache fixes."""
+    broker = _FakeBroker(_make_positions(n))
+    latest_prices = {t: p.entry_price for t, p in broker.positions.items()}
+    with patch("services.market_history.recent_price", return_value=None) as recent_price:
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}})
+    assert recent_price.call_count == n
+
+
+@pytest.mark.parametrize("n", [10, 50, 200, 500])
+def test_check_exits_wall_clock_cost_at_scale(n, capsys):
+    """Records real wall-clock cost (not just call count) at each N, printed for
+    Task 17b-style recording - a 0.1ms mock reply per DB read still exposes the
+    O(N) shape without needing seeded real data."""
+    broker = _FakeBroker(_make_positions(n))
+    latest_prices = {t: p.entry_price for t, p in broker.positions.items()}
+
+    def _slow_recent_price(*a, **kw):
+        time.sleep(0.0001)  # a representative single-row SQLite read, not real I/O
+        return None
+
+    with patch("services.market_history.recent_price", side_effect=_slow_recent_price):
+        t0 = time.monotonic()
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}})
+        elapsed = time.monotonic() - t0
+    print(f"n={n} positions: check_exits took {elapsed * 1000:.1f}ms")
+```
+
+- [ ] **Step 2: Run it**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_check_exits_scale_benchmark.py -v -s`
+Expected: PASS. The `-s` flag surfaces the wall-clock `print()` lines - record the
+four `n=...` numbers (10/50/200/500) into the same known-findings entry Task 17b's
+Step 3 writes, plus a dated summary paragraph in `services/exits/CHEATSHEET.md`
+(same cross-posting reasoning as Task 17b's own Step 3 - a future audit of
+`services/exits/` reads that file first, not this plan) stating plainly whether
+the distinct-ticker case (this benchmark's actual design) or only the same-ticker
+case turned out to dominate, since that directly decides whether Task 20 alone
+resolves the live crash report or needs the bulk-fetch/tick_executor follow-up its
+own "Known scope gap" note already flags.
+
+**Frontend rendering is a plausible contributing dimension this benchmark does not
+measure** (2026-08-27 direct note) - whether the dashboard's own position-list
+rendering cost also scales with open-position count is a real, unanswered question,
+not one this backend-only benchmark can speak to. Deliberately not pinned to
+specific current frontend file paths here:
+`docs/superpowers/plans/2026-08-25-frontend-modularization.md` is still in
+progress (~5 of 54 tasks done per its own checkboxes), so a path-specific claim
+written today would likely be stale before anyone acts on it. Instead: add one
+line to that plan's own tracking noting this open question, to be picked up once
+enough of the strangler-fig migration has landed that a frontend-side measurement
+would target something stable rather than code about to move.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_check_exits_scale_benchmark.py
+git commit -m "test: benchmark check_exits' per-position cost, quantify the live crash report (P3.5 Task 17c)"
+```
+
+---
+
 **P3.5 gate:** Task 17b's Step 2 has actually run against the live app at least once
-(not just Task 17a's unit tests) and its result is recorded in the known-findings doc;
-Task 18 and Task 22 each carry a pointer to that result before their own
+(not just Task 17a's unit tests) and its result, plus Task 17c's four benchmark
+numbers, are recorded in the known-findings doc; Task 18, Task 22, and Task 20
+(relocated below) each carry a pointer to the relevant result before their own
 implementation starts. Config is back to its pre-test values (Step 4 confirms it
-live). No step touches `kalshi_account.trading_enabled` or leaves `mode` other than
-`paper`.
+live). No step touches `kalshi_account.trading_enabled`, leaves `mode` other than
+`paper`, or writes to a real `data/*.db` file.
 
 ---
 
 ## Phase P4 — Critical / market consumers, ticker coalescing, kept queue
+
+**Task 20 relocated here, ahead of Task 18/19 (2026-08-27), direct instruction
+following a live crash report** ("having a large amount of open positions causes
+things to lag or crash") - see P3.5's header for the full trace
+(`main.py:958` -> `exit_engine.check_exits` -> `market_history.recent_price`
+unconditional per open position) and Task 17c for the benchmark quantifying it.
+Originally the third task of this phase; a crash-severity, every-tick hot-path bug
+outranks Task 18/19's message-volume efficiency work, and Task 20 turns out to have
+no real dependency on either (its original Step 6 assumed Task 18's `_consume_market`
+coroutine, which doesn't exist yet at this point in the plan - corrected below to
+wire the cache at today's real call site, `main.py`'s single per-tick call, which
+this task doesn't need Task 18 for at all).
+
+### Task 20: `check_exits` per-tick memoization
+
+**Files:**
+- Modify: `services/exits/exit_engine.py` (`check_exits` and its four DB-reading helpers)
+- Modify: `main.py` (the `strategy.check_exits(...)` call site, line 958)
+- Test: append to the existing `exit_engine` test file
+
+**Interfaces:**
+- Produces: `exit_engine.check_exits(..., tick_cache: dict | None = None)` — an
+  optional cache dict, populated once per tick, keyed by `(function_name, ticker)`,
+  so N open positions *on the same tick and same ticker* share one `recent_price`/
+  `volatility`/`analyst_lean`/`series_stats` read instead of N reads (I12 W4). When
+  `tick_cache` is `None` (every existing caller), behavior is byte-identical to
+  today — this is a strictly additive optional parameter.
+
+**Known scope gap, stated plainly rather than glossed over:** this only removes
+*duplicate reads for positions sharing one ticker* (e.g. two partial-hedge
+positions on the same market). It does **not** reduce read count when N open
+positions span N *different* tickers - the more likely shape for "a large amount
+of open positions," and exactly what Task 17c's `test_check_exits_hits_recent_
+price_once_per_open_position_today` benchmark measures (distinct tickers by
+design). Check that benchmark's actual numbers before treating this task alone as
+having resolved the live crash report - if most of the reported cost turns out to
+be the distinct-ticker case, this needs a follow-up: either a bulk-fetch across all
+open tickers in one query (this codebase already has precedent for that shape -
+`signal_log.series_stats_bulk`, referenced in `services/tick_executor.py`'s own
+module docstring) or a `tick_executor` offload of the whole `check_exits` call
+(this session's other three established fixes all took that route). Decide with
+Task 17c's real numbers, not a guess made here.
+
+- [ ] **Step 1: Read `check_exits`'s current signature and its four per-position DB reads in full** (`recent_price` :229, `volatility` :448, `analyst_lean` :494, `series_stats` :506).
+- [ ] **Step 2: Write a failing test**: two open positions on the same ticker, one `check_exits` call each with a shared `tick_cache={}`, asserts `market_history.recent_price` (mocked/counted) is called exactly once, not twice.
+- [ ] **Step 3: Run it, watch it fail.**
+- [ ] **Step 4: Add the `tick_cache` parameter and the four memoized lookups**, e.g.:
+
+```python
+def _cached(tick_cache, key, fn, *args):
+    if tick_cache is None:
+        return fn(*args)
+    if key not in tick_cache:
+        tick_cache[key] = fn(*args)
+    return tick_cache[key]
+```
+
+Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker), market_history.recent_price, ticker, ...)` (match real arguments).
+
+- [ ] **Step 5: Run it, watch it pass.**
+- [ ] **Step 6: Wire a shared `tick_cache={}` at today's real call site** — `main.py:958`, right before `for close_decision in strategy.check_exits(...)`: create `tick_cache = {}` and pass it through as the new keyword argument. (Not `_consume_market` — that coroutine doesn't exist yet; this call happens once per trading tick today, directly in `trading_loop`, which is exactly where the live crash report's cost accrues.)
+- [ ] **Step 7: Run the full exit_engine test suite for a regression check** — pay particular attention to any test relying on `recent_price` etc. being called fresh per position (none should, since the underlying value for the same ticker is identical within one tick, but confirm).
+- [ ] **Step 8: Commit:** `git commit -m "perf: memoize check_exits per-tick DB reads across positions on the same ticker (I13 P4)"`
+
+---
 
 ### Task 18: Split the single consumer into `critical` and `market` queues
 
@@ -2262,43 +2584,6 @@ git add services/kalshi/websocket.py services/whale_stream/whale_stream_handlers
   services/settlement_resolver.py tests/test_kalshi_ws_two_consumers.py tests/test_whale_stream_stage_timing.py
 git commit -m "feat: coalesce tickers, defer settled resolution off the critical path (I13 P4)"
 ```
-
----
-
-### Task 20: `check_exits` per-tick memoization
-
-**Files:**
-- Modify: `services/exits/exit_engine.py` (`check_exits` and its four DB-reading helpers)
-- Test: append to the existing `exit_engine` test file
-
-**Interfaces:**
-- Produces: `exit_engine.check_exits(..., tick_cache: dict | None = None)` — an
-  optional cache dict, populated once per tick, keyed by `(function_name, ticker)`,
-  so N open positions on the same tick share one `recent_price`/`volatility`/
-  `analyst_lean`/`series_stats` read per ticker instead of N reads (I12 W4). When
-  `tick_cache` is `None` (every existing caller), behavior is byte-identical to
-  today — this is a strictly additive optional parameter.
-
-- [ ] **Step 1: Read `check_exits`'s current signature and its four per-position DB reads in full** (`recent_price` :229, `volatility` :448, `analyst_lean` :494, `series_stats` :506).
-- [ ] **Step 2: Write a failing test**: two open positions on the same ticker, one `check_exits` call each with a shared `tick_cache={}`, asserts `market_history.recent_price` (mocked/counted) is called exactly once, not twice.
-- [ ] **Step 3: Run it, watch it fail.**
-- [ ] **Step 4: Add the `tick_cache` parameter and the four memoized lookups**, e.g.:
-
-```python
-def _cached(tick_cache, key, fn, *args):
-    if tick_cache is None:
-        return fn(*args)
-    if key not in tick_cache:
-        tick_cache[key] = fn(*args)
-    return tick_cache[key]
-```
-
-Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker), market_history.recent_price, ticker, ...)` (match real arguments).
-
-- [ ] **Step 5: Run it, watch it pass.**
-- [ ] **Step 6: Wire a shared `tick_cache={}` from `_consume_market`'s per-tick-batch processing** (created once per drain of the ticker map, passed to every `check_exits` call in that batch, discarded after).
-- [ ] **Step 7: Run the full exit_engine test suite for a regression check** — pay particular attention to any test relying on `recent_price` etc. being called fresh per position (none should, since the underlying value for the same ticker is identical within one tick, but confirm).
-- [ ] **Step 8: Commit:** `git commit -m "perf: memoize check_exits per-tick DB reads across positions on the same ticker (I13 P4)"`
 
 ---
 
