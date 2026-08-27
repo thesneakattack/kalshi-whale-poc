@@ -132,6 +132,18 @@ steps:
           # file, same pins.
           pip install -q uv
           uv pip install --system -r requirements-dev.txt
+          # python:3.13-slim has no git binary (same gap
+          # quality-architecture-audit.yml's own comment already documents
+          # for tools.project_manifest). Found live 2026-08-27 implementing
+          # the AQC workflow tool: tests/test_quality_coordination_cleanup_
+          # actions.py's fault-injection suite runs real git commands
+          # against a disposable synthetic repo fixture (tests/support/
+          # synthetic_git_repo.py), which needs a real git binary to exist
+          # at all - unlike project_manifest's generated_from_head, there is
+          # no graceful null-degradation available here, since the whole
+          # point of that suite is proving real git subprocess behavior.
+          # Installed once here rather than worked around per-test.
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends git
           # -n 4, not `auto`. `auto` uses every visible core, and the
           # container sees all 16 of the host's - but the shared
           # agent runs WOODPECKER_MAX_WORKFLOWS=4, so four concurrent

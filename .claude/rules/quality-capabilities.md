@@ -49,7 +49,9 @@ to the current task and load/use the relevant skill before acting.
   existing module is kept, renamed to `tools/quality_ratchet.py` (see the
   next bullet) — "AQC" now names only the tool specified in
   `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
-  workflow-design.md`, not yet implemented.
+  workflow-design.md`, implemented — see
+  `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
+  workflow.md`.
 - **quality-ratchet** (formerly `quality-coordination-observation`,
   renamed 2026-08-27) — `tools/quality_ratchet.py`, a standalone workflow
   tool (not application code — see the standing rule in `CLAUDE.md`), a
@@ -62,6 +64,21 @@ to the current task and load/use the relevant skill before acting.
   (`python -m tools.quality_ratchet`) or inspect
   `tools/quality_ratchet_data/quality_ratchet.db` directly; there is no
   API route and no dashboard view.
+- **autonomous-quality-coordination-workflow** — `tools/quality_coordination.py` +
+  `tools/coordination_engine.py`, the tool "AQC" now names (see the bullet above for the
+  naming history). An automated project-manager/janitor over this repository's own
+  engineering workflow — branch/PR/CI lifecycle health, `superpowers` plan/ledger execution
+  health, standing-rule/process-hygiene compliance — informed by, never auditing, the
+  trading application's own read-only diagnostics as context. No GitHub write authority; the
+  only mutating authority is three deterministic, idempotent, path-contained local
+  git/filesystem cleanup actions (`git worktree prune`, deleting a branch already merged and
+  remote-deleted, deleting a finished plan's SDD scratch workspace), each independently
+  fault-injection-tested against a synthetic repo fixture, never this repository. Manual
+  invocation only: `python -m tools.quality_coordination` (detect + report) /
+  `python -m tools.quality_coordination --clean` (also executes eligible cleanup actions).
+  Design: `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-
+  design.md`. Plan: `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
+  workflow.md`.
 - **economic-strategy-effectiveness-investigation** — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —
