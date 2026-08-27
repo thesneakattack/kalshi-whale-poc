@@ -287,6 +287,66 @@ def test_sync_pass_one_does_not_sync_project_status_for_a_manually_closed_issue_
     assert client.project_status_calls == calls_before
 
 
+def test_sync_pass_one_does_not_clobber_status_of_an_active_claim():
+    """The github-issues-kanban plugin skill claims an issue by swapping
+    status:claimable for status:claimed + claimed-by:<agent> +
+    claim-expires:<iso-ts> (its lock-protocol.md). A later sync must not
+    silently revert that back to whatever the source's own status_label
+    computes, or it fights the plugin instead of coexisting with it."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)  # status:claimable
+    (number,) = client.issues.keys()
+    client.set_labels(
+        number,
+        ["status:claimed", "claimed-by:test-agent", "claim-expires:2099-01-01T00:00:00Z"],
+        ["status:claimable"],
+    )
+
+    sync_pass_one([_item(done=False)], client, dry_run=False)  # source still says claimable
+
+    assert "status:claimed" in client.issues[number]["labels"]
+    assert "status:claimable" not in client.issues[number]["labels"]
+    assert "claimed-by:test-agent" in client.issues[number]["labels"]
+
+
+def test_sync_pass_one_does_not_touch_project_status_during_an_active_claim():
+    """The plugin never touches Project fields itself (labels + comments
+    only) - once sync defers to a claim, the safest behavior is to leave
+    the Project Status column exactly as it was, not guess a new value."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.set_labels(
+        number,
+        ["status:claimed", "claimed-by:test-agent", "claim-expires:2099-01-01T00:00:00Z"],
+        ["status:claimable"],
+    )
+    calls_before = client.project_status_calls
+
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+
+    assert client.project_status_calls == calls_before
+
+
+def test_sync_pass_one_still_reconciles_status_once_a_claim_has_expired():
+    """A claim past its own TTL is stale by the plugin's own model
+    ("stale claims auto-release on next dispatch cycle") - sync should
+    not treat an expired claim as still protecting the status label."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.set_labels(
+        number,
+        ["status:claimed", "claimed-by:test-agent", "claim-expires:2020-01-01T00:00:00Z"],
+        ["status:claimable"],
+    )
+
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+
+    assert "status:claimable" in client.issues[number]["labels"]
+    assert "status:claimed" not in client.issues[number]["labels"]
+
+
 def test_reconcile_sets_depends_on_label_using_real_issue_number():
     client = FakeGithubClient()
     track_a = _item(kind="track", key="A", title="Track A")

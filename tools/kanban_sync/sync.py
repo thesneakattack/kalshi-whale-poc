@@ -26,6 +26,33 @@ class SyncGithubClient(Protocol):
     def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]: ...
 
 
+_CLAIMED_BY_PREFIX = "claimed-by:"
+_CLAIM_EXPIRES_PREFIX = "claim-expires:"
+
+
+def _has_active_claim(issue_labels: frozenset[str]) -> bool:
+    """True when the installed github-issues-kanban plugin skill currently
+    holds a live, unexpired lock on this issue (claimed-by:<agent> +
+    claim-expires:<iso-ts>, per its lock-protocol.md). status:* label
+    reconciliation below must defer to this rather than silently reverting
+    a claim back to whatever the source's own status_label computes - that
+    would fight the plugin's claim instead of coexisting with it. A claim
+    past its own TTL is stale by the plugin's own model ("stale claims
+    auto-release on next dispatch cycle") - only a still-unexpired claim is
+    protected here."""
+    claimed_by = [l for l in issue_labels if l.startswith(_CLAIMED_BY_PREFIX)]
+    expires = [l for l in issue_labels if l.startswith(_CLAIM_EXPIRES_PREFIX)]
+    if not claimed_by or not expires:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(expires[0][len(_CLAIM_EXPIRES_PREFIX):])
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) < expires_at
+
+
 def _desired_base_labels(item: SyncItem) -> set[str]:
     """status:*/type:* always apply; phase:* only when the source could
     determine one (see SyncItem.phase_label's own docstring)."""
@@ -196,18 +223,33 @@ def sync_pass_one(
             report.flagged_mismatches.append(f"#{existing.number} {item.title}")
             continue
 
-        existing_status_labels = existing.labels & labels.ALL_STATUS_LABELS
-        stale_status = existing_status_labels - {item.status_label}
+        active_claim = _has_active_claim(existing.labels)
+        desired = _desired_base_labels(item)
+        if active_claim:
+            # Defer to the plugin's claim entirely for the status dimension -
+            # neither remove its status:claimed/in-progress/etc. nor add the
+            # item's own computed status:*, which would otherwise leave two
+            # status:* labels on the issue at once.
+            desired = desired - {item.status_label}
+            stale_status: set[str] = set()
+        else:
+            existing_status_labels = existing.labels & labels.ALL_STATUS_LABELS
+            stale_status = existing_status_labels - {item.status_label}
         existing_phase_labels = existing.labels & labels.ALL_PHASE_LABELS
         desired_phase = {item.phase_label} if item.phase_label else set()
         stale_phase = existing_phase_labels - desired_phase
-        add = (_desired_base_labels(item) - existing.labels)
+        add = desired - existing.labels
         remove = stale_status | stale_phase
         if add or remove:
             if not dry_run:
                 client.set_labels(existing.number, sorted(add), sorted(remove))
             report.updated.append(f"#{existing.number} {item.title}")
-        _sync_project_status(item, existing.number, client, dry_run=dry_run)
+        if not active_claim:
+            # The Project Status field has no analogue of its own to defer
+            # to (the plugin never touches Project fields, only labels) -
+            # leaving it exactly as it was is the safest "don't fight the
+            # claim" behavior, matching the label-side deferral above.
+            _sync_project_status(item, existing.number, client, dry_run=dry_run)
 
     return number_by_identity, report
 
