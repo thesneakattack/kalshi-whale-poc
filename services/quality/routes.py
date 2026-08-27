@@ -49,17 +49,35 @@ def _coordination_rollup() -> dict[str, int]:
 
 
 @router.get("/api/quality/coordination")
-async def get_quality_coordination():
+async def get_quality_coordination(limit: int = 200):
     conn = _qc._connect()
     try:
-        items = [dict(r) for r in conn.execute("SELECT * FROM coordination_items").fetchall()]
+        items = [
+            dict(r) for r in conn.execute(
+                "SELECT * FROM coordination_items ORDER BY last_observed_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+        keys = [item["automation_key"] for item in items]
+        logs_by_key: dict[str, list[dict]] = {k: [] for k in keys}
+        if keys:
+            placeholders = ",".join("?" * len(keys))
+            rows = conn.execute(
+                f"""SELECT automation_key, at, message FROM (
+                        SELECT automation_key, at, message,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY automation_key ORDER BY at DESC
+                               ) AS rn
+                        FROM coordination_log
+                        WHERE automation_key IN ({placeholders})
+                    ) WHERE rn <= 20
+                    ORDER BY automation_key, at DESC""",
+                keys,
+            ).fetchall()
+            for r in rows:
+                logs_by_key[r["automation_key"]].append({"at": r["at"], "message": r["message"]})
         for item in items:
-            item["log"] = [
-                dict(r) for r in conn.execute(
-                    "SELECT at, message FROM coordination_log WHERE automation_key=? ORDER BY at",
-                    (item["automation_key"],),
-                ).fetchall()
-            ]
+            item["log"] = logs_by_key[item["automation_key"]]
         return {"items": items}
     finally:
         conn.close()

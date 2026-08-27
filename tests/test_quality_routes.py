@@ -84,6 +84,107 @@ def test_quality_coordination_route_returns_items_and_log():
     assert body["items"][0]["state"] == "escalation_eligible"
 
 
+def _insert_item(conn, key, last_observed_at):
+    conn.execute(
+        """INSERT INTO coordination_items
+           (automation_key, state, level, first_observed_at, last_observed_at,
+            observation_count, reopen_count, scope_paths, source_finding_id, source_check)
+           VALUES (?, 'observed', 'warning', '2026-01-01T00:00:00', ?,
+                   1, 0, 'a.py', 'fid', 'check')""",
+        (key, last_observed_at),
+    )
+
+
+def test_quality_coordination_route_respects_limit(monkeypatch, tmp_path):
+    # Own isolated DB file, not the shared session-wide one the earlier
+    # single-item test already wrote 'k1' into - the global redirect in
+    # conftest.py is per-session, not per-test, so reusing it across tests
+    # that pick predictable keys would collide (UNIQUE constraint / stale
+    # locked connections), same class of issue tests/support/runtime_
+    # isolation.py's own docstring documents for module-scope singletons.
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "quality_coordination_test.db")
+    conn = qc._connect()
+    # 3 items with distinct last_observed_at - k3 most recent, k1 oldest.
+    _insert_item(conn, "k1", "2026-01-01T01:00:00")
+    _insert_item(conn, "k2", "2026-01-01T02:00:00")
+    _insert_item(conn, "k3", "2026-01-01T03:00:00")
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/quality/coordination?limit=2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 2
+    assert [item["automation_key"] for item in body["items"]] == ["k3", "k2"]
+
+
+def test_quality_coordination_route_caps_log_entries_per_item(monkeypatch, tmp_path):
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "quality_coordination_test.db")
+    conn = qc._connect()
+    _insert_item(conn, "k1", "2026-01-01T00:00:00")
+    for i in range(25):
+        conn.execute(
+            "INSERT INTO coordination_log (automation_key, at, message) VALUES (?, ?, ?)",
+            ("k1", f"2026-01-01T00:{i:02d}:00", f"msg{i}"),
+        )
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/quality/coordination")
+    assert resp.status_code == 200
+    body = resp.json()
+    log = body["items"][0]["log"]
+    assert len(log) == 20
+    # Most recent first - msg24 (00:24:00) is the newest of the 25 inserted.
+    assert log[0]["message"] == "msg24"
+    assert log[-1]["message"] == "msg5"
+
+
+def test_quality_coordination_route_makes_one_log_query_not_n_plus_one(monkeypatch, tmp_path):
+    """sqlite3.Connection is an immutable C type - neither instance nor
+    class-level attribute assignment of `execute` is possible (verified: both
+    raise). So rather than patching sqlite3.Connection.execute itself, this
+    wraps the connection object returned by _qc._connect() - the same
+    object routes.py calls .execute()/.close() on - in a counting proxy.
+    Because the wrap happens only after _connect()'s own internal setup
+    (PRAGMA + CREATE TABLE IF NOT EXISTS calls) has already run on the real
+    connection, the counter reflects only the queries the route body itself
+    issues, matching the "one for items, one for all logs" claim exactly."""
+    monkeypatch.setattr(qc, "DB_PATH", tmp_path / "quality_coordination_test.db")
+    conn = qc._connect()
+    _insert_item(conn, "k1", "2026-01-01T01:00:00")
+    _insert_item(conn, "k2", "2026-01-01T02:00:00")
+    _insert_item(conn, "k3", "2026-01-01T03:00:00")
+    conn.commit()
+    conn.close()
+
+    call_count = 0
+    real_connect = qc._connect
+
+    class _CountingConn:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._real.execute(*args, **kwargs)
+
+        def close(self):
+            self._real.close()
+
+    def _counting_connect():
+        return _CountingConn(real_connect())
+
+    monkeypatch.setattr(qc, "_connect", _counting_connect)
+
+    resp = client.get("/api/quality/coordination")
+
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 3
+    assert call_count == 2  # one for items, one window-function query for all logs - not 1 + len(items)
+
+
 def test_quality_summary_gains_coordination_rollup():
     resp = client.get("/api/quality/summary")
     assert resp.status_code == 200
