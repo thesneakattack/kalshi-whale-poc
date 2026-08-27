@@ -71,7 +71,7 @@ async def get_quality_coordination(limit: int = 200):
                         FROM coordination_log
                         WHERE automation_key IN ({placeholders})
                     ) WHERE rn <= 20
-                    ORDER BY automation_key, at DESC""",
+                    ORDER BY automation_key, at""",
                 keys,
             ).fetchall()
             for r in rows:

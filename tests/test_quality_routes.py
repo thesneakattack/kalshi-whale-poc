@@ -135,9 +135,12 @@ def test_quality_coordination_route_caps_log_entries_per_item(monkeypatch, tmp_p
     body = resp.json()
     log = body["items"][0]["log"]
     assert len(log) == 20
-    # Most recent first - msg24 (00:24:00) is the newest of the 25 inserted.
-    assert log[0]["message"] == "msg24"
-    assert log[-1]["message"] == "msg5"
+    # The inner window function selects the 20 most recent by rn (msg5..msg24
+    # survive, msg0..msg4 are dropped as the 5 oldest) - but the final display
+    # order is ascending (oldest of the surviving 20 first), matching Task 7's
+    # original ORDER BY at convention this route inherits.
+    assert log[0]["message"] == "msg5"
+    assert log[-1]["message"] == "msg24"
 
 
 def test_quality_coordination_route_makes_one_log_query_not_n_plus_one(monkeypatch, tmp_path):
