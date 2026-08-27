@@ -62,6 +62,13 @@ no architecture decision exist yet — that is what this plan covers.
 A reader can see actual measured cost (or "measured: negligible") for a churn burst, not
 architectural speculation.
 
+**Scale caveat (2026-08-27):** this measurement is bounded to today's live watchlist scale
+(8-13 tickers). `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`'s
+Phase P3.5 (Task 17a/17b) later stresses the same `trade_stream.ingest.subscription_churn.*`
+counters this measurement uses, at a real widened-scope scale, and feeds that larger-scale
+data point back here (and into CH3, below) - see that phase's own header note for the
+reuse contract.
+
 ---
 
 ## CH2 — Root-cause the still-untraced third instability event
@@ -102,6 +109,15 @@ H11 (CH3 below) rests on that proof rather than coincidence.
   bottleneck.
 - [ ] If (i): proceed to CH4.
 - [ ] Commit: `docs: classify H11 (CH3)`.
+
+**Not necessarily final once (ii)/(iii) stops the plan (2026-08-27):** the realtime-
+data-plane-remediation plan's Phase P3.5 (Task 17a/17b) runs after this task in current
+Track A sequencing and is the literal "larger watchlist" experiment this bullet names -
+it reuses this investigation's own `subscription_churn` counters at real widened-scope
+scale and, per its own Step 5, posts a dated addendum here (reopening or confirming this
+classification) once it lands. If that addendum hasn't been added yet, treat this
+entry's stop as provisional pending P3.5, not permanent - check for it before assuming
+CH4/CH5 are still out of scope.
 
 **Acceptance**
 A reviewer can tell, from the doc alone, whether the rest of this plan should ever run.

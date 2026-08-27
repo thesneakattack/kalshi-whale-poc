@@ -34,18 +34,22 @@ gated behind both; nothing in it should start yet.
 
 ## Track A — Realtime data plane (lead track)
 
-**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every
-axis checked: frame count bounded (<=2 raw WS frames per churn burst under
-the live exchange-wide config), no snapshot cost on churn-add
-(`send_initial_snapshot` isn't set on `add_markets`), no positive
-queue-depth/latency correlation with churn magnitude (weak negative, r =
--0.217), and no measured rate-limit pressure. Full measurement: H11 in
+**Status (2026-08-27, corrected — this entry was one step stale):** CH1 done
+(PR #82) — measured negligible on every axis checked: frame count bounded
+(<=2 raw WS frames per churn burst under the live exchange-wide config), no
+snapshot cost on churn-add (`send_initial_snapshot` isn't set on
+`add_markets`), no positive queue-depth/latency correlation with churn
+magnitude (weak negative, r = -0.217), and no measured rate-limit pressure.
+CH2 also done (PR #92) — root-caused and fixed the still-untraced third
+instability event: `GET /api/quality/summary` was blocking the event loop,
+not subscription churn (classification (c), "something else entirely," per
+CH2's own task). Full measurement: H11 in
 `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
-**CH2 is next, not started** — root-cause the still-untraced third
-instability event (the app-unresponsiveness observed live immediately
-after an 8->13 churn burst); CH1's negligible-cost result makes
-churn-as-direct-cause less likely on priors but does not rule it out, and
-CH3 cannot classify H11 until CH2 supplies the actual root cause.
+**CH3 is next, not started** — reconcile CH1+CH2's negative evidence into a
+classification of H11; per CH2's result, expect (ii)/(iii) rather than (i),
+but that classification is now explicitly provisional pending Phase P3.5's
+larger-scale churn measurement (see the P3.5 bullet below) rather than final
+the moment CH3 commits.
 
 **Canonical docs**
 - Investigation plan: `docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`
@@ -73,7 +77,12 @@ CH3 cannot classify H11 until CH2 supplies the actual root cause.
   of Task 18/19. Findings get cross-posted to the relevant `services/
   <name>/CHEATSHEET.md` files (CLAUDE.md's "Current objective" section, per
   a 2026-08-27 standing instruction), not left findable only in this plan.
-  Not started.
+  **Now also feeds back into CH3/H11** (2026-08-27, same-day follow-up): Task
+  17a's stress-step runner captures this investigation's own
+  `trade_stream.ingest.subscription_churn.*` counters at real widened-scope
+  scale, and Task 17b posts a dated addendum to CH3 in
+  `2026-08-26-subscription-churn-investigation.md` reopening or confirming
+  its classification — not a one-way P4/P5 input only. Not started.
 - Orchestrator: `.claude/skills/realtime-data-plane-investigation/SKILL.md`
   for CH1–CH5; the remediation plan's own per-phase workflow for Tasks
   14–17.
