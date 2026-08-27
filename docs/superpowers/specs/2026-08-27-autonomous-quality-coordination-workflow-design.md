@@ -210,6 +210,36 @@ suppressing signals from §6.1-§6.3, e.g.:
   findings this branch's PR would have addressed" for a human's judgment,
   without asserting that the branch caused or must fix them.
 
+**Required application-side change (discovered during this brainstorm,
+not assumed away):** all three routes are `/api/*` paths, and
+`services/auth.py`'s `AuthMiddleware` gates every `/api/*` path behind a
+session **except** the ones listed in `PUBLIC_PATHS` (currently `/login`,
+`/auth/login`, `/auth/callback`) whenever `auth_configured()` is true. It
+happens to work unmodified today only because no Google OAuth credentials
+are configured in this dev environment. Since the standing production
+goal is to eventually turn real auth on, this design **requires** one
+narrow application-side change, decided explicitly by the user (not
+assumed by this design, since it touches auth/security policy — a
+protected domain):
+
+> Add `/api/quality/summary`, `/api/health/pipeline`, and
+> `/api/health/faults` to `services/auth.py`'s `PUBLIC_PATHS`.
+
+This is a deliberate, narrow exception for three already-read-only,
+non-sensitive operational-diagnostics routes (finding counts, scheduler
+timing, fault history — no trading data, no credentials, no order/position
+detail). It does not touch the trading gate, kill switch, CORS policy, or
+any other route's auth requirement, and is trivially reversible (remove
+the three paths from the set again). It does mean these three routes
+become reachable by anyone who can reach the app without a session at
+all, even after real auth is configured for everything else — accepted
+here as a proportionate trade-off for read-only operational diagnostics,
+not a precedent for widening `PUBLIC_PATHS` further without its own
+separate justification. This is the one and only application-code change
+this entire design requires; every other signal domain (§6.1-§6.3, §6.5)
+and the cleanup action layer (§8) touch only `tools/`, git, and the
+filesystem.
+
 ### 6.5 Documentation / ROADMAP drift (data feed, not a finding)
 
 **Not run through the coordination engine.** AQC gathers the raw
@@ -387,8 +417,15 @@ as its own follow-up task, independent of this design:
   posture.
 - **Resolving** documentation/ROADMAP drift — §6.5 surfaces data only.
 
-## 14. Follow-up documentation tasks (tracked here, executed during implementation)
+## 14. Follow-up tasks (tracked here, executed during implementation)
 
+- **Application-side change (the only one this design requires):** add
+  `/api/quality/summary`, `/api/health/pipeline`, and `/api/health/faults`
+  to `services/auth.py`'s `PUBLIC_PATHS` (§6.4). A one-line, explicitly
+  user-approved change to the trading application itself — not covered by
+  the "workflow/tooling and application code must never overlap" rule,
+  since that rule governs *application dependence on tooling*, not an
+  application security-policy change made to enable a tool's read access.
 - Update `.claude/rules/autonomous-quality-coordination-evidence.md` to
   generalize its framing from GitHub-write authority specifically to
   local-mutation authority in general, so it correctly governs §8's
