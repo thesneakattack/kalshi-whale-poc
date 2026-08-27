@@ -98,17 +98,17 @@ def test_create_issue_creates_a_missing_label_then_retries():
     failure on gh issue create --label too, not just gh issue edit
     --add-label."""
     runner = FakeRunner()
-    runner.queue("", returncode=1, stderr="'phase:design-spec' not found")
+    runner.queue("", returncode=1, stderr="'phase:implementing' not found")
     runner.queue("")  # gh label create
     runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/99\n")
     client = GithubClient(REPO, runner=runner)
 
-    result = client.create_issue("Title", "Body", ["status:claimable", "phase:design-spec"])
+    result = client.create_issue("Title", "Body", ["status:claimable", "phase:implementing"])
 
     assert result.number == 99
     assert runner.calls[0][:3] == ["gh", "issue", "create"]
     assert runner.calls[1][:3] == ["gh", "label", "create"]
-    assert "phase:design-spec" in runner.calls[1]
+    assert "phase:implementing" in runner.calls[1]
     assert runner.calls[2][:3] == ["gh", "issue", "create"]
 
 
@@ -271,6 +271,63 @@ def test_find_pr_state_returns_state_string():
     client = GithubClient(REPO, runner=runner)
 
     assert client.find_pr_state("feat/done") == "MERGED"
+
+
+def test_list_open_by_label_returns_matching_open_issues_with_body():
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {
+            "number": 98, "state": "OPEN",
+            "labels": [{"name": "type:tracking"}, {"name": "status:in-progress"}],
+            "body": "some body <!-- autotrade-sync: worktree:feat/x -->",
+        },
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.list_open_by_label("type:tracking")
+
+    assert len(result) == 1
+    assert result[0].number == 98
+    assert result[0].open is True
+    assert result[0].labels == frozenset({"type:tracking", "status:in-progress"})
+    assert result[0].body == "some body <!-- autotrade-sync: worktree:feat/x -->"
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "list"]
+    assert "--label" in call and "type:tracking" in call
+    assert "--state" in call and "open" in call
+    assert "--json" in call and "number,state,labels,body" in call
+
+
+def test_list_open_by_label_returns_empty_list_when_no_matches():
+    runner = FakeRunner()
+    runner.queue(json.dumps([]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.list_open_by_label("type:tracking")
+
+    assert result == []
+
+
+def test_list_open_by_label_is_not_scoped_by_a_search_term_unlike_find_by_marker():
+    runner = FakeRunner()
+    runner.queue(json.dumps([]))
+    client = GithubClient(REPO, runner=runner)
+
+    client.list_open_by_label("type:tracking")
+
+    assert "--search" not in runner.calls[0]
+
+
+def test_list_open_by_label_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.list_open_by_label("type:tracking")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
 
 
 def test_nonzero_returncode_raises_githubcliierror():

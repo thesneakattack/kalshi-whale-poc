@@ -25,6 +25,7 @@ class IssueState:
     number: int
     open: bool
     labels: frozenset[str]
+    body: str = ""
 
 
 class GithubCliError(RuntimeError):
@@ -69,6 +70,27 @@ class GithubClient:
             open=item["state"] == "OPEN",
             labels=frozenset(label["name"] for label in item["labels"]),
         )
+
+    def list_open_by_label(self, label: str) -> list[IssueState]:
+        """Bulk-lists every currently-OPEN issue carrying `label`, with body
+        included so a caller can markers.parse_marker() it to recover
+        (kind, key) - unlike find_by_marker, not scoped to one marker. The
+        only mechanism that can notice a source item that has vanished
+        entirely from a run's scan (see sync.close_stale_worktree_issues)."""
+        stdout = self._run([
+            "issue", "list", "--label", label, "--state", "open",
+            "--json", "number,state,labels,body", "--limit", "1000",
+        ])
+        results = json.loads(stdout)
+        return [
+            IssueState(
+                number=item["number"],
+                open=item["state"] == "OPEN",
+                labels=frozenset(l["name"] for l in item["labels"]),
+                body=item["body"],
+            )
+            for item in results
+        ]
 
     def create_issue(self, title: str, body: str, labels: Sequence[str]) -> IssueState:
         args = ["issue", "create", "--title", title, "--body", body]
