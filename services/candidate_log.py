@@ -164,36 +164,28 @@ def record_rejection(
     band gate that would have won often while losing money on every
     settlement (CLAUDE.md's HARD COMMANDMENT table). Not every gate can
     supply this either (a gate that rejects before price is even parsed
-    genuinely has none) - None here means "unknown," not 0."""
+    genuinely has none) - None here means "unknown," not 0.
+
+    Fully non-blocking now (P3 Task 17, 2026-08-27) - both writes route
+    through capture_writer, zero synchronous DB I/O anywhere in this
+    function. Started as just rejection_events (Task 16); extended to
+    rejected_candidates too once Task 17's reader-gate call site made it
+    clear this function needed to be safe to call directly from the WS
+    reader hot path, not just from strategy_engine.py/kalshi_trade_tape.py's
+    already-less-latency-critical call sites. capture_writer's own
+    "upsert" store mode (_STORE_KEY/_STORE_UPSERT_SQL) now runs the exact
+    UPSERT statement that used to execute here synchronously - see
+    capture_writer.py's own module docstring for the two store-mode
+    shapes. Every reader of either table (gate_summary,
+    population_gate_summary, clear_all, count_range, clear_range,
+    resolve_from_market_results) flushes both stores before it
+    reads/deletes, so no caller has to know either table's writes are
+    asynchronous now."""
     now = now if now is not None else time.time()
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO rejected_candidates
-                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved, unit_cost)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-            ON CONFLICT(ticker, strategy, gate_name) DO UPDATE SET
-                observed_value = excluded.observed_value,
-                threshold_value = excluded.threshold_value,
-                side = excluded.side,
-                rejected_at = excluded.rejected_at,
-                unit_cost = excluded.unit_cost
-            WHERE rejected_candidates.resolved = 0
-            """,
-            (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
-        )
-    # Population copy - one row per call, no dedup. See this module's
-    # "POPULATION STATISTICS" docstring section. Batched through
-    # capture_writer (P3 Task 16, 2026-08-27) instead of a second
-    # synchronous connect()+INSERT on this same hot path - every row is
-    # still preserved (this only changes WHEN it lands on disk, not
-    # whether it does), which is why this is a batch, not the aggregate-
-    # by-minute design Task 16 originally specified: rejection_events
-    # exists specifically so no rejection ever collapses into another the
-    # way rejected_candidates' own dedup key does, and every reader of it
-    # (population_gate_summary, clear_all, count_range, clear_range) flushes
-    # before it reads/deletes, so a caller never has to know this table's
-    # writes are asynchronous now.
+    capture_writer.submit(
+        "rejected_candidates",
+        (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
+    )
     capture_writer.submit(
         "rejection_events",
         (None, ticker, strategy, gate_name, observed_value, threshold_value, side, now, 0, None, None, unit_cost),
@@ -215,17 +207,19 @@ def resolve_from_market_results(market_results: dict) -> int:
     deduped table ever would; one indexed UPDATE per resolved ticker
     resolves all of that ticker's pending rows at once.
 
-    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
-    2026-08-27): a row still sitting in that buffer doesn't exist in the
-    table yet for this UPDATE to find, and would otherwise stay
-    permanently unresolved once a settled market drops out of a later
-    tick's market_results - not just delayed, genuinely lost data,
-    unlike the same tradeoff elsewhere in this plan where a late flush
-    only delays visibility. Usually a near no-op in practice: capture_
-    writer's own background thread already flushes within ~1s on its own
-    cadence, well inside typical poll_interval_sec tick spacing - this
-    only does real work in the rare case a rejection landed in the last
-    <1s before this tick's resolve call."""
+    Flushes capture_writer's rejected_candidates and rejection_events
+    buffers first (P3 Task 16/17, 2026-08-27): a row still sitting in
+    either buffer doesn't exist in its table yet for this SELECT/UPDATE
+    to find, and would otherwise stay permanently unresolved once a
+    settled market drops out of a later tick's market_results - not just
+    delayed, genuinely lost data, unlike the same tradeoff elsewhere in
+    this plan where a late flush only delays visibility. Usually a near
+    no-op in practice: capture_writer's own background thread already
+    flushes within ~1s on its own cadence, well inside typical
+    poll_interval_sec tick spacing - this only does real work in the rare
+    case a rejection landed in the last <1s before this tick's resolve
+    call."""
+    capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
     with _connect() as conn:
         rows = conn.execute(
@@ -264,7 +258,13 @@ def gate_summary() -> list[dict]:
     avg_unit_cost (2026-08-23), when known, is the mean unit_cost across
     this gate's rows that captured one - see population_gate_summary's own
     docstring for why this matters (a high win rate at a near-certainty
-    unit_cost tells a different story than the same win rate at 0.5-0.8)."""
+    unit_cost tells a different story than the same win rate at 0.5-0.8).
+
+    Flushes capture_writer's rejected_candidates buffer first (P3 Task 17,
+    2026-08-27) - record_rejection() no longer writes this table
+    synchronously, so without this a caller could read a stale/incomplete
+    view for up to ~1s after the most recent rejection."""
+    capture_writer.flush_now("rejected_candidates")
     with _connect() as conn:
         rows = conn.execute(
             "SELECT strategy, gate_name, side, result, resolved, unit_cost FROM rejected_candidates",
@@ -411,10 +411,11 @@ def clear_all() -> None:
     log" intent for anything reading the population table instead of the
     deduped one.
 
-    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
-    2026-08-27) - a row sitting in that buffer isn't in the table yet for
-    DELETE to find, and would otherwise land moments after a "wipe"
-    silently un-wipes it."""
+    Flushes capture_writer's rejected_candidates and rejection_events
+    buffers first (P3 Task 16/17, 2026-08-27) - a row sitting in either
+    buffer isn't in its table yet for DELETE to find, and would otherwise
+    land moments after a "wipe" silently un-wipes it."""
+    capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
     with _connect() as conn:
         conn.execute("DELETE FROM rejected_candidates")
@@ -432,9 +433,10 @@ def count_range(before: float | None = None, after: float | None = None) -> int:
     dedup) so this preview matches what clear_range would actually delete,
     not just the deduped table's half of it.
 
-    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
-    2026-08-27) so a just-submitted-but-not-yet-flushed row isn't
-    undercounted in this preview."""
+    Flushes capture_writer's rejected_candidates and rejection_events
+    buffers first (P3 Task 16/17, 2026-08-27) so a just-submitted-but-not-
+    yet-flushed row isn't undercounted in this preview."""
+    capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
     where, params = _range_where(before, after)
     with _connect() as conn:
@@ -451,9 +453,10 @@ def clear_range(before: float | None = None, after: float | None = None) -> int:
     clear_all - returns the combined row count so this matches what
     count_range previews.
 
-    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
-    2026-08-27), same reasoning as clear_all - a buffered row isn't in
-    the table yet for DELETE to find."""
+    Flushes capture_writer's rejected_candidates and rejection_events
+    buffers first (P3 Task 16/17, 2026-08-27), same reasoning as
+    clear_all - a buffered row isn't in its table yet for DELETE to find."""
+    capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
     where, params = _range_where(before, after)
     with _connect() as conn:

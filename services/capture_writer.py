@@ -18,14 +18,37 @@ against an existing, identically-shaped table is a no-op, and this module
 is meant to eventually own that table outright (see the module-level intent
 above), so it should be able to create it cold too.
 
-Always INSERT OR IGNORE, matching series_watcher.flush()'s own handling of
-raw_trades' trade_id PRIMARY KEY: a re-presented trade_id (reconnect
-replay) is a real, expected scenario, not a hypothetical - a plain INSERT
-would raise IntegrityError inside this thread's target function, which
-Python does not propagate anywhere the caller could see. _flush_store
-catches its own exceptions (never lets one store's failure starve the
-others or kill the thread) and counts a failed batch in _dropped_counts,
-visible via dropped_count()."""
+Two store modes (P3 Task 17 added the second): "insert" stores
+(raw_trades, rejection_events) append every row to a plain list and flush
+via INSERT OR IGNORE - duplicates within the buffer are all kept, dedup
+happens at the DB via a PRIMARY KEY/AUTOINCREMENT. "upsert" stores
+(rejected_candidates) buffer as a dict keyed by _STORE_KEY's column
+indices instead of a list - a second submit() for the same key overwrites
+the first IN MEMORY (latest observed value wins, matching this store's
+own real semantics), and flush executes _STORE_UPSERT_SQL (an
+INSERT...ON CONFLICT DO UPDATE, same statement candidate_log.py used to
+run synchronously) rather than a plain INSERT. Both modes share the same
+_lock, _flush_store, dropped-count accounting, and never-raises contract.
+
+Always INSERT OR IGNORE for insert-mode stores, matching series_watcher.
+flush()'s own handling of raw_trades' trade_id PRIMARY KEY: a
+re-presented trade_id (reconnect replay) is a real, expected scenario,
+not a hypothetical - a plain INSERT would raise IntegrityError inside
+this thread's target function, which Python does not propagate anywhere
+the caller could see. _flush_store catches its own exceptions (never
+lets one store's failure starve the others or kill the thread) and
+counts a failed batch in _dropped_counts, visible via dropped_count().
+
+Sets PRAGMA journal_mode=WAL on every connection (added alongside Task
+17's changes, closing a gap present since Task 14): WAL is a per-file
+setting that persists once any connection sets it, and every store's
+owning module (series_watcher.py, candidate_log.py) already sets it via
+their own _connect() - but only when something calls that. A store whose
+only writer is this module (nothing else ever calls the owning module's
+_connect() first) would otherwise depend on incidental call ordering to
+end up in WAL mode at all, which is exactly the "bursty write took the
+app down under rollback-journal mode on 2026-08-11" failure class
+CLAUDE.md documents - not hypothetical for this codebase specifically."""
 import logging
 import sqlite3
 import threading
@@ -39,8 +62,43 @@ logger = logging.getLogger(__name__)
 _STORE_PATHS: dict[str, Path] = {
     "raw_trades": Path(__file__).resolve().parent.parent / "data" / "series_watcher.db",
     "rejection_events": Path(__file__).resolve().parent.parent / "data" / "candidate_log.db",
+    "rejected_candidates": Path(__file__).resolve().parent.parent / "data" / "candidate_log.db",
 }
-_STORE_TABLE = {"raw_trades": "raw_trades", "rejection_events": "rejection_events"}
+_STORE_TABLE = {
+    "raw_trades": "raw_trades", "rejection_events": "rejection_events",
+    "rejected_candidates": "rejected_candidates",
+}
+# Upsert-mode stores only: which positional indices of a submitted row
+# tuple form the natural key, for in-memory latest-wins collapsing before
+# a submitted row ever reaches _STORE_UPSERT_SQL below. A store not listed
+# here is insert-mode (plain list buffer, INSERT OR IGNORE on flush).
+_STORE_KEY: dict[str, tuple[int, ...]] = {
+    "rejected_candidates": (0, 1, 2),  # ticker, strategy, gate_name
+}
+# Upsert-mode stores only: the exact statement _flush_store executemany()s
+# for this store instead of the generic INSERT OR IGNORE. Must match the
+# row shape submit() receives for this store exactly (positionally).
+_STORE_UPSERT_SQL: dict[str, str] = {
+    # Identical to candidate_log.record_rejection()'s former synchronous
+    # UPSERT - moved here verbatim (P3 Task 17), not redesigned. The
+    # "WHERE rejected_candidates.resolved = 0" clause is the real
+    # invariant (a resolved row is never overwritten by a later
+    # rejection) - enforced by SQLite per row regardless of how many
+    # times, or how few, this module's own in-memory key-collapse means a
+    # given key is actually written.
+    "rejected_candidates": """
+        INSERT INTO rejected_candidates
+            (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved, unit_cost)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT(ticker, strategy, gate_name) DO UPDATE SET
+            observed_value = excluded.observed_value,
+            threshold_value = excluded.threshold_value,
+            side = excluded.side,
+            rejected_at = excluded.rejected_at,
+            unit_cost = excluded.unit_cost
+        WHERE rejected_candidates.resolved = 0
+    """,
+}
 _STORE_DDL: dict[str, str] = {
     "raw_trades": """
         CREATE TABLE IF NOT EXISTS raw_trades (
@@ -86,11 +144,33 @@ _STORE_DDL: dict[str, str] = {
             unit_cost REAL
         )
     """,
+    # Matches candidate_log.py's real schema exactly, same "bake unit_cost
+    # into the initial CREATE" reasoning as rejection_events above.
+    "rejected_candidates": """
+        CREATE TABLE IF NOT EXISTS rejected_candidates (
+            ticker TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            gate_name TEXT NOT NULL,
+            observed_value REAL,
+            threshold_value REAL,
+            side TEXT,
+            rejected_at REAL NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            result TEXT,
+            resolved_at REAL,
+            unit_cost REAL,
+            PRIMARY KEY (ticker, strategy, gate_name)
+        )
+    """,
 }
 _FLUSH_INTERVAL_SEC = 1.0
 _FLUSH_BATCH = 500
 
-_buffers: dict[str, list[tuple]] = {name: [] for name in _STORE_PATHS}
+def _empty_buffer(store: str):
+    return {} if store in _STORE_KEY else []
+
+
+_buffers: dict[str, dict | list] = {name: _empty_buffer(name) for name in _STORE_PATHS}
 _lock = threading.Lock()
 _last_flush_at: dict[str, float] = {name: time.time() for name in _STORE_PATHS}
 _dropped_counts: dict[str, int] = {name: 0 for name in _STORE_PATHS}
@@ -100,7 +180,11 @@ _stop_event = threading.Event()
 
 def submit(store: str, row: tuple) -> None:
     with _lock:
-        _buffers.setdefault(store, []).append(row)
+        if store in _STORE_KEY:
+            key = tuple(row[i] for i in _STORE_KEY[store])
+            _buffers.setdefault(store, {})[key] = row  # latest wins in memory
+        else:
+            _buffers.setdefault(store, []).append(row)
 
 
 def depth() -> dict[str, int]:
@@ -130,8 +214,11 @@ def _flush_store(store: str) -> None:
     _dropped_counts so the loss is visible (capture_writer.dropped_count())
     instead of silent - same contract as series_watcher.flush() already
     established for its own (book-only, post-Task-15) buffer."""
+    upsert_mode = store in _STORE_KEY
     with _lock:
-        rows, _buffers[store] = _buffers[store], []
+        buf = _buffers[store]
+        rows = list(buf.values()) if upsert_mode else buf
+        _buffers[store] = _empty_buffer(store)
     if not rows:
         _last_flush_at[store] = time.time()
         return
@@ -140,13 +227,17 @@ def _flush_store(store: str) -> None:
         db_path.parent.mkdir(exist_ok=True)
         conn = sqlite3.connect(db_path, timeout=0.05)
         try:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout = 50")
             if store in _STORE_DDL:
                 conn.execute(_STORE_DDL[store])
-            placeholders = ",".join("?" for _ in rows[0])
-            conn.executemany(
-                f"INSERT OR IGNORE INTO {_STORE_TABLE[store]} VALUES ({placeholders})", rows,
-            )
+            if upsert_mode:
+                conn.executemany(_STORE_UPSERT_SQL[store], rows)
+            else:
+                placeholders = ",".join("?" for _ in rows[0])
+                conn.executemany(
+                    f"INSERT OR IGNORE INTO {_STORE_TABLE[store]} VALUES ({placeholders})", rows,
+                )
             conn.commit()
         finally:
             conn.close()

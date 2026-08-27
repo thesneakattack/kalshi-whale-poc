@@ -138,6 +138,110 @@ def test_flush_failure_is_counted_in_dropped_count_not_raised(tmp_path, monkeypa
     assert capture_writer.depth()["nonexistent_store"] == 0  # buffer still cleared, not re-added
 
 
+# --- upsert-mode stores (P3 Task 17: rejected_candidates) ---
+
+def _rejected_candidates_row(ticker="TICK-A", strategy="whale_watcher", gate_name="min_contracts",
+                              observed_value=10.0, threshold_value=20.0, side="yes",
+                              rejected_at=None, unit_cost=0.5):
+    """Matches services/candidate_log.py's real UPSERT VALUES shape (8
+    columns - resolved is hardcoded 0 in _STORE_UPSERT_SQL, result/
+    resolved_at aren't part of the INSERT at all)."""
+    return (ticker, strategy, gate_name, observed_value, threshold_value, side,
+            rejected_at if rejected_at is not None else time.time(), unit_cost)
+
+
+def test_upsert_store_collapses_repeated_submissions_to_the_same_key_in_memory(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "candidate_log_test.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"rejected_candidates": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": {}})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"rejected_candidates": 0.0})
+
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(observed_value=10.0, rejected_at=1000.0))
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(observed_value=15.0, rejected_at=2000.0))
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(observed_value=20.0, rejected_at=3000.0))
+    assert capture_writer.depth()["rejected_candidates"] == 1  # same (ticker, strategy, gate_name) key
+
+    capture_writer.flush_now("rejected_candidates")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM rejected_candidates").fetchall()
+    conn.close()
+    assert len(rows) == 1  # not 3
+    assert rows[0]["observed_value"] == 20.0  # latest wins, not first
+
+
+def test_upsert_store_never_overwrites_an_already_resolved_row(tmp_path, monkeypatch):
+    """The real invariant this UPSERT SQL exists to enforce (candidate_log.
+    record_rejection's own former docstring): once resolved, a row is
+    frozen - a later rejection of the same key must not un-resolve or
+    mutate it. Proven against the real UPSERT SQL, not assumed."""
+    from services import capture_writer
+    db_path = tmp_path / "candidate_log_test2.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"rejected_candidates": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": {}})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"rejected_candidates": 0.0})
+
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(observed_value=10.0))
+    capture_writer.flush_now("rejected_candidates")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE rejected_candidates SET resolved = 1, result = 'yes' "
+        "WHERE ticker = 'TICK-A' AND strategy = 'whale_watcher' AND gate_name = 'min_contracts'",
+    )
+    conn.commit()
+    conn.close()
+
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(observed_value=999.0))
+    capture_writer.flush_now("rejected_candidates")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM rejected_candidates").fetchone()
+    conn.close()
+    assert row["observed_value"] == 10.0  # unchanged, not overwritten by the post-resolve rejection
+    assert row["resolved"] == 1
+
+
+def test_upsert_store_different_keys_produce_separate_rows(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "candidate_log_test3.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"rejected_candidates": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": {}})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"rejected_candidates": 0.0})
+
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(ticker="TICK-A"))
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(ticker="TICK-B"))
+    capture_writer.submit("rejected_candidates", _rejected_candidates_row(gate_name="entry_threshold"))
+    assert capture_writer.depth()["rejected_candidates"] == 3
+
+    capture_writer.flush_now("rejected_candidates")
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM rejected_candidates").fetchone()[0] == 3
+    conn.close()
+
+
+def test_flush_sets_wal_journal_mode_on_a_fresh_db(tmp_path, monkeypatch):
+    """Closes a real gap present since Task 14: _flush_store never set
+    journal_mode itself, relying on the owning module's own _connect()
+    having run first to leave the file in WAL - true today only
+    incidentally. A store whose only writer is ever this module needs
+    this set directly, the same "bursty write took the app down under
+    rollback-journal mode" class of incident CLAUDE.md documents."""
+    from services import capture_writer
+    db_path = tmp_path / "wal_test.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"raw_trades": [_sample_trade_row("wal1")]})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"raw_trades": 0.0})
+
+    capture_writer.flush_now("raw_trades")
+
+    conn = sqlite3.connect(db_path)
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert mode.lower() == "wal"
+
+
 def test_supervisor_restarts_a_dead_writer_thread():
     from services import capture_writer
     capture_writer.start()

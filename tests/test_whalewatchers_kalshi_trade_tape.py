@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services import candidate_log, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, capture_writer, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.market_analyst_agent import _db as maa_db_module
 from services.whalewatchers.kalshi_trade_tape import KalshiTradeTapeProvider, _notional_usd, _taker_side
 
@@ -31,7 +31,17 @@ def _redirect_signal_log_db(tmp_path, monkeypatch):
     monkeypatch.setattr(series_evaluator, "DB_PATH", tmp_path / "series_evaluator.db")
     # fetch_signals() now also calls candidate_log.record_rejection() when
     # the min_contracts gate fails - same real-db-isolation reasoning.
-    monkeypatch.setattr(candidate_log, "DB_PATH", tmp_path / "candidate_log.db")
+    candidate_log_db_path = tmp_path / "candidate_log.db"
+    monkeypatch.setattr(candidate_log, "DB_PATH", candidate_log_db_path)
+    # record_rejection()'s writes route through capture_writer now (P3
+    # Task 16/17), not candidate_log.DB_PATH directly - redirect its
+    # stores too, same reasoning as test_candidate_log.py's own fixture.
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {
+        "rejected_candidates": candidate_log_db_path, "rejection_events": candidate_log_db_path,
+    })
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
+    monkeypatch.setattr(capture_writer, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
 
 
 def _market(ticker="TICK-A", volume_24h_fp="10000", close_time=None):

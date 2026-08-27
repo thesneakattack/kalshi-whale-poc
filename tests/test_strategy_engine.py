@@ -3,6 +3,7 @@ import time
 import pytest
 
 from services import candidate_log as cl_module
+from services import capture_writer as cw_module
 from services import market_analyst_agent as maa_module
 from services.market_analyst_agent import _db as maa_db_module
 from services import market_history as mh_module
@@ -45,6 +46,18 @@ def _strategy(tmp_path, monkeypatch, bankroll=10000.0, kill_switch_enabled=True,
     # data/market_analyst.db on every check_exits() call.
     monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(cl_module, "DB_PATH", tmp_path / "candidate_log.db")
+    # candidate_log.record_rejection() routes both its writes through
+    # capture_writer now (P3 Task 16/17), not cl_module.DB_PATH directly -
+    # redirect its stores too or a rejection call in these tests would hit
+    # capture_writer's default real data/candidate_log.db path (caught,
+    # not corrupted, by the sqlite3 guard - but fails the test).
+    candidate_log_db_path = tmp_path / "candidate_log.db"
+    monkeypatch.setattr(cw_module, "_STORE_PATHS", {
+        "rejected_candidates": candidate_log_db_path, "rejection_events": candidate_log_db_path,
+    })
+    monkeypatch.setattr(cw_module, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
+    monkeypatch.setattr(cw_module, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
+    monkeypatch.setattr(cw_module, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
     # _exit_confidence's new volatility-normalization (2026-08-14 auto-exit
     # deep-dive) calls market_history.volatility() whenever auto_exit_
     # enabled is on - redirect this too, same real-data-contamination bug
