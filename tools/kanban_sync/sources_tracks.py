@@ -34,6 +34,27 @@ _DONE_KEYWORDS = ("complete", "done")
 _NOT_DONE_OVERRIDE_KEYWORDS = (
     "not started", "not done", "not complete", "not yet", "still open", "in progress",
 )
+# phase:* detection (2026-08-27): furthest-along doc-path reference wins - a
+# track that cites both a plan and the research it grew from (the common
+# case) is further along than one with only a research doc. No
+# brainstorming-phase entry: an idea with none of these three doc types
+# referenced has nothing in the section body for this heuristic to detect it
+# from at all - see labels.py's own note on why there's no
+# PHASE_BRAINSTORMING constant.
+_PHASE_DOC_PATTERNS = (
+    (re.compile(r"docs/superpowers/plans/"), "PHASE_IMPLEMENTATION_PLAN"),
+    (re.compile(r"docs/superpowers/specs/"), "PHASE_DESIGN_SPEC"),
+    (re.compile(r"docs/superpowers/research/"), "PHASE_RESEARCH_EVIDENCE"),
+)
+
+
+def _detect_phase(body: str, done: bool) -> str | None:
+    if done:
+        return labels.PHASE_IMPLEMENTED
+    for pattern, attr_name in _PHASE_DOC_PATTERNS:
+        if pattern.search(body):
+            return getattr(labels, attr_name)
+    return None
 
 
 def _split_sections(text: str) -> list[tuple[str, str, str]]:
@@ -80,5 +101,6 @@ def parse_track_items(text: str) -> list[SyncItem]:
             ),
             depends_on_keys=depends_on,
             done=done,
+            phase_label=_detect_phase(body, done),
         ))
     return items

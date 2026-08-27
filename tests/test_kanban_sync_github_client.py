@@ -91,6 +91,39 @@ def test_create_issue_parses_number_from_returned_url():
     assert create_call.count("--label") == 2
 
 
+def test_create_issue_creates_a_missing_label_then_retries():
+    """Same real risk set_labels already hit (2026-08-27, 'depends-on:#75'
+    not found) but on the create path: a brand-new label family's first-ever
+    item (e.g. phase:* before it has ever been used) could hit this exact
+    failure on gh issue create --label too, not just gh issue edit
+    --add-label."""
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="'phase:design-spec' not found")
+    runner.queue("")  # gh label create
+    runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/99\n")
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.create_issue("Title", "Body", ["status:claimable", "phase:design-spec"])
+
+    assert result.number == 99
+    assert runner.calls[0][:3] == ["gh", "issue", "create"]
+    assert runner.calls[1][:3] == ["gh", "label", "create"]
+    assert "phase:design-spec" in runner.calls[1]
+    assert runner.calls[2][:3] == ["gh", "issue", "create"]
+
+
+def test_create_issue_propagates_a_real_error_unrelated_to_a_missing_label():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.create_issue("Title", "Body", ["status:claimable"])
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
 def test_set_labels_is_a_no_op_when_nothing_to_change():
     runner = FakeRunner()
     client = GithubClient(REPO, runner=runner)

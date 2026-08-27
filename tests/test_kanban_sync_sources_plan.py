@@ -1,3 +1,4 @@
+from tools.kanban_sync import labels
 from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
 
 
@@ -48,3 +49,17 @@ def test_build_plan_items_has_acceptance_criteria():
     items = build_plan_items({"x.md": {"status": "not-started", "note": ""}})
 
     assert len(items[0].acceptance_criteria) >= 1
+
+
+def test_build_plan_items_always_phase_implementation_plan():
+    """Every item reaching build_plan_items already has a real plan doc -
+    that's how it became a candidate at all (list_plan_candidates only scans
+    docs/superpowers/plans/*.md) - so phase is always implementation-plan,
+    never a lower phase. "done" classifications never reach here (skipped
+    above), so phase:implemented is never assigned by this function."""
+    items = build_plan_items({
+        "not-started.md": {"status": "not-started", "note": ""},
+        "in-progress.md": {"status": "in-progress", "note": ""},
+    })
+
+    assert all(i.phase_label == labels.PHASE_IMPLEMENTATION_PLAN for i in items)

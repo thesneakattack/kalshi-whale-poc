@@ -114,3 +114,59 @@ def test_parse_track_items_status_paragraph_spans_multiple_lines_in_context_body
     items = parse_track_items(text)
 
     assert "CH2 is next, not started" in items[0].context_body
+
+
+def test_parse_track_items_phase_prefers_plan_over_spec_and_research():
+    text = (
+        "## Track A — X\n\n"
+        "**Status (2026-08-27):** in progress.\n\n"
+        "See `docs/superpowers/research/2026-08-25-x.md`, "
+        "`docs/superpowers/specs/2026-08-25-x-design.md`, and "
+        "`docs/superpowers/plans/2026-08-25-x.md`.\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert items[0].phase_label == labels.PHASE_IMPLEMENTATION_PLAN
+
+
+def test_parse_track_items_phase_falls_back_to_spec_when_no_plan_referenced():
+    text = (
+        "## Track A — X\n\n**Status (2026-08-27):** brainstormed.\n\n"
+        "See `docs/superpowers/specs/2026-08-25-x-design.md` and "
+        "`docs/superpowers/research/2026-08-25-x.md`.\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert items[0].phase_label == labels.PHASE_DESIGN_SPEC
+
+
+def test_parse_track_items_phase_falls_back_to_research_when_only_research_referenced():
+    text = (
+        "## Track A — X\n\n**Status (2026-08-27):** investigating.\n\n"
+        "See `docs/superpowers/research/2026-08-25-x.md`.\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert items[0].phase_label == labels.PHASE_RESEARCH_EVIDENCE
+
+
+def test_parse_track_items_phase_is_none_when_no_doc_type_referenced():
+    text = "## Track A — X\n\n**Status (2026-08-27):** just an idea so far.\n"
+
+    items = parse_track_items(text)
+
+    assert items[0].phase_label is None
+
+
+def test_parse_track_items_done_track_is_phase_implemented_even_with_a_plan_referenced():
+    text = (
+        "## Track D — X\n\n**Status (2026-08-26):** complete, nothing left.\n\n"
+        "See `docs/superpowers/plans/2026-08-25-x.md`.\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert items[0].phase_label == labels.PHASE_IMPLEMENTED

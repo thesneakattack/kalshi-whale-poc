@@ -22,6 +22,15 @@ class SyncGithubClient(Protocol):
     def post_comment(self, number: int, body: str) -> None: ...
 
 
+def _desired_base_labels(item: SyncItem) -> set[str]:
+    """status:*/type:* always apply; phase:* only when the source could
+    determine one (see SyncItem.phase_label's own docstring)."""
+    result = {item.status_label, item.type_label}
+    if item.phase_label:
+        result.add(item.phase_label)
+    return result
+
+
 def _render_body(item: SyncItem) -> str:
     parts = [item.context_body.rstrip(), "\n## Acceptance criteria"]
     parts += [f"- {c}" for c in item.acceptance_criteria]
@@ -61,7 +70,7 @@ def sync_pass_one(
             if dry_run:
                 report.created.append(f"{identity}: {item.title}")
                 continue
-            desired_labels = sorted({item.status_label, item.type_label})
+            desired_labels = sorted(_desired_base_labels(item))
             issue = client.create_issue(item.title, _render_body(item), desired_labels)
             number_by_identity[identity] = issue.number
             report.created.append(f"#{issue.number} {item.title}")
@@ -84,8 +93,11 @@ def sync_pass_one(
 
         existing_status_labels = existing.labels & labels.ALL_STATUS_LABELS
         stale_status = existing_status_labels - {item.status_label}
-        add = ({item.status_label, item.type_label} - existing.labels)
-        remove = stale_status
+        existing_phase_labels = existing.labels & labels.ALL_PHASE_LABELS
+        desired_phase = {item.phase_label} if item.phase_label else set()
+        stale_phase = existing_phase_labels - desired_phase
+        add = (_desired_base_labels(item) - existing.labels)
+        remove = stale_status | stale_phase
         if add or remove:
             if not dry_run:
                 client.set_labels(existing.number, sorted(add), sorted(remove))
