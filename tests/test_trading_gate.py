@@ -2057,7 +2057,7 @@ def test_lifecycle_close_date_updated_is_a_noop_for_an_unknown_ticker():
 
 
 def test_lifecycle_determined_updates_catalog_status_but_does_not_resolve_outcome():
-    # 2026-08-23 correction (services/exits/CHEATSHEET.md's audit finding):
+    # 2026-08-23 correction (services/exits/README.md's audit finding):
     # determined is not terminal - result can still flip via disputed ->
     # amended before finalized, so no outcome resolution happens here
     # anymore, only the persisted catalog status.

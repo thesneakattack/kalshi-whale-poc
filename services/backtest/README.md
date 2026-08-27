@@ -1,4 +1,4 @@
-# Backtest module — cheat sheet
+# Backtest module — reference
 
 Owns: `backtest.py` (`entry_threshold_sweep`, `min_whale_winrate_pct_sweep`
 - stateless replay over `services/signal_log.py`'s already-logged resolved

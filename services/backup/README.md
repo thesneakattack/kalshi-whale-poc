@@ -1,4 +1,4 @@
-# Backup module — cheat sheet
+# Backup module — reference
 
 Owns: `backup.py` (snapshot every `data/*.db` file via SQLite's own online
 `Connection.backup()` API, prune old snapshots, record each run in

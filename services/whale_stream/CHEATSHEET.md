@@ -33,7 +33,7 @@ stay where they are.
   `status == "finalized"` — the only way to get a truly final,
   dispute-corrected result on this path (2026-08-23 fix, see
   `_process_stream_lifecycle`'s own docstring and
-  `services/exits/CHEATSHEET.md`'s audit finding for the full history: an
+  `services/exits/README.md`'s audit finding for the full history: an
   earlier same-day pass resolved on `determined` instead, which this
   corrected). The REST-tick path (`main.py`) applies the identical
   finalized-only gate and keeps running as an independent, idempotent
@@ -42,7 +42,7 @@ stay where they are.
   `market-positions` channels, consumed in `_process_stream_fill`/
   `_process_stream_position` (best-effort parsing, never verified against a
   real fill since real trading has never been enabled — see
-  `services/position/CHEATSHEET.md`, this module produces the WS-sourced
+  `services/position/README.md`, this module produces the WS-sourced
   side of that reconciliation).
 
 ## Handoff — who calls this module, who it calls

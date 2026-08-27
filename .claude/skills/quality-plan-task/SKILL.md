@@ -51,7 +51,7 @@ initiative. Reconstruct progress from:
 - current git history,
 - current CI state,
 - this implementation plan,
-- relevant `CHEATSHEET.md` files,
+- relevant module reference docs (`README.md`/`CHEATSHEET.md`),
 - the repository's existing checkpoint/session-handoff mechanisms.
 
 Where the implementation plan literally recommends
@@ -72,7 +72,7 @@ acceptance criteria, safety rules, and verification requirements.
    - `git rev-parse HEAD`
    - relevant recent commits
    - every existing file the task proposes touching
-   - relevant `CHEATSHEET.md`
+   - relevant module reference doc (`README.md`/`CHEATSHEET.md`)
    - current `.github/workflows/`
    Per `.claude/rules/branching-and-ci.md`: already on this initiative's
    branch → continue using it. On `main` → sync it and create one before

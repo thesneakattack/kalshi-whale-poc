@@ -1,4 +1,4 @@
-# Alerting module — cheat sheet
+# Alerting module — reference
 
 Owns: `alerting.py` (transition-based detection for the three cases
 ROADMAP.md's "Path to production" section named directly — kill-switch
@@ -122,7 +122,7 @@ crash alert stayed `resolved_at: None` forever):
 alert "pins `GET /api/quality/summary`'s overall `status` to `error`
 permanently." That's incorrect — `services/quality/routes.py` composes
 `status`/`counts` only from `observability.runtime_findings()` +
-`storage_health.storage_findings()` (see `services/quality/CHEATSHEET.md`'s
+`storage_health.storage_findings()` (see `services/quality/README.md`'s
 own field table); `alerting.active_alerts()` is exposed as a separate,
 uncombined `alerts` field that never feeds into `status`. The real,
 narrower effect of the gap was `GET /api/alerts/active`/the dashboard's

@@ -1,4 +1,4 @@
-# Observability module — cheat sheet
+# Observability module — reference
 
 Owns: `observability.py` (bounded, low-frequency persistence of runtime
 metrics the app already computes in memory, into `data/observability.db`)
@@ -496,7 +496,7 @@ persistence idiom's own "don't connect per row" guidance
 
 ## Restart-safe cold-start seeding — same fix as `backup.py`, applied up front
 
-`services/backup/backup.py`'s CHEATSHEET.md documents a real live bug
+`services/backup/backup.py`'s README.md documents a real live bug
 (2026-08-23): trusting `state["backup"]["last_started_at"]`'s in-memory
 `0.0` default across a process restart meant every `uvicorn --reload` cycle
 looked like "never backed up" and fired an unnecessary immediate re-run.

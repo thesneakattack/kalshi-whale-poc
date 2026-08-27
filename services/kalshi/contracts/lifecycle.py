@@ -10,7 +10,7 @@ Semantics owned:
   "finalized" ("Settlement complete... Terminal state"). Resolving an
   outcome at `determined` graded whale signals/analyst calls/candidate
   rows against a potentially-wrong result with no correction path (real
-  shipped bug, fixed 2026-08-23 — services/exits/CHEATSHEET.md). Only
+  shipped bug, fixed 2026-08-23 — services/exits/README.md). Only
   `settled` may trigger resolution, and even then the WS payload itself
   carries NO result field (confirmed against real traffic), so resolution
   requires a fresh single-ticker REST read re-checked for

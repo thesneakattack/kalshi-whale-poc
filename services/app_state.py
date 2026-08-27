@@ -243,7 +243,7 @@ state = {
     "backup": {"running": False, "last_started_at": 0.0, "task": None},
     # services/observability/observability.py's maybe_capture() interval
     # gate - restart-safe the same way backup's own last_started_at is (see
-    # that module's CHEATSHEET.md): seeded from the most recently persisted
+    # that module's README.md): seeded from the most recently persisted
     # sample on first check in a process rather than trusted at its 0.0
     # in-memory default.
     "observability": {"last_sample_at": 0.0},

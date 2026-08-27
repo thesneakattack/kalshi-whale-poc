@@ -1,4 +1,4 @@
-# Diagnostics module — cheat sheet
+# Diagnostics module — reference
 
 Owns: `diagnostics.py` (`run_offline`'s bundle of read-only integrity
 checks — `check_threshold_integrity`, `check_price_band_adherence`,

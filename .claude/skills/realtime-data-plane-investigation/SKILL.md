@@ -50,8 +50,9 @@ Do not let a generic execution plugin replace this initiative's numbered task wo
 
 ## Per-task workflow
 
-1. Read `CLAUDE.md`, canonical investigation files, relevant CHEATSHEETs, exact mirrored
-   Kalshi docs, current tests, current CI, and relevant recent git history.
+1. Read `CLAUDE.md`, canonical investigation files, relevant module reference docs
+   (`README.md`/`CHEATSHEET.md`), exact mirrored Kalshi docs, current tests, current CI, and
+   relevant recent git history.
 2. Re-ground:
    - branch;
    - HEAD;

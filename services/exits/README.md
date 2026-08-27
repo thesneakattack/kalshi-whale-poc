@@ -1,4 +1,4 @@
-# Exits module — cheat sheet
+# Exits module — reference
 
 Owns: `exit_engine.py` (per-position exit decisions: settlement close,
 take-profit, stop-loss, time-to-close forced exit, sentiment-reversal, the
@@ -14,7 +14,7 @@ body is now a one-line delegation into `exit_engine.check_exits`.
 `services/paper_broker.py`'s `close_position` is the actual execution
 primitive every function here calls into once a reason has been decided —
 it stays flat, it owns no exit *decision* logic, only fills/bankroll/
-persistence (see `services/position/CHEATSHEET.md`).
+persistence (see `services/position/README.md`).
 
 ## Relevant Kalshi API docs
 

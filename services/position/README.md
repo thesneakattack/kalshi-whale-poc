@@ -1,4 +1,4 @@
-# Position module — cheat sheet
+# Position module — reference
 
 Owns: `routes.py` (account order history, Market-Native state, risk
 halt/resume for all 3 independent risk trackers, erroneous-close

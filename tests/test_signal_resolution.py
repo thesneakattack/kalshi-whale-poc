@@ -58,7 +58,7 @@ def test_check_signal_resolutions_marks_resolved_markets_correctly(tmp_path, mon
 
 
 def test_check_signal_resolutions_leaves_a_determined_but_not_finalized_market_unresolved(tmp_path, monkeypatch):
-    # 2026-08-23 fix (services/whale_calibration/CHEATSHEET.md's own audit
+    # 2026-08-23 fix (services/whale_calibration/README.md's own audit
     # finding): Kalshi sets `result` the instant a market is `determined`,
     # but the result "may be disputed" and can flip via determined ->
     # disputed -> amended before finally reaching finalized

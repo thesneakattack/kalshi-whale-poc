@@ -1,4 +1,4 @@
-# History module — cheat sheet
+# History module — reference
 
 Owns: `routes.py` — browsable signal history, flow clustering, the Trading
 History tab (win/loss + cumulative P&L curve), market_history's

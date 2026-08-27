@@ -72,7 +72,7 @@ tables, reasoning purely from data availability ("only `determined` carries
 `docs/kalshi/market_lifecycle.md` is explicit that `determined` is not
 terminal (the result "may be disputed" during the settlement-timer window,
 and can flip via `determined` -> `disputed` -> `amended` before
-`finalized`) - see `services/exits/CHEATSHEET.md`'s audit finding, which
+`finalized`) - see `services/exits/README.md`'s audit finding, which
 named the identical bug shape for `close_if_settled` and got fixed the same
 pass. `determined` now only updates this module's persisted `status`
 column; `settled` does the actual resolving, via a fresh single-ticker

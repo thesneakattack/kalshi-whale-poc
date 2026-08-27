@@ -104,7 +104,7 @@ message (`_process_item`) — one parse per message, +2.6 µs/msg measured.
 The generic accumulator lives in `services/latency_agg.py`, outside this
 package on purpose: the contract-docs scanner treats every public method
 here as a Kalshi operation. Full metric list and window semantics:
-`services/observability/CHEATSHEET.md`.
+`services/observability/README.md`.
 
 ## Type strictness / tolerance policy (C2-C6, 2026-08-25)
 

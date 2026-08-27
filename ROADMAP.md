@@ -149,7 +149,7 @@ which can run in parallel right now.
       `GET /api/backup/status`/`history`, `POST /api/backup/run`. Sizing
       this against real data also found and fixed an unrelated 5.7GB
       `game_state.db` bug (candlestick payloads re-stored in full, never
-      read back) — see `services/backup/CHEATSHEET.md`.
+      read back) — see `services/backup/README.md`.
 - [x] No monitoring/alerting for a kill-switch trip, crash, or connectivity
       loss. Shipped 2026-08-23: `services/alerting/` (transition-based edge
       detection, `data/alert_log.db`, `GET /api/alerts/active`/`history`).
@@ -268,7 +268,7 @@ which can run in parallel right now.
       continued-modularization pass: `services/whale_calibration/`,
       `services/advisory/`, `services/backtest/`. Residual scope
       (regime/candidate-log/cross-strategy/market-analyst/series-evaluator)
-      documented in `services/analytics/CHEATSHEET.md`.
+      documented in `services/analytics/README.md`.
 - [ ] **Retroactively move already-stable flat files into their concern's
       folder** — `paper_broker.py` → `services/position/`,
       `strategy_engine.py` → `services/position_management/`,
@@ -279,8 +279,19 @@ which can run in parallel right now.
       this check. Deliberately not done in-line with other modularization
       work: real import-site churn across the whole codebase for files
       that already work, queued once the new-file convention (package +
-      `routes.py` + `CHEATSHEET.md`) had proven itself on enough new
+      `routes.py` + reference doc) had proven itself on enough new
       modules first.
+      **Partially spec'd 2026-08-27** (independently arrived at, then found
+      to converge with this item):
+      `docs/superpowers/specs/2026-08-27-backend-services-modularization-
+      design.md` covers `config_store.py` et al. → `services/config/`, plus
+      `account_positions.py` → `services/position/`,
+      `trade_analytics.py`/`regime_analytics.py`/`suggestion_decisions.py`
+      → `services/history/`, and a new `services/reset/` — scoped to
+      dashboard-facing files only, by explicit user choice that session.
+      `paper_broker.py` → `services/position/` and `strategy_engine.py` →
+      `services/position_management/` remain open, deferred as
+      core-trading-engine work, not part of that spec.
 - [ ] **Flatten the config surface** — too many independent knobs to track
       which are load-bearing. Direct instruction (2026-08-22); the 3-day
       config-drift incident that session is direct proof this is real, not
@@ -444,7 +455,7 @@ which can run in parallel right now.
       `check_and_alert`'s existing per-tick cadence via
       `_expire_stale_crash_alerts`), plus `resolve_alert(alert_id)` +
       `POST /api/alerts/{id}/resolve` for manual acknowledgment. See
-      `services/alerting/CHEATSHEET.md`'s "Crash-alert resolution" section.
+      `services/alerting/README.md`'s "Crash-alert resolution" section.
       **Correction to the original write-up:** it claimed this pinned
       `/api/quality/summary`'s overall `status` to `"error"` - checked
       against the actual code while designing the fix, and that's false:

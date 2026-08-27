@@ -237,7 +237,7 @@ async def _check_signal_resolutions(client: KalshiPublicGateway):
     individual get_market() calls.
 
     Only trusts a market's `result` once `status` is `finalized` (2026-08-23
-    fix, services/whale_calibration/CHEATSHEET.md's own audit finding -
+    fix, services/whale_calibration/README.md's own audit finding -
     "the single most important thing a future audit of this module's
     numbers should check first"). Same gap, same fix shape as
     catalog_scan.propagate_milestone_winners/whale_stream_handlers'

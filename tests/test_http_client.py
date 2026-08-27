@@ -632,7 +632,7 @@ def test_reset_rest_latency_window_keeps_lifetime_and_high_water(monkeypatch):
 
 def test_class_window_counts_reset_per_sample_while_lifetime_counts_persist(monkeypatch):
     # I8 found the I5 counters were lifetime-only while observability's
-    # CHEATSHEET (and the demand probe) treated them as per-sample counts -
+    # README (and the demand probe) treated them as per-sample counts -
     # summing per-minute samples of a lifetime counter inflated demand ~30x.
     clock = _install_clock(monkeypatch)
     _install_limiter(monkeypatch, clock, wait_sec=0.0)

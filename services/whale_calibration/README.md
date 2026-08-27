@@ -1,4 +1,4 @@
-# Whale calibration module — cheat sheet
+# Whale calibration module — reference
 
 Owns: `confidence_calibration.py` (rule-based bucket analysis of
 `composite_confidence_breakdown`'s factor weights against real resolved
@@ -23,7 +23,7 @@ all is decided upstream of this module**, and that upstream logic touches
 Kalshi data directly — see the audit finding below.
 
 ## Audit finding: whale-accuracy "correct" is set at `determined`, not
-`finalized` — the same gap as `services/exits/CHEATSHEET.md`, now on the
+`finalized` — the same gap as `services/exits/README.md`, now on the
 objective-function metric itself
 
 Checked directly against `docs/kalshi/market_lifecycle.md` while writing
@@ -47,7 +47,7 @@ timer restarts" if it is. The truly final state is `finalized`
 finding named as the top priority for a future audit): `_check_signal_
 resolutions` now only trusts `market.result` once `market.status ==
 "finalized"` — same fix shape, same day, as the sibling gaps this section
-already named in `services/exits/CHEATSHEET.md` (phase 134) and
+already named in `services/exits/README.md` (phase 134) and
 `services/market_catalog/CHEATSHEET.md`'s `propagate_milestone_winners`. A
 ticker whose market is `determined` but not yet `finalized` simply stays in
 `unresolved_batch`'s pool and gets rechecked on a later pass — the same
@@ -67,7 +67,7 @@ needing to first measure how often it happens.
   through `routes.py`) every tick, gated by `confidence_calibration.enabled`
   and `calibration_history`'s own rate-limited `due()` check.
 - **Downstream (real write-back loop, same shape as
-  `services/advisory/CHEATSHEET.md`'s):** when
+  `services/advisory/README.md`'s):** when
   `confidence_calibration.auto_apply_enabled` is on (config-gated, typed-
   confirmation-phrase protected — `POST
   /api/confidence-calibration/auto-apply/enable`), `trading_loop` writes

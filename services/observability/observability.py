@@ -4,7 +4,7 @@ already computes in memory (tick timing/phase breakdown, rate-limit hits,
 trade-stream throughput, WS drop counters, ...) so a later question like
 "was it slow an hour ago" can be answered from data/observability.db
 instead of only from live state or logs. docs/superpowers/plans/2026-08-24-
-quality-control-plane.md Task 9; see this package's CHEATSHEET.md.
+quality-control-plane.md Task 9; see this package's README.md.
 
 Deliberately reuses existing counters rather than adding new instrumentation
 (docs/superpowers/specs/2026-08-24-quality-control-plane-design.md section
@@ -359,7 +359,7 @@ def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
 def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     """Cheap interval gate wired into the trading loop, next to backup's own
     _maybe_run_backup. Restart-safe the same way services/backup/backup.py's
-    CHEATSHEET.md documents fixing live (2026-08-23): last_sample_at is
+    README.md documents fixing live (2026-08-23): last_sample_at is
     seeded from the most recently *persisted* sample the first time this
     runs in a given process, instead of trusting the in-memory
     state["observability"] default alone - otherwise every uvicorn --reload

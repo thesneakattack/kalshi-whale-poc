@@ -33,7 +33,7 @@ class FakeClient:
 
 
 def test_propagate_milestone_winners_only_includes_a_markets_own_result_once_finalized(monkeypatch):
-    # 2026-08-23 fix (services/exits/CHEATSHEET.md's audit finding,
+    # 2026-08-23 fix (services/exits/README.md's audit finding,
     # docs/kalshi/market_lifecycle.md): Kalshi sets `result` the instant a
     # market is "determined", well before "finalized" - the result "may be
     # disputed" during the settlement-timer window in between. A market

@@ -6,7 +6,7 @@ boundary package on purpose: nothing here interprets vendor data, and
 tools/quality_audit's kalshi-contract-docs scanner rightly treats every
 public method inside services/kalshi/ as a documented Kalshi operation.
 
-Design constraints (services/observability/CHEATSHEET.md "Hot-path
+Design constraints (services/observability/README.md "Hot-path
 impact"): O(1) per sample, a fixed label set, no per-event persistence.
 The fixed log-spaced buckets are the cheapest way to bound a p95 when the
 observability store only persists one scalar per metric per minute - the
