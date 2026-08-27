@@ -71,3 +71,46 @@ def test_parse_track_items_done_status_line_marks_item_done():
     items = parse_track_items(text)
 
     assert items[0].done is True
+
+
+def test_parse_track_items_does_not_false_positive_on_a_done_sub_step_mid_paragraph():
+    """Real bug, found live 2026-08-27: a multi-line status paragraph whose FIRST
+    line mentions a sub-step being "done" (CH1), while the track's own overall
+    verdict - "not started" - appears several lines later in the same paragraph,
+    was being read as the whole track being done. _STATUS_LINE_RE previously
+    stopped at the first newline, so the "not started" text was never even seen by
+    the done-check. This is the actual text from active-tracks-board.md's Track A
+    section that got a live GitHub issue incorrectly auto-closed."""
+    text = (
+        "## Track A — Realtime data plane (lead track)\n\n"
+        "**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every\n"
+        "axis checked: frame count bounded, no snapshot cost on churn-add, no\n"
+        "positive queue-depth/latency correlation, and no measured rate-limit\n"
+        "pressure. Full measurement: H11 in the known-findings doc.\n"
+        "**CH2 is next, not started** — root-cause the still-untraced third\n"
+        "instability event; CH1's negligible-cost result makes churn-as-direct-cause\n"
+        "less likely on priors but does not rule it out.\n\n"
+        "**Canonical docs**\n"
+        "- Investigation plan: some-plan.md\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert items[0].done is False
+
+
+def test_parse_track_items_status_paragraph_spans_multiple_lines_in_context_body():
+    """The full multi-line status paragraph (not just its first line) should be
+    what a human reviewing the issue actually sees, so the "not started" qualifier
+    is visible there too, not just used internally by the done-check."""
+    text = (
+        "## Track A — Realtime data plane (lead track)\n\n"
+        "**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every\n"
+        "axis checked.\n"
+        "**CH2 is next, not started** — root-cause the instability event.\n\n"
+        "**Canonical docs**\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert "CH2 is next, not started" in items[0].context_body
