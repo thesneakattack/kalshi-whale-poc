@@ -45,15 +45,18 @@ def _check_project_scope() -> None:
 
 
 # Conservative per-item GraphQL call estimates. A real (write) run costs up to
-# ~4 calls/item: sync_pass_one's find_by_marker + create_issue/set_labels, plus
-# sync_pass_two's own find_by_marker + set_labels for depends-on reconciliation.
-# A --dry-run never writes, only sync_pass_one's find_by_marker runs, so 1/item.
+# ~6 calls/item: sync_pass_one's find_by_marker + create_issue/set_labels +
+# ensure_on_project/set_project_status (2026-08-27, Project Status field sync -
+# both are GraphQL-backed under the hood despite looking like plain CLI flags,
+# same as the rest), plus sync_pass_two's own find_by_marker + set_labels for
+# depends-on reconciliation. A --dry-run never writes and never touches the
+# project - only sync_pass_one's find_by_marker runs - so 1/item, unchanged.
 # Found live 2026-08-27: a 33-item real sync exhausted the 5000/5000 GraphQL
 # quota partway through with zero advance warning, leaving fields/labels
 # half-applied - and the failure surfaced as a misleading gh CLI error ("unknown
 # owner type") rather than anything rate-limit-shaped, only identifiable via
 # GH_DEBUG=api. Refusing to start an under-budget run is safer than a partial one.
-_ESTIMATED_CALLS_PER_ITEM_WRITE = 4
+_ESTIMATED_CALLS_PER_ITEM_WRITE = 6
 _ESTIMATED_CALLS_PER_ITEM_DRY_RUN = 1
 
 

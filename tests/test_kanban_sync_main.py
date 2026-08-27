@@ -171,6 +171,22 @@ def test_cmd_sync_skips_stale_worktree_check_when_worktree_not_in_sources(monkey
     assert calls == []
 
 
+def test_estimated_calls_per_item_write_reflects_project_status_calls():
+    assert cli._ESTIMATED_CALLS_PER_ITEM_WRITE == 6
+
+
+def test_check_rate_limit_budget_exits_at_the_new_higher_estimate():
+    """Proves the constant bump actually changed guard behavior, not just
+    its docstring: 33 * 4 (the old estimate's boundary) is no longer
+    enough headroom for 33 items at the new per-item cost."""
+    client = _FakeRateLimitClient(remaining=33 * 4)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._check_rate_limit_budget(client, item_count=33, dry_run=False)
+
+    assert exc.value.code == 1
+
+
 def test_check_rate_limit_budget_uses_a_lower_estimate_for_dry_run():
     """A dry run only ever calls find_by_marker (one read per item) - never
     create/edit/close - so it needs far less budget than a real write run for the
