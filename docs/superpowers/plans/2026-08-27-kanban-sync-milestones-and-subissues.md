@@ -735,11 +735,38 @@ Update the import line:
 from tools.kanban_sync.sync import close_completed_plan_parents, close_stale_worktree_issues, reconcile, sync_pass_one
 ```
 
+**Pre-dispatch fix (verified against current `tests/test_kanban_sync_sync.py`
+before this task was dispatched):** the existing `_item()` helper hardcodes
+`type_label=labels.TYPE_TRACKING` regardless of its `kind` argument — passing
+`kind="plan"` alone does NOT produce a `TYPE_PLAN_TASK`-labeled issue, since
+`type_label` is a plain dataclass field with no derivation from `kind`
+(`tools/kanban_sync/models.py`'s `SyncItem` has no such logic either). Without
+this fix, `_plan_item()`'s created issue would never carry `TYPE_PLAN_TASK`,
+so `client.list_open_by_label(labels.TYPE_PLAN_TASK)` would never return it
+and every test below would fail on `assert report.closed`. Fix: `_item()`
+gets a new `type_label` keyword parameter defaulting to the existing
+`labels.TYPE_TRACKING` (every current call site is unaffected), and
+`_plan_item()` passes `type_label=labels.TYPE_PLAN_TASK` explicitly. Add this
+one-line change to `_item()`'s signature as parts of this task's Step 1
+(the function itself already exists in the file, only its signature changes):
+
+```python
+def _item(kind="track", key="A", *, title="Track A", status=labels.STATUS_CLAIMABLE,
+          done=False, depends_on=(), phase=None, type_label=labels.TYPE_TRACKING):
+    return SyncItem(
+        kind=kind, key=key, title=title, status_label=status,
+        type_label=type_label, context_body="## Context\nx",
+        acceptance_criteria=("done when x happens",), done=done,
+        depends_on_keys=depends_on, phase_label=phase,
+    )
+```
+
 Add tests (near the `close_stale_worktree_issues` tests):
 
 ```python
 def _plan_item(key="x.md", *, title="Plan: x.md"):
-    return _item(kind="plan", key=key, title=title, status=labels.STATUS_CLAIMABLE)
+    return _item(kind="plan", key=key, title=title, status=labels.STATUS_CLAIMABLE,
+                 type_label=labels.TYPE_PLAN_TASK)
 
 
 def test_close_completed_plan_parents_closes_issue_whose_sub_issues_are_all_done():
