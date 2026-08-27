@@ -111,6 +111,22 @@ class GithubClient:
     def post_comment(self, number: int, body: str) -> None:
         self._run(["issue", "comment", str(number), "--body", body])
 
+    def graphql_rate_limit(self) -> tuple[int, int]:
+        """Returns (remaining, reset_epoch_seconds) for the GraphQL quota. `gh project`
+        and `gh issue edit` are both GraphQL-backed under the hood despite looking like
+        plain CLI commands (found live 2026-08-27 - a bulk board-population run
+        exhausted the 5000/5000 quota partway through with no advance warning, and the
+        failure surfaced as a misleading 'unknown owner type' error rather than
+        anything rate-limit-shaped). Not repo-scoped - rate_limit is a global endpoint -
+        so this bypasses _run's automatic --repo flag rather than reusing it."""
+        result = self._runner(["gh", "api", "rate_limit", "--jq", ".resources.graphql"])
+        if result.returncode != 0:
+            raise GithubCliError(
+                f"gh api rate_limit failed: {result.stderr or result.stdout}"
+            )
+        data = json.loads(result.stdout)
+        return data["remaining"], data["reset"]
+
     def find_pr_state(self, branch: str) -> str | None:
         stdout = self._run([
             "pr", "list", "--head", branch, "--state", "all",

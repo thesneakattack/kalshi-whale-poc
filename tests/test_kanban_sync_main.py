@@ -68,3 +68,43 @@ def test_collect_items_checks_plan_classifications_before_any_subprocess_call(mo
         cli._collect_items(["plan", "worktree"], None)
 
     assert exc.value.code == 1
+
+
+class _FakeRateLimitClient:
+    def __init__(self, remaining: int, reset: int = 1787812121) -> None:
+        self._remaining = remaining
+        self._reset = reset
+
+    def graphql_rate_limit(self):
+        return self._remaining, self._reset
+
+
+def test_check_rate_limit_budget_exits_when_insufficient_for_a_real_run():
+    """Found live 2026-08-27: a 33-item real sync (dry_run=False) exhausted the
+    quota partway through - each item can cost up to ~4 GraphQL calls
+    (find_by_marker + create/edit + a second find_by_marker/set_labels pass for
+    depends-on reconciliation). 10 remaining is nowhere near enough for 33 items."""
+    client = _FakeRateLimitClient(remaining=10)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._check_rate_limit_budget(client, item_count=33, dry_run=False)
+
+    assert exc.value.code == 1
+
+
+def test_check_rate_limit_budget_passes_when_sufficient():
+    client = _FakeRateLimitClient(remaining=5000)
+
+    cli._check_rate_limit_budget(client, item_count=33, dry_run=False)  # must not raise
+
+
+def test_check_rate_limit_budget_uses_a_lower_estimate_for_dry_run():
+    """A dry run only ever calls find_by_marker (one read per item) - never
+    create/edit/close - so it needs far less budget than a real write run for the
+    same item count."""
+    client = _FakeRateLimitClient(remaining=40)
+
+    cli._check_rate_limit_budget(client, item_count=33, dry_run=True)  # must not raise
+
+    with pytest.raises(SystemExit):
+        cli._check_rate_limit_budget(client, item_count=33, dry_run=False)

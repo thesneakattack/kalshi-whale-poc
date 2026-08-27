@@ -179,6 +179,39 @@ def test_close_issue_calls_gh_issue_close():
     assert "9" in runner.calls[0]
 
 
+def test_graphql_rate_limit_parses_remaining_and_reset():
+    """Found live 2026-08-27: a 33-item board-population run (item-add + item-edit,
+    both GraphQL-backed despite looking like plain CLI flags) silently exhausted the
+    5000/5000 GraphQL quota partway through, leaving fields/labels half-applied - and
+    surfaced as a misleading 'unknown owner type' error rather than anything
+    rate-limit-shaped, confirmed only by re-running with GH_DEBUG=api. A tool that
+    bulk-writes to GitHub must check its own budget before starting, not discover
+    exhaustion mid-run."""
+    runner = FakeRunner()
+    runner.queue('{"limit": 5000, "used": 4990, "remaining": 10, "reset": 1787812121}')
+    client = GithubClient(REPO, runner=runner)
+
+    remaining, reset = client.graphql_rate_limit()
+
+    assert remaining == 10
+    assert reset == 1787812121
+    # Not repo-scoped - rate_limit is a global endpoint, must not get --repo appended
+    # the way every other _run-based call does.
+    assert runner.calls[0] == ["gh", "api", "rate_limit", "--jq", ".resources.graphql"]
+
+
+def test_graphql_rate_limit_raises_on_a_real_gh_failure():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 503: Service Unavailable")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.graphql_rate_limit()
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "503" in str(exc)
+
+
 def test_post_comment_calls_gh_issue_comment_with_body():
     runner = FakeRunner()
     runner.queue("")
