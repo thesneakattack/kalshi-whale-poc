@@ -516,22 +516,44 @@ which can run in parallel right now.
       already rebuild the bundle from current source on every push, so a
       broken build fails loudly on its own and a stale-vs-source drift
       can't reach either check undetected.
-- [ ] **Persisted quality-coordination observation series** (I11 spec, I12
-      plan) — a read-only `services/quality_coordination.py` module that
-      tracks `tools.quality_audit` static findings' identity/persistence/
-      suppression state over time and exposes it via
-      `GET /api/quality/coordination`, with zero GitHub writes and zero new
-      credentials. Fully specified and planned as 9 bite-sized TDD tasks but
-      **not implemented** — the 2026-08-25/26 autonomous-quality-
-      coordination investigation (`docs/superpowers/research/2026-08-25-
-      autonomous-quality-architecture-decision.md`) measured **zero**
-      durable `main`-level findings needing escalation across its 41-hour
-      sample and concluded report-only stays correct until new evidence
-      says otherwise — building even this report-only observation series is
-      queued nice-to-have, not urgent, and a future write-lane (GitHub
-      issues/draft PRs) is explicitly a separate, later decision requiring
-      its own re-verification, not a default next step. Start here:
-      `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`.
+- [x] **Persisted static-finding observation series** (I11 spec, I12
+      plan, implemented 2026-08-26; renamed 2026-08-27) — a read-only
+      `tools/quality_ratchet.py` module (standalone workflow tooling, not
+      application code) that tracks `tools.quality_audit` static findings'
+      identity/persistence/suppression state over time, with zero GitHub
+      writes and zero new credentials. Invoked externally only
+      (`python -m tools.quality_ratchet`) — corrected mid-implementation,
+      same day (2026-08-26), after the module was originally built wired
+      into the trading app (`main.py`'s tick loop, `config/settings.yaml`,
+      app-owned API routes): that coupling was a real misunderstanding of
+      the feature's own purpose (workflow/tooling quality control, not
+      application behavior) and was fully reversed — see
+      `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s
+      Task 15 and `CLAUDE.md`'s "Workflow/tooling and application code must
+      never overlap" standing rule for the full account. No API surface, no
+      dashboard view; inspect `tools/quality_ratchet_data/quality_
+      ratchet.db` directly or run the module's own CLI. **Renamed
+      2026-08-27, module and behavior otherwise unchanged:** a further
+      direct correction clarified that "Autonomous Quality Coordination"
+      was never supposed to mean this — it names a *different* tool
+      (project-manager/janitor over this repo's own engineering workflow,
+      not an observer of the trading app's own static findings). This
+      module kept its implementation under the new `quality_ratchet` name;
+      see the next item for what "AQC" now refers to.
+- [ ] **Autonomous Quality Coordination (workflow-health)** — spec'd
+      2026-08-27:
+      `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
+      workflow-design.md`. An automated project-manager/janitor over this
+      repo's own engineering workflow — branch/PR/CI lifecycle, `superpowers`
+      plan/ledger execution health, standing-rule/baseline hygiene, and
+      (as context, not an audited target) the trading app's own
+      self-reported diagnostics — plus a narrow, three-action deterministic
+      cleanup layer (`git worktree prune`, deleting merged-and-remote-
+      deleted local branches, deleting a finished plan's SDD scratch
+      workspace). Requires one small application-side change
+      (`services/auth.py`'s `PUBLIC_PATHS` gains the three read-only
+      diagnostic routes AQC reads as context) — everything else touches
+      only `tools/`, git, and the filesystem. Not yet planned/implemented.
 
 ## Shipped
 

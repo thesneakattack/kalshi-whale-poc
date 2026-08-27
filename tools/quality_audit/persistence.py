@@ -1,12 +1,26 @@
 """Persistence-isolation scanner for the Quality Control Plane's static
 audit CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task
-5). Cross-checks every module-level `DB_PATH = ...` assignment under the
-repo against tests/support/runtime_isolation.py's PERSISTENCE_MODULE_PATHS
-registry (Task 2) - a module with real persisted state that isn't
-registered there is invisible to every isolation guarantee that registry
-backs (see that module's own docstring for the 2026-08-23 test-
-contamination incident this exists to prevent from recurring in a
-different shape: a new DB_PATH owner nobody remembered to register).
+5). Cross-checks every module-level `DB_PATH = ...` assignment under
+services/ (and main.py) against tests/support/runtime_isolation.py's
+PERSISTENCE_MODULE_PATHS registry (Task 2) - a module with real persisted
+state that isn't registered there is invisible to every isolation
+guarantee that registry backs (see that module's own docstring for the
+2026-08-23 test-contamination incident this exists to prevent from
+recurring in a different shape: a new DB_PATH owner nobody remembered to
+register).
+
+Deliberately excludes tools/: that directory holds standalone workflow
+tooling, not application code, and PERSISTENCE_MODULE_PATHS is
+specifically the application's own test-isolation registry (see
+CLAUDE.md's "workflow and tooling should never overlap with app code"
+standing rule, added 2026-08-26 after tools/quality_ratchet.py -
+tools/quality_coordination.py at the time, renamed 2026-08-27 - originally
+shipped registered there). A tools/-owned module manages its own
+persistence isolation directly in its own tests (e.g.
+tools/quality_ratchet.py's tests explicitly monkeypatch its DB_PATH
+in every test function) rather than relying on the app's shared registry
+- requiring registration would recreate the exact coupling this scanner's
+own home directory (tools/) exists to avoid.
 
 Reads PERSISTENCE_MODULE_PATHS as a plain tuple of strings only - never
 calls tests.support.runtime_isolation.loaded_registered_modules(), which
@@ -27,6 +41,8 @@ from tools.quality_audit import source
 def _find_db_path_owners(repo_root: Path) -> dict[str, Path]:
     owners: dict[str, Path] = {}
     for path in source.iter_python_files(repo_root, include_tests=False):
+        if path.relative_to(repo_root).parts[0] == "tools":
+            continue  # standalone workflow tooling manages its own test isolation - see module docstring
         tree = source.parse_python(path)
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(

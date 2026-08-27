@@ -132,7 +132,10 @@ already know about itself" from scratch every time.
 
 1. `GET /api/quality/summary` — the single composite health read: overall
    status, active findings, alerts, faults, storage summary, latest
-   research-run status. Start here for "is something wrong."
+   research-run status, and a `coordination` rollup (escalation-eligible/
+   suppressed/observed counts from the persisted quality-coordination
+   observation series — `GET /api/quality/coordination` for the full
+   per-item detail and explanation log). Start here for "is something wrong."
 2. `GET /api/health/pipeline` — background-task/scheduler state (which
    `_maybe_*` schedulers are running, when each last fired).
 3. `GET /api/health/faults` — accumulated exception history by
@@ -378,11 +381,52 @@ site. When a backend-computed value already exists, prefer exposing it as
 its own named field over re-deriving it client-side at all — re-derivation
 is exactly where both of these bug classes happened.
 
+## Workflow/tooling and application code must never overlap (2026-08-26)
+
+Direct standing instruction, prompted by a real mistake: an "Autonomous Quality
+Coordination" module — meant to watch this repo's own code-quality scanner findings,
+i.e. engineering-*workflow* health — was originally built wired into the trading
+*application*: an in-process scheduler inside `main.py`'s own tick loop, a config
+section in `config/settings.yaml`, and read routes in `services/quality/routes.py`. The
+word "autonomous" led straight to conflating it with the app's own automation, since the
+app itself is an autotrader — but the feature was never about the app. Corrected
+2026-08-26 by removing all of it: the module moved to `tools/`, its data moved out of
+the shared `data/` directory, and every scheduler/config/route touchpoint was deleted
+(see `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s Task 15
+and `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md`'s own
+Amendment for the full account).
+
+**Standing rule going forward, for this and any future workflow/tooling feature:**
+- Code lives under `tools/`, never `services/` or `main.py`.
+- Config lives in the tool's own file/mechanism, never `config/settings.yaml`.
+- Execution is external and standalone (a human, cron, a CI scheduled pipeline), never
+  wired into `main.py`'s tick loop, `services/app_state.py`'s state dict, or any other
+  live-app execution path.
+- The application must never import from, configure, schedule, or depend on a
+  workflow/tooling module in any way — including test infrastructure
+  (`tests/support/runtime_isolation.py`'s `PERSISTENCE_MODULE_PATHS` is the app's own
+  registry; a tool manages its own test isolation directly).
+- The reverse direction is fine: a tool may read from the application through a real,
+  intentional API boundary if a genuine future need justifies one. Coupling is a
+  one-way concern (app → tool is never acceptable; tool → app, via a real endpoint, is).
+- If a human-facing view of a tool's output is ever wanted, that's its own standalone
+  concern (e.g. a small dashboard reading the tool's own data store directly) — not a
+  route added to this application.
+
 ## Quick file map
 
 - `main.py` — FastAPI app, API/auth routes only (no HTML), the trading loop.
 - `services/` — one module per concern (client, strategy, risk, broker,
   persistence, auth, accounts store, whale-watcher provider library).
+- `tools/` — standalone workflow/tooling, never application code (see the
+  standing rule above): `quality_audit/` (static repo-quality scanner),
+  `quality_ratchet.py` (renamed from `quality_coordination.py` 2026-08-27 —
+  persisted observation series over that scanner's findings; "Autonomous
+  Quality Coordination" now names a different, separately-specified tool,
+  see ROADMAP.md and `docs/superpowers/specs/2026-08-27-autonomous-
+  quality-coordination-workflow-design.md`), `project_manifest.py`, and
+  others. Own persistence, own config (if any), own invocation — zero
+  coupling with `main.py`/`services/`.
 - `static/` — dashboard + status page + login/accounts pages, served
   directly by ddev's `web` container, not by `main.py`. Plain inline
   HTML/CSS/JS per page, no build step, no bundler.

@@ -180,7 +180,8 @@ The "refresh plans that instruct editing `static/status.html` directly" requirem
 
 ---
 
-## 4.6 Autonomous Quality Coordination research — MERGED RESEARCH LEVERAGE
+## 4.6 Autonomous Quality Coordination research — MERGED RESEARCH LEVERAGE, since
+implemented (2026-08-26, later the same day — see the "Not yet realized" note below)
 
 PR #15/#18 completed the AQC investigation.
 
@@ -217,16 +218,36 @@ Future work can immediately apply the AQC coordination doctrine manually:
 
 ### Not yet realized
 
-The following runtime capability is **not implemented**:
+**~~The following runtime capability is not implemented: `services/quality_coordination.py`,
+`data/quality_coordination.db`, persisted coordination observation history, coordination
+API routes, periodic observation scheduling, coordinator health/staleness surfacing.
+Therefore AQC has improved execution discipline, not delivered runtime autonomous
+coordination yet.~~**
 
-- `services/quality_coordination.py`
-- `data/quality_coordination.db`
-- persisted coordination observation history
-- coordination API routes
-- periodic observation scheduling
-- coordinator health/staleness surfacing
+**Corrected (2026-08-26, later the same day):** implemented as `tools/quality_coordination.py`
+(not `services/` — see `CLAUDE.md`'s "Workflow/tooling and application code must never
+overlap" standing rule, added the same day after the module was originally built wired
+into the trading app and that coupling was identified as a real mistake), with persisted
+observation history at `tools/quality_coordination_data/quality_coordination.db`
+(deliberately outside the shared `data/` directory). **Two of the six items above were
+never actually delivered, by design, not oversight:** "coordination API routes" and
+"periodic observation scheduling" — the module has neither. It's invoked externally only
+(`python -m tools.quality_coordination`), on whatever cadence a human or an external
+scheduler chooses; the trading application has zero coupling to it in any direction. See
+`docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s Task 15 for the
+full account.
 
-Therefore AQC has improved **execution discipline**, not delivered runtime autonomous coordination yet.
+**Corrected again, more fundamentally (2026-08-27):** everything above in this section is
+accurate as a historical record of what was built, but it was never actually "Autonomous
+Quality Coordination" as the user originally meant the term — it's a persisted observation
+series over the trading *application's* own static code findings, which is a real,
+legitimate, but differently-scoped capability. Direct user correction: AQC was always meant
+to audit "the automated workflow itself" (an expert-project-manager/janitor role over this
+repo's own branches/PRs/CI/plans/ledgers), informed by, not auditing, the trading app's own
+diagnostics. Renamed to `tools/quality_ratchet.py` (same behavior, unchanged) so the name
+stops colliding with what "AQC" now means — see
+`docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` for
+the actual AQC design, not yet implemented, and Program 7 below for its updated status.
 
 ---
 
@@ -402,7 +423,29 @@ The operator console must ultimately represent backend concepts that earlier pro
 ## 5.3 Autonomous Quality Coordination implementation
 
 **Plan:** `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`  
-**State:** **PLAN REQUIRES ARCHITECTURAL CORRECTION**.
+**State:** ~~PLAN REQUIRES ARCHITECTURAL CORRECTION~~ ~~**CORRECTED, safe to
+execute**~~ (commit `d015733`, same day — Task 6 was rewritten in place to
+match the "Required correction" list below before any of it shipped) **→
+implemented, then corrected further, same day (plan Task 15): the whole
+in-app-scheduler approach — even the `asyncio.to_thread`-isolated version
+this verdict approved — was itself the wrong design.** Direct user
+correction: this feature was never supposed to touch the trading
+application at all; "prefer standalone scheduled CLI/process," the FIRST
+option this section's own "Required correction" list already named below,
+turned out to be the right call all along, not the fallback it was framed
+as. The module now runs as `tools/quality_coordination.py`, invoked
+externally only, with zero application coupling in any form (no scheduler,
+no config, no API routes) — see `CLAUDE.md`'s "Workflow/tooling and
+application code must never overlap" standing rule and the plan's Task 15.
+
+**Corrected further (2026-08-27):** this plan and its Task 15 correction were themselves
+scoped to the wrong audit target — the trading application's own static code findings, not
+"the automated workflow itself" as originally meant. The module this plan built is kept,
+renamed to `tools/quality_ratchet.py` (behavior unchanged) — see
+`docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` for
+what "Autonomous Quality Coordination" actually refers to now, and Program 7 below for its
+current status. This plan's own remaining detail below is left as the historical record of
+what `quality_ratchet.py` actually is, not confused with the real AQC.
 
 ### Keep
 
@@ -415,7 +458,8 @@ The operator console must ultimately represent backend concepts that earlier pro
 - content-fingerprint idempotence;
 - active-work suppression;
 - persisted observation history;
-- read-only API exposure.
+- ~~read-only API exposure~~ **removed entirely (Task 15) — no API route
+  exists, in either direction; see the State note above.**
 
 ### Unsafe as written
 
@@ -442,7 +486,18 @@ That conflicts with the later realtime investigation's key invariant: unrelated 
 
 ### Verdict
 
-> **Do not execute as written. Preserve the investigation; revise runtime integration only.**
+> ~~Do not execute as written. Preserve the investigation; revise runtime
+> integration only.~~ **Superseded (2026-08-26, later the same day):** the
+> revision this verdict called for already happened, in the plan document
+> itself, before this section was updated to say so. Task 6 as currently
+> written satisfies all four "Required correction" bullets above —
+> `asyncio.to_thread` isolation (the named second-choice, justified
+> because the iteration is fully self-contained), `enabled: false` by
+> default until a real runtime-cost measurement, and a mandatory
+> noninterference-measurement step before that default is ever flipped.
+> **Execute as written**, starting at Task 1, via the plan's own header
+> instruction (`superpowers:subagent-driven-development` or
+> `superpowers:executing-plans`).
 
 ---
 
@@ -931,6 +986,15 @@ Core trading interfaces stable.
 
 ## Program 7 — Revised AQC implementation
 
+**Corrected (2026-08-27):** "Revised AQC" here still meant the trading-application
+static-finding observer — renamed `tools/quality_ratchet.py`, Tasks 1-9 of its plan fully
+implemented and merged (2026-08-26/27), not a Program 7 concern going forward. The real
+Program 7 (audit "the automated workflow itself," not the app) is freshly spec'd at
+`docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` and
+has not started implementation. Current status: see `docs/superpowers/plans/2026-08-26-
+active-tracks-board.md`'s Track C table, which is the authoritative live status tracker for
+this program going forward rather than this section's own stale requirements below.
+
 ### Priority
 
 Useful but not trading-critical.
@@ -941,9 +1005,10 @@ May move earlier only if fully isolated from trading and noncontending with crit
 
 Do not use current Task 6 tick integration.
 
-Preferred topology:
+Preferred topology (historical — described the now-renamed `quality_ratchet.py`, not the
+real AQC; see the correction note above):
 
-`scheduled standalone CLI/process → static audit + branch reads → quality_coordination.db → read-only API/UI`
+`scheduled standalone CLI/process → static audit + branch reads → quality_ratchet.db → read-only API/UI`
 
 ### Preserve
 
@@ -1196,7 +1261,8 @@ earlier judgment call that this update reverses.
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
 | Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3 AUTHORIZED not started (2026-08-26); P4-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
-| AQC persisted coordinator | PLAN REQUIRES REFRESH | Program 7 |
+| Static-finding ratchet (was mislabeled "AQC persisted coordinator") | IMPLEMENTED as standalone `tools/quality_ratchet.py` (renamed 2026-08-27), zero app coupling (2026-08-26 — see §5.3 and §4.6) | N/A — done, not application-owned, not Program 7 |
+| AQC (workflow-health, the real scope) | SPEC'D 2026-08-27, not yet implemented — `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` | Program 7 |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
 | Economic strategy effectiveness | MERGED RESEARCH LEVERAGE (2026-08-26) — E1-E7/E11-E12 resumed and merged forward onto post-Program-1 `main`; findings' Program-1-dependency caveat explicitly still open pending elapsed-time re-verification, not implementation-approved | Program 2R (done) → Program 2 |
