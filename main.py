@@ -269,11 +269,16 @@ async def _check_signal_resolutions(client: KalshiPublicGateway):
 
 
 def _flush_trade_capture(trade_tape: list, cfg: dict) -> dict:
-    """Synchronous batched write into series_watcher's raw_trades table -
-    root-cause report C1's specifically measured 0.65-1.6s executemany on
-    essentially every tick. A plain sync function so it is directly
-    unit-testable and directly callable from tick_executor's worker thread
-    (realtime data-plane remediation plan, P1 Task 7)."""
+    """Records this tick's trade tape, then flushes series_watcher's
+    book_snapshots buffer. Trades no longer flush here (P3 Task 15 -
+    record_trade submits each row to capture_writer's own independently-
+    scheduled daemon thread instead), which is what root-cause report C1's
+    originally-measured 0.65-1.6s executemany on essentially every tick was
+    - the book-side flush this function still does synchronously is a much
+    smaller, unmeasured-as-a-problem cost, kept here because P1 Task 7
+    already offloaded it via tick_executor regardless. A plain sync
+    function so it is directly unit-testable and directly callable from
+    tick_executor's worker thread."""
     for tape_trade in trade_tape:
         series_watcher.record_trade(tape_trade, cfg)
     return series_watcher.flush()
@@ -742,12 +747,14 @@ async def trading_loop():
             # would under-report exactly when the stream is the thing
             # that's broken. record_trade dedupes on trade_id, so the
             # deliberate overlap between the two paths costs nothing.
-            # The record loop + batched flush (see series_watcher.flush) is
-            # root-cause report C1's specifically measured 0.65-1.6s
+            # The record loop below (record_trade, now submitting to
+            # capture_writer's own daemon thread - P3 Task 15) is what
+            # root-cause report C1 originally measured as a 0.65-1.6s
             # synchronous executemany into the 16.9M-row raw_trades table on
-            # essentially every tick - routed through tick_executor (P1
-            # Task 7) so it runs off this loop instead of starving the WS
-            # consumer for that whole stretch.
+            # essentially every tick; that cost is now off this loop
+            # entirely, on capture_writer's own schedule. This call still
+            # runs via tick_executor (P1 Task 7) for the book_snapshots
+            # flush series_watcher.flush() still does synchronously here.
             await _flush_trade_capture_async(trade_tape, cfg)
             # Same per-tick batched write for index ticks. Without this the
             # buffer only drained when it hit its own _FLUSH_BATCH, which at

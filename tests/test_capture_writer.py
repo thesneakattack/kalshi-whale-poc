@@ -100,6 +100,44 @@ def test_duplicate_trade_id_is_ignored_and_does_not_kill_the_thread(tmp_path, mo
         capture_writer.stop()
 
 
+def test_flush_now_synchronously_flushes_without_the_thread_running(tmp_path, monkeypatch):
+    from services import capture_writer
+    db_path = tmp_path / "capture_test5.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"raw_trades": [_sample_trade_row("t5")]})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"raw_trades": 0.0})
+
+    result = capture_writer.flush_now("raw_trades")
+
+    assert result == {"flushed": 1}
+    assert capture_writer.depth()["raw_trades"] == 0
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM raw_trades").fetchone()[0] == 1
+    conn.close()
+
+
+def test_flush_failure_is_counted_in_dropped_count_not_raised(tmp_path, monkeypatch):
+    """A store with no DDL registered and no pre-existing table is a clean
+    way to force a genuine flush failure (no such table) without mocking
+    sqlite3 internals - proves _flush_store's never-raises contract for a
+    real failure, not just the duplicate-trade_id case above (which never
+    actually reaches the except branch, since INSERT OR IGNORE prevents
+    the IntegrityError it's guarding against)."""
+    from services import capture_writer
+    db_path = tmp_path / "capture_test6.db"
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"nonexistent_store": db_path})
+    monkeypatch.setattr(capture_writer, "_STORE_TABLE", {"nonexistent_store": "nonexistent_table"})
+    monkeypatch.setattr(capture_writer, "_STORE_DDL", {})  # no DDL - table never gets created
+    monkeypatch.setattr(capture_writer, "_buffers", {"nonexistent_store": [("a", "b")]})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"nonexistent_store": 0.0})
+    monkeypatch.setattr(capture_writer, "_dropped_counts", {"nonexistent_store": 0})
+
+    capture_writer._flush_store("nonexistent_store")  # must not raise
+
+    assert capture_writer.dropped_count()["nonexistent_store"] == 1
+    assert capture_writer.depth()["nonexistent_store"] == 0  # buffer still cleared, not re-added
+
+
 def test_supervisor_restarts_a_dead_writer_thread():
     from services import capture_writer
     capture_writer.start()

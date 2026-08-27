@@ -14,21 +14,31 @@ from services import series_watcher as sw
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
-    from services import data_quarantine, signal_log
+    from services import capture_writer, data_quarantine, signal_log
     from services import paper_broker as pb_module
 
-    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "series_watcher.db")
+    db_path = tmp_path / "series_watcher.db"
+    monkeypatch.setattr(sw, "DB_PATH", db_path)
     monkeypatch.setattr(signal_log, "DB_PATH", tmp_path / "signal_log.db")
     monkeypatch.setattr(pb_module, "DB_PATH", tmp_path / "paper_broker.db")
     monkeypatch.setattr(data_quarantine, "DB_PATH", tmp_path / "quarantine.db")
     sw._last_book_write.clear()
-    # Capture is buffered now (see series_watcher.flush) and the buffers are
-    # module globals, so they have to be reset between tests or one test's
-    # unflushed rows land in the next one's database.
-    monkeypatch.setattr(sw, "_trade_buffer", [])
+    # Book capture is buffered now (see series_watcher.flush) and the
+    # buffer is a module global, so it has to be reset between tests or
+    # one test's unflushed rows land in the next one's database.
     monkeypatch.setattr(sw, "_book_buffer", [])
     monkeypatch.setattr(sw, "_dropped_rows", 0)
     monkeypatch.setattr(sw, "_quarantine_cache", None)
+    # Trade capture routes through capture_writer now (P3 Task 15) - point
+    # its raw_trades store at the SAME isolated tmp path record_trade's
+    # tests read back from, and reset its own module-global buffers/
+    # counters for the same cross-test-pollution reason as sw._book_buffer
+    # above (capture_writer.py's own tests proved this matters - a prior
+    # test's leftover state otherwise bleeds into this file's).
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"raw_trades": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"raw_trades": []})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"raw_trades": 0.0})
+    monkeypatch.setattr(capture_writer, "_dropped_counts", {"raw_trades": 0})
     yield
 
 
@@ -36,6 +46,14 @@ CFG = {
     "series_watcher": {"enabled": True, "series": ["KXBTC15M"], "book_snapshot_interval_sec": 5},
     "whale_watcher_kalshi": {"min_contracts": 5000, "min_contracts_by_series": {"KXBTC15M": 2500}},
 }
+
+
+def _flush_trades():
+    """record_trade submits to capture_writer now (P3 Task 15), which
+    flushes on its own daemon thread's cadence, not synchronously - tests
+    need a deterministic, immediate flush instead of sleeping for it."""
+    from services import capture_writer
+    capture_writer.flush_now("raw_trades")
 
 
 def _trade(trade_id, ticker="KXBTC15M-26AUG17-B1", outcome="yes", count="1000.00",
@@ -53,7 +71,7 @@ def _trade(trade_id, ticker="KXBTC15M-26AUG17-B1", outcome="yes", count="1000.00
 def test_record_trade_keeps_the_whole_payload_not_just_the_derived_fields():
     trade = _trade("t1", some_future_kalshi_field="whatever it adds next")
     assert sw.record_trade(trade, CFG, now=1000.0) is True
-    sw.flush()
+    _flush_trades()
 
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -77,7 +95,7 @@ def test_record_trade_ignores_unwatched_series_and_duplicate_ids():
     # same print.
     assert sw.record_trade(_trade("t1"), CFG) is True
     assert sw.record_trade(_trade("t1"), CFG) is True
-    sw.flush()
+    _flush_trades()
 
     with sqlite3.connect(sw.DB_PATH) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_trades").fetchone()[0] == 1
@@ -89,7 +107,7 @@ def test_record_trade_stores_all_three_direction_fields_separately():
     field disappears is visible in the data, not inferred from a support
     ticket."""
     sw.record_trade(_trade("t1", outcome="no"), CFG)
-    sw.flush()
+    _flush_trades()
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM raw_trades").fetchone()
@@ -103,7 +121,7 @@ def test_record_trade_marks_side_unreadable_rather_than_guessing():
     for key in ("taker_outcome_side", "taker_book_side", "taker_side"):
         trade.pop(key)
     assert sw.record_trade(trade, CFG) is True
-    sw.flush()
+    _flush_trades()
     with sqlite3.connect(sw.DB_PATH) as conn:
         side, notional = conn.execute("SELECT resolved_side, notional_usd FROM raw_trades").fetchone()
     assert side is None and notional is None
@@ -157,6 +175,7 @@ def test_prune_drops_old_book_snapshots_but_never_trades():
     sw.record_trade(_trade("t1"), CFG, now=1000.0)
     sw.record_book({"market_ticker": "KXBTC15M-A"}, CFG, now=1000.0)
     sw.flush()
+    _flush_trades()
     result = sw.prune(retention_hours=1.0, now=1000.0 + 2 * 3600)
     assert result["book_snapshots_deleted"] == 1
     with sqlite3.connect(sw.DB_PATH) as conn:
@@ -168,27 +187,47 @@ def test_quarantined_window_marks_captured_trades_excluded():
 
     data_quarantine.start("latency probe", reason="deliberate test")
     sw.record_trade(_trade("t1"), CFG, now=1000.0)
-    sw.flush()
+    _flush_trades()
     with sqlite3.connect(sw.DB_PATH) as conn:
         assert conn.execute("SELECT excluded FROM raw_trades").fetchone()[0] == 1
+
+
+def test_raw_trades_growth_rate_is_unchanged_through_the_real_writer_thread():
+    """P3's own gate criterion (realtime-data-plane-remediation.md, Task
+    15 Step 7): capture must not shrink. Exercises the REAL capture_writer
+    daemon thread's start/submit/stop lifecycle (not flush_now, unlike
+    every other test above) - 1,000 distinct trades in, exactly 1,000 rows
+    out once stop() flushes, proving Task 15's move from an inline buffer
+    to a shared background writer didn't quietly drop anything at scale."""
+    from services import capture_writer
+
+    capture_writer.start()
+    try:
+        for i in range(1000):
+            assert sw.record_trade(_trade(f"t{i}"), CFG, now=1000.0 + i) is True
+    finally:
+        capture_writer.stop()  # blocks until the shutdown flush completes
+    with sqlite3.connect(sw.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_trades").fetchone()[0] == 1000
 
 
 # --------------------------------------------------------------- concurrency
 #
 # Code-review finding #2 (/code-review high pass against PR #23): this PR's
-# own P1 work made record_trade/record_book and flush() genuinely
-# cross-thread - a tick_executor worker thread (main.py's
-# _flush_trade_capture_async) and the main asyncio event-loop thread
-# (services/whale_stream/whale_stream_handlers.py's _process_stream_trade,
-# which calls series_watcher.record_trade() directly and synchronously per
-# WS message) both touch _trade_buffer/_book_buffer and flush()'s
-# swap-and-clear, which was never synchronized. book_snapshots has no
-# unique constraint (only an AUTOINCREMENT surrogate key), so a genuine
-# flush-vs-flush race - record_trade's own batch-triggered inline flush()
-# on the event-loop thread racing the tick_executor's scheduled flush() on
-# a worker thread - can grab the SAME buffer twice (duplicate rows) or
-# orphan an appended row into a buffer nothing ever flushes again (a
-# silently lost row, no error, no drop counter increment).
+# own P1 work made record_book/flush() genuinely cross-thread - a
+# tick_executor worker thread (main.py's _flush_trade_capture_async, which
+# still calls this module's flush() for the book half) and the main
+# asyncio event-loop thread (services/whale_stream/
+# whale_stream_handlers.py's _process_stream_ticker) both touch
+# _book_buffer and flush()'s swap-and-clear, which was never synchronized.
+# book_snapshots has no unique constraint (only an AUTOINCREMENT surrogate
+# key), so a genuine flush-vs-flush race can grab the SAME buffer twice
+# (duplicate rows) or orphan an appended row into a buffer nothing ever
+# flushes again (a silently lost row, no error, no drop counter
+# increment). Originally record_trade/_trade_buffer shared this exact
+# vulnerability too - P3 Task 15 (2026-08-27) moved trade capture to
+# capture_writer.py entirely, with its own independent lock/tests
+# (tests/test_capture_writer.py), so every test below is book-only now.
 #
 # Root-cause note on the test design below: the actual vulnerable window is
 # two adjacent plain statements inside flush() (capture the old lists, then
@@ -203,7 +242,7 @@ def test_quarantined_window_marks_captured_trades_excluded():
 # Python build, and not something anyone should rely on GIL incidental
 # protection for). So the primary proof here is a DETERMINISTIC test of the
 # fix's actual mechanism (sw._buffer_lock provides real mutual exclusion
-# over every _trade_buffer/_book_buffer touch, verified by forcing the
+# over every _book_buffer touch, verified by forcing the
 # exact interleaving rather than hoping to get lucky with it) - the
 # volume-based tests are kept below as secondary smoke coverage that the
 # fixed system also behaves correctly under real concurrent load, not as
@@ -211,9 +250,9 @@ def test_quarantined_window_marks_captured_trades_excluded():
 
 def test_flush_and_record_book_are_mutually_exclusive_via_the_buffer_lock():
     """The direct proof of the fix's synchronization mechanism (code-review
-    finding #2): record_book() (and, by the same code path, record_trade()
-    and flush()) must acquire sw._buffer_lock around every touch of
-    _trade_buffer/_book_buffer. Proven by holding the lock from this test
+    finding #2): record_book() (and, by the same code path, flush()) must
+    acquire sw._buffer_lock around every touch of _book_buffer. Proven by
+    holding the lock from this test
     thread and confirming a concurrent record_book() call genuinely blocks
     until the lock is released - not "usually doesn't interleave badly,"
     a real mutual-exclusion guarantee that holds regardless of GIL
@@ -393,7 +432,7 @@ def test_funnel_reports_every_stage_and_separates_capture_from_signals():
     _seed_signal("KXBTC15M-B", "yes", 1010.0, 0.70, correct=0)
     sw.record_trade(_trade("t1", ticker="KXBTC15M-A", count="10000.00"), CFG, now=1000.0)
     sw.record_trade(_trade("t2", ticker="KXBTC15M-A", count="10.00"), CFG, now=1001.0)
-    sw.flush()
+    _flush_trades()
 
     out = sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0)
     stages = {s["stage"]: s["count"] for s in out["stages"]}
