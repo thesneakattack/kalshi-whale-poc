@@ -15,15 +15,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import GithubClient
+from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
+from tools.kanban_sync.plan_tasks import decompose_plan
 from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
 from tools.kanban_sync.sources_roadmap import parse_roadmap_items
 from tools.kanban_sync.sources_tracks import parse_track_items
 from tools.kanban_sync.sources_worktree import (
     collect_worktree_items, live_worktree_branches, parse_worktree_list,
 )
-from tools.kanban_sync.sync import close_stale_worktree_issues, reconcile
+from tools.kanban_sync.sync import (
+    close_completed_plan_parents, close_stale_worktree_issues, reconcile,
+)
 
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
@@ -143,6 +148,10 @@ def _cmd_sync(args: argparse.Namespace) -> None:
         stale_report = close_stale_worktree_issues(live_branches, client, dry_run=args.dry_run)
         report.closed += stale_report.closed
 
+    if "plan" in sources:
+        plan_close_report = close_completed_plan_parents(client, dry_run=args.dry_run)
+        report.closed += plan_close_report.closed
+
     print(f"created: {len(report.created)}")
     for line in report.created:
         print(f"  + {line}")
@@ -158,6 +167,28 @@ def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
         print(path)
 
 
+def _cmd_decompose_plan(args: argparse.Namespace) -> None:
+    _check_project_scope()
+    client = GithubClient(REPO)
+    marker = build_marker(labels.SYNC_MARKER_KIND_PLAN, args.plan)
+    existing = client.find_by_marker(marker)
+    if existing is None:
+        print(
+            f"error: no tracked issue found for plan {args.plan!r} - "
+            f"run `sync --sources plan` first",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    plan_path = PLANS_DIR / args.plan
+    if not plan_path.exists():
+        print(f"error: plan doc not found: {plan_path}", file=sys.stderr)
+        sys.exit(1)
+    result = decompose_plan(
+        args.plan, plan_path.read_text(), existing.number, client, dry_run=args.dry_run,
+    )
+    print(json.dumps(result, indent=2))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.kanban_sync")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -170,6 +201,11 @@ def main(argv: list[str] | None = None) -> int:
 
     candidates_parser = sub.add_parser("plan-candidates", help="list plan docs needing classification")
     candidates_parser.set_defaults(func=_cmd_plan_candidates)
+
+    decompose_parser = sub.add_parser("decompose-plan", help="create milestone + task sub-issues for one plan")
+    decompose_parser.add_argument("--plan", required=True, help="plan doc filename, e.g. 2026-08-27-x.md")
+    decompose_parser.add_argument("--dry-run", action="store_true")
+    decompose_parser.set_defaults(func=_cmd_decompose_plan)
 
     args = parser.parse_args(argv)
     args.func(args)

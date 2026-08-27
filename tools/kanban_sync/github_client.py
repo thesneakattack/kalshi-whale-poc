@@ -94,10 +94,17 @@ class GithubClient:
             for item in results
         ]
 
-    def create_issue(self, title: str, body: str, labels: Sequence[str]) -> IssueState:
+    def create_issue(
+        self, title: str, body: str, labels: Sequence[str],
+        *, parent: int | None = None, milestone: str | None = None,
+    ) -> IssueState:
         args = ["issue", "create", "--title", title, "--body", body]
         for label in labels:
             args += ["--label", label]
+        if parent is not None:
+            args += ["--parent", str(parent)]
+        if milestone is not None:
+            args += ["--milestone", milestone]
         # A brand-new label family's first-ever item (e.g. phase:* on its
         # first ever creation, 2026-08-27) hits this path before any issue
         # exists to retrofit via set_labels' own already-proven retry below -
@@ -173,6 +180,20 @@ class GithubClient:
             return None
         return results[0]["state"]
 
+    def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]:
+        """Returns (completed, total) sub-issue counts. Repo-scoped (unlike
+        the project-object methods above), so uses _run's automatic --repo
+        flag like find_by_marker/create_issue already do."""
+        stdout = self._run(["issue", "view", str(issue_number), "--json", "subIssuesSummary"])
+        data = json.loads(stdout)["subIssuesSummary"]
+        return data["completed"], data["total"]
+
+    def set_milestone(self, issue_number: int, title: str | None) -> None:
+        if title is None:
+            self._run(["issue", "edit", str(issue_number), "--remove-milestone"])
+        else:
+            self._run(["issue", "edit", str(issue_number), "--milestone", title])
+
     def ensure_on_project(self, issue_number: int) -> str:
         """Idempotently adds the issue to the board's project if not already
         present; returns the project item's own node ID (PVTI_..., distinct
@@ -207,3 +228,34 @@ class GithubClient:
         ])
         if result.returncode != 0:
             raise GithubCliError(f"gh project item-edit failed: {result.stderr or result.stdout}")
+
+    def create_milestone(self, title: str) -> int:
+        """Creates a new milestone, returning its repo-scoped number
+        (distinct from a project item's node ID or an issue's number)."""
+        result = self._runner([
+            "gh", "api", "-X", "POST", f"repos/{self._repo}/milestones",
+            "-f", f"title={title}",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh api milestones create failed: {result.stderr or result.stdout}")
+        return json.loads(result.stdout)["number"]
+
+    def find_milestone_by_title(self, title: str) -> int | None:
+        """state=all (not just open) so a milestone someone closed by hand
+        is still found - avoids creating a duplicate-titled milestone.
+        -X GET is required alongside -f: gh api defaults to POST whenever
+        any -f/-F field is present unless -X explicitly overrides it -
+        confirmed live (a bare -f state=all here 422s, since it POSTs
+        {"state": "all"} as a body to a GET-only endpoint instead of
+        appending it as a query string). per_page=100 raises the safe ceiling
+        from GitHub's default page size of 30."""
+        result = self._runner([
+            "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones",
+            "-f", "state=all", "-f", "per_page=100",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh api milestones list failed: {result.stderr or result.stdout}")
+        for milestone in json.loads(result.stdout):
+            if milestone["title"] == title:
+                return milestone["number"]
+        return None

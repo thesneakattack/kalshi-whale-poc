@@ -63,3 +63,22 @@ classifying which numbered plan docs are actually still open.
    flagged, and call out any `flagged mismatches` explicitly — those need a
    human to look at the issue and decide whether to close it for real or
    remove the stale dependency (spec §9).
+
+7. **Decompose canonical-convention `not-started`/`in-progress` plans into
+   milestone + sub-issues.** One-time per plan, per
+   `docs/superpowers/specs/2026-08-27-kanban-sync-milestones-and-subissues-design.md`
+   §4.2 — safe to re-run, it no-ops once already decomposed. For each plan
+   classified `not-started` or `in-progress` in step 4 that uses the
+   canonical `### Task N: <title>` heading convention (the other two
+   conventions found in this repo, `## Task N:` and `## T1a —`, are out of
+   scope — zero sub-issues created is expected for those, not an error):
+   ```bash
+   python -m tools.kanban_sync decompose-plan --plan <file> --dry-run
+   ```
+   Review the JSON output (`milestone`, `tasks_found`,
+   `sub_issues_created`), then re-run without `--dry-run`. A plan whose
+   parent issue auto-closes on a later `sync --sources plan` run (once all
+   its sub-issues are closed, per spec §4.4) should be reclassified `done`
+   in the next classification JSON (step 4) — otherwise step 5's next run
+   will keep posting a mismatch comment against an issue this tool itself
+   already closed correctly.
