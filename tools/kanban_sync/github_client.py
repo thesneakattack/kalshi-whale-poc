@@ -94,10 +94,17 @@ class GithubClient:
             for item in results
         ]
 
-    def create_issue(self, title: str, body: str, labels: Sequence[str]) -> IssueState:
+    def create_issue(
+        self, title: str, body: str, labels: Sequence[str],
+        *, parent: int | None = None, milestone: str | None = None,
+    ) -> IssueState:
         args = ["issue", "create", "--title", title, "--body", body]
         for label in labels:
             args += ["--label", label]
+        if parent is not None:
+            args += ["--parent", str(parent)]
+        if milestone is not None:
+            args += ["--milestone", milestone]
         # A brand-new label family's first-ever item (e.g. phase:* on its
         # first ever creation, 2026-08-27) hits this path before any issue
         # exists to retrofit via set_labels' own already-proven retry below -
@@ -172,6 +179,20 @@ class GithubClient:
         if not results:
             return None
         return results[0]["state"]
+
+    def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]:
+        """Returns (completed, total) sub-issue counts. Repo-scoped (unlike
+        the project-object methods above), so uses _run's automatic --repo
+        flag like find_by_marker/create_issue already do."""
+        stdout = self._run(["issue", "view", str(issue_number), "--json", "subIssuesSummary"])
+        data = json.loads(stdout)["subIssuesSummary"]
+        return data["completed"], data["total"]
+
+    def set_milestone(self, issue_number: int, title: str | None) -> None:
+        if title is None:
+            self._run(["issue", "edit", str(issue_number), "--remove-milestone"])
+        else:
+            self._run(["issue", "edit", str(issue_number), "--milestone", title])
 
     def ensure_on_project(self, issue_number: int) -> str:
         """Idempotently adds the issue to the board's project if not already

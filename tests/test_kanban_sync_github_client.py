@@ -485,3 +485,84 @@ def test_find_milestone_by_title_propagates_a_real_error():
         assert False, "expected GithubCliError"
     except GithubCliError as exc:
         assert "500" in str(exc)
+
+
+def test_create_issue_with_parent_and_milestone_adds_both_flags():
+    runner = FakeRunner()
+    runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/50\n")
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.create_issue(
+        "Task 1: Title", "Body", ["status:claimable"],
+        parent=42, milestone="2026-08-27-some-plan.md",
+    )
+
+    assert result.number == 50
+    call = runner.calls[0]
+    assert "--parent" in call and "42" in call
+    assert "--milestone" in call and "2026-08-27-some-plan.md" in call
+
+
+def test_create_issue_without_parent_or_milestone_omits_both_flags():
+    """Backward-compatibility guard: every existing call site (worktree/
+    roadmap/track/plan item creation) never passes these - must produce
+    the exact same args as before this change."""
+    runner = FakeRunner()
+    runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/50\n")
+    client = GithubClient(REPO, runner=runner)
+
+    client.create_issue("Title", "Body", ["status:claimable"])
+
+    call = runner.calls[0]
+    assert "--parent" not in call
+    assert "--milestone" not in call
+
+
+def test_get_sub_issues_summary_returns_completed_and_total():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"subIssuesSummary": {"completed": 2, "total": 5, "percentCompleted": 40}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.get_sub_issues_summary(42)
+
+    assert result == (2, 5)
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "view"]
+    assert "42" in call
+    assert "--repo" in call and REPO in call
+    assert "--json" in call and "subIssuesSummary" in call
+
+
+def test_get_sub_issues_summary_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.get_sub_issues_summary(999)
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "404" in str(exc)
+
+
+def test_set_milestone_adds_the_milestone_flag():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_milestone(42, "2026-08-27-some-plan.md")
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "edit"]
+    assert "--milestone" in call and "2026-08-27-some-plan.md" in call
+
+
+def test_set_milestone_none_removes_the_milestone():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_milestone(42, None)
+
+    call = runner.calls[0]
+    assert "--remove-milestone" in call
