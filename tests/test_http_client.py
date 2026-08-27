@@ -62,6 +62,46 @@ def _reset_kalshi_rate_limiters(monkeypatch):
     monkeypatch.setattr(http_client, "_kalshi_write_limiter", http_client._TokenBucketRateLimiter(http_client._KALSHI_WRITE_RATE_PER_SEC))
 
 
+@pytest.fixture(autouse=True)
+def _reset_rest_latency_window():
+    # Module-level globals (_rest_class_stats/_endpoint_window, added later
+    # for I8's per-endpoint-family window counts - see services/http_client.py's
+    # own comment there), same reasoning as the three siblings above: without
+    # a reset, one test's call_with_backoff invocations leak into the next
+    # test's exact-count assertions.
+    #
+    # Real bug found 2026-08-27 (root-cause-debugging investigation into
+    # ci/woodpecker/push/tests-pytest failing under real `pytest -n 4`
+    # parallel xdist scheduling while staying green sequentially/single-
+    # worker): this fourth global was added without a matching reset here,
+    # unlike its three siblings, which each explicitly document why they
+    # need one. Under plain sequential execution this was invisible by pure
+    # accident of file order - test_reset_rest_latency_window_keeps_lifetime_
+    # and_high_water and test_class_window_counts_reset_per_sample_while_
+    # lifetime_counts_persist both happen to sit earlier in this file and
+    # both already call reset_rest_latency_window() as part of their own
+    # bodies, incidentally leaving a clean window for every test after them.
+    # xdist's worker scheduling does not guarantee tests within one worker
+    # run in file-definition order (dynamic work-stealing as workers free
+    # up), so a worker that ran test_endpoint_defaults_to_the_coro_funcs_
+    # own_name (which also calls call_with_backoff on a function literally
+    # named get_markets) before reaching
+    # test_per_endpoint_window_counts_are_exact_and_reset_with_the_window
+    # left a stray get_markets count of 1 in _endpoint_window, inflating
+    # that test's expected count of 2 to 3 - confirmed by deterministically
+    # reproducing that exact adversarial order, with no xdist involved at
+    # all: `pytest -p no:xdist tests/test_http_client.py::
+    # test_endpoint_defaults_to_the_coro_funcs_own_name tests/
+    # test_http_client.py::test_per_endpoint_window_counts_are_exact_and_
+    # reset_with_the_window` fails the second test the same way. Not a
+    # production bug - _rest_class_stats/_endpoint_window accumulating
+    # across the whole app's real runtime lifetime is exactly the intended
+    # behavior (see rest_latency_snapshot()'s own docstring).
+    http_client.reset_rest_latency_window()
+    yield
+    http_client.reset_rest_latency_window()
+
+
 def _no_sleep(monkeypatch):
     sleeps = []
 

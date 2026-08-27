@@ -113,6 +113,58 @@ def _reset_trading_state():
     main.account._client = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_singletons():
+    """main.state["discovery_cache"] and main.config_store are both real,
+    mutable singletons redirected/constructed exactly ONCE at this file's
+    IMPORT time (see the module-level setup above config_store_module.
+    config_store.reload() / `import main`) - unlike mc_module/se_module/etc,
+    which most tests that care about clean catalog state already defend
+    with their own explicit clear_all() calls at the top of the test body,
+    nothing in this file resets these two between tests.
+
+    Two real, confirmed cross-test-order leaks found here (root-cause-
+    debugging investigation, 2026-08-27, xdist-parallel test-isolation fix
+    for ci/woodpecker/push/tests-pytest failing under real `pytest -n 4`
+    while staying green sequentially/single-worker):
+
+    1. discovery_cache's `markets` list genuinely retaining a market
+       inserted by an EARLIER-run test's synchronous
+       main._refresh_discovery_cache call - confirmed by deterministically
+       reproducing the exact adversarial order with no xdist involved:
+       `pytest -p no:xdist tests/test_trading_gate.py::
+       test_refresh_discovery_cache_includes_rejected_series_when_
+       evaluator_disabled tests/test_trading_gate.py::
+       test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run`
+       fails the second test with a stray "SERBAD-M1" ticker leaking into
+       its result the exact same way.
+    2. config_store's on-disk YAML genuinely retaining a value POSTed
+       through the real /api/market-analyst/full-spectrum/apply route by
+       an EARLIER-run test (test_post_market_analyst_full_spectrum_apply_
+       end_to_end sets risk.max_daily_loss_pct to 0.3, exactly matching a
+       LATER test's own suggested_value, silently tripping
+       _full_spectrum_suggestions_from_raw's no-op "already the current
+       value" filter) - confirmed the same way: `pytest -p no:xdist tests/
+       test_trading_gate.py::test_post_market_analyst_full_spectrum_apply_
+       end_to_end tests/test_trading_gate.py::
+       test_run_full_spectrum_analysis_succeeds_and_records_analysis` fails
+       the second test with 0 suggestions instead of 1.
+
+    Both leaks only ever manifested under pytest-xdist's -n 4 parallel
+    scheduling, which does not guarantee tests within one worker process
+    run in this file's own definition order the way plain sequential
+    pytest happens to (dynamic work-stealing redistributes tests across
+    workers as they free up) - by luck, both polluting tests above sit
+    LATER in this file than the victim test they were caught poisoning, so
+    sequential/single-worker runs never hit the adversarial order. Reset
+    here, once, so correctness stops depending on collection/scheduling
+    order. Not a production bug - both singletons accumulating state across
+    the real app's runtime lifetime is exactly the intended behavior."""
+    main.state["discovery_cache"] = {"fetched_at": 0.0, "markets": [], "refreshing": False, "task": None}
+    shutil.copy(config_store_module.CONFIG_PATH, _tmp_config_path)
+    config_store_module.config_store.reload()
+
+
 def test_files_are_actually_redirected_away_from_the_real_repo():
     """Guards the guard: if this ever fails, every other test in this file
     could be touching real project files instead of the temp copies."""
