@@ -13,9 +13,27 @@ from tools.kanban_sync import labels
 from tools.kanban_sync.models import SyncItem
 
 _TRACK_HEADING_RE = re.compile(r"^## Track (?P<letter>[A-Z]) — (?P<title>.+)$", re.MULTILINE)
-_STATUS_LINE_RE = re.compile(r"\*\*Status[^*]*:\*\*[^\n]*")
+# Spans the WHOLE status paragraph, not just its first line - stops at the
+# first blank line (a real paragraph boundary in this doc's own markdown
+# convention) or end of text. A single-line capture previously let a
+# multi-line status ("CH1 done... [next line] CH2 is next, not started")
+# read as done purely from its first line, since the "not started" qualifier
+# a few lines down was never even seen by the done-check below. Found live
+# 2026-08-27: this exact shape incorrectly auto-closed a real, still-open
+# GitHub issue for a track that was nowhere near finished.
+_STATUS_LINE_RE = re.compile(r"\*\*Status[^*]*:\*\*.*?(?=\n[ \t]*\n|\Z)", re.DOTALL)
 _GATE_KEYWORDS = ("hard-gated", "hard gate", "gated behind")
 _DONE_KEYWORDS = ("complete", "done")
+# Overrides a _DONE_KEYWORDS match: these phrases are a stronger, more
+# specific signal that the track (or a piece of it) is explicitly NOT
+# finished, even when "done"/"complete" also appears elsewhere in the same
+# paragraph describing a sub-step. Conservative on purpose, matching this
+# module's own stated bias (see the file docstring) - a track that's
+# ambiguous between done and not-done should read as not-done, the same
+# direction this file already errs for gate detection.
+_NOT_DONE_OVERRIDE_KEYWORDS = (
+    "not started", "not done", "not complete", "not yet", "still open", "in progress",
+)
 
 
 def _split_sections(text: str) -> list[tuple[str, str, str]]:
@@ -38,7 +56,10 @@ def parse_track_items(text: str) -> list[SyncItem]:
     for idx, (letter, title, body) in enumerate(sections):
         status_match = _STATUS_LINE_RE.search(body)
         status_text = status_match.group(0) if status_match else ""
-        done = any(kw in status_text.lower() for kw in _DONE_KEYWORDS)
+        status_lower = status_text.lower()
+        done = any(kw in status_lower for kw in _DONE_KEYWORDS) and not any(
+            kw in status_lower for kw in _NOT_DONE_OVERRIDE_KEYWORDS
+        )
 
         heading = f"Track {letter} — {title}"
         depends_on: tuple[tuple[str, str], ...] = ()
