@@ -280,12 +280,33 @@ decision activates the draft-PR stage, I7's proof and its three conditions are t
   change" skips more redundant work than keying on "did the commit change" would have. `commit_sha`
   is still attempted best-effort (`git rev-parse HEAD`, 5s timeout, tolerating `None` exactly like
   `_git_head()` already does) and stored for diagnostic/informational value only — it is nullable in
-  the schema above and never part of the uniqueness constraint. `observe_main()` checks whether the
+  the schema above and never part of the uniqueness constraint. ~~`observe_main()` checks whether the
   computed `audit_fingerprint` already has a `coordination_runs` row before doing anything else; if
   so, it returns the prior `RunResult` without re-touching `coordination_items` at all. This is the
   direct fix for the cold-start-reload bug class CLAUDE.md already documents for `_maybe_*`
   schedulers (`backup_cold_start_reload_bug`): an in-memory "have I run yet" flag would be wrong
-  across an `uvicorn --reload`; a durable, content-keyed table row is not.
+  across an `uvicorn --reload`; a durable, content-keyed table row is not.~~ **Corrected
+  (2026-08-26, post-implementation, found by an addendum consolidated review):** the design above
+  was wrong in a way self-review at spec time did not catch. Gating `apply_observation` itself on
+  the fingerprint check means a finding whose surrounding audit content never changes — i.e. a
+  finding that is genuinely, stably persisting — produces the identical fingerprint call after
+  call, so the short-circuit fires every time and `apply_observation` (where the persistence floor
+  and escalation logic live) never runs again after the first observation. A persisting, unresolved
+  problem could then never reach `escalation_eligible`, which is exactly backwards for a
+  persistence floor: it defeats the state machine for the one case it exists to handle. The
+  original design also froze `latest_run_at()` for the same reason (no new `coordination_runs` row
+  ever got written for a stable fingerprint), which reopened the very
+  `backup_cold_start_reload_bug` class this section cites as its own motivation — every
+  `uvicorn --reload` would see a stale seed and treat the module as newly overdue. **Corrected
+  design:** `apply_observation` always runs, unconditionally; the fingerprint is used only to
+  decide whether `coordination_runs` gets a fresh `INSERT` (content changed since the immediately
+  preceding run) or an in-place `UPDATE` of that same row's `ran_at`/`commit_sha`/counts (content
+  unchanged) — preserving the original's only real benefit (bounded run-history growth for static
+  content) without gating the state machine on it. The expensive work this section worried about
+  saving (`run_audit()`'s scanner pass, the GitHub branch fetch) was never actually saved by the
+  short-circuit either way — both already run before the fingerprint is even computable — so
+  nothing about the original performance rationale survives scrutiny; only the DB-row-growth
+  rationale was real, and the corrected design keeps exactly that part.
 - **Retry/recovery:** a crashed or interrupted run leaves `coordination_runs` without a row for that
   SHA (the row is written only after `coordination_items` updates commit inside the same SQLite
   transaction) — the next scheduler tick naturally retries the same SHA rather than needing a

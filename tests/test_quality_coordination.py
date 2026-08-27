@@ -1,6 +1,7 @@
 import sqlite3
 
 import services.quality_coordination as qc
+import tools.quality_audit.baseline as qc_baseline
 from services.quality.models import QualityFinding
 from services.quality_coordination import derive_automation_key
 
@@ -176,6 +177,12 @@ from services.quality_coordination import observe_main
 
 
 def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkeypatch):
+    """Idempotence now means "the run-history table doesn't grow a new row for
+    unchanged content" — NOT "apply_observation is skipped." A consolidated addendum
+    review found the original short-circuit-both design defeated the persistence floor
+    for the exact case it exists to handle (see the escalation regression test below);
+    the fix always reprocesses, and only the coordination_runs bookkeeping stays
+    idempotent (UPDATE in place rather than a second INSERT)."""
     monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
     with patch("services.quality_coordination._run_static_audit", return_value=report), \
@@ -183,10 +190,10 @@ def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkey
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint == r2.audit_fingerprint
-    assert r2.items_observed == 0  # second call short-circuits, no re-processing
+    assert r2.items_observed == 1  # reprocessed, not skipped
     conn = _connect()
     runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
-    assert runs == 1  # only one row, not two
+    assert runs == 1  # still one row — UPDATEd in place, not a second INSERT
     conn.close()
 
 
@@ -345,9 +352,11 @@ def test_observe_main_reprocesses_a_fingerprint_that_recurs_non_consecutively(tm
     conn.close()
 
 
-def test_observe_main_still_short_circuits_on_true_back_to_back_repeat(tmp_path, monkeypatch):
-    """Task 4's original idempotence guarantee, preserved: two consecutive identical-fingerprint
-    runs must still short-circuit the second one."""
+def test_observe_main_reuses_one_run_row_for_true_back_to_back_repeat(tmp_path, monkeypatch):
+    """Task 10's original guarantee, restated correctly: two consecutive identical-fingerprint
+    runs still produce exactly one coordination_runs row (an UPDATE, not a second INSERT) —
+    but, unlike the original Task 10 design, apply_observation genuinely reruns both times
+    (see the escalation regression test below for why that distinction matters)."""
     monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
     with patch("services.quality_coordination._run_static_audit", return_value=report), \
@@ -355,11 +364,31 @@ def test_observe_main_still_short_circuits_on_true_back_to_back_repeat(tmp_path,
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint == r2.audit_fingerprint
-    assert r2.items_observed == 0  # second call short-circuits, no re-processing
+    assert r2.items_observed == 1  # reprocessed, not skipped
     conn = _connect()
     runs = conn.execute("SELECT COUNT(*) c FROM coordination_runs").fetchone()["c"]
-    assert runs == 1  # only one row, not two
+    assert runs == 1  # still one row — UPDATEd in place, not a second INSERT
+    row = conn.execute("SELECT ran_at FROM coordination_runs").fetchone()
+    assert row["ran_at"] == (T0 + timedelta(minutes=1)).isoformat()  # ran_at genuinely refreshed
     conn.close()
+
+
+def test_observe_main_escalates_a_stable_persisting_finding_past_its_floor(tmp_path, monkeypatch):
+    """The regression this whole fix exists for. Found by an addendum consolidated review:
+    a finding that never changes keeps producing the SAME fingerprint call after call, so
+    the original short-circuit-both design meant apply_observation (where the persistence
+    floor lives) never ran again after the first observation — a persisting, unresolved
+    problem could never reach escalation_eligible, which is exactly backwards for a
+    persistence floor. Proves the fix: a stable error-severity finding (2h floor) observed
+    3h apart, with nothing else changing, must still escalate."""
+    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    report = QualityReport(findings=[_finding(check="config-usage", scope="a.b", severity="error")])
+    with patch("services.quality_coordination._run_static_audit", return_value=report), \
+         patch("services.quality_coordination._current_commit_sha", return_value=None):
+        r1 = observe_main(tmp_path, at=T0)
+        r2 = observe_main(tmp_path, at=T0 + timedelta(hours=3))
+    assert r1.states["config-usage|a.b|"] == "observed"  # below the 2h floor at t=0
+    assert r2.states["config-usage|a.b|"] == "escalation_eligible"  # 3h > 2h floor, and it fired
 
 
 def test_observe_main_error_path_does_not_spam_identical_consecutive_errors(tmp_path, monkeypatch):
@@ -443,7 +472,7 @@ def test_observe_main_uses_the_real_baseline_json_path_convention(tmp_path, monk
     expected_path = tmp_path / "tools" / "quality_audit" / "baseline.json"
     with patch("services.quality_coordination._run_static_audit", return_value=report), \
          patch("services.quality_coordination._current_commit_sha", return_value=None), \
-         patch("services.quality_coordination.load_baseline", wraps=qc.load_baseline) as mock_load:
+         patch("tools.quality_audit.baseline.load_baseline", wraps=qc_baseline.load_baseline) as mock_load:
         observe_main(tmp_path, at=T0)
 
     mock_load.assert_called_once_with(expected_path)

@@ -17,7 +17,7 @@ succeeds.
 """
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from services import fault_log
 from services import quality_coordination as _qc
@@ -57,7 +57,7 @@ def _coordination_rollup() -> dict[str, int]:
 
 
 @router.get("/api/quality/coordination")
-async def get_quality_coordination(limit: int = 200):
+async def get_quality_coordination(limit: int = Query(200, ge=1, le=1000)):
     conn = _qc._connect()
     try:
         items = [

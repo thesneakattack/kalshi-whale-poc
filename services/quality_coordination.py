@@ -10,15 +10,13 @@ import hashlib
 import json
 import sqlite3
 import subprocess
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
-from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "quality_coordination.db"
 
@@ -310,6 +308,16 @@ def observe_main(repo_root: Path, at: datetime | None = None,
     try:
         try:
             report = _run_static_audit(repo_root)
+            # Lazy import, same shape/reasoning as _run_static_audit's own: keeps `tools`
+            # out of this module's import-time footprint entirely (not just the 9 scanner
+            # modules), and folds a corrupt baseline.json or a missing tools/ package into
+            # the exact same error-reporting path as an audit-scanner failure, rather than
+            # escaping observe_main uncaught (a real gap the addendum's consolidated review
+            # found: this used to sit just outside the guard below).
+            from tools.quality_audit.baseline import compare_to_baseline, load_baseline
+
+            baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
+            comparison = compare_to_baseline(report, load_baseline(baseline_path))
         except Exception as exc:
             fp = hashlib.sha256(f"error:{exc}".encode()).hexdigest()
             last = conn.execute(
@@ -325,16 +333,24 @@ def observe_main(repo_root: Path, at: datetime | None = None,
                 conn.commit()
             return RunResult(fp, None, 0, 0, {}, str(exc))
 
-        baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
-        comparison = compare_to_baseline(report, load_baseline(baseline_path))
-
+        # Content fingerprint is used ONLY to decide whether the run-history table gets a
+        # fresh row or an in-place refresh of the existing one — never to gate whether
+        # apply_observation runs. An addendum consolidated review found that the original
+        # short-circuit ("if this fingerprint was already seen last time, skip
+        # apply_observation entirely") defeated the persistence floor for the exact case it
+        # exists to handle: a finding that just sits there, unchanged, is precisely when the
+        # fingerprint stays constant call after call, so the floor/escalation logic inside
+        # apply_observation would never re-run for a genuinely persisting problem. It also
+        # froze latest_run_at() (MAX(ran_at) never advanced), defeating the cold-start-safe
+        # seeding this was originally built to protect (the actual bug that mattered:
+        # `_maybe_run_quality_coordination` would treat every uvicorn --reload as newly
+        # overdue and fire a full audit + GitHub burst). Both are fixed by always calling
+        # apply_observation and always refreshing ran_at — an UPDATE-in-place for a truly
+        # unchanged fingerprint still avoids unbounded coordination_runs growth for static
+        # content, which was the only real benefit the original short-circuit provided (the
+        # expensive work — the scanner pass, the GitHub fetch — already happened above
+        # regardless of the fingerprint, so the old short-circuit never actually saved it).
         fp = _fingerprint(comparison.new)
-        last = conn.execute(
-            "SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if last is not None and last["audit_fingerprint"] == fp:
-            return RunResult(fp, last["commit_sha"], 0, 0, {}, last["error"])
-
         signals = [
             Signal(derive_automation_key(f), f.severity, _scope_paths(f), f.finding_id, f.check)
             for f in comparison.new
@@ -342,12 +358,24 @@ def observe_main(repo_root: Path, at: datetime | None = None,
         states = apply_observation(conn, signals, branches, claims, at)
         resolved = sum(1 for s in states.values() if s == "resolved")
         sha = _current_commit_sha(repo_root)
-        conn.execute(
-            """INSERT INTO coordination_runs
-               (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
-               VALUES (?, ?, ?, ?, ?, NULL)""",
-            (fp, sha, at.isoformat(), len(signals), resolved),
-        )
+
+        last = conn.execute(
+            "SELECT * FROM coordination_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if last is not None and last["audit_fingerprint"] == fp:
+            conn.execute(
+                """UPDATE coordination_runs
+                   SET commit_sha=?, ran_at=?, items_observed=?, items_resolved=?, error=NULL
+                   WHERE id=?""",
+                (sha, at.isoformat(), len(signals), resolved, last["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO coordination_runs
+                   (audit_fingerprint, commit_sha, ran_at, items_observed, items_resolved, error)
+                   VALUES (?, ?, ?, ?, ?, NULL)""",
+                (fp, sha, at.isoformat(), len(signals), resolved),
+            )
         conn.commit()
         return RunResult(fp, sha, len(signals), resolved, states, None)
     finally:
@@ -451,7 +479,6 @@ def run_coordination_cycle(repo_root: Path) -> RunResult:
 
 if __name__ == "__main__":
     import dataclasses
-    import json
 
     _repo_root = Path(__file__).resolve().parent.parent
     _result = run_coordination_cycle(_repo_root)

@@ -1720,6 +1720,76 @@ rename didn't miss a read/write site by grepping for the old name after the edit
 
 ---
 
+### Task 14 (found during Tasks 10-13's own consolidated review, fixed directly by the
+controller — not delegated to a subagent, given the depth of cross-task design
+reasoning involved)
+
+**Problem, found by a consolidated review over the combined Tasks 10-13 diff — exactly
+the kind of cross-task interaction no individual task review could see:** Task 10
+correctly fixed "a recurring-after-a-gap finding is never marked resolved," but
+preserved the premise that a truly back-to-back identical fingerprint should still
+short-circuit `apply_observation` entirely. Task 11 then made "back-to-back identical"
+the *normal* case (filtered input to `comparison.new`, which on this repo today is
+empty and therefore constant). Combined: a finding that's genuinely, stably persisting
+— the entire point of a persistence floor — produces the same fingerprint every run,
+so `apply_observation` (where the floor/escalation logic lives) never runs again after
+the first observation. `escalation_eligible` could then never actually fire for a real,
+unaddressed problem. The same short-circuit also froze `latest_run_at()` (no new
+`coordination_runs` row for a stable fingerprint), reopening the exact
+`backup_cold_start_reload_bug` class Task 10's own docstring cited as its motivation —
+every `uvicorn --reload` would treat the scheduler as newly overdue and fire a full
+audit + GitHub burst.
+
+**Fix:** `apply_observation` now always runs, unconditionally. The fingerprint is used
+only to decide whether `coordination_runs` gets a fresh `INSERT` (content changed since
+the immediately preceding run) or an in-place `UPDATE` of `ran_at`/`commit_sha`/counts
+on that same row (content unchanged) — this preserves the only real benefit the
+original short-circuit provided (bounded run-history growth for static content;
+confirmed the expensive work — the scanner pass, the GitHub fetch — was never actually
+saved by the old short-circuit either way, since both already run before the
+fingerprint is even computable) without gating the state machine on it.
+
+Two smaller findings from the same consolidated review were folded into this same fix:
+- The `tools.quality_audit.baseline` import (added at module scope by Task 11) was
+  moved to a lazy import inside `observe_main`'s own try block, alongside
+  `_run_static_audit`'s call — making `_run_static_audit`'s own docstring claim ("a
+  deployment image without `tools/` present still starts fine") actually true again, and
+  folding a corrupt `baseline.json` into the same error-reporting path as any other
+  audit-run failure (previously it sat just outside that guard).
+- `GET /api/quality/coordination`'s `?limit=` param gained real bounds
+  (`Query(200, ge=1, le=1000)`) — previously a negative value reinstated the unbounded
+  read Task 12 removed, since SQLite treats a negative `LIMIT` as "no limit."
+- Three dead-import findings (`urllib.error`, `timedelta`, a redundant `import json`
+  inside the `__main__` guard) that survived Task 13's own consolidation pass.
+
+**Tests:** rewrote `test_observe_main_is_idempotent_on_repeated_identical_audit` (Task
+4's original) and Task 10's `test_observe_main_still_short_circuits_on_true_back_to_back_
+repeat` (renamed to `test_observe_main_reuses_one_run_row_for_true_back_to_back_repeat`)
+— both now assert reprocessing happens (`items_observed == 1`, not `0`) while
+`coordination_runs` still holds exactly one row (via `UPDATE`, not skip). Added the
+critical regression test the consolidated review explicitly asked for:
+`test_observe_main_escalates_a_stable_persisting_finding_past_its_floor` — a stable
+error-severity finding observed twice, 3 hours apart (past the 2h floor), with nothing
+else changing, must reach `escalation_eligible` on the second call. Updated
+`test_observe_main_uses_the_real_baseline_json_path_convention` to patch
+`tools.quality_audit.baseline.load_baseline` (the source) rather than
+`services.quality_coordination.load_baseline` (no longer a module-level name once the
+import became lazy).
+
+Also corrected the design spec itself
+(`docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md` §10) —
+struck through, not deleted, per this project's own documentation convention — since
+the spec explicitly mandated the now-reversed short-circuit design.
+
+**Verification:** full `tests/test_quality_coordination.py` (33/33), the combined
+4-file quality-coordination suite (49/49), the full backend suite (1985 passed, 16
+skipped), and `python -m tools.quality_audit` (0 new, 196 existing, 0 resolved) all
+green.
+
+**Commit:** `fix: run apply_observation unconditionally so a stable persisting finding can still escalate`
+
+---
+
 ## Self-Review
 
 **0. Two real bugs caught and fixed while drafting this plan, not before it — recorded rather than
