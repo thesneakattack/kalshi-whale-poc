@@ -290,8 +290,8 @@ def _maybe_run_quality_coordination(cfg: dict) -> None:
     tick_phase_timings noninterference measurement is taken with it turned on - see
     services/quality_coordination.py's run_coordination_cycle docstring.
 
-    Same cold-start-safe interval tracking as _maybe_run_backup: last_run_at is seeded from
-    services/quality_coordination.py's own persisted coordination_runs history
+    Same cold-start-safe interval tracking as _maybe_run_backup: last_started_at is seeded
+    from services/quality_coordination.py's own persisted coordination_runs history
     (latest_run_at()) on first check in a process, rather than trusting an unseeded 0.0 -
     a restart doesn't mean immediately overdue, just unknown, so go check what actually
     happened before deciding."""
@@ -299,18 +299,18 @@ def _maybe_run_quality_coordination(cfg: dict) -> None:
     if not qc_cfg.get("enabled", False):
         return
     qc_state = state.setdefault(
-        "quality_coordination", {"running": False, "last_run_at": 0.0, "task": None},
+        "quality_coordination", {"running": False, "last_started_at": 0.0, "task": None},
     )
-    if qc_state["last_run_at"] == 0.0:
+    if qc_state["last_started_at"] == 0.0:
         persisted = latest_run_at()
         if persisted is not None:
-            qc_state["last_run_at"] = persisted
+            qc_state["last_started_at"] = persisted
     interval = qc_cfg.get("interval_sec", 3600)
     now_ts = time.time()
-    due = now_ts - qc_state["last_run_at"] > interval
+    due = now_ts - qc_state["last_started_at"] > interval
     if due and not qc_state["running"]:
         qc_state["running"] = True
-        qc_state["last_run_at"] = now_ts
+        qc_state["last_started_at"] = now_ts
         qc_state["task"] = task_supervisor.supervise(
             _run_quality_coordination_background,
             component="quality_coordination", operation="run",

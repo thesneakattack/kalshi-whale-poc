@@ -226,6 +226,7 @@ def test_scope_paths_falls_back_to_scope_for_aggregate_rules_with_no_path():
 
 
 import urllib.error
+import urllib.parse
 
 from services.quality_coordination import derive_claims, fetch_branch_signals
 
@@ -287,7 +288,10 @@ def test_fetch_branch_signals_skips_a_malformed_branch_without_raising(monkeypat
         if url.endswith("/branches"):
             return branches_payload
         for name, payload in compare_payloads.items():
-            if url.endswith(f"/compare/main...{name}"):
+            # Branch names are URL-encoded before being interpolated into the compare
+            # URL (Task 13's edit 5 - a literal "/" in a branch name must not be sent
+            # unencoded into a path segment), so match against the encoded form here too.
+            if url.endswith(f"/compare/main...{urllib.parse.quote(name, safe='')}"):
                 return payload
         raise AssertionError(f"unexpected compare URL: {url}")
 

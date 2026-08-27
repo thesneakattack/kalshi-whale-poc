@@ -6,7 +6,7 @@ from services.app_state import state
 
 
 def test_scheduler_skips_when_disabled():
-    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
+    state["quality_coordination"] = {"running": False, "last_started_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": False}}
     with patch("main.task_supervisor") as mock_supervisor:
         main._maybe_run_quality_coordination(cfg)
@@ -14,7 +14,7 @@ def test_scheduler_skips_when_disabled():
 
 
 EPOCH = 1_800_000_000.0  # a realistic time.time() scale — real epoch seconds, not small test
-#                          numbers, because last_run_at=0.0 is a sentinel that only reliably
+#                          numbers, because last_started_at=0.0 is a sentinel that only reliably
 #                          means "always overdue" when compared against a real epoch-scale value
 #                          (exactly how the real, already-proven backup.py pattern this mirrors
 #                          works in production) — small mock values like 1000.0 would silently
@@ -22,7 +22,7 @@ EPOCH = 1_800_000_000.0  # a realistic time.time() scale — real epoch seconds,
 
 
 def test_scheduler_fires_a_supervised_background_task_once_then_waits_for_interval():
-    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
+    state["quality_coordination"] = {"running": False, "last_started_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": True, "interval_sec": 3600}}
     with patch("main.task_supervisor") as mock_supervisor, \
          patch("main.latest_run_at", return_value=None), \
@@ -38,7 +38,7 @@ def test_scheduler_fires_a_supervised_background_task_once_then_waits_for_interv
 def test_scheduler_skips_while_a_run_is_already_in_flight():
     """Same 'running' guard as backup's state["backup"]["running"] — a slow run must not
     overlap with the next interval tick firing a second one."""
-    state["quality_coordination"] = {"running": True, "last_run_at": EPOCH, "task": None}
+    state["quality_coordination"] = {"running": True, "last_started_at": EPOCH, "task": None}
     cfg = {"quality_coordination": {"enabled": True, "interval_sec": 1}}
     with patch("main.task_supervisor") as mock_supervisor, \
          patch("main.time") as mock_time:
@@ -47,10 +47,10 @@ def test_scheduler_skips_while_a_run_is_already_in_flight():
     mock_supervisor.supervise.assert_not_called()
 
 
-def test_scheduler_seeds_last_run_at_from_persisted_history_on_cold_start():
+def test_scheduler_seeds_last_started_at_from_persisted_history_on_cold_start():
     """The cold-start-reload fix: if in-memory state is unseeded (0.0) but a prior run is
     already recorded on disk, the scheduler must not treat that as newly overdue."""
-    state["quality_coordination"] = {"running": False, "last_run_at": 0.0, "task": None}
+    state["quality_coordination"] = {"running": False, "last_started_at": 0.0, "task": None}
     cfg = {"quality_coordination": {"enabled": True, "interval_sec": 3600}}
     with patch("main.task_supervisor") as mock_supervisor, \
          patch("main.latest_run_at", return_value=EPOCH), \
@@ -58,7 +58,7 @@ def test_scheduler_seeds_last_run_at_from_persisted_history_on_cold_start():
         mock_time.time.return_value = EPOCH + 5  # 5s after the persisted last run, not due
         main._maybe_run_quality_coordination(cfg)
     mock_supervisor.supervise.assert_not_called()
-    assert state["quality_coordination"]["last_run_at"] == EPOCH
+    assert state["quality_coordination"]["last_started_at"] == EPOCH
 
 
 def test_background_wrapper_runs_the_blocking_work_via_to_thread():
@@ -83,7 +83,7 @@ def test_background_wrapper_runs_the_blocking_work_via_to_thread():
        the same thing (to_thread was actually invoked, not bypassed)."""
     from main import _run_quality_coordination_background
 
-    state["quality_coordination"] = {"running": True, "last_run_at": 0.0, "task": None}
+    state["quality_coordination"] = {"running": True, "last_started_at": 0.0, "task": None}
     with patch("main.asyncio.to_thread") as mock_to_thread:
         asyncio.run(_run_quality_coordination_background())
     mock_to_thread.assert_called_once()

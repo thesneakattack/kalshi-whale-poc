@@ -35,17 +35,25 @@ router = APIRouter()
 
 
 def _coordination_rollup() -> dict[str, int]:
-    conn = _qc._connect()
+    """Rolled-up coordination-item state counts for the /api/quality/summary composite
+    read. Wrapped so a sqlite error here degrades to a safe default instead of 500ing the
+    entire summary route - the same self-contained try/except-and-degrade idiom
+    services/fault_log.py's own summary() already uses for the same "one broken
+    sub-section shouldn't break the whole composite read" principle."""
     try:
-        rows = conn.execute("SELECT state, COUNT(*) c FROM coordination_items GROUP BY state").fetchall()
-        counts = {r["state"]: r["c"] for r in rows}
-        return {
-            "escalation_eligible": counts.get("escalation_eligible", 0),
-            "suppressed": counts.get("suppressed_pending_work", 0),
-            "observed": counts.get("observed", 0),
-        }
-    finally:
-        conn.close()
+        conn = _qc._connect()
+        try:
+            rows = conn.execute("SELECT state, COUNT(*) c FROM coordination_items GROUP BY state").fetchall()
+            counts = {r["state"]: r["c"] for r in rows}
+            return {
+                "escalation_eligible": counts.get("escalation_eligible", 0),
+                "suppressed": counts.get("suppressed_pending_work", 0),
+                "observed": counts.get("observed", 0),
+            }
+        finally:
+            conn.close()
+    except Exception:
+        return {"escalation_eligible": 0, "suppressed": 0, "observed": 0}
 
 
 @router.get("/api/quality/coordination")

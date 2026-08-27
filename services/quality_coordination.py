@@ -6,10 +6,19 @@ coordination-design.md for the full design; this module implements that spec exa
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from services.quality.models import QualityFinding
+from services.quality.models import QualityFinding, QualityReport
+from tools.quality_audit.baseline import compare_to_baseline, load_baseline
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "quality_coordination.db"
 
@@ -87,14 +96,10 @@ def derive_automation_key(f: QualityFinding) -> str:
     return f"{check}|{f.scope}|"
 
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-
 FLOOR_HOURS = {"error": 2.0, "warning": 6.0, "info": 6.0}
 DEBURST_GAP_HOURS = 1.0
 DEBURST_COUNT = 2
 STALENESS_IDLE_HOURS = 3.0
-STALENESS_HARD_CAP_HOURS = 24.0
 
 
 @dataclass(frozen=True)
@@ -133,7 +138,7 @@ def _suppressing_signal(conn: sqlite3.Connection, key: str, scope_paths: tuple[s
             return ("claim", c.source)
     for b in branches:
         idle_hours = (at - datetime.fromisoformat(b.last_commit_at_iso)).total_seconds() / 3600
-        if idle_hours >= STALENESS_HARD_CAP_HOURS or idle_hours >= STALENESS_IDLE_HOURS:
+        if idle_hours >= STALENESS_IDLE_HOURS:
             continue
         if any(p in b.changed_paths for p in scope_paths):
             return ("branch", b.name)
@@ -235,14 +240,6 @@ def apply_observation(conn: sqlite3.Connection, signals: list[Signal], branches:
     return result
 
 
-import hashlib
-import subprocess
-from datetime import timezone
-
-from tools.quality_audit.__main__ import run_audit as _run_static_audit
-from tools.quality_audit.baseline import compare_to_baseline, load_baseline
-
-
 def _current_commit_sha(repo_root: Path) -> str | None:
     try:
         r = subprocess.run(
@@ -287,6 +284,20 @@ class RunResult:
     items_resolved: int
     states: dict[str, str]
     error: str | None
+
+
+def _run_static_audit(repo_root: Path) -> QualityReport:
+    """Thin wrapper kept at module scope (patchable as
+    services.quality_coordination._run_static_audit, same name tests already patch) while
+    deferring the actual import: tools.quality_audit.__main__.run_audit pulls in all 9
+    scanner modules, which main.py importing services.quality_coordination would otherwise
+    drag into the trading app's startup path unconditionally. Deferred to call time so a
+    deployment image without tools/ present still starts fine - an ImportError here is
+    caught by observe_main's own except Exception exactly like any other audit-run
+    failure."""
+    from tools.quality_audit.__main__ import run_audit
+
+    return run_audit(repo_root)
 
 
 def observe_main(repo_root: Path, at: datetime | None = None,
@@ -343,10 +354,6 @@ def observe_main(repo_root: Path, at: datetime | None = None,
         conn.close()
 
 
-import json
-import urllib.error
-import urllib.request
-
 _GITHUB_API = "https://api.github.com/repos/{repo}"
 
 
@@ -388,7 +395,7 @@ def fetch_branch_signals(repo: str = "thesneakattack/kalshi-whale-poc", timeout:
             name = b.get("name")
             if not name or name == "main":
                 continue
-            compare = _http_get_json(f"{base}/compare/main...{name}", timeout)
+            compare = _http_get_json(f"{base}/compare/main...{urllib.parse.quote(name, safe='')}", timeout)
             if not isinstance(compare, dict):
                 continue
             paths = tuple(
