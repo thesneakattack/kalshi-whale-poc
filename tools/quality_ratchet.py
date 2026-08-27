@@ -269,8 +269,14 @@ def apply_observation(conn: sqlite3.Connection, signals: list[Signal], branches:
 
 def _current_commit_sha(repo_root: Path) -> str | None:
     try:
+        # -c safe.directory=* : see tools/project_manifest.py's _git_head for
+        # why this is needed under `ddev exec` (root running git against a
+        # bind-mounted repo owned by the host uid trips git's dubious-
+        # ownership check) and why it's scoped per-invocation rather than
+        # set as global git config.
         r = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, timeout=5,
+            ["git", "-c", "safe.directory=*", "rev-parse", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=5,
         )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
