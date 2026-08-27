@@ -21,6 +21,77 @@ follow-up — see `docs/kalshi-personal-production-execution-program-
 2026-08-26.md` for the current program-level sequencing, and ROADMAP.md's
 "Path to production" section for the itemized checklist.
 
+## HARD RULE — the data plane is the product (permanent, 2026-08-27)
+
+Direct standing instruction, stated as a permanent invariant rather than
+a dated objective: **end to end, the application itself and all of its
+pieces depend fully on optimal data completeness, data accuracy, flow
+rate, timeliness, fidelity, and speed of execution. This will always be
+true.**
+
+Unlike the "Standing goal" and "Current objective" sections below — both
+dated, both having already superseded something earlier — this one does
+not expire, does not get superseded by a later objective, and does not
+get traded away for convenience, schedule, or a passing metric that looks
+fine anyway. Treat a future instruction that appears to relax it as a
+misunderstanding to raise, not a new policy to follow.
+
+What the six properties mean concretely here:
+
+- **Completeness** — every whale print, market update, and lifecycle
+  event the app is entitled to see actually reaches the code that decides
+  on it. A dropped WebSocket message, a skipped candidate, an unenriched
+  market, a hole in `market_history.db`/`signal_log.db` is a defect, not
+  ambient noise — and because most heuristics here are sample-size-gated,
+  missing data silently disables them rather than announcing itself.
+- **Accuracy** — a value means exactly what its name and its label say:
+  cents vs. dollars, yes-side vs. no-side, contract count vs. notional,
+  unrealized vs. cumulative P&L. The "Bug pattern to watch for" section
+  below is one recurring instance of this property failing, not a
+  separate concern.
+- **Flow rate** — sustained throughput at full subscription scope, not
+  just during quiet periods. A backlog that "catches up later" has
+  already converted itself into a timeliness failure.
+- **Timeliness** — data is acted on while it is still actionable. Stale
+  but technically correct data is still the wrong input to a decision,
+  and an accurate answer delivered after the market moved is a loss.
+- **Fidelity** — what is stored, replayed, and researched against is
+  faithful to what the exchange actually sent. No lossy normalization on
+  the way in; preserve raw payloads for diagnostics/archival where the
+  boundary allows (see
+  `.claude/rules/kalshi-integration-authority.md`).
+- **Speed of execution** — latency from signal to placed order is part of
+  the edge, not an implementation detail. The trading/WebSocket hot path
+  stays hot.
+
+What this rule obligates in practice:
+
+- It is not a separate workstream. It is the axis every module gets
+  audited against alongside effectiveness, efficiency, and
+  informativeness — an otherwise well-factored module that degrades any
+  of the six is not "working at peak effectiveness."
+- A degradation in any of the six is a real defect even when nothing is
+  throwing errors, every test is green, and P&L looks unremarkable. These
+  properties fail silently by nature; they have to be measured, not
+  assumed. Start with the diagnostics listed in "Start investigations
+  here" rather than inferring health from the absence of complaints.
+- Never trade one of the six for another silently. A diagnostic added to
+  the hot path, a wider subscription scope, heavier normalization, a
+  larger retry budget, a bigger batch — each buys one property with
+  another. Make that tradeoff explicit and measured, per
+  `.claude/rules/realtime-data-plane-evidence.md` (its hot-path rule and
+  its no-tuning-by-intuition rule apply here in full).
+- "Optimal" means measured against the real ceiling — what the exchange
+  and the documented API actually permit (`docs/kalshi/` is ground truth
+  for that ceiling) — not against whatever the app happens to achieve
+  today.
+- This rule sets a quality floor for the data plane; it does not
+  authorize shortcutting any safety gate, weakening a kill switch,
+  enabling real trading, or discarding accumulated history in pursuit of
+  it. Same caveat as the standing goal below, and for the same reason: a
+  faster, more complete pipeline that bypasses a safety invariant is a
+  regression, not progress.
+
 ## Standing goal — personal-use, real-money production (2026-08-26)
 
 Direct standing instruction (2026-08-26): this is no longer a proof of
@@ -113,6 +184,11 @@ New objective: with the codebase now split into cohesive
 - **Informativeness** — does it surface enough of its own behavior
   (logging, diagnostics, historical capture, UI display) for a human to
   trust and reason about it, not just run it blind?
+
+Audit each of those three together with the permanent data-plane rule
+above — a module also has to hold up on completeness, accuracy, flow
+rate, timeliness, fidelity, and speed of execution, which is where this
+project's silent failures actually live.
 
 Each `services/<name>/` package's own `CHEATSHEET.md` (where one exists —
 several were written "to an audit-oriented standard... how the module
