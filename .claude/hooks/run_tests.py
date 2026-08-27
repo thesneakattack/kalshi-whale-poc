@@ -32,7 +32,8 @@ def main():
 
     try:
         result = subprocess.run(
-            ["ddev", "exec", "-s", "fastapi", "python3", "-m", "pytest", "-q"],
+            ["ddev", "exec", "-s", "fastapi", "python3", "-m", "pytest",
+             "--testmon", "-n", "4", "-m", "not slow", "-q"],
             capture_output=True, text=True, timeout=240,
         )
     except Exception:
@@ -54,6 +55,27 @@ def main():
         # for cross-test contamination by itself). 240s gives real margin
         # above measured runtime instead of a number already smaller than
         # normal, successful completion.
+        #
+        # Recurred, same shape, 2026-08-26: the suite grew again (1574 ->
+        # 2042 tests) and plain serial `pytest -q` (no `-n`, no `--testmon`,
+        # this hook's own invocation at the time) measured at 322.82s -
+        # meaning every single invocation had been silently timing out and
+        # returning zero signal, again, invisibly, for however long the
+        # suite had been over 240s. Fixed by reusing the exact combination
+        # .woodpecker/tests-pytest.yml's own CI pipeline already proved
+        # safe for this suite: `-n 4` (measured 135.45s cold here, vs.
+        # 322.82s serial) plus `--testmon` (a warm run in the same
+        # container only re-executes tests whose exercised lines changed
+        # since last time - this hook fires on every edit within one
+        # continuous dev session, so its cache stays warm far more than
+        # CI's per-push containers ever could) plus `-m "not slow"` (skips
+        # the two real-repo-tree scans in test_quality_audit.py that
+        # duplicate the dedicated quality-architecture-audit CI job -
+        # 73.7s + 11.77s of the 322.82s serial total, for zero coverage
+        # this hook's own edit-triggered scope needs). Cold measured at
+        # 116.18s with this combination - back under the 240s timeout with
+        # real margin, and warm runs during an edit session are far
+        # faster still.
         return  # ddev not running/not found - don't block the edit over tooling issues
 
     if result.returncode != 0:

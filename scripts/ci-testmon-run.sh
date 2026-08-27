@@ -26,7 +26,15 @@ if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_COMMIT_BRANCH:-}" = 
   # The actual merge gate (PR event) or a just-merged main push - always
   # full, unscoped, never testmon-selected. See tests-pytest.yml's header,
   # tier 2.
-  exec python -m pytest -n 4
+  #
+  # -m "not slow" (2026-08-26): excludes tests/test_quality_audit.py's two
+  # real-repo-tree scans, which run the identical checks
+  # .woodpecker/quality-architecture-audit.yml's own `architecture-audit`
+  # step already runs, independently, as its own required PR-gate context
+  # - measured at 73.7s + 11.77s of this suite's wall time for zero
+  # coverage beyond what that dedicated job already enforces. That job is
+  # unaffected by this change; it doesn't invoke pytest at all.
+  exec python -m pytest -n 4 -m "not slow"
 fi
 
 # A push to a non-main branch, not yet a PR - testmon-scoped (tier 3).
@@ -42,7 +50,7 @@ mkdir -p "$CACHE_DIR"
 if [ -f "$CACHE_DIR/.testmondata" ]; then
   cp "$CACHE_DIR/.testmondata" .testmondata
 fi
-python -m pytest --testmon -n 4
+python -m pytest --testmon -n 4 -m "not slow"
 STATUS=$?
 cp .testmondata "$CACHE_DIR/.testmondata"
 exit "$STATUS"
