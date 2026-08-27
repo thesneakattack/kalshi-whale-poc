@@ -90,6 +90,24 @@ Re-verify E3/E4/E5's provisional findings against a capture-health-controlled sa
         └── P2-4 (blocked on a human write-volume/retention decision, independent otherwise)
 ```
 
+**Re-verification ran 2026-08-27** —
+`docs/superpowers/research/2026-08-27-economic-e3-e5-reverification.md`. Outcome: E4
+reproduces and strengthens under a genuinely capture-health-controlled sample (no design
+change indicated for P2-1). E3's open questions (the 08-14 gap, the 08-18–08-22 trough)
+remain unresolved, but a real capture-health signal (`loop_watchdog.stall_max_ms`) now
+exists for the first time — for the post-merge population only, not retroactively — and it
+surfaced a severe, sharply-bounded, already-independently-fixed stall incident
+(`bb5806c`) inside the naive "post-merge" window; P2-2 should build on this signal rather
+than assume Program 1 shipped the richer dropped-message/queue-saturation telemetry its
+own text speculated about. E5 partially reproduces: the edge/pricing-gap finding
+reproduces and worsens in every window measured; the "selection and exit are both
+favorable" component reproduces in the larger (>90-entry) samples but not in the
+smallest, cleanest capture-health-controlled sub-sample (n=32-34, too thin to be
+conclusive either way) — flagged as an open tension for whoever next revisits E5, not
+resolved by this pass. The underlying trade sample has grown from 90 to 142 post-cutover
+entries, still short of the "several hundred entries" re-run trigger this plan and the
+status report both name.
+
 ## What this plan deliberately does not include
 
 No task changes `config/settings.yaml`'s live values. No task enables real trading or
