@@ -23,6 +23,7 @@ class SyncGithubClient(Protocol):
     def list_open_by_label(self, label: str): ...
     def ensure_on_project(self, issue_number: int) -> str: ...
     def set_project_status(self, item_id: str, status: str) -> None: ...
+    def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]: ...
 
 
 def _desired_base_labels(item: SyncItem) -> set[str]:
@@ -96,6 +97,25 @@ def close_stale_worktree_issues(
             client.post_comment(issue.number, _stale_worktree_comment(key))
             client.close_issue(issue.number)
         report.closed.append(f"#{issue.number} worktree:{key} (branch no longer live)")
+    return report
+
+
+def close_completed_plan_parents(client: SyncGithubClient, *, dry_run: bool) -> SyncReport:
+    """Closes an open type:plan-task issue whose sub-issues (created by
+    plan_tasks.decompose_plan) are all complete. GitHub never auto-closes
+    a parent when its sub-issues all close (confirmed live 2026-08-27) -
+    this is the mechanical check that does it. Unlike decompose_plan
+    (a one-time action, spec §4.2), this runs every sync - "did the last
+    sub-issue just close" is exactly the kind of drift-over-time signal
+    the rest of this module already reconciles (spec §4.4)."""
+    report = SyncReport(dry_run=dry_run)
+    for issue in client.list_open_by_label(labels.TYPE_PLAN_TASK):
+        completed, total = client.get_sub_issues_summary(issue.number)
+        if total == 0 or completed < total:
+            continue
+        if not dry_run:
+            client.close_issue(issue.number)
+        report.closed.append(f"#{issue.number} all {total} sub-issues complete")
     return report
 
 

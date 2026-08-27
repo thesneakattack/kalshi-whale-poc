@@ -2,7 +2,7 @@ from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import IssueState
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync import project_status
-from tools.kanban_sync.sync import close_stale_worktree_issues, reconcile, sync_pass_one
+from tools.kanban_sync.sync import close_completed_plan_parents, close_stale_worktree_issues, reconcile, sync_pass_one
 
 
 class FakeGithubClient:
@@ -13,6 +13,7 @@ class FakeGithubClient:
         self.project_items: dict[int, str] = {}   # issue number -> fake project item id
         self.project_status: dict[int, str] = {}  # issue number -> current Status option name
         self.project_status_calls = 0             # call counter, for "was it called again" assertions
+        self.sub_issues_summary: dict[int, tuple[int, int]] = {}
 
     def find_by_marker(self, marker):
         for number, issue in self.issues.items():
@@ -51,12 +52,15 @@ class FakeGithubClient:
         self.project_status[int(item_id)] = status
         self.project_status_calls += 1
 
+    def get_sub_issues_summary(self, issue_number):
+        return self.sub_issues_summary.get(issue_number, (0, 0))
+
 
 def _item(kind="track", key="A", *, title="Track A", status=labels.STATUS_CLAIMABLE,
-          done=False, depends_on=(), phase=None):
+          done=False, depends_on=(), phase=None, type_label=labels.TYPE_TRACKING):
     return SyncItem(
         kind=kind, key=key, title=title, status_label=status,
-        type_label=labels.TYPE_TRACKING, context_body="## Context\nx",
+        type_label=type_label, context_body="## Context\nx",
         acceptance_criteria=("done when x happens",), done=done,
         depends_on_keys=depends_on, phase_label=phase,
     )
@@ -394,3 +398,56 @@ def test_close_stale_worktree_issues_does_not_touch_a_manually_closed_tracking_i
     assert client.issues[number]["open"] is False
     assert client.comments == []
     assert report.closed == []
+
+
+def _plan_item(key="x.md", *, title="Plan: x.md"):
+    return _item(kind="plan", key=key, title=title, status=labels.STATUS_CLAIMABLE,
+                 type_label=labels.TYPE_PLAN_TASK)
+
+
+def test_close_completed_plan_parents_closes_issue_whose_sub_issues_are_all_done():
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (3, 3)
+
+    report = close_completed_plan_parents(client, dry_run=False)
+
+    assert client.issues[number]["open"] is False
+    assert report.closed
+
+
+def test_close_completed_plan_parents_leaves_issue_open_when_sub_issues_incomplete():
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (2, 3)
+
+    report = close_completed_plan_parents(client, dry_run=False)
+
+    assert client.issues[number]["open"] is True
+    assert report.closed == []
+
+
+def test_close_completed_plan_parents_ignores_issue_with_no_sub_issues():
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (0, 0)
+
+    report = close_completed_plan_parents(client, dry_run=False)
+
+    assert client.issues[number]["open"] is True
+    assert report.closed == []
+
+
+def test_close_completed_plan_parents_dry_run_makes_no_mutating_calls():
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (3, 3)
+
+    report = close_completed_plan_parents(client, dry_run=True)
+
+    assert client.issues[number]["open"] is True
+    assert report.closed  # still reported, matching every other dry-run in this file
