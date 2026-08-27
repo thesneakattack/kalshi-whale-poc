@@ -62,3 +62,184 @@ def fetch_app_report(
         except Exception:
             report[key] = None
     return report
+
+
+"""Branch/PR/CI lifecycle health signal domain (spec §6.1). Identity: "branch:<name>".
+Payload: last-commit age, open-PR state, Woodpecker status for the branch tip, whether a
+corresponding .claude/worktrees/ directory exists, and CI staleness detail when the status
+is ambiguously "pending". Suppression candidates: an open PR actively receiving
+commits/reviews, an explicit "paused, not stalled" active-tracks-board.md note (both spec
+§6.1), and a co-dispatch cluster - N branches created within CLUSTER_WINDOW_MINUTES of each
+other with no individual PR yet, treated as one in-flight unit rather than N independent
+stale-branch signals (this plan's own extension of §6.1's suppression-candidate list; see
+this task's evidence note - no new engine architecture, just a third suppression source
+computed here before calling apply_observation).
+"""
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from tools import coordination_engine as ce
+from tools.coordination_engine import Signal
+
+# Evidence: git log --merges --format="%H %cI" -10 main against this repo's real history
+# (measured while writing this plan) showed the 10 most recent merges spaced ~5 minutes to
+# ~5.4 hours apart. Set just above the largest observed gap in that sample. A 10-merge
+# sample, not the fuller 30-90-day pull spec §10 point 1 calls for - re-measure before
+# treating this as final (Task 9).
+FLOOR_HOURS_BRANCH = 6.0
+
+# Evidence: no direct historical source for "how far apart do one dispatch's branches
+# land" exists in this repo; chosen generously since suppression only delays escalation by
+# one more run, never blocks it permanently - see this task's evidence note.
+CLUSTER_WINDOW_MINUTES = 20.0
+
+_COMMIT_STATUS_FAILURE_STATES = {"failure", "error"}
+
+
+def _branch_first_commit_at(branch: str, main_branch: str, git_runner: Runner) -> datetime | None:
+    """Proxy for branch-creation time: the oldest commit reachable from `branch` but not
+    from `main_branch` - the same "first commit unique to this branch" approach
+    tools/quality_ratchet.py's fetch_branch_signals takes from the GitHub compare API,
+    computed locally here via git log instead."""
+    result = git_runner(["git", "log", f"{main_branch}..{branch}", "--format=%cI"])
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return datetime.fromisoformat(lines[-1])  # oldest is last - git log lists newest-first
+
+
+def _cluster_siblings(
+    creation_times: dict[str, datetime], window_minutes: float,
+) -> dict[str, frozenset[str]]:
+    """For each branch, the set of OTHER branches whose creation time falls within
+    `window_minutes` of its own. A branch with no nearby sibling gets an empty set - not a
+    cluster of one."""
+    result: dict[str, frozenset[str]] = {}
+    window = timedelta(minutes=window_minutes)
+    for name, at in creation_times.items():
+        siblings = frozenset(
+            other for other, other_at in creation_times.items()
+            if other != name and abs(other_at - at) <= window
+        )
+        result[name] = siblings
+    return result
+
+
+def _pr_state(branch: str, gh_runner: Runner) -> str | None:
+    result = gh_runner([
+        "gh", "pr", "list", "--head", branch, "--state", "all",
+        "--json", "state", "--limit", "1",
+    ])
+    results = json.loads(result.stdout or "[]")
+    return results[0]["state"] if results else None
+
+
+def _commit_status(branch: str, gh_runner: Runner) -> str | None:
+    """`gh api ... --jq ".state"` raw-unquotes a scalar jq result (unlike `gh ... --json`,
+    which _pr_state above uses and which IS real JSON) - stdout is already the bare state
+    string ("failure", "pending", "success", ...), not a JSON value to parse. Parsing it
+    with json.loads would be the bug here, not the fix - see the test fixtures in this
+    task's test file for the same distinction spelled out against a fake runner."""
+    result = gh_runner([
+        "gh", "api", f"repos/{{owner}}/{{repo}}/commits/{branch}/status",
+        "--jq", ".state",
+    ])
+    stdout = (result.stdout or "").strip()
+    return stdout or None
+
+
+def _woodpecker_step_progress(branch: str, woodpecker_runner: Runner) -> dict:
+    """Real per-step Started/Stopped detail via scripts/woodpecker-status --pipeline N
+    (spec §6.1's "found live 2026-08-27" CI-staleness paragraph). Degrades to an empty dict
+    on any parse failure - a missing/ambiguous CI detail is not itself an error for this
+    domain, just less payload to work with."""
+    try:
+        result = woodpecker_runner(["scripts/woodpecker-status", "--branch", branch, "--json"])
+        data = json.loads(result.stdout or "{}")
+    except Exception:
+        return {}
+    steps = data.get("steps") or []
+    if not steps:
+        return {}
+    furthest = steps[-1]
+    return {
+        "furthest_step": furthest.get("name"),
+        "furthest_step_started_at": (
+            datetime.fromtimestamp(furthest["started"], tz=timezone.utc).isoformat()
+            if furthest.get("started") else None
+        ),
+    }
+
+
+def collect_branch_signals(
+    branch_names: list[str],
+    *,
+    git_runner: Runner,
+    gh_runner: Runner,
+    woodpecker_runner: Runner,
+    conn,
+    worktrees_root: Path,
+    main_branch: str = "main",
+    at: datetime,
+) -> tuple[list[Signal], frozenset[str], frozenset[str]]:
+    creation_times: dict[str, datetime] = {}
+    for branch in branch_names:
+        created = _branch_first_commit_at(branch, main_branch, git_runner)
+        if created is not None:
+            creation_times[branch] = created
+
+    clusters = _cluster_siblings(creation_times, CLUSTER_WINDOW_MINUTES)
+
+    signals: list[Signal] = []
+    suppressed_keys: set[str] = set()
+    immediate_keys: set[str] = set()
+
+    for branch in branch_names:
+        identity = f"branch:{branch}"
+        pr_state = _pr_state(branch, gh_runner)
+        commit_status = _commit_status(branch, gh_runner) if pr_state is not None else None
+
+        # last_commit_age_hours/has_worktree were dropped from this payload (found in
+        # review, 2026-08-27): apply_observation fingerprints the WHOLE Signal.payload
+        # (Task 1), and last_commit_age_hours is computed from `at`, which advances every
+        # AQC cycle - a full-payload fingerprint comparison across two cycles could then
+        # never match even when nothing about the branch's CI status actually changed,
+        # silently breaking the possibly_stuck detection below in every real invocation,
+        # not just as a test-fixture mismatch. worktrees_root/main_branch stay accepted
+        # parameters per this domain's documented interface even though this payload no
+        # longer folds worktree existence into it, for the same reason.
+        payload: dict = {
+            "pr_state": pr_state,
+            "ci_status": commit_status,
+        }
+
+        if commit_status == "pending":
+            step_progress = _woodpecker_step_progress(branch, woodpecker_runner)
+            payload.update(step_progress)
+            prior = ce.get_prior_row(conn, identity)
+            # Compare against the prior row's stored content fingerprint directly, rather
+            # than re-parsing a payload the engine doesn't expose as JSON on the row (only
+            # `fingerprint`, the hash, is stored) - two consecutive runs whose full payload
+            # fingerprints match while ci_status stays "pending" means nothing about this
+            # branch's CI run advanced between them.
+            if prior is not None:
+                candidate_fp = ce._fingerprint(payload)
+                if candidate_fp == prior["fingerprint"]:
+                    payload["possibly_stuck"] = True
+
+        if commit_status in _COMMIT_STATUS_FAILURE_STATES:
+            # spec §6.1: "a failure/error state ... should surface immediately, at full
+            # severity, never behind a persistence floor."
+            immediate_keys.add(identity)
+
+        if pr_state == "OPEN":
+            # spec §6.1 suppression candidate: an open PR actively receiving commits/reviews.
+            suppressed_keys.add(identity)
+        elif clusters.get(branch):
+            # This plan's co-dispatch-cluster extension (see task docstring above).
+            suppressed_keys.add(identity)
+
+        signals.append(Signal(identity=identity, domain="branch", payload=payload, still_present=True))
+
+    return signals, frozenset(suppressed_keys), frozenset(immediate_keys)
