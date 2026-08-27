@@ -110,7 +110,22 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    the checklist from quietly drifting out of sync with what's actually
    shipped.
 
-8. **PR check — only when this checkpoint completes the initiative, not
+8. **Kanban board sync (mechanical sources only).** Run the fast,
+   fully-deterministic slice of the board sync — worktrees, `ROADMAP.md`,
+   `active-tracks-board.md` — so the GitHub Issues board doesn't drift too
+   far behind a normal working session:
+   ```bash
+   python -m tools.kanban_sync sync --sources worktree,roadmap,track
+   ```
+   This does not run the judgment-assisted plan-doc classification step —
+   that's the standalone `kanban-board-sync` skill, run on demand, since
+   it's slower and shouldn't gate every checkpoint. If `gh` is missing the
+   `project` scope, this prints an actionable error and exits nonzero —
+   don't treat that as a checkpoint failure, just note it and move on;
+   getting that scope added is a one-time human action
+   (`gh auth refresh -s project`), not something to fix mid-checkpoint.
+
+9. **PR check — only when this checkpoint completes the initiative, not
    every mid-initiative checkpoint.** If the branch has no open PR yet and
    the initiative this branch covers is actually done, `gh pr create`; if
    CI (step 6) is green and the diff has been reviewed, `gh pr merge
@@ -119,11 +134,11 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    full policy. A checkpoint in the middle of a multi-task initiative just
    leaves the branch pushed and green; it doesn't open or merge a PR yet.
 
-9. **Session-hygiene prompt.** Give a short 2-3 sentence summary of what
-   this checkpoint covered (keeps continuity across a later `/compact`).
-   Then suggest — don't insist — whichever fits: `/compact` if context is
-   getting heavy after a substantial chunk of work, `/clear` if the next
-   task is materially unrelated to what was just finished.
+10. **Session-hygiene prompt.** Give a short 2-3 sentence summary of what
+    this checkpoint covered (keeps continuity across a later `/compact`).
+    Then suggest — don't insist — whichever fits: `/compact` if context is
+    getting heavy after a substantial chunk of work, `/clear` if the next
+    task is materially unrelated to what was just finished.
 
 ## Scope note
 
