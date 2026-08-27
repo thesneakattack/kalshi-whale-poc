@@ -39,15 +39,29 @@ to the current task and load/use the relevant skill before acting.
   misunderstanding of this feature's own purpose (workflow/tooling quality
   control, not application behavior). Fully decoupled: see `CLAUDE.md`'s
   "Workflow/tooling and application code must never overlap" standing rule.
-- **quality-coordination-observation** — `tools/quality_coordination.py`,
-  a standalone workflow tool (not application code — see the standing
-  rule in `CLAUDE.md`), a read-only persisted observation series over
-  `tools.quality_audit`'s static findings (identity/persistence/suppression
-  policy from the autonomous-quality-coordination investigation, I8/I11).
-  No GitHub write authority exists, and no application coupling of any
-  kind — invoke directly (`python -m tools.quality_coordination`) or
-  inspect `tools/quality_coordination_data/quality_coordination.db`
-  directly; there is no API route and no dashboard view.
+  **Corrected again, more fundamentally, 2026-08-27:** even the corrected,
+  decoupled module still audited the wrong *subject* — the trading
+  application's own static code findings, not "the automated workflow
+  itself." Direct user correction: this was always meant to be an
+  automated project-manager/janitor over this repo's own engineering
+  workflow (branches/PRs/CI, `superpowers` plans/ledgers, standing-rule
+  compliance), informed by (not auditing) the app's own diagnostics. The
+  existing module is kept, renamed to `tools/quality_ratchet.py` (see the
+  next bullet) — "AQC" now names only the tool specified in
+  `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
+  workflow-design.md`, not yet implemented.
+- **quality-ratchet** (formerly `quality-coordination-observation`,
+  renamed 2026-08-27) — `tools/quality_ratchet.py`, a standalone workflow
+  tool (not application code — see the standing rule in `CLAUDE.md`), a
+  read-only persisted observation series over `tools.quality_audit`'s
+  static findings (identity/persistence/suppression policy from the
+  autonomous-quality-coordination investigation, I8/I11 — that investigation's
+  *mechanics* are reused here even though its *target* is now understood
+  to have been the wrong one, see above). No GitHub write authority
+  exists, and no application coupling of any kind — invoke directly
+  (`python -m tools.quality_ratchet`) or inspect
+  `tools/quality_ratchet_data/quality_ratchet.db` directly; there is no
+  API route and no dashboard view.
 - **economic-strategy-effectiveness-investigation** — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —

@@ -1,20 +1,36 @@
-"""Read-only autonomous quality coordination — persisted observation series only.
+"""quality_ratchet — read-only, persisted observation series over tools.quality_audit's
+static findings.
+
+**Renamed from tools/quality_coordination.py (2026-08-27).** Not a rename in name only:
+"Autonomous Quality Coordination" (AQC) now names a *different*, separately-specified tool
+— an automated project-manager/janitor over this repository's own engineering workflow
+(branch/PR/CI lifecycle, superpowers plan/ledger health, standing-rule compliance), not an
+observer of the trading application's own static code-quality findings, which is what this
+module actually does. Direct user correction, 2026-08-27: "the goal of this plan wasnt to
+audit the application, but to ... be an expert project manager, and ... 'be a janitor' over
+the automated workflow itself." This module's own behavior is unchanged by that correction
+— it was a legitimate, working capability under the wrong name, so it keeps its
+implementation and gets a name that no longer collides with AQC's. See
+docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md for
+what "AQC" now refers to.
 
 Standalone tool, not application code: lives under tools/ (alongside tools/quality_audit/,
 the static scanner this module observes) rather than services/, and is never imported by
 main.py or any part of the live trading app. Invoke directly (`python -m
-tools.quality_coordination`) or from whatever external scheduler a human sets up - the
-trading app's own process/config/scheduling never drives or gates this (see CLAUDE.md's
-"workflow and tooling should never overlap with app code" standing rule, added 2026-08-26
-after this module originally shipped wired into main.py's tick loop).
+tools.quality_ratchet`) or from whatever external scheduler a human sets up - the trading
+app's own process/config/scheduling never drives or gates this (see CLAUDE.md's "workflow
+and tooling should never overlap with app code" standing rule, added 2026-08-26 after this
+module originally shipped wired into main.py's tick loop).
 
 No GitHub write credential, no issue/PR authority, no write path outside this module's own
-tools/quality_coordination_data/quality_coordination.db — deliberately NOT under the
-shared data/ directory the trading app owns (that directory is globbed whole by the app's
-own backup cycle and storage-health inventory; living there would silently couple this
-standalone tool's data into app-owned mechanisms it was never meant to be part of). See
-docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md for the full
-design; this module implements that spec exactly.
+tools/quality_ratchet_data/quality_ratchet.db — deliberately NOT under the shared data/
+directory the trading app owns (that directory is globbed whole by the app's own backup
+cycle and storage-health inventory; living there would silently couple this standalone
+tool's data into app-owned mechanisms it was never meant to be part of). See
+docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md for the design
+this module still implements exactly — that document's own title predates the rename and is
+left as the historical record of what was actually built, per this repo's own
+"struck through, not deleted" documentation convention.
 """
 from __future__ import annotations
 
@@ -30,7 +46,7 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 
-DB_PATH = Path(__file__).resolve().parent / "quality_coordination_data" / "quality_coordination.db"
+DB_PATH = Path(__file__).resolve().parent / "quality_ratchet_data" / "quality_ratchet.db"
 
 _HOST_SNIPPET_MAX = 80
 
@@ -39,8 +55,9 @@ def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # WAL mode: lets a reader (e.g. GET /api/quality/coordination) proceed concurrently
-    # with the background coordination cycle's writer instead of blocking on the default
+    # WAL mode: lets a concurrent reader (a human/Claude session inspecting the DB directly -
+    # there is no API route, per this module's own docstring) proceed alongside a run's writer
+    # instead of blocking on the default
     # rollback-journal lock - same hardening every other DB-owning module in this repo
     # applies (see services/paper_broker.py's _connect for the original incident). Idempotent
     # - safe to run on every connect.
@@ -298,7 +315,7 @@ class RunResult:
 
 def _run_static_audit(repo_root: Path) -> QualityReport:
     """Thin wrapper kept at module scope (patchable as
-    tools.quality_coordination._run_static_audit, same name tests already patch) while
+    tools.quality_ratchet._run_static_audit, same name tests already patch) while
     deferring the actual import: tools.quality_audit.__main__.run_audit pulls in all 9
     scanner modules, which this module isn't otherwise loaded until an explicit standalone
     invocation (this module is no longer imported by main.py at all - see the module
@@ -465,7 +482,7 @@ def latest_run_at() -> float | None:
     run" (e.g. before deciding whether to invoke it again). No longer consumed internally:
     this module has no in-process scheduler of its own to cold-start-seed (see the module
     docstring — invocation is external, by whatever process/human runs
-    `python -m tools.quality_coordination`). Returns None if no run has ever completed."""
+    `python -m tools.quality_ratchet`). Returns None if no run has ever completed."""
     conn = _connect()
     try:
         row = conn.execute("SELECT MAX(ran_at) AS m FROM coordination_runs").fetchone()

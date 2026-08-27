@@ -13,10 +13,11 @@ Deliberately excludes tools/: that directory holds standalone workflow
 tooling, not application code, and PERSISTENCE_MODULE_PATHS is
 specifically the application's own test-isolation registry (see
 CLAUDE.md's "workflow and tooling should never overlap with app code"
-standing rule, added 2026-08-26 after tools/quality_coordination.py
-originally shipped registered there). A tools/-owned module manages its
-own persistence isolation directly in its own tests (e.g.
-tools/quality_coordination.py's tests explicitly monkeypatch its DB_PATH
+standing rule, added 2026-08-26 after tools/quality_ratchet.py -
+tools/quality_coordination.py at the time, renamed 2026-08-27 - originally
+shipped registered there). A tools/-owned module manages its own
+persistence isolation directly in its own tests (e.g.
+tools/quality_ratchet.py's tests explicitly monkeypatch its DB_PATH
 in every test function) rather than relying on the app's shared registry
 - requiring registration would recreate the exact coupling this scanner's
 own home directory (tools/) exists to avoid.

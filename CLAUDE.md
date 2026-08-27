@@ -420,10 +420,13 @@ Amendment for the full account).
   persistence, auth, accounts store, whale-watcher provider library).
 - `tools/` — standalone workflow/tooling, never application code (see the
   standing rule above): `quality_audit/` (static repo-quality scanner),
-  `quality_coordination.py` (persisted observation series over that
-  scanner's findings), `project_manifest.py`, and others. Own persistence,
-  own config (if any), own invocation — zero coupling with `main.py`/
-  `services/`.
+  `quality_ratchet.py` (renamed from `quality_coordination.py` 2026-08-27 —
+  persisted observation series over that scanner's findings; "Autonomous
+  Quality Coordination" now names a different, separately-specified tool,
+  see ROADMAP.md and `docs/superpowers/specs/2026-08-27-autonomous-
+  quality-coordination-workflow-design.md`), `project_manifest.py`, and
+  others. Own persistence, own config (if any), own invocation — zero
+  coupling with `main.py`/`services/`.
 - `static/` — dashboard + status page + login/accounts pages, served
   directly by ddev's `web` container, not by `main.py`. Plain inline
   HTML/CSS/JS per page, no build step, no bundler.
