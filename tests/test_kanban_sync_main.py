@@ -45,3 +45,26 @@ def test_plan_candidates_subcommand_is_registered(monkeypatch):
     cli.main(["plan-candidates"])
 
     assert called == [True]
+
+
+def test_parse_sources_strips_whitespace_and_rejects_unknown_names():
+    # Whitespace after a comma must not silently drop a source.
+    assert cli._parse_sources("worktree, roadmap") == ["worktree", "roadmap"]
+
+    # A misspelled/unknown source name must fail loudly, not be ignored.
+    with pytest.raises(SystemExit) as exc:
+        cli._parse_sources("worktree,bogus")
+
+    assert exc.value.code == 1
+
+
+def test_collect_items_checks_plan_classifications_before_any_subprocess_call(monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("subprocess.run must not be called before the plan-classifications check")
+
+    monkeypatch.setattr(cli.subprocess, "run", _boom)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._collect_items(["plan", "worktree"], None)
+
+    assert exc.value.code == 1

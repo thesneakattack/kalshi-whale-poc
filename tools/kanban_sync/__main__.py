@@ -26,6 +26,7 @@ REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
 ACTIVE_TRACKS_BOARD_PATH = Path("docs/superpowers/plans/2026-08-26-active-tracks-board.md")
 PLANS_DIR = Path("docs/superpowers/plans")
+KNOWN_SOURCES = frozenset({"worktree", "roadmap", "track", "plan"})
 
 
 def _check_project_scope() -> None:
@@ -40,7 +41,32 @@ def _check_project_scope() -> None:
         sys.exit(1)
 
 
+def _parse_sources(raw: str) -> list[str]:
+    """Split, whitespace-strip, and validate a `--sources` value. Exits 1
+    on any unrecognized name rather than silently dropping it - a typo or
+    stray space must not produce a CLI that exits 0 while quietly skipping
+    a source (see Task 10 review finding #1)."""
+    sources = [token.strip() for token in raw.split(",")]
+    unknown = [s for s in sources if s not in KNOWN_SOURCES]
+    if unknown:
+        print(
+            f"error: unknown --sources value(s): {', '.join(unknown)}. "
+            f"Valid sources: {', '.join(sorted(KNOWN_SOURCES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return sources
+
+
 def _collect_items(sources: list[str], plan_classifications: Path | None) -> list[SyncItem]:
+    # Checked first, before any source-specific work (including real
+    # subprocess calls for worktree/track), so a missing flag fails fast
+    # rather than after wasting real `git`/`gh` calls (Task 10 review
+    # finding #2).
+    if "plan" in sources and plan_classifications is None:
+        print("error: --sources plan requires --plan-classifications <path>", file=sys.stderr)
+        sys.exit(1)
+
     items: list[SyncItem] = []
     client = GithubClient(REPO)
 
@@ -55,9 +81,6 @@ def _collect_items(sources: list[str], plan_classifications: Path | None) -> lis
     if "track" in sources:
         items += parse_track_items(ACTIVE_TRACKS_BOARD_PATH.read_text())
     if "plan" in sources:
-        if plan_classifications is None:
-            print("error: --sources plan requires --plan-classifications <path>", file=sys.stderr)
-            sys.exit(1)
         items += build_plan_items(json.loads(plan_classifications.read_text()))
 
     return items
@@ -65,7 +88,7 @@ def _collect_items(sources: list[str], plan_classifications: Path | None) -> lis
 
 def _cmd_sync(args: argparse.Namespace) -> None:
     _check_project_scope()
-    sources = args.sources.split(",")
+    sources = _parse_sources(args.sources)
     items = _collect_items(sources, args.plan_classifications)
     client = GithubClient(REPO)
     report = reconcile(items, client, dry_run=args.dry_run)
