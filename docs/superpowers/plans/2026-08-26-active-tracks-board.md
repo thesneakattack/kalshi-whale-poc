@@ -34,22 +34,27 @@ gated behind both; nothing in it should start yet.
 
 ## Track A — Realtime data plane (lead track)
 
-**Status (2026-08-27, corrected — this entry was one step stale):** CH1 done
-(PR #82) — measured negligible on every axis checked: frame count bounded
-(<=2 raw WS frames per churn burst under the live exchange-wide config), no
-snapshot cost on churn-add (`send_initial_snapshot` isn't set on
-`add_markets`), no positive queue-depth/latency correlation with churn
-magnitude (weak negative, r = -0.217), and no measured rate-limit pressure.
-CH2 also done (PR #92) — root-caused and fixed the still-untraced third
-instability event: `GET /api/quality/summary` was blocking the event loop,
-not subscription churn (classification (c), "something else entirely," per
-CH2's own task). Full measurement: H11 in
+**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every
+axis checked: frame count bounded (<=2 raw WS frames per churn burst under
+the live exchange-wide config), no snapshot cost on churn-add
+(`send_initial_snapshot` isn't set on `add_markets`), no positive
+queue-depth/latency correlation with churn magnitude (weak negative, r =
+-0.217), and no measured rate-limit pressure. CH2 done (PR #92) —
+root-caused and fixed the still-untraced third instability event: `GET
+/api/quality/summary` was blocking the event loop, not subscription churn.
+**CH3 done** — classified H11 as (ii) real but currently-negligible cost,
+and separately (iii) unrelated to the observed instability; not (i).
+Neither result supports a confirmed material bottleneck, so per this
+track's own order below, Phase P2.5 stops here — CH4/CH5 do not run.
+Re-grounded against current live config/watchlist (12 tickers, same
+filters CH1 measured under) before writing the classification — nothing
+had shifted. Full reconciliation: H11 in
 `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
-**CH3 is next, not started** — reconcile CH1+CH2's negative evidence into a
-classification of H11; per CH2's result, expect (ii)/(iii) rather than (i),
-but that classification is now explicitly provisional pending Phase P3.5's
-larger-scale churn measurement (see the P3.5 bullet below) rather than final
-the moment CH3 commits.
+This classification is explicitly provisional pending Phase P3.5's
+larger-scale churn measurement (see the P3.5 bullet below), not final.
+**Task 14 (Phase P3) is next, not started** — per the order below, CH3's
+(ii)/(iii) result means skip straight to Task 14 rather than running
+CH4/CH5 first.
 
 **Canonical doc — single file (merged 2026-08-27):**
 `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`. The

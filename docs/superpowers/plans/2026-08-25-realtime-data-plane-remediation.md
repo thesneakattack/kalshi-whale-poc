@@ -1404,6 +1404,12 @@ H11 (CH3 below) rests on that proof rather than coincidence.
 - [ ] If (i): proceed to CH4.
 - [ ] Commit: `docs: classify H11 (CH3)`.
 
+**Resolved (2026-08-27):** (ii) real but currently-negligible cost, and separately
+(iii) unrelated to the observed instability — not (i). Full reconciliation and evidence
+in H11's own entry, `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
+This phase stops here; CH4/CH5 do not run unless P3.5's addendum below reopens the
+classification.
+
 **Not necessarily final once (ii)/(iii) stops this phase (2026-08-27):** Phase P3.5
 below (Task 17a/17b) runs after this task in current sequencing and is the literal
 "larger watchlist" experiment this bullet names — it reuses this phase's own
