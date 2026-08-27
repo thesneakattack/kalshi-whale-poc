@@ -129,7 +129,7 @@ from services.app_state import (  # noqa: E402
     risk, shadow, state, strategy, trade_stream, whale_provider,
     whale_sim,
 )
-from services.account_positions import (  # noqa: E402
+from services.position.account_positions import (  # noqa: E402
     _fetch_account_snapshot, _join_real_position_prices, _real_account_position_tickers,
     _slim_fill, _slim_order, _slim_position,
 )

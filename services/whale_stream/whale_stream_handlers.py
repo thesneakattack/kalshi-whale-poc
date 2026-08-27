@@ -17,7 +17,7 @@ from services.config import config_performance
 from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi import websocket as kalshi_websocket
-from services.account_positions import _slim_fill, _slim_position
+from services.position.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
@@ -311,8 +311,8 @@ async def _process_stream_fill(fill_msg: dict) -> None:
     every real WS fill was silently discarded here - fill.get("fill_id")
     was always None, so this function no-opped on every single message,
     never observed because trading_enabled has always been off in
-    practice. See services/account_positions.py's _FILL_FIELDS for the
-    matching field-allowlist fix.
+    practice. See services/position/account_positions.py's _FILL_FIELDS for
+    the matching field-allowlist fix.
 
     Prepends to the existing state["account"]["fills"] list (same shape/
     cap the REST path already produces, so nothing downstream needs to
@@ -321,7 +321,7 @@ async def _process_stream_fill(fill_msg: dict) -> None:
     on a 20s cache - see that function's own comment) will naturally
     reconcile/overwrite this with verified data regardless, so a
     WS-sourced fill only ever needs to survive until the next reconcile."""
-    from services.account_positions import _slim_fill
+    from services.position.account_positions import _slim_fill
 
     if not state["account"].get("connected"):
         return
@@ -350,9 +350,9 @@ async def _process_stream_position(position_msg: dict) -> None:
     downstream consumer (frontend, _join_real_position_prices,
     _real_account_position_tickers) keeps reading the one key they already
     expect, regardless of which source populated it. See
-    services/account_positions.py's _POSITION_FIELDS for the matching
+    services/position/account_positions.py's _POSITION_FIELDS for the matching
     field-allowlist fix."""
-    from services.account_positions import _slim_position
+    from services.position.account_positions import _slim_position
 
     if not state["account"].get("connected"):
         return

@@ -15,7 +15,7 @@ line ranges in main.py.
 """
 from fastapi import APIRouter, HTTPException
 
-from services.account_positions import _slim_order
+from services.position.account_positions import _slim_order
 from services.app_state import account, broker, bump_generation, risk, shadow
 
 router = APIRouter()

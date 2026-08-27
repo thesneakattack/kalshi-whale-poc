@@ -97,7 +97,7 @@ def _run_stream_ticker(msg):
         (msg,) = msg
     asyncio.run(main._process_stream_ticker(ticker_contract.normalize_ticker(msg)))
 from fastapi.testclient import TestClient  # noqa: E402
-from services import account_positions  # noqa: E402
+from services.position import account_positions  # noqa: E402
 from services.market_watch import discovery_cache  # noqa: E402
 from services.confidence_scoring import DEFAULT_WEIGHTS  # noqa: E402
 
