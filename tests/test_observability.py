@@ -793,3 +793,67 @@ def test_maybe_capture_resets_the_candidate_retry_window_after_persisting(monkey
     observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
 
     assert resets == [1]
+
+
+# --- capture writer thread metrics/finding (realtime data-plane remediation P3 Task 14) ---
+
+class _FakeAliveThread:
+    def is_alive(self) -> bool:
+        return True
+
+
+class _FakeDeadThread:
+    def is_alive(self) -> bool:
+        return False
+
+
+def test_capture_writer_metrics_flow_into_the_snapshot_when_alive(monkeypatch):
+    from services import capture_writer
+    monkeypatch.setattr(capture_writer, "_thread", _FakeAliveThread())
+    monkeypatch.setattr(capture_writer, "_buffers", {"raw_trades": [("row",)]})
+    monkeypatch.setattr(capture_writer, "_last_flush_at", {"raw_trades": time.time() - 0.25})
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert metrics["writer.depth.raw_trades"] == 1.0
+    assert 200 <= metrics["writer.last_flush_age_ms.raw_trades"] <= 400
+
+
+def test_capture_writer_metrics_omitted_when_never_started(monkeypatch):
+    from services import capture_writer
+    monkeypatch.setattr(capture_writer, "_thread", None)
+
+    metrics = observability.capture_from_runtime({}, {}, None, None)
+
+    assert not [k for k in metrics if k.startswith("writer.")]
+
+
+def test_capture_writer_dead_finding_absent_when_never_started(monkeypatch):
+    from services import capture_writer
+    monkeypatch.setattr(capture_writer, "_thread", None)
+
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    assert not [f for f in findings if f.check == "capture-writer-alive"]
+
+
+def test_capture_writer_dead_finding_absent_when_alive(monkeypatch):
+    from services import capture_writer
+    monkeypatch.setattr(capture_writer, "_thread", _FakeAliveThread())
+
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    assert not [f for f in findings if f.check == "capture-writer-alive"]
+
+
+def test_capture_writer_dead_finding_critical_when_started_but_not_alive(monkeypatch):
+    from services import capture_writer
+    monkeypatch.setattr(capture_writer, "_thread", _FakeDeadThread())
+    monkeypatch.setattr(capture_writer, "_buffers", {"raw_trades": [("row",), ("row2",)]})
+
+    findings = observability.runtime_findings(_POLL_CFG, {}, None, None)
+
+    matches = [f for f in findings if f.check == "capture-writer-alive"]
+    assert len(matches) == 1
+    assert matches[0].severity == "critical"
+    assert matches[0].evidence == {"depth": {"raw_trades": 2}}

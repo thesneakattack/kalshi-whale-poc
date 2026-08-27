@@ -376,6 +376,47 @@ surfaces as a quality finding" — reads `candidate_retry.abandoned` from
 here, once Task 13 wires the finding.
 
 
+### `writer.*` — capture writer thread depth/flush recency (realtime data-plane remediation P3 Task 14, 2026-08-27)
+
+Source: `services/capture_writer.py`, the daemon thread that batches
+capture-store writes off both the asyncio loop and the reader coroutine.
+Unwired today — nothing calls `capture_writer.submit()` yet (Task 15
+routes `series_watcher.record_trade`'s row through it instead of its own
+local buffer); the thread itself is started/stopped and liveness-
+supervised from `main.py`'s `lifespan()` regardless, so it runs idle
+(empty buffers never open a DB connection — `_flush_store`'s own early
+return) until Task 15 wires a real producer.
+
+Names (`float`; gated on `capture_writer.is_alive()`, not on the depth/age
+dicts being non-empty — those always return an entry per known store,
+populated at module import, so gating on non-emptiness would emit a
+misleadingly "live-looking" `0` for a process that never called
+`capture_writer.start()` at all):
+
+- `writer.depth.<store>` — `len(capture_writer._buffers[store])` at
+  capture time, a live gauge, not a windowed count.
+- `writer.last_flush_age_ms.<store>` — milliseconds since that store's
+  last flush (successful or not — see `capture_writer.py`'s own
+  `_last_flush_at` comment), also live, not windowed.
+
+**Use.** A sustained rise in `writer.depth.<store>` alongside a rising
+`writer.last_flush_age_ms.<store>` means the writer thread is falling
+behind or stuck (not dead — `writer.alive`-style detection is the
+separate `observability:capture-writer-dead:capture_writer` finding
+below, not a metric threshold on these two gauges).
+
+**Finding: `capture-writer-alive`.** `_capture_writer_dead_finding()`
+fires `critical` when `capture_writer.was_started()` is true but
+`capture_writer.is_alive()` is false — the thread was running and died.
+Absent (not a finding at all, not a lower severity) when the writer was
+never started in this process at all, since that's not an anomaly, just
+a process that hasn't reached `capture_writer.start()` yet. `main.py`'s
+`_capture_writer_liveness_loop` already restarts a dead thread within
+~5s via `capture_writer.ensure_alive()` — this finding makes a dead
+stretch visible in `/api/quality/summary` too, not just recoverable,
+same "counted, not silent" bar P2's own retry-abandonment finding set.
+
+
 ### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
 
 Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),

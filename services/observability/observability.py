@@ -24,7 +24,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import candidate_retry, http_client, loop_watchdog, whale_pipeline_perf
+from services import candidate_retry, capture_writer, http_client, loop_watchdog, whale_pipeline_perf
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -216,6 +216,17 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # meaningful-looking zeros.
     metrics.update(_flatten_candidate_retry(candidate_retry.snapshot()))
 
+    # writer.* (realtime data-plane remediation P3 Task 14) - the capture
+    # writer daemon thread's per-store buffer depth and flush recency. Same
+    # "no evidence, no rows" contract as everything above - depth()/
+    # last_flush_age_ms() always return an entry per known store (populated
+    # at module import, not at start()), so gate on is_alive() rather than
+    # on those dicts being non-empty; otherwise a process that never called
+    # capture_writer.start() would still emit a misleadingly "live-looking"
+    # depth of 0.
+    if capture_writer.is_alive():
+        metrics.update(_flatten_capture_writer(capture_writer.depth(), capture_writer.last_flush_age_ms()))
+
     return metrics
 
 
@@ -244,6 +255,15 @@ def _flatten_candidate_retry(snapshot: dict) -> dict:
         "candidate_retry.recovered": float(recovered),
         "candidate_retry.abandoned": float(abandoned),
     }
+
+
+def _flatten_capture_writer(depth: dict, last_flush_age_ms: dict) -> dict:
+    out: dict = {}
+    for store, n in depth.items():
+        out[f"writer.depth.{store}"] = float(n)
+    for store, age_ms in last_flush_age_ms.items():
+        out[f"writer.last_flush_age_ms.{store}"] = float(age_ms)
+    return out
 
 
 def _flatten_rest_latency(snapshot: dict) -> dict:
@@ -525,6 +545,28 @@ def _candidate_retry_abandoned_finding() -> QualityFinding | None:
     )
 
 
+def _capture_writer_dead_finding() -> QualityFinding | None:
+    """P3 Task 14's own liveness contract: the writer thread is supervised
+    (main.py restarts it within ~5s via capture_writer.ensure_alive()), but
+    a finding here makes a dead stretch visible in /api/quality/summary
+    too, not just recoverable - same "counted, not silent" bar P2's own
+    retry-abandonment finding already set. Only fires once the writer has
+    been started at least once in this process (a process that never
+    called start() isn't "dead," it's simply not running this component
+    yet - not an anomaly worth a finding)."""
+    if not capture_writer.was_started():
+        return None  # never started in this process
+    if capture_writer.is_alive():
+        return None
+    return QualityFinding(
+        finding_id="observability:capture-writer-dead:capture_writer",
+        check="capture-writer-alive", severity="critical", confidence="high", source="runtime",
+        scope="capture_writer",
+        summary="capture_writer's daemon thread is not alive - capture writes are not landing",
+        evidence={"depth": capture_writer.depth()},
+    )
+
+
 def runtime_findings(
     cfg: dict, state: dict, trade_stream, index_stream, now: float | None = None,
 ) -> list[QualityFinding]:
@@ -543,4 +585,7 @@ def runtime_findings(
     abandoned_finding = _candidate_retry_abandoned_finding()
     if abandoned_finding is not None:
         findings.append(abandoned_finding)
+    writer_finding = _capture_writer_dead_finding()
+    if writer_finding is not None:
+        findings.append(writer_finding)
     return findings

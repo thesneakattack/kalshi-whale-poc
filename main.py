@@ -26,6 +26,7 @@ from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import candidate_retry
+from services import capture_writer
 from services.diagnostics import diagnostics
 from services.history import regime_analytics
 from services.whale_calibration import confidence_calibration
@@ -1004,6 +1005,18 @@ async def trading_loop():
         await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
 
 
+async def _capture_writer_liveness_loop() -> None:
+    """capture_writer's daemon thread isn't itself an asyncio task
+    task_supervisor can restart directly - this coroutine is what's
+    actually supervised (restart=True), and it just polls
+    capture_writer.ensure_alive() every 5s, matching P3 Task 14's own
+    liveness contract (observability.py's dead-writer finding covers the
+    "visible in /api/quality/summary" half of that same contract)."""
+    while True:
+        await asyncio.sleep(5)
+        capture_writer.ensure_alive()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # restart=True on these three: they're the long-running loops the app
@@ -1014,6 +1027,14 @@ async def lifespan(app: FastAPI):
     task = task_supervisor.supervise(trading_loop, component="trading_loop", operation="run", restart=True)
     loop_watchdog_task = task_supervisor.supervise(
         lambda: loop_watchdog.start_forever(), component="loop_watchdog", operation="run", restart=True,
+    )
+    # Unwired today (P3 Task 14): nothing calls capture_writer.submit() yet
+    # (Task 15 routes series_watcher.record_trade through it) - starting it
+    # now is safe since an idle writer with empty buffers never opens a DB
+    # connection (capture_writer._flush_store's own early return).
+    capture_writer.start()
+    capture_writer_liveness_task = task_supervisor.supervise(
+        _capture_writer_liveness_loop, component="capture_writer", operation="liveness", restart=True,
     )
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
@@ -1048,6 +1069,8 @@ async def lifespan(app: FastAPI):
         index_stream_task.cancel()
     task.cancel()
     loop_watchdog_task.cancel()
+    capture_writer_liveness_task.cancel()
+    capture_writer.stop()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data
     # client) holding its own SDK-managed aiohttp session — needs its own
