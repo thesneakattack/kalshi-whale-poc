@@ -252,17 +252,75 @@ Live-measured (2026-08-26), not assumed:
   existing `ingest_metrics()`/`reset_ingest_window()`/`capture_from_runtime` pipeline - no
   new metrics subsystem). Live-confirmed working: one real sync captured 5 tickers added, 0
   removed, in a single window.
-- **Not yet measured**: the actual downstream/upstream *cost* of a churn burst - how many
-  WS frames one `_sync_subscriptions` call sends (recall it replicates the same
-  add/delete_markets payload across both the `trade` and `ticker` channel sids in scoped
-  mode), whether Kalshi's `send_initial_snapshot: True` ticker resubscribe behavior applies
-  per-add or only on first subscribe, whether a burst measurably correlates with ingest
-  queue depth/latency or REST demand, and whether a distinct, not-yet-traced app
+- **CH1 measured (2026-08-27)** — the churn burst's actual downstream/upstream cost, against
+  `services/kalshi/websocket.py`'s real code path, the exact mirrored
+  `docs/kalshi/websocket-connection.md` contract, and 64h/449,574-row live
+  `data/observability.db` history (188 real non-empty churn windows in that span; largest
+  ever observed 6 tickers added / 5 removed in one window, consistent with the earlier
+  5-ticker sample):
+  - **Frame count**: not "N tickers x messages" — `_sync_subscriptions` sends one
+    `update_subscription` frame per *participating market-channel sid* per non-empty
+    direction (`to_add`/`to_remove`), each frame carrying the **entire** diff as a single
+    `market_tickers` array, never one frame per ticker (websocket.py:919-932). Which sids
+    participate depends on `exchange_wide_trades` (websocket.py:910:
+    `market_channels = ("ticker",) if exchange_wide_trades else ("trade", "ticker")`), and
+    the live config (`config/settings.yaml`'s `kalshi.trade_stream_exchange_wide: true`)
+    sets it `True` - `trade` is exchange-wide and is explicitly excluded from
+    add/delete_markets (websocket.py:896-909's own comment: sending it there "would either
+    error or, worse, silently narrow the firehose back down to a watchlist"). So under the
+    **current live config a churn burst sends at most 2 raw WS frames total** (one
+    add_markets + one delete_markets), and typically **1 frame** (every one of the 5
+    highest-magnitude live churn events sampled was add-only, 0 removed). In scoped
+    (non-exchange-wide) mode it would be up to 4 frames (2 sids x 2 directions) - still a
+    small constant, not N.
+  - **`send_initial_snapshot`**: confirmed via the exact mirrored doc, not memory -
+    `docs/kalshi/websocket-connection.md` documents it as a distinct parameter on
+    `update_subscription` itself (not just `subscribe`), described as "If true, receive an
+    initial snapshot for **newly added** market tickers on the ticker channel", default
+    `false`. So per Kalshi's contract it does apply per-add, not only on first subscribe -
+    but the code's `add_markets` call (websocket.py:919-925) never sets this key, so it
+    defaults to `false`: **no ticker snapshot is requested for churned-in tickers today**,
+    only for the very first `subscribe` on connect (websocket.py:883-891, which does pass
+    `"send_initial_snapshot": True`). Worth flagging as its own small gap (a freshly-added
+    ticker gets no seeded snapshot until the next natural tick update), but it also means
+    per-add churn cost is *lower* than the original report assumed, not higher.
+  - **Queue-depth/wait correlation**: measured, not assumed, across all 188 real churn
+    windows. Same-window `trade_stream.ingest.queue_depth`: churn-window mean 1079/median
+    0.5 (n=188) vs. all-window mean 3381/median 10 (n=1622) - churn windows run **below**
+    the population average, not above. `queue_wait.window_avg_sec`: churn-window mean
+    7.9s/median 0.09s vs. all-window mean 35.6s/median 0.6s - same direction. Pearson r
+    between `tickers_added_window` and same-window `queue_depth` across all 188 events:
+    **-0.217** (weak negative). The sampler window immediately before and immediately after
+    each churn event shows no rise either (prev mean 1079->1440, next mean 1206, both still
+    below the population average) - no lagged effect either. **This falsifies the "churn
+    burst raises queue depth/latency" mechanism** as currently measured; the data leans the
+    opposite direction.
+  - **REST demand**: `_sync_subscriptions` itself makes zero REST calls (its full body is
+    `self._send(...)` WS writes only). The one REST path whose *input* depends on watchlist
+    membership, `_resolve_unknown_markets` (`services/whalewatchers/kalshi_trade_tape.py:358`),
+    runs once per trading tick from `fetch_signals` regardless of whether that tick
+    coincides with a churn event - its measured call volume
+    (`whale_pipeline.counter.resolve_calls` / `kalshi_rest_class.critical_whale.calls`, last
+    500 samples) is already mean 7.1/median 6/max 46 per window, the same order of magnitude
+    as churn's own max ticker-add count (6). Since `exchange_wide_trades: true` already
+    means ~98% of trade flow is off-watchlist regardless of churn (the existing "Watchlist
+    is the coverage bottleneck" finding), churn's marginal contribution to this REST surface
+    is not distinguishable from existing per-tick noise.
+  - **CH1 verdict: measured negligible on every axis checked**, not confirmed-material and
+    not falsified-irrelevant - frame count is small and bounded (<=2 under the live config),
+    the one mechanism that could have made per-add cost expensive isn't even exercised (no
+    snapshot on churn-add), queue depth/wait show no positive correlation with churn
+    magnitude (weak negative), and churn adds no REST calls of its own beyond noise-level.
+    Feeds into CH3's classification of H11.
+- **Still open (CH2's job, not CH1's)**: whether the distinct, not-yet-traced app
   unresponsiveness event observed live immediately after an 8->13 burst was actually caused
   by this mechanism or was coincidental/a different bug (two unrelated event-loop-blocking
   bugs were found and fixed the same day in unrelated modules - `candidate_log.
   population_gate_summary` and `whale_calibration` routes - so a third, distinct cause is not
-  ruled out).
+  ruled out). CH1's negligible-cost measurement makes mechanism (b) in CH2's own
+  classification ("directly caused by subscription-churn/H11's mechanism") less likely on
+  priors, but CH2 still has to prove the actual root cause with a stack trace, not infer it
+  from this correlation study.
 
 ## What the investigation must not assume
 
