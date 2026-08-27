@@ -34,36 +34,43 @@ gated behind both; nothing in it should start yet.
 
 ## Track A — Realtime data plane (lead track)
 
-**Status (2026-08-27):** CH1 done (PR #82) — measured negligible on every
-axis checked: frame count bounded (<=2 raw WS frames per churn burst under
-the live exchange-wide config), no snapshot cost on churn-add
-(`send_initial_snapshot` isn't set on `add_markets`), no positive
-queue-depth/latency correlation with churn magnitude (weak negative, r =
--0.217), and no measured rate-limit pressure. Full measurement: H11 in
+**Status (2026-08-27, corrected — this entry was one step stale):** CH1 done
+(PR #82) — measured negligible on every axis checked: frame count bounded
+(<=2 raw WS frames per churn burst under the live exchange-wide config), no
+snapshot cost on churn-add (`send_initial_snapshot` isn't set on
+`add_markets`), no positive queue-depth/latency correlation with churn
+magnitude (weak negative, r = -0.217), and no measured rate-limit pressure.
+CH2 also done (PR #92) — root-caused and fixed the still-untraced third
+instability event: `GET /api/quality/summary` was blocking the event loop,
+not subscription churn (classification (c), "something else entirely," per
+CH2's own task). Full measurement: H11 in
 `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
-**CH2 is next, not started** — root-cause the still-untraced third
-instability event (the app-unresponsiveness observed live immediately
-after an 8->13 churn burst); CH1's negligible-cost result makes
-churn-as-direct-cause less likely on priors but does not rule it out, and
-CH3 cannot classify H11 until CH2 supplies the actual root cause.
+**CH3 is next, not started** — reconcile CH1+CH2's negative evidence into a
+classification of H11; per CH2's result, expect (ii)/(iii) rather than (i),
+but that classification is now explicitly provisional pending Phase P3.5's
+larger-scale churn measurement (see the P3.5 bullet below) rather than final
+the moment CH3 commits.
 
-**Canonical docs**
-- Investigation plan: `docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`
-  — CH1 → CH2 → CH3 → (conditional) CH4 → CH5.
-- Prior findings it builds on: `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`,
+**Canonical doc — single file (merged 2026-08-27):**
+`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`. The
+former standalone `2026-08-26-subscription-churn-investigation.md` is
+retired — its content now lives there as **Phase P2.5** (CH1 → CH2 → CH3 →
+conditional CH4 → CH5), sequenced right before Phase P3, matching this
+track's own established execution order below. Folded in because the two
+had become tightly, bidirectionally cross-linked (P3.5 reuses CH1's own
+churn counters and feeds a classification addendum back to CH3) rather than
+independent initiatives that happened to touch the same subsystem.
+- Prior findings both phases build on: `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`,
   Hypothesis H11.
-- Follow-on implementation, authorized and independently available:
-  `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`,
-  Program 1 **P3 = Tasks 14–17** (writer thread → reader-side capture
-  contract → sub-threshold rejection aggregation → the live reader-gate
-  flip). Authorized 2026-08-26 (execution program doc §5.1 Verdict,
-  reprioritization pass) — not yet started.
-- **New (2026-08-27), sequenced between P3 and P4, scope widened same day**:
-  Phase **P3.5 = Tasks 17a–17c**, a live (not replay-based) watchlist-scale
-  stress test (`tools/watchlist_scale_stress_test.py`) covering six
-  dimensions: `kalshi.min_volume_24h`/`categories` (scope), `kalshi.
-  live_markets_only` (discovery) / `strategy.live_markets_only` (decision
-  layer), `kalshi.max_children_per_parent` (per-series child cap),
+- **P3 = Tasks 14–17** (writer thread → reader-side capture contract →
+  sub-threshold rejection aggregation → the live reader-gate flip).
+  Authorized 2026-08-26 (execution program doc §5.1 Verdict, reprioritization
+  pass) — not yet started.
+- **P3.5 = Tasks 17a–17c**, sequenced between P3 and P4: a live (not
+  replay-based) watchlist-scale stress test (`tools/watchlist_scale_stress_test.py`)
+  covering six dimensions: `kalshi.min_volume_24h`/`categories` (scope),
+  `kalshi.live_markets_only` (discovery) / `strategy.live_markets_only`
+  (decision layer), `kalshi.max_children_per_parent` (per-series child cap),
   `whale_watcher_kalshi.min_contracts` (whale-signal density), `GET
   /api/markets/search` (the distinct on-demand search route), and a
   synthetic `check_exits` benchmark (Task 17c) quantifying a live-reported
@@ -73,10 +80,15 @@ CH3 cannot classify H11 until CH2 supplies the actual root cause.
   of Task 18/19. Findings get cross-posted to the relevant `services/
   <name>/CHEATSHEET.md` files (CLAUDE.md's "Current objective" section, per
   a 2026-08-27 standing instruction), not left findable only in this plan.
-  Not started.
+  **Also feeds back into P2.5's CH3/H11**: Task 17a's stress-step runner
+  captures P2.5's own `trade_stream.ingest.subscription_churn.*` counters at
+  real widened-scope scale, and Task 17b posts a dated addendum to CH3
+  reopening or confirming its classification — not a one-way P4/P5 input
+  only. Not started.
 - Orchestrator: `.claude/skills/realtime-data-plane-investigation/SKILL.md`
-  for CH1–CH5; the remediation plan's own per-phase workflow for Tasks
-  14–17.
+  for Phase P2.5's CH1–CH5 (a distinct, investigation-shaped orchestrator
+  from the rest of this plan — see P2.5's own header banner); the
+  remediation plan's own per-phase workflow for every other phase.
 
 **Order inside this track:** CH1 → CH2 → CH3 (classifies H11). If CH3
 confirms a real bottleneck, do CH4/CH5 *before* Task 14 — a real
