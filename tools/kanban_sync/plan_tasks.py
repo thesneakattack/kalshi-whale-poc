@@ -35,6 +35,7 @@ def decompose_plan(
     client,
     *,
     dry_run: bool,
+    start_from_task: int = 1,
 ) -> dict:
     """One-time action (spec §4.2): assigns a milestone (create-or-reuse,
     titled after the plan filename) to the plan's parent issue, and - only
@@ -43,7 +44,15 @@ def decompose_plan(
     consecutive tasks. Safe to call repeatedly: skips entirely if the
     parent already has sub-issues (subIssuesSummary.total > 0), since a
     plan's task list is fixed once approved (spec §4.2's own reasoning for
-    why this is one-time, not ongoing reconciliation)."""
+    why this is one-time, not ongoing reconciliation).
+
+    start_from_task (default 1, i.e. no skipping) excludes canonical tasks
+    numbered below it from sub-issue creation entirely - for retroactively
+    decomposing a plan that's already partway through execution (this
+    repo has no reliable automated "is task N done" signal; a human/Claude
+    judgment pass, same discipline as plan-doc classification, determines
+    the cutoff). The first included task starts a fresh depends-on chain -
+    it never references a skipped, never-created earlier task's issue."""
     completed, total = client.get_sub_issues_summary(parent_number)
     if total > 0:
         return {"skipped": "already decomposed", "existing_sub_issues": total}
@@ -56,7 +65,9 @@ def decompose_plan(
     if not dry_run:
         client.set_milestone(parent_number, milestone_title)
 
-    tasks = parse_canonical_tasks(plan_text)
+    tasks = [
+        (n, t) for n, t in parse_canonical_tasks(plan_text) if n >= start_from_task
+    ]
     created_sub_issues: list[int] = []
     if tasks and not dry_run:
         previous_number: int | None = None

@@ -170,21 +170,31 @@ def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
 def _cmd_decompose_plan(args: argparse.Namespace) -> None:
     _check_project_scope()
     client = GithubClient(REPO)
-    marker = build_marker(labels.SYNC_MARKER_KIND_PLAN, args.plan)
-    existing = client.find_by_marker(marker)
-    if existing is None:
-        print(
-            f"error: no tracked issue found for plan {args.plan!r} - "
-            f"run `sync --sources plan` first",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    if args.parent_issue is not None:
+        # A track-tracked plan (active-tracks-board.md) carries a track:*
+        # marker, not a plan:* one - find_by_marker would never find it.
+        # Bypassing the lookup entirely (not just overriding its result)
+        # works for any existing issue, present or future, without this
+        # tool needing to learn a second marker kind.
+        parent_number = args.parent_issue
+    else:
+        marker = build_marker(labels.SYNC_MARKER_KIND_PLAN, args.plan)
+        existing = client.find_by_marker(marker)
+        if existing is None:
+            print(
+                f"error: no tracked issue found for plan {args.plan!r} - "
+                f"run `sync --sources plan` first",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        parent_number = existing.number
     plan_path = PLANS_DIR / args.plan
     if not plan_path.exists():
         print(f"error: plan doc not found: {plan_path}", file=sys.stderr)
         sys.exit(1)
     result = decompose_plan(
-        args.plan, plan_path.read_text(), existing.number, client, dry_run=args.dry_run,
+        args.plan, plan_path.read_text(), parent_number, client,
+        dry_run=args.dry_run, start_from_task=args.start_from_task,
     )
     print(json.dumps(result, indent=2))
 
@@ -204,6 +214,16 @@ def main(argv: list[str] | None = None) -> int:
 
     decompose_parser = sub.add_parser("decompose-plan", help="create milestone + task sub-issues for one plan")
     decompose_parser.add_argument("--plan", required=True, help="plan doc filename, e.g. 2026-08-27-x.md")
+    decompose_parser.add_argument(
+        "--parent-issue", type=int, default=None,
+        help="target this issue number directly, bypassing plan: marker lookup "
+             "(e.g. for a track-tracked plan carrying a track: marker instead)",
+    )
+    decompose_parser.add_argument(
+        "--start-from-task", type=int, default=1,
+        help="skip creating sub-issues for canonical tasks numbered below this "
+             "(for retroactively decomposing a plan already partway through execution)",
+    )
     decompose_parser.add_argument("--dry-run", action="store_true")
     decompose_parser.set_defaults(func=_cmd_decompose_plan)
 
