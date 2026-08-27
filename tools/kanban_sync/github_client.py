@@ -49,8 +49,15 @@ class GithubClient:
         return result.stdout
 
     def find_by_marker(self, marker: str) -> IssueState | None:
+        # GitHub's issue search does not match the literal `<!--`/`-->` HTML-comment
+        # delimiters (verified live 2026-08-27 against the real API - a search for the
+        # full wrapped marker always returns zero results even for an issue whose body
+        # genuinely contains that exact text). Search on the marker's inner content only.
+        search_term = marker.strip()
+        if search_term.startswith("<!--") and search_term.endswith("-->"):
+            search_term = search_term[4:-3].strip()
         stdout = self._run([
-            "issue", "list", "--search", marker, "--state", "all",
+            "issue", "list", "--search", search_term, "--state", "all",
             "--json", "number,state,labels", "--limit", "1",
         ])
         results = json.loads(stdout)

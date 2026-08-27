@@ -43,6 +43,26 @@ def test_find_by_marker_returns_none_when_no_results():
     assert "--repo" in runner.calls[0] and REPO in runner.calls[0]
 
 
+def test_find_by_marker_strips_html_comment_delimiters_before_searching():
+    """Found live (2026-08-27): GitHub's issue search does not match the literal
+    `<!--`/`-->` characters, so searching for the full wrapped marker string always
+    returns zero results even for an issue that genuinely has that exact marker in
+    its body - verified manually against the real API. Every sync re-run would
+    therefore treat every already-created issue as new and create a duplicate. The
+    search term must be the marker's inner content only."""
+    runner = FakeRunner()
+    runner.queue(json.dumps([{"number": 48, "state": "OPEN", "labels": []}]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_by_marker("<!-- autotrade-sync: roadmap:some-key -->")
+
+    assert result.number == 48
+    search_call = runner.calls[0]
+    search_term = search_call[search_call.index("--search") + 1]
+    assert "<!--" not in search_term and "-->" not in search_term
+    assert search_term == "autotrade-sync: roadmap:some-key"
+
+
 def test_find_by_marker_parses_existing_issue():
     runner = FakeRunner()
     runner.queue(json.dumps([
