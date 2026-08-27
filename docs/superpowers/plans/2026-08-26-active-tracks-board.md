@@ -110,7 +110,7 @@ visible in one place.
 | 4 — canonical shadow qualification | 3 exit | not started |
 | 5 — frontend operator console | plan refresh (spec stale) | not started |
 | 6 — personal production operations | 3/4 exit + human capital-policy decision | not started |
-| 7 — revised AQC implementation | none for Tasks 1-9 as originally scoped (plan corrected 2026-08-26, `d015733`) — **new gate below** | **paused after Task 3** |
+| 7 — AQC implementation (workflow-health, corrected scope 2026-08-27) | none — write-lane question resolved (see below), spec approved | **not started** |
 | 8 — capital qualification (Stages A–F) | 6 exit + each stage's own human gate | not started |
 
 Programs 5 and 7 have no technical dependency on Track A/B — they're
@@ -119,30 +119,41 @@ sequenced late by priority, not by a hard gate, which is why Program 7
 issue. Program 5 remains available for the same reason if there's ever
 a reason to parallelize further.
 
-**Program 7 status (2026-08-26): paused after Task 3, mid-plan, by
-explicit user decision — not a stall.** Tasks 1-3 (schema, automation-key
-derivation, coordinator policy port) are complete and committed on
-`feat/autonomous-quality-coordination`
-(worktree: `.claude/worktrees/autonomous-quality-coordination`), all
-zero-write, zero-credential, matching the plan's original scope exactly.
-Ledger: `.superpowers/sdd/2026-08-26-autonomous-quality-coordination/progress.md`
-on that branch/worktree — read it before resuming, it has the full pause
-rationale and two parked Task 3 review findings.
+**Program 7 status (2026-08-27): fresh spec approved, implementation not
+started.** History, newest first:
 
-**Why paused, not just slow:** mid-Task-4, the user asked to install a
-GitHub MCP server + a "GitHub Issues Kanban" skill and factor those
-write-capable GitHub operations into this AQC implementation. That
-directly conflicts with this plan's own Global Constraint #1 ("no write
-lane, no GitHub credential, no issue/PR authority anywhere in this
-plan... enabling any write capability is a separate, later, explicit
-design decision") and with
-`.claude/rules/autonomous-quality-coordination-evidence.md`'s
-requirement for a full threat-model/fault-injection/adversarial-review
-pass before any write lane exists. Given the choice, the user chose to
-**pause AQC implementation and scope a real write-lane design first**,
-rather than install-and-keep-separate or something narrower.
+- **2026-08-27 — scope corrected a second time.** Direct user correction:
+  even the original 9(+6)-task plan's *subject* was wrong — it audited the
+  trading application's own static code findings, not "the automated
+  workflow itself" as AQC was always meant to mean (an automated
+  project-manager/janitor over this repo's own branches/PRs/CI/plans/
+  ledgers). That original implementation is kept, fully merged, and
+  renamed `tools/quality_ratchet.py` (PR #43) — a legitimate, working,
+  differently-scoped capability, no longer Program 7. The real Program 7
+  is freshly designed at
+  `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
+  workflow-design.md` — brainstormed and approved in chat, not yet
+  planned/implemented. Next step: `superpowers:writing-plans` against
+  that spec.
+- **2026-08-26 — the write-lane gate below was resolved, not left open.**
+  The user's mid-Task-4 request (install GitHub Issues Kanban + dispatch
+  write-capable remediation) was generalized during brainstorming into
+  **Autonomous Engineering Mode** (AEM) — a separate, source-agnostic
+  background-agent mechanism, merged as design docs
+  (`docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-
+  design.md`, PR #42). AEM explicitly defers *which* sources feed its
+  GitHub Issues queue (§11) — whether AQC's own findings ever do is its
+  own separate, still-undecided question, deliberately not resolved by
+  either design.
+- **2026-08-26 (original) — paused after Task 3, mid-plan.** Tasks 1-3
+  (schema, automation-key derivation, coordinator policy port) were
+  committed on `feat/autonomous-quality-coordination`; Tasks 4-9 (plus
+  follow-up Tasks 10-15) later completed under the corrected, decoupled
+  design and merged as `quality_ratchet` (see above) — Ledger:
+  `.superpowers/sdd/2026-08-26-autonomous-quality-coordination/progress.md`
+  on that branch, historical record of that (differently-scoped) effort.
 
-**New gate for Program 7's remaining Tasks 4-9:** a separate write-lane
+**Old gate, now resolved — kept for history:** ~~a separate write-lane
 design investigation must complete and produce its own explicit plan
 before implementation resumes — Tasks 4-9 are otherwise unblocked
 (zero-write as originally scoped) but should not resume until that
@@ -150,7 +161,7 @@ parallel decision is resolved one way or another, so the two efforts
 don't end up designing against each other. That investigation had not
 yet started as of this board update (blocked on inspecting the actual
 MCP tool's real capabilities/credential model — a marketplace page
-fetch failed 3x with HTTP 429).
+fetch failed 3x with HTTP 429).~~
 
 ---
 
