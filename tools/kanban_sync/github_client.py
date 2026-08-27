@@ -207,3 +207,32 @@ class GithubClient:
         ])
         if result.returncode != 0:
             raise GithubCliError(f"gh project item-edit failed: {result.stderr or result.stdout}")
+
+    def create_milestone(self, title: str) -> int:
+        """Creates a new milestone, returning its repo-scoped number
+        (distinct from a project item's node ID or an issue's number)."""
+        result = self._runner([
+            "gh", "api", "-X", "POST", f"repos/{self._repo}/milestones",
+            "-f", f"title={title}",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh api milestones create failed: {result.stderr or result.stdout}")
+        return json.loads(result.stdout)["number"]
+
+    def find_milestone_by_title(self, title: str) -> int | None:
+        """state=all (not just open) so a milestone someone closed by hand
+        is still found - avoids creating a duplicate-titled milestone.
+        -X GET is required alongside -f: gh api defaults to POST whenever
+        any -f/-F field is present unless -X explicitly overrides it -
+        confirmed live (a bare -f state=all here 422s, since it POSTs
+        {"state": "all"} as a body to a GET-only endpoint instead of
+        appending it as a query string)."""
+        result = self._runner([
+            "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones", "-f", "state=all",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh api milestones list failed: {result.stderr or result.stdout}")
+        for milestone in json.loads(result.stdout):
+            if milestone["title"] == title:
+                return milestone["number"]
+        return None

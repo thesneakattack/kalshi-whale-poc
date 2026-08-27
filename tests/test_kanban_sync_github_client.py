@@ -420,3 +420,68 @@ def test_nonzero_returncode_raises_githubcliierror():
         assert False, "expected GithubCliError"
     except GithubCliError as exc:
         assert "404" in str(exc)
+
+
+def test_create_milestone_posts_to_the_milestones_endpoint():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"number": 7, "title": "2026-08-27-some-plan.md"}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.create_milestone("2026-08-27-some-plan.md")
+
+    assert result == 7
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "api", "-X"]
+    assert "POST" in call
+    assert f"repos/{REPO}/milestones" in call
+    assert "-f" in call and "title=2026-08-27-some-plan.md" in call
+
+
+def test_create_milestone_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.create_milestone("x")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_find_milestone_by_title_returns_matching_number():
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {"number": 3, "title": "other-plan.md"},
+        {"number": 7, "title": "2026-08-27-some-plan.md"},
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_milestone_by_title("2026-08-27-some-plan.md")
+
+    assert result == 7
+    call = runner.calls[0]
+    assert call[:2] == ["gh", "api"]
+    assert f"repos/{REPO}/milestones" in call
+    assert "-X" in call and "GET" in call
+    assert "state=all" in call
+
+
+def test_find_milestone_by_title_returns_none_when_no_match():
+    runner = FakeRunner()
+    runner.queue(json.dumps([{"number": 3, "title": "other-plan.md"}]))
+    client = GithubClient(REPO, runner=runner)
+
+    assert client.find_milestone_by_title("2026-08-27-some-plan.md") is None
+
+
+def test_find_milestone_by_title_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.find_milestone_by_title("x")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
