@@ -12,6 +12,25 @@ Uses `tools/kanban_sync` for every deterministic part; this skill's own
 job is the one judgment call that tool can't make on its own (spec §5) -
 classifying which numbered plan docs are actually still open.
 
+**Division of labor with the installed `github-issues-kanban` plugin skill
+(2026-08-27):** that skill already fully specifies claiming, working, and
+reporting on an issue (`prompts/claim-issue.md`, `prompts/dispatch-next.md`,
+`prompts/report-result.md`) using the same `status:*`/`depends-on:#N` label
+vocabulary this tool uses - zero code, just `gh` commands to follow
+directly. Use it for anything claim/work/report-shaped. This skill and
+`tools/kanban_sync` own only what that plugin explicitly leaves to "the
+host": deriving which issues should exist from this repo's own state
+(worktrees/ROADMAP.md/tracks/plan docs), creating/closing them to match,
+native GitHub Milestones + Sub-Issues, and driving the Projects V2 board's
+native Status field (the plugin is label-only; it never touches Project
+fields). `sync_pass_one` is claim-aware (`sync.py`'s `_has_active_claim`) -
+a live, unexpired `claimed-by:*`/`claim-expires:*` claim from that plugin
+is left untouched by this tool's own status-label/Project-Status
+reconciliation, never silently reverted back to the source-computed
+status. Do not build a parallel status/claim CLI in `tools/kanban_sync` -
+that capability already exists and is out of scope for this tool to
+duplicate.
+
 ## Steps
 
 1. **Confirm `gh` has the `project` scope.** `gh auth status` - if
