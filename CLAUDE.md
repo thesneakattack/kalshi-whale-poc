@@ -206,9 +206,10 @@ Investigations that produce real per-module findings should feed this same
 raw material forward, not just their own plan doc (2026-08-27 direct
 instruction, prompted by the realtime-data-plane remediation plan's P3.5
 stress test): once a finding is confirmed, cross-post a short dated summary
-into the relevant `services/<name>/CHEATSHEET.md` (create one, following an
+into the relevant `services/<name>/README.md` (or `CHEATSHEET.md`, for the
+five Kalshi-boundary packages named above) — create one, following an
 existing module's format, if the module doesn't have one yet and the
-finding warrants it) so a later audit or refactor of that module discovers
+finding warrants it — so a later audit or refactor of that module discovers
 it there rather than needing to already know which historical plan/research
 doc to search.
 
