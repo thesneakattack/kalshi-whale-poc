@@ -451,3 +451,40 @@ def test_close_completed_plan_parents_dry_run_makes_no_mutating_calls():
 
     assert client.issues[number]["open"] is True
     assert report.closed  # still reported, matching every other dry-run in this file
+
+
+def test_close_completed_plan_parents_ignores_marker_less_issues_even_with_type_label():
+    """Regression guard: decompose_plan labels sub-issues with type:plan-task
+    (the same label plan parents carry). list_open_by_label returns both,
+    but only plan parents have a sync marker. Sub-issues must be filtered out
+    by marker check (kind==plan) rather than trusting the label alone, since
+    sub-issues have no marker at all (parse_marker returns None)."""
+    client = FakeGithubClient()
+    # Create a real plan parent via sync_pass_one - it will have a marker
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (plan_number,) = client.issues.keys()
+    # Seed the plan parent's sub-issue summary as complete
+    client.sub_issues_summary[plan_number] = (3, 3)
+
+    # Inject a sub-issue directly: same type:plan-task label but NO marker
+    sub_issue_body = "## Context\nPart of docs/superpowers/plans/x.md"
+    sub_issue_number = client.create_issue(
+        "Task 1: subtitle",
+        sub_issue_body,
+        [labels.STATUS_CLAIMABLE, labels.TYPE_PLAN_TASK]
+    ).number
+    # Seed sub-issue summary as if it's complete, to test that marker filtering
+    # prevents this issue from being closed despite looking "ready" via total==0
+    # trick - we explicitly mark it complete so marker filter is the only thing
+    # preventing a mis-close.
+    client.sub_issues_summary[sub_issue_number] = (3, 3)
+
+    report = close_completed_plan_parents(client, dry_run=False)
+
+    # Plan parent should close (it has a marker + complete subs)
+    assert client.issues[plan_number]["open"] is False
+    assert f"#{plan_number}" in report.closed[0]
+
+    # Sub-issue must NOT close (no marker, despite type:plan-task label and complete subs)
+    assert client.issues[sub_issue_number]["open"] is True
+    assert sub_issue_number not in [int(c.split()[0][1:]) for c in report.closed]

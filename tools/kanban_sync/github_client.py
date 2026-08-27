@@ -247,9 +247,11 @@ class GithubClient:
         any -f/-F field is present unless -X explicitly overrides it -
         confirmed live (a bare -f state=all here 422s, since it POSTs
         {"state": "all"} as a body to a GET-only endpoint instead of
-        appending it as a query string)."""
+        appending it as a query string). per_page=100 raises the safe ceiling
+        from GitHub's default page size of 30."""
         result = self._runner([
-            "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones", "-f", "state=all",
+            "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones",
+            "-f", "state=all", "-f", "per_page=100",
         ])
         if result.returncode != 0:
             raise GithubCliError(f"gh api milestones list failed: {result.stderr or result.stdout}")

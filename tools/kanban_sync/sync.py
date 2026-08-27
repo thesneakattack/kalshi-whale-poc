@@ -107,9 +107,16 @@ def close_completed_plan_parents(client: SyncGithubClient, *, dry_run: bool) -> 
     this is the mechanical check that does it. Unlike decompose_plan
     (a one-time action, spec §4.2), this runs every sync - "did the last
     sub-issue just close" is exactly the kind of drift-over-time signal
-    the rest of this module already reconciles (spec §4.4)."""
+    the rest of this module already reconciles (spec §4.4).
+
+    Note: decompose_plan labels sub-issues with type:plan-task (the same label
+    plan parents carry), but only plan parents have a sync marker with kind==plan.
+    Sub-issues are filtered out by marker check, not label alone."""
     report = SyncReport(dry_run=dry_run)
     for issue in client.list_open_by_label(labels.TYPE_PLAN_TASK):
+        parsed = parse_marker(issue.body)
+        if parsed is None or parsed[0] != labels.SYNC_MARKER_KIND_PLAN:
+            continue
         completed, total = client.get_sub_issues_summary(issue.number)
         if total == 0 or completed < total:
             continue
