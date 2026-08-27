@@ -133,6 +133,12 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" for the
    full policy. A checkpoint in the middle of a multi-task initiative just
    leaves the branch pushed and green; it doesn't open or merge a PR yet.
+   Right after a merge, run `scripts/cleanup-worktrees.sh` (no flags) to
+   sweep every registered worktree, not just the one just merged — it
+   only ever removes a worktree/branch whose PR is confirmed `MERGED` via
+   `gh` *and* whose tip is a confirmed ancestor of `main`, with a clean
+   working tree; anything short of that (open/closed-without-merge PR,
+   uncommitted changes) is left alone and reported, never forced.
 
 10. **Session-hygiene prompt.** Give a short 2-3 sentence summary of what
     this checkpoint covered (keeps continuity across a later `/compact`).
