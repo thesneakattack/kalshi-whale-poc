@@ -4,7 +4,7 @@ write_gate.py prototype for those three properties against the design that WOULD
 The four properties below are the ones this plan's actual code has."""
 from datetime import datetime, timedelta, timezone
 
-import services.quality_coordination as qc
+import tools.quality_coordination as qc
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

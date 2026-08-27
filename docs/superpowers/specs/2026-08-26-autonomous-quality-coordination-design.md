@@ -19,6 +19,61 @@ under this decision," each with the reason stated, not skipped silently.
 
 ---
 
+## Amendment (2026-08-26, post-implementation): the application-coupling this spec
+originally designed was wrong and has been reversed
+
+This spec, as originally written and implemented (Tasks 1-9, PR #43), wired the module
+into the trading application: a `_maybe_run_quality_coordination` scheduler inside
+`main.py`'s own tick loop, a `quality_coordination:` section in `config/settings.yaml`,
+and two read routes in `services/quality/routes.py`. Direct user correction, same day:
+this was a real misunderstanding of the feature's own name — "Autonomous Quality
+**Coordination**" was about coordinating the *engineering workflow's* quality (this
+repo's own code health, via `tools.quality_audit`'s static scanners), not the trading
+*application*; the word "autonomous" led to conflating it with the app's own
+automation (it's an autotrader), which it was never about. Standing instruction: **the
+application and this tool must have zero coupling** — no shared execution, no shared
+config, no shared code location, no shared test-isolation registry, and no API surface
+in either direction except a tool reading a real, intentional endpoint from the app if a
+future need ever justifies one (never the reverse — the app must never import, run,
+configure, or schedule this tool).
+
+**What actually changed, corrected here rather than left for the reader to infer from
+diffing against the original text below:**
+- The module lives at `tools/quality_coordination.py`, not `services/quality_coordination.py`
+  — `tools/` is this repo's existing home for workflow tooling (`tools/quality_audit/`,
+  which this module observes, already lives there).
+- There is no `_maybe_run_quality_coordination` scheduler, no tick-loop wiring, and no
+  entry in `services/app_state.py`'s `state` dict. The module is invoked only via
+  `python -m tools.quality_coordination`, by whatever external process a human chooses
+  (manually, a cron entry, a Woodpecker scheduled pipeline) — never by the trading app's
+  own process.
+- There is no `config/settings.yaml` entry. `enabled`/`interval_sec` don't mean anything
+  once there's no in-process scheduler to gate or space out — an external invoker decides
+  whether and when this runs at all.
+- There are no API routes (§2 below is obsolete) and `GET /api/quality/summary` has no
+  `"coordination"` field. A human or a future Claude session inspects
+  `tools/quality_coordination_data/quality_coordination.db` directly (its own SQLite
+  file, deliberately **not** under the shared `data/` directory the app's backup and
+  storage-health mechanisms own) or runs the module's own CLI output — never through the
+  trading app's API surface. If a UI is ever wanted, that's a separate, standalone
+  concern (e.g. a dashboard reading the tool's db directly), not something built into
+  this application.
+- `tests/support/runtime_isolation.py`'s `PERSISTENCE_MODULE_PATHS` (the app's own
+  test-isolation registry) does **not** list this module — it manages its own test
+  isolation directly (every test explicitly monkeypatches its own `DB_PATH`), and
+  `tools/quality_audit/persistence.py`'s scanner was corrected to exclude `tools/` from
+  that check entirely, for the same reason.
+- See `CLAUDE.md`'s "workflow and tooling should never overlap with app code" standing
+  rule (added the same day) for the durable version of this principle, and
+  `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s addendum
+  (Task 15) for the full list of changed files.
+
+Sections §1, §2, §6, and §11 below still contain the original, now-superseded design —
+struck through in place rather than deleted, per this project's own documentation
+convention, with the corrected reality noted alongside each.
+
+---
+
 ## 0. Checklist-to-section map (so a reviewer can confirm nothing was silently dropped)
 
 | Plan's I11 checklist item | Where answered | Status |
@@ -37,9 +92,13 @@ under this decision," each with the reason stated, not skipped silently.
 
 ## 1. Module and interfaces
 
-New module: `services/quality_coordination.py`, following this repo's persistence idiom exactly
-(`CLAUDE.md` "Persistence idiom" section — one file per concern, its own `DB_PATH`, `_connect()`
-creates tables `IF NOT EXISTS`).
+~~New module: `services/quality_coordination.py`~~ **Corrected (2026-08-26, see the
+Amendment above): `tools/quality_coordination.py`** — same persistence idiom
+(`CLAUDE.md` "Persistence idiom" section — one file per concern, its own `DB_PATH`,
+`_connect()` creates tables `IF NOT EXISTS`), just under `tools/` (workflow tooling) not
+`services/` (application code). `DB_PATH` itself also moved:
+`tools/quality_coordination_data/quality_coordination.db`, not under the shared `data/`
+directory — see the Amendment for why.
 
 ```python
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "quality_coordination.db"
@@ -91,10 +150,12 @@ the only class this whole investigation (I1's identity table, I2's replayed epis
 about — come from `tools.quality_audit.__main__.run_audit(repo_root: Path) -> QualityReport`, which
 iterates the real `_SCANNERS` list (9 scanners, the same ones I1 §3.1 enumerated) and is otherwise
 only invoked by that module's own CLI (`python -m tools.quality_audit`, run by Woodpecker and by a
-human). This module imports and calls that function directly, in-process, on its own schedule
-(§1's `_maybe_run_quality_coordination` below) — the only place in the running app that does. Cost:
-I1 §2 measured ~2s on host for the scan itself (CI's ~60s figure is dominated by dependency
-install, not the scan), cheap enough for an hourly in-process call. **Runtime findings
+human). ~~This module imports and calls that function directly, in-process, on its own schedule
+(§1's `_maybe_run_quality_coordination` below) — the only place in the running app that does.~~
+**Corrected (2026-08-26): this module calls that function directly too, but never "in-process"
+with the trading app — it's a wholly separate process, invoked externally (see the Amendment).**
+Cost: I1 §2 measured ~2s on host for the scan itself (CI's ~60s figure is dominated by dependency
+install, not the scan) — cheap regardless of who invokes it or how often. **Runtime findings
 (`source="runtime"`) are never fed into this coordinator** — I1 §3.2 already classified them
 "unsuitable for external defect state by construction," and this design does not revisit that.
 
@@ -125,23 +186,39 @@ def observe_main(repo_root: Path, at: datetime | None = None) -> RunResult:
     (see §10)."""
 ```
 
-**Wiring:** a new `_maybe_run_quality_coordination()` scheduler in `main.py`, following the exact
+**~~Wiring: a new `_maybe_run_quality_coordination()` scheduler in `main.py`, following the exact
 shape of this repo's existing `_maybe_*` schedulers (CLAUDE.md's backup-scheduler cold-start bug is
 the concrete precedent to avoid — see §10 for how this design avoids the same class of bug). Fires
 once per `main`-branch audit opportunity; since Woodpecker has no scheduled `main` audit (I2 §5,
 I10 §2 item 3 — deliberately not added), "once per opportunity" means once per app-process
 lifecycle tick at a fixed interval (existing scheduler convention, e.g. hourly), not once per git
-push — this module runs inside the long-lived `fastapi` process, not in CI.
+push — this module runs inside the long-lived `fastapi` process, not in CI.~~**
+
+**Corrected (2026-08-26, see the Amendment above): there is no wiring into `main.py` at all,
+and never should be — that was the exact application-coupling this correction exists to
+undo.** Invocation is external and manual/scheduled by whatever process a human sets up
+(`python -m tools.quality_coordination`), decoupled from both the trading app's process and
+from Woodpecker/CI. "Once per opportunity" is now whatever cadence the external invoker
+chooses — this spec does not prescribe one.
 
 ## 2. Read endpoint
 
-`GET /api/quality/coordination` (new route, `main.py`) returns the current `coordination_items`
-table plus each item's `coordination_log` trail, shaped for `system-health.js`-style consumption.
-`GET /api/quality/summary` (existing route) gains one new field:
-`"coordination": {"escalation_eligible": <count>, "suppressed": <count>, "observed": <count>}` —
-a three-number rollup, not the full detail, matching that route's existing "composite health read"
-role (CLAUDE.md's "Start investigations here" section). No write route exists — there is nothing to
-`POST` to.
+**~~`GET /api/quality/coordination` (new route, `main.py`) returns the current
+`coordination_items` table plus each item's `coordination_log` trail, shaped for
+`system-health.js`-style consumption. `GET /api/quality/summary` (existing route) gains
+one new field: `"coordination": {"escalation_eligible": <count>, "suppressed": <count>,
+"observed": <count>}` — a three-number rollup, not the full detail, matching that route's
+existing "composite health read" role (CLAUDE.md's "Start investigations here" section).
+No write route exists — there is nothing to `POST` to.~~**
+
+**Corrected (2026-08-26, see the Amendment above): this entire section is obsolete. There
+is no read endpoint, in either app route.** The trading application exposes nothing about
+this tool and imports nothing from it. Inspection is direct: read
+`tools/quality_coordination_data/quality_coordination.db` (its own SQLite file) or run
+`python -m tools.quality_coordination` for a one-shot JSON report. If a UI is ever
+genuinely wanted, it's a separate, standalone concern (e.g. a small dashboard reading the
+tool's db directly, per the user's own suggestion) — never a route added back into this
+application.
 
 ## 3. Automation identity
 
@@ -219,17 +296,19 @@ decision reopens this question, it needs its own new measurement, not a retrofit
 
 ## 6. Reporting surfaces per finding class
 
-Exactly one surface is activated: the `coordination_items`/`coordination_log` tables via §2's
-routes. Mapped against I5 §7's silent-intermediate-state rule (unchanged by this narrower scope —
-the *policy* of what state transitions emit anything is identical, only "emit" now means "persist a
-row," never "call GitHub"):
+Exactly one surface is activated: the `coordination_items`/`coordination_log` tables
+~~via §2's routes~~ **(corrected 2026-08-26: via direct SQLite inspection or the module's
+own CLI — §2's routes never existed in the final design; see the Amendment)**. Mapped
+against I5 §7's silent-intermediate-state rule (unchanged by this narrower scope — the
+*policy* of what state transitions emit anything is identical, only "emit" now means
+"persist a row," never "call GitHub"):
 
 | I5 finding class | Surface under this spec |
 |---|---|
 | Class 1 (source-located static) | Persisted row only; SARIF stays a candidate (I5 §9, I10 §2 item 2) — **not implemented** |
-| Class 2 (branch-local regression) | Not tracked by this module at all — `observe_main()` always calls `tools.quality_audit.__main__.run_audit()` against the checked-out `main` tree the live app process is running from, never a branch checkout, so branch-only findings never reach this module's input by construction (same structural guarantee I8's `test_branch_only_finding_never_reaches_repo_state` proved) |
+| Class 2 (branch-local regression) | Not tracked by this module at all — `observe_main()` always calls `tools.quality_audit.__main__.run_audit()` against whatever tree its invoker checks out. **Corrected (2026-08-26): the original guarantee here ("the live app process is running from") no longer applies — there is no live app process running this at all.** The guarantee now rests on operational discipline (invoke this against a real `main` checkout, never a feature branch), the same discipline `python -m tools.quality_audit`'s own CLI already depends on, not a structural property of a shared process. |
 | Class 3/4 (transient observation/runtime) | Persisted row; no external emission (matches I5's "everything else... never a new comment" rule) |
-| Durable actionable defect (would-be issue) | Reaches `ESCALATION_ELIGIBLE` in `coordination_items.state`; **no issue is filed** — a human or a future Claude session queries §2's route, exactly as this investigation's own I2 task had to reconstruct history by hand before this module existed |
+| Durable actionable defect (would-be issue) | Reaches `ESCALATION_ELIGIBLE` in `coordination_items.state`; **no issue is filed** — a human or a future Claude session inspects the persisted db directly (§2), exactly as this investigation's own I2 task had to reconstruct history by hand before this module existed |
 
 ## 7. Credential/token/event architecture
 
@@ -309,25 +388,34 @@ decision activates the draft-PR stage, I7's proof and its three conditions are t
   rationale was real, and the corrected design keeps exactly that part.
 - **Retry/recovery:** a crashed or interrupted run leaves `coordination_runs` without a row for that
   SHA (the row is written only after `coordination_items` updates commit inside the same SQLite
-  transaction) — the next scheduler tick naturally retries the same SHA rather than needing a
-  separate retry mechanism. `coordination_items` updates and the `coordination_runs` insert happen
+  transaction) — the next invocation (whatever external process/cadence triggers it — see the
+  Amendment, this is no longer a scheduler tick) naturally retries the same SHA rather than needing
+  a separate retry mechanism. `coordination_items` updates and the `coordination_runs` insert happen
   in one `BEGIN`/`COMMIT` block, so a mid-run crash never leaves a partially-updated item.
 - **Outage behavior (GitHub read unavailable — rate limit, network, GitHub down):** `observe_main()`
   proceeds using `branches=[]` (no active-work signal available), which per I3 §11's precedence
   degrades to "evaluate on persistence floor alone" — the same accepted-gap behavior §4/I8's
   `test_ambiguous_local_only_work_provides_no_suppression_signal` already documents for local-only
   work, now extended to "GitHub temporarily unreachable." The run still completes, still writes
-  `coordination_runs` (with `error` populated), and never crashes the scheduler. A future session
+  `coordination_runs` (with `error` populated), and never raises out of the invocation. A future session
   reading `error` populated on recent rows is the informativeness signal that something degraded —
   matching CLAUDE.md's "does it surface enough of its own behavior" pillar, not a silent failure.
 
 ## 11. Staged activation and rollback
 
-**Activation:** a single boolean, `quality_coordination.enabled` (default `true` once this ships,
-following this repo's live-reloadable `config/settings.yaml` convention), checked once per scheduler
-tick before `observe_main()` runs at all. Setting it `false` is the complete kill switch — the module
-makes zero GitHub calls and zero DB writes when disabled; no partial-disable state exists because
-there is only the one capability (§0's table) to disable.
+**~~Activation: a single boolean, `quality_coordination.enabled` (default `true` once
+this ships, following this repo's live-reloadable `config/settings.yaml` convention),
+checked once per scheduler tick before `observe_main()` runs at all. Setting it `false`
+is the complete kill switch — the module makes zero GitHub calls and zero DB writes when
+disabled; no partial-disable state exists because there is only the one capability (§0's
+table) to disable.~~**
+
+**Corrected (2026-08-26, see the Amendment above): there is no config flag, and none is
+needed.** The kill switch is simply: does anything invoke `python -m
+tools.quality_coordination`? If nothing does, nothing runs — no GitHub calls, no DB
+writes, by construction, with no flag to flip. If an external scheduler is ever set up
+(cron, a Woodpecker pipeline), removing or disabling *that* is the complete kill switch;
+this module itself has no notion of being "enabled" or "disabled" to track.
 
 **No further stage is activated by this spec.** I10 §2's rollout note and I11's own §6/§7/§9 already
 state SARIF, issue-escalation, and draft-PR are designed-elsewhere-or-not-yet, each gated on a

@@ -9,6 +9,10 @@ data/*.db-wal
 # services/backup/backup.py's snapshot output - one level below the flat
 # data/*.db pattern above, so it needs its own explicit line.
 data/backups/
+# tools/quality_coordination.py's own db, deliberately NOT under data/ - see that
+# module's docstring for why (zero coupling to the app's own backup/storage-health
+# mechanisms, which specifically own the data/ directory).
+tools/quality_coordination_data/
 .ddev/.web
 .ddev/db_snapshots
 

@@ -25,20 +25,29 @@ to the current task and load/use the relevant skill before acting.
   A persisted, read-only observation series was fully specified and planned
   in `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-
   design.md` / `docs/superpowers/plans/2026-08-26-autonomous-quality-
-  coordination.md` (9 TDD tasks, executed via `superpowers:executing-plans`/
-  `superpowers:subagent-driven-development` — no bespoke orchestrator
-  needed, unlike the investigation itself) and **is now implemented** — all
-  9 tasks complete: see the **quality-coordination-observation** bullet
-  immediately below and `services/quality_coordination.py` itself. No
+  coordination.md` (originally 9 TDD tasks, executed via
+  `superpowers:executing-plans`/`superpowers:subagent-driven-development` —
+  no bespoke orchestrator needed, unlike the investigation itself) and **is
+  now implemented** — see the **quality-coordination-observation** bullet
+  immediately below and `tools/quality_coordination.py` itself. No
   GitHub write authority exists anywhere in that plan either — see
   `.claude/rules/autonomous-quality-coordination-evidence.md` for the
   governing constraints any future write-lane decision must still satisfy.
-- **quality-coordination-observation** — `services/quality_coordination.py`,
-  a read-only persisted observation series over `tools.quality_audit`'s
-  static findings (identity/persistence/suppression policy from the
-  autonomous-quality-coordination investigation, I8/I11). No GitHub write
-  authority exists — `GET /api/quality/coordination` for detail,
-  `GET /api/quality/summary`'s `coordination` field for the rollup.
+  **Corrected same day (plan Task 15):** the module was originally built
+  wired into the trading application (a `main.py` scheduler, a
+  `config/settings.yaml` entry, app-owned API routes) — a real
+  misunderstanding of this feature's own purpose (workflow/tooling quality
+  control, not application behavior). Fully decoupled: see `CLAUDE.md`'s
+  "Workflow/tooling and application code must never overlap" standing rule.
+- **quality-coordination-observation** — `tools/quality_coordination.py`,
+  a standalone workflow tool (not application code — see the standing
+  rule in `CLAUDE.md`), a read-only persisted observation series over
+  `tools.quality_audit`'s static findings (identity/persistence/suppression
+  policy from the autonomous-quality-coordination investigation, I8/I11).
+  No GitHub write authority exists, and no application coupling of any
+  kind — invoke directly (`python -m tools.quality_coordination`) or
+  inspect `tools/quality_coordination_data/quality_coordination.db`
+  directly; there is no API route and no dashboard view.
 - **economic-strategy-effectiveness-investigation** — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —

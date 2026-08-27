@@ -241,14 +241,6 @@ state = {
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.
     "backup": {"running": False, "last_started_at": 0.0, "task": None},
-    # Same background-task decoupling as backup above, for main.py's
-    # _maybe_run_quality_coordination - see that function's own docstring.
-    # last_started_at is cold-start-seeded from services/quality_coordination.py's
-    # own persisted coordination_runs history (latest_run_at()), same fix
-    # shape as backup's own last_started_at. Disabled by default
-    # (config/settings.yaml's quality_coordination.enabled: false) pending a
-    # real tick_phase_timings noninterference measurement.
-    "quality_coordination": {"running": False, "last_started_at": 0.0, "task": None},
     # services/observability/observability.py's maybe_capture() interval
     # gate - restart-safe the same way backup's own last_started_at is (see
     # that module's CHEATSHEET.md): seeded from the most recently persisted

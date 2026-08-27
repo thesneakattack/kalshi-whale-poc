@@ -17,10 +17,9 @@ succeeds.
 """
 import time
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
 from services import fault_log
-from services import quality_coordination as _qc
 from services.alerting import alerting
 from services.app_state import index_stream, state, trade_stream
 from services.backup import backup
@@ -32,63 +31,6 @@ from services.research import research
 from services.storage_health import storage_health
 
 router = APIRouter()
-
-
-def _coordination_rollup() -> dict[str, int]:
-    """Rolled-up coordination-item state counts for the /api/quality/summary composite
-    read. Wrapped so a sqlite error here degrades to a safe default instead of 500ing the
-    entire summary route - the same self-contained try/except-and-degrade idiom
-    services/fault_log.py's own summary() already uses for the same "one broken
-    sub-section shouldn't break the whole composite read" principle."""
-    try:
-        conn = _qc._connect()
-        try:
-            rows = conn.execute("SELECT state, COUNT(*) c FROM coordination_items GROUP BY state").fetchall()
-            counts = {r["state"]: r["c"] for r in rows}
-            return {
-                "escalation_eligible": counts.get("escalation_eligible", 0),
-                "suppressed": counts.get("suppressed_pending_work", 0),
-                "observed": counts.get("observed", 0),
-            }
-        finally:
-            conn.close()
-    except Exception:
-        return {"escalation_eligible": 0, "suppressed": 0, "observed": 0}
-
-
-@router.get("/api/quality/coordination")
-async def get_quality_coordination(limit: int = Query(200, ge=1, le=1000)):
-    conn = _qc._connect()
-    try:
-        items = [
-            dict(r) for r in conn.execute(
-                "SELECT * FROM coordination_items ORDER BY last_observed_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        ]
-        keys = [item["automation_key"] for item in items]
-        logs_by_key: dict[str, list[dict]] = {k: [] for k in keys}
-        if keys:
-            placeholders = ",".join("?" * len(keys))
-            rows = conn.execute(
-                f"""SELECT automation_key, at, message FROM (
-                        SELECT automation_key, at, message,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY automation_key ORDER BY at DESC
-                               ) AS rn
-                        FROM coordination_log
-                        WHERE automation_key IN ({placeholders})
-                    ) WHERE rn <= 20
-                    ORDER BY automation_key, at""",
-                keys,
-            ).fetchall()
-            for r in rows:
-                logs_by_key[r["automation_key"]].append({"at": r["at"], "message": r["message"]})
-        for item in items:
-            item["log"] = logs_by_key[item["automation_key"]]
-        return {"items": items}
-    finally:
-        conn.close()
 
 
 @router.get("/api/quality/summary")
@@ -121,7 +63,6 @@ async def get_quality_summary():
         "alerts": {"active": alerting.active_alerts()},
         "faults": fault_log.summary(),
         "storage": {"databases": storage_entries},
-        "coordination": _coordination_rollup(),
         "research": {
             "running": research_state["running"],
             "last_report_at": last_research["generated_at"] if last_research is not None else None,

@@ -1,9 +1,9 @@
 import sqlite3
 
-import services.quality_coordination as qc
+import tools.quality_coordination as qc
 import tools.quality_audit.baseline as qc_baseline
 from services.quality.models import QualityFinding
-from services.quality_coordination import derive_automation_key
+from tools.quality_coordination import derive_automation_key
 
 
 def test_connect_creates_all_three_tables(tmp_path, monkeypatch):
@@ -80,7 +80,7 @@ def test_line_shift_does_not_change_identity():
 
 from datetime import datetime, timedelta, timezone
 
-from services.quality_coordination import (
+from tools.quality_coordination import (
     BranchSignal, Claim, Signal, apply_observation, _connect,
 )
 
@@ -93,7 +93,7 @@ def _sig(key="k1", level="info", paths=("services/x.py",)):
 
 
 def test_new_signal_creates_observed_item(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     result = apply_observation(conn, [_sig()], [], [], T0)
     conn.commit()
@@ -104,7 +104,7 @@ def test_new_signal_creates_observed_item(tmp_path, monkeypatch):
 
 
 def test_absent_signal_resolves_previously_tracked_item(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     apply_observation(conn, [_sig()], [], [], T0)
     conn.commit()
@@ -115,7 +115,7 @@ def test_absent_signal_resolves_previously_tracked_item(tmp_path, monkeypatch):
 
 
 def test_exact_claim_suppresses(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     apply_observation(conn, [_sig()], [], [], T0)
     conn.commit()
@@ -128,7 +128,7 @@ def test_exact_claim_suppresses(tmp_path, monkeypatch):
 
 
 def test_path_overlap_branch_suppresses(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     apply_observation(conn, [_sig()], [], [], T0)
     conn.commit()
@@ -141,7 +141,7 @@ def test_path_overlap_branch_suppresses(tmp_path, monkeypatch):
 
 
 def test_floor_met_with_no_signal_is_escalation_eligible(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     apply_observation(conn, [_sig(level="warning")], [], [], T0)
     conn.commit()
@@ -152,7 +152,7 @@ def test_floor_met_with_no_signal_is_escalation_eligible(tmp_path, monkeypatch):
 
 
 def test_recurrence_reopens_same_key_with_history(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     conn = _connect()
     apply_observation(conn, [_sig()], [], [], T0)
     conn.commit()
@@ -173,7 +173,7 @@ def test_recurrence_reopens_same_key_with_history(tmp_path, monkeypatch):
 from unittest.mock import patch
 
 from services.quality.models import QualityReport
-from services.quality_coordination import observe_main
+from tools.quality_coordination import observe_main
 
 
 def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkeypatch):
@@ -183,10 +183,10 @@ def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkey
     for the exact case it exists to handle (see the escalation regression test below);
     the fix always reprocesses, and only the coordination_runs bookkeeping stays
     idempotent (UPDATE in place rather than a second INSERT)."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint == r2.audit_fingerprint
@@ -198,10 +198,10 @@ def test_observe_main_is_idempotent_on_repeated_identical_audit(tmp_path, monkey
 
 
 def test_observe_main_writes_run_row_with_counts(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value="deadbeef"):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value="deadbeef"):
         result = observe_main(tmp_path, at=T0)
     assert result.items_observed == 1
     assert result.commit_sha == "deadbeef"
@@ -209,8 +209,8 @@ def test_observe_main_writes_run_row_with_counts(tmp_path, monkeypatch):
 
 
 def test_observe_main_survives_scanner_exception_and_records_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
-    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("tools.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
         result = observe_main(tmp_path, at=T0)
     assert result.error is not None and "boom" in result.error
     assert result.items_observed == 0
@@ -221,13 +221,13 @@ def test_scope_paths_prefers_evidence_path_over_dotted_scope():
     rules (e.g. 'services.foo'), which never equals a real GitHub file path ('services/foo.py')
     — using it directly for suppression path-overlap matching would make every such rule
     permanently unsuppressible by any real branch. evidence['path'] is the real file path."""
-    from services.quality_coordination import _scope_paths
+    from tools.quality_coordination import _scope_paths
     f = _finding(check="router-registration", scope="services.foo", evidence={"path": "services/foo.py"})
     assert _scope_paths(f) == ("services/foo.py",)
 
 
 def test_scope_paths_falls_back_to_scope_for_aggregate_rules_with_no_path():
-    from services.quality_coordination import _scope_paths
+    from tools.quality_coordination import _scope_paths
     f = _finding(check="api-usage-inventory", scope="KalshiClient.get_market", evidence={})
     assert _scope_paths(f) == ("KalshiClient.get_market",)
 
@@ -235,7 +235,7 @@ def test_scope_paths_falls_back_to_scope_for_aggregate_rules_with_no_path():
 import urllib.error
 import urllib.parse
 
-from services.quality_coordination import derive_claims, fetch_branch_signals
+from tools.quality_coordination import derive_claims, fetch_branch_signals
 
 
 def test_derive_claims_returns_empty_list():
@@ -245,7 +245,7 @@ def test_derive_claims_returns_empty_list():
 def test_fetch_branch_signals_degrades_to_empty_list_on_network_error(monkeypatch):
     def _raise(*a, **kw):
         raise urllib.error.URLError("no network")
-    monkeypatch.setattr("services.quality_coordination._http_get_json", _raise)
+    monkeypatch.setattr("tools.quality_coordination._http_get_json", _raise)
     assert fetch_branch_signals() == []
 
 
@@ -261,7 +261,7 @@ def test_fetch_branch_signals_parses_real_shaped_response(monkeypatch):
             return branches_payload
         return compare_payload
 
-    monkeypatch.setattr("services.quality_coordination._http_get_json", _fake_get)
+    monkeypatch.setattr("tools.quality_coordination._http_get_json", _fake_get)
     result = fetch_branch_signals()
     assert len(result) == 1
     assert result[0].name == "fix/x"
@@ -302,7 +302,7 @@ def test_fetch_branch_signals_skips_a_malformed_branch_without_raising(monkeypat
                 return payload
         raise AssertionError(f"unexpected compare URL: {url}")
 
-    monkeypatch.setattr("services.quality_coordination._http_get_json", _fake_get)
+    monkeypatch.setattr("tools.quality_coordination._http_get_json", _fake_get)
     result = fetch_branch_signals()
     assert [s.name for s in result] == ["fix/good"]
 
@@ -312,7 +312,7 @@ def test_fetch_branch_signals_degrades_to_empty_list_when_branches_payload_is_no
     (e.g. a {'message': ...} error body) must degrade to [] rather than raising when the
     per-branch loop tries to treat it as one."""
     monkeypatch.setattr(
-        "services.quality_coordination._http_get_json",
+        "tools.quality_coordination._http_get_json",
         lambda url, timeout: {"message": "Not Found"},
     )
     assert fetch_branch_signals() == []
@@ -325,18 +325,18 @@ def test_observe_main_reprocesses_a_fingerprint_that_recurs_non_consecutively(tm
     must reprocess (not short-circuit) and mark B resolved. Under the old all-history
     UNIQUE/WHERE-lookup behavior this fingerprint would already exist in coordination_runs
     (from run 1) and the run would wrongly short-circuit."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report_a = QualityReport(findings=[_finding(check="config-usage", scope="a.b", finding_id="a")])
     report_ab = QualityReport(findings=[
         _finding(check="config-usage", scope="a.b", finding_id="a"),
         _finding(check="config-usage", scope="c.d", finding_id="b"),
     ])
-    with patch("services.quality_coordination._current_commit_sha", return_value=None):
-        with patch("services.quality_coordination._run_static_audit", return_value=report_a):
+    with patch("tools.quality_coordination._current_commit_sha", return_value=None):
+        with patch("tools.quality_coordination._run_static_audit", return_value=report_a):
             r1 = observe_main(tmp_path, at=T0)
-        with patch("services.quality_coordination._run_static_audit", return_value=report_ab):
+        with patch("tools.quality_coordination._run_static_audit", return_value=report_ab):
             r2 = observe_main(tmp_path, at=T0 + timedelta(hours=1))
-        with patch("services.quality_coordination._run_static_audit", return_value=report_a):
+        with patch("tools.quality_coordination._run_static_audit", return_value=report_a):
             r3 = observe_main(tmp_path, at=T0 + timedelta(hours=2))
     assert r1.audit_fingerprint == r3.audit_fingerprint
     assert r2.audit_fingerprint != r1.audit_fingerprint
@@ -357,10 +357,10 @@ def test_observe_main_reuses_one_run_row_for_true_back_to_back_repeat(tmp_path, 
     runs still produce exactly one coordination_runs row (an UPDATE, not a second INSERT) —
     but, unlike the original Task 10 design, apply_observation genuinely reruns both times
     (see the escalation regression test below for why that distinction matters)."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b")])
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint == r2.audit_fingerprint
@@ -381,10 +381,10 @@ def test_observe_main_escalates_a_stable_persisting_finding_past_its_floor(tmp_p
     problem could never reach escalation_eligible, which is exactly backwards for a
     persistence floor. Proves the fix: a stable error-severity finding (2h floor) observed
     3h apart, with nothing else changing, must still escalate."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b", severity="error")])
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(hours=3))
     assert r1.states["config-usage|a.b|"] == "observed"  # below the 2h floor at t=0
@@ -395,8 +395,8 @@ def test_observe_main_error_path_does_not_spam_identical_consecutive_errors(tmp_
     """The error path must not insert a new coordination_runs row for a repeating identical
     error now that the UNIQUE constraint (which used to do this implicitly via
     INSERT OR IGNORE) is gone."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
-    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("tools.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
         r1 = observe_main(tmp_path, at=T0)
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint == r2.audit_fingerprint
@@ -410,10 +410,10 @@ def test_observe_main_error_path_logs_a_new_row_when_the_error_changes(tmp_path,
     """A different consecutive error must still get its own row — this also resolves the
     separately-parked Minor finding that latest_run_at() used to freeze at the first failure
     forever under the old UNIQUE-constrained scheme."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
-    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
+    with patch("tools.quality_coordination._run_static_audit", side_effect=RuntimeError("boom")):
         r1 = observe_main(tmp_path, at=T0)
-    with patch("services.quality_coordination._run_static_audit", side_effect=RuntimeError("crash")):
+    with patch("tools.quality_coordination._run_static_audit", side_effect=RuntimeError("crash")):
         r2 = observe_main(tmp_path, at=T0 + timedelta(minutes=1))
     assert r1.audit_fingerprint != r2.audit_fingerprint
     conn = _connect()
@@ -442,14 +442,14 @@ def _write_baseline(repo_root, accepted_ids):
 
 
 def test_observe_main_excludes_baseline_accepted_findings_from_signals(tmp_path, monkeypatch):
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     _write_baseline(tmp_path, ["accepted-1"])
     report = QualityReport(findings=[
         _finding(check="config-usage", scope="a.b", finding_id="accepted-1"),
         _finding(check="config-usage", scope="c.d", finding_id="new-1"),
     ])
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         result = observe_main(tmp_path, at=T0)
 
     assert result.items_observed == 1  # only the non-accepted finding produced a tracked item
@@ -467,11 +467,11 @@ def test_observe_main_uses_the_real_baseline_json_path_convention(tmp_path, monk
     the exact same file tools/quality_audit/__main__.py's own _DEFAULT_BASELINE_PATH resolves
     to (Path(__file__).resolve().parent / "baseline.json", from that module's own directory) —
     not hardcoded elsewhere or misaligned with the CLI's own convention."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[_finding(check="config-usage", scope="a.b", finding_id="x")])
     expected_path = tmp_path / "tools" / "quality_audit" / "baseline.json"
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None), \
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None), \
          patch("tools.quality_audit.baseline.load_baseline", wraps=qc_baseline.load_baseline) as mock_load:
         observe_main(tmp_path, at=T0)
 
@@ -483,13 +483,13 @@ def test_observe_main_resolves_an_item_once_it_becomes_baseline_accepted(tmp_pat
     baseline-accepted finding: a finding tracked as observed in one run, then baseline-accepted
     before the next run, must be marked resolved by that next run (apply_observation's existing
     absent-from-present logic, fed by the now-filtered signal list — no extra plumbing)."""
-    monkeypatch.setattr("services.quality_coordination.DB_PATH", tmp_path / "q.db")
+    monkeypatch.setattr("tools.quality_coordination.DB_PATH", tmp_path / "q.db")
     report = QualityReport(findings=[
         _finding(check="config-usage", scope="a.b", finding_id="soon-accepted"),
     ])
 
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         r1 = observe_main(tmp_path, at=T0)
     assert r1.items_observed == 1
     conn = _connect()
@@ -500,8 +500,8 @@ def test_observe_main_resolves_an_item_once_it_becomes_baseline_accepted(tmp_pat
     assert row["state"] == "observed"
 
     _write_baseline(tmp_path, ["soon-accepted"])  # now baseline-accepted by a human
-    with patch("services.quality_coordination._run_static_audit", return_value=report), \
-         patch("services.quality_coordination._current_commit_sha", return_value=None):
+    with patch("tools.quality_coordination._run_static_audit", return_value=report), \
+         patch("tools.quality_coordination._current_commit_sha", return_value=None):
         r2 = observe_main(tmp_path, at=T0 + timedelta(hours=1))
 
     conn = _connect()

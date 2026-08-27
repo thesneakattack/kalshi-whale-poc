@@ -200,13 +200,6 @@ research:
   enabled: false  # off until manually reviewed - see services/research/CHEATSHEET.md
   min_new_resolved_signals: 100
   min_new_closed_trades: 50
-quality_coordination:
-  enabled: false  # off until a real tick_phase_timings noninterference measurement is taken
-  # with it turned on - see services/quality_coordination.py's run_coordination_cycle
-  # docstring and Task 6's own "Noninterference measurement" step. Do not flip this
-  # default as a drive-by - it gates a blocking GitHub fetch + full quality-audit pass,
-  # backgrounded via asyncio.to_thread but not yet measured against the live tick.
-  interval_sec: 3600
 event_lifecycle:
   tournament_min_siblings: 4
   tournament_pretail_days: 5.0

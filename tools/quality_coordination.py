@@ -1,8 +1,20 @@
 """Read-only autonomous quality coordination — persisted observation series only.
 
+Standalone tool, not application code: lives under tools/ (alongside tools/quality_audit/,
+the static scanner this module observes) rather than services/, and is never imported by
+main.py or any part of the live trading app. Invoke directly (`python -m
+tools.quality_coordination`) or from whatever external scheduler a human sets up - the
+trading app's own process/config/scheduling never drives or gates this (see CLAUDE.md's
+"workflow and tooling should never overlap with app code" standing rule, added 2026-08-26
+after this module originally shipped wired into main.py's tick loop).
+
 No GitHub write credential, no issue/PR authority, no write path outside this module's own
-data/quality_coordination.db. See docs/superpowers/specs/2026-08-26-autonomous-quality-
-coordination-design.md for the full design; this module implements that spec exactly.
+tools/quality_coordination_data/quality_coordination.db — deliberately NOT under the
+shared data/ directory the trading app owns (that directory is globbed whole by the app's
+own backup cycle and storage-health inventory; living there would silently couple this
+standalone tool's data into app-owned mechanisms it was never meant to be part of). See
+docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md for the full
+design; this module implements that spec exactly.
 """
 from __future__ import annotations
 
@@ -18,7 +30,7 @@ from pathlib import Path
 
 from services.quality.models import QualityFinding, QualityReport
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "quality_coordination.db"
+DB_PATH = Path(__file__).resolve().parent / "quality_coordination_data" / "quality_coordination.db"
 
 _HOST_SNIPPET_MAX = 80
 
@@ -286,12 +298,13 @@ class RunResult:
 
 def _run_static_audit(repo_root: Path) -> QualityReport:
     """Thin wrapper kept at module scope (patchable as
-    services.quality_coordination._run_static_audit, same name tests already patch) while
+    tools.quality_coordination._run_static_audit, same name tests already patch) while
     deferring the actual import: tools.quality_audit.__main__.run_audit pulls in all 9
-    scanner modules, which main.py importing services.quality_coordination would otherwise
-    drag into the trading app's startup path unconditionally. Deferred to call time so a
-    deployment image without tools/ present still starts fine - an ImportError here is
-    caught by observe_main's own except Exception exactly like any other audit-run
+    scanner modules, which this module isn't otherwise loaded until an explicit standalone
+    invocation (this module is no longer imported by main.py at all - see the module
+    docstring). Deferred to call time so a deployment image without tools/ present still
+    starts fine - an ImportError here is caught by observe_main's own except Exception
+    exactly like any other audit-run
     failure."""
     from tools.quality_audit.__main__ import run_audit
 
@@ -448,8 +461,11 @@ def fetch_branch_signals(repo: str = "thesneakattack/kalshi-whale-poc", timeout:
 
 
 def latest_run_at() -> float | None:
-    """Most recent persisted run timestamp, for cold-start seeding — same role as backup.py's
-    `latest()` call in `_maybe_run_backup`. Returns None if no run has ever completed."""
+    """Most recent persisted run timestamp — a diagnostic for "when did this last actually
+    run" (e.g. before deciding whether to invoke it again). No longer consumed internally:
+    this module has no in-process scheduler of its own to cold-start-seed (see the module
+    docstring — invocation is external, by whatever process/human runs
+    `python -m tools.quality_coordination`). Returns None if no run has ever completed."""
     conn = _connect()
     try:
         row = conn.execute("SELECT MAX(ran_at) AS m FROM coordination_runs").fetchone()
@@ -463,15 +479,14 @@ def latest_run_at() -> float | None:
 def run_coordination_cycle(repo_root: Path) -> RunResult:
     """The full cycle: fetch branch signals, derive claims, observe main. Synchronous and
     blocking by design (fetch_branch_signals does a real urlopen; observe_main runs a full
-    tools.quality_audit pass) — the async wrapper in main.py is what keeps this off the
-    event loop, not this function itself, exactly matching backup.py's
-    run_backup_cycle/_run_backup_background split. That also makes this directly callable
-    from a plain script with no asyncio involved at all, same as backup.py's own
-    `if __name__ == "__main__":` block.
+    tools.quality_audit pass) — this module has no event loop to keep it off of at all,
+    since it's never imported into the live trading app (see the module docstring); the
+    only caller is the `if __name__ == "__main__":` block below, a plain synchronous
+    script invocation.
 
-    Returns RunResult (Task 4's dataclass, from observe_main) — NOT a plain dict, unlike
-    backup.py's run_backup_cycle. A dataclass isn't JSON-serializable on its own; the
-    __main__ block below converts via dataclasses.asdict() before json.dumps()."""
+    Returns RunResult (a dataclass, from observe_main), not a plain dict — the __main__
+    block below converts via dataclasses.asdict() before json.dumps() since a dataclass
+    isn't JSON-serializable on its own."""
     branches = fetch_branch_signals()
     claims = derive_claims()
     return observe_main(repo_root, branches=branches, claims=claims)

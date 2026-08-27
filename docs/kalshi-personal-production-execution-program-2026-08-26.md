@@ -180,7 +180,8 @@ The "refresh plans that instruct editing `static/status.html` directly" requirem
 
 ---
 
-## 4.6 Autonomous Quality Coordination research — MERGED RESEARCH LEVERAGE
+## 4.6 Autonomous Quality Coordination research — MERGED RESEARCH LEVERAGE, since
+implemented (2026-08-26, later the same day — see the "Not yet realized" note below)
 
 PR #15/#18 completed the AQC investigation.
 
@@ -217,16 +218,24 @@ Future work can immediately apply the AQC coordination doctrine manually:
 
 ### Not yet realized
 
-The following runtime capability is **not implemented**:
+**~~The following runtime capability is not implemented: `services/quality_coordination.py`,
+`data/quality_coordination.db`, persisted coordination observation history, coordination
+API routes, periodic observation scheduling, coordinator health/staleness surfacing.
+Therefore AQC has improved execution discipline, not delivered runtime autonomous
+coordination yet.~~**
 
-- `services/quality_coordination.py`
-- `data/quality_coordination.db`
-- persisted coordination observation history
-- coordination API routes
-- periodic observation scheduling
-- coordinator health/staleness surfacing
-
-Therefore AQC has improved **execution discipline**, not delivered runtime autonomous coordination yet.
+**Corrected (2026-08-26, later the same day):** implemented as `tools/quality_coordination.py`
+(not `services/` — see `CLAUDE.md`'s "Workflow/tooling and application code must never
+overlap" standing rule, added the same day after the module was originally built wired
+into the trading app and that coupling was identified as a real mistake), with persisted
+observation history at `tools/quality_coordination_data/quality_coordination.db`
+(deliberately outside the shared `data/` directory). **Two of the six items above were
+never actually delivered, by design, not oversight:** "coordination API routes" and
+"periodic observation scheduling" — the module has neither. It's invoked externally only
+(`python -m tools.quality_coordination`), on whatever cadence a human or an external
+scheduler chooses; the trading application has zero coupling to it in any direction. See
+`docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s Task 15 for the
+full account.
 
 ---
 
@@ -402,11 +411,20 @@ The operator console must ultimately represent backend concepts that earlier pro
 ## 5.3 Autonomous Quality Coordination implementation
 
 **Plan:** `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`  
-**State:** ~~PLAN REQUIRES ARCHITECTURAL CORRECTION~~ **CORRECTED, safe to
-execute** (commit `d015733`, same day — Task 6 was rewritten in place to
-match the "Required correction" list below before any of it shipped; this
-section's own Verdict was just never refreshed to say so until now,
-2026-08-26 later the same day).
+**State:** ~~PLAN REQUIRES ARCHITECTURAL CORRECTION~~ ~~**CORRECTED, safe to
+execute**~~ (commit `d015733`, same day — Task 6 was rewritten in place to
+match the "Required correction" list below before any of it shipped) **→
+implemented, then corrected further, same day (plan Task 15): the whole
+in-app-scheduler approach — even the `asyncio.to_thread`-isolated version
+this verdict approved — was itself the wrong design.** Direct user
+correction: this feature was never supposed to touch the trading
+application at all; "prefer standalone scheduled CLI/process," the FIRST
+option this section's own "Required correction" list already named below,
+turned out to be the right call all along, not the fallback it was framed
+as. The module now runs as `tools/quality_coordination.py`, invoked
+externally only, with zero application coupling in any form (no scheduler,
+no config, no API routes) — see `CLAUDE.md`'s "Workflow/tooling and
+application code must never overlap" standing rule and the plan's Task 15.
 
 ### Keep
 
@@ -419,7 +437,8 @@ section's own Verdict was just never refreshed to say so until now,
 - content-fingerprint idempotence;
 - active-work suppression;
 - persisted observation history;
-- read-only API exposure.
+- ~~read-only API exposure~~ **removed entirely (Task 15) — no API route
+  exists, in either direction; see the State note above.**
 
 ### Unsafe as written
 
@@ -1211,7 +1230,7 @@ earlier judgment call that this update reverses.
 | Realtime measurement/replay | MERGED + OPERATIONAL | Program 1 |
 | Realtime architecture fix | P0-P2 MERGED + OPERATIONAL (2026-08-26, all 9 code-review findings fixed first); P3 AUTHORIZED not started (2026-08-26); P4-P6 not started | Program 1 |
 | AQC research/suppression/write policy | MERGED RESEARCH LEVERAGE | Apply manually now |
-| AQC persisted coordinator | PLAN CORRECTED, IMPLEMENTATION STARTING (2026-08-26) | Program 7 |
+| AQC persisted coordinator | IMPLEMENTED as standalone `tools/quality_coordination.py`, zero app coupling (2026-08-26 — see §5.3 and §4.6) | Program 7 (N/A — done, not application-owned) |
 | Frontend research/spec | MERGED RESEARCH LEVERAGE | Program 5 |
 | Frontend Preact migration | PLAN REQUIRES REFRESH | Program 5 |
 | Economic strategy effectiveness | MERGED RESEARCH LEVERAGE (2026-08-26) — E1-E7/E11-E12 resumed and merged forward onto post-Program-1 `main`; findings' Program-1-dependency caveat explicitly still open pending elapsed-time re-verification, not implementation-approved | Program 2R (done) → Program 2 |

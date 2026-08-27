@@ -1790,6 +1790,78 @@ green.
 
 ---
 
+### Task 15 (found via direct user correction, not a code review): reverse Tasks 6/7's
+application-coupling entirely — this is a rewrite of the integration architecture, not
+an incremental fix
+
+**What happened:** while looking at `config/settings.yaml` (opened to review Task 6's
+`quality_coordination:` section), the user identified a real, foundational
+misunderstanding this whole feature had been built under: "Autonomous Quality
+**Coordination**" was named for coordinating the *engineering workflow's* quality — this
+repo's own code health, observed via `tools.quality_audit`'s static scanners — not the
+trading *application*. The word "autonomous" led every session (including this one, and
+likely the original I0-I13 investigation before it) to treat this as adjacent to the
+app's own automation, since the app itself is an autotrader. It was never about the app.
+Direct instruction, verbatim: "workflow and tooling should never overlap with app code
+... i want ZERO COUPLING AT ALL." This is corrected now, not deferred — Tasks 6/7's
+approach (an in-process scheduler, an app-config entry, two app-owned read routes) is
+reversed in full, not patched.
+
+**What changed (see `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-
+design.md`'s own Amendment for the full design-level correction):**
+1. `services/quality_coordination.py` → `tools/quality_coordination.py` — code lives with
+   this repo's other workflow tooling (`tools/quality_audit/`), not application code.
+2. `DB_PATH` moved to `tools/quality_coordination_data/quality_coordination.db` —
+   deliberately outside the shared `data/` directory the app's own backup and
+   storage-health mechanisms own, so those mechanisms never see or touch it.
+3. `main.py`'s `_maybe_run_quality_coordination`/`_run_quality_coordination_background`
+   and the tick-loop call site removed entirely, along with the now-dead import and
+   `services/app_state.py`'s `"quality_coordination"` state-dict entry. No in-process
+   scheduler exists; invocation is external only (`python -m tools.quality_coordination`).
+4. `config/settings.yaml`'s `quality_coordination:` section removed entirely — no
+   replacement config file. Once there's no in-process scheduler, `enabled`/`interval_sec`
+   don't mean anything; an external invoker decides whether and when this runs at all.
+5. `services/quality/routes.py`'s `_coordination_rollup()`, the `GET /api/quality/
+   coordination` route, and the `"coordination"` key in `/api/quality/summary` removed
+   entirely — the app imports nothing from this tool, in either direction, beyond what a
+   real future API boundary might justify (tool reading the app, never the app depending
+   on the tool). Corresponding tests in `tests/test_quality_routes.py` removed.
+6. `tests/test_quality_coordination_scheduler.py` deleted outright — it only tested the
+   removed scheduler wiring.
+7. `tests/support/runtime_isolation.py`'s `PERSISTENCE_MODULE_PATHS` does **not** list
+   this module (a brief earlier attempt to register it was itself identified as the same
+   coupling and reverted) — the tool manages its own test isolation directly, every test
+   explicitly monkeypatching its own `DB_PATH`.
+8. `tools/quality_audit/persistence.py`'s `persistence-isolation` scanner corrected to
+   exclude `tools/` from its "must be registered in `PERSISTENCE_MODULE_PATHS`" check —
+   that registry is specifically the application's own test-isolation mechanism, and a
+   standalone tool isn't subject to it. (This was the one real static-audit finding this
+   whole reversal produced: `persistence-unisolated:tools.quality_coordination` — fixed
+   at the scanner level, not by re-registering the module.)
+9. `tools/quality_audit/baseline.json`: the 3 findings that only existed because of the
+   now-removed app integration (`backend-route-unused:GET:/api/quality/coordination`,
+   `config-unread:quality_coordination.enabled`, `config-unread:quality_coordination.
+   interval_sec`) removed from `accepted_finding_ids` with a dated resolution note on
+   each, per CLAUDE.md's own "remove stale IDs, don't leave them as cruft" instruction —
+   not left stale.
+10. `CLAUDE.md` gained a standing rule: workflow/tooling code, config, and execution must
+    never overlap with application code, config, or execution (see that file directly).
+
+**Verification:** full backend suite green (1975 passed, 16 skipped — down from 1985
+after removing 5 app-route tests and one whole scheduler-test file, as expected),
+`python -m tools.quality_coordination` runs standalone end to end and produces a real
+observation, `python -m tools.quality_audit` clean (0 new, 193 existing baselined, 0
+resolved).
+
+**Not a small fix:** this task reverses Tasks 6 and 7's actual design decisions, not just
+their bugs — anyone reading this plan top to bottom should not conclude the feature still
+works the way Tasks 1-9 originally built it. The PR carrying this work says so explicitly
+in its own description rather than reading as an incremental follow-up.
+
+**Commit:** `refactor: decouple quality-coordination from the trading application entirely`
+
+---
+
 ## Self-Review
 
 **0. Two real bugs caught and fixed while drafting this plan, not before it — recorded rather than
