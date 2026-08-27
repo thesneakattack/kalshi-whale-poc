@@ -393,3 +393,86 @@ def collect_docs_roadmap_feed(roadmap_text: str, recent_commit_subjects: list[st
         ]
         feed.append({"roadmap_bullet": bullet, "possibly_related_commits": related})
     return feed
+
+
+"""Cleanup/janitor action layer (spec §8). Detect and act are always separate phases
+(spec §5); callers only invoke these when Task 8's CLI is run with --clean, and even then
+only for identities Task 8's own eligibility check already confirmed. Every action is
+deterministic, idempotent, path-contained, and independently verifiable
+(.claude/rules/autonomous-quality-coordination-evidence.md's "Remediation authority rule",
+generalized from GitHub-write to git/filesystem-write per spec §3). main is never a target
+under any code path (spec §11).
+"""
+_MAIN_BRANCH_PROTECTED_NAMES = {"main"}
+
+
+def prune_worktrees(*, git_runner: Runner, repo_root: Path) -> str:
+    """spec §8 action 1. No precondition beyond git's own built-in safety - this command
+    only reconciles bookkeeping against worktrees already removed from disk."""
+    result = git_runner(["git", "worktree", "prune"])
+    return "succeeded" if result.returncode == 0 else f"failed:{result.stderr.strip()}"
+
+
+def delete_merged_branch(branch: str, *, git_runner: Runner, main_branch: str = "main") -> str:
+    """spec §8 action 2. Preconditions: (a) branch is an ancestor of main_branch via
+    git merge-base --is-ancestor, (b) not the protected main branch itself, (c) `git branch
+    -d` (never -D) as an independent second guard beyond (a) - git's own merge-check backs
+    this up rather than being the only check."""
+    if branch in _MAIN_BRANCH_PROTECTED_NAMES or branch == main_branch:
+        return "refused:protected-main"
+
+    check = git_runner(["git", "merge-base", "--is-ancestor", branch, main_branch])
+    if check.returncode != 0:
+        return "refused:not-merged"
+
+    result = git_runner(["git", "branch", "-d", branch])
+    if result.returncode != 0:
+        return f"refused:{result.stderr.strip()}"
+    return "succeeded"
+
+
+def delete_sdd_scratch(
+    plan_branch_candidates: list[str], plan_dir: Path, *, git_runner: Runner, main_branch: str = "main",
+) -> str:
+    """spec §8 action 3. Branch-mapping derivation: see this task's own note above -
+    plan_branch_candidates is whatever the caller resolved from the ledger's first line
+    plus the repo's <prefix>/<name> naming-convention fallback; this function itself never
+    guesses beyond refusing when the candidate set isn't exactly one confirmed branch."""
+    if len(plan_branch_candidates) != 1:
+        return "refused:ambiguous-branch-mapping"
+    branch = plan_branch_candidates[0]
+
+    check = git_runner(["git", "merge-base", "--is-ancestor", branch, main_branch])
+    if check.returncode != 0:
+        return "refused:branch-not-merged"
+
+    if not plan_dir.exists():
+        return "refused:already-removed"
+    import shutil
+    shutil.rmtree(plan_dir)
+    return "succeeded"
+
+
+def run_cleanup_actions(
+    eligible: list[tuple[str, str]], *, git_runner: Runner, repo_root: Path, sdd_root: Path,
+    conn, at: datetime, dry_run: bool,
+) -> None:
+    """Executes (or, if dry_run, only reports) each eligible (identity, action_type) pair.
+    Every attempt is logged regardless of outcome (spec §8: "identity, action type,
+    timestamp, outcome, and whether it ran in --clean or was merely reported as eligible -
+    before/after state for auditability")."""
+    for identity, action_type in eligible:
+        if dry_run:
+            outcome = "not-executed:dry-run"
+        elif action_type == "worktree_prune":
+            outcome = prune_worktrees(git_runner=git_runner, repo_root=repo_root)
+        elif action_type == "delete_merged_branch":
+            branch = identity.removeprefix("branch:")
+            outcome = delete_merged_branch(branch, git_runner=git_runner)
+        elif action_type == "delete_sdd_scratch":
+            outcome = "refused:not-implemented-in-this-caller"  # Task 8 wires real candidates
+        else:
+            outcome = f"failed:unknown-action-type-{action_type}"
+
+        ce.log_cleanup_action(conn, identity, action_type, at, dry_run=dry_run, outcome=outcome)
+    conn.commit()
