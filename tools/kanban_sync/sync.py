@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
 from tools.kanban_sync import labels
-from tools.kanban_sync.markers import build_marker
+from tools.kanban_sync.markers import build_marker, parse_marker
 from tools.kanban_sync.models import SyncItem, SyncReport
 
 
@@ -20,6 +20,7 @@ class SyncGithubClient(Protocol):
     def set_labels(self, number: int, add: Sequence[str], remove: Sequence[str]) -> None: ...
     def close_issue(self, number: int) -> None: ...
     def post_comment(self, number: int, body: str) -> None: ...
+    def list_open_by_label(self, label: str): ...
 
 
 def _desired_base_labels(item: SyncItem) -> set[str]:
@@ -48,6 +49,52 @@ def _mismatch_comment(item: SyncItem) -> str:
         f"This issue is closed on GitHub, but its source (`{item.kind}:{item.key}`) "
         f"is still open. Not reopening automatically - please reconcile manually."
     )
+
+
+def _stale_worktree_comment(branch: str) -> str:
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return (
+        f"<!-- event: sync-stale-worktree | agent: kanban-board-sync | ts: {ts} -->\n"
+        f"Closing automatically: the worktree/branch `{branch}` this issue tracks "
+        f"is no longer present in `git worktree list` (merged and removed, or "
+        f"the worktree/branch was deleted). If this is wrong, reopen manually."
+    )
+
+
+def close_stale_worktree_issues(
+    live_branches: set[str],
+    client: SyncGithubClient,
+    *,
+    dry_run: bool,
+) -> SyncReport:
+    """Closes every open type:tracking issue whose worktree branch (parsed
+    from its body's sync marker) is no longer in `live_branches`. Needed
+    because build_worktree_items only ever iterates *currently-existing*
+    worktrees (git worktree list) - unlike sources_plan.py/sources_roadmap.py,
+    which iterate the full candidate set and correctly emit done=True items,
+    a removed worktree's item is simply absent from every future run's item
+    list, so sync_pass_one's per-item loop never sees it and never closes it
+    (issue #98, confirmed live 2026-08-27).
+
+    Defensive by construction: client.list_open_by_label already scopes to
+    type:tracking and to open issues only (so a manually-closed issue for a
+    dead branch is never even in the candidate set - no reopen risk). On top
+    of that, any issue whose body doesn't parse as a marker, or whose parsed
+    kind isn't "worktree", is skipped outright rather than trusting the
+    label alone."""
+    report = SyncReport(dry_run=dry_run)
+    for issue in client.list_open_by_label(labels.TYPE_TRACKING):
+        parsed = parse_marker(issue.body)
+        if parsed is None:
+            continue
+        kind, key = parsed
+        if kind != labels.SYNC_MARKER_KIND_WORKTREE or key in live_branches:
+            continue
+        if not dry_run:
+            client.post_comment(issue.number, _stale_worktree_comment(key))
+            client.close_issue(issue.number)
+        report.closed.append(f"#{issue.number} worktree:{key} (branch no longer live)")
+    return report
 
 
 def sync_pass_one(
