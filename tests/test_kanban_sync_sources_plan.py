@@ -26,10 +26,21 @@ def test_list_plan_candidates_returns_sorted_list(tmp_path):
     assert result == ["a-plan.md", "b-plan.md"]
 
 
-def test_build_plan_items_skips_done_classification():
+def test_build_plan_items_emits_done_item_for_done_classification():
+    """A 'done' classification must still produce a SyncItem (with done=True)
+    so sync_pass_one's existing close-on-done logic can close an already-open
+    issue for a plan that finished after its issue was created. Skipping it
+    entirely (the old behavior) meant a plan that shipped after its tracking
+    issue existed could never be auto-closed - found live 2026-08-27 (issue
+    #96, backend-services-modularization) and fixed here rather than closed
+    by hand every time it recurs."""
     items = build_plan_items({"x.md": {"status": "done", "note": "shipped"}})
 
-    assert items == []
+    assert len(items) == 1
+    assert items[0].key == "x.md"
+    assert items[0].done is True
+    assert items[0].status_label == labels.STATUS_DONE
+    assert items[0].phase_label == labels.PHASE_IMPLEMENTED
 
 
 def test_build_plan_items_creates_item_for_in_progress():
@@ -51,12 +62,13 @@ def test_build_plan_items_has_acceptance_criteria():
     assert len(items[0].acceptance_criteria) >= 1
 
 
-def test_build_plan_items_always_phase_implementation_plan():
-    """Every item reaching build_plan_items already has a real plan doc -
-    that's how it became a candidate at all (list_plan_candidates only scans
-    docs/superpowers/plans/*.md) - so phase is always implementation-plan,
-    never a lower phase. "done" classifications never reach here (skipped
-    above), so phase:implemented is never assigned by this function."""
+def test_build_plan_items_not_started_and_in_progress_are_phase_implementation_plan():
+    """Every not-started/in-progress item reaching build_plan_items already
+    has a real plan doc - that's how it became a candidate at all
+    (list_plan_candidates only scans docs/superpowers/plans/*.md) - so phase
+    is always implementation-plan, never a lower phase. "done" classifications
+    get phase:implemented instead - see
+    test_build_plan_items_emits_done_item_for_done_classification."""
     items = build_plan_items({
         "not-started.md": {"status": "not-started", "note": ""},
         "in-progress.md": {"status": "in-progress", "note": ""},

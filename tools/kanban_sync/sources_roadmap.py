@@ -47,17 +47,24 @@ def _iter_bullets(text: str) -> list[tuple[bool, str]]:
 
 
 def parse_roadmap_items(text: str) -> list[SyncItem]:
+    """A checked (`- [x]`) bullet still produces a SyncItem (done=True),
+    rather than being skipped outright - sync_pass_one's own create/close
+    logic already handles both ends of this correctly (no existing issue +
+    done => nothing created; existing open issue + done => closed), so
+    skipping it here would only lose the second case: a bullet open when its
+    tracking issue was first created, then later checked off, would never
+    get that issue auto-closed. Same bug shape as sources_plan.py's
+    build_plan_items - found and fixed together 2026-08-27 (that module's
+    own docstring has the fuller incident writeup)."""
     items: list[SyncItem] = []
     for checked, bullet_text in _iter_bullets(text):
-        if checked:
-            continue
         title = extract_roadmap_title(bullet_text)
         key = slugify(title)
         items.append(SyncItem(
             kind=labels.SYNC_MARKER_KIND_ROADMAP,
             key=key,
             title=title,
-            status_label=labels.STATUS_CLAIMABLE,
+            status_label=labels.STATUS_DONE if checked else labels.STATUS_CLAIMABLE,
             type_label=labels.TYPE_FEATURE,
             context_body=f"## Context\n{bullet_text}",
             acceptance_criteria=(
@@ -65,6 +72,6 @@ def parse_roadmap_items(text: str) -> list[SyncItem]:
                 "factual note on what shipped, per the close-roadmap-item "
                 "skill's convention.",
             ),
-            done=False,
+            done=checked,
         ))
     return items
