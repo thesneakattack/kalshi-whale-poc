@@ -35,17 +35,31 @@ means a ticker rejected fifty times by the same gate over its life counts
 as ONE data point, not fifty - "unusable for population statistics." Fixed
 additively, not by changing the existing table's behavior (every current
 consumer of gate_summary()/rejected_candidates keeps working unchanged):
-record_rejection() now also inserts one row per call into a second table,
+record_rejection() now also submits one row per call into a second table,
 rejection_events, with no dedup key at all - the true population.
 population_gate_summary() answers the same "what would a gate's rejected
 candidates have done" question gate_summary() does, from that real
 population, with the same honest "insufficient" gating
 services/settlement_edge.py's edge_report() uses rather than reporting a
 number earned from too few samples.
+
+rejection_events writes route through services/capture_writer.py (P3 Task
+16, 2026-08-27) instead of a second synchronous connect()+INSERT per call
+- the plan's own original design asked to aggregate this table by
+(ticker, side, minute) instead, which was rejected: that would have
+destroyed the exact per-row unit_cost/observed_value detail this table
+exists to preserve (see the "cost-blindness gap" naming above and
+CLAUDE.md's Standing goal section, which still calls per-unit-cost-band
+analysis an open research target). Batching preserves every row, only
+delaying when it lands on disk - population_gate_summary()/clear_all()/
+count_range()/clear_range() each flush the buffer first so no caller ever
+sees a stale undercount or an incomplete wipe.
 """
 import sqlite3
 import time
 from pathlib import Path
+
+from services import capture_writer
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
@@ -168,16 +182,22 @@ def record_rejection(
             """,
             (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
         )
-        # Population copy - one row per call, no dedup. See this module's
-        # "POPULATION STATISTICS" docstring section.
-        conn.execute(
-            """
-            INSERT INTO rejection_events
-                (ticker, strategy, gate_name, observed_value, threshold_value, side, rejected_at, resolved, unit_cost)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-            """,
-            (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
-        )
+    # Population copy - one row per call, no dedup. See this module's
+    # "POPULATION STATISTICS" docstring section. Batched through
+    # capture_writer (P3 Task 16, 2026-08-27) instead of a second
+    # synchronous connect()+INSERT on this same hot path - every row is
+    # still preserved (this only changes WHEN it lands on disk, not
+    # whether it does), which is why this is a batch, not the aggregate-
+    # by-minute design Task 16 originally specified: rejection_events
+    # exists specifically so no rejection ever collapses into another the
+    # way rejected_candidates' own dedup key does, and every reader of it
+    # (population_gate_summary, clear_all, count_range, clear_range) flushes
+    # before it reads/deletes, so a caller never has to know this table's
+    # writes are asynchronous now.
+    capture_writer.submit(
+        "rejection_events",
+        (None, ticker, strategy, gate_name, observed_value, threshold_value, side, now, 0, None, None, unit_cost),
+    )
 
 
 def resolve_from_market_results(market_results: dict) -> int:
@@ -193,7 +213,20 @@ def resolve_from_market_results(market_results: dict) -> int:
     effect, not counted in the return value - by ticker rather than by
     row, since a busy ticker can carry far more event rows than the
     deduped table ever would; one indexed UPDATE per resolved ticker
-    resolves all of that ticker's pending rows at once."""
+    resolves all of that ticker's pending rows at once.
+
+    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
+    2026-08-27): a row still sitting in that buffer doesn't exist in the
+    table yet for this UPDATE to find, and would otherwise stay
+    permanently unresolved once a settled market drops out of a later
+    tick's market_results - not just delayed, genuinely lost data,
+    unlike the same tradeoff elsewhere in this plan where a late flush
+    only delays visibility. Usually a near no-op in practice: capture_
+    writer's own background thread already flushes within ~1s on its own
+    cadence, well inside typical poll_interval_sec tick spacing - this
+    only does real work in the rare case a rejection landed in the last
+    <1s before this tick's resolve call."""
+    capture_writer.flush_now("rejection_events")
     with _connect() as conn:
         rows = conn.execute(
             "SELECT rowid, ticker FROM rejected_candidates WHERE resolved = 0",
@@ -324,7 +357,14 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     the same 6.2M rows, returning only ~10 grouped rows) cuts the
     Python-object cost to near zero and makes the remaining time actually
     I/O-bound again, so the tick_executor offload at this function's own
-    call site (services/analytics/routes.py) is now doing real work."""
+    call site (services/analytics/routes.py) is now doing real work.
+
+    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
+    2026-08-27) - record_rejection() no longer writes this table
+    synchronously, so without this a caller could read an undercount for
+    up to ~1s after the most recent rejection. Cheap: bounded by
+    _FLUSH_BATCH, a no-op when nothing is buffered."""
+    capture_writer.flush_now("rejection_events")
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -369,7 +409,13 @@ def clear_all() -> None:
     dataset (see this module's "POPULATION STATISTICS" docstring section),
     and leaving it behind would silently defeat a user's "wipe candidate
     log" intent for anything reading the population table instead of the
-    deduped one."""
+    deduped one.
+
+    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
+    2026-08-27) - a row sitting in that buffer isn't in the table yet for
+    DELETE to find, and would otherwise land moments after a "wipe"
+    silently un-wipes it."""
+    capture_writer.flush_now("rejection_events")
     with _connect() as conn:
         conn.execute("DELETE FROM rejected_candidates")
         conn.execute("DELETE FROM rejection_events")
@@ -384,7 +430,12 @@ def count_range(before: float | None = None, after: float | None = None) -> int:
     full rejection history, same caveat that applies to clear_range.
     Sums in rejection_events (the population table, uncapped by that same
     dedup) so this preview matches what clear_range would actually delete,
-    not just the deduped table's half of it."""
+    not just the deduped table's half of it.
+
+    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
+    2026-08-27) so a just-submitted-but-not-yet-flushed row isn't
+    undercounted in this preview."""
+    capture_writer.flush_now("rejection_events")
     where, params = _range_where(before, after)
     with _connect() as conn:
         deduped = conn.execute(f"SELECT COUNT(*) FROM rejected_candidates {where}", params).fetchone()[0]
@@ -398,7 +449,12 @@ def clear_range(before: float | None = None, after: float | None = None) -> int:
     losing what's on either side of it" reasoning as signal_log.
     clear_range. Deletes from rejection_events too, same reasoning as
     clear_all - returns the combined row count so this matches what
-    count_range previews."""
+    count_range previews.
+
+    Flushes capture_writer's rejection_events buffer first (P3 Task 16,
+    2026-08-27), same reasoning as clear_all - a buffered row isn't in
+    the table yet for DELETE to find."""
+    capture_writer.flush_now("rejection_events")
     where, params = _range_where(before, after)
     with _connect() as conn:
         cur = conn.execute(f"DELETE FROM rejected_candidates {where}", params)

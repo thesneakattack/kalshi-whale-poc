@@ -1,11 +1,21 @@
 import pytest
 
 from services import candidate_log as cl
+from services import capture_writer as cw
 
 
 @pytest.fixture(autouse=True)
 def _redirect_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(cl, "DB_PATH", tmp_path / "candidate_log.db")
+    db_path = tmp_path / "candidate_log.db"
+    monkeypatch.setattr(cl, "DB_PATH", db_path)
+    # rejection_events writes route through capture_writer now (P3 Task 16)
+    # - point its store at the same isolated tmp path, and reset its
+    # module-global buffers/counters (same cross-test-pollution reasoning
+    # as test_series_watcher.py's own fixture).
+    monkeypatch.setattr(cw, "_STORE_PATHS", {"rejection_events": db_path})
+    monkeypatch.setattr(cw, "_buffers", {"rejection_events": []})
+    monkeypatch.setattr(cw, "_last_flush_at", {"rejection_events": 0.0})
+    monkeypatch.setattr(cw, "_dropped_counts", {"rejection_events": 0})
 
 
 def test_record_rejection_creates_unresolved_row():
@@ -131,6 +141,30 @@ def test_gate_summary_sorted_by_resolved_count_descending():
 # that additively - these tests lock in that it's a true, undeduped
 # population, and that every existing danger-zone/reset operation stays in
 # sync between the two tables.
+
+def test_record_rejection_batches_rejection_events_through_capture_writer_not_synchronously():
+    """The actual P3 Task 16 change, proven directly rather than only
+    through population_gate_summary() (which flushes internally, so it
+    would pass even if this regressed back to a synchronous write). A
+    fresh row must sit in capture_writer's buffer - genuinely not yet in
+    the table - until something flushes it; every real reader flushing
+    internally is what makes that invisible to callers, not the absence of
+    batching."""
+    import sqlite3
+
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    assert cw.depth()["rejection_events"] == 1
+    # rejection_events already exists (candidate_log._connect() creates it
+    # as a side effect of the rejected_candidates UPSERT above) but must
+    # still be empty - the row is sitting in capture_writer's buffer, not
+    # written yet.
+    with sqlite3.connect(cl.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM rejection_events").fetchone()[0] == 0
+    cw.flush_now("rejection_events")
+    assert cw.depth()["rejection_events"] == 0
+    with sqlite3.connect(cl.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM rejection_events").fetchone()[0] == 1
+
 
 def test_repeated_rejection_grows_the_population_table_not_deduped():
     """The exact gap gate_summary() can't answer - three rejections of the

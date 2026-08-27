@@ -1739,6 +1739,33 @@ git commit -m "feat: add supervised capture writer thread, unwired (I13 P3)"
 - [ ] **Step 7: Run the full candidate_log test suite for a regression check.**
 - [ ] **Step 8: Commit:** `git commit -m "perf: aggregate sub-threshold rejection rows by minute instead of per print (I13 P3)"`
 
+**Redesigned at execution time (2026-08-27) — do not implement the aggregation
+above.** Step 1's own re-grounding instruction ("read `rejected_candidates`'s
+schema in full... before designing the aggregate schema") surfaced that this
+task's premise is stale: `rejected_candidates` already has
+`PRIMARY KEY (ticker, strategy, gate_name)` and was never one-row-per-print.
+A second table, `rejection_events`, was added 2026-08-23 - two days before
+this plan - specifically *without* a dedup key, because `rejected_candidates`'
+own dedup made population statistics ("a ticker rejected fifty times... counts
+as ONE data point") unusable; it exists to preserve full per-print granularity
+including `unit_cost`, which CLAUDE.md's Standing goal section still names as
+an open research target ("rejected candidates in the 0.60-0.95 unit-cost band
+show negative hypothetical EV... a real gate-tuning target"). Aggregating it
+into `(ticker, side, minute_bucket, count)` as originally specified above
+would have silently destroyed that per-row data - exactly what the HARD RULE
+forbids trading away without an explicit decision.
+
+Implemented instead (same real cost problem - `record_rejection()`'s
+`rejection_events` insert was a fresh `sqlite3.connect()` per call, the same
+hot-path anti-pattern already fixed elsewhere in this plan): route
+`rejection_events` through `capture_writer` as a new store, same shape as
+`raw_trades` (Task 14/15) - every row preserved, only the write batched.
+`population_gate_summary()`/`clear_all()`/`count_range()`/`clear_range()`/
+`resolve_from_market_results()` each flush the buffer first, so no caller
+(test or production) has to know the writes are asynchronous now. Confirmed
+with the user before implementing (a real fork with research-relevant
+consequences, not a mechanical choice) - see commit for full detail.
+
 ---
 
 ### Task 17: Enable the reader gate for real (flip Task 3's shadow mode to filtering)

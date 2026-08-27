@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 
 _STORE_PATHS: dict[str, Path] = {
     "raw_trades": Path(__file__).resolve().parent.parent / "data" / "series_watcher.db",
+    "rejection_events": Path(__file__).resolve().parent.parent / "data" / "candidate_log.db",
 }
-_STORE_TABLE = {"raw_trades": "raw_trades"}  # extend as more stores move here
+_STORE_TABLE = {"raw_trades": "raw_trades", "rejection_events": "rejection_events"}
 _STORE_DDL: dict[str, str] = {
     "raw_trades": """
         CREATE TABLE IF NOT EXISTS raw_trades (
@@ -59,6 +60,30 @@ _STORE_DDL: dict[str, str] = {
             is_block_trade INTEGER,
             excluded INTEGER NOT NULL DEFAULT 0,
             raw_json TEXT NOT NULL
+        )
+    """,
+    # Matches services/candidate_log.py's real schema exactly (including
+    # unit_cost, which that module adds via ALTER TABLE after its own
+    # initial CREATE - baked directly into this DDL instead, since a fresh
+    # table created by THIS module's own _flush_store (e.g. a clean test
+    # tmp_path) needs the full shape from the start, not a two-step
+    # migration). id is INTEGER PRIMARY KEY AUTOINCREMENT - submit() rows
+    # pass None for it so SQLite assigns the next value, same as omitting
+    # the column entirely.
+    "rejection_events": """
+        CREATE TABLE IF NOT EXISTS rejection_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            gate_name TEXT NOT NULL,
+            observed_value REAL,
+            threshold_value REAL,
+            side TEXT,
+            rejected_at REAL NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            result TEXT,
+            resolved_at REAL,
+            unit_cost REAL
         )
     """,
 }
