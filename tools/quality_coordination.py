@@ -289,3 +289,45 @@ def collect_ledger_signals(ledger_paths: list[Path], *, at: datetime) -> list[Si
             still_present=True,
         ))
     return signals
+
+
+"""Standing-rule and process-hygiene compliance signal domain (spec §6.3). Identity: a
+specific rule-instance key. Concrete instance implemented here: tools/quality_audit/
+baseline.json's accepted_finding_ids entries lacking a dated notes addendum
+(CLAUDE.md's "Baseline-ratchet semantics" convention) - spec §6.3's own worked example.
+Floor is 0.0 per spec's own rationale: a structural check, not a timing question.
+"""
+FLOOR_HOURS_PROCESS_HYGIENE = 0.0
+
+
+def _baseline_missing_dated_notes(baseline_text: str) -> list[str]:
+    """`notes` is a dict keyed by check-prefix (e.g. "api-usage:*"), not a flat string -
+    confirmed against the real tools/quality_audit/baseline.json (found in review,
+    2026-08-27: an earlier draft treated it as a flat string, which would have flagged
+    every accepted ID as missing a note, always, against the real file). This checks
+    whether an accepted ID's own prefix has any notes entry at all - a presence check, not
+    a verification that the ID's own specific addition within a shared note is itself
+    individually dated (see this task's own note above on that narrower scope)."""
+    data = json.loads(baseline_text)
+    accepted = data.get("accepted_finding_ids", [])
+    notes = data.get("notes", {})
+    missing = []
+    for finding_id in accepted:
+        check = finding_id.split(":", 1)[0]
+        prefix_key = f"{check}:*"
+        if prefix_key not in notes:
+            missing.append(finding_id)
+    return missing
+
+
+def collect_process_hygiene_signals(baseline_path: Path, baseline_text: str) -> list[Signal]:
+    missing = _baseline_missing_dated_notes(baseline_text)
+    return [
+        Signal(
+            identity=f"process_hygiene:{baseline_path.name}:{finding_id}",
+            domain="process_hygiene",
+            payload={"finding_id": finding_id, "reason": "accepted_finding_ids entry has no dated notes addendum"},
+            still_present=True,
+        )
+        for finding_id in missing
+    ]
