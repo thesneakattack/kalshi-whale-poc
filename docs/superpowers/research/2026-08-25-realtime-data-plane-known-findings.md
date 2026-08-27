@@ -369,6 +369,45 @@ Live-measured (2026-08-26), not assumed:
   they would have queued behind it. Mechanism (b) (churn-caused) is now ruled out
   definitively, not just deprioritized - the actual cause has no relationship to subscription
   churn at all. Feeds into CH3's classification of H11 as (ii) or (iii), not (i).
+- **CH3 resolved (2026-08-27) — classification: (ii) real but currently-negligible cost,
+  and separately (iii) unrelated to the observed instability. Not (i).** Reconciling
+  CH1 and CH2 rather than re-measuring: CH1 measured churn's own downstream/upstream
+  cost as negligible on every axis checked (bounded frame count <=2, no snapshot cost
+  on churn-add, no positive queue-depth/latency correlation with churn magnitude, no
+  measured rate-limit pressure) - real and bursty, but its cost does not rise to a
+  material bottleneck under the live config, which is (ii), not (i). CH2 separately
+  ruled out mechanism (b) *definitively* for the specific instability event that
+  prompted this investigation (the live "taxing everything downstream and upstream"
+  report) - the actual cause (`GET /api/quality/summary` blocking the event loop,
+  now fixed) has no relationship to subscription churn at all, which is (iii) for that
+  symptom specifically. Neither result supports (i); per this investigation's own stop
+  rule, Phase P2.5 (`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`)
+  stops at CH3 - CH4/CH5 (solution-family research/benchmarking) do not run.
+
+  **Re-grounded against current live state (2026-08-27), not just CH1's original
+  measurement window**: `GET /api/config` still shows `kalshi.min_volume_24h: 10000`,
+  `categories: ["Sports"]`, `max_children_per_parent: 5`,
+  `trade_stream_exchange_wide: true` - the same config CH1 measured under - and
+  `GET /api/state` shows a 12-ticker live watchlist, inside CH1's own observed 8-13
+  range. Nothing has shifted since CH1/CH2 ran; this classification is not stale
+  relative to current config.
+
+  **What would change this classification:** a materially larger watchlist (a lower
+  volume floor, more categories than just Sports, `max_children_per_parent`
+  raised/unset, or non-exchange-wide scoped mode - which alone would raise frame count
+  from <=2 to up to 4 per churn burst per CH1's own frame-count analysis) could push
+  frame count, `send_initial_snapshot` cost, or queue correlation into a different
+  regime than what CH1 measured at today's scale. This is exactly what Phase P3.5
+  (below, in the same plan) tests live - **this classification is provisional pending
+  its result, not final.** See P3.5's own header note and Task 17b's Step 5 for the
+  addendum contract; check for that addendum before treating CH4/CH5 as permanently
+  out of scope.
+
+  **H11 verdict, current state:** confirmed real (mechanism traced, observability
+  live), confirmed bursty (not continuous, ~15s catalog-refresh cadence), confirmed
+  negligible in cost at current scale (CH1), and confirmed uninvolved in the one
+  concrete symptom that motivated the original report (CH2). Not a confirmed
+  bottleneck today. Commit: `docs: classify H11 (CH3)`.
 
 ## What the investigation must not assume
 
