@@ -212,6 +212,26 @@ def test_immediate_keys_bypass_floor_on_first_observation(tmp_path, monkeypatch)
     assert states == {"branch:feat/x": "escalation_eligible"}
 
 
+def test_immediate_keys_win_over_suppressed_keys_when_both_apply(tmp_path, monkeypatch):
+    """Regression test (found in review): a branch with an open PR (suppressed_keys) AND a
+    real CI failure (immediate_keys) must still escalate - spec §6.1's "a failure/error
+    state should surface immediately... never behind a persistence floor" is about severity,
+    not about whether some other, unrelated evidence of activity also exists. Suppression
+    exists to delay a floor-driven staleness signal, not to mask a real, currently-failing
+    signal - checking immediate_keys before suppressed_keys in apply_observation is what
+    keeps that distinction real rather than accidental."""
+    monkeypatch.setattr(ce, "DB_PATH", tmp_path / "quality_coordination.db")
+    conn = ce._connect()
+
+    states = apply_observation(
+        conn, [_sig()], T0, floor_hours={"branch": 6.0},
+        suppressed_keys=frozenset({"branch:feat/x"}),
+        immediate_keys=frozenset({"branch:feat/x"}),
+    )
+
+    assert states == {"branch:feat/x": "escalation_eligible"}
+
+
 def test_fingerprint_changes_when_payload_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "quality_coordination.db")
     conn = ce._connect()
@@ -406,12 +426,18 @@ def apply_observation(
             first_seen_at = datetime.fromisoformat(row["first_seen_at"])
 
         elapsed_hours = (at - first_seen_at).total_seconds() / 3600
-        if identity in suppressed_keys:
-            state = "suppressed"
-            explanation = "suppressed: active-work evidence for this identity this cycle"
-        elif identity in immediate_keys:
+        # immediate_keys is checked BEFORE suppressed_keys (found in review, 2026-08-27): a
+        # real failure/error signal must surface "immediately... never behind a persistence
+        # floor" (spec §6.1) regardless of whether some other, unrelated evidence of active
+        # work also exists for the same identity - suppression exists to delay a
+        # floor-driven staleness signal, not to mask a currently-real severity signal. See
+        # test_immediate_keys_win_over_suppressed_keys_when_both_apply above.
+        if identity in immediate_keys:
             state = "escalation_eligible"
             explanation = "escalation-eligible: immediate-severity signal, floor bypassed"
+        elif identity in suppressed_keys:
+            state = "suppressed"
+            explanation = "suppressed: active-work evidence for this identity this cycle"
         elif elapsed_hours >= floor_hours[sig.domain]:
             state = "escalation_eligible"
             explanation = f"escalation-eligible: persistence floor ({floor_hours[sig.domain]}h) met"
@@ -454,7 +480,7 @@ def record_run(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ddev exec -s fastapi python3 -m pytest tests/test_coordination_engine.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -644,8 +670,10 @@ git commit -m "feat: scaffold tools/quality_coordination.py with the read-only a
   evidence-backed constants — see below), `_branch_first_commit_at(branch: str, main_branch:
   str, git_runner: Runner) -> datetime | None`, `_cluster_siblings(creation_times: dict[str,
   datetime], window_minutes: float) -> dict[str, frozenset[str]]`,
-  `_woodpecker_step_progress(branch: str, gh_runner: Runner, woodpecker_runner: Runner) ->
-  dict` (pending-duration + per-step Started/Stopped, or a `failure`/`error` short-circuit),
+  `_woodpecker_step_progress(branch: str, woodpecker_runner: Runner) -> dict` (pending-
+  duration + per-step Started/Stopped detail — the `failure`/`error` short-circuit is
+  decided by the caller from `_commit_status`'s result, not inside this helper, so it takes
+  only the one runner it actually needs),
   `collect_branch_signals(branch_names: Sequence[str], *, git_runner: Runner, gh_runner:
   Runner, woodpecker_runner: Runner, conn: sqlite3.Connection, worktrees_root: Path,
   main_branch: str = "main", at: datetime) -> tuple[list[Signal], frozenset[str],
@@ -826,8 +854,11 @@ def test_collect_branch_signals_marks_a_real_ci_failure_immediate(tmp_path, monk
     git_runner = _StubRunner()
     git_runner.queue("2026-08-27T12:00:00-05:00\n")
     gh_runner = _StubRunner()
-    gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped
-    gh_runner.queue('[{"state": "failure"}]')  # commit-status-shaped
+    gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: a JSON array, json.loads'd
+    gh_runner.queue("failure\n")  # commit-status-shaped: `gh api ... --jq ".state"` raw-
+    # unquotes a scalar jq result, so this is the literal stdout _commit_status reads
+    # directly - not a JSON blob to parse (unlike the pr-list response above, which uses
+    # `gh ... --json` and is real JSON).
     woodpecker_runner = _StubRunner()
 
     signals, suppressed, immediate = collect_branch_signals(
@@ -856,8 +887,9 @@ def test_collect_branch_signals_flags_possibly_stuck_when_step_unchanged_two_run
     git_runner = _StubRunner()
     git_runner.queue("2026-08-27T15:00:00-05:00\n")
     gh_runner = _StubRunner()
-    gh_runner.queue('[{"state": "OPEN"}]')
-    gh_runner.queue('[{"state": "pending"}]')
+    gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: real JSON, json.loads'd
+    gh_runner.queue("pending\n")  # commit-status-shaped: raw --jq output, see the sibling
+    # test above for why this isn't JSON-wrapped.
     woodpecker_runner = _StubRunner()
     woodpecker_runner.queue(
         '{"steps": [{"name": "browser-e2e", "started": 1756310400, "stopped": 0}]}'
@@ -894,7 +926,7 @@ this task's evidence note - no new engine architecture, just a third suppression
 computed here before calling apply_observation).
 """
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tools import coordination_engine as ce
@@ -954,6 +986,11 @@ def _pr_state(branch: str, gh_runner: Runner) -> str | None:
 
 
 def _commit_status(branch: str, gh_runner: Runner) -> str | None:
+    """`gh api ... --jq ".state"` raw-unquotes a scalar jq result (unlike `gh ... --json`,
+    which _pr_state above uses and which IS real JSON) - stdout is already the bare state
+    string ("failure", "pending", "success", ...), not a JSON value to parse. Parsing it
+    with json.loads would be the bug here, not the fix - see the test fixtures in this
+    task's test file for the same distinction spelled out against a fake runner."""
     result = gh_runner([
         "gh", "api", f"repos/{{owner}}/{{repo}}/commits/{branch}/status",
         "--jq", ".state",
@@ -979,7 +1016,7 @@ def _woodpecker_step_progress(branch: str, woodpecker_runner: Runner) -> dict:
     return {
         "furthest_step": furthest.get("name"),
         "furthest_step_started_at": (
-            datetime.fromtimestamp(furthest["started"], tz=ce.DB_PATH and __import__("datetime").timezone.utc).isoformat()
+            datetime.fromtimestamp(furthest["started"], tz=timezone.utc).isoformat()
             if furthest.get("started") else None
         ),
     }
@@ -1100,8 +1137,17 @@ change - computed entirely inside this domain's own suppression logic."
 **Interfaces:**
 - Produces: `FLOOR_HOURS_LEDGER: float` (provisional — see evidence note),
   `_ledger_last_state_line(text: str) -> str`, `_ledger_is_complete(last_line: str) -> bool`,
-  `collect_ledger_signals(ledger_paths: Sequence[Path], *, git_runner: Runner, gh_runner:
-  Runner, at: datetime) -> list[Signal]`.
+  `collect_ledger_signals(ledger_paths: Sequence[Path], *, at: datetime) -> list[Signal]`.
+  **Does not take `git_runner`/`gh_runner` params (found in review — an earlier draft
+  declared both and used neither).** Computing spec §6.2's "days since the last commit
+  touching that plan's associated branch" needs to know which branch a given
+  `.superpowers/sdd/<plan>/` ledger maps to — the exact derivation Task 7 already names as
+  an implementation-time detail, not resolved in the spec (§8 action 3's branch-mapping
+  note). This task deliberately does not duplicate or shortcut that derivation with an
+  unrelated guess; it only implements the piece §6.2 describes that's independent of
+  branch mapping (the ledger's own last recorded state line). "Hours since last commit on
+  the associated branch" is a real, named follow-on once Task 7's derivation exists — see
+  that task's note — not silently dropped.
 
 **Evidence for `FLOOR_HOURS_LEDGER` (§10 point 1):** unlike branch merge cadence, this
 repo currently has no populated `.superpowers/sdd/<plan>/progress.md` ledgers to measure
@@ -1130,7 +1176,6 @@ a genuine gap, not an oversight glossed over.
 
 ```python
 # tests/test_quality_coordination_ledger_domain.py
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1139,19 +1184,6 @@ from tools.quality_coordination import (
 )
 
 AT = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
-
-
-class _StubRunner:
-    def __init__(self):
-        self.calls = []
-        self._responses = []
-
-    def queue(self, stdout="", returncode=0, stderr=""):
-        self._responses.append(subprocess.CompletedProcess([], returncode, stdout, stderr))
-
-    def __call__(self, args):
-        self.calls.append(list(args))
-        return self._responses.pop(0)
 
 
 def test_floor_hours_ledger_is_a_positive_constant():
@@ -1174,12 +1206,8 @@ def test_ledger_is_complete_false_for_an_ordinary_task_line():
 def test_collect_ledger_signals_still_present_for_incomplete_ledger(tmp_path):
     ledger = tmp_path / "progress.md"
     ledger.write_text("## Task 1\n- [x] done\n\n## Task 2\n- [ ] in progress\n")
-    git_runner = _StubRunner()
-    git_runner.queue("2026-08-26T10:00:00-05:00\n")  # last commit touching the branch
-    gh_runner = _StubRunner()
-    gh_runner.queue("[]")  # branch not merged
 
-    signals = collect_ledger_signals([ledger], git_runner=git_runner, gh_runner=gh_runner, at=AT)
+    signals = collect_ledger_signals([ledger], at=AT)
 
     assert len(signals) == 1
     assert signals[0].still_present is True
@@ -1189,10 +1217,8 @@ def test_collect_ledger_signals_still_present_for_incomplete_ledger(tmp_path):
 def test_collect_ledger_signals_absent_when_complete(tmp_path):
     ledger = tmp_path / "progress.md"
     ledger.write_text("## Task 3\nSTATUS: COMPLETE - all tasks done\n")
-    git_runner = _StubRunner()
-    gh_runner = _StubRunner()
 
-    signals = collect_ledger_signals([ledger], git_runner=git_runner, gh_runner=gh_runner, at=AT)
+    signals = collect_ledger_signals([ledger], at=AT)
 
     assert signals == []
 
@@ -1200,7 +1226,7 @@ def test_collect_ledger_signals_absent_when_complete(tmp_path):
 def test_collect_ledger_signals_absent_when_file_missing(tmp_path):
     missing = tmp_path / "nope" / "progress.md"
 
-    signals = collect_ledger_signals([missing], git_runner=_StubRunner(), gh_runner=_StubRunner(), at=AT)
+    signals = collect_ledger_signals([missing], at=AT)
 
     assert signals == []
 ```
@@ -1215,10 +1241,14 @@ Expected: FAIL — `ImportError: cannot import name 'collect_ledger_signals' fro
 ```python
 # tools/quality_coordination.py (append)
 """Plan and ledger execution health signal domain (spec §6.2). Identity: the ledger/plan
-file's own path (relative to repo root). Payload: last recorded task/round line, days
-since the last commit touching that plan's associated branch. Ledger-line-format caveat:
-see this task's own note above - no real .superpowers/sdd/*/progress.md exists in this
-checkout to validate the parsing against yet.
+file's own path (relative to repo root). Payload: last recorded task/round line. Spec
+§6.2's other payload field - days since the last commit touching that plan's ASSOCIATED
+BRANCH (not the ledger file's own commit history: .superpowers/sdd/<plan>/ is gitignored
+scratch state, so the ledger file itself is never committed at all) - needs the same
+ledger-to-branch mapping Task 7 already names as an implementation-time detail (spec §8
+action 3), not resolved here either; see this task's own Interfaces note above. Ledger-
+line-format caveat: see this task's own note above - no real .superpowers/sdd/*/progress.md
+exists in this checkout to validate the parsing against yet.
 """
 _LEDGER_COMPLETE_RE = re.compile(r"\bSTATUS:\s*COMPLETE\b", re.IGNORECASE)
 
@@ -1237,9 +1267,7 @@ def _ledger_is_complete(last_line: str) -> bool:
     return bool(_LEDGER_COMPLETE_RE.search(last_line))
 
 
-def collect_ledger_signals(
-    ledger_paths: list[Path], *, git_runner: Runner, gh_runner: Runner, at: datetime,
-) -> list[Signal]:
+def collect_ledger_signals(ledger_paths: list[Path], *, at: datetime) -> list[Signal]:
     signals: list[Signal] = []
     for path in ledger_paths:
         if not path.exists():
@@ -1298,11 +1326,26 @@ baseline.json`'s `accepted_finding_ids` against its own `notes` block, exactly t
 convention `CLAUDE.md`'s "Baseline-ratchet semantics" section documents (a "+N
 2026-MM-DD: ..." addendum per accepted finding-ID prefix).
 
+**`notes`'s real shape, confirmed against the live file (found in review, 2026-08-27) rather
+than assumed:** `tools/quality_audit/baseline.json`'s `notes` field is a **dict keyed by
+check-prefix** (`"config-unread:*"`, `"api-usage:*"`, `"frontend-route-unknown:*"`,
+`"backend-route-unused:*"` in the file as it stands today), each value a long provenance
+string covering every accepted ID under that prefix plus its dated addenda — not a single
+flat string. `_baseline_missing_dated_notes` below checks whether an accepted ID's own
+prefix has *any* entry in that dict; it does not attempt to verify that the specific ID's
+own addition within a shared note is itself individually dated (freeform-prose date
+verification is a materially harder problem than this heuristic claims to solve, and the
+original substring check never solved it either — it only checked presence, same scope as
+the fix below, just against the right data shape). Run against the live file, this
+correctly returns `[]` today: every one of its 199 accepted IDs' prefixes already has a
+`notes` entry — confirmed empirically before, not just after, writing the fix.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_quality_coordination_process_hygiene_domain.py
 import json
+from pathlib import Path
 
 from tools.quality_coordination import (
     FLOOR_HOURS_PROCESS_HYGIENE, _baseline_missing_dated_notes, collect_process_hygiene_signals,
@@ -1313,33 +1356,50 @@ def test_floor_hours_process_hygiene_is_zero_per_spec_rationale():
     assert FLOOR_HOURS_PROCESS_HYGIENE == 0.0
 
 
-def test_missing_dated_notes_detects_undocumented_accepted_id():
-    baseline = {"accepted_finding_ids": ["backend-route-unused:GET:/api/x"], "notes": "no dated entry here"}
+def test_missing_dated_notes_detects_id_whose_prefix_has_no_notes_entry():
+    baseline = {
+        "accepted_finding_ids": ["backend-route-unused:GET:/api/x"],
+        "notes": {"config-unread:*": "an unrelated category's note"},
+    }
     missing = _baseline_missing_dated_notes(json.dumps(baseline))
 
     assert "backend-route-unused:GET:/api/x" in missing
 
 
-def test_missing_dated_notes_empty_when_note_exists():
+def test_missing_dated_notes_empty_when_prefix_note_exists():
     baseline = {
         "accepted_finding_ids": ["backend-route-unused:GET:/api/x"],
-        "notes": "+1 2026-08-27: backend-route-unused:GET:/api/x accepted, no frontend caller yet.",
+        "notes": {
+            "backend-route-unused:*": "+1 2026-08-27: GET:/api/x accepted, no frontend caller yet.",
+        },
     }
     missing = _baseline_missing_dated_notes(json.dumps(baseline))
 
     assert missing == []
 
 
+def test_missing_dated_notes_against_a_baseline_shaped_like_the_real_file():
+    """Regression test (found in review): the real tools/quality_audit/baseline.json's
+    `notes` field is a dict keyed by check-prefix, not a flat string - a fixture using a
+    flat string would pass while silently not exercising the real shape at all."""
+    real_baseline_path = Path("tools/quality_audit/baseline.json")
+    if not real_baseline_path.exists():
+        return  # skip gracefully outside a full repo checkout - not this test's concern
+    missing = _baseline_missing_dated_notes(real_baseline_path.read_text())
+
+    assert missing == []  # every accepted ID's prefix has a notes entry as of 2026-08-27
+
+
 def test_collect_process_hygiene_signals_one_per_missing_id(tmp_path):
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps({
-        "accepted_finding_ids": ["a", "b"],
-        "notes": "+1 2026-08-27: a accepted, reason x.",
+        "accepted_finding_ids": ["api-usage:a", "backend-route-unused:b"],
+        "notes": {"api-usage:*": "+1 2026-08-27: a accepted, reason x."},
     }))
 
     signals = collect_process_hygiene_signals(baseline_path, baseline_path.read_text())
 
-    assert [s.identity for s in signals] == ["process_hygiene:baseline.json:b"]
+    assert [s.identity for s in signals] == ["process_hygiene:baseline.json:backend-route-unused:b"]
     assert signals[0].domain == "process_hygiene"
 ```
 
@@ -1362,12 +1422,21 @@ FLOOR_HOURS_PROCESS_HYGIENE = 0.0
 
 
 def _baseline_missing_dated_notes(baseline_text: str) -> list[str]:
+    """`notes` is a dict keyed by check-prefix (e.g. "api-usage:*"), not a flat string -
+    confirmed against the real tools/quality_audit/baseline.json (found in review,
+    2026-08-27: an earlier draft treated it as a flat string, which would have flagged
+    every accepted ID as missing a note, always, against the real file). This checks
+    whether an accepted ID's own prefix has any notes entry at all - a presence check, not
+    a verification that the ID's own specific addition within a shared note is itself
+    individually dated (see this task's own note above on that narrower scope)."""
     data = json.loads(baseline_text)
     accepted = data.get("accepted_finding_ids", [])
-    notes = data.get("notes", "")
+    notes = data.get("notes", {})
     missing = []
     for finding_id in accepted:
-        if finding_id not in notes:
+        check = finding_id.split(":", 1)[0]
+        prefix_key = f"{check}:*"
+        if prefix_key not in notes:
             missing.append(finding_id)
     return missing
 
@@ -1388,7 +1457,7 @@ def collect_process_hygiene_signals(baseline_path: Path, baseline_text: str) -> 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ddev exec -s fastapi python3 -m pytest tests/test_quality_coordination_process_hygiene_domain.py -v`
-Expected: PASS (4 tests)
+Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1429,7 +1498,9 @@ SAMPLE = """## Path to production
 
 - [x] Something already shipped.
 - [ ] Consider a dedicated charts module for the Advanced view.
-- [ ] Shadow-mode sustained run and review.
+- [ ] `services/shadow_mode.py` logs what the strategy would trade against
+      real signal data, but hasn't been run for a real evaluation stretch
+      and reviewed.
 """
 
 
@@ -1438,6 +1509,16 @@ def test_open_roadmap_bullets_skips_checked_items():
 
     assert len(bullets) == 2
     assert all(not b.startswith("[x]") for b in bullets)
+
+
+def test_open_roadmap_bullets_captures_indented_continuation_lines():
+    """Regression test (found in review): this repo's real ROADMAP.md bullets routinely
+    wrap onto 6-space-indented continuation lines - a bare single-line regex truncates
+    them to their first physical line, silently dropping most of a real bullet's text."""
+    bullets = _open_roadmap_bullets(SAMPLE)
+
+    shadow_bullet = [b for b in bullets if "shadow_mode.py" in b][0]
+    assert "evaluation stretch and reviewed" in shadow_bullet
 
 
 def test_collect_docs_roadmap_feed_flags_vocabulary_overlap():
@@ -1472,12 +1553,45 @@ coordination_engine.apply_observation - these functions never construct a Signal
 never fed to the engine. Judging whether an open item is actually done is left to a human
 or a Claude session reading this feed; this module never asserts it.
 """
-_ROADMAP_OPEN_RE = re.compile(r"^- \[ \] (.+)$", re.MULTILINE)
+_ROADMAP_BULLET_RE = re.compile(r"^- \[([ x])\] (.+)$")
 _WORD_RE = re.compile(r"[a-z]{4,}")
 
 
 def _open_roadmap_bullets(text: str) -> list[str]:
-    return [m.group(1).strip() for m in _ROADMAP_OPEN_RE.finditer(text)]
+    """Collects each top-level `- [ ]` bullet's full text, including 6-space-indented
+    continuation lines up to the next top-level bullet or a blank line - mirroring
+    docs/superpowers/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
+    approach for the identical problem. A bare single-line regex (found in review,
+    2026-08-27) truncates virtually every real ROADMAP.md bullet to its first physical line
+    - this repo's bullets routinely wrap onto continuation lines, confirmed against
+    ROADMAP.md's own real content, which a MULTILINE-but-not-DOTALL `(.+)$` cannot see past.
+    """
+    lines = text.splitlines()
+    bullets: list[str] = []
+    current_lines: list[str] | None = None
+    current_is_open = False
+
+    for line in lines:
+        match = _ROADMAP_BULLET_RE.match(line)
+        if match:
+            if current_lines is not None and current_is_open:
+                bullets.append(" ".join(current_lines))
+            current_is_open = match.group(1) == " "
+            current_lines = [match.group(2).strip()]
+            continue
+        if current_lines is not None and line.startswith("      "):
+            current_lines.append(line.strip())
+            continue
+        if current_lines is not None:
+            if current_is_open:
+                bullets.append(" ".join(current_lines))
+            current_lines = None
+            current_is_open = False
+
+    if current_lines is not None and current_is_open:
+        bullets.append(" ".join(current_lines))
+
+    return bullets
 
 
 def _significant_words(text: str) -> set[str]:
@@ -1499,7 +1613,7 @@ def collect_docs_roadmap_feed(roadmap_text: str, recent_commit_subjects: list[st
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ddev exec -s fastapi python3 -m pytest tests/test_quality_coordination_docs_feed.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1525,8 +1639,12 @@ git commit -m "feat: add docs/ROADMAP drift data feed (never routed through the 
 - Produces (in `tools/quality_coordination.py`): `prune_worktrees(*, git_runner: Runner,
   repo_root: Path) -> str`, `delete_merged_branch(branch: str, *, git_runner: Runner,
   main_branch: str = "main") -> str` (returns an outcome string:
-  `"succeeded"`/`"refused:<reason>"`/`"failed:<error>"`), `delete_sdd_scratch(plan_branch:
-  str, *, sdd_root: Path, git_runner: Runner, main_branch: str = "main") -> str`,
+  `"succeeded"`/`"refused:<reason>"`/`"failed:<error>"`),
+  `delete_sdd_scratch(plan_branch_candidates: list[str], plan_dir: Path, *, git_runner:
+  Runner, main_branch: str = "main") -> str` (`plan_branch_candidates` is whatever the
+  caller resolved from the ledger-mapping derivation below — a list rather than a single
+  branch precisely so this function can refuse on an ambiguous mapping instead of guessing
+  which one to trust),
   `run_cleanup_actions(eligible: list[tuple[str, str]], *, git_runner: Runner, repo_root:
   Path, sdd_root: Path, conn, at: datetime, dry_run: bool) -> None` — `eligible` is
   `[(identity, action_type)]`; logs every attempt via `coordination_engine.log_cleanup_action`
@@ -1783,7 +1901,7 @@ def run_cleanup_actions(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ddev exec -s fastapi python3 -m pytest tests/test_quality_coordination_cleanup_actions.py -v`
-Expected: PASS (7 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1802,22 +1920,53 @@ git commit -m "feat: add cleanup/janitor action layer, verified against a synthe
 - Test: `tests/test_quality_coordination_cli.py`
 
 **Interfaces:**
-- Produces: `run_detect_cycle(repo_root: Path, *, at: datetime | None = None) -> dict` —
-  wires Tasks 2-6's gatherers together, calls `coordination_engine.apply_observation` with
-  the measured `FLOOR_HOURS_*` mapping, records the run via `coordination_engine.record_run`,
-  and returns a JSON-serializable report dict (per-domain signal states, the docs/ROADMAP
-  feed, and the app-report context). `main(argv: list[str] | None = None) -> int` — argparse
-  entrypoint, mirroring `tools/project_manifest.py`'s `--check`/`--write` convention (spec
-  §5): default invocation detects and reports only; `--clean` also calls
+- Produces: `_make_real_runner(cwd: Path) -> Runner` — binds a real `subprocess.run` call to
+  `cwd`, the one place this task constructs the concrete runner every other function in
+  this domain only ever receives as an already-injected `Runner`/`HttpGetter`.
+  `run_detect_cycle(repo_root: Path, *, at: datetime | None = None, git_runner: Runner |
+  None = None, http_getter: HttpGetter | None = None) -> dict` — wires Tasks 2-6's
+  gatherers together, calls `coordination_engine.apply_observation` with the measured
+  `FLOOR_HOURS_*` mapping, records the run via `coordination_engine.record_run`, and
+  returns a JSON-serializable report dict (per-domain signal states, the docs/ROADMAP feed,
+  and the app-report context). `git_runner`/`http_getter` default to real implementations
+  bound to `repo_root` when omitted — real CLI behavior is unchanged, but every test can
+  inject a fake instead (Global Constraint 8: no test in this plan makes a real
+  subprocess/network call — see this task's own note below on why an earlier draft
+  violated that for this exact function). `main(argv: list[str] | None = None, *,
+  git_runner: Runner | None = None, http_getter: HttpGetter | None = None) -> int` —
+  argparse entrypoint, mirroring `tools/project_manifest.py`'s `--check`/`--write`
+  convention (spec §5): default invocation detects and reports only; `--clean` also calls
   `run_cleanup_actions` for every `escalation_eligible` identity whose domain has a defined
   cleanup action, always re-running detection in the same invocation first (spec §5: "never
-  acts on a stale or separately-cached detection result").
+  acts on a stale or separately-cached detection result"). `main` takes the same two
+  injectable kwargs as `run_detect_cycle`, for the same reason and passes them straight
+  through, plus reuses the one real runner it builds for both the detect pass and any
+  `--clean` cleanup calls.
+
+**Injectability gap (found in review, 2026-08-27 — not a hypothetical, an actual regression
+this task shipped):** an earlier draft of this task gave `run_detect_cycle` no injectable
+parameters at all — it called `subprocess.run` and `fetch_app_report`'s real
+`urllib.request.urlopen` path directly, and its own tests then called it with no way to
+avoid a real subprocess/network call, contradicting this plan's own Architecture paragraph
+("every git/gh/Woodpecker-CLI subprocess call and every app-diagnostics HTTP call goes
+through an injectable runner... so no test in this plan ever shells out or makes a network
+call for real") and Global Constraint 8, in the one task that most needed to honor them
+(the CLI is the one place every earlier task's injectable pieces actually get wired
+together for real). A second, related regression in the same draft: the module-level
+`_real_git_runner` it built took no `cwd` at all, so every git/gh/woodpecker call made
+through Tasks 3/4/7's already-correctly-injectable functions silently ran against the
+process's actual working directory instead of `--repo-root` — the flag existed and was
+parsed, but nothing downstream of `run_detect_cycle`'s own top-level `git branch` call
+actually respected the value. Both are fixed the same way: `_make_real_runner(cwd)`
+replaces the bare function, and it — not a cwd-less global — is what `run_detect_cycle`
+and `main` construct and thread everywhere a `Runner` is needed.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_quality_coordination_cli.py
 import json
+import subprocess
 from datetime import datetime, timezone
 
 from tools import coordination_engine as ce
@@ -1826,33 +1975,65 @@ from tools.quality_coordination import main, run_detect_cycle
 AT = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _no_op_runner(args):
-    import subprocess
-    return subprocess.CompletedProcess(args, 0, "[]", "")
+class _StubRunner:
+    """Same generic Runner fake used elsewhere in this plan (e.g. Task 3's _StubRunner) -
+    queues canned CompletedProcess results, defaults to an empty JSON-array response
+    (harmless for the handful of gh/git calls this task's tests don't care about the
+    content of) so a test only needs to queue the responses it actually asserts on."""
+
+    def __init__(self):
+        self.calls = []
+        self._responses = []
+
+    def queue(self, stdout="", returncode=0, stderr=""):
+        self._responses.append(subprocess.CompletedProcess([], returncode, stdout, stderr))
+
+    def __call__(self, args):
+        self.calls.append(list(args))
+        if not self._responses:
+            return subprocess.CompletedProcess(args, 0, "[]", "")
+        return self._responses.pop(0)
+
+
+def _refusing_getter(url, timeout):
+    """Injected in place of a real HTTP call - raising here is the test-side proof that
+    nothing in this task's code path ever falls through to _default_http_get's real
+    urllib.request.urlopen (Global Constraint 8)."""
+    raise AssertionError(f"no real network call expected in a test, got {url!r}")
+
+
+def _empty_baseline(tmp_path) -> None:
+    baseline_dir = tmp_path / "tools" / "quality_audit"
+    baseline_dir.mkdir(parents=True)
+    (baseline_dir / "baseline.json").write_text(json.dumps({"accepted_finding_ids": [], "notes": {}}))
 
 
 def test_run_detect_cycle_returns_a_report_with_all_domains(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "ROADMAP.md").write_text("## Path to production\n\n- [ ] An open item.\n")
-    baseline_dir = tmp_path / "tools" / "quality_audit"
-    baseline_dir.mkdir(parents=True)
-    (baseline_dir / "baseline.json").write_text(json.dumps({"accepted_finding_ids": [], "notes": ""}))
+    _empty_baseline(tmp_path)
+    git_runner = _StubRunner()
+    git_runner.queue("")  # `git branch --format=...` - no branches
 
-    report = run_detect_cycle(tmp_path, at=AT)
+    report = run_detect_cycle(tmp_path, at=AT, git_runner=git_runner, http_getter=_refusing_getter)
 
     assert set(report.keys()) >= {"branch", "ledger", "process_hygiene", "docs_roadmap_feed", "app_report"}
+    # _refusing_getter never actually gets called successfully - fetch_app_report catches
+    # its AssertionError like any other per-call failure and degrades to None, proving the
+    # injection point works without needing a real network stack to observe it.
+    assert report["app_report"] == {"quality_summary": None, "health_pipeline": None, "health_faults": None}
 
 
-def test_main_default_invocation_does_not_call_clean(tmp_path, monkeypatch, capsys):
+def test_main_default_invocation_does_not_call_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "ROADMAP.md").write_text("## Path to production\n")
-    baseline_dir = tmp_path / "tools" / "quality_audit"
-    baseline_dir.mkdir(parents=True)
-    (baseline_dir / "baseline.json").write_text(json.dumps({"accepted_finding_ids": [], "notes": ""}))
+    _empty_baseline(tmp_path)
+    git_runner = _StubRunner()
+    git_runner.queue("")
 
-    exit_code = main(["--repo-root", str(tmp_path)])
+    exit_code = main(
+        ["--repo-root", str(tmp_path)], git_runner=git_runner, http_getter=_refusing_getter,
+    )
 
     assert exit_code == 0
     action_count = ce._connect().execute("SELECT COUNT(*) FROM cleanup_actions").fetchone()[0]
@@ -1861,17 +2042,34 @@ def test_main_default_invocation_does_not_call_clean(tmp_path, monkeypatch, caps
 
 def test_main_clean_flag_always_reruns_detection_first(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "ROADMAP.md").write_text("## Path to production\n")
-    baseline_dir = tmp_path / "tools" / "quality_audit"
-    baseline_dir.mkdir(parents=True)
-    (baseline_dir / "baseline.json").write_text(json.dumps({"accepted_finding_ids": [], "notes": ""}))
+    _empty_baseline(tmp_path)
+    git_runner = _StubRunner()
+    git_runner.queue("")
 
-    exit_code = main(["--repo-root", str(tmp_path), "--clean"])
+    exit_code = main(
+        ["--repo-root", str(tmp_path), "--clean"], git_runner=git_runner, http_getter=_refusing_getter,
+    )
 
     assert exit_code == 0
     run_row = ce._connect().execute("SELECT COUNT(*) FROM coordination_runs").fetchone()[0]
     assert run_row == 1  # exactly one fresh detect pass, not a reuse of a prior cached one
+
+
+def test_main_clean_flag_scopes_git_calls_to_repo_root(tmp_path, monkeypatch):
+    """Regression test (found in review): the injected runner must be the SAME cwd-bound
+    instance for both the detect pass and any --clean cleanup calls - proving --repo-root
+    means the same thing throughout one invocation, not just at the top-level branch list."""
+    monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
+    (tmp_path / "ROADMAP.md").write_text("## Path to production\n")
+    _empty_baseline(tmp_path)
+    git_runner = _StubRunner()
+    git_runner.queue("")
+
+    main(["--repo-root", str(tmp_path), "--clean"], git_runner=git_runner, http_getter=_refusing_getter)
+
+    assert len(git_runner.calls) >= 1
+    assert git_runner.calls[0][:2] == ["git", "branch"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1887,12 +2085,19 @@ Expected: FAIL — `ImportError: cannot import name 'run_detect_cycle' from 'too
 convention: default invocation is detect + report only (safe); --clean also executes
 eligible cleanup actions, always after a fresh detect pass in the same invocation."""
 import argparse
-import dataclasses
 import subprocess as _subprocess
+from datetime import timezone
 
 
-def _real_git_runner(args: list[str]) -> "subprocess.CompletedProcess[str]":
-    return _subprocess.run(args, capture_output=True, text=True)
+def _make_real_runner(cwd: Path) -> Runner:
+    """The one place this module constructs a real, concrete Runner (found in review,
+    2026-08-27 - see this task's own "Injectability gap" note above for what was wrong
+    with the version this replaces). Bound to `cwd` so every git/gh/woodpecker call made
+    through it actually runs against --repo-root, not the process's own working
+    directory."""
+    def _runner(args: list[str]) -> "subprocess.CompletedProcess[str]":
+        return _subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    return _runner
 
 
 _FLOOR_HOURS = {
@@ -1909,24 +2114,26 @@ _CLEANUP_ACTION_FOR_DOMAIN = {
 }
 
 
-def run_detect_cycle(repo_root: Path, *, at: datetime | None = None) -> dict:
-    at = at or datetime.now(__import__("datetime").timezone.utc)
+def run_detect_cycle(
+    repo_root: Path, *, at: datetime | None = None,
+    git_runner: Runner | None = None, http_getter: HttpGetter | None = None,
+) -> dict:
+    at = at or datetime.now(timezone.utc)
+    git_runner = git_runner or _make_real_runner(repo_root)
     conn = ce._connect()
 
-    branch_list = _subprocess.run(
-        ["git", "branch", "--format=%(refname:short)"], cwd=repo_root, capture_output=True, text=True,
-    ).stdout.splitlines()
+    branch_list = git_runner(["git", "branch", "--format=%(refname:short)"]).stdout.splitlines()
     branch_names = [b.strip() for b in branch_list if b.strip() and b.strip() != "main"]
 
     branch_signals, suppressed, immediate = collect_branch_signals(
-        branch_names, git_runner=_real_git_runner, gh_runner=_real_git_runner,
-        woodpecker_runner=_real_git_runner, conn=conn,
+        branch_names, git_runner=git_runner, gh_runner=git_runner,
+        woodpecker_runner=git_runner, conn=conn,
         worktrees_root=repo_root / ".claude" / "worktrees", at=at,
     )
 
     ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
         if (repo_root / ".superpowers" / "sdd").exists() else []
-    ledger_signals = collect_ledger_signals(ledger_paths, git_runner=_real_git_runner, gh_runner=_real_git_runner, at=at)
+    ledger_signals = collect_ledger_signals(ledger_paths, at=at)
 
     baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
     process_hygiene_signals = (
@@ -1945,7 +2152,7 @@ def run_detect_cycle(repo_root: Path, *, at: datetime | None = None) -> dict:
         if roadmap_path.exists() else []
     )
 
-    app_report = fetch_app_report("http://fastapi:8000")
+    app_report = fetch_app_report("http://fastapi:8000", getter=http_getter)
 
     escalated = sum(1 for s in states.values() if s == "escalation_eligible")
     ce.record_run(conn, at, signals_observed=len(all_signals), signals_escalated=escalated)
@@ -1967,9 +2174,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None, *,
+    git_runner: Runner | None = None, http_getter: HttpGetter | None = None,
+) -> int:
     args = _parse_args(argv)
-    report = run_detect_cycle(args.repo_root)
+    git_runner = git_runner or _make_real_runner(args.repo_root)
+    report = run_detect_cycle(args.repo_root, git_runner=git_runner, http_getter=http_getter)
 
     if args.clean:
         eligible = [
@@ -1979,9 +2190,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
         conn = ce._connect()
         run_cleanup_actions(
-            eligible, git_runner=_real_git_runner, repo_root=args.repo_root,
+            eligible, git_runner=git_runner, repo_root=args.repo_root,
             sdd_root=args.repo_root / ".superpowers" / "sdd", conn=conn,
-            at=datetime.now(__import__("datetime").timezone.utc), dry_run=False,
+            at=datetime.now(timezone.utc), dry_run=False,
         )
 
     print(json.dumps(report, indent=2, default=str))
@@ -1996,7 +2207,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ddev exec -s fastapi python3 -m pytest tests/test_quality_coordination_cli.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -2380,8 +2591,15 @@ glossed over.
 **3. Type and interface consistency across tasks:**
 
 - `Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]` (Task 2) is the
-  single subprocess-injection type, used identically by Tasks 3, 4, 7, and 8 — no second
-  runner type is introduced anywhere.
+  single subprocess-injection type, used identically by Tasks 3, 7, and 8 — no second
+  runner type is introduced anywhere. Task 4 deliberately does not use it at all (see this
+  task's own Interfaces note — `collect_ledger_signals` dropped unused `git_runner`/
+  `gh_runner` params found in review, rather than keeping them for a feature this task
+  doesn't actually implement). `_make_real_runner(cwd) -> Runner` (Task 8) is the single
+  place a concrete `Runner` is ever constructed — every other function in this domain only
+  ever receives one already injected, which is what makes Task 8's own tests able to run
+  without a real subprocess or network call (found needed in review: an earlier draft's
+  `run_detect_cycle`/`main` had no injection point at all — see Task 8's own note).
 - `coordination_engine.Signal(identity, domain, payload, still_present)` (Task 1) is the
   only signal type constructed by Tasks 3, 4, and 5 — Task 6 deliberately never constructs
   one, consistent with §6.5.
@@ -2391,8 +2609,22 @@ glossed over.
   checks — no second vocabulary exists.
 - `cleanup_actions.action_type` values (`"worktree_prune"`, `"delete_merged_branch"`,
   `"delete_sdd_scratch"`) are produced in Task 7's three action functions and consumed by
-  name in `run_cleanup_actions` (Task 7) and `main`'s `--clean` wiring (Task 8) — matching
-  exactly.
+  name in `run_cleanup_actions` (Task 7) — but **only `"delete_merged_branch"` is actually
+  reachable from `main`'s `--clean` wiring today** (Task 8's `_CLEANUP_ACTION_FOR_DOMAIN`
+  maps only the `"branch"` domain). This corrects an earlier version of this bullet that
+  claimed all three were wired "matching exactly" — checked against the real code in
+  review and found false. `worktree_prune` (unconditional per spec §8 action 1 — "no
+  precondition beyond git's own built-in safety," i.e. not obviously gated behind any
+  particular signal's `escalation_eligible` state at all) and `delete_sdd_scratch` (gated
+  behind a `"ledger"`-domain signal, but only once its branch-mapping derivation — already
+  named as an unresolved implementation-time detail in Task 7 — is actually invoked at CLI
+  time) are both fully built and independently fault-injection-tested (Task 7), just not
+  yet wired into `--clean`'s eligibility scan. **This is a genuine scope/architecture
+  decision this plan does not resolve unilaterally** — whether `worktree_prune` runs
+  unconditionally versus signal-gated, and how `delete_sdd_scratch`'s branch-mapping
+  derivation gets invoked at CLI time, are both open questions the spec itself left
+  implementation-time detail; flagged here for human review rather than decided in this
+  pass (see the PR description).
 - `FLOOR_HOURS_BRANCH`/`FLOOR_HOURS_LEDGER`/`FLOOR_HOURS_PROCESS_HYGIENE` (Tasks 3-5) are
   assembled into the one `_FLOOR_HOURS` dict `run_detect_cycle` passes to
   `apply_observation` (Task 8) — no domain's floor is defined twice.
