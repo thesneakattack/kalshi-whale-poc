@@ -239,6 +239,48 @@ leaving it implicit in the doc's own prose.
   wouldn't be resolved by more engineering effort, only by this repo
   adopting one single, disciplined commit-message convention for task
   references, which is a process change, not a `kanban_sync` feature.
+- **Sub-issue marker identity.** The implementation (`plan_tasks.py`,
+  Task 4) gives each created sub-issue a plain `## Context\nPart of
+  \`docs/superpowers/plans/<file>\`.` body with no `autotrade-sync:`
+  marker, rather than the stable `(kind="plan-task",
+  key=f"{plan_filename}:{task_number}")` identity this section originally
+  specified. Found in the final whole-branch review (2026-08-27), after
+  implementation: since sub-issue closing is explicit (§4.3, never
+  reconciled after creation) and `markers.py`'s `_MARKER_RE` doesn't
+  accept a hyphenated kind like `plan-task` without a regex change, a
+  marker would have added parsing surface with no reconciliation ever
+  consuming it. Accepted as a deliberate simplification, not fixed -
+  cheapest available correctness for `close_completed_plan_parents`
+  (§4.4) already comes from filtering on the *parent's* `plan` marker
+  kind instead (fixed the same review round - see git history around
+  2026-08-27 for the exact commit), which sub-issues, having no marker at
+  all, are naturally excluded from.
+- **Partial-decomposition recovery.** `decompose_plan`'s one-time gate is
+  `subIssuesSummary.total > 0`, not `total >= len(tasks)`. If
+  `create_issue` fails partway through a multi-task decomposition (rate
+  limit, transient 5xx), the plan is left with some-but-not-all sub-issues
+  and no CLI path to finish the rest - re-running `decompose-plan` sees
+  `total > 0` and reports `"skipped": "already decomposed"` even though
+  it isn't. Found in the final whole-branch review (2026-08-27); not
+  fixed - no observed partial failure yet, and completing it correctly
+  needs either a `--force`/resume mode or `total >= len(tasks)` gating,
+  either of which is a deliberate follow-up, not a one-line fix. If this
+  is ever hit for real, treat it as a signal to implement resume support
+  rather than a bug to patch around.
+- **Auto-close vs. plan classification staleness.** `close_completed_plan_parents`
+  (§4.4) can close a plan's parent issue before the plan doc has been
+  reclassified `done` in the next `sync --sources plan --plan-classifications
+  ...` run's classification JSON (produced by the kanban-board-sync skill's
+  judgment step, §5's own gap this design never touches). When that
+  happens, `sync_pass_one`'s existing mismatch-comment path (unrelated to
+  this design, pre-existing) sees a closed issue with a still-open
+  source and posts a comment every run until the classification catches
+  up - noisy, not incorrect (the issue stays closed, never reopened).
+  Found in the final whole-branch review (2026-08-27); not fixed, since
+  the real fix (deduplicating that pre-existing comment path) is outside
+  this design's scope. Operational mitigation: reclassify a plan to
+  `done` in the classification JSON as soon as its parent auto-closes,
+  per the kanban-board-sync skill.
 
 ## 7. Self-review
 
