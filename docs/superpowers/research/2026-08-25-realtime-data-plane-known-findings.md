@@ -339,15 +339,36 @@ Live-measured (2026-08-26), not assumed:
     with churn magnitude itself (r=-0.247) and produces no measured rate-limit pressure
     (22 `rate_limited` events / 1486 samples, 0 errors) - so it reads as a shared-confound
     correlation, not a material direct cost. Feeds into CH3's classification of H11.
-- **Still open (CH2's job, not CH1's)**: whether the distinct, not-yet-traced app
-  unresponsiveness event observed live immediately after an 8->13 burst was actually caused
-  by this mechanism or was coincidental/a different bug (two unrelated event-loop-blocking
-  bugs were found and fixed the same day in unrelated modules - `candidate_log.
-  population_gate_summary` and `whale_calibration` routes - so a third, distinct cause is not
-  ruled out). CH1's negligible-cost measurement makes mechanism (b) in CH2's own
-  classification ("directly caused by subscription-churn/H11's mechanism") less likely on
-  priors, but CH2 still has to prove the actual root cause with a stack trace, not infer it
-  from this correlation study.
+- **CH2 resolved (2026-08-27) — classification (a): a third, unrelated module, same bug
+  shape as PR #35/#36, not churn-caused.** Live proof, not inference: `GET
+  /api/observability/history?metric=loop_watchdog.stall_max_ms` surfaced a fresh 12.5s stall
+  and an isolated 56.9s stall (neither temporally adjacent to a churn event - the nearest
+  churn sync in both cases was 60-100s away, consistent with CH1's own no-correlation
+  result), so a 12-minute live `py-spy dump` watch (`cap_add: SYS_PTRACE`, same mechanism as
+  PR #35/#36) was run against the real worker process. It caught `series_watcher.funnel()`
+  (via `check_series_funnel` -> `services/diagnostics/diagnostics.py`'s `run_offline()`)
+  holding the event loop for a continuous ~15s stretch, recurring every ~30-45s throughout
+  the watch window - every single sample during those stretches showed the identical frame,
+  the signature of one sustained block, not many fast unrelated calls. Isolated and measured
+  directly against the live process: `funnel()` alone costs 1.8-2.5s on a cold page cache,
+  collapsing to ~0.01s on a repeated identical call once warm - the signature of slow
+  bind-mount disk I/O (WSL2/Docker Desktop), not GIL-bound Python object construction (ruling
+  out the population_gate_summary-style fix; this needed a plain offload, not a SQL
+  rewrite - the query was already using its `(series, observed_at)` index).
+  `services/quality/routes.py`'s `get_quality_summary()` (`GET /api/quality/summary`) called
+  `diagnostics.run_offline(cfg)` synchronously, unoffloaded, directly on the event loop - and
+  the dashboard's `frontend/src/js/polling-and-websocket.js` `refresh()` calls
+  `loadSystemHealth()` (which hits this route) on every poll tick
+  (`scheduleRefreshTimer`'s default `refreshIntervalMs = 5000`) whenever the Terminal tab is
+  open, explaining the ~30-45s recurrence (not every single 5s tick, since a warm-cache call
+  is cheap - only the ones that catch the cache cold pile up). **Fixed**: wrapped the
+  `run_offline()` call in `services.tick_executor.run(...)`, the same established idiom PR
+  #36 used for the whale_calibration routes. Verified live post-fix: while
+  `GET /api/quality/summary` was in flight (~4.55s), five concurrent `GET /api/state`
+  requests all completed in 0.08-0.11s each - before the fix, per the py-spy evidence above,
+  they would have queued behind it. Mechanism (b) (churn-caused) is now ruled out
+  definitively, not just deprioritized - the actual cause has no relationship to subscription
+  churn at all. Feeds into CH3's classification of H11 as (ii) or (iii), not (i).
 
 ## What the investigation must not assume
 

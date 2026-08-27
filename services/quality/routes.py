@@ -19,7 +19,7 @@ import time
 
 from fastapi import APIRouter
 
-from services import fault_log
+from services import fault_log, tick_executor
 from services.alerting import alerting
 from services.app_state import index_stream, state, trade_stream
 from services.backup import backup
@@ -59,7 +59,20 @@ async def get_quality_summary():
         "status": report.overall_status(),
         "counts": report.counts(),
         "findings": [f.to_dict() for f in findings],
-        "diagnostics": diagnostics.run_offline(cfg),
+        # Offloaded via tick_executor (2026-08-27 fix, subscription-churn
+        # investigation CH2 - see docs/superpowers/research/2026-08-25-
+        # realtime-data-plane-known-findings.md's H11 entry). Same shape as
+        # the two event-loop-stall bugs fixed 2026-08-26
+        # (candidate_log.population_gate_summary, whale_calibration routes):
+        # run_offline() -> series_watcher.check_series_funnel() ->
+        # funnel()'s raw_trades aggregate query measured live at 1.8-2.5s on
+        # a cold page cache (collapsing to ~0.01s once warm - the signature
+        # of slow bind-mount disk I/O, not GIL-bound Python work), called
+        # synchronously and unoffloaded on a route the dashboard polls every
+        # refreshIntervalMs (default 5s) while the Terminal tab is open -
+        # proven live via py-spy: caught holding the loop for a continuous
+        # ~15s stretch, recurring every ~30-45s.
+        "diagnostics": await tick_executor.run(lambda: diagnostics.run_offline(cfg)),
         "alerts": {"active": alerting.active_alerts()},
         "faults": fault_log.summary(),
         "storage": {"databases": storage_entries},
