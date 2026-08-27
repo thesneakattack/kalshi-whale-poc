@@ -197,3 +197,46 @@ def test_check_rate_limit_budget_uses_a_lower_estimate_for_dry_run():
 
     with pytest.raises(SystemExit):
         cli._check_rate_limit_budget(client, item_count=33, dry_run=False)
+
+
+class _FakeNoIssueClient:
+    def find_by_marker(self, marker):
+        return None
+
+
+def test_decompose_plan_subcommand_errors_when_plan_issue_not_found(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeNoIssueClient())
+    monkeypatch.setattr(cli, "PLANS_DIR", tmp_path)
+    (tmp_path / "x.md").write_text("# X\n")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["decompose-plan", "--plan", "x.md"])
+
+    assert exc.value.code == 1
+
+
+def test_cmd_sync_runs_close_completed_plan_parents_when_plan_in_sources(monkeypatch):
+    calls = []
+    _patch_sync_pipeline(monkeypatch, items=[], live_branches=None)
+    monkeypatch.setattr(
+        cli, "close_completed_plan_parents",
+        lambda client, dry_run: calls.append(True) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="plan", dry_run=False, plan_classifications=None))
+
+    assert calls == [True]
+
+
+def test_cmd_sync_skips_close_completed_plan_parents_when_plan_not_in_sources(monkeypatch):
+    calls = []
+    _patch_sync_pipeline(monkeypatch, items=[], live_branches=None)
+    monkeypatch.setattr(
+        cli, "close_completed_plan_parents",
+        lambda client, dry_run: calls.append(True) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="roadmap", dry_run=False, plan_classifications=None))
+
+    assert calls == []
