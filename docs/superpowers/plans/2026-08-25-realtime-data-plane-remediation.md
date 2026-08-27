@@ -1296,6 +1296,180 @@ re-presented mid-retry. `ddev exec -s fastapi python -m pytest tests/ -q` green.
 
 ---
 
+## Phase P2.5 — Subscription-churn investigation (H11, CH1-CH5)
+
+> **Distinct orchestrator for this phase only:** use
+> `.claude/skills/realtime-data-plane-investigation/SKILL.md` as the orchestrator for
+> CH1-CH5, not `superpowers:subagent-driven-development`/`executing-plans` — this phase
+> is investigation-shaped (measure, classify, decide) unlike the rest of this plan's
+> implementation-shaped phases. Execute exactly one numbered task, verify, commit,
+> report, and stop. **Merged into this file 2026-08-27** from its own former plan doc
+> (`2026-08-26-subscription-churn-investigation.md`, retired) — it had become a
+> follow-on thread of this same investigation in practice, not a separate initiative,
+> per its own original banner; see CH3's and Phase P3.5's cross-references below for
+> why keeping it a separate file had stopped paying for itself.
+
+**Goal:** Determine whether market-discovery-driven WebSocket subscription churn
+(Hypothesis H11) is a real, material bottleneck — and if so, select an evidence-backed
+fix — rather than assume the user's report names the mechanism correctly.
+
+**Finding so far:** `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`,
+Hypothesis H11 (added 2026-08-26). Mechanism traced, churn confirmed real but bursty
+(~15s cadence, not per-tick), first observability added and live-verified (PR #37,
+merged). No cost measurement, no root cause for the co-occurring instability event, and
+no architecture decision exist yet — that is what this phase covers.
+
+**Phase-scoped constraints, in addition to this plan's Global Constraints above:**
+- No subscription/queue/rate/worker tuning before CH3 classifies a real bottleneck.
+- No structural production redesign before CH5's solution-comparison step.
+- If CH1/CH2 falsify H11 (churn burst is not the cause of the observed instability),
+  record that as a real result and stop — a negative result is a valid outcome, not a
+  reason to keep digging for a way to confirm the original report.
+
+### CH1 — Measure a churn burst's actual downstream/upstream cost
+
+**Read**
+- `services/kalshi/websocket.py`'s `_sync_subscriptions`/`ingest_metrics` (the
+  `subscription_churn` counters added in PR #37)
+- `docs/kalshi/websocket-connection.md` (subscribe/update_subscription semantics,
+  `send_initial_snapshot` behavior)
+- current `data/observability.db` history for `*.ingest.subscription_churn.*`,
+  `*.ingest.queue_depth`, `*.ingest.queue_wait.*`
+
+**Questions to answer, each with a stated confirm/falsify criterion**
+- [ ] How many raw WS frames does one `_sync_subscriptions` call actually send? (Sent
+  once per market-channel sid — trade + ticker in scoped mode — so an N-ticker diff is
+  N tickers × up to 2 messages, not N messages; confirm this against the real code path,
+  don't assume.)
+- [ ] Does Kalshi's `send_initial_snapshot: True` behavior on the `ticker` channel apply
+  per newly-added ticker, or only on first subscribe? Check the exact mirrored doc, not
+  memory.
+- [ ] Does a churn burst measurably correlate with a rise in
+  `trade_stream.ingest.queue_depth` / `queue_wait` / handler latency in the same or
+  immediately following window? Use `data/observability.db`'s own history plus a live
+  correlated sample if the dev instance is running.
+- [ ] Does a churn burst add measurable REST demand (e.g. via `_resolve_unknown_markets`,
+  `_fetch_live_status`, or hydration calls) beyond what's already bounded/cached?
+- [ ] Commit: `docs: measure subscription-churn burst cost (CH1)` — update the H11 finding
+  with real numbers, not another hypothesis.
+
+**Acceptance**
+A reader can see actual measured cost (or "measured: negligible") for a churn burst, not
+architectural speculation.
+
+**Scale caveat (2026-08-27):** this measurement is bounded to today's live watchlist scale
+(8-13 tickers). Phase P3.5 below (Task 17a/17b) later stresses the same
+`trade_stream.ingest.subscription_churn.*` counters this measurement uses, at a real
+widened-scope scale, and feeds that larger-scale data point back here (and into CH3,
+below) — see that phase's own header note for the reuse contract.
+
+---
+
+### CH2 — Root-cause the still-untraced third instability event
+
+Use `root-cause-debugging` explicitly — this is exactly its trigger (unexpected/live
+incident, contradictory behavior).
+
+- [ ] Reproduce the app-unresponsiveness event live (the same `SYS_PTRACE`/`py-spy`
+  method used for the two bugs fixed in PR #35/#36 this session).
+- [ ] Capture a stack trace during the stall; identify the actual blocking call.
+- [ ] Classify the result explicitly: (a) the same shape of bug as PR #35/#36 in a third,
+  unrelated module: (b) directly caused by subscription-churn/H11's mechanism; (c)
+  something else entirely.
+- [ ] If (a) or (c): fix or document following this session's established pattern
+  (`tick_executor` offload, or SQL-side aggregation if the bottleneck is Python-object
+  construction over a large row count — see PR #35's own lesson that a thread offload
+  alone doesn't help GIL-bound work).
+- [ ] If (b): do not fix yet — feed the confirmed mechanism into CH3/CH4 below instead of
+  patching reactively.
+- [ ] Commit: `fix: <root cause>` or `docs: root-cause the third instability event (CH2)`,
+  whichever applies.
+
+**Acceptance**
+The instability event has a proven cause, not a guess, and this plan's classification of
+H11 (CH3 below) rests on that proof rather than coincidence.
+
+---
+
+### CH3 — Reconcile CH1 + CH2 into a classification of H11
+
+- [ ] State plainly: is subscription churn (i) a confirmed, material bottleneck, (ii) a
+  real but currently-negligible cost, or (iii) unrelated to the observed instability?
+- [ ] Update H11 in the known-findings doc with this classification and the evidence
+  behind it.
+- [ ] If (ii) or (iii): stop this plan here. Record why, and what would change that
+  classification later (e.g. a larger watchlist, a wider category set, more concurrent
+  live events). Do not proceed to redesign work against an unconfirmed or negligible
+  bottleneck.
+- [ ] If (i): proceed to CH4.
+- [ ] Commit: `docs: classify H11 (CH3)`.
+
+**Not necessarily final once (ii)/(iii) stops this phase (2026-08-27):** Phase P3.5
+below (Task 17a/17b) runs after this task in current sequencing and is the literal
+"larger watchlist" experiment this bullet names — it reuses this phase's own
+`subscription_churn` counters at real widened-scope scale and, per its own Step 5,
+posts a dated addendum here (reopening or confirming this classification) once it
+lands. If that addendum hasn't been added yet, treat this entry's stop as provisional
+pending P3.5, not permanent — check for it before assuming CH4/CH5 are still out of
+scope.
+
+**Acceptance**
+A reviewer can tell, from the doc alone, whether the rest of this phase should ever run.
+
+---
+
+### CH4 — Research and benchmark solution families *(only if CH3 = confirmed bottleneck)*
+
+**Note (2026-08-27):** a broader, churn-independent live watchlist-scale stress test
+exists as Phase P3.5 below (`tools/watchlist_scale_stress_test.py`), sequenced ahead of
+P4/P5. If CH4 ever runs, reuse that tool rather than building a second scale-up harness
+— P3.5 answers the general queue-depth/REST-demand/loop-health question at scale, CH4
+(if it ever becomes relevant) would still need its own churn-specific benchmarking on
+top of it.
+
+Follow the parent skill's solution-selection workflow exactly (enumerate ≥3 families,
+research current authoritative practice, prototype outside the production path, benchmark
+against the same representative workload, fault-inject burst traffic/reconnect/queue
+pressure). Do not conclude "batch discovery less often," "cap churn," "hysteresis on
+rank changes," or any other specific mechanism before this step runs — those are
+candidates to evaluate, not a foregone conclusion.
+
+- [ ] Enumerate candidate families (e.g.: dampen `round_robin_select`'s output with
+  hysteresis/minimum-dwell-time; separate a stable "core" watchlist from a smaller
+  rapidly-scanned discovery pool; batch subscription diffs rather than sending them
+  the instant they're computed; something else — do not anchor on this list).
+- [ ] Prototype each outside the production path.
+- [ ] Benchmark against CH1's real measured workload.
+- [ ] Fault-inject: burst traffic, a reconnect mid-churn, malformed diff.
+- [ ] Score against the design spec's matrix (correctness, capture completeness, latency,
+  operational simplicity — same axes the parent investigation already established).
+- [ ] Commit: `docs: benchmark subscription-churn solution candidates (CH4)`.
+
+**Acceptance**
+At least three real candidates, benchmarked on the same workload, with rejected options
+explained.
+
+---
+
+### CH5 — Architecture decision and implementation plan *(only after CH4)*
+
+- [ ] Write the architecture decision (winner, rejected alternatives, why).
+- [ ] Invoke `superpowers:writing-plans` to produce a separate, numbered implementation
+  plan — this document does not authorize implementation itself.
+- [ ] Commit: `docs: subscription-churn architecture decision + implementation plan (CH5)`.
+
+**Acceptance**
+A human can review and approve (or reject) a concrete plan before any implementation
+task starts.
+
+---
+
+**P2.5 gate:** CH3 has classified H11, one way or the other, in the known-findings doc.
+CH4/CH5 only run if CH3 confirms a material bottleneck; otherwise this phase's gate is
+CH3's own commit plus (once it exists) Phase P3.5's confirming/reopening addendum.
+
+---
+
 ## Phase P3 — Reader gate live, capture contract, writer thread
 
 ### Task 14: Writer thread with per-store batched flush, supervised
@@ -1689,17 +1863,16 @@ specifically so its findings can inform Task 18's two-consumer-mode threshold an
 Task 22's REST-scheduler preset calibration rather than arriving after those are
 already built.
 
-Distinct from, not a duplicate of, the subscription-churn-investigation plan's CH4
-(`docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`), which asks
-whether a *larger watchlist changes churn's own cost specifically* and is gated behind
-CH3 confirming churn is a material bottleneck (unlikely per CH1/CH2's results, both
-negative on that question). This phase asks the broader question - queue depth, REST
-demand, loop-health - at real scale, independent of churn, and runs regardless of CH3's
+Distinct from, not a duplicate of, Phase P2.5 above's CH4, which asks whether a *larger
+watchlist changes churn's own cost specifically* and is gated behind CH3 confirming
+churn is a material bottleneck (unlikely per CH1/CH2's results, both negative on that
+question). This phase asks the broader question - queue depth, REST demand,
+loop-health - at real scale, independent of churn, and runs regardless of CH3's
 outcome. If CH4 ever does run later, reuse this phase's `tools/
 watchlist_scale_stress_test.py` rather than building a second scale-up harness.
 
 **Bidirectional, not just CH4-ward (2026-08-27, direct follow-up instruction).** CH3's own
-stop criteria (subscription-churn-investigation.md) names "a larger watchlist" as one of the
+stop criteria (Phase P2.5 above) names "a larger watchlist" as one of the
 things that could change H11's classification later - and this phase's five `widen_scope*`
 steps are the literal experiment that tests that scenario, at real scale, on the actual live
 watchlist. In current Track A sequencing CH3 runs *before* this phase, so if CH1/CH2's
@@ -1846,7 +2019,7 @@ def test_run_stress_steps_applies_measures_and_reverts_only_touched_sections():
     assert result["results"][0]["pipeline"]["markets_watched"] == 9
     assert slept == [5.0]
     # Captures loop_watchdog AND the three subscription_churn counters CH1 already
-    # tracks (subscription-churn-investigation.md) - this phase's live run doubles as
+    # tracks (Phase P2.5 above) - this phase's live run doubles as
     # a larger-scale churn data point for CH3, not just a P4/P5 input.
     obs = result["results"][0]["observability"]
     assert set(obs) == {
@@ -1940,7 +2113,7 @@ HttpGetter = Callable[[str, float], dict]
 HttpPoster = Callable[[str, dict, float], dict]
 
 # loop_watchdog is this phase's own P4/P5 concern; the three subscription_churn
-# counters are CH1's own metrics (subscription-churn-investigation.md) - captured here
+# counters are CH1's own metrics (Phase P2.5 above) - captured here
 # too so a widened-scope step doubles as a larger-scale churn data point for CH3,
 # not just a P4/P5 input (see this phase's header note).
 _OBSERVABILITY_METRICS = (
@@ -2183,10 +2356,9 @@ preset's assumed one, when either task is implemented. If nothing moved material
 at this scale, say that explicitly in both places - it's a legitimate finding that
 lowers P4/P5's priority relative to P3, not a failed experiment.
 
-**Separately, feed the churn-counter comparison (Step 3) back into
-`docs/superpowers/plans/2026-08-26-subscription-churn-investigation.md`'s CH3.** If
-CH3 already ran and stopped the churn plan on today's small-scale evidence, and this
-step's churn counters landed materially outside CH1's observed range, add a dated
+**Separately, feed the churn-counter comparison (Step 3) back into Phase P2.5 above's
+CH3.** If CH3 already ran and stopped that phase on today's small-scale evidence, and
+this step's churn counters landed materially outside CH1's observed range, add a dated
 addendum to CH3's section reopening the classification and pointing at this entry -
 do not silently leave a stale "stopped" verdict standing once contradicting evidence
 exists. If the counters stayed in range, add a one-line confirming addendum instead
