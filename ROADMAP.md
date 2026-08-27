@@ -247,21 +247,28 @@ which can run in parallel right now.
 
 ## P4 — Nice-to-haves
 
-- [ ] **Recurring xdist-parallel test flakiness, `ci/woodpecker/push/tests-pytest`
-      only — never `pr/tests-pytest` (the actual merge gate).** Found live
-      2026-08-27 across 4 separate pushes on `feat/realtime-data-plane-remediation`,
-      a different unrelated test each time: `test_trading_gate.py::
-      test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run`,
-      `test_trading_gate.py::test_run_full_spectrum_analysis_succeeds_and_records_analysis`,
-      and `test_http_client.py::test_per_endpoint_window_counts_are_exact_and_reset_with_the_window`
-      (one push repeated a `test_trading_gate.py` pair). Every instance
-      confirmed the same shape: passes in isolation, passes single-worker
-      (`-p no:xdist`), only fails under 4-worker parallel scheduling -
-      smells like shared module-level state (a global counter/cache) racing
-      across xdist workers rather than a real logic bug, but not yet root-
-      caused. Not blocking (the `pr/*` contexts branch protection actually
-      requires have stayed green every time), so not chased further inline
-      - worth a dedicated `root-cause-debugging` pass if it keeps recurring.
+- [x] **Recurring xdist-parallel test flakiness, `ci/woodpecker/push/tests-pytest`.**
+      Root-caused and fixed 2026-08-27 across two PRs, both merged to `main`:
+      **PR #119** (`fix/xdist-parallel-test-isolation`) added autouse reset
+      fixtures for `main.state["discovery_cache"]`, `main.config_store`, and
+      `services/http_client.py`'s `_rest_class_stats`/`_endpoint_window` -
+      shared module-level singletons that xdist's work-stealing scheduler
+      exposed by not preserving file-definition order within a worker.
+      **PR #125** (`fix/xdist-trading-gate-isolation`) found and fixed a
+      second instance the same day: `test_enable_trading_succeeds_with_
+      correct_phrase_and_connected_account` flips `main.account.
+      trading_enabled` True via the real `/api/trading/enable` route and
+      never reset it - `monkeypatch`'s auto-restore covered `_client` but not
+      a real-route mutation, leaking into whichever test xdist scheduled
+      next. Fixed with the same autouse-fixture idiom PR #119 established.
+      Both confirmed via real `pytest -n 4` full-suite runs (12 consecutive,
+      zero recurrence) and via deterministic single-worker reproduction of
+      the exact adversarial test pairs. General lesson worth keeping: a
+      shared module-level singleton needs an autouse reset fixture the
+      moment more than one test can mutate it, not just a manual reset at
+      each mutating test's own setup - `_reset_trading_state()` had existed
+      since 2026-08-22 and was still called at setup-only in the test that
+      leaked.
 - [ ] **Move analytics/advisory computation out of the live tick loop —
       dump the underlying data and let external tooling analyze it.**
       Direct instruction (2026-08-21). Queued behind the main.py
