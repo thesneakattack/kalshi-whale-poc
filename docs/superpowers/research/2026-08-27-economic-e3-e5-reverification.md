@@ -36,9 +36,10 @@ post-merge window surfaced something the original design doc's "wait for Program
 ship a capture-completeness signal" language did not anticipate: **a severe, sharply
 bounded stall incident immediately after the merge deploy, already root-caused and fixed
 by a separate, independent commit** (`bb5806c`, "fix: stop candidate_log.
-population_gate_summary from blocking the event loop", 2026-08-26T19:11:29-05:00 —
-2h10m after the Program 1 merge, itself found via a live py-spy trace per its own commit
-message and `ROADMAP.md`). This is unrelated to Program 1's own changes; it is a
+population_gate_summary from blocking the event loop", 2026-08-26T14:11:29-05:00 /
+2026-08-26T19:11:29Z — 2h10m after the Program 1 merge (2026-08-26T17:01:39Z), itself
+found via a live py-spy trace per its own commit message and `ROADMAP.md`). This is
+unrelated to Program 1's own changes; it is a
 same-day, independently-discovered-and-fixed blocking-call bug that happened to surface
 under the increased dashboard-poll/`rejection_events` volume shortly after Program 1
 deployed.
@@ -169,7 +170,7 @@ data) + 3 (deterministic re-computation via the real, reviewed `reconcile()` fun
 every number in the table; the choice between (a)/(b) above is explicitly evidence class
 6 (labeled inference) — not settled by this pass.**
 
-## Evidence class summary (per `.claude/rules/autonomous-quality-coordination-evidence.md`)
+## Evidence class summary (per the investigation's own design doc §4, `docs/superpowers/specs/2026-08-26-economic-strategy-effectiveness-investigation-design.md` — the numbering `.claude/rules/autonomous-quality-coordination-evidence.md`'s evidence-classes section inspired, same convention the sibling E1-E3 doc cites)
 
 **Class 1 (current persisted data) + 3 (deterministic re-computation via existing,
 reviewed code):** every numeric table above — the reset-log/trade-count sanity check, the

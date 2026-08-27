@@ -105,8 +105,8 @@ favorable" component reproduces in the larger (>90-entry) samples but not in the
 smallest, cleanest capture-health-controlled sub-sample (n=32-34, too thin to be
 conclusive either way) — flagged as an open tension for whoever next revisits E5, not
 resolved by this pass. The underlying trade sample has grown from 90 to 142 post-cutover
-entries, still short of the "several hundred entries" re-run trigger this plan and the
-status report both name.
+entries, still short of the status report's own "several hundred entries" re-run trigger
+(§4) — noted here for the first time in this plan, not independently corroborated by it.
 
 ## What this plan deliberately does not include
 
