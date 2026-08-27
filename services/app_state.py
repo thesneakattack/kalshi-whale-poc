@@ -49,7 +49,7 @@ from services.backtest import backtest
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services.diagnostics import diagnostics
-from services import regime_analytics
+from services.history import regime_analytics
 from services import stats_power
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
@@ -69,9 +69,9 @@ from services import index_feed
 from services import settlement_edge
 from services import trade_archive
 from services import signal_log
-from services import suggestion_decisions
+from services.history import suggestion_decisions
 from services import title_cache
-from services import trade_analytics
+from services.history import trade_analytics
 from services import trade_category
 from services.config_store import config_store
 from services.http_client import close_client, get_and_reset_rate_limit_hits

@@ -22,8 +22,9 @@ from pydantic import BaseModel
 from services import (
     candidate_log,
     config_performance, market_analyst_agent,
-    regime_analytics, series_evaluator, signal_log, suggestion_decisions, tick_executor, trade_analytics,
+    series_evaluator, signal_log, tick_executor,
 )
+from services.history import regime_analytics, suggestion_decisions, trade_analytics
 from services.analytics.market_analyst_orchestrator import (
     _run_full_spectrum_analysis, _run_market_analyst_for_ticker, _run_series_analysis,
     _series_evaluator_overview_with_crosscheck,

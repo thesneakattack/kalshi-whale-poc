@@ -1,4 +1,4 @@
-from services import trade_analytics as ta
+from services.history import trade_analytics as ta
 
 # Reason strings mirror exactly what services/paper_broker.py and
 # services/strategy_engine.py actually produce (see their docstrings) -

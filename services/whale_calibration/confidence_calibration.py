@@ -40,7 +40,8 @@ main.py's trading loop does, the same way every other auto-apply path in
 this app keeps the actual config_store.update() call at the call site, not
 buried in a service module.
 """
-from services import stats_power, trade_analytics
+from services import stats_power
+from services.history import trade_analytics
 from services.confidence_scoring import DEFAULT_WEIGHTS
 
 _BUCKET_COUNT = 3

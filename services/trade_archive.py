@@ -33,7 +33,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import signal_log, trade_analytics
+from services import signal_log
+from services.history import trade_analytics
 from services import paper_broker as pb_module
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trade_archive.db"

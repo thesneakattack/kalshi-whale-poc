@@ -62,7 +62,8 @@ from pathlib import Path
 
 import pytest
 
-from services import candidate_log, series_evaluator, signal_log, trade_analytics
+from services import candidate_log, series_evaluator, signal_log
+from services.history import trade_analytics
 from services.advisory import advisory_engine
 
 pytestmark = pytest.mark.skipif(
