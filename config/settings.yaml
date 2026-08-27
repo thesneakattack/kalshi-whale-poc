@@ -17,6 +17,13 @@ kalshi:
   trade_stream_exchange_wide: true
   market_lifecycle_stream_enabled: true
   top_series_per_category: 30
+realtime_data_plane:
+  # P3: filters sub-threshold trades in the reader (services/kalshi/
+  # websocket.py) instead of the consumer - default false ships as
+  # shadow-mode-only (counts ingest.prefiltered.trade, never drops).
+  # Flipping this requires a paper-mode soak per the P3 gate criteria in
+  # docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md.
+  reader_gate_enabled: false
 whale_signal:
   signal_frequency_sec: 12
   whale_size_range:
