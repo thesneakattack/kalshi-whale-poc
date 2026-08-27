@@ -126,7 +126,7 @@ def _connect() -> sqlite3.Connection:
     # the exchange but is NOT evidence about how the strategy performs, and
     # averaging it into a 30-day statistic silently corrupts every
     # sample-size-gated heuristic downstream. Before this the only remedy
-    # was deletion (services/reset_log.py records a real instance: 19,995
+    # was deletion (services/reset/reset_log.py records a real instance: 19,995
     # rows destroyed to move a headline win rate off 64.8% back to its true
     # 74.2%), which fixes the number by throwing away history CLAUDE.md
     # explicitly calls a first-class asset.
@@ -497,7 +497,7 @@ def clear_range(before: float | None = None, after: float | None = None) -> int:
     purgeable without losing the valid history on either side of it. No
     bounds at all (both None) is equivalent to clear_all() but still
     returns a real deleted-row count, which clear_all() doesn't - callers
-    that need a count for the reset audit log (services/reset_log.py)
+    that need a count for the reset audit log (services/reset/reset_log.py)
     should call this even for a full wipe."""
     where, params = _range_where(before, after)
     with _connect() as conn:

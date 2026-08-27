@@ -61,13 +61,13 @@ from services import market_history
 from services import ml_feed
 from services import mutual_exclusivity
 from services.exits import position_netting
-from services import reset_log
+from services.reset import reset_log
 from services import series_cache
 from services import series_evaluator
 from services import series_watcher
 from services import index_feed
 from services import settlement_edge
-from services import trade_archive
+from services.reset import trade_archive
 from services import signal_log
 from services.history import suggestion_decisions
 from services import title_cache

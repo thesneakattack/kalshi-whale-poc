@@ -60,7 +60,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.market_history",
     "services.observability.observability",
     "services.paper_broker",
-    "services.reset_log",
+    "services.reset.reset_log",
     "services.research.research",
     "services.risk_manager",
     "services.series_cache",
@@ -70,7 +70,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.shadow_mode",
     "services.signal_log",
     "services.title_cache",
-    "services.trade_archive",
+    "services.reset.trade_archive",
     "services.trade_category",
     "services.whale_calibration.calibration_history",
 )

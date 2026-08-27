@@ -528,7 +528,7 @@ def test_reset_route_wires_market_catalog_and_market_history_flags():
 # positions' unrealized P&L into the archive uncredited) --------------------
 
 def test_reset_close_positions_first_closes_positions_and_archive_records_the_real_close():
-    from services import trade_archive as ta_module
+    from services.reset import trade_archive as ta_module
 
     main.broker.reset(starting_bankroll=10000.0)
     main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")

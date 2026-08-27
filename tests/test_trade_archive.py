@@ -1,4 +1,4 @@
-"""services/trade_archive.py - reset without losing the evidence.
+"""services/reset/trade_archive.py - reset without losing the evidence.
 
 Motivating incident, 2026-08-17: measuring performance against the ~70%
 target found data/paper_broker.db reaching back only to 08/16 19:28 because
@@ -10,7 +10,7 @@ import sqlite3
 
 import pytest
 
-from services import trade_archive as ta
+from services.reset import trade_archive as ta
 
 
 @pytest.fixture(autouse=True)

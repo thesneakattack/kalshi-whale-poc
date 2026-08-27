@@ -12,7 +12,7 @@ back only to 08/16 19:28, because a reset had wiped it. `signal_log`
 survived and could still answer signal-level questions, but every
 trade-level question - realised win rate, mean entry unit cost, exit
 breakdown, P&L by category - was simply gone for everything before that
-line. `services/reset_log.py` recorded that a reset *happened*; nothing
+line. `services/reset/reset_log.py` recorded that a reset *happened*; nothing
 recorded what it destroyed.
 
 This module closes that: before a paper reset, every trade and open
@@ -37,7 +37,7 @@ from services import signal_log
 from services.history import trade_analytics
 from services import paper_broker as pb_module
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trade_archive.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "trade_archive.db"
 
 
 def _connect() -> sqlite3.Connection:
