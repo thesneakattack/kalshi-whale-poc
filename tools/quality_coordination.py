@@ -331,3 +331,65 @@ def collect_process_hygiene_signals(baseline_path: Path, baseline_text: str) -> 
         )
         for finding_id in missing
     ]
+
+
+"""Documentation/ROADMAP drift data feed (spec §6.5). NOT run through
+coordination_engine.apply_observation - these functions never construct a Signal and are
+never fed to the engine. Judging whether an open item is actually done is left to a human
+or a Claude session reading this feed; this module never asserts it.
+"""
+_ROADMAP_BULLET_RE = re.compile(r"^- \[([ x])\] (.+)$")
+_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _open_roadmap_bullets(text: str) -> list[str]:
+    """Collects each top-level `- [ ]` bullet's full text, including 6-space-indented
+    continuation lines up to the next top-level bullet or a blank line - mirroring
+    docs/superpowers/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
+    approach for the identical problem. A bare single-line regex (found in review,
+    2026-08-27) truncates virtually every real ROADMAP.md bullet to its first physical line
+    - this repo's bullets routinely wrap onto continuation lines, confirmed against
+    ROADMAP.md's own real content, which a MULTILINE-but-not-DOTALL `(.+)$` cannot see past.
+    """
+    lines = text.splitlines()
+    bullets: list[str] = []
+    current_lines: list[str] | None = None
+    current_is_open = False
+
+    for line in lines:
+        match = _ROADMAP_BULLET_RE.match(line)
+        if match:
+            if current_lines is not None and current_is_open:
+                bullets.append(" ".join(current_lines))
+            current_is_open = match.group(1) == " "
+            current_lines = [match.group(2).strip()]
+            continue
+        if current_lines is not None and line.startswith("      "):
+            current_lines.append(line.strip())
+            continue
+        if current_lines is not None:
+            if current_is_open:
+                bullets.append(" ".join(current_lines))
+            current_lines = None
+            current_is_open = False
+
+    if current_lines is not None and current_is_open:
+        bullets.append(" ".join(current_lines))
+
+    return bullets
+
+
+def _significant_words(text: str) -> set[str]:
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def collect_docs_roadmap_feed(roadmap_text: str, recent_commit_subjects: list[str]) -> list[dict]:
+    feed = []
+    for bullet in _open_roadmap_bullets(roadmap_text):
+        bullet_words = _significant_words(bullet)
+        related = [
+            subject for subject in recent_commit_subjects
+            if bullet_words & _significant_words(subject)
+        ]
+        feed.append({"roadmap_bullet": bullet, "possibly_related_commits": related})
+    return feed
