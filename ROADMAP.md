@@ -247,6 +247,21 @@ which can run in parallel right now.
 
 ## P4 — Nice-to-haves
 
+- [ ] **Recurring xdist-parallel test flakiness, `ci/woodpecker/push/tests-pytest`
+      only — never `pr/tests-pytest` (the actual merge gate).** Found live
+      2026-08-27 across 4 separate pushes on `feat/realtime-data-plane-remediation`,
+      a different unrelated test each time: `test_trading_gate.py::
+      test_fetch_markets_regroups_extra_ticker_into_its_series_existing_run`,
+      `test_trading_gate.py::test_run_full_spectrum_analysis_succeeds_and_records_analysis`,
+      and `test_http_client.py::test_per_endpoint_window_counts_are_exact_and_reset_with_the_window`
+      (one push repeated a `test_trading_gate.py` pair). Every instance
+      confirmed the same shape: passes in isolation, passes single-worker
+      (`-p no:xdist`), only fails under 4-worker parallel scheduling -
+      smells like shared module-level state (a global counter/cache) racing
+      across xdist workers rather than a real logic bug, but not yet root-
+      caused. Not blocking (the `pr/*` contexts branch protection actually
+      requires have stayed green every time), so not chased further inline
+      - worth a dedicated `root-cause-debugging` pass if it keeps recurring.
 - [ ] **Move analytics/advisory computation out of the live tick loop —
       dump the underlying data and let external tooling analyze it.**
       Direct instruction (2026-08-21). Queued behind the main.py
