@@ -9,7 +9,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import config_performance as cp_module
 from services import market_history as mh_module
@@ -18,7 +17,19 @@ from services import series_evaluator as se_module
 from services import series_watcher as sw_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="active_terminal_refresh_"))
-pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
+# services.paper_broker.DB_PATH is deliberately NOT imported+re-overridden
+# here (2026-08-27 real bug found under the full xdist suite while adding
+# tests/test_trading_gate.py's close_positions_first reset tests - see that
+# file's own comment at the same spot for the full mechanism): conftest's
+# install_runtime_isolation() already redirects it before this file is even
+# collected, and that's what services.app_state's `broker = PaperBroker(...)`
+# singleton (what `main.broker` is) picks up. Reassigning it again here is
+# dead code for main.broker but stays live for anything that reads the
+# module attribute fresh instead of through the broker instance -
+# trade_archive.archive_epoch() does exactly that, so under xdist's
+# per-worker module caching, whichever same-worker test file's copy of this
+# line ran last could silently redirect archive_epoch() to a second, never-
+# written-to tmp file.
 rm_module.DB_PATH = _tmp_dir / "risk_state.db"
 cp_module.DB_PATH = _tmp_dir / "config_performance.db"
 mh_module.DB_PATH = _tmp_dir / "market_history.db"

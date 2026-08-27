@@ -36,7 +36,23 @@ from services import settlement_edge as sedge_module
 from services.whale_stream import whale_stream_handlers as wsh_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="trading_gate_test_"))
-pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
+# pb_module.DB_PATH is deliberately NOT re-overridden here (2026-08-27 real
+# gap found writing the close_positions_first reset tests below): conftest's
+# install_runtime_isolation() already redirects it - services.paper_broker is
+# the first entry in _EAGER_SINGLETON_MODULES - and does so BEFORE this file
+# is even imported. That redirect is also what services.app_state's own
+# `broker = PaperBroker(...)` singleton (services/app_state.py:91, what
+# `main.broker` below actually is) picks up, transitively, the moment
+# anything imports services.app_state - which install_runtime_isolation()
+# itself does, via services.market_events.event_schedule (another
+# _EAGER_SINGLETON_MODULES entry) importing it. So by the time this line used
+# to run, main.broker was ALREADY constructed against that path; reassigning
+# pb_module.DB_PATH here again did nothing for main.broker (dead code) while
+# staying live for anything that reads the module attribute fresh instead of
+# going through the broker instance - trade_archive.archive_epoch() reads
+# pb_module.DB_PATH directly, so it silently pointed at a second, different,
+# never-written-to tmp file. No existing test here had ever called
+# POST /api/reset with paper: True (the default) to expose the divergence.
 rm_module.DB_PATH = _tmp_dir / "risk_state.db"
 cp_module.DB_PATH = _tmp_dir / "config_performance.db"
 mh_module.DB_PATH = _tmp_dir / "market_history.db"
@@ -506,6 +522,74 @@ def test_reset_route_wires_market_catalog_and_market_history_flags():
     assert "market_history" in body["cleared"]
     assert mc_module.scan_progress()["total_markets"] == 0
     assert mh_module.snapshot_count() == 0
+
+
+# --- close_positions_first (2026-08-27 direct request: don't abandon open --
+# positions' unrealized P&L into the archive uncredited) --------------------
+
+def test_reset_close_positions_first_closes_positions_and_archive_records_the_real_close():
+    from services import trade_archive as ta_module
+
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    main.broker.open_position("TICK-B", "no", size=10, price=0.4, reason="entry")
+    main.state["latest_prices"] = {"TICK-A": 0.6, "TICK-B": 0.3}
+    assert len(main.broker.positions) == 2
+
+    resp = client.post("/api/reset", json={"paper": True, "close_positions_first": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert main.broker.positions == {}
+
+    close_entry = next(c for c in body["cleared"] if isinstance(c, dict)
+                        and c.get("domain") == "close_positions_first")
+    assert close_entry["closed"] == 2
+
+    archive_entry = next(c for c in body["cleared"] if isinstance(c, dict) and c.get("domain") == "archive")
+    epoch_id = archive_entry["epoch"]["epoch_id"]
+    archived = ta_module.epoch_trades(epoch_id)
+    # Both entries plus both closes were archived - the closes are real
+    # `close:`-reason trades, not orphaned archived_positions rows.
+    assert len(archived) == 4
+    close_reasons = [r["reason"] for r in archived if r["ticker"] in ("TICK-A", "TICK-B")
+                      and r["reason"].startswith("closed:")]
+    assert len(close_reasons) == 2
+
+
+def test_reset_close_positions_first_is_a_no_op_without_open_positions():
+    main.broker.reset(starting_bankroll=10000.0)
+    resp = client.post("/api/reset", json={"paper": True, "close_positions_first": True})
+    assert resp.status_code == 200
+    close_entry = next(c for c in resp.json()["cleared"] if isinstance(c, dict)
+                        and c.get("domain") == "close_positions_first")
+    assert close_entry["closed"] == 0
+
+
+def test_reset_close_positions_first_is_ignored_for_a_ranged_reset():
+    # A ranged reset only ever purges the trades table (closed history) -
+    # positions/bankroll are current live state, never touched by range
+    # scoping (see ResetBody.range_start's own docstring). Combining the
+    # flag with a range must not surprise-close live positions that the
+    # range-scoped reset itself would never have touched.
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-C", "yes", size=5, price=0.5, reason="entry")
+
+    resp = client.post("/api/reset", json={
+        "paper": True, "close_positions_first": True, "range_start": time.time() - 3600,
+    })
+    assert resp.status_code == 200
+    assert "TICK-C" in main.broker.positions
+    cleared = resp.json()["cleared"]
+    assert not any(isinstance(c, dict) and c.get("domain") == "close_positions_first" for c in cleared)
+
+
+def test_reset_preview_reports_close_positions_first_count():
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-D", "yes", size=5, price=0.5, reason="entry")
+
+    resp = client.get("/api/reset/preview", params={"paper": True, "close_positions_first": True})
+    assert resp.status_code == 200
+    assert resp.json()["counts"]["close_positions_first"] == 1
 
 
 # --- Series evaluator (Item 1) -----------------------------------------------

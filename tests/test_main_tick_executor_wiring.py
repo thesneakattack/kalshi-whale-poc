@@ -12,7 +12,6 @@ import tempfile
 from pathlib import Path
 
 from services import candidate_log as cl_module
-from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import config_performance as cp_module
 from services.market_analyst_agent import _db as maa_db_module
@@ -24,7 +23,13 @@ from services import settlement_edge as sedge_module
 from services import signal_log as sl_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="tick_executor_wiring_"))
-pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
+# services.paper_broker.DB_PATH is deliberately NOT imported+re-overridden
+# here - see
+# tests/test_trading_gate.py's own comment at the same spot for the full
+# mechanism (conftest's install_runtime_isolation() already redirects it
+# before this file is even collected; reassigning it again here is dead code
+# for main.broker but stays live and dangerous for anything reading the
+# module attribute fresh, like trade_archive.archive_epoch()).
 rm_module.DB_PATH = _tmp_dir / "risk_state.db"
 cp_module.DB_PATH = _tmp_dir / "config_performance.db"
 mh_module.DB_PATH = _tmp_dir / "market_history.db"

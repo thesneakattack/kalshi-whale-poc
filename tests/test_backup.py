@@ -14,10 +14,20 @@ poll_interval_sec). The fix seeds last_started_at from the already-persisted
 backup_runs history on cold start instead of trusting in-memory state alone.
 
 services.backup.backup imports services.app_state (for state["backup"]),
-which constructs PaperBroker/RiskManager at *import time* - redirect their
-DB_PATH before the first import in this process, same convention as
-tests/test_trading_gate.py, so nothing here can reach the real data/*.db
-files no matter what a test does.
+which constructs PaperBroker/RiskManager at *import time*. Real data/*.db
+files can never be reached either way: conftest's install_runtime_isolation()
+already redirects services.paper_broker.DB_PATH (and every other
+_EAGER_SINGLETON_MODULES entry) to an isolated tmp path before this file - or
+any test file - is even collected, and that's what services.app_state's
+singleton construction actually picks up. This file's own risk_manager
+redirect below is real for RiskManager only insofar as RiskManager itself
+isn't in that eager list the same way; services.paper_broker.DB_PATH is
+deliberately NOT imported+re-redirected here for that reason - see
+tests/test_trading_gate.py's own
+comment at the equivalent spot for the full mechanism and the real bug
+(archive_epoch() silently reading a second, never-written-to tmp file) this
+redundant reassignment used to cause once co-located with another test file
+under xdist.
 """
 import asyncio
 import sqlite3
@@ -31,7 +41,6 @@ from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="backup_test_"))
-pb_module.DB_PATH = _tmp_dir / "paper_broker.db"
 rm_module.DB_PATH = _tmp_dir / "risk_state.db"
 
 from services.app_state import state  # noqa: E402
