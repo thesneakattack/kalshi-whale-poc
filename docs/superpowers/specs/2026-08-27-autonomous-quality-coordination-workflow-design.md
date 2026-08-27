@@ -171,6 +171,24 @@ an explicit "paused, not stalled" note for that track in
 `active-tracks-board.md` (Program 7's own pause, recorded via PR #41, is
 exactly the kind of state this must not misclassify as janitorial cruft).
 
+**CI staleness/stuck-run detection, not just pass/fail (found live
+2026-08-27):** a `pending` status context is not itself informative — it
+covers both "genuinely still running" and "silently hung/never reported
+back," and distinguishing them by hand meant re-fetching the GitHub
+commit-status API and, when still ambiguous, cross-checking real
+Woodpecker step-level state (`bash scripts/woodpecker-status --pipeline
+<N>`, comparing each step's `Started`/`Stopped` unix-epoch fields against
+current time) — exactly the kind of repetitive verification-by-hand this
+tool exists to take over. This signal domain's payload must therefore
+include, per open branch/PR: how long the current pipeline has been
+`pending` and, if still ambiguous, the real per-step start/stop
+timestamps from Woodpecker's own API — flagging a context whose furthest-
+along step hasn't advanced across two consecutive AQC runs (not just "has
+been pending a while," which is also true of a normal multi-minute
+browser-E2E run) as a real "possibly stuck CI" signal, separate from an
+actual `failure`/`error` state (which should surface immediately, at full
+severity, never behind a persistence floor).
+
 ### 6.2 Plan and ledger execution health
 
 **Identity:** SDD ledger path (`.superpowers/sdd/<plan>/progress.md`) or
