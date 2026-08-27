@@ -1,7 +1,8 @@
 from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import IssueState
 from tools.kanban_sync.models import SyncItem
-from tools.kanban_sync.sync import reconcile, sync_pass_one
+from tools.kanban_sync import project_status
+from tools.kanban_sync.sync import close_stale_worktree_issues, reconcile, sync_pass_one
 
 
 class FakeGithubClient:
@@ -9,12 +10,22 @@ class FakeGithubClient:
         self.issues: dict[int, dict] = {}
         self._next_number = 1
         self.comments: list[tuple[int, str]] = []
+        self.project_items: dict[int, str] = {}   # issue number -> fake project item id
+        self.project_status: dict[int, str] = {}  # issue number -> current Status option name
+        self.project_status_calls = 0             # call counter, for "was it called again" assertions
 
     def find_by_marker(self, marker):
         for number, issue in self.issues.items():
             if marker in issue["body"]:
                 return IssueState(number=number, open=issue["open"], labels=frozenset(issue["labels"]))
         return None
+
+    def list_open_by_label(self, label):
+        return [
+            IssueState(number=number, open=True, labels=frozenset(issue["labels"]), body=issue["body"])
+            for number, issue in self.issues.items()
+            if issue["open"] and label in issue["labels"]
+        ]
 
     def create_issue(self, title, body, labels_):
         number = self._next_number
@@ -31,6 +42,14 @@ class FakeGithubClient:
 
     def post_comment(self, number, body):
         self.comments.append((number, body))
+
+    def ensure_on_project(self, issue_number):
+        self.project_items.setdefault(issue_number, str(issue_number))
+        return self.project_items[issue_number]
+
+    def set_project_status(self, item_id, status):
+        self.project_status[int(item_id)] = status
+        self.project_status_calls += 1
 
 
 def _item(kind="track", key="A", *, title="Track A", status=labels.STATUS_CLAIMABLE,
@@ -108,10 +127,10 @@ def test_sync_pass_one_dry_run_makes_no_mutating_calls():
 def test_sync_pass_one_new_issue_includes_phase_label():
     client = FakeGithubClient()
 
-    sync_pass_one([_item(phase=labels.PHASE_RESEARCH_EVIDENCE)], client, dry_run=False)
+    sync_pass_one([_item(phase=labels.PHASE_RESEARCH)], client, dry_run=False)
 
     (issue,) = client.issues.values()
-    assert labels.PHASE_RESEARCH_EVIDENCE in issue["labels"]
+    assert labels.PHASE_RESEARCH in issue["labels"]
 
 
 def test_sync_pass_one_no_phase_label_added_when_item_has_none():
@@ -125,12 +144,12 @@ def test_sync_pass_one_no_phase_label_added_when_item_has_none():
 
 def test_sync_pass_one_replaces_stale_phase_label_on_update():
     client = FakeGithubClient()
-    sync_pass_one([_item(phase=labels.PHASE_RESEARCH_EVIDENCE)], client, dry_run=False)
+    sync_pass_one([_item(phase=labels.PHASE_RESEARCH)], client, dry_run=False)
 
-    _, report = sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+    _, report = sync_pass_one([_item(phase=labels.PHASE_SPEC)], client, dry_run=False)
 
     (issue,) = client.issues.values()
-    assert issue["labels"] & labels.ALL_PHASE_LABELS == {labels.PHASE_DESIGN_SPEC}
+    assert issue["labels"] & labels.ALL_PHASE_LABELS == {labels.PHASE_SPEC}
     assert report.updated
 
 
@@ -139,11 +158,129 @@ def test_sync_pass_one_leaves_phase_label_alone_when_unchanged():
     same idempotency guarantee this file's own status/depends-on tests
     already prove for those two label families."""
     client = FakeGithubClient()
-    sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+    sync_pass_one([_item(phase=labels.PHASE_SPEC)], client, dry_run=False)
 
-    _, report = sync_pass_one([_item(phase=labels.PHASE_DESIGN_SPEC)], client, dry_run=False)
+    _, report = sync_pass_one([_item(phase=labels.PHASE_SPEC)], client, dry_run=False)
 
     assert report.updated == []
+
+
+def test_sync_pass_one_sets_project_status_for_newly_created_item():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(status=labels.STATUS_CLAIMABLE)], client, dry_run=False)
+
+    (number,) = client.issues.keys()
+    assert client.project_status[number] == project_status.STATUS_NEXT
+
+
+def test_sync_pass_one_maps_status_claimed_to_doing():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(status=labels.STATUS_CLAIMED)], client, dry_run=False)
+
+    (number,) = client.issues.keys()
+    assert client.project_status[number] == project_status.STATUS_DOING
+
+
+def test_sync_pass_one_maps_status_in_progress_to_doing():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(status=labels.STATUS_IN_PROGRESS)], client, dry_run=False)
+
+    (number,) = client.issues.keys()
+    assert client.project_status[number] == project_status.STATUS_DOING
+
+
+def test_sync_pass_one_maps_status_ready_for_review_to_waiting():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(status=labels.STATUS_READY_FOR_REVIEW)], client, dry_run=False)
+
+    (number,) = client.issues.keys()
+    assert client.project_status[number] == project_status.STATUS_WAITING
+
+
+def test_sync_pass_one_maps_status_blocked_to_waiting():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item(status=labels.STATUS_BLOCKED)], client, dry_run=False)
+
+    (number,) = client.issues.keys()
+    assert client.project_status[number] == project_status.STATUS_WAITING
+
+
+def test_sync_pass_one_sets_project_status_to_done_when_item_becomes_done_and_issue_closes():
+    """item.done is checked BEFORE item.status_label - necessary because
+    sources_tracks.py always sets status_label=STATUS_CLAIMABLE regardless
+    of done (unlike sources_roadmap.py/sources_plan.py). Mapping via
+    status_label alone would land a just-finished track on "Next" instead
+    of "Done"."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(status=labels.STATUS_CLAIMABLE, done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    # done=True but status_label still STATUS_CLAIMABLE, matching
+    # sources_tracks.py's real (if odd) behavior.
+    sync_pass_one([_item(status=labels.STATUS_CLAIMABLE, done=True)], client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_DONE
+
+
+def test_sync_pass_one_does_not_touch_project_status_for_an_already_closed_done_item_on_a_later_run():
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    sync_pass_one([_item(done=True)], client, dry_run=False)  # closes it, sets project status
+    calls_after_close = client.project_status_calls
+
+    sync_pass_one([_item(done=True)], client, dry_run=False)  # already closed, still done
+
+    assert client.project_status_calls == calls_after_close
+
+
+def test_sync_pass_one_reapplies_project_status_every_run_even_when_labels_unchanged():
+    """Proves the deliberate unconditional/self-healing choice: gating on
+    "did the label change this run" would mean this never fires for any
+    pre-existing item whose label already matches what's computed today."""
+    client = FakeGithubClient()
+    sync_pass_one([_item()], client, dry_run=False)
+    calls_after_first = client.project_status_calls
+
+    sync_pass_one([_item()], client, dry_run=False)  # identical input, no label diff
+
+    assert client.project_status_calls > calls_after_first
+
+
+def test_sync_pass_one_overwrites_a_manually_set_project_status_to_match_computed_status():
+    client = FakeGithubClient()
+    sync_pass_one([_item(status=labels.STATUS_CLAIMABLE)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.project_status[number] = "Waiting"  # simulate a human dragging the card
+
+    sync_pass_one([_item(status=labels.STATUS_CLAIMABLE)], client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_NEXT
+
+
+def test_sync_pass_one_dry_run_never_touches_the_project():
+    client = FakeGithubClient()
+
+    sync_pass_one([_item()], client, dry_run=True)
+
+    assert client.project_items == {}
+    assert client.project_status == {}
+
+
+def test_sync_pass_one_does_not_sync_project_status_for_a_manually_closed_issue_with_still_open_source():
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.close_issue(number)  # simulate a human closing it by hand
+    calls_before = client.project_status_calls
+
+    sync_pass_one([_item(done=False)], client, dry_run=False)  # source still open
+
+    assert client.project_status_calls == calls_before
 
 
 def test_reconcile_sets_depends_on_label_using_real_issue_number():
@@ -179,3 +316,81 @@ def test_reconcile_skips_depends_on_for_dependency_not_yet_created():
 
     (number,) = client.issues.keys()
     assert not [l for l in client.issues[number]["labels"] if l.startswith("depends-on:#")]
+
+
+def _worktree_item(branch="feat/x", *, status=labels.STATUS_IN_PROGRESS):
+    return _item(
+        kind="worktree", key=branch, title=f"Worktree: {branch}",
+        status=status,
+    )
+
+
+def test_close_stale_worktree_issues_closes_issue_whose_branch_is_no_longer_live():
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
+
+    assert client.issues[number]["open"] is False
+    assert report.closed
+    assert client.comments and "feat/x" in client.comments[0][1]
+
+
+def test_close_stale_worktree_issues_leaves_issue_open_when_branch_still_live():
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_worktree_issues(live_branches={"feat/x"}, client=client, dry_run=False)
+
+    assert client.issues[number]["open"] is True
+    assert report.closed == []
+
+
+def test_close_stale_worktree_issues_ignores_issue_whose_marker_kind_is_not_worktree():
+    client = FakeGithubClient()
+    sync_pass_one([_item(kind="track", key="A", title="Track A")], client, dry_run=False)
+
+    report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
+
+    assert report.closed == []
+    assert all(issue["open"] for issue in client.issues.values())
+
+
+def test_close_stale_worktree_issues_ignores_issue_whose_body_has_no_marker():
+    client = FakeGithubClient()
+    client.issues[1] = {
+        "title": "Manual", "body": "no marker here",
+        "labels": {labels.TYPE_TRACKING}, "open": True,
+    }
+
+    report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
+
+    assert report.closed == []
+    assert client.issues[1]["open"] is True
+
+
+def test_close_stale_worktree_issues_dry_run_makes_no_mutating_calls():
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=True)
+
+    assert client.issues[number]["open"] is True
+    assert client.comments == []
+    assert report.closed  # still reported, matching sync_pass_one's own dry-run convention
+
+
+def test_close_stale_worktree_issues_does_not_touch_a_manually_closed_tracking_issue():
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.close_issue(number)  # simulate a human closing it by hand
+
+    report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
+
+    assert client.issues[number]["open"] is False
+    assert client.comments == []
+    assert report.closed == []

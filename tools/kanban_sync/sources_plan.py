@@ -60,10 +60,12 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"'done' on a future sync run.",
             ),
             done=done,
-            # PHASE_IMPLEMENTED for a done classification, otherwise always
-            # PHASE_IMPLEMENTATION_PLAN, never a lower phase - every item
-            # reaching this function already has a real plan doc (that's how
-            # it became a candidate at all; see list_plan_candidates).
-            phase_label=labels.PHASE_IMPLEMENTED if done else labels.PHASE_IMPLEMENTATION_PLAN,
+            # PHASE_DONE for a done classification, otherwise always
+            # PHASE_PLAN, never a lower phase - every item reaching this
+            # function already has a real plan doc (that's how it became a
+            # candidate at all; see list_plan_candidates). Never
+            # PHASE_IMPLEMENTING/PHASE_VERIFICATION - those are
+            # worktree-only, see labels.py's own docstring.
+            phase_label=labels.PHASE_DONE if done else labels.PHASE_PLAN,
         ))
     return items

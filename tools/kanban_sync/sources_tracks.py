@@ -42,15 +42,17 @@ _NOT_DONE_OVERRIDE_KEYWORDS = (
 # from at all - see labels.py's own note on why there's no
 # PHASE_BRAINSTORMING constant.
 _PHASE_DOC_PATTERNS = (
-    (re.compile(r"docs/superpowers/plans/"), "PHASE_IMPLEMENTATION_PLAN"),
-    (re.compile(r"docs/superpowers/specs/"), "PHASE_DESIGN_SPEC"),
-    (re.compile(r"docs/superpowers/research/"), "PHASE_RESEARCH_EVIDENCE"),
+    (re.compile(r"docs/superpowers/plans/"), "PHASE_PLAN"),
+    (re.compile(r"docs/superpowers/specs/"), "PHASE_SPEC"),
+    (re.compile(r"docs/superpowers/research/"), "PHASE_RESEARCH"),
 )
 
 
 def _detect_phase(body: str, done: bool) -> str | None:
+    # Never PHASE_IMPLEMENTING/PHASE_VERIFICATION - those are worktree-only,
+    # see labels.py's own docstring.
     if done:
-        return labels.PHASE_IMPLEMENTED
+        return labels.PHASE_DONE
     for pattern, attr_name in _PHASE_DOC_PATTERNS:
         if pattern.search(body):
             return getattr(labels, attr_name)

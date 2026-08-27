@@ -20,8 +20,10 @@ from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
 from tools.kanban_sync.sources_roadmap import parse_roadmap_items
 from tools.kanban_sync.sources_tracks import parse_track_items
-from tools.kanban_sync.sources_worktree import collect_worktree_items
-from tools.kanban_sync.sync import reconcile
+from tools.kanban_sync.sources_worktree import (
+    collect_worktree_items, live_worktree_branches, parse_worktree_list,
+)
+from tools.kanban_sync.sync import close_stale_worktree_issues, reconcile
 
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
@@ -43,15 +45,18 @@ def _check_project_scope() -> None:
 
 
 # Conservative per-item GraphQL call estimates. A real (write) run costs up to
-# ~4 calls/item: sync_pass_one's find_by_marker + create_issue/set_labels, plus
-# sync_pass_two's own find_by_marker + set_labels for depends-on reconciliation.
-# A --dry-run never writes, only sync_pass_one's find_by_marker runs, so 1/item.
+# ~6 calls/item: sync_pass_one's find_by_marker + create_issue/set_labels +
+# ensure_on_project/set_project_status (2026-08-27, Project Status field sync -
+# both are GraphQL-backed under the hood despite looking like plain CLI flags,
+# same as the rest), plus sync_pass_two's own find_by_marker + set_labels for
+# depends-on reconciliation. A --dry-run never writes and never touches the
+# project - only sync_pass_one's find_by_marker runs - so 1/item, unchanged.
 # Found live 2026-08-27: a 33-item real sync exhausted the 5000/5000 GraphQL
 # quota partway through with zero advance warning, leaving fields/labels
 # half-applied - and the failure surfaced as a misleading gh CLI error ("unknown
 # owner type") rather than anything rate-limit-shaped, only identifiable via
 # GH_DEBUG=api. Refusing to start an under-budget run is safer than a partial one.
-_ESTIMATED_CALLS_PER_ITEM_WRITE = 4
+_ESTIMATED_CALLS_PER_ITEM_WRITE = 6
 _ESTIMATED_CALLS_PER_ITEM_DRY_RUN = 1
 
 
@@ -89,7 +94,14 @@ def _parse_sources(raw: str) -> list[str]:
     return sources
 
 
-def _collect_items(sources: list[str], plan_classifications: Path | None) -> list[SyncItem]:
+def _collect_items(
+    sources: list[str], plan_classifications: Path | None,
+) -> tuple[list[SyncItem], set[str] | None]:
+    """Returns (items, live_worktree_branches). live_worktree_branches is
+    None when "worktree" isn't among `sources` - that's also the signal
+    _cmd_sync uses to decide whether to run the stale-worktree-issue
+    closure pass (Part B), since that pass only makes sense when this run
+    actually has fresh worktree state to check against."""
     # Checked first, before any source-specific work (including real
     # subprocess calls for worktree/track), so a missing flag fails fast
     # rather than after wasting real `git`/`gh` calls (Task 10 review
@@ -99,6 +111,7 @@ def _collect_items(sources: list[str], plan_classifications: Path | None) -> lis
         sys.exit(1)
 
     items: list[SyncItem] = []
+    live_branches: set[str] | None = None
     client = GithubClient(REPO)
 
     if "worktree" in sources:
@@ -107,6 +120,7 @@ def _collect_items(sources: list[str], plan_classifications: Path | None) -> lis
             capture_output=True, text=True, check=True,
         ).stdout
         items += collect_worktree_items(porcelain, client)
+        live_branches = live_worktree_branches(parse_worktree_list(porcelain))
     if "roadmap" in sources:
         items += parse_roadmap_items(ROADMAP_PATH.read_text())
     if "track" in sources:
@@ -114,16 +128,20 @@ def _collect_items(sources: list[str], plan_classifications: Path | None) -> lis
     if "plan" in sources:
         items += build_plan_items(json.loads(plan_classifications.read_text()))
 
-    return items
+    return items, live_branches
 
 
 def _cmd_sync(args: argparse.Namespace) -> None:
     _check_project_scope()
     sources = _parse_sources(args.sources)
-    items = _collect_items(sources, args.plan_classifications)
+    items, live_branches = _collect_items(sources, args.plan_classifications)
     client = GithubClient(REPO)
     _check_rate_limit_budget(client, len(items), args.dry_run)
     report = reconcile(items, client, dry_run=args.dry_run)
+
+    if live_branches is not None:
+        stale_report = close_stale_worktree_issues(live_branches, client, dry_run=args.dry_run)
+        report.closed += stale_report.closed
 
     print(f"created: {len(report.created)}")
     for line in report.created:

@@ -9,8 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
-from tools.kanban_sync import labels
-from tools.kanban_sync.markers import build_marker
+from tools.kanban_sync import labels, project_status
+from tools.kanban_sync.markers import build_marker, parse_marker
 from tools.kanban_sync.models import SyncItem, SyncReport
 
 
@@ -20,6 +20,9 @@ class SyncGithubClient(Protocol):
     def set_labels(self, number: int, add: Sequence[str], remove: Sequence[str]) -> None: ...
     def close_issue(self, number: int) -> None: ...
     def post_comment(self, number: int, body: str) -> None: ...
+    def list_open_by_label(self, label: str): ...
+    def ensure_on_project(self, issue_number: int) -> str: ...
+    def set_project_status(self, item_id: str, status: str) -> None: ...
 
 
 def _desired_base_labels(item: SyncItem) -> set[str]:
@@ -50,6 +53,79 @@ def _mismatch_comment(item: SyncItem) -> str:
     )
 
 
+def _stale_worktree_comment(branch: str) -> str:
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return (
+        f"<!-- event: sync-stale-worktree | agent: kanban-board-sync | ts: {ts} -->\n"
+        f"Closing automatically: the worktree/branch `{branch}` this issue tracks "
+        f"is no longer present in `git worktree list` (merged and removed, or "
+        f"the worktree/branch was deleted). If this is wrong, reopen manually."
+    )
+
+
+def close_stale_worktree_issues(
+    live_branches: set[str],
+    client: SyncGithubClient,
+    *,
+    dry_run: bool,
+) -> SyncReport:
+    """Closes every open type:tracking issue whose worktree branch (parsed
+    from its body's sync marker) is no longer in `live_branches`. Needed
+    because build_worktree_items only ever iterates *currently-existing*
+    worktrees (git worktree list) - unlike sources_plan.py/sources_roadmap.py,
+    which iterate the full candidate set and correctly emit done=True items,
+    a removed worktree's item is simply absent from every future run's item
+    list, so sync_pass_one's per-item loop never sees it and never closes it
+    (issue #98, confirmed live 2026-08-27).
+
+    Defensive by construction: client.list_open_by_label already scopes to
+    type:tracking and to open issues only (so a manually-closed issue for a
+    dead branch is never even in the candidate set - no reopen risk). On top
+    of that, any issue whose body doesn't parse as a marker, or whose parsed
+    kind isn't "worktree", is skipped outright rather than trusting the
+    label alone."""
+    report = SyncReport(dry_run=dry_run)
+    for issue in client.list_open_by_label(labels.TYPE_TRACKING):
+        parsed = parse_marker(issue.body)
+        if parsed is None:
+            continue
+        kind, key = parsed
+        if kind != labels.SYNC_MARKER_KIND_WORKTREE or key in live_branches:
+            continue
+        if not dry_run:
+            client.post_comment(issue.number, _stale_worktree_comment(key))
+            client.close_issue(issue.number)
+        report.closed.append(f"#{issue.number} worktree:{key} (branch no longer live)")
+    return report
+
+
+def _sync_project_status(
+    item: SyncItem, number: int, client: SyncGithubClient, *, dry_run: bool,
+) -> None:
+    """Drives the Project's native "Status" single-select field - the only
+    mechanism that actually produces the board's visible columns (Labels
+    cannot drive Projects V2 board/table grouping at all). Runs
+    unconditionally every time it's called, not gated on whether labels
+    changed this run - see the design doc's §4.3 for why (gating would
+    mean this never fires for a pre-existing item whose label already
+    matches what's computed today). dry_run makes zero project calls,
+    matching every other mutating operation in this module.
+
+    item.done is checked BEFORE item.status_label, not the other way
+    around: sources_tracks.py always sets status_label=STATUS_CLAIMABLE
+    regardless of done (unlike sources_roadmap.py/sources_plan.py, which
+    correctly flip it) - mapping via status_label alone would land a
+    just-finished track on "Next" instead of "Done"."""
+    if dry_run:
+        return
+    status = (
+        project_status.STATUS_DONE if item.done
+        else project_status.STATUS_LABEL_TO_PROJECT_STATUS[item.status_label]
+    )
+    item_id = client.ensure_on_project(number)
+    client.set_project_status(item_id, status)
+
+
 def sync_pass_one(
     items: Sequence[SyncItem],
     client: SyncGithubClient,
@@ -74,6 +150,7 @@ def sync_pass_one(
             issue = client.create_issue(item.title, _render_body(item), desired_labels)
             number_by_identity[identity] = issue.number
             report.created.append(f"#{issue.number} {item.title}")
+            _sync_project_status(item, issue.number, client, dry_run=dry_run)
             continue
 
         number_by_identity[identity] = existing.number
@@ -83,6 +160,7 @@ def sync_pass_one(
                 if not dry_run:
                     client.close_issue(existing.number)
                 report.closed.append(f"#{existing.number} {item.title}")
+                _sync_project_status(item, existing.number, client, dry_run=dry_run)
             continue
 
         if not existing.open:
@@ -102,6 +180,7 @@ def sync_pass_one(
             if not dry_run:
                 client.set_labels(existing.number, sorted(add), sorted(remove))
             report.updated.append(f"#{existing.number} {item.title}")
+        _sync_project_status(item, existing.number, client, dry_run=dry_run)
 
     return number_by_identity, report
 

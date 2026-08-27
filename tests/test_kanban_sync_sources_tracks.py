@@ -127,7 +127,7 @@ def test_parse_track_items_phase_prefers_plan_over_spec_and_research():
 
     items = parse_track_items(text)
 
-    assert items[0].phase_label == labels.PHASE_IMPLEMENTATION_PLAN
+    assert items[0].phase_label == labels.PHASE_PLAN
 
 
 def test_parse_track_items_phase_falls_back_to_spec_when_no_plan_referenced():
@@ -139,7 +139,7 @@ def test_parse_track_items_phase_falls_back_to_spec_when_no_plan_referenced():
 
     items = parse_track_items(text)
 
-    assert items[0].phase_label == labels.PHASE_DESIGN_SPEC
+    assert items[0].phase_label == labels.PHASE_SPEC
 
 
 def test_parse_track_items_phase_falls_back_to_research_when_only_research_referenced():
@@ -150,7 +150,7 @@ def test_parse_track_items_phase_falls_back_to_research_when_only_research_refer
 
     items = parse_track_items(text)
 
-    assert items[0].phase_label == labels.PHASE_RESEARCH_EVIDENCE
+    assert items[0].phase_label == labels.PHASE_RESEARCH
 
 
 def test_parse_track_items_phase_is_none_when_no_doc_type_referenced():
@@ -161,7 +161,7 @@ def test_parse_track_items_phase_is_none_when_no_doc_type_referenced():
     assert items[0].phase_label is None
 
 
-def test_parse_track_items_done_track_is_phase_implemented_even_with_a_plan_referenced():
+def test_parse_track_items_done_track_is_phase_done_even_with_a_plan_referenced():
     text = (
         "## Track D — X\n\n**Status (2026-08-26):** complete, nothing left.\n\n"
         "See `docs/superpowers/plans/2026-08-25-x.md`.\n"
@@ -169,4 +169,21 @@ def test_parse_track_items_done_track_is_phase_implemented_even_with_a_plan_refe
 
     items = parse_track_items(text)
 
-    assert items[0].phase_label == labels.PHASE_IMPLEMENTED
+    assert items[0].phase_label == labels.PHASE_DONE
+
+
+def test_parse_track_items_never_emits_implementing_or_verification_phase():
+    """phase:implementing/phase:verification are worktree-only. Regression
+    guard against future drift on that decision."""
+    text = (
+        "## Track A — X\n\n**Status (2026-08-27):** in progress.\n\n"
+        "See `docs/superpowers/plans/2026-08-25-x.md`.\n\n"
+        "## Track B — Y\n\n**Status (2026-08-27):** complete.\n"
+    )
+
+    items = parse_track_items(text)
+
+    assert all(
+        i.phase_label not in {labels.PHASE_IMPLEMENTING, labels.PHASE_VERIFICATION}
+        for i in items
+    )
