@@ -92,3 +92,48 @@ def sync_pass_one(
             report.updated.append(f"#{existing.number} {item.title}")
 
     return number_by_identity, report
+
+
+def sync_pass_two(
+    items: Sequence[SyncItem],
+    number_by_identity: dict[tuple[str, str], int],
+    client: SyncGithubClient,
+    *,
+    dry_run: bool,
+) -> SyncReport:
+    report = SyncReport(dry_run=dry_run)
+    for item in items:
+        identity = (item.kind, item.key)
+        number = number_by_identity.get(identity)
+        if number is None or item.done:
+            continue  # not created this run, or already closed - no deps to set
+
+        desired = {
+            f"depends-on:#{number_by_identity[dep]}"
+            for dep in item.depends_on_keys
+            if dep in number_by_identity
+        }
+        existing = client.find_by_marker(build_marker(item.kind, item.key))
+        current = {
+            label for label in (existing.labels if existing else frozenset())
+            if label.startswith("depends-on:#")
+        }
+        add = desired - current
+        remove = current - desired
+        if add or remove:
+            if not dry_run:
+                client.set_labels(number, sorted(add), sorted(remove))
+            report.updated.append(f"#{number} depends-on updated")
+    return report
+
+
+def reconcile(
+    items: Sequence[SyncItem],
+    client: SyncGithubClient,
+    *,
+    dry_run: bool = False,
+) -> SyncReport:
+    number_by_identity, report = sync_pass_one(items, client, dry_run=dry_run)
+    pass_two_report = sync_pass_two(items, number_by_identity, client, dry_run=dry_run)
+    report.updated += pass_two_report.updated
+    return report

@@ -1,7 +1,7 @@
 from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import IssueState
 from tools.kanban_sync.models import SyncItem
-from tools.kanban_sync.sync import sync_pass_one
+from tools.kanban_sync.sync import reconcile, sync_pass_one
 
 
 class FakeGithubClient:
@@ -103,3 +103,38 @@ def test_sync_pass_one_dry_run_makes_no_mutating_calls():
     assert client.issues == {}
     assert report.dry_run is True
     assert report.created
+
+
+def test_reconcile_sets_depends_on_label_using_real_issue_number():
+    client = FakeGithubClient()
+    track_a = _item(kind="track", key="A", title="Track A")
+    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
+
+    reconcile([track_a, track_c], client)
+
+    c_number = [n for n, i in client.issues.items() if i["title"] == "Track C"][0]
+    a_number = [n for n, i in client.issues.items() if i["title"] == "Track A"][0]
+    assert f"depends-on:#{a_number}" in client.issues[c_number]["labels"]
+
+
+def test_reconcile_second_run_does_not_re_add_existing_depends_on_label():
+    client = FakeGithubClient()
+    track_a = _item(kind="track", key="A", title="Track A")
+    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
+    reconcile([track_a, track_c], client)
+
+    reconcile([track_a, track_c], client)  # second run, same input
+
+    c_number = [n for n, i in client.issues.items() if i["title"] == "Track C"][0]
+    depends_labels = [l for l in client.issues[c_number]["labels"] if l.startswith("depends-on:#")]
+    assert len(depends_labels) == 1  # not duplicated
+
+
+def test_reconcile_skips_depends_on_for_dependency_not_yet_created():
+    client = FakeGithubClient()
+    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
+
+    report = reconcile([track_c], client)  # Track A never in this run's item list
+
+    (number,) = client.issues.keys()
+    assert not [l for l in client.issues[number]["labels"] if l.startswith("depends-on:#")]
