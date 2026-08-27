@@ -114,6 +114,56 @@ def _reset_trading_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_trading_gate_state():
+    """main.account.trading_enabled/_client and config_store's
+    kalshi_account.trading_enabled are real, mutable singleton state that
+    only ever gets cleared by an explicit _reset_trading_state() call -
+    most tests in this file call it at SETUP (protecting themselves against
+    a leak from whichever test ran before), but calling it at setup alone
+    does nothing to protect the NEXT test from THIS one. monkeypatch.setattr
+    (main.account, "_client", ...) gets auto-restored after a test (back to
+    None, since _reset_trading_state() had just set it going in) - but
+    main.account.trading_enabled, flipped True by the real POST
+    /api/trading/enable code path rather than monkeypatch, is not.
+
+    Real, confirmed leak (root-cause-debugging investigation, 2026-08-27,
+    reproducing a ci/woodpecker/push/tests-pytest failure seen under real
+    `pytest -n 4` that never reproduced sequentially or single-file):
+    test_enable_trading_succeeds_with_correct_phrase_and_connected_account
+    ends at `assert main.account.trading_enabled is True` with no reset
+    afterward - confirmed by deterministically reproducing the exact
+    adversarial order with zero xdist involved: `pytest -p no:xdist tests/
+    test_trading_gate.py::test_enable_trading_succeeds_with_correct_phrase_
+    and_connected_account tests/test_trading_gate.py::
+    test_flatten_all_closes_paper_positions_with_correct_phrase` fails the
+    second test with exactly the reported AttributeError: 'NoneType' object
+    has no attribute 'get_positions' (main.account._client is None again,
+    but main.account.trading_enabled is still True from the leaking test,
+    so /api/trading/flatten-all now believes it should also flatten the
+    real account and reaches into a client that was never reconnected).
+
+    NOTE: this had first been suspected of
+    test_flatten_all_also_flattens_the_real_account_when_trading_enabled
+    instead, since it also flips trading_enabled True via the real route -
+    but that test already calls _reset_trading_state() as its own last line
+    (2026-08-22, commit a8de0347) and does not leak; pairing it directly
+    against test_flatten_all_closes_paper_positions_with_correct_phrase
+    under -p no:xdist passes cleanly. Verify the specific adversarial pair
+    before trusting a stack trace's call site to point at the right test -
+    the leak and the crash happen in different tests entirely.
+
+    Same class of fix as _reset_shared_singletons below: an every-test
+    autouse fixture, not another manual per-test call that's easy to add to
+    a new test's setup and just as easy to forget at its teardown - reset
+    unconditionally both before AND after every test in this file so no
+    future test that flips trading_enabled can leak into whichever test the
+    scheduler happens to run next, regardless of xdist worker ordering."""
+    _reset_trading_state()
+    yield
+    _reset_trading_state()
+
+
+@pytest.fixture(autouse=True)
 def _reset_shared_singletons():
     """main.state["discovery_cache"] and main.config_store are both real,
     mutable singletons redirected/constructed exactly ONCE at this file's
