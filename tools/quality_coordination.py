@@ -87,7 +87,14 @@ from tools.coordination_engine import Signal
 # ~5.4 hours apart. Set just above the largest observed gap in that sample. A 10-merge
 # sample, not the fuller 30-90-day pull spec §10 point 1 calls for - re-measure before
 # treating this as final (Task 9).
-FLOOR_HOURS_BRANCH = 6.0
+#
+# +1 2026-08-27 (Task 9 Step 2 re-measurement): git log --merges --format="%cI" -60 main
+# against this repo's real history showed 59 consecutive-merge gaps, median 0.29h, max
+# 7.34h (2026-08-25T04:21:56 -05:00 -> 2026-08-25T11:42:03 -05:00, an ordinary overnight
+# gap for a single-operator repo, not an anomaly). 7.34h materially exceeds the prior 6.0h
+# floor, so raised to 8.0h - comfortably above the largest observed gap in this still-
+# smaller-than-ideal 60-merge sample (spec §10 point 1 calls for a fuller 30-90-day pull).
+FLOOR_HOURS_BRANCH = 8.0
 
 # Evidence: no direct historical source for "how far apart do one dispatch's branches
 # land" exists in this repo; chosen generously since suppression only delays escalation by
