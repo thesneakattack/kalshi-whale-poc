@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 
 import pytest
@@ -31,6 +32,36 @@ def test_collect_items_errors_when_plan_source_missing_classifications():
         cli._collect_items(["plan"], None)
 
     assert exc.value.code == 1
+
+
+def test_collect_items_returns_none_live_worktree_branches_when_worktree_not_requested():
+    items, live_branches = cli._collect_items([], None)
+
+    assert items == []
+    assert live_branches is None
+
+
+def test_collect_items_returns_live_worktree_branches_when_worktree_requested(monkeypatch):
+    # A single monkeypatch of subprocess.run covers both calls:
+    # __main__.py's own direct `git worktree list` call, and (transitively,
+    # since GithubClient's _default_runner also calls the real subprocess.run)
+    # the `gh pr list` call collect_worktree_items makes per branch.
+    def fake_run(args, **kwargs):
+        if args[:3] == ["git", "worktree", "list"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=(
+                "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n"
+                "worktree /repo/.claude/worktrees/x\nHEAD def\nbranch refs/heads/feat/x\n"
+            ), stderr="")
+        if args[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="[]", stderr="")
+        raise AssertionError(f"unexpected call: {args}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    items, live_branches = cli._collect_items(["worktree"], None)
+
+    assert len(items) == 1
+    assert live_branches == {"feat/x"}
 
 
 def test_sync_subcommand_requires_sources_argument():
@@ -96,6 +127,48 @@ def test_check_rate_limit_budget_passes_when_sufficient():
     client = _FakeRateLimitClient(remaining=5000)
 
     cli._check_rate_limit_budget(client, item_count=33, dry_run=False)  # must not raise
+
+
+class _FakeReport:
+    def __init__(self):
+        self.created = []
+        self.updated = []
+        self.closed = []
+        self.flagged_mismatches = []
+
+
+def _patch_sync_pipeline(monkeypatch, *, items, live_branches):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "_collect_items", lambda sources, plan_classifications: (items, live_branches))
+    monkeypatch.setattr(cli, "_check_rate_limit_budget", lambda client, item_count, dry_run: None)
+    monkeypatch.setattr(cli, "reconcile", lambda items, client, dry_run: _FakeReport())
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: object())
+
+
+def test_cmd_sync_runs_stale_worktree_check_when_worktree_in_sources(monkeypatch):
+    calls = []
+    _patch_sync_pipeline(monkeypatch, items=[], live_branches={"feat/x"})
+    monkeypatch.setattr(
+        cli, "close_stale_worktree_issues",
+        lambda live_branches, client, dry_run: calls.append(live_branches) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="worktree", dry_run=False, plan_classifications=None))
+
+    assert calls == [{"feat/x"}]
+
+
+def test_cmd_sync_skips_stale_worktree_check_when_worktree_not_in_sources(monkeypatch):
+    calls = []
+    _patch_sync_pipeline(monkeypatch, items=[], live_branches=None)
+    monkeypatch.setattr(
+        cli, "close_stale_worktree_issues",
+        lambda live_branches, client, dry_run: calls.append(live_branches) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="roadmap", dry_run=False, plan_classifications=None))
+
+    assert calls == []
 
 
 def test_check_rate_limit_budget_uses_a_lower_estimate_for_dry_run():
