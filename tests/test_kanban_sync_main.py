@@ -216,6 +216,51 @@ def test_decompose_plan_subcommand_errors_when_plan_issue_not_found(monkeypatch,
     assert exc.value.code == 1
 
 
+class _FakeParentIssueClient:
+    """find_by_marker raises if called - proves --parent-issue bypasses
+    marker lookup entirely rather than merely overriding its result."""
+    def find_by_marker(self, marker):
+        raise AssertionError("find_by_marker must not be called when --parent-issue is given")
+
+
+def test_decompose_plan_subcommand_uses_parent_issue_directly_when_given(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeParentIssueClient())
+    monkeypatch.setattr(cli, "PLANS_DIR", tmp_path)
+    (tmp_path / "x.md").write_text("# X\n")
+    calls = []
+    monkeypatch.setattr(
+        cli, "decompose_plan",
+        lambda plan_filename, plan_text, parent_number, client, *, dry_run, start_from_task=1:
+            calls.append((plan_filename, parent_number, dry_run, start_from_task))
+            or {"tasks_found": 0, "sub_issues_created": [], "milestone": "x.md"},
+    )
+
+    cli.main(["decompose-plan", "--plan", "x.md", "--parent-issue", "75"])
+
+    assert calls == [("x.md", 75, False, 1)]
+
+
+def test_decompose_plan_subcommand_passes_start_from_task_through(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeParentIssueClient())
+    monkeypatch.setattr(cli, "PLANS_DIR", tmp_path)
+    (tmp_path / "x.md").write_text("# X\n")
+    calls = []
+    monkeypatch.setattr(
+        cli, "decompose_plan",
+        lambda plan_filename, plan_text, parent_number, client, *, dry_run, start_from_task=1:
+            calls.append(start_from_task)
+            or {"tasks_found": 0, "sub_issues_created": [], "milestone": "x.md"},
+    )
+
+    cli.main([
+        "decompose-plan", "--plan", "x.md", "--parent-issue", "75", "--start-from-task", "14",
+    ])
+
+    assert calls == [14]
+
+
 def test_cmd_sync_runs_close_completed_plan_parents_when_plan_in_sources(monkeypatch):
     calls = []
     _patch_sync_pipeline(monkeypatch, items=[], live_branches=None)

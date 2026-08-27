@@ -194,3 +194,57 @@ def test_decompose_plan_dry_run_makes_no_mutating_calls():
     assert client.created_milestones == []
     assert client.milestone_assignments == {}
     assert client.created_issues == []
+
+
+_THREE_TASK_PLAN = """# Some Plan
+
+### Task 1: First thing
+
+body
+
+### Task 2: Second thing
+
+more body
+
+### Task 3: Third thing
+
+even more body
+"""
+
+
+def test_decompose_plan_start_from_task_skips_earlier_tasks():
+    """Retroactively decomposing an in-flight plan (spec: an already-
+    partially-executed plan like a track's canonical doc) must not create
+    misleadingly-open sub-issues for tasks already known to be done."""
+    client = _FakeDecomposeClient()
+
+    result = decompose_plan(
+        "x.md", _THREE_TASK_PLAN, 42, client, dry_run=False, start_from_task=2,
+    )
+
+    assert result["tasks_found"] == 2
+    assert len(client.created_issues) == 2
+    assert client.created_issues[0]["title"] == "Task 2: Second thing"
+    assert client.created_issues[1]["title"] == "Task 3: Third thing"
+
+
+def test_decompose_plan_start_from_task_chains_from_the_first_included_task():
+    """The first included task must not carry a dangling depends-on
+    reference to a skipped, never-created earlier task's issue."""
+    client = _FakeDecomposeClient()
+
+    result = decompose_plan(
+        "x.md", _THREE_TASK_PLAN, 42, client, dry_run=False, start_from_task=2,
+    )
+
+    first_number = result["sub_issues_created"][0]
+    second_number = result["sub_issues_created"][1]
+    assert client.label_calls == [(second_number, [f"depends-on:#{first_number}"], [])]
+
+
+def test_decompose_plan_start_from_task_defaults_to_one_backward_compatible():
+    client = _FakeDecomposeClient()
+
+    result = decompose_plan("x.md", _CANONICAL_PLAN, 42, client, dry_run=False)
+
+    assert result["tasks_found"] == 2
