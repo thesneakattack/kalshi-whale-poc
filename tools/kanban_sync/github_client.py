@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from tools.kanban_sync import project_status
+
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
 _URL_NUMBER_RE = re.compile(r"/issues/(\d+)\s*$")
@@ -170,3 +172,38 @@ class GithubClient:
         if not results:
             return None
         return results[0]["state"]
+
+    def ensure_on_project(self, issue_number: int) -> str:
+        """Idempotently adds the issue to the board's project if not already
+        present; returns the project item's own node ID (PVTI_..., distinct
+        from the issue's node ID) needed by set_project_status's --id.
+        Not repo-scoped (owner/project-scoped) - bypasses _run's automatic
+        --repo flag like graphql_rate_limit already does."""
+        issue_url = f"https://github.com/{self._repo}/issues/{issue_number}"
+        result = self._runner([
+            "gh", "project", "item-add", str(project_status.PROJECT_NUMBER),
+            "--owner", project_status.PROJECT_OWNER,
+            "--url", issue_url,
+            "--format", "json",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh project item-add failed: {result.stderr or result.stdout}")
+        return json.loads(result.stdout)["id"]
+
+    def set_project_status(self, item_id: str, status: str) -> None:
+        """Sets the project's Status field by GraphQL node ID, not by
+        --field/--value name, so a UI rename of the option's display text
+        doesn't silently break this call."""
+        try:
+            option_id = project_status.STATUS_OPTION_IDS[status]
+        except KeyError:
+            raise GithubCliError(f"unknown project Status option: {status!r}") from None
+        result = self._runner([
+            "gh", "project", "item-edit",
+            "--id", item_id,
+            "--field-id", project_status.STATUS_FIELD_ID,
+            "--project-id", project_status.PROJECT_ID,
+            "--single-select-option-id", option_id,
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(f"gh project item-edit failed: {result.stderr or result.stdout}")

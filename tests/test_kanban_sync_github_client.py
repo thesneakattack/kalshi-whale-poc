@@ -330,6 +330,86 @@ def test_list_open_by_label_propagates_a_real_error():
         assert "500" in str(exc)
 
 
+def test_ensure_on_project_calls_gh_project_item_add_with_owner_and_url_not_repo():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"id": "PVTI_abc123", "content": {"number": 42}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.ensure_on_project(42)
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "project", "item-add"]
+    assert "--owner" in call and "thesneakattack" in call
+    assert "--url" in call and "https://github.com/thesneakattack/kalshi-whale-poc/issues/42" in call
+    assert "--format" in call and "json" in call
+    assert "--repo" not in call
+    assert result == "PVTI_abc123"
+
+
+def test_ensure_on_project_returns_the_projects_own_item_id_not_the_issue_id():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"id": "PVTI_xyz789", "content": {"number": 999}}))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.ensure_on_project(999)
+
+    assert result == "PVTI_xyz789"
+    assert result != 999
+
+
+def test_ensure_on_project_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.ensure_on_project(1)
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_set_project_status_calls_gh_project_item_edit_with_node_ids_not_names():
+    runner = FakeRunner()
+    runner.queue("")
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_project_status("PVTI_abc123", "Doing")
+
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "project", "item-edit"]
+    assert "--id" in call and "PVTI_abc123" in call
+    assert "--field-id" in call and "PVTSSF_lAHOAHYiPM4BhmnCzhghwaY" in call
+    assert "--project-id" in call and "PVT_kwHOAHYiPM4BhmnC" in call
+    assert "--single-select-option-id" in call and "3b0f9f3a" in call
+    assert "--field" not in call and "--value" not in call
+    assert "--repo" not in call
+
+
+def test_set_project_status_propagates_a_real_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.set_project_status("PVTI_abc123", "Doing")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
+
+
+def test_set_project_status_raises_a_clear_error_for_an_unknown_status_name():
+    runner = FakeRunner()
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.set_project_status("PVTI_abc123", "Bogus")
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "Bogus" in str(exc)
+    assert runner.calls == []  # never even attempted the gh call
+
+
 def test_nonzero_returncode_raises_githubcliierror():
     runner = FakeRunner()
     runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
