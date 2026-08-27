@@ -57,3 +57,5 @@ def test_quality_summary_makes_no_kalshi_network_calls(monkeypatch):
     resp = client.get("/api/quality/summary")
 
     assert resp.status_code == 200
+
+

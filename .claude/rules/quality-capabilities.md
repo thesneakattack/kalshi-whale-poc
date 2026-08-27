@@ -22,15 +22,46 @@ to the current task and load/use the relevant skill before acting.
   branches/PRs or adding GitHub write authority. Decision: report-only stays
   correct today (zero durable findings measured in the sample) —
   `docs/superpowers/research/2026-08-25-autonomous-quality-architecture-decision.md`.
-  A persisted, read-only observation series is fully specified and planned
-  but **not implemented**: `docs/superpowers/specs/2026-08-26-autonomous-
-  quality-coordination-design.md` / `docs/superpowers/plans/2026-08-26-
-  autonomous-quality-coordination.md` (9 TDD tasks, execute via
-  `superpowers:executing-plans` or `superpowers:subagent-driven-development`
-  when picked up — no bespoke orchestrator needed, unlike the investigation
-  itself). No GitHub write authority exists anywhere in that plan either —
-  see `.claude/rules/autonomous-quality-coordination-evidence.md` for the
+  A persisted, read-only observation series was fully specified and planned
+  in `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-
+  design.md` / `docs/superpowers/plans/2026-08-26-autonomous-quality-
+  coordination.md` (originally 9 TDD tasks, executed via
+  `superpowers:executing-plans`/`superpowers:subagent-driven-development` —
+  no bespoke orchestrator needed, unlike the investigation itself) and **is
+  now implemented** — see the **quality-coordination-observation** bullet
+  immediately below and `tools/quality_coordination.py` itself. No
+  GitHub write authority exists anywhere in that plan either — see
+  `.claude/rules/autonomous-quality-coordination-evidence.md` for the
   governing constraints any future write-lane decision must still satisfy.
+  **Corrected same day (plan Task 15):** the module was originally built
+  wired into the trading application (a `main.py` scheduler, a
+  `config/settings.yaml` entry, app-owned API routes) — a real
+  misunderstanding of this feature's own purpose (workflow/tooling quality
+  control, not application behavior). Fully decoupled: see `CLAUDE.md`'s
+  "Workflow/tooling and application code must never overlap" standing rule.
+  **Corrected again, more fundamentally, 2026-08-27:** even the corrected,
+  decoupled module still audited the wrong *subject* — the trading
+  application's own static code findings, not "the automated workflow
+  itself." Direct user correction: this was always meant to be an
+  automated project-manager/janitor over this repo's own engineering
+  workflow (branches/PRs/CI, `superpowers` plans/ledgers, standing-rule
+  compliance), informed by (not auditing) the app's own diagnostics. The
+  existing module is kept, renamed to `tools/quality_ratchet.py` (see the
+  next bullet) — "AQC" now names only the tool specified in
+  `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
+  workflow-design.md`, not yet implemented.
+- **quality-ratchet** (formerly `quality-coordination-observation`,
+  renamed 2026-08-27) — `tools/quality_ratchet.py`, a standalone workflow
+  tool (not application code — see the standing rule in `CLAUDE.md`), a
+  read-only persisted observation series over `tools.quality_audit`'s
+  static findings (identity/persistence/suppression policy from the
+  autonomous-quality-coordination investigation, I8/I11 — that investigation's
+  *mechanics* are reused here even though its *target* is now understood
+  to have been the wrong one, see above). No GitHub write authority
+  exists, and no application coupling of any kind — invoke directly
+  (`python -m tools.quality_ratchet`) or inspect
+  `tools/quality_ratchet_data/quality_ratchet.db` directly; there is no
+  API route and no dashboard view.
 - **economic-strategy-effectiveness-investigation** — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —

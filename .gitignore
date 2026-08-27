@@ -9,6 +9,11 @@ data/*.db-wal
 # services/backup/backup.py's snapshot output - one level below the flat
 # data/*.db pattern above, so it needs its own explicit line.
 data/backups/
+# tools/quality_ratchet.py's own db (renamed from quality_coordination.py 2026-08-27),
+# deliberately NOT under data/ - see that module's docstring for why (zero coupling to
+# the app's own backup/storage-health mechanisms, which specifically own the data/
+# directory).
+tools/quality_ratchet_data/
 .ddev/.web
 .ddev/db_snapshots
 
