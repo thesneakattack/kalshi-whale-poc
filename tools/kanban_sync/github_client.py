@@ -17,6 +17,7 @@ from typing import Callable, Sequence
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
 _URL_NUMBER_RE = re.compile(r"/issues/(\d+)\s*$")
+_LABEL_NOT_FOUND_RE = re.compile(r"'([^']+)' not found")
 
 
 @dataclass(frozen=True)
@@ -48,8 +49,15 @@ class GithubClient:
         return result.stdout
 
     def find_by_marker(self, marker: str) -> IssueState | None:
+        # GitHub's issue search does not match the literal `<!--`/`-->` HTML-comment
+        # delimiters (verified live 2026-08-27 against the real API - a search for the
+        # full wrapped marker always returns zero results even for an issue whose body
+        # genuinely contains that exact text). Search on the marker's inner content only.
+        search_term = marker.strip()
+        if search_term.startswith("<!--") and search_term.endswith("-->"):
+            search_term = search_term[4:-3].strip()
         stdout = self._run([
-            "issue", "list", "--search", marker, "--state", "all",
+            "issue", "list", "--search", search_term, "--state", "all",
             "--json", "number,state,labels", "--limit", "1",
         ])
         results = json.loads(stdout)
@@ -80,7 +88,22 @@ class GithubClient:
             args += ["--add-label", label]
         for label in remove:
             args += ["--remove-label", label]
-        self._run(args)
+        # depends-on:#N labels are created per-dependency, on demand - unlike the fixed
+        # status:*/type:* set (tools/kanban_sync/labels.py), gh never has them
+        # pre-created. `gh issue edit --add-label` does not auto-create a missing
+        # label, so create it and retry rather than propagate the error (found live
+        # 2026-08-27, the first real sync's first depends-on edge). Bounded to one
+        # retry per label in `add` so a genuinely unrelated failure still raises.
+        for _ in range(len(add) + 1):
+            try:
+                self._run(args)
+                return
+            except GithubCliError as exc:
+                match = _LABEL_NOT_FOUND_RE.search(str(exc))
+                if not match:
+                    raise
+                self._run(["label", "create", match.group(1), "--color", "ededed"])
+        raise GithubCliError(f"gh issue edit {number} still failing after creating missing labels")
 
     def close_issue(self, number: int) -> None:
         self._run(["issue", "close", str(number)])

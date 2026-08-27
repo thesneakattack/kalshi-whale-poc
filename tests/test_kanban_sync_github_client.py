@@ -43,6 +43,26 @@ def test_find_by_marker_returns_none_when_no_results():
     assert "--repo" in runner.calls[0] and REPO in runner.calls[0]
 
 
+def test_find_by_marker_strips_html_comment_delimiters_before_searching():
+    """Found live (2026-08-27): GitHub's issue search does not match the literal
+    `<!--`/`-->` characters, so searching for the full wrapped marker string always
+    returns zero results even for an issue that genuinely has that exact marker in
+    its body - verified manually against the real API. Every sync re-run would
+    therefore treat every already-created issue as new and create a duplicate. The
+    search term must be the marker's inner content only."""
+    runner = FakeRunner()
+    runner.queue(json.dumps([{"number": 48, "state": "OPEN", "labels": []}]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_by_marker("<!-- autotrade-sync: roadmap:some-key -->")
+
+    assert result.number == 48
+    search_call = runner.calls[0]
+    search_term = search_call[search_call.index("--search") + 1]
+    assert "<!--" not in search_term and "-->" not in search_term
+    assert search_term == "autotrade-sync: roadmap:some-key"
+
+
 def test_find_by_marker_parses_existing_issue():
     runner = FakeRunner()
     runner.queue(json.dumps([
@@ -91,6 +111,61 @@ def test_set_labels_sends_add_and_remove_flags():
     assert call[:3] == ["gh", "issue", "edit"]
     assert "--add-label" in call and "status:done" in call
     assert "--remove-label" in call and "status:claimable" in call
+
+
+def test_set_labels_creates_a_missing_dynamic_label_then_retries():
+    """depends-on:#N labels are created per-dependency, on demand - unlike the fixed
+    status:*/type:* set, gh never has them pre-created. Found live (2026-08-27): the
+    first real sync against a fresh repo failed outright on the very first depends-on
+    edge with `'depends-on:#75' not found`, because gh issue edit --add-label never
+    auto-creates a missing label the way gh issue create's --label implicitly can for
+    some hosts. set_labels must create the missing label and retry, not just propagate
+    the error."""
+    runner = FakeRunner()
+    runner.queue(
+        "",
+        returncode=1,
+        stderr="failed to update https://github.com/thesneakattack/kalshi-whale-poc/issues/77: 'depends-on:#75' not found",
+    )
+    runner.queue("")  # gh label create
+    runner.queue("")  # retried gh issue edit, now succeeds
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_labels(77, add=["depends-on:#75"], remove=[])
+
+    assert runner.calls[0][:3] == ["gh", "issue", "edit"]
+    assert runner.calls[1][:3] == ["gh", "label", "create"]
+    assert "depends-on:#75" in runner.calls[1]
+    assert runner.calls[2][:3] == ["gh", "issue", "edit"]
+
+
+def test_set_labels_creates_each_missing_label_across_multiple_retries():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="'depends-on:#75' not found")
+    runner.queue("")  # create depends-on:#75
+    runner.queue("", returncode=1, stderr="'depends-on:#76' not found")
+    runner.queue("")  # create depends-on:#76
+    runner.queue("")  # retried edit, now succeeds
+    client = GithubClient(REPO, runner=runner)
+
+    client.set_labels(77, add=["depends-on:#75", "depends-on:#76"], remove=[])
+
+    label_create_calls = [c for c in runner.calls if c[:3] == ["gh", "label", "create"]]
+    assert len(label_create_calls) == 2
+    assert any("depends-on:#75" in c for c in label_create_calls)
+    assert any("depends-on:#76" in c for c in label_create_calls)
+
+
+def test_set_labels_propagates_a_real_error_unrelated_to_a_missing_label():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 500: Internal Server Error")
+    client = GithubClient(REPO, runner=runner)
+
+    try:
+        client.set_labels(5, add=["status:done"], remove=[])
+        assert False, "expected GithubCliError"
+    except GithubCliError as exc:
+        assert "500" in str(exc)
 
 
 def test_close_issue_calls_gh_issue_close():
