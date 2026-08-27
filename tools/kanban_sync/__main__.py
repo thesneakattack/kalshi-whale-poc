@@ -12,6 +12,7 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.kanban_sync.github_client import GithubClient
@@ -36,6 +37,36 @@ def _check_project_scope() -> None:
         print(
             "error: gh CLI is missing the 'project' OAuth scope needed for "
             "Projects V2 board access.\nRun: gh auth refresh -s project",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# Conservative per-item GraphQL call estimates. A real (write) run costs up to
+# ~4 calls/item: sync_pass_one's find_by_marker + create_issue/set_labels, plus
+# sync_pass_two's own find_by_marker + set_labels for depends-on reconciliation.
+# A --dry-run never writes, only sync_pass_one's find_by_marker runs, so 1/item.
+# Found live 2026-08-27: a 33-item real sync exhausted the 5000/5000 GraphQL
+# quota partway through with zero advance warning, leaving fields/labels
+# half-applied - and the failure surfaced as a misleading gh CLI error ("unknown
+# owner type") rather than anything rate-limit-shaped, only identifiable via
+# GH_DEBUG=api. Refusing to start an under-budget run is safer than a partial one.
+_ESTIMATED_CALLS_PER_ITEM_WRITE = 4
+_ESTIMATED_CALLS_PER_ITEM_DRY_RUN = 1
+
+
+def _check_rate_limit_budget(client, item_count: int, dry_run: bool) -> None:
+    remaining, reset_epoch = client.graphql_rate_limit()
+    per_item = _ESTIMATED_CALLS_PER_ITEM_DRY_RUN if dry_run else _ESTIMATED_CALLS_PER_ITEM_WRITE
+    estimated = item_count * per_item
+    if remaining < estimated:
+        reset_str = datetime.fromtimestamp(reset_epoch, tz=timezone.utc).isoformat()
+        print(
+            f"error: GitHub GraphQL rate limit too low to safely run this sync.\n"
+            f"  remaining: {remaining}, estimated need: ~{estimated} (for {item_count} items)\n"
+            f"  resets at: {reset_str}\n"
+            f"Refusing to start rather than fail partway through a bulk sync and "
+            f"leave issues/fields/labels half-applied.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -91,6 +122,7 @@ def _cmd_sync(args: argparse.Namespace) -> None:
     sources = _parse_sources(args.sources)
     items = _collect_items(sources, args.plan_classifications)
     client = GithubClient(REPO)
+    _check_rate_limit_budget(client, len(items), args.dry_run)
     report = reconcile(items, client, dry_run=args.dry_run)
 
     print(f"created: {len(report.created)}")
