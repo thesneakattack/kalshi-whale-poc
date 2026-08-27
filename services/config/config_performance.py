@@ -23,7 +23,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "config_performance.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "config_performance.db"
 
 # The only strategy field that isn't a tunable knob - deliberately excluding
 # just this one (rather than hand-listing every field that *is* tunable)

@@ -8,7 +8,7 @@ import asyncio
 from fastapi import APIRouter
 
 from services.app_state import state
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.research import research
 
 router = APIRouter()

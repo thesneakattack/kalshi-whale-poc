@@ -31,7 +31,7 @@ from services.app_state import state, trade_stream, whale_provider
 from services import whale_pipeline_perf
 from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()

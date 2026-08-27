@@ -12,13 +12,14 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import candidate_log, config_performance, market_analyst_agent, market_history, series_watcher, settlement_edge
+from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge
+from services.config import config_performance
 from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi import websocket as kalshi_websocket
 from services.account_positions import _slim_fill, _slim_position
 from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_lookup import _category_by_ticker, _close_time_by_ticker

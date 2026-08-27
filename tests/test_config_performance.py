@@ -1,4 +1,4 @@
-from services import config_performance as cp
+from services.config import config_performance as cp
 
 
 def _cfg(**overrides):

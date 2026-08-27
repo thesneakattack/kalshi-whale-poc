@@ -262,7 +262,7 @@ def _maybe_run_backup(cfg: dict) -> None:
 if __name__ == "__main__":
     import json
 
-    from services.config_store import config_store
+    from services.config.config_store import config_store
 
     _cfg = (config_store.get().get("backup") or {})
     result = run_backup_cycle(_cfg.get("retention_count", _DEFAULT_RETENTION_COUNT))

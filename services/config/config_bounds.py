@@ -239,7 +239,7 @@ def check_all(cfg: dict) -> list[dict]:
     """check() across the global strategy config and every category/series
     override, since an override can be individually broken while the global
     default is fine (and vice versa)."""
-    from services import config_overrides
+    from services.config import config_overrides
 
     base = cfg.get("strategy") or {}
     overrides = cfg.get("strategy_overrides") or {}

@@ -1,6 +1,6 @@
 import pytest
 
-from services.config_overrides import merge_override, remove_override, resolve
+from services.config.config_overrides import merge_override, remove_override, resolve
 
 
 def test_resolve_returns_global_defaults_when_no_overrides():

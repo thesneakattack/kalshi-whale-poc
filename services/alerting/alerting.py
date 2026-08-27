@@ -172,7 +172,7 @@ async def _dispatch_notification(category: str, severity: str, message: str, tri
     why this never raises into the caller and never blocks the trading
     loop. No-op when alerting.webhook_url isn't configured (the opt-in
     default)."""
-    from services.config_store import config_store
+    from services.config.config_store import config_store
 
     webhook_url = ((config_store.get().get("alerting") or {}).get("webhook_url") or "").strip()
     if not webhook_url:

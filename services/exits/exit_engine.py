@@ -15,7 +15,7 @@ settlement-close primitive without duplicating it.
 import time
 
 from services import kalshi_fees, market_analyst_agent, market_history, signal_log
-from services import config_overrides
+from services.config import config_overrides
 from services.paper_broker import PaperBroker, Position
 
 # Same freshness window services/whalewatchers/kalshi_trade_tape.py already

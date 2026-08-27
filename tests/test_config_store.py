@@ -39,8 +39,8 @@ real file, and identical exception behavior on truncated reads).
 import yaml
 import pytest
 
-from services import config_store as config_store_module
-from services.config_store import ConfigStore
+from services.config import config_store as config_store_module
+from services.config.config_store import ConfigStore
 
 
 def _write_yaml(path, data):

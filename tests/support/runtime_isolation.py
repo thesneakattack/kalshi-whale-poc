@@ -8,7 +8,7 @@ covers a persistence module this registry doesn't (yet) know about.
 
 Real, live bug found and fixed 2026-08-23: several test files redirected
 their own DB_PATH at module scope, before their own `import main`, and each
-one was safe in isolation. But services.app_state/services.config_store's
+one was safe in isolation. But services.app_state/services.config.config_store's
 module-scope singletons (`broker = PaperBroker(...)`, `config_store =
 ConfigStore()`) are constructed exactly ONCE per Python process, the first
 time anything imports them - cached in sys.modules for the rest of that
@@ -48,7 +48,7 @@ PERSISTENCE_MODULE_PATHS: tuple[str, ...] = (
     "services.backup.backup",
     "services.candidate_ledger",
     "services.candidate_log",
-    "services.config_performance",
+    "services.config.config_performance",
     "services.data_quarantine",
     "services.fault_log",
     "services.game_state",
@@ -167,7 +167,7 @@ def _redirect_data_dir_modules(temp_root: Path) -> None:
 
 
 def _redirect_config_store(temp_root: Path) -> None:
-    from services import config_store as config_store_module
+    from services.config import config_store as config_store_module
 
     tmp_config_path = temp_root / "settings.yaml"
     shutil.copy(config_store_module.CONFIG_PATH, tmp_config_path)

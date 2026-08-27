@@ -9,7 +9,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from services.app_state import index_stream, state, trade_stream
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.observability import observability
 
 router = APIRouter()

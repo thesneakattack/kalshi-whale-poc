@@ -1646,7 +1646,7 @@ def test_rejects_the_1c_and_99c_extremes_on_both_sides(tmp_path, monkeypatch):
 def test_allows_the_boundary_prices_themselves(tmp_path, monkeypatch):
     """0.02 and 0.98 are the edges of what's allowed, not past them - an
     off-by-one here would silently narrow the strategy's whole universe."""
-    from services import config_bounds
+    from services.config import config_bounds
 
     assert config_bounds.is_tradeable_unit_cost(0.02) is True
     assert config_bounds.is_tradeable_unit_cost(0.98) is True

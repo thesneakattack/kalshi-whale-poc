@@ -47,7 +47,7 @@ from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
 from services import fault_log
 from services import whale_gate
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.latency_agg import LatencyAgg, bucket_for, empty_buckets, p95_upper_bound
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {

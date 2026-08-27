@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 from services import candidate_log as cl_module
-from services import config_performance as cp_module
-from services import config_store as config_store_module
+from services.config import config_performance as cp_module
+from services.config import config_store as config_store_module
 from services.market_catalog import market_catalog as mc_module
 from services import market_analyst_agent
 from services.market_analyst_agent import _db as maa_db_module
@@ -116,7 +116,7 @@ def _reset_trading_state():
 def test_files_are_actually_redirected_away_from_the_real_repo():
     """Guards the guard: if this ever fails, every other test in this file
     could be touching real project files instead of the temp copies."""
-    import services.config_store as csm
+    import services.config.config_store as csm
     assert "sandbox/autotrade/config/settings.yaml" not in str(csm.config_store._path)
     assert "sandbox/autotrade/data" not in str(pb_module.DB_PATH)
     assert "sandbox/autotrade/data" not in str(rm_module.DB_PATH)

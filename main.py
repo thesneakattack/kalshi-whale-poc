@@ -31,7 +31,7 @@ from services.history import regime_analytics
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
 from services.market_events import event_schedule
-from services import config_performance
+from services.config import config_performance
 from services import market_analyst_agent
 from services.market_catalog import market_catalog
 from services import market_history
@@ -53,7 +53,7 @@ from services import signal_log
 from services import title_cache
 from services.history import trade_analytics
 from services import trade_category
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.http_client import classify, close_client, get_and_reset_rate_limit_hits, http_metrics_snapshot
 from services.kalshi.public import KalshiPublicGateway
 from services.kalshi.account_client import KalshiAccountClient

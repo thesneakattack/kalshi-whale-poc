@@ -10,9 +10,10 @@ cleanest of the modules pulled out this pass.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import config_performance, signal_log, tick_executor
+from services import signal_log, tick_executor
+from services.config import config_performance
 from services.app_state import bump_generation
-from services.config_store import config_store
+from services.config.config_store import config_store
 from services.whale_calibration import calibration_history, confidence_calibration
 
 router = APIRouter()

@@ -8,7 +8,7 @@ from fastapi import APIRouter
 
 from services import signal_log
 from services.backtest import backtest
-from services.config_store import config_store
+from services.config.config_store import config_store
 
 router = APIRouter()
 

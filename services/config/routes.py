@@ -9,9 +9,9 @@ main.py does app.include_router(...) at the same path as before.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import config_performance
+from services.config import config_performance
 from services.app_state import bump_generation
-from services.config_store import config_store
+from services.config.config_store import config_store
 
 router = APIRouter()
 

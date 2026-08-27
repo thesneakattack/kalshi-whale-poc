@@ -39,7 +39,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from services import config_performance, signal_log
+from services import signal_log
+from services.config import config_performance
 from services import paper_broker as pb_module
 from services.config.config_paths import _config_value_at_path
 
@@ -248,7 +249,8 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
     category/series override chain the strategy itself uses, with every
     layer (base band + both override tiers) individually rewound to its
     entry-time value, not just the base."""
-    from services import config_overrides, trade_category
+    from services import trade_category
+    from services.config import config_overrides
 
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
@@ -604,7 +606,7 @@ def check_config_bounds(cfg: dict) -> Check:
     far worse than a loud failure because the config keeps *claiming* the
     protection is on. See services/config_bounds.py for the arithmetic and
     the real 2026-08-17 case that motivated it."""
-    from services import config_bounds
+    from services.config import config_bounds
 
     violations = config_bounds.check_all(cfg)
     if not violations:
