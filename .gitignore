@@ -14,6 +14,10 @@ data/backups/
 # the app's own backup/storage-health mechanisms, which specifically own the data/
 # directory).
 tools/quality_ratchet_data/
+# tools/coordination_engine.py's own db (the new AQC workflow tool, "quality_coordination"
+# now names this instead - see that module's docstring). Same reasoning as
+# quality_ratchet_data/ above.
+tools/quality_coordination_data/
 .ddev/.web
 .ddev/db_snapshots
 
