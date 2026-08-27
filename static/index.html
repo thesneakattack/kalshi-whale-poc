@@ -954,6 +954,7 @@ CONFIDENCE: a weighted blend of eight factors - how large the print is relative 
           purpose — pick only what you actually want gone.
         </p>
         <div class="field"><label><input type="checkbox" id="reset-cb-paper" checked> Paper account — bankroll, positions, trade log, daily-loss baseline, and the in-memory signal/decision feed</label></div>
+        <div class="field" style="margin-left:20px;"><label><input type="checkbox" id="reset-cb-close-positions-first"> Close open positions first — flattens every open position at its latest known price (realizing P&amp;L) before archiving, instead of abandoning it unrealized. No effect on a date-range-scoped reset.</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-shadow"> Shadow trades — logged intended real-bankroll trades and shadow daily-loss baseline</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-signal-log"> Whale track record — every logged signal and its resolved win/loss outcome (the "real" accuracy history)</label></div>
         <div class="field"><label><input type="checkbox" id="reset-cb-market-analyst"> Market analyst — every AI-generated market analysis and its resolved hit/miss record</label></div>

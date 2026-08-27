@@ -101,6 +101,7 @@ $('reset-btn').addEventListener('click', async () => { await fetchJSON('/api/res
 $('config-reset-btn').addEventListener('click', async () => {
   const body = {
     paper: $('reset-cb-paper').checked,
+    close_positions_first: $('reset-cb-close-positions-first').checked,
     shadow: $('reset-cb-shadow').checked,
     signal_log: $('reset-cb-signal-log').checked,
     market_analyst: $('reset-cb-market-analyst').checked,

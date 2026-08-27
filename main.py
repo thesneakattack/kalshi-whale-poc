@@ -1414,6 +1414,16 @@ class ResetBody(BaseModel):
     # trade_archive.compare().
     archive_label: str | None = None
     archive_reason: str | None = None
+    # Opt-in (2026-08-27 direct request): a paper reset otherwise archives
+    # open positions as-is, unrealized P&L never credited - abandoned, not
+    # closed. When true (and the reset is unscoped - a ranged reset never
+    # touches positions/bankroll to begin with, see range_start/range_end
+    # below), every open position is flattened at its latest known price
+    # via the same broker.close_all_positions() POST /api/trading/
+    # flatten-all already uses, BEFORE the archive snapshot is taken - so
+    # the permanent archive records real realized closes instead of
+    # orphaned archived_positions rows.
+    close_positions_first: bool = False
     shadow: bool = False
     signal_log: bool = False
     market_analyst: bool = False
@@ -1462,6 +1472,10 @@ def _reset_domain_counts(body: ResetBody) -> dict[str, int | None]:
             broker.count_trade_range(body.range_end, body.range_start)
             if (body.range_start or body.range_end) else len(broker.trade_log)
         )
+        # Only meaningful when it will actually run - see reset_broker's own
+        # "not ranged" guard for why a ranged reset never closes positions.
+        if body.close_positions_first and not (body.range_start or body.range_end):
+            counts["close_positions_first"] = len(broker.positions)
     if body.shadow:
         counts["shadow"] = None
     if body.signal_log:
@@ -1488,7 +1502,8 @@ async def reset_preview(
     paper: bool = False, shadow: bool = False, signal_log: bool = False, market_analyst: bool = False,
     market_catalog: bool = False, market_history: bool = False, series_evaluator: bool = False,
     candidate_log: bool = False, calibration_history: bool = False,
-    trade_category: bool = False, range_start: float | None = None, range_end: float | None = None,
+    trade_category: bool = False, close_positions_first: bool = False,
+    range_start: float | None = None, range_end: float | None = None,
 ):
     # Dry-run counterpart to POST /api/reset - same domain/range selection,
     # deletes nothing. Powers the Danger Zone's "here's what you're about
@@ -1498,7 +1513,8 @@ async def reset_preview(
         paper=paper, shadow=shadow, signal_log=signal_log, market_analyst=market_analyst,
         market_catalog=market_catalog, market_history=market_history, series_evaluator=series_evaluator,
         candidate_log=candidate_log, calibration_history=calibration_history,
-        trade_category=trade_category, range_start=range_start, range_end=range_end,
+        trade_category=trade_category, close_positions_first=close_positions_first,
+        range_start=range_start, range_end=range_end,
     )
     return {"counts": _reset_domain_counts(body), "scope": "all" if not (range_start or range_end) else "range"}
 
@@ -1530,11 +1546,23 @@ async def reset_broker(body: ResetBody = ResetBody()):
         )
 
     if body.paper:
-        # Archive BEFORE anything is destroyed (2026-08-17 direct request:
-        # "a safe reset of the paper trading mechanic while maintaining a
-        # log of important data"). The motivating incident is concrete: a
-        # prior reset left paper_broker.db reaching back only to 08/16
-        # 19:28, so every trade-level question about anything earlier -
+        # Close open positions BEFORE the archive snapshot (2026-08-27 direct
+        # request), so archive_epoch below records real, realized closes
+        # instead of orphaned archived_positions rows with unrealized P&L
+        # never credited. Skipped for a ranged reset - positions/bankroll are
+        # current live state, never touched by range scoping (see
+        # ResetBody.range_start's own docstring), so closing them here would
+        # surprise a caller who only asked to purge a date range of history.
+        if body.close_positions_first and not ranged:
+            closed = broker.close_all_positions(
+                state["latest_prices"], f"reset: closed before {scope} reset",
+            )
+            cleared.append({"domain": "close_positions_first", "closed": len(closed)})
+        # Archive BEFORE anything else is destroyed (2026-08-17 direct
+        # request: "a safe reset of the paper trading mechanic while
+        # maintaining a log of important data"). The motivating incident is
+        # concrete: a prior reset left paper_broker.db reaching back only to
+        # 08/16 19:28, so every trade-level question about anything earlier -
         # realised win rate, mean entry unit cost, exit breakdown - was
         # unanswerable. reset_log recorded that a reset happened; nothing
         # recorded what it removed.
