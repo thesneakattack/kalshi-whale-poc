@@ -243,3 +243,49 @@ def collect_branch_signals(
         signals.append(Signal(identity=identity, domain="branch", payload=payload, still_present=True))
 
     return signals, frozenset(suppressed_keys), frozenset(immediate_keys)
+
+
+"""Plan and ledger execution health signal domain (spec §6.2). Identity: the ledger/plan
+file's own path (relative to repo root). Payload: last recorded task/round line. Spec
+§6.2's other payload field - days since the last commit touching that plan's ASSOCIATED
+BRANCH (not the ledger file's own commit history: .superpowers/sdd/<plan>/ is gitignored
+scratch state, so the ledger file itself is never committed at all) - needs the same
+ledger-to-branch mapping Task 7 already names as an implementation-time detail (spec §8
+action 3), not resolved here either; see this task's own Interfaces note above. Ledger-
+line-format caveat: see this task's own note above - no real .superpowers/sdd/*/progress.md
+exists in this checkout to validate the parsing against yet.
+"""
+_LEDGER_COMPLETE_RE = re.compile(r"\bSTATUS:\s*COMPLETE\b", re.IGNORECASE)
+
+# Evidence: see this task's own note - no populated real ledger exists yet to measure
+# completion time from directly; provisional, deliberately longer than the branch domain's
+# floor since a plan/ledger can legitimately span several working sessions.
+FLOOR_HOURS_LEDGER = 72.0
+
+
+def _ledger_last_state_line(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _ledger_is_complete(last_line: str) -> bool:
+    return bool(_LEDGER_COMPLETE_RE.search(last_line))
+
+
+def collect_ledger_signals(ledger_paths: list[Path], *, at: datetime) -> list[Signal]:
+    signals: list[Signal] = []
+    for path in ledger_paths:
+        if not path.exists():
+            continue
+        text = path.read_text()
+        last_line = _ledger_last_state_line(text)
+        if _ledger_is_complete(last_line):
+            continue
+
+        signals.append(Signal(
+            identity=f"ledger:{path}",
+            domain="ledger",
+            payload={"last_state_line": last_line},
+            still_present=True,
+        ))
+    return signals
