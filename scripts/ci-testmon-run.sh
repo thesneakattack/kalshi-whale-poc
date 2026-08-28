@@ -22,10 +22,10 @@
 # decides full-suite vs testmon-scoped and runs pytest accordingly.
 set -u
 
-if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
-  # The actual merge gate (PR event) or a just-merged main push - always
-  # full, unscoped, never testmon-selected. See tests-pytest.yml's header,
-  # tier 2.
+if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_PIPELINE_EVENT:-}" = "manual" ] || [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
+  # The actual merge gate (PR event), a manual "run the tests" trigger, or a
+  # just-merged main push - always full, unscoped, never testmon-selected.
+  # See tests-pytest.yml's header, tiers 2 and 4.
   #
   # -m "not slow" (2026-08-26): excludes tests/test_quality_audit.py's two
   # real-repo-tree scans, which run the identical checks
