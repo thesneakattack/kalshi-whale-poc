@@ -3752,6 +3752,430 @@ suite green with every phase flag flipped on.
 
 ---
 
+## Phase P7 — WS-primary decision-relevant state, REST as reconnect-triggered
+   verification (H12/H13)
+
+**Source:** `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`
+Hypotheses H12/H13, added 2026-08-27 - a distinct investigation thread from the P0-P6
+phases above (WS ingest/queue mechanics), addressing a different question: is REST or
+WS *authoritative* for position-management and application state, not how fast WS
+messages get consumed once received.
+
+### Architecture decision
+
+**Direct instruction, given three times without the architecture changing
+(2026-08-15, 2026-08-24, 2026-08-27's correction):** *"rest api should only be used to
+confirm decisions before theyre made"* / *"polling should be removed altogether in
+favor of taking data from websockets."* H12 found the concrete, never-touched
+mechanism (`main.py:782-784`'s wholesale REST-overwrite of `state["latest_prices"]`
+every tick); H13 extended the sweep application-wide and found three more concrete
+gaps (`signal_log.mark_resolved`, `_fetch_account_snapshot`, five discarded
+`market_lifecycle_v2` event types) plus three places the target pattern already works
+today, live, as proof it's buildable here (the streaming trade-tape's full REST
+replacement, the `settled`-handler's REST-verify-at-resolution, and I4's
+REST-as-audit-not-replacement reconciliation).
+
+**Authoritative-practice research that shapes every task below** (`docs/kalshi/`, not
+memory - re-verify if `docs/kalshi/README.md`'s fetch dates for these pages look
+stale by the time this phase is picked up): `websocket-connection.md`'s own AsyncAPI
+schema shows `seq` exists **only** on subscription-management responses
+(`subscribed`/`unsubscribed`/`ok`) and on `orderbook_delta`'s own snapshot/delta data
+messages (confirmed: `public-trades.md`, `market-ticker.md`, and
+`market-and-event-lifecycle.md` - the three schemas that actually matter for this
+phase - carry no `seq` field on their data messages at all, zero matches on direct
+inspection). **There is no per-message gap-detection mechanism Kalshi documents for
+`trade`/`ticker`/`market_lifecycle_v2`/`fill`/`market_positions`.** The only
+documented recovery event is a full reconnect (`quick_start_websockets.md`:
+"Implement reconnection logic with exponential backoff" - no resume/replay
+capability exists on this API tier, unlike FIX's `KalshiRT` retransmission sessions
+this app doesn't use). Concretely, this means: WS delivery within one live connection
+is TCP-ordered and complete by protocol design - the risk this phase actually needs
+to defend against is **connection loss**, not silent in-connection message drops.
+`main.py:782-784`'s every-6-second wholesale overwrite was never actually defending
+against a real gap risk (no such gap-detection signal exists to have prompted it) -
+it was solving a problem this protocol doesn't have, while creating the real one H12
+found (stomping fresher WS data on a fixed schedule unrelated to whether anything
+actually changed).
+
+**Chosen family: extend Family A** (WS-primary state, REST only to seed genuinely
+missing data or to verify at a real trigger point) - **not** a new mechanism, but the
+exact pattern already proven twice in this codebase (the 2026-08-23 settlement
+inversion, the `fill`/`market_positions` WS-write path) and reusing this *plan's own*
+already-designed reconnect infrastructure: Task 21's connection-generation stamping
+and Task 27's `on_loss_event(reason, occurred_at)` callback, fired on reconnect and
+error-25. The correct trigger for a REST-verify pass, per the research above, is a
+reconnect - not a fixed 6-second timer, not a per-message sequence check that doesn't
+exist for these channels.
+
+**Rejected alternatives:**
+- **Family C (dissolve `trading_loop` into WS-triggered handlers + independent
+  schedulers entirely)** - rejected for *this* remediation pass, not rejected
+  outright. None of H12/H13's confirmed gaps require it: each (`latest_prices`,
+  `signal_log`, `_fetch_account_snapshot`, discarded lifecycle events) is
+  independently fixable in place. A full dissolution is the largest-blast-radius
+  option against a live, safety-adjacent hot path, with the least fault-injection
+  precedent in this codebase - disproportionate to what the evidence actually
+  demands. Two of three `check_exits` call sites are already WS-triggered (finished,
+  not proposed); the tick-loop's own call stays, now reading correctly-maintained
+  WS-primary state instead of being redesigned away.
+- **Family B (per-field freshness-contract shared cache)** - deferred, not rejected.
+  Real value for the separate "different-cadence concerns bundled into one tick"
+  observation (`event_titles`/`live_status`/`series_track_record` per H12), but none
+  of the three concrete P7 gaps need it - each has exactly one natural owner already
+  (`_process_stream_ticker` for price, the lifecycle handler for
+  settlement/signal-resolution, the fill/position handlers for account state).
+  Revisit only if a future gap doesn't fit the "one WS handler already owns this
+  field" shape these three do.
+- **Family D (deeper REST caching/conditional fetch)** - rejected, per H12: repeats
+  the exact pattern three prior audits already tried without addressing what's
+  authoritative.
+
+**Tie to CLAUDE.md's HARD RULE (the data plane is the product)** - each task below is
+evaluated against, not just "fewer REST calls":
+- **Completeness**: Task 28 (reconnect-triggered position/account verify) is the
+  actual completeness backstop for exactly the one real gap window (a connection
+  drop) - stronger than the removed blind 6s poll, not weaker, because it's now
+  triggered by the real risk event instead of a timer with no relationship to it.
+- **Accuracy**: Task 29's merge-not-overwrite fix is the direct fix for H12's
+  labeled-value problem (a field silently holding a periodically-reset value instead
+  of what it claims to be, live).
+- **Timeliness**: the whole point - WS-primary means position management acts on
+  current data between ticks, not data that's up to 6s stale by construction.
+- **Speed of execution**: fewer REST round-trips on the tick-critical path directly
+  serves this per the HARD RULE's own "latency from signal to placed order is part
+  of the edge" framing.
+- **Flow rate/fidelity**: not materially changed by this phase; noted for
+  completeness, not because either is at risk here.
+- Per the HARD RULE's own instruction, every task's hot-path cost is measured, not
+  assumed - see each task's own verification step.
+
+---
+
+### Task 28: Generalize Task 27's reconnect/error-25 loss-event callback into a
+    shared hook, add a position/account REST-verify subscriber
+
+**Files:**
+- Modify: `services/diagnostics/trade_capture_reconciliation.py` (Task 27's
+  `on_loss_event` becomes one of possibly several registered callbacks, not the
+  only one - re-read Task 27's actual shipped code before this task starts, since
+  it may have evolved the exact function signature during its own implementation)
+- Create: `services/position/ws_state_verify.py`
+- Modify: `services/kalshi/websocket.py` (`_record_disconnect`, the error-25 path -
+  same two call sites Task 27 already touches, adding one more callback invocation
+  alongside the existing one)
+- Test: `tests/test_ws_state_verify.py`
+
+**Interfaces:**
+- Produces: `ws_state_verify.on_connection_loss(reason: str, *, occurred_at: float) -> None`
+  - schedules a bounded, single-shot REST-verify pass (mirrors Task 27's
+    `_schedule_sweep`/`drain_pending_sweeps` shape exactly - reuse that pattern, don't
+    invent a second one) for (a) every currently-open position's ticker
+    (`broker.positions.keys() | real_position_tickers`, same set `main.py`'s
+    `open_position_tickers` already computes) and (b) the real account's
+    balance/positions/fills.
+  - `ws_state_verify.drain_pending_verifications(client, cfg) -> dict` - called from
+    `main.py`'s tick loop (bounded, max one pending verification drained per tick,
+    same shape as Task 27's own drain), does a single `get_markets_by_tickers` for
+    open-position tickers and one `_fetch_account_snapshot`-shaped call, both marked
+    `caller_class("critical_position")`.
+
+- [ ] **Step 1: Read Task 27's actual shipped implementation first** - this task
+  depends on it directly (same call sites, same callback shape). If Task 27 hasn't
+  shipped yet when this task is picked up, do Task 27 first; do not duplicate its
+  reconnect/error-25 wiring independently.
+- [ ] **Step 2: Write the failing test**
+
+```python
+# tests/test_ws_state_verify.py
+import pytest
+
+
+def test_on_connection_loss_schedules_a_verification_pass(monkeypatch):
+    from services.position import ws_state_verify as wsv
+    scheduled = []
+    monkeypatch.setattr(wsv, "_schedule_verification", lambda reason, occurred_at: scheduled.append((reason, occurred_at)))
+    wsv.on_connection_loss("reconnect", occurred_at=123.0)
+    assert scheduled == [("reconnect", 123.0)]
+
+
+@pytest.mark.asyncio
+async def test_drain_pending_verifications_refreshes_only_open_position_tickers(monkeypatch):
+    from services.position import ws_state_verify as wsv
+    wsv._pending_verifications.clear()
+    wsv.on_connection_loss("reconnect", occurred_at=100.0)
+
+    calls = []
+
+    class _FakeClient:
+        async def get_markets_by_tickers(self, tickers):
+            calls.append(sorted(tickers))
+            return {t: {"ticker": t, "yes_bid_dollars": "0.42"} for t in tickers}
+
+    result = await wsv.drain_pending_verifications(
+        _FakeClient(), open_position_tickers=["TICK-A", "TICK-B"], cfg={"kalshi_account": {"trading_enabled": False}},
+    )
+    assert calls == [["TICK-A", "TICK-B"]]
+    assert result["verified_tickers"] == ["TICK-A", "TICK-B"]
+```
+
+- [ ] **Step 3: Run it, watch it fail** (`ws_state_verify` doesn't exist yet).
+- [ ] **Step 4: Implement `ws_state_verify.py`**, mirroring
+  `trade_capture_reconciliation.py`'s `_pending_sweeps`/`_schedule_sweep`/
+  `on_loss_event` shape exactly (same bounded-queue, single-drain-per-tick pattern -
+  read that file's real current code for the precise structure to copy, don't
+  re-derive it from this plan's earlier description alone since Task 27 may have
+  refined it during implementation).
+- [ ] **Step 5: Wire the second callback** in `services/kalshi/websocket.py`'s
+  `_record_disconnect` and error-25 handling, alongside Task 27's existing
+  `trade_capture_reconciliation.on_loss_event(...)` call - both fire from the same
+  two call sites, independently.
+- [ ] **Step 6: Wire `drain_pending_verifications` into `main.py`'s tick loop**,
+  bounded to one drain per tick, `caller_class("critical_position")`.
+- [ ] **Step 7: Measure hot-path cost** (HARD RULE requirement, not optional) -
+  confirm `on_connection_loss` itself (the callback, not the drained verification)
+  costs microseconds, not milliseconds, on the reconnect path - it only appends to a
+  bounded list, the actual REST work happens later on the tick loop's own existing
+  `critical_position` budget, not synchronously on the WS reader.
+- [ ] **Step 8: Run the full test suite for a regression check.**
+- [ ] **Step 9: Commit:** `git commit -m "feat: reconnect-triggered position/account REST-verify, reusing Task 27's loss-event pattern (H12/H13 P7)"`
+
+---
+
+### Task 29: `state["latest_prices"]`/`state["latest_asks"]` - merge WS data,
+    stop wholesale REST overwrite
+
+**Files:**
+- Modify: `main.py` (lines 782-793, current line numbers - re-verify against HEAD
+  before editing, this file has moved during the session that found this gap)
+- Test: append to `tests/test_trading_gate.py` or wherever `trading_loop`'s
+  `latest_prices` behavior is currently tested (`grep -rn "latest_prices" tests/`)
+
+**Interfaces:**
+- Changes: the REST-driven assignment becomes a **merge that never overwrites a
+  ticker `_process_stream_ticker` has already written this connection**, not a
+  dict-literal replacement. New tickers this tick's `_fetch_markets` result
+  introduces (never seen via WS yet) are seeded from REST, exactly as today, since
+  that's the genuine gap-fill case, not the overwrite case H12 found.
+- Cold-start / no-WS-yet case stays REST-seeded - this is not a wholesale removal of
+  REST from `latest_prices`, it's fixing which case REST is allowed to win.
+
+- [ ] **Step 1: Read the current exact code at `main.py:782-793`** and
+  `_process_stream_ticker`'s `state["latest_prices"][ticker] = ...` assignment
+  (`services/whale_stream/whale_stream_handlers.py`, confirm the current line - it
+  was ~251 when H12 was written, re-verify) before writing the fix, per this plan's
+  own established grounding discipline.
+- [ ] **Step 2: Write the failing test** - a ticker gets a WS-driven price update
+  between two ticks; asserts the next tick's REST-driven refresh does not revert it.
+
+```python
+def test_ws_ticker_price_update_survives_the_next_tick_rest_refresh(monkeypatch):
+    # Seed state["latest_prices"][ticker] via the WS path (call
+    # _process_stream_ticker directly with a synthetic ticker_msg, matching the
+    # real shape - yes_bid_dollars present), then simulate one more trading_loop
+    # tick's REST-driven latest_prices assignment with an OLDER price for the same
+    # ticker in that tick's `markets` result. Assert the WS-set price survives.
+    ...
+```
+
+- [ ] **Step 3: Run it, watch it fail** - today's wholesale overwrite reverts it
+  every time.
+- [ ] **Step 4: Change `main.py:782-784`'s assignment to a merge**:
+
+```python
+for m in markets:
+    ticker = m.get("ticker")
+    if not ticker:
+        continue
+    if ticker not in state["latest_prices"]:  # never seen via WS this connection - REST seeds it
+        state["latest_prices"][ticker] = float(m.get("yes_bid_dollars") or 0.5)
+```
+
+  (Read this against the real current code before finalizing - `state["latest_
+  prices"]` needs a real initial value for every genuinely new ticker, and the exact
+  condition for "never seen via WS" needs to match how `_process_stream_ticker`
+  actually keys the dict, which this plan's earlier read already confirmed is the
+  same ticker string.) Apply the identical merge shape to `state["latest_asks"]`
+  (lines 790-793).
+- [ ] **Step 5: Run it, watch it pass.**
+- [ ] **Step 6: Run the full `check_exits`/exit-management test suite for a
+  regression check** - this is the safety-adjacent part. Confirm no test depended on
+  `latest_prices` being wholesale-replaced every tick (none should, per Step 2's own
+  design, but confirm rather than assume, matching Task 20's own "pay particular
+  attention" precedent for this exact function).
+- [ ] **Step 7: Live verification** (paper mode only) - confirm via `GET /api/state`
+  that a position's displayed price tracks WS ticker pushes between REST ticks
+  rather than only updating every 6s. Not just unit-tested - this is exactly the
+  kind of claim this plan's own P3.5 live-scale work insisted on confirming live,
+  not just in a test double.
+- [ ] **Step 8: Commit:** `git commit -m "fix: stop state[latest_prices] from wholesale-overwriting WS-driven data every tick (H12 P7)"`
+
+---
+
+### Task 30: Wire `signal_log` resolution off the existing `settled` lifecycle
+    handler
+
+**Files:**
+- Modify: `services/signal_log.py` (new function)
+- Modify: `services/whale_stream/whale_stream_handlers.py` (`_process_stream_lifecycle`'s
+  `settled` branch, ~line 484-518 - re-verify against HEAD)
+- Test: append to `tests/test_signal_log.py` and the lifecycle-handler test file
+
+**Interfaces:**
+- Produces: `signal_log.resolve_from_market_results(ticker: str, result: str) -> int`
+  - matches the naming convention `market_analyst_agent.resolve_from_market_results`/
+  `candidate_log.resolve_from_market_results` already use, returns the count of rows
+  resolved. Resolves every unresolved (`resolved = 0`) row for this ticker, computing
+  `correct = (result == row["side"])` per row (each signal has its own `side`, unlike
+  the other three resolvers which resolve uniformly per ticker) - `mark_resolved`
+  already exists and does the actual write, this is the ticker-scoped query wrapping
+  it that doesn't exist yet.
+- The 30s/200-batch REST poll (`_check_signal_resolutions`) is **not removed** -
+  demoted to the slower safety net it should always have been (catches a ticker this
+  app wasn't watching at settlement time, or a genuinely missed lifecycle event),
+  matching every other one of the four resolvers' existing "additive to, not a
+  replacement for, the REST-tick fallback" comment. Both paths are idempotent
+  (`WHERE resolved = 0`), so firing from both is safe by construction, same
+  correctness argument the `settled` handler's own docstring already makes for the
+  other four.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_settled_lifecycle_event_resolves_matching_signal_log_rows(tmp_path, monkeypatch):
+    # Isolate signal_log's DB_PATH via monkeypatch (established test convention).
+    # log_signal(...) an unresolved row for ticker="T1", side="yes".
+    # Call signal_log.resolve_from_market_results("T1", "yes").
+    # Assert the row is now resolved=1, correct=1, and unresolved_batch no longer returns it.
+    ...
+```
+
+- [ ] **Step 2: Run it, watch it fail** - `resolve_from_market_results` doesn't
+  exist yet.
+- [ ] **Step 3: Add `signal_log.resolve_from_market_results`**:
+
+```python
+def resolve_from_market_results(ticker: str, result: str) -> int:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, side FROM signals WHERE ticker = ? AND resolved = 0", (ticker,),
+        ).fetchall()
+        if not rows:
+            return 0
+        now = time.time()
+        conn.executemany(
+            "UPDATE signals SET resolved = 1, correct = ?, resolved_at = ? WHERE id = ?",
+            [(1 if result == r[1] else 0, now, r[0]) for r in rows],
+        )
+    return len(rows)
+```
+
+- [ ] **Step 4: Run it, watch it pass.**
+- [ ] **Step 5: Call it from the `settled` branch** in `_process_stream_lifecycle`,
+  alongside the existing three resolver calls (`market_history.record_outcome`,
+  `settlement_edge.resolve_window`, `market_analyst_agent.resolve_from_market_results`,
+  `candidate_log.resolve_from_market_results`) - same `{ticker: result}`-derived
+  values already computed in that branch, no new data needed. Add `signal_log` to
+  this file's imports.
+- [ ] **Step 6: Run the lifecycle-handler test suite for a regression check.**
+- [ ] **Step 7: Commit:** `git commit -m "feat: resolve signal_log off the settled lifecycle event instead of REST-poll-only (H13 P7)"`
+
+---
+
+### Task 31: Reconnect-triggered REST-verify replaces `_fetch_account_snapshot`'s
+    blind 20s reconcile
+
+**Files:**
+- Modify: `services/position/account_positions.py`
+- Test: append to the account-snapshot test file
+
+**Interfaces:**
+- Changes: `_fetch_account_snapshot` stops unconditionally reconciling/overwriting
+  WS-sourced `state["account"]` data on a flat 20s timer. Instead: trust the
+  WS-sourced `fill`/`market_positions` updates (`_process_stream_fill`/
+  `_process_stream_position`, already shipped) as authoritative between connection
+  losses; Task 28's `ws_state_verify` reconnect hook covers the actual gap-risk
+  window. `balance` (which has no WS channel at all, per H13 §4) keeps its own
+  independent, much-longer interval cache (e.g. 60s, not 20s - balance changes only
+  on a fill, which WS already reports) rather than being folded into the same
+  reconcile-everything call.
+- Real-account impact today is architectural, not behavioral: `trading_enabled` is
+  `false`, so no live fill/position traffic exists yet to observe the difference -
+  this task is about being correctly designed for when it's enabled, not fixing a
+  currently-visible symptom. Treat it with the same care as any other
+  trading-path-adjacent change per CLAUDE.md's safety posture, not less because it's
+  currently inert.
+
+- [ ] **Step 1: Read the current `_fetch_account_snapshot`/`_ACCOUNT_SNAPSHOT_REFRESH_SEC`
+  code in full** (`services/position/account_positions.py:137-188` per H13's
+  citation - re-verify) before changing it.
+- [ ] **Step 2: Write the failing test** - a WS-sourced position update
+  (`_process_stream_position`) followed by a REST-triggered snapshot fetch within
+  the old 20s window should no longer be overwritten; a reconnect event should
+  still trigger a real reconcile.
+- [ ] **Step 3: Run it, watch it fail.**
+- [ ] **Step 4: Split the cache**: `balance` keeps its own interval (tune from 20s
+  to 60s, matching "balance only changes on a fill" reasoning above); `positions`/
+  `fills` stop being unconditionally refetched on the same timer - only refetched
+  when `ws_state_verify`'s reconnect-triggered pass (Task 28) requests it, or when
+  `state["account"]` has never been populated at all (cold start, same "seed only
+  what's genuinely missing" shape as Task 29).
+- [ ] **Step 5: Run it, watch it pass; run the account/position test suite for a
+  regression check.**
+- [ ] **Step 6: Commit:** `git commit -m "fix: stop unconditionally REST-reconciling WS-sourced account state every 20s (H13 P7)"`
+
+---
+
+### Task 32: Measure whether lifecycle-driven `created`/`activated` events would
+    reduce catalog-scan REST volume, before deciding to wire them
+
+**Explicitly measurement-first, not implementation** - H13 §5 flagged this
+feasibility question as genuinely unassessed (does wiring the 5 discarded lifecycle
+event types into `market_catalog` reduce `catalog_scan`'s REST rescan volume, or add
+a second, redundant discovery path alongside it), and this plan's own "no premature
+conclusion" rule applies directly - this is exactly the shape of guess ("wire the
+unused channel, it'll obviously help") the rule warns against.
+
+**Files:**
+- Modify: `services/whale_stream/whale_stream_handlers.py` (`_process_stream_lifecycle`,
+  add a counter only - no behavior change)
+- Modify: `services/market_watch/catalog_scan.py` (`_scan_catalog_batch`, add a
+  counter only)
+
+- [ ] **Step 1: Add a bounded metric**: for each `created`/`activated` lifecycle
+  event received, record whether that same ticker/event is *also* touched by
+  `_scan_catalog_batch`'s own next rescan within a short window (e.g. the scan's own
+  `_CATALOG_SCAN_MIN_INTERVAL_SEC` window) - this directly answers H13 §5's
+  unresolved question (real overlap vs. two independent paths) with live data
+  instead of guessing.
+- [ ] **Step 2: Run a live paper-mode soak** (this plan's own established pattern -
+  see Task 17b) for long enough to observe a real sample of both created/activated
+  events and catalog-scan cycles.
+- [ ] **Step 3: Decide, with the measured overlap, whether wiring these event types
+  would reduce `catalog_scan`'s REST volume materially or merely duplicate it** -
+  write the finding (either way - a negative result is still real progress per this
+  plan's own established discipline) into
+  `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md` before
+  deciding whether a follow-up implementation task is warranted.
+- [ ] **Step 4: Commit the measurement code and its finding as one task**, same
+  shape as Task 17c - a benchmark/finding commit, not necessarily a behavior change.
+
+---
+
+**P7 gate:** Full test suite green with every P7 change live (no flags needed - these
+are all strictly-additive-or-corrective changes, not opt-in features, matching the
+"stop doing the wrong thing" shape of the underlying bugs rather than a new toggle).
+Live paper-mode confirmation (`GET /api/state`) that: `latest_prices` for an open
+position updates between REST ticks; a `settled` lifecycle event resolves
+`signal_log` without waiting for the next 30s batch; a reconnect visibly triggers
+`ws_state_verify`'s drain (new counter, exposed via `ingest_metrics()` or
+`/api/health/pipeline`, matching every other phase's own visibility requirement).
+Cross-post the shipped findings into `services/position/README.md` (or create it,
+following an existing module's format, per CLAUDE.md's cross-posting rule) and
+`services/signal_log`'s own module docstring, so a future audit of either module
+finds this there rather than needing to know this plan doc exists.
+
+---
+
 ## Self-review
 
 **Spec coverage:** every numbered section of
@@ -3784,3 +4208,42 @@ Tasks 14, 15, 16. Caller classes (`critical_whale`, `critical_position`,
 `trade_tape_poll`, `reconciliation`) are introduced once each (Tasks 12/22/26/27)
 and reused by name thereafter, matching `services/http_client.py`'s existing
 `CALLER_CLASSES` registration pattern.
+
+---
+
+**Phase P7 self-review (added 2026-08-27, addendum — the phases above map to the
+original `2026-08-25-realtime-data-plane-remediation-design.md`; P7 maps to a later,
+separate investigation thread and is reviewed on its own terms here rather than
+forced into that earlier spec's section numbering):**
+
+**Finding coverage:** H12 (`state["latest_prices"]` wholesale overwrite) → Task 29,
+directly. H13's three new gaps → `signal_log.mark_resolved` single-caller gap → Task
+35; `_fetch_account_snapshot`'s unconditional 20s reconcile → Task 31; the discarded
+`created`/`activated` lifecycle event types → Task 32 (measurement-first, per H13's
+own explicit "feasibility unassessed" flag — deliberately not an implementation task
+yet). H13's two lower-priority interactive-tier gaps (`orderbook_delta`,
+`user_orders`) are **not** tasked here — both confirmed low-impact today
+(interactive-only call sites, `user_orders` inert while `trading_enabled: false`) and
+`orderbook_delta` is new capability, not a completeness/accuracy fix, a different
+kind of work than this phase's actual scope; left as an explicit future item in the
+known-findings doc rather than silently dropped.
+
+**Reused infrastructure, not duplicated:** Task 28 depends on and extends Task 27's
+`on_loss_event` callback and Task 21's connection-generation concept rather than
+building a parallel reconnect-detection mechanism — the plan's own established
+pattern (Task 27 already builds exactly the "fire on reconnect/error-25" hook this
+phase needed) was checked for reuse before any new primitive was proposed, matching
+the "prefer the simplest candidate" rule this phase's own architecture-decision
+section cites.
+
+**No premature conclusion, checked against the rule's own named examples:** neither
+"add a queue" nor "add a cache layer" nor "increase a limit" appears as a bare
+solution anywhere in P7 — every task is a targeted, evidenced correction to a named
+line/function found in the known-findings doc, and Task 32 is explicitly a
+measurement, not an implementation, exactly where the evidence (H13 §5) says the
+answer isn't known yet.
+
+**Placeholder scan:** same standard as the rest of this plan — every task names its
+real files/line ranges (flagged for re-verification against HEAD where the
+underlying investigation is now a few commits old, matching Tasks 3/15/17/18/21/22/
+24/27's own precedent for this), every code step shows real code, no "TBD" text.
