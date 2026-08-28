@@ -46,6 +46,31 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
+# Same live-session detection .claude/hooks/guard_workflow.py's R6 rule
+# already uses (a Claude session's control socket -> its /proc/<pid>/cwd),
+# reimplemented in bash since this script has no Python dependency
+# otherwise. Used below to refuse unlocking a worktree a live session is
+# actually sitting in, regardless of what the three staleness checks say -
+# a lock is the one signal this script previously honored unconditionally,
+# and code-review on the initial unlock fix (2026-08-28) correctly flagged
+# that stripping it without this check would silently defeat whatever
+# protection it was providing.
+worktree_has_live_session() {
+  local target sockdir sock pid cwd
+  target="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/cc-socks"
+  [ -d "$sockdir" ] || return 1
+  for sock in "$sockdir"/*.sock; do
+    [ -e "$sock" ] || continue
+    pid="$(basename "$sock" .sock)"
+    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null)" || continue
+    if [ "$cwd" = "$target" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Parse `git worktree list --porcelain` into parallel arrays of
 # path/branch, and find the primary checkout (real .git directory, not a
 # linked worktree's .git file).
@@ -121,6 +146,31 @@ for i in "${!WORKTREE_PATHS[@]}"; do
       continue
     fi
 
+    if worktree_has_live_session "$path"; then
+      echo "kept: $branch - a live Claude session's cwd is inside $path; not touching its lock or removing it" >&2
+      kept=$((kept + 1))
+      continue
+    fi
+
+    # Unlock before attempting removal - both `worktree remove` below and
+    # `worktree prune` in the ddev fallback refuse a locked worktree. A
+    # lock left over from whatever agent session used this worktree (and
+    # already confirmed above not to be a currently-live session) has no
+    # further bearing on whether it's provably stale by the three checks
+    # above. was_locked tracks whether this call actually changed
+    # anything, so a failed removal below can restore the original lock
+    # state instead of silently leaving a previously-locked worktree
+    # unprotected. Real bug found 2026-08-28: without the unlock, the ddev
+    # fallback deleted a locked worktree's directory but `worktree prune`
+    # silently skipped deregistering it, leaving git's worktree metadata
+    # pointing at a now-nonexistent path - `branch -d` then refused with
+    # "used by worktree", aborting the whole script (set -e) with the
+    # branch never deleted, locally or remotely.
+    was_locked=0
+    if git -C "$PRIMARY" worktree unlock "$path" 2>/dev/null; then
+      was_locked=1
+    fi
+
     if ! git -C "$PRIMARY" worktree remove "$path" 2>/tmp/cleanup-worktrees-remove-err; then
       rel="${path#"$PRIMARY"/}"
       if command -v ddev >/dev/null 2>&1 && (cd "$PRIMARY" && ddev describe >/dev/null 2>&1); then
@@ -128,6 +178,10 @@ for i in "${!WORKTREE_PATHS[@]}"; do
         git -C "$PRIMARY" worktree prune
       fi
       if [ -e "$path" ]; then
+        if [ "$was_locked" = "1" ]; then
+          git -C "$PRIMARY" worktree lock "$path" \
+            --reason "cleanup-worktrees: removal attempt failed, restoring prior lock" 2>/dev/null || true
+        fi
         echo "kept: $branch - worktree removal blocked and ddev fallback did not clear it: $(cat /tmp/cleanup-worktrees-remove-err)" >&2
         kept=$((kept + 1))
         continue
