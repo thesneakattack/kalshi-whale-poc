@@ -4161,6 +4161,95 @@ unused channel, it'll obviously help") the rule warns against.
 
 ---
 
+### WS protocol best-practices re-check (direct instruction, 2026-08-27): ping/pong,
+    subscription-message batching, sharding
+
+Three specific Kalshi-documented WS practices raised in earlier planning, re-verified
+against current code (not re-derived from memory) rather than assumed still true or
+still unaddressed:
+
+**Ping/pong keepalive - already compliant, no task.** `docs/kalshi/CHEATSHEET.md`'s
+existing entry (found 2026-08-24, Kalshi Integration Phase A Task A1) already confirmed
+`services/kalshi/websocket.py` uses the `websockets` library's own automatic ping/pong
+(`connect(..., ping_interval=20, ping_timeout=20)`) rather than a hand-rolled
+implementation - exactly `quick_start_websockets.md`'s documented recommendation ("The
+Python `websockets` library automatically handles WebSocket ping/pong frames... No
+manual heartbeat handling is required"). Re-verified directly against current code
+while building this phase: `grep -n "ping_interval|ping_timeout|send.*ping" services/
+kalshi/websocket.py` returns exactly the one `connect()` call's two kwargs and nothing
+else - zero hand-rolled ping/pong frame handling anywhere. Worth keeping in view for
+Task 33's own design: the CHEATSHEET entry's own correction (2026-08-25) notes the 20s
+`ping_timeout` is also why an event-loop stall closes the socket with 1011 "keepalive
+ping timeout" - exactly the disconnect reason recorded in this phase's own preamble
+data and in the live incident this session already wrote up separately (`ROADMAP.md`'s
+trade-stream-consumer-stall item) - not a new finding, a confirmed cross-reference.
+
+**Sharding (`shard_factor`/`shard_key`) - direction already decided, correctly still
+deferred, live baseline now recorded so it isn't re-derived blind later.**
+`docs/kalshi/CHEATSHEET.md` already documents the mechanism (`websocket-connection.md`'s
+subscribe params, `changelog-index.md`'s semantics: "Messages are sharded by
+`market_ticker` using consistent hashing. Clients can run multiple connections with
+different `shard_key` values to distribute load") **with its own explicit caveat**:
+documented for the `communications` channel specifically, `trade` honouring it is
+unverified. `next-session-pickup-2026-08-24.md` (surfaced by the doc-consolidation
+pass) named this as the fix direction for trade-channel CPU cost but never implemented
+it. Live-checked while building this phase (`GET /api/state`'s `trade_stream_perf`,
+2026-08-27): `messages_per_sec: 21.2`, `avg_handler_ms: 0.413` - about 9ms of actual
+handler work per second, comfortably within one connection's capacity. **Not tasked
+here** - implementing multi-connection sharding against an unverified-for-`trade`
+mechanism, for a cost that live data shows isn't a real bottleneck yet, would be
+exactly the premature-conclusion shape this plan's own rule forbids. Recorded so the
+next session that revisits trade-channel load doesn't have to rediscover this: the
+lever exists, the mechanism needs live verification before use, and the trigger
+condition (this ratio degrading materially, not a fixed schedule) is now written down
+rather than left to be re-found.
+
+### Task 33: Combine independently-scoped channels into one subscribe message on
+    connect
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`_sync_subscriptions`, the `force_subscribe`
+  connect-time branch - re-verify current line numbers against HEAD, this file has
+  moved during this session)
+- Test: append to the existing `_sync_subscriptions` test file (`grep -rn
+  "_sync_subscriptions" tests/`)
+
+**Interfaces:**
+- Changes: `trade` and `market_lifecycle_v2` - both exchange-wide, neither taking a
+  `market_tickers`/scoping param, the same shape `fill`+`market_positions` already
+  share in one combined message (`"channels": ["fill", position_contract.
+  SUBSCRIPTION_CHANNEL]`, `services/kalshi/websocket.py:409`) - get combined into one
+  `{"channels": ["trade", "market_lifecycle_v2"]}` subscribe message instead of two
+  separate `_send()` calls. `ticker` (needs `market_tickers`) and the index channels
+  (`cfbenchmarks_value`/`pyth_value`, need `index_ids`/`underlying_tickers`) stay
+  separate - each needs its own channel-specific params, and `websocket-connection.md`'s
+  schema shows those params live at the top level of one `params` object, not
+  per-channel, so mixing a scoped channel into a combined message would incorrectly
+  apply its params to every channel in that message.
+- Connection-setup-only cost (fires once per connect/reconnect, not per-tick or
+  per-message) - real but low-urgency, included here because it's a genuine documented-
+  but-unused capability, not because it's a hot-path bottleneck.
+
+- [ ] **Step 1: Write the failing test** - asserts exactly one `_send()` call carries
+  both `"trade"` and `"market_lifecycle_v2"` in its `channels` list on a fresh
+  connect, where today's code sends two separate calls.
+- [ ] **Step 2: Run it, watch it fail.**
+- [ ] **Step 3: Combine the two `_send()` calls** in `_sync_subscriptions`'s
+  `force_subscribe` branch into one, preserving each channel's own gating
+  (`self.exchange_wide_trades or desired` for trade, `self.subscribe_lifecycle` for
+  lifecycle - both must independently gate whether they're included in the combined
+  list, not become unconditionally coupled).
+- [ ] **Step 4: Run it, watch it pass; run the full WS-client test suite for a
+  regression check.**
+- [ ] **Step 5: Live verification** - a real `ddev restart`, confirm via `ddev logs -s
+  fastapi` that the fresh connection sends one combined subscribe for trade+lifecycle
+  instead of two, and that both channels' data still flows normally afterward (`GET
+  /api/health/pipeline`'s `ingest.received_by_class` for both `trade` and `lifecycle`
+  growing).
+- [ ] **Step 6: Commit:** `git commit -m "perf: combine trade+market_lifecycle_v2 into one subscribe message on connect, matching fill+market_positions' existing pattern (H12/H13 P7)"`
+
+---
+
 **P7 gate:** Full test suite green with every P7 change live (no flags needed - these
 are all strictly-additive-or-corrective changes, not opt-in features, matching the
 "stop doing the wrong thing" shape of the underlying bugs rather than a new toggle).
@@ -4168,7 +4257,9 @@ Live paper-mode confirmation (`GET /api/state`) that: `latest_prices` for an ope
 position updates between REST ticks; a `settled` lifecycle event resolves
 `signal_log` without waiting for the next 30s batch; a reconnect visibly triggers
 `ws_state_verify`'s drain (new counter, exposed via `ingest_metrics()` or
-`/api/health/pipeline`, matching every other phase's own visibility requirement).
+`/api/health/pipeline`, matching every other phase's own visibility requirement);
+a fresh connect sends one combined subscribe message for `trade`+`market_lifecycle_v2`
+(Task 33), confirmed via `ddev logs`.
 Cross-post the shipped findings into `services/position/README.md` (or create it,
 following an existing module's format, per CLAUDE.md's cross-posting rule) and
 `services/signal_log`'s own module docstring, so a future audit of either module
@@ -4227,6 +4318,16 @@ yet). H13's two lower-priority interactive-tier gaps (`orderbook_delta`,
 `orderbook_delta` is new capability, not a completeness/accuracy fix, a different
 kind of work than this phase's actual scope; left as an explicit future item in the
 known-findings doc rather than silently dropped.
+
+**WS protocol best-practices, direct instruction (2026-08-27):** ping/pong re-verified
+compliant against current code, no task needed. Sharding re-confirmed as the right
+future direction with its own documented caveat (unverified for `trade`) preserved,
+not tasked given live data (`trade_stream_perf`: 21.2 msg/sec, 0.413ms avg handler)
+shows no current bottleneck - recorded rather than silently dropped, matching the
+same discipline as the two lower-priority H13 gaps above. Multi-channel subscribe
+batching → Task 33, a real, small, connection-setup-only gap (`trade`+
+`market_lifecycle_v2` sent as two messages where `fill`+`market_positions` already
+prove the combined-message pattern works in this exact codebase).
 
 **Reused infrastructure, not duplicated:** Task 28 depends on and extends Task 27's
 `on_loss_event` callback and Task 21's connection-generation concept rather than
