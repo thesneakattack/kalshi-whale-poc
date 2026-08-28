@@ -1,7 +1,11 @@
-"""The workflow guard (.claude/hooks/guard_workflow.py) is what turns the audit's
-prose rules into harness decisions. Each rule is exercised as a pure function with
-injected state, live-session map, git output, and file existence."""
+"""The workflow guard (.claude/hooks/guard_workflow.py) turns standing rules into
+harness decisions. Each rule is exercised as a pure function with injected state
+and live-session map; session discovery runs against a synthetic /proc tree so no
+test depends on what is actually running on the machine."""
 import importlib.util
+import io
+import json
+import os
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "guard_workflow.py"
@@ -19,17 +23,22 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# ---------------------------------------------------------------- R1 / R8
-def test_r1_full_suite_pytest_is_denied_but_scoped_runs_pass(tmp_path):
-    g = _load()
-    st = tmp_path / "st"; st.mkdir()
-    assert g.pre_bash("ddev exec -s fastapi python3 -m pytest -q", str(tmp_path), st, {}, set())["decision"] == "deny"
-    assert g.pre_bash("python3 -m pytest", str(tmp_path), st, {}, set()) is not None
-    assert g.pre_bash("python3 -m pytest tests/test_risk_manager.py -q", str(tmp_path), st, {}, set()) is None
-    assert g.pre_bash("pytest -k kill_switch", str(tmp_path), st, {}, set()) is None
-    assert g.pre_bash("pytest --lf", str(tmp_path), st, {}, set()) is None
+def _proc(tmp_path: Path, entries: dict) -> Path:
+    """A synthetic /proc: {pid: (comm, cwd symlink target or None)}."""
+    root = tmp_path / "proc"
+    root.mkdir()
+    for pid, (comm, cwd) in entries.items():
+        d = root / str(pid)
+        d.mkdir()
+        (d / "comm").write_text(comm + "\n")
+        if cwd:
+            os.symlink(cwd, d / "cwd")
+    (root / "self").mkdir()
+    (root / "meminfo").write_text("")
+    return root
 
 
+# ---------------------------------------------------------------- R8
 def test_r8_git_add_all_is_denied(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
@@ -45,7 +54,7 @@ def test_r2_sqlite_on_data_denied_once_then_allowed(tmp_path):
     cmd = "sqlite3 data/signal_log.db 'select count(*) from signals'"
     first = g.pre_bash(cmd, str(tmp_path), st, {}, set())
     assert first["decision"] == "deny" and "api/quality/summary" in first["reason"]
-    assert g.pre_bash(cmd, str(tmp_path), st, {}, set()) is None  # second attempt passes
+    assert g.pre_bash(cmd, str(tmp_path), st, {}, set()) is None
 
 
 def test_r2_skipped_when_diagnostics_were_read_this_session(tmp_path):
@@ -63,12 +72,9 @@ def test_r6_checkout_in_a_checkout_another_live_session_occupies_is_denied(tmp_p
     sessions = {111: str(primary), 222: str(tmp_path / "elsewhere")}
     out = g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={222})
     assert out["decision"] == "deny" and "pid 111" in out["reason"]
-    # the occupant itself is not blocked
     assert g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={111}) is None
-    # -C targeting the occupied checkout from elsewhere is caught too
     out = g.pre_bash(f"git -C {primary} stash", str(tmp_path / "elsewhere"), st, sessions, self_pids={222})
     assert out["decision"] == "deny"
-    # a different checkout is fine
     assert g.pre_bash("git checkout -b x", str(tmp_path / "elsewhere"), st, sessions, self_pids={222}) is None
 
 
@@ -78,7 +84,7 @@ def test_r7_ddev_exec_from_a_worktree_gets_the_docker_form(tmp_path):
     st = tmp_path / "st"; st.mkdir()
     primary = _repo(tmp_path / "autotrade")
     wt = primary / ".claude" / "worktrees" / "feat-x"
-    (wt / ".git").parent.mkdir(parents=True)
+    wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../../.git/worktrees/feat-x\n")
     out = g.pre_bash("ddev exec -s fastapi python3 -m pytest tests/test_a.py", str(wt), st, {}, set())
     assert out["decision"] == "deny"
@@ -91,22 +97,22 @@ def test_r3_kalshi_file_edit_requires_a_docs_kalshi_read(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
-    out = g.pre_edit("Edit", "services/whale_stream/whale_stream_handlers.py", "", str(repo), st, lambda a: "", lambda r: True)
+    out = g.pre_edit("Edit", "services/whale_stream/whale_stream_handlers.py", str(repo), st)
     assert out["decision"] == "deny" and "docs/kalshi/CHEATSHEET.md" in out["reason"]
     g.post("Read", {"file_path": str(repo / "docs/kalshi/get-market.md")}, str(repo), st)
-    assert g.pre_edit("Edit", "services/whale_stream/whale_stream_handlers.py", "", str(repo), st, lambda a: "", lambda r: True) is None
+    assert g.pre_edit("Edit", "services/whale_stream/whale_stream_handlers.py", str(repo), st) is None
 
 
 def test_r4_hot_file_edit_denied_once_until_gitnexus_ran(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
-    out = g.pre_edit("Edit", "services/risk_manager.py", "", str(repo), st, lambda a: "", lambda r: True)
-    assert out["decision"] == "deny" and "gitnexus" in out["reason"]
-    assert g.pre_edit("Edit", "services/risk_manager.py", "", str(repo), st, lambda a: "", lambda r: True) is None
+    out = g.pre_edit("Edit", "services/risk_manager.py", str(repo), st)
+    assert out["decision"] == "deny" and "gitnexus@1.6.10" in out["reason"]
+    assert g.pre_edit("Edit", "services/risk_manager.py", str(repo), st) is None
     st2 = tmp_path / "st2"; st2.mkdir()
     g.post("mcp__gitnexus__impact", {}, str(repo), st2)
-    assert g.pre_edit("Edit", "services/strategy_engine.py", "", str(repo), st2, lambda a: "", lambda r: True) is None
+    assert g.pre_edit("Edit", "services/strategy_engine.py", str(repo), st2) is None
 
 
 def test_hot_file_edit_nudges_dimensional_analysis_once(tmp_path):
@@ -118,31 +124,70 @@ def test_hot_file_edit_nudges_dimensional_analysis_once(tmp_path):
     assert g.post("Edit", {"file_path": str(repo / "services/paper_broker.py")}, str(repo), st) is None
 
 
-# ---------------------------------------------------------------- R5
-def test_r5_new_plan_denied_while_branch_plan_has_unchecked_tasks(tmp_path):
+def test_effort_is_not_gated_full_suite_and_new_plans_pass(tmp_path):
+    """The 2026-08-27 effort caps (no local full suite, no new plan while one is
+    unfinished, 300-line plan budget) were withdrawn 2026-08-28 by direct instruction."""
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
-    plans = repo / "docs" / "superpowers" / "plans"; plans.mkdir(parents=True)
-    (plans / "2026-08-20-old.md").write_text("# Old\n- [x] T1\n- [ ] T2\n")
-    git = lambda args: "docs/superpowers/plans/2026-08-20-old.md\nservices/x.py\n"
-    exists = lambda rel: (repo / rel).exists()
-    out = g.pre_edit("Write", "docs/superpowers/plans/2026-08-28-new.md", "# New\n- [ ] T1\n", str(repo), st, git, exists)
-    assert out["decision"] == "deny" and "2026-08-20-old.md" in out["reason"]
-    # naming the old plan in the new one hands off explicitly
-    assert g.pre_edit("Write", "docs/superpowers/plans/2026-08-28-new.md",
-                      "# New\nSupersedes: 2026-08-20-old.md\n- [ ] T1\n", str(repo), st, git, exists) is None
-    # a finished plan on the branch does not block
-    (plans / "2026-08-20-old.md").write_text("# Old\n- [x] T1\n- [x] T2\n")
-    assert g.pre_edit("Write", "docs/superpowers/plans/2026-08-28-new.md", "# New\n", str(repo), st, git, exists) is None
+    assert g.pre_bash("ddev exec -s fastapi python3 -m pytest -q", str(repo), st, {}, set()) is None
+    assert g.pre_edit("Write", "docs/superpowers/plans/2026-08-28-new.md", str(repo), st) is None
+    big = repo / "docs" / "superpowers" / "plans" / "big.md"
+    big.parent.mkdir(parents=True)
+    big.write_text("\n".join(f"- [ ] line {i}" for i in range(400)) + "\n")
+    assert g.post("Write", {"file_path": str(big)}, str(repo), st) is None
 
 
-def test_plan_over_budget_is_reported_loudly(tmp_path):
+# ------------------------------------------------------- session discovery
+def test_proc_sessions_are_claude_processes_with_a_real_cwd(tmp_path):
     g = _load()
-    st = tmp_path / "st"; st.mkdir()
-    repo = _repo(tmp_path)
-    plans = repo / "docs" / "superpowers" / "plans"; plans.mkdir(parents=True)
-    big = plans / "2026-08-28-big.md"
-    big.write_text("\n".join(f"- [ ] line {i}" for i in range(301)) + "\n")
-    out = g.post("Write", {"file_path": str(big)}, str(repo), st)
-    assert out["exit"] == 2 and "301 lines" in out["stderr"]
+    root = _proc(tmp_path, {
+        111: ("claude", "/w/a"),
+        222: ("python3", "/w/b"),            # not a session
+        333: ("claude", None),               # no readable cwd
+        444: ("claude", "/w/d (deleted)"),   # sitting in a removed worktree
+    })
+    assert g.sessions_from_proc(root) == {111: "/w/a"}
+
+
+def test_proc_sessions_skip_other_users_processes(tmp_path):
+    g = _load()
+    root = _proc(tmp_path, {111: ("claude", "/w/a")})
+    assert g.sessions_from_proc(root, uid=os.getuid() + 1) == {}
+
+
+def test_live_sessions_merges_socks_and_proc(tmp_path, monkeypatch):
+    g = _load()
+    root = _proc(tmp_path, {111: ("claude", "/w/proc"), 555: ("node", "/w/sock")})
+    kd = tmp_path / "socks"; kd.mkdir()
+    (kd / "555.sock").write_text("")
+    (kd / "notapid.sock").write_text("")
+    monkeypatch.setenv("CLAUDE_PROC_ROOT", str(root))
+    monkeypatch.setenv("CLAUDE_SOCK_DIR", str(kd))
+    assert g.live_sessions() == {111: "/w/proc", 555: "/w/sock"}
+
+
+def test_sessions_cli_tags_self_and_other(monkeypatch, capsys):
+    g = _load()
+    me = os.getpid()
+    monkeypatch.setattr(g, "live_sessions", lambda: {me: "/w/me", 999: "/w/them"})
+    assert g.main(["--sessions"]) == 0
+    lines = sorted([f"{me}\tself\t/w/me", "999\tother\t/w/them"], key=lambda ln: int(ln.split("\t")[0]))
+    assert capsys.readouterr().out == "\n".join(lines) + "\n"
+
+
+def test_the_real_proc_probe_never_reports_this_python_process():
+    g = _load()
+    assert os.getpid() not in g.sessions_from_proc()
+
+
+def test_main_denies_via_hook_json(monkeypatch, capsys, tmp_path):
+    g = _load()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(g, "live_sessions", lambda: {})
+    payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": "s1",
+               "tool_input": {"command": "git add -A"}, "cwd": str(tmp_path)}
+    monkeypatch.setattr(g.sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert g.main([]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
