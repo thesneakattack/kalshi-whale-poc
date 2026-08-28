@@ -229,6 +229,64 @@ def _reset_shared_singletons():
     config_store_module.config_store.reload()
 
 
+@pytest.fixture(autouse=True)
+def _reset_candidate_log_store():
+    """cl_module.DB_PATH (candidate_log.db) is a real, persisted, module-
+    level store redirected exactly ONCE at this file's import time (see the
+    cl_module.DB_PATH / cw_module._STORE_PATHS block above) and shared by
+    every test in this file - unlike mc_module, which the test_lifecycle_*
+    tests' own _reset_lifecycle_stats() helper already clear_all()s at
+    setup, nothing in this file ever cleared candidate_log between tests.
+
+    Real, confirmed leak (root-cause-debugging investigation, 2026-08-27,
+    third instance of the same xdist-parallel test-isolation class this
+    file's two fixtures above already closed - PR #119 for discovery_cache/
+    config_store, PR #125 for main.account.trading_enabled):
+    test_lifecycle_settled_resolves_outcome_via_a_fresh_rest_read records a
+    rejection for ("TICK-A", "whale_follow", "entry_threshold") and then
+    runs the real settled path, whose candidate_log.resolve_from_market_
+    results() sets that row's resolved = 1. When
+    test_lifecycle_determined_updates_catalog_status_but_does_not_resolve_
+    outcome runs AFTER it, its own record_rejection() for the exact same
+    (ticker, strategy, gate_name) key hits capture_writer's
+    rejected_candidates UPSERT - whose `ON CONFLICT ... DO UPDATE SET ...
+    WHERE rejected_candidates.resolved = 0` guard deliberately refuses to
+    reopen an already-resolved row (correct production semantics: a later
+    rejection of a settled ticker must not un-resolve its outcome). The one
+    row stays resolved = 1, and the test's `gate_summary()[...]
+    ["resolved_count"] == 0` assertion sees 1 instead. Confirmed
+    deterministically with zero xdist involved: `pytest -p no:xdist tests/
+    test_trading_gate.py::test_lifecycle_settled_resolves_outcome_via_a_
+    fresh_rest_read tests/test_trading_gate.py::test_lifecycle_determined_
+    updates_catalog_status_but_does_not_resolve_outcome` fails the second
+    test with exactly `1 == 0` on the untouched merge base; the reverse
+    order passes, and so does this whole file sequentially - only because
+    `determined` happens to be DEFINED before `settled` here, an ordering
+    pytest-xdist's work-stealing scheduler does not preserve.
+
+    clear_all() is the right reset (not a raw DELETE): it flushes both
+    capture_writer buffers first, since record_rejection() no longer writes
+    either table synchronously (P3 Task 16/17) and a row still sitting in a
+    buffer would land moments after a bare DELETE and silently un-wipe it.
+    Same idiom as the two fixtures above - reset unconditionally both
+    before AND after every test, so no current or future test that records
+    or resolves a candidate can leak into whichever test the scheduler runs
+    next. The per-test _reset_lifecycle_stats() calls are left as-is.
+
+    Scope note: the same settled path also writes market_history
+    (record_outcome), settlement_edge (resolve_window) and
+    market_analyst_agent (resolve_from_market_results) through their own
+    module-level stores; no test in this file currently reads any of those
+    across a test boundary (the whole file passes in full reverse
+    definition order with only this fixture added - see the commit), so
+    they are deliberately not reset here. Add them the same way, with a
+    reproduced adversarial pair, if a future test starts asserting on one
+    of them."""
+    cl_module.clear_all()
+    yield
+    cl_module.clear_all()
+
+
 def test_files_are_actually_redirected_away_from_the_real_repo():
     """Guards the guard: if this ever fails, every other test in this file
     could be touching real project files instead of the temp copies."""
