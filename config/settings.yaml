@@ -13,6 +13,14 @@ kalshi:
   - Sports
   live_markets_only: true
   poll_interval_sec: 6
+  # P8 Task 39: applies only in streaming mode (_streaming_trade_tape_enabled()),
+  # where trading_loop's own REST tick is a safety net, not the primary data
+  # path - check_exits/check_pending_fills/position_netting.review already run
+  # from the WS ticker path (Task 38), and the five _maybe_* schedulers +
+  # candidate_retry run from their own independent loops (Tasks 36-37).
+  # poll_interval_sec stays the cadence for non-streaming (REST-primary) mode,
+  # unchanged.
+  safety_net_interval_sec: 30
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
   market_lifecycle_stream_enabled: true
