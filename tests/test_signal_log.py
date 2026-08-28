@@ -438,3 +438,41 @@ def test_connect_enables_wal_mode(tmp_path, monkeypatch):
     with log._connect() as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode.lower() == "wal"
+
+
+# --- P8 Task 30: resolve from the settled lifecycle event, per ticker --------
+# mark_resolved had exactly one caller in the whole app - main.py's 30s/200-
+# batch REST poll - even though the same market_lifecycle_v2 `settled` event
+# already resolves four other stores for the same ticker via WS. This is the
+# ticker-scoped wrapper the WS path calls; each signal keeps its own side, so
+# correctness is computed per row, not uniformly per ticker.
+
+def test_resolve_from_market_results_resolves_every_unresolved_row_for_the_ticker(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    old = time.time() - 3600
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=old)
+    log.log_signal("TICK-A", "no", 1000, 0.8, "simulated", seen_at=old)
+    log.log_signal("TICK-B", "yes", 1000, 0.8, "simulated", seen_at=old)  # other ticker: untouched
+
+    n = log.resolve_from_market_results("TICK-A", "yes")
+
+    assert n == 2
+    rows = {(r["ticker"], r["side"]): r for r in log.recent(limit=10)}
+    assert rows[("TICK-A", "yes")]["resolved"] == 1 and rows[("TICK-A", "yes")]["correct"] == 1
+    assert rows[("TICK-A", "no")]["resolved"] == 1 and rows[("TICK-A", "no")]["correct"] == 0
+    assert rows[("TICK-B", "yes")]["resolved"] == 0
+    assert [r["ticker"] for r in log.unresolved_batch(limit=10, older_than_sec=0)] == ["TICK-B"]
+
+
+def test_resolve_from_market_results_is_idempotent_and_never_reopens(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=time.time() - 3600)
+    assert log.resolve_from_market_results("TICK-A", "yes") == 1
+    assert log.resolve_from_market_results("TICK-A", "no") == 0  # already resolved: no rows touched, verdict untouched
+    row = log.recent(limit=1)[0]
+    assert row["resolved"] == 1 and row["correct"] == 1
+
+
+def test_resolve_from_market_results_with_no_rows_returns_zero(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    assert log.resolve_from_market_results("NOPE", "yes") == 0

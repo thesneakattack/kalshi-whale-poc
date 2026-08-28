@@ -12,7 +12,7 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge
+from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge, signal_log
 from services.config import config_performance
 from services import whale_pipeline_perf
 from services import http_client
@@ -539,6 +539,12 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         resolved = settlement_edge.resolve_window(ticker, result == "yes")
         resolved += market_analyst_agent.resolve_from_market_results({ticker: result})
         resolved += candidate_log.resolve_from_market_results({ticker: result})
+        # P8 Task 30: the fifth store. signal_log's only resolver used to be
+        # main.py's 30s/200-batch REST poll, which stays as the slower safety
+        # net (a ticker this app wasn't watching at settlement time, or a
+        # missed lifecycle event); both paths are idempotent (WHERE resolved
+        # = 0), so firing from both is safe, same as the four above.
+        resolved += signal_log.resolve_from_market_results(ticker, result)
         stats["outcomes_resolved_via_lifecycle"] += resolved
         return
 

@@ -3330,3 +3330,28 @@ def test_pipeline_health_reports_open_position_price_staleness():
     assert body["unstamped_count"] == 1
     assert 395 <= body["open_position_oldest_age_sec"] <= 405
     assert body["stale_over_300s_count"] == 1
+
+
+def test_lifecycle_settled_also_resolves_signal_log_rows_for_the_ticker(tmp_path, monkeypatch):
+    """P8 Task 30: signal_log was the one store the settled lifecycle path did
+    not resolve - mark_resolved's only caller was the 30s REST poll - even
+    though the same event already resolved four other stores for the same
+    ticker. Now it resolves alongside them, per row (each signal keeps its
+    own side)."""
+    import services.signal_log as signal_log_module
+    monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+    signal_log_module.log_signal("TICK-A", "yes", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
+    signal_log_module.log_signal("TICK-A", "no", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
+    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+
+    _run_lifecycle((
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+
+    rows = {r["side"]: r for r in signal_log_module.recent(limit=10) if r["ticker"] == "TICK-A"}
+    assert rows["yes"]["resolved"] == 1 and rows["yes"]["correct"] == 1
+    assert rows["no"]["resolved"] == 1 and rows["no"]["correct"] == 0
+    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] >= 2
