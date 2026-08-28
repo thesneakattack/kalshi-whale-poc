@@ -11,6 +11,16 @@ Honesty note: resolution checking relies on Kalshi's market `result` field
 being "yes"/"no" once settled. That's a reasonable reading of the API but,
 like the account-balance field names elsewhere in this app, wasn't
 independently confirmed against every market type — see /status.
+
+Resolution has two writers since P8 Task 30 (2026-08-28): the WS
+market_lifecycle_v2 `settled` handler (resolve_from_market_results, per
+ticker, the instant a market settles) and main.py's 30s/200-batch REST poll
+(mark_resolved, now the slower safety net for tickers this app wasn't
+watching at settlement time). Until then the REST poll was the ONLY caller
+in the app while the same settled event already resolved four other stores
+for the same ticker - see docs/superpowers/research/2026-08-25-realtime-
+data-plane-known-findings.md H13. Both paths are idempotent (WHERE
+resolved = 0), so a row graded by either is never reopened or re-graded.
 """
 import json
 import sqlite3
@@ -287,6 +297,39 @@ def mark_resolved(signal_id: int, correct: bool):
             "UPDATE signals SET resolved = 1, correct = ?, resolved_at = ? WHERE id = ?",
             (1 if correct else 0, time.time(), signal_id),
         )
+
+
+def resolve_from_market_results(ticker: str, result: str) -> int:
+    """Resolve every still-unresolved signal for one ticker against its final
+    market result - the ticker-scoped entry point the market_lifecycle_v2
+    `settled` handler calls (P8 Task 30, 2026-08-27). Until this existed,
+    mark_resolved had exactly one caller in the whole application - main.py's
+    30s/200-batch REST poll - while the same settled event was already
+    resolving market_history, settlement_edge, market_analyst_agent and
+    candidate_log for the same ticker the instant it arrived; signal_log was
+    the one store left waiting for the next REST batch regardless.
+
+    Each signal carries its own side, so correctness is per row, not uniform
+    per ticker (unlike the other four resolvers). Idempotent by the same
+    `WHERE resolved = 0` guard the rest of this module relies on: a row
+    resolved by either path is never reopened or re-graded, so firing from
+    both the WS path and the REST-poll fallback stays safe. Same naming as
+    the sibling resolvers. Returns the number of rows resolved."""
+    result = (result or "").strip().lower()
+    if result not in ("yes", "no"):
+        return 0
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, side FROM signals WHERE ticker = ? AND resolved = 0", (ticker,),
+        ).fetchall()
+        if not rows:
+            return 0
+        now = time.time()
+        conn.executemany(
+            "UPDATE signals SET resolved = 1, correct = ?, resolved_at = ? WHERE id = ? AND resolved = 0",
+            [(1 if result == side else 0, now, row_id) for row_id, side in rows],
+        )
+    return len(rows)
 
 
 def series_stats(ticker: str, days: int = 30) -> dict:

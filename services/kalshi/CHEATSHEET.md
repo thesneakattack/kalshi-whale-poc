@@ -164,3 +164,80 @@ was observed), keep the tolerant/raw path, and if it's schema-relevant
 consider the docs-drift canary. **Raw-payload archival exception**:
 opaque raw payload copies (series_watcher's columns/raw_json, diagnostics
 pass-through) are allowed anywhere; semantic *interpretation* is not.
+
+## Combined connect-time subscribe + snapshot on add_markets (P7 Task 33, 2026-08-28)
+
+`_sync_subscriptions`' `force_subscribe` branch sends exchange-wide `trade` and
+`market_lifecycle_v2` in **one** subscribe message (`{"channels": ["trade",
+"market_lifecycle_v2"]}`), the same combined shape `fill`+`market_positions`
+already used in `run()`; each channel keeps its own gate and the message
+carries whichever are due. A watchlist-scoped `trade` subscribe stays its own
+message - its `market_tickers` sit at the top level of the `params` object and
+would apply to every channel in the message, and lifecycle takes no market
+filter at all. `ticker`/index channels stay separate for the same reason.
+Kalshi answers a multi-channel subscribe with one `subscribed` response per
+channel (`websocket-connection.md`'s Subscribed Response schema), which
+`_handle_message` already processes one channel/sid at a time - so partial
+acceptance, whatever the server does, is handled without change. Known,
+pre-existing, not fixed here (R6 in the remediation plan): every subscribe
+path sets its `_X_subscribed` flag right after sending, before the server's
+confirmation arrives.
+
+`add_markets` on the **ticker** sid now carries `send_initial_snapshot: true`
+(documented for "newly added market tickers on the ticker channel" -
+`websocket-connection.md` update_subscription schema; never sent on the trade
+sid), so a market added mid-connection - a position opening while connected -
+gets its first price from WS immediately instead of waiting for its next
+natural tick or `market_fetch.overlay_live_prices`' REST seed. Live on the
+first post-change connection: `trade` and `lifecycle` both receiving on one
+connection, zero drops.
+
+## Consumer-stall bound + liveness backstop (issue #145/#150, 2026-08-28)
+
+Live-observed 2026-08-27 (issue #145): the reader (`recv()` -> `_ingest_raw`)
+and consumer (`_consume()` draining `self._queue`) are separate tasks; a hung
+`await` inside a handler stalls the consumer forever while the reader keeps
+enqueueing, filling the queue and dropping messages with zero automated
+recovery (`task_supervisor` only restarts `run()` on an unhandled exception -
+a hang that never raises is invisible to it). Root cause traced to
+`services/whalewatchers/kalshi_trade_tape.py`'s `fetch_signals` ->
+`await asyncio.to_thread(self._process_trades_timed, ...)`, unbounded, wrapping
+every blocking SQLite call on the trade path.
+
+Fixed with two layers, not one - a bare reconnect alone would have hidden a
+worse problem (see below):
+
+- **`_process_item`** now wraps its `_handle_message(...)` call in
+  `asyncio.wait_for(..., timeout=_HANDLER_TIMEOUT_SEC)` (10s default,
+  constructor-overridable as `handler_timeout_sec`). Bounds every message's
+  worst case at the actual hang site. `TimeoutError` is counted/fault-logged
+  separately from `handler_exceptions_*` (`handler_timeouts_total`/
+  `handler_timeouts_by_class` in `ingest_metrics()`) - deliberately not
+  folded into the existing counter, since conflating them would hide the one
+  signal that says whether this is happening often enough to matter.
+- **`ensure_consumer_progressing()`** is a backstop for whatever the timeout
+  doesn't structurally cover (e.g. a hang inside `_sync_subscriptions`, which
+  runs on the *reader's* task, not the consumer's). Polled every 10s from
+  `main.py` (`_stream_consumer_liveness_loop`, one per active gateway -
+  `trade_stream` and `index_stream`). Signal is direct, not a proxy: total
+  processed-message count held flat across 3 consecutive checks while
+  `messages_received` kept climbing and the queue holds a backlog - "new
+  work arrived, nothing got consumed." A genuinely quiet market
+  (`messages_received` flat) or a slow-but-progressing consumer (processed
+  count still advancing) both correctly report not-stuck. On trigger, calls
+  `force_reconnect(reason)` - closes only the current connection (unlike
+  `close()`, never sets `self._stop`), reusing `run()`'s existing
+  disconnect -> backoff -> reconnect path, which already discards the stuck
+  consumer task (`finally: consumer.cancel()`) and starts a fresh one.
+
+**Known, accepted, NOT fixed (issue #150):** cancelling a timed-out
+`asyncio.to_thread(...)` call does not stop the underlying OS thread once it
+has started running (confirmed against CPython's own
+`concurrent.futures.Future.cancel()`: "cannot be cancelled if it is
+running") - it leaks one worker from the shared, bounded default
+`ThreadPoolExecutor` per occurrence. Deferred rather than fixed pre-emptively
+(no measured frequency yet, per `.claude/rules/realtime-data-plane-
+evidence.md`'s "don't tune by intuition") - `handler_timeouts_total` is the
+signal to watch; issue #150 names the real fix (a dedicated executor, or
+root-causing whatever inside `_process_trades_sync` can hang instead of
+raising) if that signal ever climbs.

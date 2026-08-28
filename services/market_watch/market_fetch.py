@@ -16,7 +16,9 @@ from services.kalshi.public import KalshiPublicGateway
 from services import http_client
 from services.market_catalog import market_catalog
 from services.market_watch import selection
-from services.market_watch.discovery_cache import _cached_market_fetch, _maybe_refresh_discovery_cache
+from services.market_watch.discovery_cache import (
+    _PINNED_MARKET_REFRESH_SEC, _cached_market_fetch, _maybe_refresh_discovery_cache,
+)
 from services.market_watch.live_status import _fetch_live_status, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC
 
 # Kalshi's full market object carries 40+ fields (rules text, combo-leg
@@ -266,29 +268,61 @@ async def _fetch_markets(client: KalshiPublicGateway, cfg: dict, extra_tickers: 
         groups[key].append(m)
     markets = [m for key in order for m in groups[key]]
 
-    # Live-price overlay (2026-08-15, "websocket stream everything you can") -
-    # applies regardless of source (pinned, freshly-discovered, or reused
-    # from discovery_cache above): state["latest_prices"]/state["latest_asks"]
-    # are kept continuously fresh by the WS ticker-channel stream
-    # (main._process_stream_ticker), independent of how often this
-    # function's own REST discovery re-runs. A shallow copy, not an
-    # in-place mutation - the entries in discovery_cache["markets"] must
-    # stay untouched by a single tick's price overlay, or the cache would
-    # silently accumulate per-tick state instead of remaining a clean "what
-    # was selected" snapshot. Falls back to whatever price the market
-    # object already carried (its own REST-fetched value) when no WS data
-    # has arrived for that ticker yet - never guessed, same "missing isn't
-    # zero" idiom as the rest of this app.
-    latest_prices = state.get("latest_prices") or {}
-    latest_asks = state.get("latest_asks") or {}
+    return overlay_live_prices(markets, state, now=time.time())
+
+
+def overlay_live_prices(markets: list[dict], state: dict, now: float) -> list[dict]:
+    """Live-price overlay (2026-08-15, "websocket stream everything you can"),
+    made age-aware 2026-08-27 (P7 Task 29, redesigned). Applies regardless of
+    source (pinned, freshly-discovered, or reused from discovery_cache):
+    state["latest_prices"]/state["latest_asks"] are kept fresh by the WS
+    ticker-channel stream (_process_stream_ticker), independent of how often
+    REST discovery re-runs - so a WS-fresh in-memory value wins over the REST
+    row's own price.
+
+    The original overlay kept the in-memory value UNCONDITIONALLY, which meant
+    that once a ticker was in the dict REST never refreshed it again: a
+    WS-quiet ticker's price was copied forward every tick, forever (P8 Task 34
+    measured 4 of 10 open positions with no ticker message ever received).
+    Now: an in-memory value older than _PINNED_MARKET_REFRESH_SEC - the
+    system's own existing bound on how stale a REST row can be, reused rather
+    than a new constant - or with no write stamp at all (unknown age is not
+    trusted) loses to the REST row, which is adopted by the tick's rebuild
+    and restamped here. WS stays primary whenever it is actually flowing; a
+    quiet ticker is refreshed from REST every ~300s instead of never. A REST
+    row that carries no price of its own cannot win - a stale-but-real value
+    beats a fabricated default ("missing isn't zero").
+
+    Shallow copies, never in-place: discovery_cache["markets"] must stay a
+    clean "what was selected" snapshot, not accumulate per-tick state."""
+    prices = state.get("latest_prices") or {}
+    asks = state.get("latest_asks") or {}
+    prices_at = state.setdefault("latest_prices_updated_at", {})
+    asks_at = state.setdefault("latest_asks_updated_at", {})
     overlaid = []
     for m in markets:
         ticker = m.get("ticker")
-        if ticker and (ticker in latest_prices or ticker in latest_asks):
-            m = dict(m)
-            if ticker in latest_prices:
-                m["yes_bid_dollars"] = latest_prices[ticker]
-            if ticker in latest_asks:
-                m["yes_ask_dollars"] = latest_asks[ticker]
-        overlaid.append(m)
+        if not ticker:
+            overlaid.append(m)
+            continue
+        row = None
+        rest_bid = m.get("yes_bid_dollars") not in (None, "")
+        if ticker in prices:
+            if now - prices_at.get(ticker, float("-inf")) <= _PINNED_MARKET_REFRESH_SEC or not rest_bid:
+                row = dict(m)
+                row["yes_bid_dollars"] = prices[ticker]
+            else:
+                prices_at[ticker] = now  # REST wins: the row's own value stands, restamped
+        elif rest_bid:
+            prices_at[ticker] = now  # never seen: REST seeds it
+        rest_ask = m.get("yes_ask_dollars") not in (None, "")
+        if ticker in asks:
+            if now - asks_at.get(ticker, float("-inf")) <= _PINNED_MARKET_REFRESH_SEC or not rest_ask:
+                row = row if row is not None else dict(m)
+                row["yes_ask_dollars"] = asks[ticker]
+            else:
+                asks_at[ticker] = now
+        elif rest_ask:
+            asks_at[ticker] = now
+        overlaid.append(row if row is not None else m)
     return overlaid

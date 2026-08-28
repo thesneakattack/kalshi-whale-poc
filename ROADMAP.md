@@ -85,7 +85,7 @@ which can run in parallel right now.
       gate check on every rejected candidate, by design) needs real
       retention or a pre-aggregated summary table - the SQL rewrite fixed
       the loop-blocking, not the underlying growth.
-- [ ] **The trade-stream consumer can stall completely with no automated
+- [x] **The trade-stream consumer can stall completely with no automated
       detection or recovery - live-observed 2026-08-27, mitigated (a
       restart), not fixed.** `GET /api/health/pipeline` showed
       `queue.depth == capacity` (20,000/20,000) with `oldest_message_age_sec`
@@ -117,6 +117,31 @@ which can run in parallel right now.
       capacity` and `oldest_message_age_sec` exceeds a threshold for N
       consecutive samples), not attempted here - this was incident response,
       not a design/implementation task.
+
+      **Fixed 2026-08-28 (issue #145), two layers, not one** - a bare
+      reconnect alone would have hidden a worse problem (thread-pool
+      leak, see below). Root cause traced to `services/whalewatchers/
+      kalshi_trade_tape.py`'s `fetch_signals` -> unbounded
+      `await asyncio.to_thread(self._process_trades_timed, ...)`, which
+      wraps every blocking SQLite call on the trade path. (1) `services/
+      kalshi/websocket.py::_process_item` now wraps its handler dispatch
+      in `asyncio.wait_for(..., timeout=_HANDLER_TIMEOUT_SEC)` (10s),
+      bounding the actual hang site; timeouts are counted/fault-logged
+      separately from handler exceptions (`handler_timeouts_total`/
+      `handler_timeouts_by_class`). (2) A new `ensure_consumer_progressing()`
+      backstop (polled every 10s from `main.py`'s new
+      `_stream_consumer_liveness_loop`, one per active gateway) catches
+      whatever the timeout doesn't structurally cover - detects "processed
+      count flat across 3 consecutive checks while messages kept arriving
+      and the queue holds a backlog," then calls the new
+      `force_reconnect()` (closes the connection without setting
+      `self._stop`, reusing `run()`'s existing reconnect path). Known,
+      accepted, NOT fixed: cancelling a timed-out `asyncio.to_thread` call
+      doesn't stop the underlying OS thread (confirmed against CPython's
+      `Future.cancel()` source) - tracked as issue #150, watched via
+      `handler_timeouts_total` rather than fixed pre-emptively. Full
+      design/evidence: `services/kalshi/CHEATSHEET.md`'s "Consumer-stall
+      bound + liveness backstop" entry.
 - [x] **A second, unrelated event-loop-blocking bug**, found the same day
       while investigating WS-subscription churn (below): three
       `services/whale_calibration/routes.py` routes ran synchronous work

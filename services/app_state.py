@@ -164,6 +164,19 @@ state = {
     "markets": [],
     "latest_prices": {},
     "latest_asks": {},  # maker/limit-order path (2026-08-15) - see check_pending_fills wiring below
+    # P8 Task 34 - per-open-position WS ticker cadence. open_position_tickers
+    # is the tick loop's own derived set (paper + real); seen_at is written by
+    # _process_stream_ticker only for tickers in that set, read/pruned by the
+    # observability sampler. Never serialized (not in _build_state_body).
+    "open_position_tickers": set(),
+    "open_position_ticker_seen_at": {},
+    # P7 Task 29 (redesigned) - per-ticker last-write time for the two price
+    # dicts, stamped by every writer (WS ticker handler, REST seed, REST-wins
+    # overlay). The load-bearing input for the age-aware overlay in
+    # market_fetch.overlay_live_prices and for Task 35's staleness-triggered
+    # corroboration. Pruned with their parent dicts in the tick's rebuild.
+    "latest_prices_updated_at": {},
+    "latest_asks_updated_at": {},
     "event_phase": {},  # event_ticker -> pre_tail/mid_series/post_tail/no_occurrence, see services/market_events/event_lifecycle.py
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
     # than {} - these two accumulate over the app's whole lifetime, not just
@@ -237,6 +250,9 @@ state = {
     # Same background-task decoupling as discovery_cache above, for
     # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
     "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
+    # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
+    "candidate_retry_loop": {"running": False, "last_started_at": 0.0},
     # Same background-task decoupling as discovery_cache/catalog_scan
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.

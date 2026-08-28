@@ -13,6 +13,14 @@ kalshi:
   - Sports
   live_markets_only: true
   poll_interval_sec: 6
+  # P8 Task 39: applies only in streaming mode (_streaming_trade_tape_enabled()),
+  # where trading_loop's own REST tick is a safety net, not the primary data
+  # path - check_exits/check_pending_fills/position_netting.review already run
+  # from the WS ticker path (Task 38), and the five _maybe_* schedulers +
+  # candidate_retry run from their own independent loops (Tasks 36-37).
+  # poll_interval_sec stays the cadence for non-streaming (REST-primary) mode,
+  # unchanged.
+  safety_net_interval_sec: 30
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
   market_lifecycle_stream_enabled: true
@@ -70,6 +78,17 @@ strategy:
   limit_order_timeout_sec: 60
   min_seconds_to_close: 90
   exit_min_seconds_to_close: null
+  # P8 Task 35: when the WS-sourced price check_exits is about to act on is
+  # older than this many seconds, the independent REST corroboration read
+  # (market_history.recent_price) is TRUSTED over it even within the usual
+  # 0.30 deviation floor - WS-primary, REST verifies at decision time. If
+  # that read is unavailable too, the exit check still proceeds on the stale
+  # value (fail-open, the codebase's uniform rule) but the condition is
+  # recorded in fault_log, never silent. Provisional 120.0 matches the
+  # existing corroboration window; Task 40's benchmark on real captured
+  # cadence data is the owner of re-tuning it. 0 disables the staleness
+  # trigger (deviation-only, as before).
+  price_staleness_corroborate_sec: 120.0
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.85

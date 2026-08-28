@@ -475,3 +475,99 @@ def test_subscription_churn_window_resets_but_lifetime_totals_survive():
     assert churn["syncs_total"] == 1
     assert churn["tickers_added_total"] == 1
     assert churn["tickers_removed_total"] == 1
+
+
+# ---- P7 Task 33: one subscribe message for the independently-scoped
+# channels (trade + market_lifecycle_v2), matching fill+market_positions'
+# existing combined message; ticker/index stay separate because their
+# params live at the top level of one params object. --------------------
+
+def _wide_lifecycle_client():
+    return KalshiStreamGateway(
+        "https://external-api.kalshi.com/trade-api/v2", exchange_wide_trades=True, subscribe_lifecycle=True,
+    )
+
+
+def test_exchange_wide_trade_and_lifecycle_share_one_subscribe_message():
+    client = _wide_lifecycle_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    subs = [m for m in client._ws.sent if m["cmd"] == "subscribe"]
+    assert len(subs) == 1
+    assert set(subs[0]["params"]["channels"]) == {"trade", "market_lifecycle_v2"}
+    assert "market_tickers" not in subs[0]["params"]
+    assert client._trade_subscribed is True and client._lifecycle_subscribed is True
+
+
+def test_exchange_wide_without_lifecycle_still_sends_trade_alone():
+    client = _wide_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    subs = [m for m in client._ws.sent if m["cmd"] == "subscribe"]
+    assert [m["params"]["channels"] for m in subs] == [["trade"]]
+
+
+def test_scoped_trade_and_lifecycle_stay_separate_messages():
+    # A watchlist-scoped trade subscribe carries market_tickers, which would
+    # wrongly apply to lifecycle in a combined message (lifecycle takes no
+    # market filter at all) - so scoped mode keeps them apart.
+    client = _lifecycle_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = {"TICK-A"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    by_channels = {tuple(m["params"]["channels"]): m for m in client._ws.sent if m["cmd"] == "subscribe"}
+    assert by_channels[("trade",)]["params"]["market_tickers"] == ["TICK-A"]
+    assert "market_tickers" not in by_channels[("market_lifecycle_v2",)]["params"]
+    assert ("ticker",) in by_channels
+
+
+def test_combined_subscribe_respects_each_channels_own_gate():
+    client = _wide_lifecycle_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+    client._lifecycle_subscribed = True  # already up on this connection
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    subs = [m for m in client._ws.sent if m["cmd"] == "subscribe"]
+    assert [m["params"]["channels"] for m in subs] == [["trade"]]
+
+    client = _wide_lifecycle_client()
+    client._ws = _FakeWebSocket()
+    client._desired_tickers = set()
+    client._trade_subscribed = True
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    subs = [m for m in client._ws.sent if m["cmd"] == "subscribe"]
+    assert [m["params"]["channels"] for m in subs] == [["market_lifecycle_v2"]]
+
+
+def test_add_markets_requests_an_initial_snapshot_on_the_ticker_sid_only():
+    """P7 Task 33 / R3: a ticker added mid-connection (a position opening
+    while already connected) gets its first price straight from WS instead
+    of waiting for the next natural ticker tick or Task 29's REST seed.
+    websocket-connection.md documents send_initial_snapshot for "newly added
+    market tickers on the ticker channel" - so it rides the ticker sid's
+    add_markets only, never the trade sid's."""
+    client = _client()
+    client._ws = _FakeWebSocket()
+    client._subscription_sids = {"trade": 3, "ticker": 4}
+    client._trade_subscribed = True
+    client._ticker_subscribed = True
+    client._subscribed_tickers = {"TICK-A"}
+    client._desired_tickers = {"TICK-A", "TICK-B"}
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=False))
+
+    by_sid = {m["params"]["sid"]: m["params"] for m in client._ws.sent if m["params"].get("action") == "add_markets"}
+    assert by_sid[4].get("send_initial_snapshot") is True
+    assert "send_initial_snapshot" not in by_sid[3]

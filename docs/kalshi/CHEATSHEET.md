@@ -610,3 +610,22 @@ table, lines 62-115 and 340-410), `market_lifecycle.md` (Statuses table and
 "Transitions" section, lines 11-52).
 **Found:** 2026-08-26, realtime data-plane remediation P0 Task 5.
 **Found:** 2026-08-26, realtime data-plane remediation P0 Task 4.
+
+## Can several channels go in one `subscribe` command, and how does the server answer?
+**Answer:** Yes for channels that share the same (or no) params. `websocket-
+connection.md`'s Subscribe Command schema takes `params.channels` as an array,
+but every channel-specific param (`market_tickers`, `index_ids`,
+`underlying_tickers`, `send_initial_snapshot`) sits at the **top level of the
+one `params` object** and therefore applies to every channel in that message -
+so only channels with no channel-specific params (exchange-wide `trade`,
+`market_lifecycle_v2`, `fill`, `market_positions`) can safely share a message;
+`ticker` (needs `market_tickers`) and the index feeds cannot. The server replies
+with **one `subscribed` message per channel** (`{"channel": ..., "sid": ...}` -
+Subscribed Response schema, not a combined list), so a per-message handler
+needs no change. Whether a rejected channel fails the whole command or only
+itself is **not documented** either way. Separately, `send_initial_snapshot`
+is available on `update_subscription`/`add_markets` too (default `false`),
+scoped to "newly added market tickers on the ticker channel."
+**Source:** `websocket-connection.md` (Subscribe Command, Update Subscription -
+Add Markets, Subscribed Response, Error Response schemas).
+**Found:** 2026-08-27/28, P7 Task 33 + its adversarial review (R3/R5).

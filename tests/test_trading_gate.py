@@ -2151,7 +2151,9 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
 
     captured = {}
 
-    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None, close_times=None):
+    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None, close_times=None, **_additive_kwargs):
+        # **_additive_kwargs: check_exits' signature grows additively (tick_cache,
+        # latest_prices_updated_at, ...) - this double only cares about opened_since.
         captured["opened_since"] = opened_since
         return []
     monkeypatch.setattr(main.strategy, "check_exits", fake_check_exits)
@@ -2162,6 +2164,107 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
 
     assert captured["opened_since"] is not None
     assert before <= captured["opened_since"] <= after
+
+
+# --- _process_stream_ticker: check_pending_fills / position_netting.review
+# wiring (P8 Task 38, Family-C-lite). Both used to run only from trading_
+# loop's own tick; concurrency safety under a second, WS-triggered caller is
+# proven directly against the pure functions in
+# tests/test_position_management_concurrency.py - these confirm the wiring
+# itself: the calls actually happen from this handler, on the right gate.
+
+def test_process_stream_ticker_fills_a_pending_limit_order(monkeypatch):
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    # A yes_bid print alone doesn't move latest_asks; seed it directly the
+    # way a prior ticker message already would have, then a bid print that
+    # doesn't touch the ask keeps the same fillable ask in place.
+    main.state["latest_asks"]["TICK-A"] = 0.50
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert main.broker.pending_orders == {}  # resolved, not left dangling
+    assert "TICK-A" in main.broker.positions
+    assert main.broker.positions["TICK-A"].size == 10
+    assert any(d.get("action") == "trade" and d.get("source") == "limit_order" for d in main.state["decision_feed"])
+
+
+def test_process_stream_ticker_runs_check_pending_fills_even_without_signal_feed(monkeypatch):
+    """check_exits' own gate (state.get("signal_feed")) must not also gate
+    check_pending_fills/position_netting.review - neither reads signal_feed
+    at all, and trading_loop's tick never gated them on it either."""
+    main.state["running"] = True
+    main.state["signal_feed"] = []  # falsy - would skip check_exits, must not skip the other two
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert "TICK-A" in main.broker.positions  # filled despite the empty signal_feed
+
+
+def test_process_stream_ticker_skips_check_pending_fills_when_not_running(monkeypatch):
+    main.state["running"] = False
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert main.broker.pending_orders  # untouched - the app is paused
+    main.state["running"] = True  # restore for later tests in this module
+
+
+def test_process_stream_ticker_calls_position_netting_review_when_enabled(monkeypatch):
+    monkeypatch.setattr(main.config_store, "get", lambda: {"position_netting": {"enabled": True, "min_dwell_sec": 0}})
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {"TICK-A": 0.6, "TICK-B": 0.6}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {"TICK-A": {"event_ticker": "EVT-1"}, "TICK-B": {"event_ticker": "EVT-1"}}
+    main.state["event_titles"] = {"EVT-1": {"mutually_exclusive": True}}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", 100, 0.6, "r")
+    main.broker.open_position("TICK-B", "yes", 100, 0.6, "r")
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.6"})
+
+    assert main.broker.positions == {}  # locked-loss pair closed via the WS path
+
+
+def test_process_stream_ticker_position_netting_is_a_noop_when_disabled(monkeypatch):
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {"TICK-A": 0.6, "TICK-B": 0.6}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {"TICK-A": {"event_ticker": "EVT-1"}, "TICK-B": {"event_ticker": "EVT-1"}}
+    main.state["event_titles"] = {"EVT-1": {"mutually_exclusive": True}}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", 100, 0.6, "r")
+    main.broker.open_position("TICK-B", "yes", 100, 0.6, "r")
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.6"})
+
+    assert set(main.broker.positions) == {"TICK-A", "TICK-B"}  # position_netting.enabled defaults False
 
 
 # --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,
@@ -3254,3 +3357,119 @@ def test_shadow_risk_resume_route():
     assert resp.status_code == 200
     assert resp.json()["halted"] is False
     assert main.shadow.halted is False
+
+
+def test_process_stream_ticker_records_cadence_only_for_open_position_tickers(monkeypatch):
+    """P8 Task 34: the per-position ticker-cadence write is gated on the tick
+    loop's own open_position_tickers set - an open position's ticker is
+    stamped, any other ticker on the exchange-wide stream is not (bounded by
+    position count by construction, never exchange-wide)."""
+    main.state["running"] = False  # skip check_exits; this test is about the cadence stamp only
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["open_position_tickers"] = {"TICK-A"}
+    main.state["open_position_ticker_seen_at"] = {}
+
+    before = time.time()
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
+    _run_stream_ticker(({"market_ticker": "TICK-Z", "yes_bid_dollars": "0.5"}))
+    after = time.time()
+
+    seen = main.state["open_position_ticker_seen_at"]
+    assert set(seen) == {"TICK-A"}
+    assert before <= seen["TICK-A"] <= after
+
+
+def test_process_stream_ticker_writes_asks_and_stamps_both_timestamps(monkeypatch):
+    """P7 Task 29 (redesigned): the WS ticker handler is the primary writer
+    for BOTH price dicts - before this, latest_asks had no WS writer at all
+    (the handler read yes_ask_dollars onto the market row but never into
+    latest_asks), so asks were frozen at their REST seed forever."""
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    before = time.time()
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.40", "yes_ask_dollars": "0.45"}))
+    after = time.time()
+
+    assert main.state["latest_prices"]["TICK-A"] == 0.40
+    assert main.state["latest_asks"]["TICK-A"] == 0.45
+    assert before <= main.state["latest_prices_updated_at"]["TICK-A"] <= after
+    assert before <= main.state["latest_asks_updated_at"]["TICK-A"] <= after
+
+
+def test_process_stream_ticker_never_fabricates_an_ask_when_the_message_has_none(monkeypatch):
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.40"}))
+
+    assert "TICK-A" not in main.state["latest_asks"]  # check_pending_fills must see absent, not 0.5
+
+
+def test_pipeline_health_reports_open_position_price_staleness():
+    """P7 Task 29 (redesigned) / R4: /api/health/pipeline derives per-open-
+    position price staleness from the write stamps - visibility only."""
+    now = time.time()
+    main.state["open_position_tickers"] = {"FRESH", "STALE", "UNSTAMPED"}
+    main.state["latest_prices_updated_at"] = {"FRESH": now - 5, "STALE": now - 400}
+
+    body = client.get("/api/health/pipeline").json()["price_staleness"]
+
+    assert body["open_position_count"] == 3
+    assert body["stamped_count"] == 2
+    assert body["unstamped_count"] == 1
+    assert 395 <= body["open_position_oldest_age_sec"] <= 405
+    assert body["stale_over_300s_count"] == 1
+
+
+def test_lifecycle_settled_also_resolves_signal_log_rows_for_the_ticker(tmp_path, monkeypatch):
+    """P8 Task 30: signal_log was the one store the settled lifecycle path did
+    not resolve - mark_resolved's only caller was the 30s REST poll - even
+    though the same event already resolved four other stores for the same
+    ticker. Now it resolves alongside them, per row (each signal keeps its
+    own side)."""
+    import services.signal_log as signal_log_module
+    monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+    signal_log_module.log_signal("TICK-A", "yes", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
+    signal_log_module.log_signal("TICK-A", "no", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
+    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+
+    _run_lifecycle((
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+
+    rows = {r["side"]: r for r in signal_log_module.recent(limit=10) if r["ticker"] == "TICK-A"}
+    assert rows["yes"]["resolved"] == 1 and rows["yes"]["correct"] == 1
+    assert rows["no"]["resolved"] == 1 and rows["no"]["correct"] == 0
+    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] >= 2
+
+
+def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
+    """P8 Task 36: with the trigger checks relocated out of trading_loop, the
+    pipeline route is the one place a human can confirm each scheduler is
+    still firing - last-started age + busy flag per scheduler, unknown
+    reported as None rather than fabricated."""
+    now = time.time()
+    monkeypatch.setitem(main.state, "signal_resolution_check", {"last_checked_at": now - 12, "checking": False, "task": None})
+    monkeypatch.setitem(main.state, "catalog_scan", {"scanning": True, "last_started_at": now - 3, "task": None})
+
+    body = client.get("/api/health/pipeline").json()["schedulers"]
+
+    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "candidate_retry", "auto_apply"} <= set(body)
+    assert 10 <= body["signal_resolution"]["last_started_sec_ago"] <= 15
+    assert body["signal_resolution"]["busy"] is False
+    assert body["catalog_scan"]["busy"] is True

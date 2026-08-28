@@ -255,6 +255,75 @@ def test_handler_exceptions_are_counted_and_fault_logged_once_per_class_per_wind
     assert gw.ingest_metrics(now=0.0)["handler_exceptions_total"] == 4
 
 
+# --- consumer handler timeouts: bounds an unbounded hang (issue #145/#150) -
+
+def _gateway_with_timeout(timeout_sec: float, queue_max: int = 20000) -> KalshiStreamGateway:
+    gw = KalshiStreamGateway(
+        "https://external-api.kalshi.com/trade-api/v2",
+        ingest_queue_max=queue_max, handler_timeout_sec=timeout_sec,
+    )
+    gw._begin_connection()
+    return gw
+
+
+def test_a_handler_that_hangs_past_the_timeout_is_bounded_and_counted_separately(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(ws_module.fault_log, "record_fault", lambda *a, **k: recorded.append((a, k)) or True)
+    gw = _gateway_with_timeout(0.02)
+
+    async def hung_trade(_trade):
+        await asyncio.sleep(10)  # far past the 0.02s timeout - never actually waited out
+
+    gw._ingest_raw(_trade("a"), now=0.0)
+    asyncio.run(_drain(gw, now=0.0, on_trade=hung_trade))
+
+    m = gw.ingest_metrics(now=0.0)
+    assert m["handler_timeouts_by_class"] == {"trade": 1}
+    assert m["handler_timeouts_total"] == 1
+    assert m["handler_exceptions_total"] == 0  # a timeout is not a handler exception
+    assert m["processed_by_class"] == {"trade": 1}  # still counted as consumed - queue.task_done() still fires
+    assert len(recorded) == 1
+    args, kwargs = recorded[0]
+    assert args[0] == "kalshi_websocket" and args[1] == "handle_message_timeout:trade"
+    assert kwargs.get("severity") == "warn"
+
+
+def test_handler_timeouts_are_fault_logged_once_per_class_per_window(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(ws_module.fault_log, "record_fault", lambda *a, **k: recorded.append((a, k)) or True)
+    gw = _gateway_with_timeout(0.01)
+
+    async def hung(_msg):
+        await asyncio.sleep(10)
+
+    for i in range(3):
+        gw._ingest_raw(_trade(str(i)), now=0.0)
+    asyncio.run(_drain(gw, now=0.0, on_trade=hung))
+
+    assert gw.ingest_metrics(now=0.0)["handler_timeouts_total"] == 3
+    assert len(recorded) == 1  # a storm collapses to one fault_log write per window, same as exceptions
+
+    gw.reset_ingest_window()
+    gw._ingest_raw(_trade("again"), now=0.0)
+    asyncio.run(_drain(gw, now=0.0, on_trade=hung))
+    assert len(recorded) == 2
+    assert gw.ingest_metrics(now=0.0)["handler_timeouts_total"] == 4
+
+
+def test_a_handler_well_under_the_timeout_is_unaffected():
+    gw = _gateway_with_timeout(1.0)
+
+    async def quick_trade(_trade):
+        await asyncio.sleep(0.001)
+
+    gw._ingest_raw(_trade("a"), now=0.0)
+    asyncio.run(_drain(gw, now=0.0, on_trade=quick_trade))
+
+    m = gw.ingest_metrics(now=0.0)
+    assert m["handler_timeouts_total"] == 0
+    assert m["processed_by_class"] == {"trade": 1}
+
+
 # --- window reset semantics ------------------------------------------------
 
 def test_reset_ingest_window_clears_window_stats_but_keeps_lifetime_counters():
@@ -617,3 +686,35 @@ def test_reader_gate_enabled_gate_exception_still_falls_open_and_enqueues(monkey
     assert enqueued is True  # never filtered on an exception, even with the gate live
     assert gw._queue.qsize() == 1
     assert gw.ingest_metrics(now=1.0)["gate_exceptions"] == 1
+
+
+# --- reconnect gap duration (P8 Task 34) ---------------------------------
+
+def test_reconnect_gap_duration_is_computed_on_the_next_connection():
+    gw = _gateway()  # first connect, no prior disconnect
+    c = gw.ingest_metrics(now=100.0)["connection"]
+    assert c.get("last_gap_sec") is None  # never disconnected - no fabricated 0
+
+    gw._record_disconnect(RuntimeError("socket closed"), now=100.0)
+    gw._begin_connection(now=107.5)  # reconnect completes 7.5s later
+    c = gw.ingest_metrics(now=107.5)["connection"]
+    assert c["last_gap_sec"] == pytest.approx(7.5)
+    assert c["gap_sec_window"] == pytest.approx(7.5)
+
+
+def test_reconnect_gap_window_resets_but_lifetime_value_survives():
+    gw = _gateway()
+    gw._record_disconnect(RuntimeError("x"), now=10.0)
+    gw._begin_connection(now=12.0)
+    gw.reset_ingest_window()
+    c = gw.ingest_metrics(now=13.0)["connection"]
+    assert c["last_gap_sec"] == pytest.approx(2.0)  # lifetime: still known
+    assert c.get("gap_sec_window") is None  # window: consumed by the sampler
+
+
+def test_negative_gap_from_clock_skew_is_not_recorded():
+    gw = _gateway()
+    gw._record_disconnect(RuntimeError("x"), now=50.0)
+    gw._begin_connection(now=49.0)  # wall clock went backwards
+    c = gw.ingest_metrics(now=50.0)["connection"]
+    assert c.get("last_gap_sec") is None

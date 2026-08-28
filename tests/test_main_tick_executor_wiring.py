@@ -177,35 +177,23 @@ def test_build_series_track_record_uses_series_stats_bulk_not_per_ticker(monkeyp
     assert set(result.keys()) == {"A-1", "B-1"}
 
 
-def test_trading_loop_calls_candidate_retry_run_pending_in_stream_mode():
-    """P2 Task 13: candidate_retry.run_pending must run once per tick, in
-    stream mode only. trading_loop() is a single giant while-True
-    coroutine driven by real network calls end to end - no existing test
-    in this repo drives one full tick (confirmed: nothing greps
-    "trading_loop(" as a call, only as a string/comment) - so this is a
-    structural check on the real source, the same shape
-    tests/test_quality_audit.py's background-wiring scanner already uses
-    for main.py's other per-tick scheduler calls, rather than a pretense
-    of runtime coverage this repo has no harness for.
-
-    Code-review fix (finding #1): the call now also passes whale_provider
-    and _handle_signal through, so a recovered candidate is actually scored
-    and evaluated through the same pipeline a first-try trade uses, instead
-    of run_pending only being able to claim-and-drop it. Checked for by
-    name (not the old single-line "run_pending(client)" literal, since the
-    call is now multi-line) so a future accidental narrowing back to just
-    `client` would fail this test rather than silently reintroducing the
-    claim-without-evaluation gap."""
+def test_candidate_retry_runs_from_its_own_supervised_loop_not_the_tick():
+    """P2 Task 13 put run_pending inside trading_loop (stream mode only, with
+    whale_provider + _handle_signal threaded through so a recovered candidate
+    is scored through the same pipeline as a first-try trade, not
+    claim-and-dropped). P8 Task 37 moves it to its own supervised loop while
+    keeping candidate_retry's documented single-mutator contract: exactly one
+    caller in the whole application, now _candidate_retry_loop. Structural
+    check on the real source, same idiom as before (nothing drives one full
+    tick in this repo)."""
     import inspect
-    source = inspect.getsource(main.trading_loop)
-    assert "candidate_retry.run_pending(" in source
-    call_index = source.index("candidate_retry.run_pending(")
-    call_close_index = source.index(")", call_index)
-    call_args = source[call_index:call_close_index]
-    for required_arg in ("client", "whale_provider", "_handle_signal", "cfg", "market_results", "config_fp", "tick_now"):
+    assert "candidate_retry.run_pending(" not in inspect.getsource(main.trading_loop)
+    loop_src = inspect.getsource(main._candidate_retry_loop)
+    assert "candidate_retry.run_pending(" in loop_src
+    call_args = loop_src[loop_src.index("candidate_retry.run_pending("):]
+    call_args = call_args[:call_args.index(")")]
+    for required_arg in ("client", "whale_provider", "_handle_signal", "cfg"):
         assert required_arg in call_args, f"run_pending call is missing {required_arg!r}: {call_args!r}"
-    # Mirrors the trade-tape branch's own conditional (Task 13's own
-    # instruction) - both must be gated the same way, not just present.
-    guard_line = "if _streaming_trade_tape_enabled():"
-    guard_index = source.rindex(guard_line, 0, call_index)
-    assert source[guard_index:call_index].count("\n") <= 15  # the call is inside that same guard's block, not a distant one
+    assert "_streaming_trade_tape_enabled()" in loop_src  # the stream-mode gate moved with the call
+    assert inspect.getsource(main).count("candidate_retry.run_pending(") == 1  # single mutator, still
+    assert "_candidate_retry_loop" in inspect.getsource(main.lifespan)

@@ -100,7 +100,7 @@ from services.whale_stream.decision_bridge import (  # noqa: E402
 from services.whale_stream.whale_stream_handlers import (  # noqa: E402
     _fetch_trade_tape, _fetch_trades_for_ticker, _process_stream_fill, _process_stream_lifecycle,
     _process_stream_position, _process_stream_ticker, _process_stream_trade, _stream_market_client,
-    _streaming_trade_tape_enabled, _TRADE_TAPE_UI_CAP,
+    _streaming_trade_tape_enabled, _TRADE_TAPE_UI_CAP, build_fill_validator,
 )
 from services.whale_stream.index_stream_handlers import (  # noqa: E402
     _noop_stream_trade, _noop_stream_ticker, _process_stream_index, _record_settlement_observations,
@@ -374,6 +374,252 @@ async def _build_series_track_record_async(tickers: list, days: int = 30) -> dic
     return await tick_executor.run(lambda: signal_log.series_stats_bulk(tickers, days=days))
 
 
+_SCHEDULER_TRIGGER_INTERVAL_SEC = 5.0
+
+
+async def _scheduler_loop(trigger, name: str) -> None:
+    """One supervised loop per background trigger check (P8 Task 36). The
+    five _maybe_* functions and _maybe_run_auto_apply used to be invoked from
+    inside trading_loop's body, which made every one of them tick-cadenced by
+    accident of where the call lived, not by design - each already carries
+    its own due()/overlap guard and spawns its real work as an independent
+    task. Only the caller moved. Gated on state["running"] so nothing fires
+    while the app is paused, exactly as trading_loop's own gate behaved. The
+    interval sits well under every trigger's own due() interval (the tightest
+    is catalog_scan's 15s), so due()-precision is preserved; a not-due call
+    is one dict comparison."""
+    while True:
+        await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
+        if not state["running"]:
+            continue
+        trigger(config_store.get())
+
+
+def _maybe_run_auto_apply(cfg: dict) -> None:
+    """Calibration-history snapshot + calibration auto-apply, and unified
+    advisory auto-apply - moved verbatim out of trading_loop (P8 Task 36).
+    Both are hours-scale (snapshot_interval_sec 21600, auto_apply_cooldown_sec
+    86400) and were the one place the tick still did real inline work when
+    due instead of the _maybe_* trigger shape everything else uses. Still
+    inline-when-due here (same blocking profile as before, once every several
+    hours); offloading the due-time work itself via tick_executor is a
+    follow-up, not part of this pure relocation."""
+    tick_now = time.time()
+
+    # Calibration-history tracking (Gap 6, docs/config-tuning-data-
+    # gaps-2026-08-10.md) - confidence_calibration.py already
+    # computes a real report on demand, but only ever as a single
+    # point-in-time snapshot, discarded the moment the request
+    # ends. due() is a single cheap MAX() query, so this tick's
+    # cost stays negligible unless a snapshot is actually due; only
+    # then does the expensive full-table-scan report computation
+    # run. Costs zero API tokens (pure local computation), unlike
+    # the market analyst - automatic background capture is fine
+    # here.
+    cc_cfg = cfg.get("confidence_calibration") or {}
+    if cc_cfg.get("enabled") and calibration_history.due(
+        tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
+    ):
+        cc_rows = signal_log.resolved_signals_with_factors()
+        cc_result = confidence_calibration.generate_calibration_report(
+            cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
+        )
+        if cc_result["report"] is not None:
+            calibration_history.record_snapshot(cc_result["report"], tick_now)
+            # Auto-apply (2026-08-10, direct request) - off by
+            # default, only reachable via the typed-confirmation-
+            # gated /api/confidence-calibration/auto-apply/enable.
+            # Same cooldown idiom as the snapshot check itself:
+            # last_applied_at() is one cheap indexed query, so this
+            # only pays for the real work (blend + config write)
+            # once the cooldown has actually elapsed.
+            if cc_cfg.get("auto_apply_enabled"):
+                last_auto = config_performance.last_applied_at("calibration-auto-apply")
+                cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
+                # Direct report (2026-08-11): "auto apply should wait for a
+                # significant dataset... before applying changes." The report
+                # itself only needs min_resolved_signals (default 50) to exist
+                # at all - reasonable for a human reading a read-only panel, too
+                # thin a bar for the system to act on unsupervised. A separate,
+                # stricter floor specifically for the automatic-write path, same
+                # "manual can be more permissive than automatic" split
+                # auto_apply_min_n below applies to advisory.
+                auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
+                if (
+                    last_auto is None or (tick_now - last_auto) >= cooldown
+                ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
+                    current_weights = cfg.get("whale_confidence_weights") or {}
+                    blended = confidence_calibration.blended_weights_for_auto_apply(
+                        current_weights, cc_result["report"].get("suggested_weights"),
+                    )
+                    if blended is not None and blended != current_weights:
+                        fp_before = config_performance.fingerprint(cfg)
+                        config_store.update({"whale_confidence_weights": blended})
+                        fp_after = config_performance.fingerprint(config_store.get())
+                        # "predict how those changes may improve (or worsen)"
+                        # (direct report) - the biggest observed calibration
+                        # gap is exactly what suggested_weights was derived to
+                        # address (services/whale_calibration/confidence_calibration.py's
+                        # _suggested_weights renormalizes toward the
+                        # best-discriminating factors) - cite it plainly rather
+                        # than fabricate a forward win-rate number this app has
+                        # no way to honestly back before the new weights have
+                        # actually scored any signals yet.
+                        ranked = cc_result["report"].get("ranked_by_discrimination") or []
+                        top_factor = ranked[0] if ranked else None
+                        top_gap = next(
+                            (f["gap_pts"] for f in cc_result["report"]["per_factor"] if f["factor"] == top_factor),
+                            None,
+                        ) if top_factor else None
+                        predicted = (
+                            f" Largest observed calibration gap was {top_factor} at {top_gap:+.1f}pts - "
+                            f"this reweighting shifts weight toward the factors that discriminate best."
+                            if top_factor and top_gap is not None else ""
+                        )
+                        config_performance.log_applied_change(
+                            config_path="whale_confidence_weights",
+                            old_value=current_weights, new_value=blended,
+                            rationale=(
+                                f"Auto-applied calibration-suggested weights "
+                                f"(n={cc_result['report']['resolved_count']} resolved signals)."
+                                f"{predicted}"
+                            ),
+                            trade_count=cc_result["report"]["resolved_count"],
+                            fingerprint_before=fp_before, fingerprint_after=fp_after,
+                            auto_applied=True, source="calibration-auto-apply",
+                        )
+                        bump_generation()
+
+    # Advisory auto-apply - real bug found live (2026-08-10):
+    # advisory.auto_apply_enabled was already protected from
+    # generic config edits and had a min_confidence/cooldown_sec
+    # config surface, but nothing anywhere actually read those
+    # fields or auto-applied anything - the feature was reachable
+    # from no path at all (see the two new /api/advisory/auto-
+    # apply/* routes' own comment for the full story). Same
+    # cheap-cooldown-check-first shape as calibration's own
+    # auto-apply above; only applies the single highest-priority
+    # (first) recommendation clearing auto_apply_min_confidence
+    # per cooldown window, not a burst of every qualifying one at
+    # once - same "auto-apply is inherently conservative" posture
+    # calibration's own auto-apply follows.
+    adv_cfg = cfg.get("advisory") or {}
+    if adv_cfg.get("enabled") and adv_cfg.get("auto_apply_enabled"):
+        last_adv_auto = config_performance.last_applied_at("unified-advisory-auto")
+        adv_cooldown = adv_cfg.get("auto_apply_cooldown_sec", 86400)
+        if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
+            adv_current_fp = config_performance.fingerprint(cfg)
+            adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+            adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+            adv_result = advisory_engine.generate_recommendations(
+                adv_all_rows, cfg, adv_current_fp, adv_variants,
+                adv_cfg["min_resolved_trades_per_variant"],
+                gate_summaries=candidate_log.gate_summary(),
+                # Staleness filter (2026-08-11, direct bug report) matters most
+                # right here - unlike a manual click, auto-apply has no human
+                # to notice it's repeatedly nudging the same field off the
+                # exact same stale evidence every cooldown window.
+                last_applied_by_path=config_performance.all_last_applied_by_path(),
+                series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
+                category_rows=regime_analytics.by_category(adv_all_rows),
+            )
+            min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
+            # Direct report (2026-08-11): "auto apply should wait for a
+            # significant dataset... before applying changes." confidence_
+            # label's "higher" tier already starts at n=15 (trade_analytics.
+            # confidence_label) - a reasonable bar for a human to read a
+            # suggestion, thinner than what should trigger an unsupervised
+            # config write. A dedicated, separately-tunable floor for the
+            # automatic path only - manual Apply (see apply_advisory_
+            # recommendation) is untouched by this, same "manual can be more
+            # permissive than automatic" split as the calibration side above.
+            min_n = adv_cfg.get("auto_apply_min_n", 25)
+            qualifying = [
+                r for r in adv_result.get("recommendations", [])
+                if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
+            ]
+            if qualifying:
+                rec = qualifying[0]
+                section, _, field = rec["config_path"].partition(".")
+                config_store.update({section: {field: rec["suggested_value"]}})
+                adv_new_fp = config_performance.fingerprint(config_store.get())
+                config_performance.log_applied_change(
+                    config_path=rec["config_path"], old_value=rec["current_value"],
+                    new_value=rec["suggested_value"], rationale=rec["rationale"], trade_count=rec["n"],
+                    fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
+                    auto_applied=True, source="unified-advisory-auto",
+                )
+                bump_generation()
+
+
+_SCHEDULER_TRIGGERS = (
+    ("signal_resolution", _maybe_check_signal_resolutions),
+    ("backup", _maybe_run_backup),
+    ("research", _maybe_run_research),
+    ("event_schedule", event_schedule._maybe_resolve_event_schedules),
+    ("catalog_scan", _maybe_scan_catalog_batch),
+    ("auto_apply", _maybe_run_auto_apply),
+)
+
+
+def _tick_interval_sec(cfg: dict) -> float:
+    """P8 Task 39: trading_loop's own REST tick is a safety net in streaming
+    mode, not the primary data path, once check_exits/check_pending_fills/
+    position_netting.review all also run from the WS ticker path (Task 38)
+    and the five _maybe_* schedulers + candidate_retry run from their own
+    independent loops (Tasks 36-37). The tick's remaining jobs (market/
+    account/exchange-status fetch, settlement resolution, event-lifecycle
+    classification, capture flush, retention) are either genuinely REST-only
+    or already covered faster by the WS path - see the config field's own
+    comment in config/settings.yaml.
+
+    Non-streaming mode is unaffected: REST trade-tape polling is still the
+    primary path there (_streaming_trade_tape_enabled() false), so the tick
+    keeps its original poll_interval_sec cadence exactly as before this
+    task."""
+    kalshi_cfg = cfg["kalshi"]
+    if _streaming_trade_tape_enabled():
+        return kalshi_cfg["safety_net_interval_sec"]
+    return kalshi_cfg["poll_interval_sec"]
+
+
+async def _candidate_retry_loop() -> None:
+    """candidate_retry.run_pending's one and only caller (P8 Task 37) - it
+    used to be invoked once per tick from trading_loop's body (P2 Task 13).
+    Its documented single-mutator contract (services/candidate_retry.py:
+    "call from exactly one place") is preserved by relocation, not
+    duplication: trading_loop's call is gone, this loop is the single
+    caller. Owns its own KalshiPublicGateway per run - the tick's own client
+    closes at the end of each tick, the same reason every other background
+    task here owns one (see _check_signal_resolutions_background) - and
+    constructs it only when something is actually pending, so the idle path
+    is one snapshot() read, no client churn. Same stream-mode gate the tick
+    applied: a retry's own market lookup is only meaningful when the
+    exchange-wide stream is what feeds whale candidates in the first place.
+    whale_provider + _handle_signal are still threaded through so a
+    recovered candidate is scored and evaluated through the same pipeline a
+    first-try trade uses, not just claimed and dropped."""
+    loop_state = state["candidate_retry_loop"]
+    while True:
+        await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
+        if not state["running"] or not _streaming_trade_tape_enabled():
+            continue
+        if candidate_retry.snapshot().get("pending", 0) <= 0:
+            continue
+        cfg = config_store.get()
+        loop_state["running"] = True
+        loop_state["last_started_at"] = time.time()
+        client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+        try:
+            await candidate_retry.run_pending(
+                client, whale_provider, _handle_signal, cfg, state.get("market_results") or {},
+                config_performance.fingerprint(cfg), time.time(),
+            )
+        finally:
+            loop_state["running"] = False
+            await client.close()
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -454,10 +700,12 @@ async def trading_loop():
             # fetch.
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
-            _maybe_check_signal_resolutions(cfg)
-            _maybe_run_backup(cfg)
-            _maybe_run_research(cfg)
-            event_schedule._maybe_resolve_event_schedules(cfg)
+            # P8 Task 34 - the one set the WS ticker handler and the
+            # observability sampler both key per-position cadence off, so
+            # "which tickers count as open" has exactly one definition.
+            state["open_position_tickers"] = set(open_position_tickers)
+            # signal-resolution / backup / research / event-schedule trigger checks
+            # run from their own supervised loops now (P8 Task 36, _scheduler_loop).
             await check_and_alert(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
@@ -472,7 +720,9 @@ async def trading_loop():
             # about to need. Triggering it only after that gather returns
             # means the critical fetch's own calls are already dispatched
             # first.
-            _maybe_scan_catalog_batch(cfg)
+            # _maybe_scan_catalog_batch runs from its own supervised loop now (P8
+            # Task 36). The launch-order concern in the comment above is moot:
+            # it no longer shares this coroutine at all.
             await _fetch_category_metadata(client)
             phase_timings["market_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
@@ -504,152 +754,10 @@ async def trading_loop():
             phase_timings["resolve_and_record"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
-            # Calibration-history tracking (Gap 6, docs/config-tuning-data-
-            # gaps-2026-08-10.md) - confidence_calibration.py already
-            # computes a real report on demand, but only ever as a single
-            # point-in-time snapshot, discarded the moment the request
-            # ends. due() is a single cheap MAX() query, so this tick's
-            # cost stays negligible unless a snapshot is actually due; only
-            # then does the expensive full-table-scan report computation
-            # run. Costs zero API tokens (pure local computation), unlike
-            # the market analyst - automatic background capture is fine
-            # here.
-            cc_cfg = cfg.get("confidence_calibration") or {}
-            if cc_cfg.get("enabled") and calibration_history.due(
-                tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
-            ):
-                cc_rows = signal_log.resolved_signals_with_factors()
-                cc_result = confidence_calibration.generate_calibration_report(
-                    cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
-                )
-                if cc_result["report"] is not None:
-                    calibration_history.record_snapshot(cc_result["report"], tick_now)
-                    # Auto-apply (2026-08-10, direct request) - off by
-                    # default, only reachable via the typed-confirmation-
-                    # gated /api/confidence-calibration/auto-apply/enable.
-                    # Same cooldown idiom as the snapshot check itself:
-                    # last_applied_at() is one cheap indexed query, so this
-                    # only pays for the real work (blend + config write)
-                    # once the cooldown has actually elapsed.
-                    if cc_cfg.get("auto_apply_enabled"):
-                        last_auto = config_performance.last_applied_at("calibration-auto-apply")
-                        cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
-                        # Direct report (2026-08-11): "auto apply should wait for a
-                        # significant dataset... before applying changes." The report
-                        # itself only needs min_resolved_signals (default 50) to exist
-                        # at all - reasonable for a human reading a read-only panel, too
-                        # thin a bar for the system to act on unsupervised. A separate,
-                        # stricter floor specifically for the automatic-write path, same
-                        # "manual can be more permissive than automatic" split
-                        # auto_apply_min_n below applies to advisory.
-                        auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
-                        if (
-                            last_auto is None or (tick_now - last_auto) >= cooldown
-                        ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
-                            current_weights = cfg.get("whale_confidence_weights") or {}
-                            blended = confidence_calibration.blended_weights_for_auto_apply(
-                                current_weights, cc_result["report"].get("suggested_weights"),
-                            )
-                            if blended is not None and blended != current_weights:
-                                fp_before = config_performance.fingerprint(cfg)
-                                config_store.update({"whale_confidence_weights": blended})
-                                fp_after = config_performance.fingerprint(config_store.get())
-                                # "predict how those changes may improve (or worsen)"
-                                # (direct report) - the biggest observed calibration
-                                # gap is exactly what suggested_weights was derived to
-                                # address (services/whale_calibration/confidence_calibration.py's
-                                # _suggested_weights renormalizes toward the
-                                # best-discriminating factors) - cite it plainly rather
-                                # than fabricate a forward win-rate number this app has
-                                # no way to honestly back before the new weights have
-                                # actually scored any signals yet.
-                                ranked = cc_result["report"].get("ranked_by_discrimination") or []
-                                top_factor = ranked[0] if ranked else None
-                                top_gap = next(
-                                    (f["gap_pts"] for f in cc_result["report"]["per_factor"] if f["factor"] == top_factor),
-                                    None,
-                                ) if top_factor else None
-                                predicted = (
-                                    f" Largest observed calibration gap was {top_factor} at {top_gap:+.1f}pts - "
-                                    f"this reweighting shifts weight toward the factors that discriminate best."
-                                    if top_factor and top_gap is not None else ""
-                                )
-                                config_performance.log_applied_change(
-                                    config_path="whale_confidence_weights",
-                                    old_value=current_weights, new_value=blended,
-                                    rationale=(
-                                        f"Auto-applied calibration-suggested weights "
-                                        f"(n={cc_result['report']['resolved_count']} resolved signals)."
-                                        f"{predicted}"
-                                    ),
-                                    trade_count=cc_result["report"]["resolved_count"],
-                                    fingerprint_before=fp_before, fingerprint_after=fp_after,
-                                    auto_applied=True, source="calibration-auto-apply",
-                                )
-                                bump_generation()
-
-            # Advisory auto-apply - real bug found live (2026-08-10):
-            # advisory.auto_apply_enabled was already protected from
-            # generic config edits and had a min_confidence/cooldown_sec
-            # config surface, but nothing anywhere actually read those
-            # fields or auto-applied anything - the feature was reachable
-            # from no path at all (see the two new /api/advisory/auto-
-            # apply/* routes' own comment for the full story). Same
-            # cheap-cooldown-check-first shape as calibration's own
-            # auto-apply above; only applies the single highest-priority
-            # (first) recommendation clearing auto_apply_min_confidence
-            # per cooldown window, not a burst of every qualifying one at
-            # once - same "auto-apply is inherently conservative" posture
-            # calibration's own auto-apply follows.
-            adv_cfg = cfg.get("advisory") or {}
-            if adv_cfg.get("enabled") and adv_cfg.get("auto_apply_enabled"):
-                last_adv_auto = config_performance.last_applied_at("unified-advisory-auto")
-                adv_cooldown = adv_cfg.get("auto_apply_cooldown_sec", 86400)
-                if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
-                    adv_current_fp = config_performance.fingerprint(cfg)
-                    adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-                    adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
-                    adv_result = advisory_engine.generate_recommendations(
-                        adv_all_rows, cfg, adv_current_fp, adv_variants,
-                        adv_cfg["min_resolved_trades_per_variant"],
-                        gate_summaries=candidate_log.gate_summary(),
-                        # Staleness filter (2026-08-11, direct bug report) matters most
-                        # right here - unlike a manual click, auto-apply has no human
-                        # to notice it's repeatedly nudging the same field off the
-                        # exact same stale evidence every cooldown window.
-                        last_applied_by_path=config_performance.all_last_applied_by_path(),
-                        series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
-                        category_rows=regime_analytics.by_category(adv_all_rows),
-                    )
-                    min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
-                    # Direct report (2026-08-11): "auto apply should wait for a
-                    # significant dataset... before applying changes." confidence_
-                    # label's "higher" tier already starts at n=15 (trade_analytics.
-                    # confidence_label) - a reasonable bar for a human to read a
-                    # suggestion, thinner than what should trigger an unsupervised
-                    # config write. A dedicated, separately-tunable floor for the
-                    # automatic path only - manual Apply (see apply_advisory_
-                    # recommendation) is untouched by this, same "manual can be more
-                    # permissive than automatic" split as the calibration side above.
-                    min_n = adv_cfg.get("auto_apply_min_n", 25)
-                    qualifying = [
-                        r for r in adv_result.get("recommendations", [])
-                        if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
-                    ]
-                    if qualifying:
-                        rec = qualifying[0]
-                        section, _, field = rec["config_path"].partition(".")
-                        config_store.update({section: {field: rec["suggested_value"]}})
-                        adv_new_fp = config_performance.fingerprint(config_store.get())
-                        config_performance.log_applied_change(
-                            config_path=rec["config_path"], old_value=rec["current_value"],
-                            new_value=rec["suggested_value"], rationale=rec["rationale"], trade_count=rec["n"],
-                            fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
-                            auto_applied=True, source="unified-advisory-auto",
-                        )
-                        bump_generation()
-            phase_timings["calibration_advisory"] = round(time.time() - _phase_t, 3)
-            _phase_t = time.time()
+            # Calibration-history snapshot / calibration auto-apply / unified
+            # advisory auto-apply moved to their own supervised loop (P8 Task 36,
+            # _maybe_run_auto_apply) - the tick no longer does hours-scale work
+            # inline when it happens to be due.
 
             state["market_results"] = market_results
             if _streaming_trade_tape_enabled():
@@ -672,20 +780,9 @@ async def trading_loop():
                     _fetch_live_status(client, markets),
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
-            if _streaming_trade_tape_enabled():
-                # P2 Task 13: retries H4-unmarked candidates (services/
-                # candidate_retry.py) once per tick, stream mode only -
-                # mirrors the trade-tape branch above since a retry's own
-                # market lookup is only meaningful when the exchange-wide
-                # stream is what feeds whale candidates in the first
-                # place. Normally a near-instant no-op (nothing due).
-                # whale_provider + _handle_signal passed through (code-review
-                # fix, finding #1) so a recovered candidate is actually
-                # scored and evaluated through the same pipeline a first-try
-                # trade uses, not just claimed and dropped.
-                await candidate_retry.run_pending(
-                    client, whale_provider, _handle_signal, cfg, market_results, config_fp, tick_now,
-                )
+            # candidate_retry.run_pending (P2 Task 13) runs from its own
+            # supervised loop now - _candidate_retry_loop, P8 Task 37 - which
+            # keeps its single-mutator contract (still exactly one caller).
             phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["event_titles"].update(event_titles)
@@ -791,6 +888,14 @@ async def trading_loop():
                 m["ticker"]: float(m["yes_ask_dollars"]) for m in markets
                 if m.get("ticker") and m.get("yes_ask_dollars") not in (None, "")
             }
+            # P7 Task 29 (redesigned): the rebuilds above bound both dicts to
+            # this tick's fetched markets (open positions always included via
+            # extra_tickers); keep their per-ticker write stamps bounded the
+            # same way so neither grows with every ticker ever seen.
+            for key in ("latest_prices", "latest_asks"):
+                stamps = state[f"{key}_updated_at"]
+                for stale_ticker in [t for t in stamps if t not in state[key]]:
+                    del stamps[stale_ticker]
             _join_real_position_prices(state["account"], state["latest_prices"])
             # Human-readable label for a ticker — whale signals/decisions/positions
             # only carry the raw ticker string, so the dashboard looks this up to
@@ -929,26 +1034,14 @@ async def trading_loop():
             # state["latest_prices"], snapshotted before this fill happened.
             #
             # validate_fn re-checks the fill-time price/confidence against
-            # the same gates evaluate() applied at placement time (the
-            # "four-entry gate bypass" fix - see strategy_engine.py's
-            # validate_pending_fill/_validate_entry_price docstrings). Same
-            # is_live/category/seconds_to_close derivation as
-            # _handle_signal's own (decision_bridge.py), just computed
-            # fresh at fill time instead of signal time.
-            def _validate_fill(ticker: str, side: str, price: float, confidence: float | None) -> tuple[bool, str | None]:
-                market_info = state["market_titles"].get(ticker) or {}
-                event_ticker = market_info.get("event_ticker")
-                is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
-                if not is_live and event_ticker:
-                    is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
-                seconds_to_close = market_history.seconds_to_close(_close_time_by_ticker().get(ticker), tick_now)
-                return strategy.validate_pending_fill(
-                    ticker, side, price, confidence, cfg,
-                    category=_category_by_ticker().get(ticker), is_live=is_live, seconds_to_close=seconds_to_close,
-                )
-
+            # the same gates evaluate() applied at placement time - see
+            # build_fill_validator's own docstring (services/whale_stream/
+            # whale_stream_handlers.py; extracted from this exact closure,
+            # P8 Task 38, so _process_stream_ticker's own check_pending_
+            # fills call shares one implementation instead of a second,
+            # drifting copy).
             for fill_decision in broker.check_pending_fills(
-                state["latest_prices"], state["latest_asks"], validate_fn=_validate_fill,
+                state["latest_prices"], state["latest_asks"], validate_fn=build_fill_validator(cfg, tick_now),
             ):
                 await _handle_fill_decision(fill_decision, tick_now)
 
@@ -976,7 +1069,7 @@ async def trading_loop():
             for close_decision in strategy.check_exits(
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
                 category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-                tick_cache=tick_cache,
+                tick_cache=tick_cache, latest_prices_updated_at=state["latest_prices_updated_at"],
             ):
                 await _handle_close_decision(close_decision)
 
@@ -1019,7 +1112,7 @@ async def trading_loop():
         _maybe_capture_observability(cfg, state, trade_stream, index_stream)
         storage_health.maybe_capture_sizes(state, storage_health.DATA_DIR)
         bump_generation()
-        await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
+        await asyncio.sleep(_tick_interval_sec(cfg))
 
 
 async def _capture_writer_liveness_loop() -> None:
@@ -1032,6 +1125,19 @@ async def _capture_writer_liveness_loop() -> None:
     while True:
         await asyncio.sleep(5)
         capture_writer.ensure_alive()
+
+
+async def _stream_consumer_liveness_loop(gateway, *, interval_sec: float = 10.0) -> None:
+    """Backstop for a stuck stream consumer (issue #145) - polls
+    gateway.ensure_consumer_progressing() every interval_sec. One instance
+    per active KalshiStreamGateway (trade_stream, index_stream - same
+    class, each its own connection/queue/consumer). See that method's own
+    docstring for the detection signal and services/kalshi/websocket.py's
+    _HANDLER_TIMEOUT_SEC for the complementary per-message bound this is a
+    backstop for, not a replacement of."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        await gateway.ensure_consumer_progressing()
 
 
 @asynccontextmanager
@@ -1053,7 +1159,20 @@ async def lifespan(app: FastAPI):
     capture_writer_liveness_task = task_supervisor.supervise(
         _capture_writer_liveness_loop, component="capture_writer", operation="liveness", restart=True,
     )
+    # P8 Task 36: the background trigger checks run from their own supervised
+    # loops, not from trading_loop's body - see _scheduler_loop.
+    scheduler_tasks = [
+        task_supervisor.supervise(
+            lambda t=trigger, n=name: _scheduler_loop(t, n),
+            component="scheduler", operation=name, restart=True,
+        )
+        for name, trigger in _SCHEDULER_TRIGGERS
+    ]
+    scheduler_tasks.append(task_supervisor.supervise(
+        _candidate_retry_loop, component="scheduler", operation="candidate_retry", restart=True,
+    ))
     trade_stream_task = None
+    trade_stream_liveness_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
             lambda: trade_stream.run(
@@ -1065,7 +1184,11 @@ async def lifespan(app: FastAPI):
             ),
             component="trade_stream", operation="run", restart=True,
         )
+        trade_stream_liveness_task = task_supervisor.supervise(
+            lambda: _stream_consumer_liveness_loop(trade_stream), component="trade_stream", operation="liveness", restart=True,
+        )
     index_stream_task = None
+    index_stream_liveness_task = None
     if index_stream.enabled and (index_stream.index_ids or index_stream.underlying_tickers):
         # Its own connection and its own task - see index_stream's own
         # comment for why this isn't just another channel on trade_stream.
@@ -1077,16 +1200,23 @@ async def lifespan(app: FastAPI):
             ),
             component="index_stream", operation="run", restart=True,
         )
+        index_stream_liveness_task = task_supervisor.supervise(
+            lambda: _stream_consumer_liveness_loop(index_stream), component="index_stream", operation="liveness", restart=True,
+        )
     yield
     if trade_stream_task is not None:
         await trade_stream.close()
         trade_stream_task.cancel()
+        trade_stream_liveness_task.cancel()
     if index_stream_task is not None:
         await index_stream.close()
         index_stream_task.cancel()
+        index_stream_liveness_task.cancel()
     task.cancel()
     loop_watchdog_task.cancel()
     capture_writer_liveness_task.cancel()
+    for scheduler_task in scheduler_tasks:
+        scheduler_task.cancel()
     capture_writer.stop()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data

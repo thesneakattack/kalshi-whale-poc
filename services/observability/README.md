@@ -138,6 +138,17 @@ Names (all `float`; zero-count classes are omitted, never fabricated):
   exceptions the consumer used to swallow with a bare `except: pass`; each
   class is also fault-logged (`kalshi_websocket` / `handle_message:<class>`)
   once per window, never once per message.
+- `…ingest.handler_timeouts` (issue #145/#150, 2026-08-28) — count of
+  `_process_item`'s `asyncio.wait_for(..., timeout=_HANDLER_TIMEOUT_SEC)`
+  actually timing out. Deliberately separate from `handler_exceptions`
+  (per-class breakdown, `handler_timeouts_by_class`, is live-only via
+  `ingest_metrics()`/`/api/health/pipeline`, same as
+  `handler_exceptions_by_class` — only the aggregate is persisted here).
+  This is the signal to watch for issue #150's known, accepted
+  thread-pool-leak tradeoff (cancelling a timed-out
+  `asyncio.to_thread(...)` call doesn't stop the underlying OS thread) —
+  see `services/kalshi/CHEATSHEET.md`'s "Consumer-stall bound + liveness
+  backstop" entry for the full incident and design.
 - `…ingest.queue_depth`, `…ingest.queue_high_water`,
   `…ingest.oldest_message_age_sec` — the head-of-queue age is the direct
   "received promptly but processed stale" measurement.
@@ -651,3 +662,54 @@ notification path from this module.
   this process — expected, not an observability bug; `trade_stream.
   dropped_messages`/`messages_received` (cumulative, always real) are the
   metrics to check first if the stream-perf pair looks perpetually missing.
+
+## Reconnect gap duration + per-position ticker cadence (P8 Task 34, 2026-08-27)
+
+Two new metric families, both added because a benchmark planned for the
+realtime data-plane remediation (P8 Task 40, `docs/superpowers/plans/
+2026-08-25-realtime-data-plane-remediation.md`) needs *measured* input
+distributions rather than assumed ones - and a first research pass had
+wrongly claimed reconnect telemetry didn't exist at all (it did:
+`<stream>.ingest.reconnects` has been persisted here since I1). What was
+genuinely missing was outage *duration* and per-position *cadence*:
+
+- **`<stream>.ingest.last_gap_sec`** - wall-clock seconds between a recorded
+  disconnect (`_record_disconnect`) and the next successful connection
+  (`_begin_connection`), computed in `services/kalshi/websocket.py`. Emitted
+  only in windows where a reconnect actually completed (the gateway's
+  `gap_sec_window` is consumed by `reset_ingest_window`), so the persisted
+  series is one real sample per reconnect event. Negative gaps from
+  wall-clock skew are dropped, never recorded.
+- **`position_ticker.{tracked_count,never_seen_count,oldest/newest/median_
+  update_age_sec}`** - seconds since each currently-open position's ticker
+  last received a WS `ticker` message. Written by `_process_stream_ticker`
+  (`services/whale_stream/whale_stream_handlers.py`) as a bare set-membership
+  check + dict assignment on the exchange-wide hot path (measured 0.23 µs/msg
+  hit, 0.10 µs/msg miss), keyed off the tick loop's own
+  `state["open_position_tickers"]` so "open" has exactly one definition
+  (paper + real account). Closed positions' leftover entries are pruned in
+  `maybe_capture` post-persist, off the hot path. "Open but never seen" is
+  counted separately, never fabricated as an age.
+
+Live on first sample after shipping (2026-08-27): `tracked_count 6`,
+`never_seen_count 4`, `oldest_update_age_sec 151`, `median 62.6` - i.e. four
+of ten open positions had received *no* ticker message at all in the
+process's lifetime, and the median tracked position was over a minute
+stale. That is exactly the "a quiet ticker looks identical to an unchanged
+price" gap H12 named, now measured rather than hypothesized, and the input
+Task 35's staleness-corroboration threshold is meant to be tuned from.
+
+## Metric change: `tick.phase.calibration_advisory_sec` retired (P8 Task 36, 2026-08-28)
+
+The calibration-history snapshot / calibration auto-apply / unified advisory
+auto-apply blocks moved out of `trading_loop` into their own supervised
+scheduler loop (`main._maybe_run_auto_apply`, driven by `main._scheduler_loop`
+like the five `_maybe_*` trigger checks, which also left the tick body the
+same day). The tick therefore no longer records a `calibration_advisory`
+phase, and `tick.phase.calibration_advisory_sec` stops being emitted - a real
+metric-meaning change recorded here per I12 §3.12, not a gap. Its
+replacement for "did auto-apply run" is `GET /api/health/pipeline`'s new
+`schedulers.auto_apply` block (last-applied ages read from
+`config_performance`), alongside `schedulers.{signal_resolution,backup,
+research,event_schedule,catalog_scan}` (last-started age + busy flag from
+each scheduler's own state). Every other `tick.phase.*` metric is unchanged.

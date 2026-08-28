@@ -12,19 +12,50 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge
+from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge, signal_log
 from services.config import config_performance
 from services import whale_pipeline_perf
 from services import http_client
+from services.exits import position_netting
 from services.kalshi import websocket as kalshi_websocket
+from services.market_events import event_lifecycle
 from services.position.account_positions import _slim_fill, _slim_position
-from services.app_state import bump_generation, state, strategy, trade_stream, whale_provider
+from services.app_state import broker, bump_generation, state, strategy, trade_stream, whale_provider
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
 from services.market_lookup import _category_by_ticker, _close_time_by_ticker
-from services.whale_stream.decision_bridge import _handle_close_decision, _handle_signal
+from services.whale_stream.decision_bridge import _handle_close_decision, _handle_fill_decision, _handle_signal
 from services.ws_manager import ws_manager
+
+
+def build_fill_validator(cfg: dict, now: float):
+    """The validate_fn PaperBroker.check_pending_fills accepts - re-checks a
+    resting limit order's fill-time price/confidence against the same gates
+    evaluate() applied at placement time (the "four-entry gate bypass" fix;
+    see strategy_engine.py's validate_pending_fill/_validate_entry_price
+    docstrings). is_live/category/seconds_to_close use the same derivation
+    _handle_signal's own does, just computed fresh at fill time (now)
+    instead of signal time.
+
+    Extracted from main.py's trading_loop, where it lived as a tick-local
+    closure, so _process_stream_ticker's own check_pending_fills call
+    (P8 Task 38) shares this exact implementation instead of a second,
+    drifting copy - the same reasoning CLAUDE.md's "Bug pattern to watch
+    for" section already applies to displayed financial figures, extended
+    here to a validation rule instead of a formula."""
+    def _validate_fill(ticker: str, side: str, price: float, confidence: float | None) -> tuple[bool, str | None]:
+        market_info = state["market_titles"].get(ticker) or {}
+        event_ticker = market_info.get("event_ticker")
+        is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
+        if not is_live and event_ticker:
+            is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
+        seconds_to_close = market_history.seconds_to_close(_close_time_by_ticker().get(ticker), now)
+        return strategy.validate_pending_fill(
+            ticker, side, price, confidence, cfg,
+            category=_category_by_ticker().get(ticker), is_live=is_live, seconds_to_close=seconds_to_close,
+        )
+    return _validate_fill
 
 _TRADE_TAPE_UI_CAP = 100  # display-only cap for state["trade_tape"] (the Trade
 # Tape panel) - a human never needs to scroll more than this. Used to be the
@@ -201,6 +232,7 @@ async def _process_stream_trade(trade: dict) -> None:
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
             category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+            latest_prices_updated_at=state["latest_prices_updated_at"],
         ):
             await _handle_close_decision(close_decision)
         signals_emitted = len(signals)
@@ -224,6 +256,13 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     ticker = ticker_msg.get("ticker")
     if not ticker:
         return
+    # P8 Task 34 - per-open-position ticker cadence. Bounded by construction
+    # (only open-position tickers are written) and deliberately nothing
+    # more than a set-membership check plus one dict assignment on this
+    # exchange-wide hot path; pruning of closed positions happens in the
+    # observability sampler, off this path.
+    if ticker in state["open_position_tickers"]:
+        state["open_position_ticker_seen_at"][ticker] = time.time()
     # opened_since=now (2026-08-16 self-review finding): this was the one
     # of check_exits' three call sites (main tick loop, _process_stream_trade,
     # here) missing the 2026-08-11 same-tick stale-price guard - see
@@ -251,6 +290,22 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
         return
+    # P7 Task 29 (redesigned): this handler is the primary writer for BOTH
+    # price dicts, and stamps each write so market_fetch.overlay_live_prices
+    # can tell a WS-fresh value from one that has been copied forward since
+    # its REST seed. latest_asks had no WS writer at all before this - the
+    # ask below was read onto the market row but never into latest_asks, so
+    # check_pending_fills only ever saw REST-seeded asks, frozen forever. A
+    # message without an ask leaves latest_asks untouched: check_pending_
+    # fills relies on "absent" meaning "no fresh ask", never a default.
+    state["latest_prices_updated_at"][ticker] = now
+    ask_raw = ticker_msg.get("yes_ask_dollars")
+    if ask_raw not in (None, ""):
+        try:
+            state["latest_asks"][ticker] = float(ask_raw)
+            state["latest_asks_updated_at"][ticker] = now
+        except (TypeError, ValueError):
+            pass
     matched_market = None
     for market in state["markets"]:
         if market.get("ticker") == ticker:
@@ -280,11 +335,36 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
             volume_24h=float(matched_market.get("volume_24h_fp") or 0.0),
             close_time=matched_market.get("close_time"), now=now,
         )
-    if state["running"] and state.get("signal_feed"):
+    if state["running"]:
         cfg_now = config_store.get()
-        for close_decision in strategy.check_exits(
-            state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
-            opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+        # check_exits keeps its own pre-existing signal_feed gate - it
+        # searches signal_feed for the position to exit-check, so an empty
+        # feed is a real no-op for it specifically, not a reason to skip
+        # the other two below (Family-C-lite, P8 Task 38: check_pending_
+        # fills and position_netting.review used to only ever run from
+        # trading_loop's tick, on its own state["running"] gate with no
+        # signal_feed dependency - same gate here, unchanged behavior).
+        if state.get("signal_feed"):
+            for close_decision in strategy.check_exits(
+                state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
+                opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+                latest_prices_updated_at=state["latest_prices_updated_at"],
+            ):
+                await _handle_close_decision(close_decision)
+        # Safe under near-simultaneous callers (this WS site + trading_
+        # loop's own tick, until Task 39 slows it) - proven in
+        # tests/test_position_management_concurrency.py before this wiring
+        # landed: both functions are plain synchronous defs that mutate
+        # broker state as their last step before returning, so a second
+        # caller scheduled right after always reads the first caller's
+        # mutation and finds nothing left to act on. Never claimed/opened/
+        # closed twice.
+        for fill_decision in broker.check_pending_fills(
+            state["latest_prices"], state["latest_asks"], now=now, validate_fn=build_fill_validator(cfg_now, now),
+        ):
+            await _handle_fill_decision(fill_decision, now)
+        for close_decision in position_netting.review(
+            broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg_now, now=now,
         ):
             await _handle_close_decision(close_decision)
     bump_generation()
@@ -514,6 +594,12 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         resolved = settlement_edge.resolve_window(ticker, result == "yes")
         resolved += market_analyst_agent.resolve_from_market_results({ticker: result})
         resolved += candidate_log.resolve_from_market_results({ticker: result})
+        # P8 Task 30: the fifth store. signal_log's only resolver used to be
+        # main.py's 30s/200-batch REST poll, which stays as the slower safety
+        # net (a ticker this app wasn't watching at settlement time, or a
+        # missed lifecycle event); both paths are idempotent (WHERE resolved
+        # = 0), so firing from both is safe, same as the four above.
+        resolved += signal_log.resolve_from_market_results(ticker, result)
         stats["outcomes_resolved_via_lifecycle"] += resolved
         return
 

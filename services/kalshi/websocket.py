@@ -71,6 +71,15 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     # buffering/throughput guidance against measured behavior.
     "ingest_metrics": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
     "reset_ingest_window": ("docs/kalshi/websocket-connection.md",),
+    # Consumer-stall backstop (issue #145): quick_start_websockets.md's own
+    # reconnection guidance ("implement reconnection logic with exponential
+    # backoff") is the documented recovery path these two reuse - there is
+    # no per-message gap-detection/resume capability on this API tier (P7's
+    # own research, websocket-connection.md's AsyncAPI schema), so a forced
+    # reconnect through the existing backoff path is the correct mechanism,
+    # not a Kalshi-specific operation of its own.
+    "force_reconnect": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
+    "ensure_consumer_progressing": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
 }
 
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -121,13 +130,38 @@ _KALSHI_SUBSCRIPTION_OVERFLOW_CODE = 25  # docs/kalshi/websocket-connection.md e
 _MAX_SERVER_ERROR_CODES_TRACKED = 64  # documented codes are a small fixed set; cap defensively
 _MAX_DISCONNECT_REASON_CHARS = 200
 
+# Bounds every message's handler dispatch (issue #145's consumer-stall
+# incident, 2026-08-27: a hung await inside a handler - most likely
+# services/whalewatchers/kalshi_trade_tape.py's unbounded
+# asyncio.to_thread(self._process_trades_timed, ...) - stalled the consumer
+# forever while the reader kept enqueuing, filling the queue and dropping
+# messages with no automated recovery. Ten seconds against a real window
+# avg_ms of ~7 and p-max under 1s (see /api/health/pipeline's
+# receive_to_handler_end.window) leaves large headroom while still bounding
+# the worst case. Cancelling a timed-out asyncio.to_thread call does NOT
+# stop the underlying OS thread (confirmed against CPython's own
+# Future.cancel(): "cannot be cancelled if it is running") - a known,
+# accepted, not-yet-fixed tradeoff, tracked in issue #150, watched via
+# handler_timeouts_total/handler_timeouts_by_class below rather than
+# guessed at.
+_HANDLER_TIMEOUT_SEC = 10.0
+
+# ensure_consumer_progressing's backstop threshold: consecutive liveness
+# checks with zero processed-count progress (while new messages keep
+# arriving and the queue isn't empty) before forcing a reconnect. Catches
+# whatever _HANDLER_TIMEOUT_SEC doesn't structurally cover - e.g. a hang
+# inside _sync_subscriptions, which runs on the reader's own task, not the
+# consumer's.
+_LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
+
 
 class KalshiStreamGateway:
     def __init__(self, base_url: str, exchange_wide_trades: bool = False,
                  index_ids: list[str] | None = None,
                  underlying_tickers: list[str] | None = None,
                  subscribe_lifecycle: bool = False,
-                 ingest_queue_max: int = _INGEST_QUEUE_MAX):
+                 ingest_queue_max: int = _INGEST_QUEUE_MAX,
+                 handler_timeout_sec: float = _HANDLER_TIMEOUT_SEC):
         # exchange_wide_trades (2026-08-17, direct goal: "realtime data
         # across everything" / "zero latency and maximum insight"):
         # subscribe the `trade` channel with NO market_tickers, which
@@ -242,6 +276,15 @@ class KalshiStreamGateway:
         self._handler_exceptions_by_class: dict[str, int] = {}
         self._handler_exceptions_total = 0
         self._fault_logged_classes_this_window: set[str] = set()
+        # Consumer-stall bound + backstop (issue #145/#150) - see
+        # _HANDLER_TIMEOUT_SEC's own comment for the incident this answers.
+        self._handler_timeout_sec = handler_timeout_sec
+        self._handler_timeouts_by_class: dict[str, int] = {}
+        self._handler_timeouts_total = 0
+        self._fault_logged_timeout_classes_this_window: set[str] = set()
+        self._liveness_last_processed_total: int | None = None
+        self._liveness_last_messages_received = 0
+        self._liveness_stuck_samples = 0
         self._queue_high_water = 0
         self._wait_last: float | None = None
         self._wait_lifetime = LatencyAgg()
@@ -298,6 +341,12 @@ class KalshiStreamGateway:
         self._connects = 0
         self._reconnects = 0
         self._last_disconnect: dict | None = None
+        # Reconnect gap duration (P8 Task 34) - lifetime holds the most
+        # recent measured outage; window is consumed by the observability
+        # sampler (one persisted sample per reconnect event, so the series
+        # in observability.db is a real distribution over time).
+        self._last_gap_sec: float | None = None
+        self._gap_sec_window: float | None = None
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
@@ -332,6 +381,63 @@ class KalshiStreamGateway:
             ws = self._ws
         if ws is not None:
             await ws.close()
+
+    async def force_reconnect(self, reason: str) -> None:
+        """Closes only the current connection - unlike close(), never sets
+        self._stop, so run()'s existing exception -> _record_disconnect ->
+        backoff -> reconnect path takes over exactly as it would for a real
+        network drop. That path already discards the stuck consumer task
+        (run()'s own `finally: consumer.cancel()`) and starts a fresh one on
+        the next connection. Called by ensure_consumer_progressing(); see
+        its docstring and issue #145 for why this exists."""
+        logger.warning("kalshi_websocket: forcing reconnect (%s)", reason)
+        fault_log.record_fault("kalshi_websocket", "consumer_stalled_forced_reconnect", reason, severity="error")
+        async with self._lock:
+            ws = self._ws
+        if ws is not None:
+            await ws.close()
+
+    async def ensure_consumer_progressing(self) -> bool:
+        """Backstop liveness check (issue #145) for whatever
+        _HANDLER_TIMEOUT_SEC doesn't structurally bound - e.g. a hang inside
+        _sync_subscriptions, which runs on the reader's own task, not the
+        consumer's _consume() task. Call on a timer (main.py).
+
+        Signal is direct, not a proxy: total processed-message count held
+        flat across _LIVENESS_STUCK_SAMPLES_THRESHOLD consecutive calls
+        while messages_received kept climbing and the queue holds a
+        backlog. That's "new work arrived, nothing got consumed" - the
+        exact shape of the 2026-08-27 incident (queue at capacity,
+        oldest_message_age_sec growing 1:1 with wall clock, zero drain).
+        A genuinely quiet market (messages_received not climbing) or a
+        slow-but-progressing consumer (processed count still advancing)
+        both correctly report not-stuck.
+
+        Returns whether this call forced a reconnect."""
+        if self._queue is None:
+            return False
+        processed_total = sum(self._processed_by_class.values())
+        received_total = self.messages_received
+        stuck = (
+            self._liveness_last_processed_total is not None
+            and processed_total == self._liveness_last_processed_total
+            and received_total > self._liveness_last_messages_received
+            and self._queue.qsize() > 0
+        )
+        self._liveness_last_processed_total = processed_total
+        self._liveness_last_messages_received = received_total
+        if not stuck:
+            self._liveness_stuck_samples = 0
+            return False
+        self._liveness_stuck_samples += 1
+        if self._liveness_stuck_samples < _LIVENESS_STUCK_SAMPLES_THRESHOLD:
+            return False
+        self._liveness_stuck_samples = 0
+        await self.force_reconnect(
+            f"consumer made no progress across {_LIVENESS_STUCK_SAMPLES_THRESHOLD} liveness checks "
+            f"while messages kept arriving (queue depth {self._queue.qsize()})"
+        )
+        return True
 
     async def set_market_tickers(self, tickers: list[str]) -> None:
         normalized = {t for t in tickers if t}
@@ -594,12 +700,24 @@ class KalshiStreamGateway:
     # counter here. Before I1 the first and third collapsed into one
     # ephemeral status string plus one lifetime int.
 
-    def _begin_connection(self) -> asyncio.Queue:
+    def _begin_connection(self, now: float | None = None) -> asyncio.Queue:
         """Fresh bounded reader->consumer queue for one physical connection.
         run() calls this right after the socket is up, so a reconnect starts
-        empty with its own depth history; tests call it directly."""
+        empty with its own depth history; tests call it directly.
+
+        Reconnect gap duration (P8 Task 34): when this connection follows a
+        recorded disconnect, the wall-clock gap between the two is the real
+        outage duration - the input the staleness benchmark (P8 Task 40)
+        needs a measured distribution of, not an assumed one. Negative gaps
+        (wall-clock skew - _record_disconnect and this both read
+        time.time()) are dropped rather than recorded as fabricated data."""
         self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
         self._connects += 1
+        if self._last_disconnect is not None:
+            gap = (now if now is not None else time.time()) - self._last_disconnect["at"]
+            if gap >= 0.0:
+                self._last_gap_sec = round(gap, 3)
+                self._gap_sec_window = self._last_gap_sec
         return self._queue
 
     @staticmethod
@@ -756,9 +874,28 @@ class KalshiStreamGateway:
         started = time.monotonic()
         token = MESSAGE_ENQUEUED_AT.set(enqueued_at)
         try:
-            await self._handle_message(
-                data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+            await asyncio.wait_for(
+                self._handle_message(
+                    data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+                ),
+                timeout=self._handler_timeout_sec,
             )
+        except TimeoutError:
+            # Bounds an otherwise-unbounded hang (issue #145) - does NOT
+            # free a stuck asyncio.to_thread's underlying OS thread (issue
+            # #150, known/accepted). Kept distinct from handler_exceptions_*
+            # below: conflating them would hide exactly the signal that
+            # tells us whether this is happening often enough to matter.
+            self._handler_timeouts_total += 1
+            self._handler_timeouts_by_class[cls] = self._handler_timeouts_by_class.get(cls, 0) + 1
+            if cls not in self._fault_logged_timeout_classes_this_window:
+                self._fault_logged_timeout_classes_this_window.add(cls)
+                fault_log.record_fault(
+                    "kalshi_websocket", f"handle_message_timeout:{cls}",
+                    f"{cls} handler exceeded {self._handler_timeout_sec:.0f}s - see issue #150 "
+                    "for the known thread-pool-leak tradeoff this can incur",
+                    severity="warn",
+                )
         except Exception as exc:
             self._handler_exceptions_total += 1
             self._handler_exceptions_by_class[cls] = self._handler_exceptions_by_class.get(cls, 0) + 1
@@ -810,9 +947,11 @@ class KalshiStreamGateway:
         self._wait_buckets = empty_buckets()
         self._handler_window = {cls: LatencyAgg() for cls in self._handler_lifetime}
         self._fault_logged_classes_this_window.clear()
+        self._fault_logged_timeout_classes_this_window.clear()
         self._subscription_syncs_window = 0
         self._subscription_tickers_added_window = 0
         self._subscription_tickers_removed_window = 0
+        self._gap_sec_window = None
 
     def _oldest_message_age(self, now: float) -> float | None:
         queue = self._queue
@@ -847,6 +986,8 @@ class KalshiStreamGateway:
             "dropped_by_class": dict(self._dropped_by_class),
             "handler_exceptions_total": self._handler_exceptions_total,
             "handler_exceptions_by_class": dict(self._handler_exceptions_by_class),
+            "handler_timeouts_total": self._handler_timeouts_total,
+            "handler_timeouts_by_class": dict(self._handler_timeouts_by_class),
             "queue": {
                 "depth": queue.qsize() if queue is not None else 0,
                 "capacity": self._ingest_queue_max,
@@ -880,6 +1021,8 @@ class KalshiStreamGateway:
                 "connects": self._connects,
                 "reconnects": self._reconnects,
                 "last_disconnect": dict(self._last_disconnect) if self._last_disconnect else None,
+                "last_gap_sec": self._last_gap_sec,
+                "gap_sec_window": self._gap_sec_window,
             },
             "subscription_churn": {
                 "syncs_total": self._subscription_syncs_total,
@@ -911,30 +1054,48 @@ class KalshiStreamGateway:
         # shared flag would either re-subscribe trade every time a watchlist
         # finally arrived (duplicate firehose) or block trade until it did
         # (defeating the point).
+        # Connect-time subscribes. Exchange-wide trade and market_lifecycle_v2
+        # take no channel-specific params, so they share ONE subscribe
+        # message (P7 Task 33, 2026-08-28) - the same combined shape
+        # fill+market_positions already use in run(). Each channel keeps
+        # its own gate; the message just carries whichever are due. A
+        # watchlist-scoped trade subscribe stays its own message: its
+        # market_tickers live at the top level of the params object and
+        # would wrongly apply to lifecycle, which takes no market filter at
+        # all (docs/kalshi/market-and-event-lifecycle.md). ticker and the
+        # index channels stay separate for the same reason. Kalshi answers
+        # a multi-channel subscribe with one `subscribed` per channel
+        # (websocket-connection.md's Subscribed Response schema), which
+        # _handle_message already processes one channel/sid at a time.
+        combined: list[str] = []
         if not self._trade_subscribed:
-            trade_params: dict = {"channels": ["trade"]}
-            if not self.exchange_wide_trades:
-                trade_params["market_tickers"] = sorted(desired)
-            if self.exchange_wide_trades or desired:
+            if self.exchange_wide_trades:
+                combined.append("trade")
+            elif desired:
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "subscribe",
-                    "params": trade_params,
+                    "params": {"channels": ["trade"], "market_tickers": sorted(desired)},
                 })
                 self._trade_subscribed = True
-                if not self.exchange_wide_trades:
-                    self._subscribed_tickers = desired
+                self._subscribed_tickers = desired
 
         # market_lifecycle_v2 - opt-in (see __init__), unconditionally
         # exchange-wide like trade above, so it goes up once on connect and
         # never participates in add_markets/delete_markets either.
         if self.subscribe_lifecycle and not self._lifecycle_subscribed:
+            combined.append("market_lifecycle_v2")
+
+        if combined:
             await self._send({
                 "id": self._next_message_id(),
                 "cmd": "subscribe",
-                "params": {"channels": ["market_lifecycle_v2"]},
+                "params": {"channels": combined},
             })
-            self._lifecycle_subscribed = True
+            if "trade" in combined:
+                self._trade_subscribed = True
+            if "market_lifecycle_v2" in combined:
+                self._lifecycle_subscribed = True
 
         # Index feeds are wholly independent of the watchlist - they take
         # index_ids/underlying_tickers, and the docs are explicit that
@@ -994,11 +1155,22 @@ class KalshiStreamGateway:
             self._subscription_tickers_removed_total += len(to_remove)
             self._subscription_tickers_removed_window += len(to_remove)
         if to_add:
+            ticker_sid = self._subscription_sids.get("ticker")
             for sid in market_channel_sids:
+                params: dict = {"sid": sid, "market_tickers": to_add, "action": "add_markets"}
+                if sid == ticker_sid:
+                    # P7 Task 33 / R3: a ticker added mid-connection (a
+                    # position opening while already connected) gets its
+                    # first price from WS immediately instead of waiting for
+                    # its next natural tick or Task 29's REST seed. Documented
+                    # for "newly added market tickers on the ticker channel"
+                    # only (websocket-connection.md), so it never rides the
+                    # trade sid's update.
+                    params["send_initial_snapshot"] = True
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "update_subscription",
-                    "params": {"sid": sid, "market_tickers": to_add, "action": "add_markets"},
+                    "params": params,
                 })
         if to_remove:
             for sid in market_channel_sids:

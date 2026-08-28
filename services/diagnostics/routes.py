@@ -156,6 +156,54 @@ async def get_settlement_edge(min_samples: int = 200):
     return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
 
 
+def _scheduler_status(now: float) -> dict:
+    """P8 Task 36: with the background trigger checks relocated out of
+    trading_loop into their own supervised loops (main._scheduler_loop),
+    this is the one place to confirm each is still firing - last-started
+    age and busy flag per scheduler. Unknown (never started, or a scheduler
+    that keeps no timestamp of its own) is None, never a fabricated value."""
+    from services.config import config_performance
+
+    def _entry(key: str, started_key: str, busy_key: str) -> dict:
+        s = state.get(key) or {}
+        last = s.get(started_key) or 0.0
+        return {"last_started_sec_ago": round(now - last, 1) if last else None, "busy": bool(s.get(busy_key))}
+
+    def _applied(source: str) -> float | None:
+        last = config_performance.last_applied_at(source)
+        return round(now - last, 1) if last else None
+
+    return {
+        "signal_resolution": _entry("signal_resolution_check", "last_checked_at", "checking"),
+        "backup": _entry("backup", "last_started_at", "running"),
+        "research": {"last_started_sec_ago": None, "busy": bool((state.get("research") or {}).get("running"))},
+        "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
+        "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
+        "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
+        "auto_apply": {
+            "calibration_last_applied_sec_ago": _applied("calibration-auto-apply"),
+            "advisory_last_applied_sec_ago": _applied("unified-advisory-auto"),
+        },
+    }
+
+
+def _price_staleness(now: float) -> dict:
+    """P7 Task 29 (redesigned) / R4 visibility: age of the price each open
+    position would be exit-checked against, from the per-ticker write
+    stamps. A position with no stamp is counted as unknown, not fabricated
+    as fresh."""
+    open_tickers = state.get("open_position_tickers") or set()
+    stamps = state.get("latest_prices_updated_at") or {}
+    ages = [now - stamps[t] for t in open_tickers if t in stamps]
+    return {
+        "open_position_count": len(open_tickers),
+        "stamped_count": len(ages),
+        "unstamped_count": len(open_tickers) - len(ages),
+        "open_position_oldest_age_sec": round(max(ages), 1) if ages else None,
+        "stale_over_300s_count": sum(1 for a in ages if a > 300.0),
+    }
+
+
 @router.get("/api/health/pipeline")
 async def get_pipeline_health():
     """One place to confirm the whole flow is actually alive between
@@ -189,6 +237,15 @@ async def get_pipeline_health():
         "last_tick_duration_sec": state.get("last_tick_duration_sec"),
         "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
         "markets_watched": len(state.get("markets") or []),
+        # P7 Task 29 (redesigned) / R4: how stale the price each open
+        # position would be exit-checked against actually is, from the
+        # per-ticker write stamps. "No stamp" is counted as unknown, never
+        # fabricated as fresh - a position with no entry at all is exactly
+        # the case the age-aware overlay exists to catch.
+        "price_staleness": _price_staleness(now),
+        # P8 Task 36: per-scheduler liveness now that none of them are
+        # called from the tick - see _scheduler_status.
+        "schedulers": _scheduler_status(now),
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a
