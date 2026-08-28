@@ -23,6 +23,19 @@
 #    narrowed. This is also where "no path filter... a change anywhere in
 #    services/ or main.py can regress any other module" (this file's older
 #    header wording) still fully applies - unchanged from before.
+# 4. Manual trigger (scripts/woodpecker-trigger, the Woodpecker "Run
+#    pipeline" UI button, or a raw POST /api/repos/{id}/pipelines) - a human
+#    explicitly asking "run the tests right now" without needing a push or a
+#    PR (2026-08-28 direct request: "i dont want to have to submit a PR or
+#    push a commit to do it... just be able to ask woodpecker to run the
+#    tests themselves"). Treated exactly like tier 2 - full, unscoped, never
+#    testmon-scoped (scripts/ci-testmon-run.sh's own event check) and never
+#    skipped by the fast-path heuristic (scripts/ci-skip-heavy-suite.sh
+#    already anticipated this: anything other than push/pull_request has run
+#    full since that script was written, it just could never be reached
+#    before now). An explicit ask for confidence, not a cached/scoped
+#    convenience run - same reasoning as the PR-event gate.
+#
 # 3. A push to any other branch, not (yet) a PR - testmon-scoped (2026-08-26,
 #    direct request: "any push [should] go through relevant testing only
 #    until a PR occurs"). pytest-testmon fingerprints which lines each test
@@ -41,7 +54,7 @@
 #    naturally falls back to running everything - same as today. See the
 #    pytest step's own comment for the per-branch cache mechanics.
 when:
-  - event: [push, pull_request]
+  - event: [push, pull_request, manual]
 
 # Full-history clone override, required by ci-fast-path-check below.
 #
