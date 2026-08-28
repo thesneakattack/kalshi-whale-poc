@@ -1715,3 +1715,94 @@ def test_real_volatility_still_scales_the_references(tmp_path, monkeypatch):
     monkeypatch.setattr(market_history, "volatility", lambda *a, **k: 0.02)
     wild, _ = exit_engine._exit_confidence(pos, 0.20, "TICK-A", [], cfg)
     assert calm != wild, "volatility must still change the outcome when it is real"
+
+
+# --- staleness-triggered corroboration (P8 Task 35, resolves R4) -----------
+# The deviation gate above catches a WRONG price (a garbage tick). It never
+# caught a STALE one: an in-memory price that drifted mildly while its WS
+# ticker channel went quiet passed through indefinitely. Now, when the price
+# check_exits is about to act on is older than
+# strategy.price_staleness_corroborate_sec, the independent REST read is
+# trusted even within the deviation band. Fail-open stays the rule; the
+# uncorroborated-and-stale case becomes visible via fault_log, never silent.
+
+def test_stale_ws_price_defers_to_rest_corroboration_even_within_the_deviation_band(tmp_path, monkeypatch):
+    from services import market_history
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.31)  # |0.5-0.31| = 0.19, inside the 0.30 band
+    now = time.time()
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [], _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=120.0),
+        latest_prices_updated_at={"TICK-A": now - 200.0},
+    )
+
+    assert len(decisions) == 1 and "stop-loss" in decisions[0]["reason"]
+
+
+def test_fresh_ws_price_keeps_the_deviation_only_rule(tmp_path, monkeypatch):
+    from services import market_history
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.31)
+    now = time.time()
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [], _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=120.0),
+        latest_prices_updated_at={"TICK-A": now - 5.0},
+    )
+
+    assert decisions == []  # fresh + within band: the WS value stands, exactly as before
+
+
+def test_stale_and_uncorroborated_fails_open_but_records_a_fault_once_per_window(tmp_path, monkeypatch):
+    from services import market_history, fault_log
+    from services.exits import exit_engine
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: None)
+    recorded = []
+    monkeypatch.setattr(fault_log, "record_fault", lambda *a, **k: recorded.append((a, k)) or True)
+    exit_engine.reset_window()
+    cfg = _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=120.0)
+    stamps = {"TICK-A": time.time() - 200.0}
+
+    decisions = strategy.check_exits({"TICK-A": 0.3}, [], cfg, latest_prices_updated_at=stamps)
+    assert len(decisions) == 1  # fail-open: the stale value is still acted on
+    assert len(recorded) == 1
+    assert recorded[0][0][0] == "exit_engine" and recorded[0][0][1] == "stale_price_uncorroborated"
+
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    strategy.check_exits({"TICK-A": 0.3}, [], cfg, latest_prices_updated_at=stamps)
+    assert len(recorded) == 1  # same ticker, same window: not re-logged
+
+    exit_engine.reset_window()
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    strategy.check_exits({"TICK-A": 0.3}, [], cfg, latest_prices_updated_at=stamps)
+    assert len(recorded) == 2  # new window: logged again
+
+
+def test_zero_threshold_disables_the_staleness_trigger(tmp_path, monkeypatch):
+    from services import market_history
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.31)
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.5}, [], _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=0),
+        latest_prices_updated_at={"TICK-A": time.time() - 9999.0},
+    )
+
+    assert decisions == []
+
+
+def test_callers_that_pass_no_stamps_get_the_pre_task35_behavior(tmp_path, monkeypatch):
+    from services import market_history
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    monkeypatch.setattr(market_history, "recent_price", lambda *a, **k: 0.31)
+
+    decisions = strategy.check_exits({"TICK-A": 0.5}, [], _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=120.0))
+
+    assert decisions == []  # no stamps supplied: no staleness knowledge, deviation-only, additive guarantee

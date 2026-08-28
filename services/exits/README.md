@@ -208,3 +208,34 @@ interface Task 20 specified" and "what actually reduces read count in the
 live app," worth knowing before treating Task 20 as delivering any part of
 the live crash report's fix. The distinct-ticker bulk-fetch/`tick_executor`
 follow-up above remains the only path with a real chance of doing that.
+
+## Staleness-triggered price corroboration (P8 Task 35, 2026-08-27 — resolves R4)
+
+`check_exits` gained `latest_prices_updated_at: dict | None = None` (threaded
+through `FollowTheWhaleStrategy.check_exits` and all three call sites) and a
+second trigger on the existing corroboration read. The 2026-08-17 deviation
+gate catches a **wrong** price (a garbage tick, override when |WS − REST| >
+0.30). It never caught a **stale** one: an in-memory price whose WS ticker
+channel had gone quiet passed through indefinitely (P8 Task 34 measured 4 of
+10 open positions with no ticker message ever received). Now, when the price
+about to be acted on is older than `strategy.price_staleness_corroborate_sec`
+(120.0 provisional, `config/settings.yaml`) — or has no write stamp at all,
+unknown age is not trusted, the same rule `market_fetch.overlay_live_prices`
+uses — the independent `market_history.recent_price` read is trusted even
+inside the deviation band. WS-primary, REST verifies at decision time —
+Family A's own pattern, applied to the one place it was still missing.
+
+Design choice, from the dedicated research pass: **fail-open stays the
+rule.** This codebase has zero precedent for blocking a trading decision on
+data staleness (every freshness check — `recent_price`, `analyst_lean`,
+`discovery_cache` — fails open by explicit design; the kill switch, the only
+fail-closed mechanism, is gated on realized loss, not data age), and a WS
+outage during a fast move is exactly when a stop-loss is most needed —
+refusing to act would convert a data-plane problem into a larger realized
+loss. So a stale price that REST also cannot corroborate is still acted on,
+but the condition is recorded in `fault_log` (`exit_engine` /
+`stale_price_uncorroborated`, once per ticker per observability window,
+rolled by `maybe_capture`) — never silent, per the HARD RULE. Only the
+`current_price`/`pnl_pct` path is affected; sentiment-reversal and
+time-to-close exits never read price and are untouched. Threshold re-tuning
+belongs to P8 Task 40's benchmark on real captured cadence data.

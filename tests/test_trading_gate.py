@@ -2093,7 +2093,9 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
 
     captured = {}
 
-    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None, close_times=None):
+    def fake_check_exits(latest_prices, signal_feed, cfg, market_results, opened_since=None, category_by_ticker=None, close_times=None, **_additive_kwargs):
+        # **_additive_kwargs: check_exits' signature grows additively (tick_cache,
+        # latest_prices_updated_at, ...) - this double only cares about opened_since.
         captured["opened_since"] = opened_since
         return []
     monkeypatch.setattr(main.strategy, "check_exits", fake_check_exits)

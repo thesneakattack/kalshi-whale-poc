@@ -14,7 +14,7 @@ settlement-close primitive without duplicating it.
 """
 import time
 
-from services import kalshi_fees, market_analyst_agent, market_history, signal_log
+from services import fault_log, kalshi_fees, market_analyst_agent, market_history, signal_log
 from services.config import config_overrides
 from services.paper_broker import PaperBroker, Position
 
@@ -49,6 +49,17 @@ _PRICE_CORROBORATION_MAX_AGE_SEC = 120.0
 # on a rare legitimate case, against eliminating instant liquidation of a
 # winning position on a garbage single tick. Clearly favorable trade.
 _PRICE_CORROBORATION_MAX_DEVIATION = 0.30
+
+# P8 Task 35: tickers whose stale price could not be REST-corroborated this
+# observability window - one fault_log row per ticker per window, not one
+# per check_exits call (which runs on every qualifying WS message). Rolled
+# by services/observability/observability.py's maybe_capture, the same
+# owner that rolls every other module's window.
+_stale_uncorroborated_logged: set[str] = set()
+
+
+def reset_window() -> None:
+    _stale_uncorroborated_logged.clear()
 
 
 def _cached(tick_cache: dict | None, key: tuple, fn, *args, **kwargs):
@@ -98,6 +109,7 @@ def check_exits(
     broker: PaperBroker, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
     opened_since: float | None = None, category_by_ticker: dict | None = None,
     close_times: dict | None = None, tick_cache: dict | None = None,
+    latest_prices_updated_at: dict | None = None,
 ) -> list[dict]:
     """Actively manages already-open positions instead of leaving them
     untouched until settlement - direct request: this app had zero exit
@@ -261,8 +273,36 @@ def check_exits(
             tick_cache, ("recent_price", ticker), market_history.recent_price,
             ticker, _PRICE_CORROBORATION_MAX_AGE_SEC, as_of=exit_now,
         )
-        if corroborated is not None and abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION:
+        # P8 Task 35 (resolves R4): the deviation gate catches a WRONG price
+        # (a garbage tick); this catches a STALE one. When the value we're
+        # about to act on is older than strategy.price_staleness_
+        # corroborate_sec - or has no write stamp at all (unknown age is
+        # not trusted, same rule as market_fetch.overlay_live_prices) - the
+        # independent REST read is trusted even inside the deviation band:
+        # WS-primary, REST verifies at decision time. 0 disables the
+        # trigger; callers passing no stamps keep deviation-only behavior.
+        stale = False
+        stamped_at = None
+        staleness_sec = float(strat_cfg.get("price_staleness_corroborate_sec") or 0.0)
+        if staleness_sec > 0.0 and latest_prices_updated_at is not None:
+            stamped_at = latest_prices_updated_at.get(ticker)
+            stale = stamped_at is None or (exit_now - stamped_at) > staleness_sec
+        if corroborated is not None and (stale or abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION):
             current_price = corroborated
+        elif stale and ticker not in _stale_uncorroborated_logged:
+            # Fail open - the codebase's uniform rule for missing data, and
+            # the research's conclusion for this exact case: refusing to act
+            # during a feed outage converts a data-plane problem into a
+            # larger realized loss. But never silently: this exit check is
+            # running on a value nobody has confirmed, and the HARD RULE
+            # says these properties fail silently by nature.
+            _stale_uncorroborated_logged.add(ticker)
+            age_desc = "unstamped" if stamped_at is None else f"{exit_now - stamped_at:.0f}s old"
+            fault_log.record_fault(
+                "exit_engine", "stale_price_uncorroborated",
+                f"{ticker}: exit check acting on a price that is {age_desc}, with no REST corroboration available",
+                severity="warn",
+            )
         # broker.cost_basis(), not pos.size * pos.entry_price directly -
         # that formula is only correct for the yes side; see
         # PaperBroker.cost_basis's docstring and open_position's unit_cost.

@@ -607,6 +607,7 @@ class FollowTheWhaleStrategy:
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
         opened_since: float | None = None, category_by_ticker: dict | None = None,
         close_times: dict | None = None, tick_cache: dict | None = None,
+        latest_prices_updated_at: dict | None = None,
     ) -> list[dict]:
         """Actively manages already-open positions - real implementation now
         lives in services/exits/exit_engine.py (2026-08-22 modularization
@@ -623,5 +624,5 @@ class FollowTheWhaleStrategy:
         return exit_engine.check_exits(
             self.broker, latest_prices, signal_feed, cfg, market_results=market_results,
             opened_since=opened_since, category_by_ticker=category_by_ticker, close_times=close_times,
-            tick_cache=tick_cache,
+            tick_cache=tick_cache, latest_prices_updated_at=latest_prices_updated_at,
         )

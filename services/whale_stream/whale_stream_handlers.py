@@ -201,6 +201,7 @@ async def _process_stream_trade(trade: dict) -> None:
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
             category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+            latest_prices_updated_at=state["latest_prices_updated_at"],
         ):
             await _handle_close_decision(close_decision)
         signals_emitted = len(signals)
@@ -308,6 +309,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
             opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+            latest_prices_updated_at=state["latest_prices_updated_at"],
         ):
             await _handle_close_decision(close_decision)
     bump_generation()

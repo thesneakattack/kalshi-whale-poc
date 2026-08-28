@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from services import candidate_retry, capture_writer, http_client, loop_watchdog, whale_pipeline_perf
+from services.exits import exit_engine
 from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "observability.db"
@@ -454,6 +455,7 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     http_client.reset_rest_latency_window()
     loop_watchdog.reset_window()
     candidate_retry.reset_window()
+    exit_engine.reset_window()  # P8 Task 35: stale-uncorroborated once-per-ticker-per-window log
     # Prune closed positions' leftover ticker-cadence entries (P8 Task 34),
     # here post-persist rather than on the WS message path, so the hot-path
     # writer stays a bare dict assignment and the dict stays bounded by the
