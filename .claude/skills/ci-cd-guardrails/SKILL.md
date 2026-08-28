@@ -177,8 +177,8 @@ pipeline fails:
 - the change touches CI itself (`.woodpecker/*.yml`,
   `.github/workflows/*.yml`, this skill);
 - performing a deliberate integration checkpoint or final initiative/
-  release verification (see the `final-verification` skill - its
-  requirements are unchanged by this policy);
+  release verification (`superpowers:verification-before-completion` plus
+  the guard-proof list in `plan-task/domains/quality.md`);
 - the user explicitly asks for it;
 - repository safety demands verification before any push regardless of
   what CI will do afterward.

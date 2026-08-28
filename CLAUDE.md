@@ -1,411 +1,57 @@
 # autotrade / kalshi-whale-poc
 
-Kalshi whale-signal trading terminal: real Kalshi market data + a
-simulated-or-live whale order-flow signal + a broker layer, currently
-running in paper mode. Safety-first, incremental: no real order ever gets
-placed unless `kalshi_account.trading_enabled` is explicitly flipped in
-`config/settings.yaml` plus a typed in-app confirmation phrase. All P0
-code-level safety **primitives** (the trading gate itself, the kill
-switch, CORS) are shipped — but that is not the same claim as "real
-capital is ready to depend on this." Realtime data-plane correctness is
-partially addressed (P0-P2 of the 6-phase remediation plan merged
-2026-08-26, `main`@`22d1a79` — candidate-duplication, WAL, and a real
-cross-thread race fixed; P3's reader-gate live-filtering flip was
-authorized 2026-08-26 in a reprioritization pass but has not started -
-P4-P6 remain open); economic/strategy
-validation research has been done but not acted on (a resumed
-investigation merged 2026-08-26 as research leverage, not implementation —
-see the gap below); and canonical decision/execution semantics remain
-fully open, substantive, code-level work, not merely operational
-follow-up — see `docs/kalshi-personal-production-execution-program-
-2026-08-26.md` for the current program-level sequencing, and ROADMAP.md's
-"Path to production" section for the itemized checklist.
+Kalshi whale-signal trading terminal: real Kalshi market data + a simulated-or-live whale order-flow signal + a broker layer, running in paper mode. No real order is placed unless `kalshi_account.trading_enabled` is flipped in `config/settings.yaml` plus a typed in-app confirmation. Program sequencing: `docs/kalshi-personal-production-execution-program-2026-08-26.md`; itemized checklist: ROADMAP.md "Path to production". This file is a rulebook: one line per rule. The incident behind any rule is in `git log -S'<phrase>' -- CLAUDE.md`, not here.
 
 ## HARD RULE — the data plane is the product (permanent, 2026-08-27)
 
-Direct standing instruction, stated as a permanent invariant rather than
-a dated objective: **end to end, the application itself and all of its
-pieces depend fully on optimal data completeness, data accuracy, flow
-rate, timeliness, fidelity, and speed of execution. This will always be
-true.**
+End to end, every piece of this app depends on optimal data completeness, accuracy, flow rate, timeliness, fidelity, and speed of execution. Permanent: not superseded by any later objective, not traded for convenience; an instruction that appears to relax it is a misunderstanding to raise.
 
-Unlike the "Standing goal" and "Current objective" sections below — both
-dated, both having already superseded something earlier — this one does
-not expire, does not get superseded by a later objective, and does not
-get traded away for convenience, schedule, or a passing metric that looks
-fine anyway. Treat a future instruction that appears to relax it as a
-misunderstanding to raise, not a new policy to follow.
+- Completeness: every whale print, market update, and lifecycle event reaches the code that decides on it; a dropped message, skipped candidate, or DB hole is a defect (sample-size-gated heuristics fail silently on missing data).
+- Accuracy: a value means exactly what its label says (cents vs dollars, yes vs no side, contracts vs notional, unrealized vs cumulative).
+- Flow rate: sustained throughput at full subscription scope; a backlog that "catches up later" is already a timeliness failure.
+- Timeliness: stale-but-correct data is the wrong input to a decision.
+- Fidelity: store and replay what the exchange sent; no lossy normalization on the way in (`.claude/rules/kalshi-integration-authority.md`).
+- Speed of execution: signal-to-order latency is part of the edge; the trading/WebSocket hot path stays hot.
+- These properties fail silently: measure them (see "Start investigations here"); never infer health from the absence of errors, green tests, or unremarkable P&L.
+- Never trade one property for another silently; make the tradeoff explicit and measured (`.claude/rules/realtime-data-plane-evidence.md`).
+- "Optimal" is measured against what `docs/kalshi/` says the exchange permits, not against today's behavior.
+- This rule never justifies shortcutting a safety gate, weakening a kill switch, enabling real trading, or discarding accumulated history.
 
-What the six properties mean concretely here:
+## Standing goal (2026-08-26) and current objective (2026-08-23)
 
-- **Completeness** — every whale print, market update, and lifecycle
-  event the app is entitled to see actually reaches the code that decides
-  on it. A dropped WebSocket message, a skipped candidate, an unenriched
-  market, a hole in `market_history.db`/`signal_log.db` is a defect, not
-  ambient noise — and because most heuristics here are sample-size-gated,
-  missing data silently disables them rather than announcing itself.
-- **Accuracy** — a value means exactly what its name and its label say:
-  cents vs. dollars, yes-side vs. no-side, contract count vs. notional,
-  unrealized vs. cumulative P&L. The "Bug pattern to watch for" section
-  below is one recurring instance of this property failing, not a
-  separate concern.
-- **Flow rate** — sustained throughput at full subscription scope, not
-  just during quiet periods. A backlog that "catches up later" has
-  already converted itself into a timeliness failure.
-- **Timeliness** — data is acted on while it is still actionable. Stale
-  but technically correct data is still the wrong input to a decision,
-  and an accurate answer delivered after the market moved is a loss.
-- **Fidelity** — what is stored, replayed, and researched against is
-  faithful to what the exchange actually sent. No lossy normalization on
-  the way in; preserve raw payloads for diagnostics/archival where the
-  boundary allows (see
-  `.claude/rules/kalshi-integration-authority.md`).
-- **Speed of execution** — latency from signal to placed order is part of
-  the edge, not an implementation detail. The trading/WebSocket hot path
-  stays hot.
+- Destination: a personal-use, real-money trading system — reached only through ROADMAP.md "Path to production"; several items there are human decisions (position sizes, kill-switch numbers, sports-category legal exposure, auth model, deployment target), not commits.
+- Current focus stays paper trading (Programs 1–2). Do not prioritize live execution, shadow qualification, or capital qualification (Program 3+) over realtime/economic correctness.
+- The 70%/70% target is retired. Judge each `services/<name>/` module on effectiveness, efficiency, and informativeness, plus the six data-plane properties above.
+- Read a module's `README.md` (`CHEATSHEET.md` for `services/kalshi/` and its raw-payload consumers `market_catalog`, `market_watch`, `market_events`, `whale_stream`) before auditing it; cross-post confirmed findings there with a date.
+- Open gaps (detail in ROADMAP.md): pricing/edge gap at entry (0.60–0.95 unit-cost band negative-EV, designed not implemented); shadow mode has never produced a trade; no deployment target; `risk.max_daily_loss_pct` is 0.85 (not protective); zero category-level legal-risk awareness; auto-apply has only tuned on paper history.
 
-What this rule obligates in practice:
+## Start investigations here (in order, before any ad hoc script or `sqlite3`)
 
-- It is not a separate workstream. It is the axis every module gets
-  audited against alongside effectiveness, efficiency, and
-  informativeness — an otherwise well-factored module that degrades any
-  of the six is not "working at peak effectiveness."
-- A degradation in any of the six is a real defect even when nothing is
-  throwing errors, every test is green, and P&L looks unremarkable. These
-  properties fail silently by nature; they have to be measured, not
-  assumed. Start with the diagnostics listed in "Start investigations
-  here" rather than inferring health from the absence of complaints.
-- Never trade one of the six for another silently. A diagnostic added to
-  the hot path, a wider subscription scope, heavier normalization, a
-  larger retry budget, a bigger batch — each buys one property with
-  another. Make that tradeoff explicit and measured, per
-  `.claude/rules/realtime-data-plane-evidence.md` (its hot-path rule and
-  its no-tuning-by-intuition rule apply here in full).
-- "Optimal" means measured against the real ceiling — what the exchange
-  and the documented API actually permit (`docs/kalshi/` is ground truth
-  for that ceiling) — not against whatever the app happens to achieve
-  today.
-- This rule sets a quality floor for the data plane; it does not
-  authorize shortcutting any safety gate, weakening a kill switch,
-  enabling real trading, or discarding accumulated history in pursuit of
-  it. Same caveat as the standing goal below, and for the same reason: a
-  faster, more complete pipeline that bypasses a safety invariant is a
-  regression, not progress.
+1. `GET /api/quality/summary` 2. `GET /api/health/pipeline` 3. `GET /api/health/faults` 4. `GET /api/observability/summary` 5. `GET /api/health/storage` (+ `POST /api/health/storage/scan`) 6. `python -m tools.quality_audit`.
+- Investigation-to-guard: every real bug class gets a disposition (runtime diagnostic / CI guard / shared logic / already covered / one-off) recorded in the commit message (`.claude/rules/quality-capabilities.md`).
+- `tools/quality_audit/baseline.json`: adding an ID is a reviewed decision with a dated note in `notes`, never a way to make CI green; remove an ID when its finding resolves and say why.
+- Budget: one investigation pass, at most one session, before a code change lands; plans stay under 300 lines; the write-up comes after the fix and fits on one page.
 
-## Standing goal — personal-use, real-money production (2026-08-26)
+## Docs and history
 
-Direct standing instruction (2026-08-26): this is no longer a proof of
-concept kept in paper mode indefinitely — the purpose is a personal-use,
-real-money trading system. Equally direct, same instruction: **"we still
-need to progress safely until we reach the goal"** — this sets the
-destination, it does not authorize shortcutting any safety gate, and it
-does not by itself flip `kalshi_account.trading_enabled` or any config
-default. Getting there runs through ROADMAP.md's "Path to production"
-checklist — each open item there is a precondition, not a suggestion, and
-several (real position-size/kill-switch numbers, the sports-category legal
-exposure, the auth model, deployment target) are decisions only a human
-makes, not something a commit can complete on its own.
+- `git log`/`blame`/`diff` are the only maintained history since the 2026-08-07 cutover. `ROADMAP.md` is the living to-do (check items off in place; `/close-roadmap-item`). `docs/open-decisions.md` is the single list of parked decisions, printed every session — act on a line or ask about it; never write a new plan for something already on it.
+- Frozen, not maintained: `docs/status-archive-2026-08-26.html` (the pre-git narrative), `docs/roadmap-archive-2026-08-09.md`.
 
-This goal sits above, not in place of, the per-module quality objective
-immediately below: a module has to actually be trustworthy before real
-capital can depend on it, so that audit work is how this goal gets
-reached, not a separate track from it.
+## Dev workflow — ddev, not bare uvicorn
 
-**Clarification (2026-08-26, same day): the destination hasn't changed,
-but current work stays focused on paper trading.** The execution program
-(`docs/kalshi-personal-production-execution-program-2026-08-26.md`) lists
-programs all the way through live execution and capital qualification —
-that's the map, not a schedule to march through with urgency. Don't read
-"the end goal is real money" as license to prioritize Program 3 onward
-(canonical decision/live execution, shadow qualification, capital
-qualification) over the realtime/economic correctness work directly in
-front of them (Programs 1-2). Paper mode stays the default and the actual
-focus for now; nothing about this goal moves that up.
+- `ddev describe` first; it is usually already running. `web` (nginx, docroot `static`) is the only public entry; `fastapi` is reachable only as `fastapi:8000` inside the docker network (deliberate: Traefik tie-break bug).
+- `.py` edits hot-reload in ~1–2 s; `.ddev/**` edits need `ddev restart`; anything that must survive a real process restart needs a real `ddev restart`.
+- `ddev exec -s fastapi <cmd>` for in-container commands (runs as root; use it to delete root-owned leftovers). It refuses to run from a linked worktree directory: run it from the primary root and `cd /app/.claude/worktrees/<name>` inside.
+- Hooks: `.claude/settings.json` is read from the current worktree but `$CLAUDE_PROJECT_DIR` is the primary checkout, so every hook command goes through `.claude/hooks/run_hook.py`, which runs the session's own checkout's copy (CI-enforced by `tests/test_workflow_budgets.py`).
+- App: `https://kalshi-whale-poc.ddev.site:8443`; `GET /api/state` is the fastest live read; `ddev logs -s fastapi|web` for logs; `/run` skill for detail.
+- Public tunnel `autotrade.webfoundry.dev` is Basic-Auth gated in `.ddev/nginx/kalshi-proxy.conf`; `.env` `SITE_BASIC_AUTH_*` is the source of truth, regenerated on `ddev start`.
+- CORS stays restricted to the ddev host + `localhost:8000` (`ALLOWED_ORIGINS` in `.env`).
 
-Known specific gaps still open toward this goal (stubs — full detail in
-ROADMAP.md's "Path to production" section and the relevant module's own
-`README.md`, not restated here):
-- Entry-gate adverse selection — the original finding (KXBTC15M whale
-  signals resolved 88.8% correct across 394 settled signals, but the 12
-  the gates actually traded resolved only 58.3%) does not currently
-  reproduce: investigated 2026-08-26, both that trade sample and the gate
-  configuration that produced it no longer exist. Under the *current*
-  (contract-count) gate, selection is currently *better* than population
-  accuracy — the opposite direction. The real current shortfall
-  (-$169.81 over 90 trades in ~3.2 days) traces to a pricing/edge gap, not
-  selection or exit. A genuine, still-open, differently-shaped pattern:
-  rejected candidates in the 0.60-0.95 unit-cost band show negative
-  hypothetical EV across every gate with enough samples — a real gate-
-  tuning target, designed but not implemented. All of this is itself
-  provisional pending a larger post-2026-08-26-realtime-fix sample — see
-  `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-
-  status-report.md`.
-- `services/shadow_mode.py` has never produced a trade to review, not just
-  "unreviewed" — `mode` has been switched to `shadow` only twice ever, both
-  reverted within 24h, zero rows logged either time. No sustained real
-  evaluation stretch has happened yet, and none is in progress today
-  (`mode: paper`). That stretch, then a review of it, is the actual gate
-  before ever flipping `trading_enabled` — see ROADMAP.md for the verified
-  detail.
-- No real deployment target yet (local `ddev` on one machine only); no
-  human-set real position-size/kill-switch numbers (`risk.max_daily_loss_pct`
-  is currently `0.85` — today's kill switch only halts after 85% of the
-  day's bankroll is gone, i.e. not meaningfully protective as configured);
-  and the single-operator auth model hasn't been explicitly confirmed as
-  sufficient for real money.
-- Sports-category contracts carry unresolved multi-state legal exposure
-  (`docs/prediction-markets-research-reference.md` Part 3); this app has
-  zero category-level legal-risk awareness today.
-- `advisory`/`confidence_calibration` auto-apply has only ever tuned
-  against paper-mode trade history.
+## `data/*.db` files are live and are a first-class asset
 
-## Current objective — per-module quality, not a P&L target
-
-Direct standing instruction (2026-08-23), superseding the prior
-"HARD COMMANDMENT — 70% whale accuracy AND 70% own win rate" objective
-in full: **"forget the 70% thing. now that things are modular the goal is
-to make sure each module works at peak effectiveness, efficiency, and
-informativeness."** Do not chase, cite, or judge changes against the old
-70%/70% target going forward — retired, not paused. (Its measured
-data — the 593-signal unit-cost/breakeven table, the KXBTC15M
-selection-vs-exit gap — is still real and still sitting in git history
-`git log -S 'HARD COMMANDMENT' CLAUDE.md` / `docs/next-session-pickup-
-2026-08-17.md` if a future session ever needs it again, but it is no
-longer what work gets judged against.)
-
-New objective: with the codebase now split into cohesive
-`services/<name>/` packages (modularization phases 115-119, see
-`static/status.html`), audit and improve each module against three axes:
-
-- **Effectiveness** — does it actually do what it claims? Latent bugs,
-  dead code paths, gaps between documented and real behavior.
-- **Efficiency** — wasteful computation, redundant DB round-trips,
-  blocking calls on a hot path, N+1 patterns, unnecessary API calls.
-- **Informativeness** — does it surface enough of its own behavior
-  (logging, diagnostics, historical capture, UI display) for a human to
-  trust and reason about it, not just run it blind?
-
-Audit each of those three together with the permanent data-plane rule
-above — a module also has to hold up on completeness, accuracy, flow
-rate, timeliness, fidelity, and speed of execution, which is where this
-project's silent failures actually live.
-
-Each `services/<name>/` package's own reference doc (where one exists —
-several were written "to an audit-oriented standard... how the module
-currently behaves, what the API docs say it should do, and any gap already
-visible while writing it," per `static/status.html` phase 119) is real,
-pre-existing raw material for this — read it before assuming a module
-needs a fresh audit from scratch. Named `README.md` for most packages;
-`CHEATSHEET.md` is reserved for `services/kalshi/` (the Kalshi integration
-boundary itself) and its direct raw-Kalshi-payload consumers
-(`market_catalog`, `market_watch`, `market_events`, `whale_stream`) —
-renamed 2026-08-27 after the name had drifted onto 14 unrelated packages
-that never touched the Kalshi layers at all.
-
-Investigations that produce real per-module findings should feed this same
-raw material forward, not just their own plan doc (2026-08-27 direct
-instruction, prompted by the realtime-data-plane remediation plan's P3.5
-stress test): once a finding is confirmed, cross-post a short dated summary
-into the relevant `services/<name>/README.md` (or `CHEATSHEET.md`, for the
-five Kalshi-boundary packages named above) — create one, following an
-existing module's format, if the module doesn't have one yet and the
-finding warrants it — so a later audit or refactor of that module discovers
-it there rather than needing to already know which historical plan/research
-doc to search.
-
-## Start investigations here
-
-Before writing an ad hoc script to check "is everything okay" or chase an
-unexplained symptom, check these — in order — first. Together they're the
-accumulated output of the Quality Control Plane initiative
-(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`, Tasks 1-20):
-purpose-built so a session doesn't have to reconstruct "what does this app
-already know about itself" from scratch every time.
-
-1. `GET /api/quality/summary` — the single composite health read: overall
-   status, active findings, alerts, faults, storage summary, latest
-   research-run status, and a `coordination` rollup (escalation-eligible/
-   suppressed/observed counts from the persisted quality-coordination
-   observation series — `GET /api/quality/coordination` for the full
-   per-item detail and explanation log). Start here for "is something wrong."
-2. `GET /api/health/pipeline` — background-task/scheduler state (which
-   `_maybe_*` schedulers are running, when each last fired).
-3. `GET /api/health/faults` — accumulated exception history by
-   component/operation (`services/fault_log.py`).
-4. `GET /api/observability/summary` — historical metric trends
-   (`data/observability.db`) for a specific metric name over a window,
-   once `/api/quality/summary` has pointed at one worth digging into.
-5. `GET /api/health/storage` — per-database file inventory (size, table
-   row counts, last-modified) and, on demand,
-   `POST /api/health/storage/scan` for a real integrity check.
-6. `python -m tools.quality_audit` — static findings (router/persistence/
-   config-usage/API-contract wiring gaps), baseline-ratcheted against
-   `tools/quality_audit/baseline.json`.
-
-An ad hoc script or a fresh `grep`/`sqlite3` session should be the
-exception once these have been checked, not the default first move — they
-already answer "is X wired up," "has X been failing," "is X growing
-unexpectedly" for most of what this app does.
-
-**Investigation-to-guard rule:** when a debugging/audit pass finds a real
-bug class, decide before closing the work whether the measurement that
-exposed it belongs in runtime diagnostics, CI, or an existing guard, and
-record that disposition in the commit message or the relevant status
-entry. The full decision tree (permanent runtime diagnostic / permanent
-CI guard / shared logic / already covered / genuinely one-off) lives in
-`.claude/rules/quality-capabilities.md`'s "Standing investigation-to-guard
-rule" section — this is a pointer to that rule, not a second copy of it.
-
-**Baseline-ratchet semantics (`tools/quality_audit/baseline.json`):**
-`accepted_finding_ids` is a reviewed record of findings already judged to
-be either a known, accepted scanner limitation (documented in that file's
-own `notes` block — e.g. the config-usage scanner's inability to follow
-reads through an intermediate variable) or a genuinely intentional state
-(a route with no frontend caller yet, by design). **Adding an ID here is
-a reviewed decision, not a mechanical "make the check green" move** — do
-not silently add a new real error to the baseline just to clear a red CI
-run. On a new finding: investigate whether it's real → fix it if so (or
-explicitly accept it with a dated, reasoned note appended to `notes`,
-matching the running "+N 2026-MM-DD: ..." addendum style already used
-there) → only then add the finding_id to `accepted_finding_ids`. When a
-baselined finding later resolves for real (e.g. a previously-unused route
-gains a real caller), remove its ID and say why in the same commit rather
-than leaving it as stale cruft — see QCP Task 18's removal of
-`backend-route-unused:GET:/api/quality/summary` once
-`frontend/src/js/system-health.js` became its first real consumer.
-
-## Git history + supplementary docs
-
-This became a git repository partway through the project's life (see the
-first commit's message for the cutover point) — everything built before that
-has no real commit-by-commit history, which is why hand-maintained docs
-exist and remain the primary source for the *why* behind pre-git work:
-
-- **`ROADMAP.md`** — forward-looking, living to-do list, kept short. Check
-  items off in place (`- [x]`), add new ones as they turn up. Shipped work
-  gets folded into the "Shipped (condensed)" section as a one-line pointer,
-  not a narrative — the real detail belongs in `git log`. Check the
-  **"Path to production"** section before touching anything safety-adjacent
-  (kill switch, real trading, CORS, auth) — P0 itself is fully shipped, so
-  that's where the remaining open safety/correctness-adjacent questions
-  (shadow-mode review, deployment target, auth model, real position sizing,
-  category-level legal risk) actually live now.
-- **`docs/status-archive-2026-08-26.html`** — a frozen, final snapshot of
-  `static/status.html`, the backward-looking build-timeline page (156
-  chronological phases + reference tables) this project maintained by hand
-  from before it was a git repository through 2026-08-26. **Retired that
-  day, not maintained going forward** — it stopped paying for itself once
-  everything it recorded was already git-tracked: continuously growing
-  (6358 lines/156 phases, chunked into `docs/status-src/` fragments earlier
-  the same day, already needing a second pass), and every phase added after
-  the 2026-08-07 git cutover just re-narrated what `git log` already had.
-  The genuinely irreplaceable part — the pre-git narrative, which has no
-  commit-by-commit record anywhere else — is preserved intact in the
-  archive, not lost; only the ongoing hand-maintenance stopped. The
-  `/status` route, `docs/status-src/`, `tools/build_status_page.py`, and
-  the CI drift check that kept the two in sync are all gone with it —
-  consult the archive file directly (a plain, self-contained HTML file) for
-  anything it covers that isn't in `git log`.
-- **`docs/roadmap-archive-2026-08-09.md`** — a frozen, one-time snapshot of
-  `ROADMAP.md`'s full pre-condensing detail (it had grown to 837 lines of
-  mostly-shipped narrative). Not maintained going forward; consult it (or
-  `git log`/`git show` on `ROADMAP.md`) for the full story behind anything
-  checked off before 2026-08-09 that the status archive doesn't already
-  cover.
-
-For anything committed going forward, `git log` / `git blame` / `git diff`
-are the primary — now the *only* actively maintained — source of "what
-changed and why": that's real history, not reconstructed prose, and no
-longer has a second hand-narrated copy running alongside it. Keep using
-`ROADMAP.md` as the living, forward-looking layer on top: check "Path to
-production" before safety-adjacent work, and still check an item off there
-when it ships (`/close-roadmap-item` skill) — that's the one doc left to
-update, not two.
-
-## Dev workflow — this is a ddev project, not bare uvicorn
-
-- `ddev describe` — check whether it's running (it usually already is; don't
-  assume you need `python -m venv` / `pip install`).
-- Two services split frontend from API — `main.py` is API-only, it does not
-  serve any HTML. `web` (ddev's default nginx container, `docroot: static`)
-  is the one public entrypoint: it serves `static/*.html` directly and
-  reverse-proxies `/api/` + `/auth/` to `fastapi`
-  (`.ddev/nginx/kalshi-proxy.conf`). `fastapi` has **no public URL of its
-  own** — no `HTTP_EXPOSE`/`HTTPS_EXPOSE`/`VIRTUAL_HOST` — it's reachable
-  only inside the project's docker network as `fastapi:8000`. This is a
-  deliberate fix for a real, recurring bug (see `ROADMAP.md`): when both
-  containers had a public router registered for the same hostname,
-  Traefik's tie-break between them wasn't stable across restarts.
-- The `fastapi` service runs `uvicorn --reload` — edits to `.py` files take
-  effect in ~1-2s automatically. No manual restart needed for normal
-  iteration. Editing `.ddev/nginx/*.conf` or any `.ddev/*.yaml` does need a
-  `ddev restart` to take effect, unlike `.py` files.
-- `ddev logs -s fastapi` / `ddev logs -s web` — tail logs, e.g. to watch
-  reload events, errors, or nginx's access/error log.
-- `ddev exec -s fastapi <cmd>` — run one-off commands inside the container
-  (working dir `/app`, same layout as the repo root). Prefer this over raw
-  `docker exec`.
-- App: `https://kalshi-whale-poc.ddev.site` (served by `web`; check
-  `ddev describe`/the last `ddev start`/`restart` output for the actual
-  port — it's not always the implicit HTTPS 443).
-  `GET /api/state` is the fastest way to check live state (bankroll,
-  positions, risk halt status, etc.) without opening the dashboard — same
-  hostname, nginx proxies it to `fastapi` transparently.
-- A separate Cloudflare Tunnel (outside this repo) exposes this app
-  publicly at `autotrade.webfoundry.dev`, via a shared `traefik` container
-  also fronting other projects. `.ddev/nginx/kalshi-proxy.conf` gates only
-  that hostname behind HTTP Basic Auth (`$host`-conditional) — local access
-  via `kalshi-whale-poc.ddev.site` (loopback-only per `ddev-router`'s own
-  port bindings) is deliberately unaffected, so this never blocks local
-  dev/verification. `.env`'s `SITE_BASIC_AUTH_USER`/`SITE_BASIC_AUTH_PASSWORD`
-  are the durable source of truth for the password — a `ddev` post-start
-  hook (`.ddev/config.yaml`) regenerates the gitignored
-  `.ddev/nginx/.htpasswd` (nginx's actual `auth_basic_user_file`) from them
-  on every `ddev start`/`restart`. To change the password: edit `.env`,
-  `ddev restart`.
-- To test something that depends on a **real process restart** (not just
-  `--reload`'s in-process reimport) — e.g. verifying persistence survives a
-  restart — use a full `ddev restart`. A file save alone won't exercise that
-  path.
-- See the `/run` skill for more detail on driving the live app.
-
-## `data/*.db` files are live — don't delete/move them casually
-
-`paper_broker.db`, `risk_state.db`, `signal_log.db`, `accounts.db` are SQLite
-files the running dev server actively reads and writes while `ddev` is up.
-Deleting or moving one out from under a live process desyncs its in-memory
-state from disk until the next restart, and produces confusing results (a
-`_connect()` mid-run will silently recreate an empty file and start writing
-into a row that stale in-memory objects don't know is gone). Check
-`ddev describe` before touching them. Prefer `POST /api/reset` (wipes the
-paper account cleanly, in place, via `PaperBroker.reset()`) over deleting
-`paper_broker.db` by hand.
-
-**Accumulated history in these files is a first-class asset, not disposable
-state** — direct instruction. `market_history.db`, `signal_log.db`,
-`market_catalog.db`, `market_analyst.db`, `config_performance.db` are the
-dataset every rule-based heuristic (`confidence_calibration`,
-`advisory_engine`, `trade_analytics.compute_insights`), the whale-tracking
-filters, and the market analyst agent all depend on — most of them are
-explicitly sample-size-gated, so losing history doesn't just lose data, it
-silently resets those gates back to zero. This must survive every future
-refactor, rewrite, and test run:
-- Schema changes are always additive (`CREATE TABLE IF NOT EXISTS` +
-  `_add_column_if_missing`-style `ALTER TABLE` — see the idiom below),
-  never a drop-and-recreate.
-- Tests always redirect `DB_PATH` via `monkeypatch` to an isolated tmp
-  path — never touch a real `data/*.db` file (the established convention
-  throughout `tests/*.py`).
-- Manual/live verification should not call `POST /api/reset` or otherwise
-  truncate real data unless a reset is specifically what's being verified —
-  prefer read-only checks, or a disposable round-trip (set a value, confirm,
-  set it back) for anything that needs to touch live config/state.
-
-## Persistence idiom
-
-Every stateful module owns its own SQLite file under `data/` (gitignored via
-`data/*.db`). Pattern used by `services/signal_log.py`,
-`services/paper_broker.py`, `services/risk_manager.py`:
+- Never rm/mv a `data/*.db` while ddev is up; prefer `POST /api/reset` over deleting `paper_broker.db`.
+- Accumulated history is the dataset every sample-size-gated heuristic depends on: schema changes are additive only (`CREATE TABLE IF NOT EXISTS` + `_add_column_if_missing`); tests always `monkeypatch` `DB_PATH` to a tmp path; manual verification is read-only or a set-confirm-revert round trip.
+- Persistence idiom — one SQLite file per concern, no shared DB, no ORM:
 
 ```python
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "X.db"
@@ -417,343 +63,42 @@ def _connect() -> sqlite3.Connection:
     return conn
 ```
 
-Follow this for any new persisted state rather than introducing a different
-mechanism (a shared DB, an ORM, etc.) — it's deliberately one small file per
-concern, consistent with how the rest of the app is factored.
+- Moving a module one directory deeper changes `DB_PATH`'s `.parent` chain; fix it in the same edit and check `git status` for a stray `services/data/`.
 
-## Safety invariants — don't regress these
+## Safety invariants — never regress
 
-- Paper mode by default (`mode: paper` in `config/settings.yaml`).
-- Real order placement (`create_order`/`cancel_order` in
-  `services/kalshi_account_client.py`) is fully implemented — schema
-  verified against Kalshi's current docs and migrated to the official
-  `kalshi_python_async` SDK — and gated by `kalshi_account.trading_enabled`
-  (default `false`) plus a typed in-app confirmation phrase
-  (`POST /api/trading/enable`). The P0 code-level **gate/kill-switch
-  primitives** are done; that does not mean the rest of the path to real
-  capital is operational-only — realtime, economic/strategy, and
-  execution-semantics work still stands between here and flipping this
-  for real. See ROADMAP.md's "Path to production" section for the
-  itemized checklist and `docs/kalshi-personal-production-execution-
-  program-2026-08-26.md` for how that work is sequenced.
-- CORS is restricted to the DDEV hostname + `localhost:8000` (overridable
-  via `ALLOWED_ORIGINS` in `.env`), not wide open — don't reopen it as a
-  drive-by.
-- The daily-loss kill switch (`services/risk_manager.py`) and the paper
-  broker's bankroll/positions/trade log both persist across restarts now
-  (`data/risk_state.db`, `data/paper_broker.db`). Keep them in sync if you
-  touch either file — the risk manager's `day_start_bankroll` baseline must
-  stay consistent with the broker's actual persisted bankroll, or the kill
-  switch can mismeasure today's loss or silently un-halt after a restart.
+- `mode: paper` by default. Real orders (`services/kalshi_account_client.py`) are gated by `kalshi_account.trading_enabled` (default `false`) plus a typed confirmation (`POST /api/trading/enable`).
+- The daily-loss kill switch (`services/risk_manager.py`) and paper-broker state persist (`risk_state.db`, `paper_broker.db`); keep `day_start_bankroll` consistent with the broker's persisted bankroll.
+- Nothing in diagnostics, verification, refactoring, or quality work enables real trading, weakens a gate, or resets live data.
 
-## Bug pattern to watch for — a displayed value must match its label, not just look plausible
+## A displayed value must match its label
 
-Found live 2026-08-09 (`ROADMAP.md`/`status.html` phase 54, direct report:
-"I get values for bankroll, equity, and unrealized P&L, but the open
-positions themselves aren't shown, what a lie"). The Portfolio header's
-"Unrealized P&L" was computed as `equity - starting_bankroll` — cumulative
-all-time P&L, including every past realized gain — instead of
-`equity - bankroll`, the actual unrealized P&L on currently-open positions
-per `PaperBroker.equity()`'s own definition (`bankroll +
-total_unrealized_pnl(open_positions)`). With zero open positions this showed
-a large nonzero figure next to an empty positions list. Both formulas read
-as equally plausible from the call site — `starting_bankroll` and `bankroll`
-are both real, nearby, correctly-spelled fields — which is exactly why it
-shipped unnoticed.
+- Trace every displayed financial figure to its backend definition (`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`); expose backend-computed fields rather than re-deriving client-side. Two shipped bugs of this shape: the no-side `1 - price` inversion and `equity - starting_bankroll` labeled as unrealized P&L. Run `dimensional-analysis` after any money/probability math.
 
-Same root shape as the earlier, independently-found "no-side dollar math"
-bug class (`ROADMAP.md`, Active Position Management section): four separate
-frontend spots reimplemented `cost = size * price` without the `1 - price`
-no-side inversion, each looking locally reasonable in isolation. Before
-adding or editing any displayed financial figure (P&L, cost basis, exposure,
-payout, ...), trace it back to its backend definition
-(`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`) rather than
-deriving it from whichever fields already happen to be in scope at the call
-site. When a backend-computed value already exists, prefer exposing it as
-its own named field over re-deriving it client-side at all — re-derivation
-is exactly where both of these bug classes happened.
+## Workflow/tooling and application code never overlap
 
-## Workflow/tooling and application code must never overlap (2026-08-26)
+- Tooling lives in `tools/`, never `services/` or `main.py`; its config is its own, never `config/settings.yaml`; it runs externally (human, cron, CI), never from the app's tick loop or state; the app never imports, configures, or schedules a tool (test isolation registries included); a tool may read the app through a real API.
 
-Direct standing instruction, prompted by a real mistake: an "Autonomous Quality
-Coordination" module — meant to watch this repo's own code-quality scanner findings,
-i.e. engineering-*workflow* health — was originally built wired into the trading
-*application*: an in-process scheduler inside `main.py`'s own tick loop, a config
-section in `config/settings.yaml`, and read routes in `services/quality/routes.py`. The
-word "autonomous" led straight to conflating it with the app's own automation, since the
-app itself is an autotrader — but the feature was never about the app. Corrected
-2026-08-26 by removing all of it: the module moved to `tools/`, its data moved out of
-the shared `data/` directory, and every scheduler/config/route touchpoint was deleted
-(see `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s Task 15
-and `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md`'s own
-Amendment for the full account).
+## Kalshi API — `docs/kalshi/` is ground truth (HARD RULE)
 
-**Standing rule going forward, for this and any future workflow/tooling feature:**
-- Code lives under `tools/`, never `services/` or `main.py`.
-- Config lives in the tool's own file/mechanism, never `config/settings.yaml`.
-- Execution is external and standalone (a human, cron, a CI scheduled pipeline), never
-  wired into `main.py`'s tick loop, `services/app_state.py`'s state dict, or any other
-  live-app execution path.
-- The application must never import from, configure, schedule, or depend on a
-  workflow/tooling module in any way — including test infrastructure
-  (`tests/support/runtime_isolation.py`'s `PERSISTENCE_MODULE_PATHS` is the app's own
-  registry; a tool manages its own test isolation directly).
-- The reverse direction is fine: a tool may read from the application through a real,
-  intentional API boundary if a genuine future need justifies one. Coupling is a
-  one-way concern (app → tool is never acceptable; tool → app, via a real endpoint, is).
-- If a human-facing view of a tool's output is ever wanted, that's its own standalone
-  concern (e.g. a small dashboard reading the tool's own data store directly) — not a
-  route added to this application.
+- Before writing or editing any code that reads, parses, classifies, derives, infers, or groups Kalshi-sourced data, `grep -rn` `docs/kalshi/` (index `llms.txt`, provenance `README.md`) — not memory, not one live response. This applies to new feature work, not only call-site edits.
+- Check `docs/kalshi/CHEATSHEET.md` titles first (printed every session); add an entry whenever a page resolves a real question.
+- Full rule: `.claude/rules/kalshi-integration-authority.md`; skill: `kalshi-contract-review`.
+
+## Branching, CI, sessions
+
+- `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Read a PR body before merging.
+- CI (Woodpecker, `.woodpecker/*.yml`) is the only full-suite owner. Locally run only the targeted test files; the per-edit hook already does this. Confirm CI via `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`.
+- Checkpoint often (`/checkpoint`): commit verified units, stage specific paths, never `git add -A`, never commit a failing state.
+- Parallel sessions share one checkout: `ListAgents` first; work in a worktree under `.claude/worktrees/`; never checkout/stash under another session's work; never edit a file another session names as in use.
+- Suggest `/compact` at every phase boundary and `/clear` before unrelated work; keep working through usage limits.
+- Subagents: `model: haiku` for mechanical read-only work; `isolation: "worktree"` for heavy self-contained tasks; Explore/Plan agents skip CLAUDE.md — pure lookup only.
+
+## Toolchain
+
+- Use installed plugins before writing anything of your own; `session_orient.sh` prints the list every session; routing detail in `.claude/rules/tooling-plugins.md`. Never build a project skill or tool that duplicates a plugin.
+- Numbered plans run under the `plan-task` skill (+ `domains/<domain>.md`); bugs under `superpowers:systematic-debugging`; nothing is "done" without `superpowers:verification-before-completion`.
 
 ## Quick file map
 
-- `main.py` — FastAPI app, API/auth routes only (no HTML), the trading loop.
-- `services/` — one module per concern (client, strategy, risk, broker,
-  persistence, auth, accounts store, whale-watcher provider library).
-- `tools/` — standalone workflow/tooling, never application code (see the
-  standing rule above): `quality_audit/` (static repo-quality scanner),
-  `quality_ratchet.py` (renamed from `quality_coordination.py` 2026-08-27 —
-  persisted observation series over that scanner's findings; "Autonomous
-  Quality Coordination" now names a different, separately-specified tool,
-  see ROADMAP.md and `docs/superpowers/specs/2026-08-27-autonomous-
-  quality-coordination-workflow-design.md`),
-  `coordination_engine.py` + `quality_coordination.py` (the tool "Autonomous Quality
-  Coordination" now names — a project-manager/janitor over this repo's own engineering
-  workflow, not the trading app's code; see `docs/superpowers/specs/2026-08-27-autonomous-
-  quality-coordination-workflow-design.md`), `project_manifest.py`, and
-  others. Own persistence, own config (if any), own invocation — zero
-  coupling with `main.py`/`services/`.
-- `static/` — dashboard + status page + login/accounts pages, served
-  directly by ddev's `web` container, not by `main.py`. Plain inline
-  HTML/CSS/JS per page, no build step, no bundler.
-- `.ddev/nginx/kalshi-proxy.conf` — `web`'s reverse-proxy rules
-  (`/api/`, `/auth/` → `fastapi:8000`) and the extension-less page aliases
-  (`/status`, `/login`, `/accounts`).
-- `config/settings.yaml` — non-secret, live-reloadable tuning (thresholds,
-  position sizing, risk limits). Committed to git (once this becomes a git
-  repo), editable live from the dashboard's Controls panel.
-- `.env` (gitignored) — secrets and URLs. Every variable is optional; see
-  `.env.example` and `README.md` for what each one unlocks.
-- `docs/kalshi/` — locally-mirrored, LLM-formatted copy of Kalshi's own API
-  docs. `llms.txt` is the maintained index (source URLs), `README.md` is
-  per-page provenance/fetch dates. Authoritative over training-data
-  assumptions about Kalshi's API — see "Kalshi API documentation" below.
-- `.claude/` — Claude Code project config: hooks (`hooks/` — test-on-edit,
-  syntax check, `data/*.db` write guard, session orientation, pre-compact
-  and checkpoint reminders) and project skills (`skills/` — `run`,
-  `close-roadmap-item`, `checkpoint`, `config-field-edit`).
-- `.woodpecker/*.yml` — the authoritative CI pipelines (one file per named
-  check), run by a shared Woodpecker instance defined outside this repo at
-  `portfolio/ci-cd/`. See `docs/woodpecker-ci.md` for the full operational
-  reference and `.claude/skills/ci-cd-guardrails/SKILL.md` for the local-
-  vs-CI verification policy.
-- `.github/workflows/` — `workflow_dispatch`-only manual fallbacks for the
-  same checks (`tests.yml`, `quality.yml`), plus the still-automatic
-  scheduled `docs-drift-check.yml`.
-
-## Kalshi API documentation — treat `docs/kalshi/` as ground truth
-
-**HARD RULE, not a guideline — check this proactively at the start of any
-backend/API work in this repo, not only reactively when something breaks
-or is missing.** `docs/kalshi/` mirrors Kalshi's own API docs locally,
-fetched from the same `.md`-suffixed pages `docs.kalshi.com/llms.txt`
-indexes. Before writing or editing ANY code that touches Kalshi
-data — a call site, request/response parsing, rate-limit logic, AND
-(broader than that) any code that classifies, derives, infers, or
-groups data sourced from a Kalshi market/event/trade object —
-`grep -rn` across `docs/kalshi/` for the relevant endpoint/object/field
-name first. Don't rely on training-data assumptions about Kalshi's API,
-which has already been caught drifting from what the code assumed, and
-don't assume one live API response you happened to inspect is the whole
-picture.
-
-**This directive was already written down here once and still got missed**
-(2026-08-16 direct correction, after a session built a "subcategory"
-grouping by guessing that `category_tags` on a live event object was
-per-event sport data — wrong, it's the same full facet-filter vocabulary
-listed on every event in a category, carrying zero per-event signal; the
-real answer, a documented `competition` field plus a `filters_by_sports`
-sport→competition hierarchy, was sitting in `docs/kalshi/` the whole time).
-The gap wasn't that this rule didn't exist — it was scoped too narrowly
-("editing a call site") to register for *new feature* work that derives or
-classifies Kalshi data without literally touching an existing call site.
-Read it broadly: if the data in question originated from Kalshi, check
-`docs/kalshi/` before writing code that infers anything about it, full
-stop — this is a session-start checklist item for backend/API work, not
-something to reach for only once you're already stuck. The 2026-08-15
-full-audit session (see `docs/next-steps-2026-08-15-pt3.md`) found a stale
-legacy base URL, a wrong live-data endpoint for sports, and three
-unbatched-call opportunities — all by reading these docs and verifying
-live against the real API, not by guessing from prose or memory.
-
-- `docs/kalshi/llms.txt` — the maintained index: source URLs + one-line
-  descriptions. A complete mirror of Kalshi's real remote index as of
-  2026-08-16 (215 pages, everything from the standard trading API through
-  margin/perps, FIX, RFQ, order-groups, and historical data — see
-  `README.md`'s "full-index gap-fill" entry for how the margin/FIX
-  endpoint-name collisions against the standard API were resolved). If a
-  future page 404s or a new endpoint appears upstream, re-fetch
-  `llms.txt` and pull the new/changed page into `docs/kalshi/` — don't let
-  it silently drift back into a partial snapshot. This surface doesn't
-  change often, so there's no automated re-sync — instead,
-  `session_orient.sh` prints an age note (based on `llms.txt`'s last git
-  commit, not file mtime — mtime resets on every fresh clone) once it's
-  been 90+ days since the last refresh, as a periodic nudge to spot-check
-  for drift rather than trust the mirror indefinitely.
-- `docs/kalshi/README.md` — per-page provenance (source URL + fetch date).
-  Check the date before trusting a page for anything rate-limit- or
-  schema-sensitive; re-fetch if it looks stale.
-- Individual pages (`get-market.md`, `rate_limits.md`,
-  `websocket-connection.md`, ...) — the actual reference detail. Read the
-  specific page for the endpoint in question rather than guessing field
-  names or limits.
-- **`docs/kalshi/CHEATSHEET.md`** — living, append-only index of specific
-  data questions already resolved by reading the 215-page mirror, kept so
-  they don't get re-derived (or re-guessed) from scratch every session
-  (2026-08-16 direct request, after the rule above still got missed once:
-  "the api docs are expansive so maybe create a kind of shortcut sheet
-  thst you update for things you know to look into across sessions").
-  `session_orient.sh` prints every entry's title unconditionally at the
-  start of every session and after every compaction (its `SessionStart`
-  matcher is `*`, confirmed to fire on both) — check those titles before
-  grepping the full mirror cold. **Add a new entry any time reading a
-  `docs/kalshi/` page resolves a real data question**, especially one that
-  took a wrong guess to get to — same discipline this file's own "Bug
-  pattern to watch for" section already applies to code bugs, just for
-  API-documentation lookups instead.
-
-## Branching and CI — standing policy
-
-Direct standing instruction (2026-08-25): `main` is the authoritative
-integrated branch, protected both by policy and, since the same day, by
-real GitHub branch protection (`enforce_admins` on, force-push/deletion
-off, the five `ci/woodpecker/pr/*` status checks required — see
-`.claude/rules/branching-and-ci.md`'s "Integration lifecycle" for the
-exact configuration and how to change it). Normal implementation work
-happens on a short-lived initiative branch
-(`feat/`, `fix/`, `refactor/`, `chore/`, `docs/<name>`), not directly on
-`main` — no permanent `development`/`staging`-style branches. Claude owns
-targeted local verification; Woodpecker owns exhaustive verification, on
-every branch push, not just `main`. Full lifecycle: `main` → initiative
-branch → implementation → targeted local checks → commit → push →
-Woodpecker → PR → merge → delete branch.
-
-`.claude/rules/branching-and-ci.md` is the single authoritative detailed
-rule for this — read it before starting implementation work, not just
-this summary. `.claude/hooks/session_orient.sh` prints the active branch
-every session start specifically so this doesn't depend on remembering
-across a session; a report of `main` there is the cue to branch before
-implementing, not a reason to proceed on it.
-
-## Long-session workflow — commits, pushes, CI offload, compacting
-
-Direct standing instruction (2026-08-16): during a long working session,
-checkpoint proactively rather than batching everything to the end (on the
-current initiative branch, per the branching policy above — this section
-covers *when* to checkpoint within a session, not which branch it lands
-on). Use `TodoWrite` for any multi-step task, and once a unit of work is
-genuinely verified, commit it and push to `origin` rather than letting it
-sit uncommitted.
-
-**Default to offloading full-suite verification to Woodpecker CI rather
-than re-running it locally before every commit** (direct instruction,
-2026-08-16, updated 2026-08-24 when Woodpecker replaced GitHub Actions as
-the authoritative executor — see `.claude/skills/ci-cd-guardrails/SKILL.md`'s
-"Local vs CI verification policy" section for the full procedure; this is
-a pointer, not a duplicate). The per-edit local hook
-(`.claude/hooks/run_tests.py`, which fires `pytest` inside `ddev` after
-every `main.py`/`services/*.py` edit — keep that as-is, it's the fast
-in-the-loop feedback layer) already exercised every real code change as it
-happened; a second full local run right before committing is usually just
-repeating work Woodpecker (`.woodpecker/*.yml`, a shared instance defined
-outside this repo at `portfolio/ci-cd/`) is about to do anyway, in a clean
-environment, on push. Commit → push → check Woodpecker's result → interpret
-it is the default path now. Still run locally first when there's a
-concrete reason to want faster/richer feedback — actively debugging a
-specific failure, a large/risky change, CI itself being unavailable, or a
-change to CI configuration itself — that's a per-occasion judgment call,
-not a rule against it. `.github/workflows/tests.yml`/`quality.yml` remain
-as `workflow_dispatch`-only manual fallbacks (`gh workflow run tests.yml`,
-`gh run view --log-failed`) for when Woodpecker is down or a GitHub-native
-run is specifically wanted.
-
-The `/checkpoint` skill runs this sequence end to end (verify tests green →
-review diff scope → commit → push → report CI status → flag whether a
-`ROADMAP.md` item just shipped, in which case run `/close-roadmap-item`
-too). Two hooks back this so it doesn't depend purely on remembering
-across a long session — both verified against the primary Claude Code
-hooks docs first, since `PreCompact`/`Stop` hooks' stdout is only
-debug-logged, never seen by the model, which rules them out for this:
-- `SessionStart` with a `compact` matcher
-  (`.claude/hooks/post_compact_reorient.sh`) fires immediately after any
-  compaction (manual `/compact` or automatic) and re-injects
-  uncommitted-change state right after summarization could have blurred
-  it.
-- `UserPromptSubmit` (`.claude/hooks/midsession_checkpoint_nudge.sh`)
-  covers the gap between session start and the first compaction — which
-  could be arbitrarily long — by checking uncommitted diff size at most
-  once every 10 minutes (time-throttled, not a check on every prompt) and
-  nudging toward `/checkpoint` once it's grown past 5 files / 150 lines.
-
-Both only print a reminder; neither commits anything on its own.
-
-Never commit a failing or half-finished state — this instruction covers
-*when* to commit during a session, not a license to commit broken code.
-Stage specific paths, never a blind `git add -A`/`git add .` (see the
-global git-safety rules) — this matters more than usual here given
-`data/*.db`, `.env`, and session scratch files all live in this tree.
-
-Also proactively suggest — don't silently assume — a good moment for the
-*user* to run `/compact` (session has done substantial work and context is
-getting heavy) or `/clear` (the next thing is materially unrelated to what
-was just finished). This is a suggestion to surface, not a decision to make
-unilaterally. Concrete trigger, not just a vibe check (direct data,
-2026-08-16 usage review — see below): right after `/sync-status-docs` or
-any other full read of `ROADMAP.md` (still 1200+ lines; `static/status.html`
-itself was the other large file this trigger originally named, until the
-2026-08-26 modularization split it into small `docs/status-src/` fragments
-— see that section above), and generally once a session has been open
-8+ hours or is running noticeably slower to respond — both measured as the
-real drivers of this project's heaviest usage sessions, not hypothetical.
-
-**Session-efficiency review (2026-08-16, direct instruction: "use this to
-inform improvements to session efficiency without losing effectiveness").**
-`/usage`'s own attribution data showed 99% of usage from subagent-heavy
-sessions, 94% from sessions open 8+ hours, 93% spent above 150k context,
-and `/sync-status-docs` alone at 21% of a week's total. Root-caused the
-last one directly, not guessed: that skill's own steps implied a full read
-of both target files every invocation, and `static/status.html` alone is
-4400+ lines with a single Component-Reference table cell running several
-thousand tokens by itself — confirmed via `grep -c`/`wc -l`, not assumed.
-Fixed at the skill itself (`.claude/skills/sync-status-docs/SKILL.md`) —
-every step now scopes to `grep -n` + a targeted `Read(offset, limit)`
-around just the relevant bullet/phase-block/table-row, never a whole-file
-read; same output quality (still grounded in a real template block and the
-real target text), a fraction of the context. Apply the same "grep first,
-read a window, never the whole file" default to any other large file in
-this repo (this one included, at 300+ lines) before reaching for a full
-read — same lever, same payoff, whenever it applies.
-
-When delegating to a subagent, match the model to the task (direct
-instruction, 2026-08-16): `model: haiku` for mechanical, read-only,
-low-judgment work (bulk fetches, log scans, file inventories) — reserve
-the default/inherited model for anything needing real reasoning or code
-changes. Don't restart an already-in-flight agent just to fix its model
-tier; apply this to how agents get launched going forward. For a heavy,
-genuinely self-contained agent task (a large multi-file investigation, a
-full-suite verification run) that doesn't need to share this session's
-accumulated context, prefer spawning it with `isolation: "worktree"` —
-it starts cold (no inherited context bloat) and reports back a compact
-result instead of its full working transcript landing in this session,
-which is the other half of why subagent-heavy sessions run expensive:
-not just model tier, but how much of the subagent's own context this
-session ends up holding onto afterward.
-
-Context-window limits are already auto-compacted by Claude Code itself, no
-prompting needed. Session/usage-cap limits are handled the same way, by
-design: don't pause mid-task to ask permission to keep going because usage
-looks high — keep working. The checkpoint cadence above is what makes an
-unannounced cutoff cheap (nothing valuable sitting uncommitted when it
-happens), which is the actual mitigation here — there's no hook event for
-"usage cap approaching" to wire up, so this is a behavioral commitment, not
-a mechanical one.
+- `main.py` FastAPI app + trading loop · `services/` one package per concern · `tools/` standalone tooling (`quality_audit/`, `quality_ratchet.py`, `quality_coordination.py`, `kanban_sync/`, replay/probe scripts) · `static/` + `frontend/` dashboard (esbuild bundle, no framework build) · `config/settings.yaml` live-reloadable tuning · `.env` secrets (all optional; see `.env.example`) · `docs/kalshi/` mirrored API docs · `.claude/` hooks, rules, skills · `.woodpecker/` authoritative CI · `.github/workflows/` `workflow_dispatch` fallbacks · `.ddev/nginx/kalshi-proxy.conf` proxy rules.

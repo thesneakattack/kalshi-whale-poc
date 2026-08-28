@@ -19,6 +19,26 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 fi
 
+# Other live Claude sessions on this machine, and where each one works. This is
+# the mechanical form of "never checkout/stash under another session's work":
+# guard_workflow.py denies those git operations in an occupied checkout; this
+# line makes the occupancy visible before the first command.
+sock_dir="/run/user/$(id -u)/cc-socks"
+if [ -d "$sock_dir" ]; then
+  me_pids=""
+  p=$$
+  while [ "$p" -gt 1 ] 2>/dev/null; do me_pids="$me_pids $p"; p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null || echo 1); done
+  for s in "$sock_dir"/*.sock; do
+    [ -e "$s" ] || continue
+    pid=$(basename "$s" .sock)
+    case " $me_pids " in *" $pid "*) continue ;; esac
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+    obr=$(git -C "$cwd" branch --show-current 2>/dev/null)
+    odirty=$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    echo "live session pid $pid works in $cwd (branch '$obr', $odirty uncommitted) - do not checkout/stash/commit there; coordinate via SendMessage (ListAgents) before touching files it names"
+  done
+fi
+
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   # Cheap, network-free count (no gh calls here - this hook has a 15s
   # budget and scripts/cleanup-worktrees.sh's PR-state check is a network
@@ -54,7 +74,7 @@ if [ -d data ]; then
   fi
 fi
 
-echo "Docs: ROADMAP.md = forward-looking to-do (check items off in place). static/status.html (/status) = historical build record. Update both when a roadmap item ships - see the /sync-status-docs skill."
+echo "Docs: ROADMAP.md = forward-looking to-do (check items off in place, /close-roadmap-item). docs/status-archive-2026-08-26.html = frozen pre-git history; git log is the only maintained record since."
 
 if [ -d docs/kalshi ]; then
   kalshi_docs=$(find docs/kalshi -maxdepth 1 -name '*.md' ! -name 'README.md' 2>/dev/null | wc -l | tr -d ' ')
@@ -84,4 +104,85 @@ if [ -f docs/kalshi/CHEATSHEET.md ]; then
   entries=$(grep -c '^## ' docs/kalshi/CHEATSHEET.md 2>/dev/null || echo 0)
   echo "docs/kalshi/CHEATSHEET.md: $entries known-answer entries already resolved from docs/kalshi/ - check titles below before re-deriving/re-guessing any Kalshi data question, and add a new entry whenever a docs/kalshi/ page resolves one that isn't here yet:"
   grep '^## ' docs/kalshi/CHEATSHEET.md 2>/dev/null | sed 's/^/  - /'
+fi
+
+# Composite health read - printed so the first investigative move is reading
+# it, not opening sqlite3 (measured 198:19 the other way, 2026-08-27 audit).
+# Port 8443 is ddev-router's real HTTPS binding for this project (not 443).
+# The composite summary measured 4.4s (2026-08-28); 8s leaves margin inside
+# this hook's 15s budget.
+qs=$(curl -s --max-time 8 https://kalshi-whale-poc.ddev.site:8443/api/quality/summary 2>/dev/null)
+if [ -n "$qs" ]; then
+  python3 - "$qs" <<'PY' 2>/dev/null || echo "quality: /api/quality/summary returned unparseable JSON"
+import json, sys
+d = json.loads(sys.argv[1])
+def n(k):
+    v = d.get(k)
+    return len(v) if isinstance(v, (list, dict)) else v
+print(f"quality: overall={d.get('overall_status') or d.get('status')} findings={n('findings')} alerts={n('alerts')} faults={n('faults')} - GET /api/quality/summary for detail, before any ad hoc sqlite3/python -c")
+PY
+else
+  echo "quality: /api/quality/summary unreachable (ddev down?) - check before assuming health"
+fi
+
+# Installed plugin capabilities - printed every session because routing that
+# lived only in .claude/rules/tooling-plugins.md was used 0 times in 10 days.
+cat <<'EOF'
+plugins (use them; never write a project skill or tool that duplicates one):
+  superpowers: brainstorming | writing-plans | executing-plans | test-driven-development | systematic-debugging (any bug) | verification-before-completion (before "done") | requesting-code-review | using-git-worktrees
+  gitnexus MCP: impact/context/trace before multi-file edits to strategy, risk, advisory, calibration, kalshi client
+  dimensional-analysis: after implementing any cents/dollars/probability/contracts/P&L math
+  chrome-devtools MCP: any browser-facing evidence (console, network, WebSocket)
+  context7 MCP: library docs for FastAPI/Pydantic/asyncio; never for Kalshi (docs/kalshi/ is canonical)
+  github MCP / gh: PRs, statuses, issues; github-issues-kanban skill owns claim/dispatch on the board
+EOF
+
+# Feedback memories - the user's corrections - printed unconditionally. Claude
+# Code loads memory by relevance, which is exactly how 9 of 29 corrections got
+# re-learned; this makes every `type: feedback` entry always-loaded.
+# Memory is keyed by the PRIMARY project path; a linked worktree shares it.
+primary_dir="${CLAUDE_PROJECT_DIR%%/.claude/worktrees/*}"
+mem_dir="$HOME/.claude/projects/$(echo "$primary_dir" | sed 's|/|-|g')/memory"
+if [ -d "$mem_dir" ]; then
+  fb=$(grep -l '^  type: feedback' "$mem_dir"/*.md 2>/dev/null)
+  if [ -n "$fb" ]; then
+    echo "standing corrections (memory type=feedback, always loaded):"
+    for f in $fb; do
+      printf "  - %s\n" "$(grep -m1 '^description:' "$f" | cut -c14- | sed 's/^"//; s/"$//' | cut -c1-220)"
+    done
+  fi
+fi
+
+# AQC (tools/quality_coordination.py) - the user-built workflow janitor.
+# 16-26s with network calls, so it runs detached here (result lands in its own
+# store for the next session) and /checkpoint runs it inline; this prints the
+# last stored result so no session forgets the tool exists.
+aqc_lock=".claude/hooks/.aqc_bg_lock"
+if [ -f tools/quality_coordination.py ] && command -v python3 >/dev/null 2>&1; then
+  if [ ! -f "$aqc_lock" ] || [ $(( $(date +%s) - $(stat -c %Y "$aqc_lock" 2>/dev/null || echo 0) )) -gt 21600 ]; then
+    touch "$aqc_lock"
+    ( setsid nohup python3 -m tools.quality_coordination >/dev/null 2>&1 & ) >/dev/null 2>&1
+  fi
+fi
+if [ -f tools/quality_coordination_data/quality_coordination.db ]; then
+  python3 - <<'PY' 2>/dev/null || echo "AQC: store unreadable - run: python -m tools.quality_coordination"
+import sqlite3
+c = sqlite3.connect("file:tools/quality_coordination_data/quality_coordination.db?mode=ro", uri=True)
+run = c.execute("select ran_at, signals_observed, signals_escalated from coordination_runs order by id desc limit 1").fetchone()
+if not run:
+    print("AQC: never run - run: python -m tools.quality_coordination (or /checkpoint)")
+else:
+    esc = c.execute("select identity from signal_state where state='escalation_eligible' order by identity").fetchall()
+    plans = c.execute("select count(*) from signal_state where identity like 'ledger:plan:%' and state!='resolved'").fetchone()[0]
+    print(f"AQC: last run {run[0][:16]}Z, {run[1]} signals, {run[2]} escalation-eligible, {plans} plan(s) with unfinished tasks - /checkpoint re-runs it; python -m tools.quality_coordination for detail")
+    for (ident,) in esc[:8]:
+        print(f"  - {ident}")
+PY
+else
+  echo "AQC: never run in this checkout - run: python -m tools.quality_coordination (or /checkpoint)"
+fi
+
+if [ -f docs/open-decisions.md ]; then
+  echo "open decisions (docs/open-decisions.md - act on or ask about these; don't re-discover them, don't write a new plan for them):"
+  grep '^- ' docs/open-decisions.md | sed 's/^/  /'
 fi

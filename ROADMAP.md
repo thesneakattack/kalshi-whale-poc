@@ -404,7 +404,7 @@ which can run in parallel right now.
       spec: `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`;
       plan (T1a–T9, five PR groups):
       `docs/superpowers/plans/2026-08-25-frontend-modularization.md`, executed
-      via `.claude/skills/frontend-modularization-task/SKILL.md`. The
+      via `.claude/skills/plan-task/` + `domains/frontend.md`. The
       multi-page split stays a separate follow-up the panel contract enables.
 - [ ] **Per-module data-consumption audit + report.** Direct instruction
       (2026-08-22) — trace every module's data sources (REST/WS/SQLite/

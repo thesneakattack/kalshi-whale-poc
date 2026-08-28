@@ -121,17 +121,12 @@ to this tool's own three actions.
 
 Auto-merge is not part of the initial production rollout. If evidence later supports it for an exact mechanical allowlist, enabling it is a separate explicit decision with its own review and fault-injection proof.
 
-## Investigation completion rule
+## Stop rule
 
-The investigation is complete only when:
-
-- current concurrency and audit behavior are measured;
-- finding identity stability is characterized;
-- coordination/suppression strategies are compared with false-positive/false-negative scenarios;
-- control-plane credential/event topologies are threat-modeled and benchmarked for operational complexity;
-- reporting surfaces are compared;
-- deterministic remediation candidates are empirically classified;
-- a no-write prototype survives the scenario/fault matrix;
-- an adversarial review attacks the preferred architecture;
-- rejected alternatives have evidence-backed reasons;
-- a separate production implementation plan exists.
+One investigation pass, at most one session, before a code change (fix or
+guard) lands. The write-up comes after the fix and fits on one page.
+Rejected alternatives get one line each, not a matrix. A plan over 300
+lines, or an investigation crossing a session boundary with no landed
+change, is the signal to stop and decide — not to add tasks. (The original
+ten-condition completion rule produced a 13-phase investigation and two
+tools that ran once; see `docs/superpowers/specs/2026-08-27-workflow-audit.md`.)

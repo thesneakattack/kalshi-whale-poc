@@ -64,7 +64,7 @@ duplicate.
    {
      "2026-08-25-frontend-modularization.md": {
        "status": "in-progress",
-       "note": "frontend-modularization-task skill still has open tasks"
+       "note": "plan-task (domains/frontend.md) still has open tasks"
      }
    }
    ```
