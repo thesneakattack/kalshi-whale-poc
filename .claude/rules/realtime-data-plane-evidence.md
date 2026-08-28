@@ -74,3 +74,13 @@ It is complete when:
 - the selected solution wins on an explicit evidence matrix;
 - rejected options have documented reasons;
 - permanent detection exists for recurrence.
+
+## Stop rule (investigations started after 2026-08-28)
+
+The completion rule above governs the realtime remediation plan already in
+flight. Any investigation started after 2026-08-28 gets one pass, at most
+one session, before a code change (fix or guard) lands. The write-up comes
+after the fix and fits on one page. Rejected alternatives get one line each,
+not a matrix. A plan over 300 lines, or an investigation crossing a session
+boundary with no landed change, is the signal to stop and decide — not to
+add tasks.
