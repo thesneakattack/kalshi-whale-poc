@@ -420,6 +420,214 @@ Live-measured (2026-08-26), not assumed:
   concrete symptom that motivated the original report (CH2). Not a confirmed
   bottleneck today. Commit: `docs: classify H11 (CH3)`.
 
+## Hypothesis H12 — position management's data is REST-authoritative by
+   construction, not WS-primary with REST-as-verification, despite three
+   prior passes that each believed they were fixing this
+
+Direct standing instruction, originally given 2026-08-15, restated 2026-08-27 after
+three intervening audits each claimed partial progress: *"position management should
+be decoupled from constant polling... polling should be removed altogether in favor of
+taking data from websockets and only use the rest api to verify ws data when executing
+decisions or we need data the webstream cant give."* Direct correction the same day,
+after a first response proposed patching a single line: *"stop making monkey patches
+and research solutions like you were supposed to. what did that audit even do."*
+
+**What the three prior audits (2026-08-15, 2026-08-17, 2026-08-23) actually shipped,
+checked against current code rather than trusted from their own doc prose:**
+
+- 2026-08-15 ("no stone unturned" API audit): moved four REST call sites off the
+  tick's hot path - discovery, catalog-scanning, and signal-resolution became
+  independent background tasks with their own cadence; `_fetch_account_snapshot`
+  gained a 20s interval cache. **Effect: throttled REST. Did not change what is
+  authoritative.**
+- 2026-08-17: correctly identified that price/trade, settlement, `market_history`
+  snapshots, and live sports state were four things wrongly sharing one
+  `poll_interval_sec` cadence, and correctly named WS replacements for three of them.
+  What shipped: `market_history.record_snapshot_from_ticker` **interleaves** WS
+  samples between REST ticks (its own docstring's word - "rather than replacing it
+  outright"); `close_date_updated` lifecycle WS updates `state["markets"]` as an
+  overlay. **Effect: WS supplements REST. REST remained the thing that gets
+  overwritten-and-trusted every tick.**
+- 2026-08-23: `determined`/`settled` wired into the real settlement/outcome
+  resolvers (`market_history`, `settlement_edge`, `market_analyst_agent`,
+  `candidate_log`) - WS-primary, with a single-ticker REST call only at the moment
+  of final resolution to catch dispute corrections. **This is the one genuine
+  inversion in the whole history** - but scoped only to settlement, never
+  generalized to price or position metadata.
+
+**The mechanism that never got touched, three audits later** - confirmed by reading
+`main.py::trading_loop` directly, not inferred from any doc: every tick, unconditionally,
+`main.py:782-784` does
+
+```python
+state["latest_prices"] = {
+    m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
+}
+```
+
+`markets` is that tick's own `_fetch_markets(client, cfg, extra_tickers=open_position_tickers)`
+REST result. This **wholesale-replaces** the dict, not merges into it - so whatever
+`_process_stream_ticker` wrote from real-time WS pushes in the seconds since the last tick
+is discarded and rebuilt from REST every `poll_interval_sec` (6s), regardless of whether
+the WS value was fresher. Three separate `check_exits` call sites exist
+(`main.py`'s tick loop, `_process_stream_trade`, `_process_stream_ticker` - both in
+`services/whale_stream/whale_stream_handlers.py`); two of the three already run off WS
+pushes with no tick dependency, but the tick-loop's own call - which still runs every 6s
+regardless of whether anything changed - reads prices that were *just* reset to REST
+values on the same line above it. This is why "position management" still reads as
+tick-bound even though WS updates are demonstrably flowing: REST doesn't just supplement
+the picture, it periodically **overwrites** it.
+
+Beyond that one line, the same tick still bundles many *different*-cadence concerns
+behind one `_fetch_markets` call and one `poll_interval_sec` gate - `event_titles`,
+`live_status`, `series_track_record`, `market_titles` are all recomputed every tick, and
+several of their own inline comments already say some version of "same until the next
+tick anyway." Live sports game state (`_fetch_event_live_data`) has no WS equivalent
+(confirmed against `docs/kalshi/get-live-data.md`/`get-milestone.md` by the 2026-08-17
+audit) but doesn't need 6s freshness either, and was flagged "still open" then - no
+evidence since that it was ever decoupled from the shared cadence.
+
+**Explicitly not concluding a fix here.** Per this file's own header purpose ("seed an
+investigation, not dictate its conclusion") and `.claude/rules/realtime-data-plane-
+evidence.md`'s candidate-solution rule, the next task is solution-family enumeration
+and comparison, not a chosen architecture. Recording the candidate families surfaced so
+far so they aren't lost, explicitly including the one that should be named and rejected
+rather than silently avoided:
+
+- **Family A - WS-primary state, REST only for cold-start fill and decision-time
+  verification.** Closest literal reading of the direct instruction. `state["latest_
+  prices"]`/market metadata are written only by WS handlers; REST is called (a) once
+  per ticker that has no WS-derived value yet (a position just opened, or a ticker
+  with no ticker-channel traffic recently), and (b) immediately before `check_exits`/
+  `strategy.evaluate` actually commits to a decision, as a bounded verification read
+  (matching the 2026-08-23 settlement pattern, generalized). Open questions before this
+  can be scored: what staleness/gap-detection strategy proves a WS-derived price hasn't
+  silently gone stale (a ticker that stops receiving ticker-channel messages looks
+  identical to "the price hasn't moved" from a WS-primary cache's point of view) -
+  needs research into the Kalshi WS reconnect/backlog contract and the installed
+  `websockets` library's own gap-handling guidance, not assumed.
+- **Family B - shared cache with per-field freshness contracts.** One `MarketStateCache`
+  per ticker; every field carries its own source and as-of timestamp (price: WS,
+  continuous; close_time/status: WS lifecycle + REST fallback; volume_24h/category:
+  REST-only, refreshed on its own multi-minute schedule, not every 6s). Callers read
+  through one interface and can assert their own tolerance rather than inheriting
+  whatever the tick happened to fetch. Directly addresses the "different-cadence
+  concerns bundled into one tick" half of the finding, independent of the price-specific
+  fix Family A targets - the two are not mutually exclusive.
+- **Family C - dissolve `trading_loop` into WS-triggered handlers plus independent
+  background schedulers, no unifying tick for decision-relevant data at all.** Two of
+  three `check_exits` sites are already WS-triggered; discovery/catalog-scan/signal-
+  resolution are already independent background tasks. This family is "finish that
+  pattern" - the tick-loop's own `check_exits` call and its REST-refresh-and-decide
+  shape would be removed rather than patched, with only the genuinely-REST-only,
+  low-frequency concerns (sports game state, catalog discovery) kept on their own
+  schedules. Highest potential REST-load reduction and the most literal match to
+  "polling removed altogether," also the largest blast-radius change to a live,
+  safety-adjacent hot path - needs the most fault-injection scrutiny of the three
+  (reconnect gaps, a WS handler silently stalling per the trade-stream-consumer
+  incident above, partial-state windows during startup).
+- **Family D, named to be rejected rather than silently skipped: deeper REST
+  caching/conditional-fetch (ETag-style or narrower field selection).** Would reduce
+  REST call volume further without changing what's authoritative - i.e., a faster,
+  more sophisticated version of exactly the pattern all three prior audits already
+  used. Rejected as a candidate for *this* investigation's actual question (REST vs.
+  WS as source of truth), not because caching is bad in general - it doesn't address
+  the direct instruction's own framing, "removed altogether in favor of websockets,"
+  and repeating that pattern a fourth time is the thing being explicitly corrected
+  against here.
+
+**Not yet done, needed before any family can be selected**: authoritative research on
+Kalshi's own WS reconnect/gap semantics (does a reconnect replay missed ticker updates,
+or does the client need its own REST-backfill-on-reconnect logic regardless of which
+family is chosen - `docs/kalshi/websocket-connection.md` first, not memory); a
+representative benchmark of each family's REST-call volume and decision latency under
+the same synthetic workload; fault injection (WS disconnect mid-position, a stalled
+consumer per the incident recorded above, a ticker rotating off discovery scope while a
+position is still open); and a scored comparison before any implementation plan gets
+written.
+
+## Hypothesis H13 — application-wide REST-vs-WS inventory (2026-08-27):
+   H12 generalizes beyond position management, with three new concrete gaps
+
+Direct follow-up correction to H12: *"its not just the positioning management. its the
+entire application."* Full inventory produced separately (not duplicated here in full):
+`docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`. That
+document (1) checked all 12 documented Kalshi WS channels against what this app actually
+subscribes to, and (2) swept every REST call site app-wide (not just `main.py`), each
+classified as WS-equivalent-exists/used-to-reduce-this-call/gap.
+
+**Channel coverage**: 7 of 12 subscribed (5 live-active, `pyth_value` code-wired but
+inactive since `index_feed.underlying_tickers` is empty in config), 3 of 12 not
+applicable to anything this app does (`multivariate_market_lifecycle`, `communications`,
+`order_group_updates` - zero references anywhere in app code), 2 of 12 genuinely unused
+despite being applicable (`orderbook_delta`, `user_orders` - both interactive-tier REST
+call sites only, `market_catalog/routes.py`'s `get_orderbook`/`position/routes.py`'s
+`get_orders`, low live impact today since `trading_enabled: false` means no real order
+exists for `user_orders` to report on yet).
+
+**REST call sites**: ~27 distinct REST-calling functions found app-wide, versus the
+2026-08-25 baseline doc's 15 rows (`main.py`/`trading_loop`-scoped) - the difference is
+mostly interactive/on-demand dashboard routes the baseline didn't cover, not new
+tick-cadence discoveries; the hot path itself was already well-inventoried.
+
+**Three new gaps beyond H12's own scope** (H12 covered only `state["latest_prices"]`):
+
+1. **`signal_log.mark_resolved` - the clearest gap found, strongest in the whole
+   document.** Has exactly one caller in the entire codebase: `main.py`'s 30s/200-batch
+   REST poll (`_check_signal_resolutions`). The exact same `market_lifecycle_v2`
+   `determined`/`settled` events, for the exact same tickers, already resolve 4 *other*
+   stores instantly via WS (`market_history`, `settlement_edge`, `market_analyst_agent`,
+   `candidate_log`, via `_process_stream_lifecycle`) - `signal_log` is the one store left
+   100% REST-poll-dependent on data the app already has in hand at settlement time.
+2. **`_fetch_account_snapshot` - real-account balance/positions/fills stay a flat 20s
+   REST poll, never inverted to WS-primary, by the code's own explicit admission**
+   (`services/position/account_positions.py:137-150`): the WS parsing (`fill`/
+   `market_positions`) writes into `state["account"]` already, but the REST poll still
+   "reconciles/overwrites" it regardless of freshness, because that parsing was never
+   verified against a real fill (`trading_enabled` has always been `false`). The
+   verification blocker (`market_position` singular/plural, `fill_id`/`trade_id` field
+   naming) was fixed 2026-08-24 - the architectural flip itself was never done. **Same
+   day this gap was fixed at the parsing level, a direct instruction was given and not
+   yet acted on** (`docs/next-session-pickup-2026-08-24.md`, surfaced by the parallel
+   doc-consolidation pass): *"i dont need it to be wholesale overwritten every 6
+   seconds... rest api should only be used to confirm decisions before theyre made."*
+   Third time this exact instruction has been given (2026-08-15, 2026-08-24, and the
+   2026-08-27 correction that prompted H12/H13) without the architecture actually
+   changing.
+3. **5 of 8 `market_lifecycle_v2` event types arrive over WS and are discarded.**
+   `created`/`activated`/`deactivated`/`metadata_updated`/`price_level_structure_updated`
+   are counted into `lifecycle_stream_stats.events_by_type` (visible on `/api/state`) and
+   never applied - new-market/event discovery is still 100% driven by
+   `catalog_scan._scan_catalog_batch`'s own periodic per-series REST rescan (≥15s
+   kickoff), even though the WS channel already announces a market's existence,
+   exchange-wide, the instant it happens. Feasibility of wiring this (net REST-volume
+   reduction vs. a second redundant discovery path) is explicitly flagged as unassessed -
+   architecture work, not this inventory's scope.
+
+**Positive precedent, worth keeping as reference for the eventual solution-family
+decision**: the target pattern already exists, live, in three places. `_fetch_trade_tape`
+is a **complete** inversion, not a partial one - when streaming mode is active (the live
+default), `main.py`'s REST-trade-tape branch is dead code, fully replaced by the `trade`
+WS channel. The `settled`-handler's single-ticker `get_market` call is REST-as-
+verification-at-decision-time, exactly the target shape, already shipped (2026-08-23).
+`diagnostics/routes.py`'s coverage check and the I4 reconciliation both use REST purely
+to *audit* WS capture, never as a replacement path. None of these are hypothetical -
+they're proof the pattern is buildable in this codebase, not just requested.
+
+**Genuinely REST-only, re-confirmed against docs, not re-litigate later**: live
+sports/game state, exchange status/maintenance, series/event/market static metadata
+(title, `strike_type`, `occurrence_datetime`, category/tag taxonomy - no channel carries
+descriptive metadata, only transactional/state-transition/numeric data), candlesticks,
+and order placement/cancellation (confirmed against `websocket-connection.md`'s full
+AsyncAPI operations list - no order-entry command exists in the WS protocol at all, not
+just "the app doesn't use one").
+
+**Still not concluding a fix** - this remains inventory, same as H12. Combined evidence
+base for the eventual solution-family selection now covers the whole app, not just
+position management; the "not yet done" list from H12 (Kalshi WS reconnect/gap-recovery
+semantics, benchmarks, fault injection, scored comparison) is unchanged and still the
+next real step.
+
 ## Phase P3.5 live-scale attempt (2026-08-27) - 3/3 runs failed before producing
    comparable data
 
@@ -621,6 +829,70 @@ now having real data, none of it is REST-catalog/discovery-path data (per the
 real findings are entirely in the exchange-wide WS ingest/queue path, which doesn't have
 its own `CHEATSHEET.md`/`README.md` outside this research doc and
 `services/kalshi/websocket.py`'s own module docstring.
+
+## Live incident (2026-08-27, shortly after the successful run above) - consumer stall,
+   queue saturated, real message loss, no automated detection or recovery
+
+Reported live by direct user observation ("just now messages started dropping") a short
+time after the successful widened-scope run above and its config revert. `GET /api/
+health/pipeline` confirmed immediately: `queue.depth: 20000` == `capacity: 20000` (full),
+`oldest_message_age_sec` growing 1:1 with wall-clock time across two polls ~40s apart
+(219.3s -> 259.6s, i.e. **zero drain progress** - not merely slow, the consumer was fully
+stopped), `dropped_messages` climbing in real time (13,858 -> 18,619 in the same ~40s).
+`GET /api/quality/summary` had already independently flagged this
+(`observability:ws-dropped-messages:trade_stream`, severity error, high confidence) before
+this investigation checked it by hand - the detection worked, nothing was watching it.
+
+**Timing correlates with, but does not conclusively prove, a specific trigger**: `ddev
+logs -s fastapi` showed exactly one `WatchFiles ... Reloading` event since the prior
+restart, listing `tools/kanban_sync/sync.py`, `tests/test_trading_gate.py`,
+`tests/test_kanban_sync_sync.py` - precisely the file set a `git merge origin/main` had
+just written to the **primary checkout** (bringing in PRs #124 and #125). This is a
+legitimate, correctly-triggered reload, not a recurrence of the worktree-reload-collision
+bug fixed earlier this session (PR #123's `--reload-exclude` only scopes out
+`.claude/worktrees/` - the primary checkout, where real merges land, is supposed to keep
+triggering reloads). The open question this investigation could not resolve before
+mitigating: whether that reload's own post-restart reconnect sequence left the consumer
+task stuck, or whether something unrelated in the following minutes (the config-revert's
+resulting watchlist resync, `subscription_churn.syncs_total` 7->14) did. **Logs were lost
+to the mitigating restart before a precise timestamp correlation could be pulled** - a
+real evidence gap, stated plainly rather than papered over.
+
+**Ruled out, not just assumed innocent:** `check_exits`'s O(N)-per-open-position cost
+(Task 17c/Task 20's own subject) was the first hypothesis tried, since `_process_stream_
+ticker` and `_process_stream_trade` (`services/whale_stream/whale_stream_handlers.py`,
+two of the three call sites feeding `exit_engine.check_exits` via `strategy.check_exits`)
+both call it unconditionally on qualifying messages, un-cached, on the same hot consumer
+path this incident stalled. Checked `GET /api/state`: only **8** open positions live at
+the time - at Task 17c's own measured ~0.2ms/position, this is negligible cost, not a
+plausible cause here. Also checked: `services/loop_watchdog.py` (`stall_max_ms`) measures
+*event-loop scheduling delay* (whether periodic `asyncio.sleep` wakeups run late) - it
+would only catch the event loop itself being synchronously blocked, and
+`last_tick_duration_sec: 1.91` (normal) during the stall confirms the loop was NOT
+blocked; only the trade_stream consumer's own task was stuck on something, consistent
+with a stuck `await` (a hung network call, a lock that never releases) rather than a
+synchronous CPU/DB hog - narrows the mechanism but doesn't identify it.
+
+**Mitigation:** `ddev restart` (safe, paper mode, zero capital risk) - confirmed
+recovery immediately after: `queue.depth: 0`, `oldest_message_age_sec: 0.0`, trade stream
+reconnected and receiving normally. Chose immediate mitigation over continued live
+forensics because the queue being saturated means **every new arrival was being dropped
+in real time** - each additional minute of diagnosis was itself actively costing
+irrecoverable data under CLAUDE.md's completeness rule, a case where stopping the bleeding
+correctly took priority over root-causing with the process still in its broken state.
+
+**Real, permanent gap this exposes, independent of whatever the exact trigger turns out to
+be:** no runtime diagnostic or `task_supervisor` mechanism actually watches "is the
+trade_stream consumer's queue still draining." `task_supervisor.supervise(...,
+restart=True)` only restarts `trade_stream.run` on an *unhandled exception* - a hung
+`await` that never raises is invisible to it, exactly this incident's shape. The only
+existing signal (`observability:ws-dropped-messages`) is passive - it correctly flagged
+the state but nothing acts on it or pages anyone; this incident was caught by a human
+noticing symptoms, not by any automated recovery path. **Not fixed here** - implementing
+an actual consumer-liveness watchdog (e.g., alert or force-reconnect when `queue.depth ==
+capacity` and `oldest_message_age_sec` exceeds a threshold for N consecutive samples) is
+real design/implementation work of its own, out of scope for this incident response.
+Recorded as a ROADMAP item rather than attempted here.
 
 ## What the investigation must not assume
 

@@ -51,6 +51,22 @@ _PRICE_CORROBORATION_MAX_AGE_SEC = 120.0
 _PRICE_CORROBORATION_MAX_DEVIATION = 0.30
 
 
+def _cached(tick_cache: dict | None, key: tuple, fn, *args, **kwargs):
+    """Per-tick memoization for check_exits' four DB-reading helpers
+    (recent_price/volatility/analyst_lean/series_stats), keyed by
+    (function_name, ticker) so N open positions on the SAME ticker within
+    one tick share one read instead of N (I13 P4 Task 20 - see check_exits'
+    own tick_cache docstring). tick_cache=None (every caller that doesn't
+    opt in) bypasses the cache entirely and calls fn() directly - this is
+    what keeps the parameter strictly additive: byte-identical behavior to
+    before tick_cache existed at all."""
+    if tick_cache is None:
+        return fn(*args, **kwargs)
+    if key not in tick_cache:
+        tick_cache[key] = fn(*args, **kwargs)
+    return tick_cache[key]
+
+
 def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: str | None) -> dict | None:
     """Shared by every strategy's check_exits (FollowTheWhaleStrategy below;
     also used by the now-removed Market-Native strategy, 2026-08-22) -
@@ -81,7 +97,7 @@ def close_if_settled(broker: PaperBroker, ticker: str, pos: Position, result: st
 def check_exits(
     broker: PaperBroker, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
     opened_since: float | None = None, category_by_ticker: dict | None = None,
-    close_times: dict | None = None,
+    close_times: dict | None = None, tick_cache: dict | None = None,
 ) -> list[dict]:
     """Actively manages already-open positions instead of leaving them
     untouched until settlement - direct request: this app had zero exit
@@ -160,7 +176,22 @@ def check_exits(
     strat_cfg - different open positions can belong to different
     series/categories, and the resolved dict is also what's passed
     into _exit_confidence so every auto_exit_* weight/reference is
-    override-aware too, not just the three hard-rule fields."""
+    override-aware too, not just the three hard-rule fields.
+
+    tick_cache (I13 P4 Task 20, 2026-08-27 - live crash report "having a
+    large amount of open positions causes things to lag or crash",
+    quantified by Task 17c's benchmark: market_history.recent_price alone
+    costs ~103ms/tick at 500 open positions, called unconditionally once
+    per position with no caching): an optional dict, populated once per
+    tick, keyed by (function_name, ticker) via the module-level _cached()
+    helper - shares recent_price/volatility/analyst_lean/series_stats
+    reads across every position on the SAME ticker within one call instead
+    of re-reading per position. None (the default, every caller that
+    doesn't pass it) bypasses the cache entirely - byte-identical to
+    before this parameter existed. Known scope gap, not fixed by this
+    parameter alone: N open positions spanning N DIFFERENT tickers still
+    cost N reads - see services/exits/README.md's benchmark finding and
+    this task's own follow-up note in the remediation plan."""
     base_cfg = cfg["strategy"]
     overrides = cfg.get("strategy_overrides")
     category_by_ticker = category_by_ticker or {}
@@ -226,7 +257,8 @@ def check_exits(
         # None) changes nothing - fails open, exactly like before this
         # fix, so an illiquid/newly-discovered ticker with no REST
         # history yet is never blocked from having its stop-loss work.
-        corroborated = market_history.recent_price(
+        corroborated = _cached(
+            tick_cache, ("recent_price", ticker), market_history.recent_price,
             ticker, _PRICE_CORROBORATION_MAX_AGE_SEC, as_of=exit_now,
         )
         if corroborated is not None and abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION:
@@ -324,7 +356,7 @@ def check_exits(
                             f"prints now lean against this {pos.side} position"
                         )
             if reason is None and auto_exit_enabled:
-                confidence, factors = _exit_confidence(pos, pnl_pct, ticker, signal_feed, strat_cfg)
+                confidence, factors = _exit_confidence(pos, pnl_pct, ticker, signal_feed, strat_cfg, tick_cache)
                 if confidence >= auto_exit_threshold:
                     breakdown = ", ".join(f"{name}={factor:.0%}" for name, (factor, _weight) in factors.items())
                     reason = (
@@ -368,7 +400,9 @@ def _whale_lean(ticker: str, signal_feed: list[dict]) -> dict | None:
     return {"count": len(matches), "yes_pct": (yes_weight / total * 100) if total else 50.0}
 
 
-def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], strat_cfg: dict) -> tuple[float, dict]:
+def _exit_confidence(
+    pos, pnl_pct: float, ticker: str, signal_feed: list[dict], strat_cfg: dict, tick_cache: dict | None = None,
+) -> tuple[float, dict]:
     """Composite 0-1 "how strongly do current conditions argue for closing
     this position right now" score - the tweakable algorithm behind
     auto_exit_enabled, direct request: exits should be automated using
@@ -445,7 +479,10 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     # same "0 disables" convention as kelly_fraction_of_cap).
     normal_vol = strat_cfg.get("auto_exit_normal_volatility", 0.02)
     vol_lookback = strat_cfg.get("auto_exit_volatility_lookback_sec", 1800)
-    vol = market_history.volatility(ticker, vol_lookback) if normal_vol else None
+    vol = (
+        _cached(tick_cache, ("volatility", ticker), market_history.volatility, ticker, vol_lookback)
+        if normal_vol else None
+    )
     # `vol == 0` is treated as NO READING, not as "perfectly calm"
     # (2026-08-17). volatility() returns None when there aren't enough
     # snapshots, but a real 0.0 when there are and the price never moved -
@@ -491,7 +528,10 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
         staleness_factor = min(1.0, elapsed / stale_after) if stale_after > 0 else 0.0
         factors["staleness"] = (staleness_factor, w_staleness)
 
-    lean_estimate = market_analyst_agent.analyst_lean(ticker, max_age_sec=_ANALYST_FRESHNESS_SEC)
+    lean_estimate = _cached(
+        tick_cache, ("analyst_lean", ticker), market_analyst_agent.analyst_lean,
+        ticker, max_age_sec=_ANALYST_FRESHNESS_SEC,
+    )
     if lean_estimate is not None:
         divergence = (0.5 - lean_estimate) if pos.side == "yes" else (lean_estimate - 0.5)
         analyst_factor = max(0.0, min(1.0, divergence / 0.5))
@@ -503,7 +543,7 @@ def _exit_confidence(pos, pnl_pct: float, ticker: str, signal_feed: list[dict], 
     # using yet.
     if w_series > 0:
         min_resolved = strat_cfg.get("min_resolved_for_whale_filter", 5)
-        series_record = signal_log.series_stats(ticker, days=30)
+        series_record = _cached(tick_cache, ("series_stats", ticker), signal_log.series_stats, ticker, days=30)
         if series_record["resolved"] >= min_resolved and series_record["win_rate"] is not None:
             # Anchored at 50% (coin-flip = neutral), same convention as the
             # sentiment/analyst_divergence factors above - a series win
