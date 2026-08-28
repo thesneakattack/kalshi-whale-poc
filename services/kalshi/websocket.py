@@ -932,30 +932,48 @@ class KalshiStreamGateway:
         # shared flag would either re-subscribe trade every time a watchlist
         # finally arrived (duplicate firehose) or block trade until it did
         # (defeating the point).
+        # Connect-time subscribes. Exchange-wide trade and market_lifecycle_v2
+        # take no channel-specific params, so they share ONE subscribe
+        # message (P7 Task 33, 2026-08-28) - the same combined shape
+        # fill+market_positions already use in run(). Each channel keeps
+        # its own gate; the message just carries whichever are due. A
+        # watchlist-scoped trade subscribe stays its own message: its
+        # market_tickers live at the top level of the params object and
+        # would wrongly apply to lifecycle, which takes no market filter at
+        # all (docs/kalshi/market-and-event-lifecycle.md). ticker and the
+        # index channels stay separate for the same reason. Kalshi answers
+        # a multi-channel subscribe with one `subscribed` per channel
+        # (websocket-connection.md's Subscribed Response schema), which
+        # _handle_message already processes one channel/sid at a time.
+        combined: list[str] = []
         if not self._trade_subscribed:
-            trade_params: dict = {"channels": ["trade"]}
-            if not self.exchange_wide_trades:
-                trade_params["market_tickers"] = sorted(desired)
-            if self.exchange_wide_trades or desired:
+            if self.exchange_wide_trades:
+                combined.append("trade")
+            elif desired:
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "subscribe",
-                    "params": trade_params,
+                    "params": {"channels": ["trade"], "market_tickers": sorted(desired)},
                 })
                 self._trade_subscribed = True
-                if not self.exchange_wide_trades:
-                    self._subscribed_tickers = desired
+                self._subscribed_tickers = desired
 
         # market_lifecycle_v2 - opt-in (see __init__), unconditionally
         # exchange-wide like trade above, so it goes up once on connect and
         # never participates in add_markets/delete_markets either.
         if self.subscribe_lifecycle and not self._lifecycle_subscribed:
+            combined.append("market_lifecycle_v2")
+
+        if combined:
             await self._send({
                 "id": self._next_message_id(),
                 "cmd": "subscribe",
-                "params": {"channels": ["market_lifecycle_v2"]},
+                "params": {"channels": combined},
             })
-            self._lifecycle_subscribed = True
+            if "trade" in combined:
+                self._trade_subscribed = True
+            if "market_lifecycle_v2" in combined:
+                self._lifecycle_subscribed = True
 
         # Index feeds are wholly independent of the watchlist - they take
         # index_ids/underlying_tickers, and the docs are explicit that
@@ -1015,11 +1033,22 @@ class KalshiStreamGateway:
             self._subscription_tickers_removed_total += len(to_remove)
             self._subscription_tickers_removed_window += len(to_remove)
         if to_add:
+            ticker_sid = self._subscription_sids.get("ticker")
             for sid in market_channel_sids:
+                params: dict = {"sid": sid, "market_tickers": to_add, "action": "add_markets"}
+                if sid == ticker_sid:
+                    # P7 Task 33 / R3: a ticker added mid-connection (a
+                    # position opening while already connected) gets its
+                    # first price from WS immediately instead of waiting for
+                    # its next natural tick or Task 29's REST seed. Documented
+                    # for "newly added market tickers on the ticker channel"
+                    # only (websocket-connection.md), so it never rides the
+                    # trade sid's update.
+                    params["send_initial_snapshot"] = True
                 await self._send({
                     "id": self._next_message_id(),
                     "cmd": "update_subscription",
-                    "params": {"sid": sid, "market_tickers": to_add, "action": "add_markets"},
+                    "params": params,
                 })
         if to_remove:
             for sid in market_channel_sids:

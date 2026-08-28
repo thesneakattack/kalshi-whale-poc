@@ -164,3 +164,30 @@ was observed), keep the tolerant/raw path, and if it's schema-relevant
 consider the docs-drift canary. **Raw-payload archival exception**:
 opaque raw payload copies (series_watcher's columns/raw_json, diagnostics
 pass-through) are allowed anywhere; semantic *interpretation* is not.
+
+## Combined connect-time subscribe + snapshot on add_markets (P7 Task 33, 2026-08-28)
+
+`_sync_subscriptions`' `force_subscribe` branch sends exchange-wide `trade` and
+`market_lifecycle_v2` in **one** subscribe message (`{"channels": ["trade",
+"market_lifecycle_v2"]}`), the same combined shape `fill`+`market_positions`
+already used in `run()`; each channel keeps its own gate and the message
+carries whichever are due. A watchlist-scoped `trade` subscribe stays its own
+message - its `market_tickers` sit at the top level of the `params` object and
+would apply to every channel in the message, and lifecycle takes no market
+filter at all. `ticker`/index channels stay separate for the same reason.
+Kalshi answers a multi-channel subscribe with one `subscribed` response per
+channel (`websocket-connection.md`'s Subscribed Response schema), which
+`_handle_message` already processes one channel/sid at a time - so partial
+acceptance, whatever the server does, is handled without change. Known,
+pre-existing, not fixed here (R6 in the remediation plan): every subscribe
+path sets its `_X_subscribed` flag right after sending, before the server's
+confirmation arrives.
+
+`add_markets` on the **ticker** sid now carries `send_initial_snapshot: true`
+(documented for "newly added market tickers on the ticker channel" -
+`websocket-connection.md` update_subscription schema; never sent on the trade
+sid), so a market added mid-connection - a position opening while connected -
+gets its first price from WS immediately instead of waiting for its next
+natural tick or `market_fetch.overlay_live_prices`' REST seed. Live on the
+first post-change connection: `trade` and `lifecycle` both receiving on one
+connection, zero drops.
