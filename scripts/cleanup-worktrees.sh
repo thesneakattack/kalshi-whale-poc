@@ -113,10 +113,13 @@ fi
 # fast-forward the LOCAL main branch when it's what's actually checked
 # out in the primary (never force a checkout there) - purely a courtesy
 # for anything else that reads local main; the ancestor check itself no
-# longer depends on this happening.
+# longer depends on this happening, so `|| true` here: a failure (e.g.
+# local main has diverged from origin/main) must not abort the whole
+# script under set -e before the cleanup loop even starts, for a step
+# nothing downstream actually needs.
 git -C "$PRIMARY" fetch origin main --quiet
 if [ "$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null || echo "")" = "main" ]; then
-  git -C "$PRIMARY" merge --ff-only origin/main --quiet
+  git -C "$PRIMARY" merge --ff-only refs/remotes/origin/main --quiet || true
 fi
 
 removed=0
@@ -136,17 +139,26 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     is_merged=1
   fi
 
-  # origin/main, not local main: local main is only fast-forwarded above
-  # when $PRIMARY's HEAD is literally main, so whenever $PRIMARY sits on
-  # any other branch - the common case in this multi-worktree workflow -
-  # local main can be arbitrarily stale. Real bug found live 2026-08-28:
-  # this under-reported a just-merged branch as "not yet in main" and
-  # blocked its own cleanup, because $PRIMARY was on
-  # feat/realtime-data-plane-remediation at the time. origin/main is
-  # unconditionally fresh (fetched above regardless of what's checked out
-  # in $PRIMARY), so it's the only ref this check can safely trust.
+  # refs/remotes/origin/main, not bare origin/main and not local main:
+  # local main is only fast-forwarded above when $PRIMARY's HEAD is
+  # literally main, so whenever $PRIMARY sits on any other branch - the
+  # common case in this multi-worktree workflow - local main can be
+  # arbitrarily stale. Real bug found live 2026-08-28: this under-reported
+  # a just-merged branch as "not yet in main" and blocked its own cleanup,
+  # because $PRIMARY was on feat/realtime-data-plane-remediation at the
+  # time. origin/main is unconditionally fresh (fetched above regardless
+  # of what's checked out in $PRIMARY). The fully-qualified
+  # refs/remotes/origin/main form matters too, not just cosmetically:
+  # git's ref-resolution order checks refs/heads/<name> before
+  # refs/remotes/<name> (gitrevisions(7)), so a bare `origin/main` would
+  # silently resolve to a local branch literally named that instead, if
+  # one ever existed - turning a false "not merged" into a worse false
+  # "merged", i.e. an actual unsafe-deletion path rather than just an
+  # overly-conservative keep. Verified live: with such a shadowing local
+  # branch present, the bare form misresolves; the refs/remotes/ form
+  # doesn't.
   is_ancestor=0
-  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" origin/main 2>/dev/null; then
+  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" refs/remotes/origin/main 2>/dev/null; then
     is_ancestor=1
   fi
 
