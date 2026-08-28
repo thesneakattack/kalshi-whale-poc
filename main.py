@@ -562,6 +562,27 @@ _SCHEDULER_TRIGGERS = (
 )
 
 
+def _tick_interval_sec(cfg: dict) -> float:
+    """P8 Task 39: trading_loop's own REST tick is a safety net in streaming
+    mode, not the primary data path, once check_exits/check_pending_fills/
+    position_netting.review all also run from the WS ticker path (Task 38)
+    and the five _maybe_* schedulers + candidate_retry run from their own
+    independent loops (Tasks 36-37). The tick's remaining jobs (market/
+    account/exchange-status fetch, settlement resolution, event-lifecycle
+    classification, capture flush, retention) are either genuinely REST-only
+    or already covered faster by the WS path - see the config field's own
+    comment in config/settings.yaml.
+
+    Non-streaming mode is unaffected: REST trade-tape polling is still the
+    primary path there (_streaming_trade_tape_enabled() false), so the tick
+    keeps its original poll_interval_sec cadence exactly as before this
+    task."""
+    kalshi_cfg = cfg["kalshi"]
+    if _streaming_trade_tape_enabled():
+        return kalshi_cfg["safety_net_interval_sec"]
+    return kalshi_cfg["poll_interval_sec"]
+
+
 async def _candidate_retry_loop() -> None:
     """candidate_retry.run_pending's one and only caller (P8 Task 37) - it
     used to be invoked once per tick from trading_loop's body (P2 Task 13).
@@ -1091,7 +1112,7 @@ async def trading_loop():
         _maybe_capture_observability(cfg, state, trade_stream, index_stream)
         storage_health.maybe_capture_sizes(state, storage_health.DATA_DIR)
         bump_generation()
-        await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])
+        await asyncio.sleep(_tick_interval_sec(cfg))
 
 
 async def _capture_writer_liveness_loop() -> None:

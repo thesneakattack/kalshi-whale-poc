@@ -158,3 +158,29 @@ def test_candidate_retry_loop_respects_stream_mode_and_pause(monkeypatch):
     calls, *_ = _wire_candidate_retry(monkeypatch, pending=2, streaming=True)
     _drive(2, main._candidate_retry_loop, running=False, monkeypatch=monkeypatch)
     assert calls == []
+
+
+# --- P8 Task 39: trading_loop's own REST tick slows to a safety-net cadence
+# in streaming mode, once check_exits/check_pending_fills/position_netting.
+# review/the five schedulers/candidate_retry no longer depend on it as their
+# only trigger (Tasks 36-38).
+
+def test_tick_interval_uses_the_safety_net_cadence_when_streaming(monkeypatch):
+    monkeypatch.setattr(main, "_streaming_trade_tape_enabled", lambda: True)
+    cfg = {"kalshi": {"poll_interval_sec": 6, "safety_net_interval_sec": 30}}
+
+    assert main._tick_interval_sec(cfg) == 30
+
+
+def test_tick_interval_keeps_poll_interval_sec_when_not_streaming(monkeypatch):
+    monkeypatch.setattr(main, "_streaming_trade_tape_enabled", lambda: False)
+    cfg = {"kalshi": {"poll_interval_sec": 6, "safety_net_interval_sec": 30}}
+
+    assert main._tick_interval_sec(cfg) == 6  # REST is still the primary path here, unchanged
+
+
+def test_trading_loop_sleeps_for_the_computed_tick_interval():
+    import inspect
+    source = inspect.getsource(main.trading_loop)
+    assert "await asyncio.sleep(_tick_interval_sec(cfg))" in source
+    assert 'await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])' not in source

@@ -4549,20 +4549,54 @@ and the message-independent safety-net calls (`check_exits` for the
 runway-exhaustion rule, plus the Task 38 pair's fallback invocation).
 **Files:** `main.py`, `config/settings.yaml`.
 
-- [ ] **Step 1: Inventory what's left in the tick at that point against HEAD** - do
-  not trust this plan's own list, things will have moved.
-- [ ] **Step 2: Raise the loop cadence** from `poll_interval_sec: 6` to a
-  safety-net interval (new config field, e.g. `safety_net_interval_sec: 30`;
-  keep `poll_interval_sec` as the fallback-mode cadence for streaming-off mode,
-  where the tick is still the primary data path - the slow cadence applies ONLY
-  when `_streaming_trade_tape_enabled()`).
-- [ ] **Step 3: Confirm the runway-exhaustion rule's worst-case detection latency**
-  at the new cadence stays acceptable (a 30s-late forced exit on a
-  seconds-to-close gate - check the gate's own margin, `exit_min_seconds_to_close`
-  defaults, before picking the number).
+- [x] **Step 1: Inventory what's left in the tick at that point against HEAD**
+  (2026-08-28) - re-read `trading_loop` in full against real HEAD rather than
+  trusting this plan's own list. Confirmed Tasks 36-38 already removed every
+  trigger call that had a real alternative path (the five `_maybe_*`
+  schedulers, calibration/advisory auto-apply, `candidate_retry.run_pending`,
+  and - as of Task 38 - `check_pending_fills`/`position_netting.review` also
+  running from the WS ticker path). What's left is genuinely REST-only work
+  (market/account/exchange-status fetch, settlement resolution, event-title/
+  event-lifecycle/live-status/category-metadata refresh, capture flush,
+  hourly-gated retention) plus the tick's own redundant (but harmless per the
+  Task 38 idempotency proof) calls to `check_exits`/`check_pending_fills`/
+  `position_netting.review`. The single pacing mechanism is one line -
+  `await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])` at the very end of
+  the loop body - so this task is a change to that one sleep call's duration,
+  not a removal of tick-body logic.
+- [x] **Step 2: Raise the loop cadence** (2026-08-28) - new config field
+  `kalshi.safety_net_interval_sec: 30` (`config/settings.yaml`, added via the
+  config-field-edit skill's isolated-commit procedure);
+  `main._tick_interval_sec(cfg)` returns it when
+  `_streaming_trade_tape_enabled()`, else returns the unchanged
+  `poll_interval_sec` - non-streaming (REST-primary) mode keeps its exact
+  pre-Task-39 cadence.
+- [x] **Step 3: Confirm the runway-exhaustion rule's worst-case detection
+  latency** (2026-08-28) - `strategy.exit_min_seconds_to_close` (the gate this
+  rule is keyed on) defaults to `null` in `config/settings.yaml`, i.e. the
+  rule is opt-in and disabled by default, so the default config carries zero
+  exposure to this change. When it IS enabled, the tick's own 30s cadence is
+  a backstop only for a ticker that goes fully silent on WS near its close:
+  Task 38 already made `check_exits` (which owns this rule) run from
+  `_process_stream_ticker` on every real ticker update for an open position,
+  independent of the tick entirely, so an actively-quoted position's
+  detection latency is bounded by its own WS cadence, not the REST tick.
+  Task 34's real captured per-position cadence data
+  (`services/observability/README.md`: 6 tracked, 4 never-seen, oldest 151s,
+  median 62.6s - measured *before* this task, under the old 6s tick) already
+  shows real WS-cadence variance larger than the 24s delta this task adds to
+  the REST backstop (6s -> 30s) - this task's own worst case is a small
+  perturbation relative to variance the data plane already exhibited.
 - [ ] **Step 4: Full suite + a multi-hour live paper soak** (the P3.5 pattern)
-  comparing decision latency and REST volume before/after.
-- [ ] **Step 5: Commit:** `git commit -m "feat: tick loop drops to safety-net cadence in streaming mode (P8 Task 39)"`
+  comparing decision latency and REST volume before/after - explicitly NOT
+  done as of this commit (2026-08-28): the code change is unit-tested (11
+  passing tests) and live-verified functionally (app healthy post-reload, no
+  new faults, real measured tick-completion gaps of ~36-38s vs. the pre-
+  change ~6-8s, confirming the new cadence took effect), but a genuine
+  multi-hour before/after comparison needs real elapsed time this session
+  cannot fabricate - same honesty standard Task 40 already holds itself to.
+  Left open here rather than checked off early.
+- [x] **Step 5: Commit:** `git commit -m "feat: tick loop drops to safety-net cadence in streaming mode (P8 Task 39)"`
 
 ### Task 40: Build the P7/P8 staleness benchmark from real captured data
 
