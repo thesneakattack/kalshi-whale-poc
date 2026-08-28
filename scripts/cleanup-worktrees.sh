@@ -9,10 +9,13 @@
 #      sources_worktree.py treats CLOSED-without-merge as "still live
 #      work", and this script stays consistent with that judgment rather
 #      than guessing).
-#   2. `git merge-base --is-ancestor <branch> main` - the branch's tip is
-#      already fully contained in main, which was freshly fetched/
-#      fast-forwarded first. This alone proves nothing would be lost by
-#      deleting it, merged-remote-branch-already-gone or not.
+#   2. `git merge-base --is-ancestor <branch> origin/main` - the branch's
+#      tip is already fully contained in origin/main, freshly fetched
+#      first (origin/main, not local main - local main only gets fast-
+#      forwarded when the primary checkout happens to be on main itself,
+#      so it can't be trusted as the comparison target). This alone
+#      proves nothing would be lost by deleting it, merged-remote-branch-
+#      already-gone or not.
 #   3. The worktree's working tree is clean (`git status --porcelain`
 #      empty) - nothing uncommitted sitting there.
 #
@@ -105,8 +108,12 @@ if [ "${#WORKTREE_PATHS[@]}" -eq 0 ]; then
   exit 0
 fi
 
-# Fetch + fast-forward local main first (only if main is what's actually
-# checked out in the primary - never force a checkout there).
+# Fetch first - this unconditionally refreshes origin/main, which is what
+# the ancestor check below now compares against directly. Also
+# fast-forward the LOCAL main branch when it's what's actually checked
+# out in the primary (never force a checkout there) - purely a courtesy
+# for anything else that reads local main; the ancestor check itself no
+# longer depends on this happening.
 git -C "$PRIMARY" fetch origin main --quiet
 if [ "$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null || echo "")" = "main" ]; then
   git -C "$PRIMARY" merge --ff-only origin/main --quiet
@@ -129,8 +136,17 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     is_merged=1
   fi
 
+  # origin/main, not local main: local main is only fast-forwarded above
+  # when $PRIMARY's HEAD is literally main, so whenever $PRIMARY sits on
+  # any other branch - the common case in this multi-worktree workflow -
+  # local main can be arbitrarily stale. Real bug found live 2026-08-28:
+  # this under-reported a just-merged branch as "not yet in main" and
+  # blocked its own cleanup, because $PRIMARY was on
+  # feat/realtime-data-plane-remediation at the time. origin/main is
+  # unconditionally fresh (fetched above regardless of what's checked out
+  # in $PRIMARY), so it's the only ref this check can safely trust.
   is_ancestor=0
-  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" main 2>/dev/null; then
+  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" origin/main 2>/dev/null; then
     is_ancestor=1
   fi
 
