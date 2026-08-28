@@ -100,6 +100,39 @@ def _branches(primary: Path) -> list[str]:
     return _git(["branch", "--format=%(refname:short)"], primary).split()
 
 
+def test_detached_worktrees_are_reported_and_never_removed(tmp_path):
+    """2026-08-28 leak: the porcelain parser keyed off `branch refs/heads/`, so a
+    detached worktree (what `git worktree add --detach` and the review agents create)
+    was never listed, never reported, and accumulated until removed by hand. It must
+    be visible, counted as kept, and left alone - no branch means no PR to prove
+    staleness - while a merged branch worktree beside it is still removed."""
+    primary, wt, env = _setup(tmp_path)
+    loose = tmp_path / "loose"
+    _git(["worktree", "add", "--detach", str(loose), "HEAD"], primary)
+
+    r = _run(primary, env, "--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert f"keeping: {loose} (detached HEAD" in r.stdout
+    assert "stale: feat/x" in r.stdout and "1 removed, 1 kept" in r.stdout
+
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "removed: feat/x" in r.stdout and not wt.exists()
+    assert loose.exists() and str(loose) in _worktrees(primary)
+    assert "1 removed, 1 kept" in r.stdout
+
+
+def test_only_a_detached_worktree_still_reports_it(tmp_path):
+    primary, wt, env = _setup(tmp_path)
+    _git(["worktree", "remove", str(wt)], primary)
+    loose = tmp_path / "loose"
+    _git(["worktree", "add", "--detach", str(loose), "HEAD"], primary)
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert f"keeping: {loose} (detached HEAD" in r.stdout and "0 removed, 1 kept" in r.stdout
+    assert loose.exists()
+
+
 def test_dry_run_reports_and_mutates_nothing(tmp_path):
     primary, wt, env = _setup(tmp_path)
     r = _run(primary, env, "--dry-run")

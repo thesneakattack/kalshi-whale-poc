@@ -233,6 +233,19 @@ def test_registry_records_the_harness_cwd_and_survives_only_while_the_pid_matche
     assert json.loads((st / "session.json").read_text())["cwd"] == "/w/worktree-from-payload"
 
 
+def test_registry_prefers_the_newest_record_for_a_reused_pid(tmp_path):
+    """A session id rotates while the pid does not, leaving several records for one
+    process; the newest cwd must win rather than whichever glob listed last."""
+    g = _load()
+    root = _proc(tmp_path, {111: ("claude", None)})
+    base = tmp_path / "reg"
+    for name, at, cwd in (("old", 100.0, "/w/before"), ("new", 200.0, "/w/after"), ("older", 50.0, "/w/first")):
+        d = base / name
+        d.mkdir(parents=True)
+        (d / "session.json").write_text(json.dumps({"pid": 111, "comm": "claude", "cwd": cwd, "at": at}))
+    assert g.sessions_from_registry(base, root) == {111: "/w/after"}
+
+
 def test_claude_pid_is_the_nearest_claude_then_node_ancestor(tmp_path):
     g = _load()
     root = _proc(tmp_path, {10: ("python3", None), 20: ("bash", None), 30: ("claude", None), 40: ("node", None)})
