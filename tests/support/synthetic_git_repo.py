@@ -11,19 +11,23 @@ import subprocess
 from pathlib import Path
 
 
-def _run(args: list[str], cwd: Path) -> None:
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+def git(args: list[str], cwd: Path) -> str:
+    """Run one git command inside a synthetic repo; loud on failure (the git stderr is
+    the assertion message), returns stripped stdout. The one runner every script-level
+    test should use, so a broken fixture step fails where it happens."""
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"{' '.join(args)} failed: {result.stderr}")
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result.stdout.strip()
 
 
 def make_synthetic_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "synthetic_repo"
     repo.mkdir()
-    _run(["git", "init", "-b", "main"], repo)
-    _run(["git", "config", "user.email", "test@example.com"], repo)
-    _run(["git", "config", "user.name", "Test"], repo)
+    git(["init", "-b", "main"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Test"], repo)
     (repo / "README.md").write_text("synthetic repo for AQC cleanup fault injection\n")
-    _run(["git", "add", "README.md"], repo)
-    _run(["git", "commit", "-m", "initial commit"], repo)
+    git(["add", "README.md"], repo)
+    git(["commit", "-m", "initial commit"], repo)
     return repo

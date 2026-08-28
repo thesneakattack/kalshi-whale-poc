@@ -13,8 +13,9 @@ elsewhere - a genuinely common pattern in this codebase, e.g.
 services/backup/backup.py's `_maybe_run_backup`). That means a real,
 live-read leaf can still be reported here as "unread" - expected and
 accepted per this scanner's severity: warning/medium, never a default CI
-failure (.claude/rules/quality-capabilities.md: "heuristic static-analysis
-findings are not hard CI failures until their confidence is demonstrated").
+failure (the Quality Control Plane's standing boundary: heuristic static-
+analysis findings are not hard CI failures until their confidence is
+demonstrated).
 Findings are raw material for human triage into baseline.json, not an
 automatic verdict that a setting is dead.
 """

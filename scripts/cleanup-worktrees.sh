@@ -9,20 +9,17 @@
 #      sources_worktree.py treats CLOSED-without-merge as "still live
 #      work", and this script stays consistent with that judgment rather
 #      than guessing).
-#   2. `git merge-base --is-ancestor <branch> origin/main` - the branch's
-#      tip is already fully contained in origin/main, freshly fetched
-#      first (origin/main, not local main - local main only gets fast-
-#      forwarded when the primary checkout happens to be on main itself,
-#      so it can't be trusted as the comparison target). This alone
-#      proves nothing would be lost by deleting it, merged-remote-branch-
-#      already-gone or not.
+#   2. `git merge-base --is-ancestor <branch> refs/remotes/origin/main` -
+#      the branch's tip is already fully contained in origin/main, freshly
+#      fetched first. Not local main: local main is only fast-forwarded
+#      when the primary checkout happens to be on main itself, so it can
+#      be arbitrarily stale (2026-08-28: an idle worktree held local main
+#      65 commits behind and every merged branch read as "not merged").
 #   3. The worktree's working tree is clean (`git status --porcelain`
 #      empty) - nothing uncommitted sitting there.
 #
-# No time-based quarantine on top of these - per
-# .claude/rules/autonomous-quality-coordination-evidence.md's "no guessed
-# quarantine period" rule, a timer would just be superstition once the
-# guards above already establish certainty directly.
+# No time-based quarantine on top of these - a timer would be superstition
+# once the guards above establish certainty directly.
 #
 # A worktree whose root-owned cache files (left behind by `ddev exec`,
 # which runs as root in the container) block plain `git worktree remove`
@@ -35,7 +32,9 @@
 #
 # Run from anywhere in the repo; worktree/branch operations always target
 # the primary checkout (the one whose .git is a real directory), not the
-# caller's cwd.
+# caller's cwd. tests/test_cleanup_worktrees.py drives this script against
+# a synthetic repository with `gh`/`ddev` shims on PATH and
+# CLEANUP_WORKTREES_GUARD pointing at a stand-in session lister.
 set -euo pipefail
 
 REPO="thesneakattack/kalshi-whale-poc"
@@ -48,31 +47,6 @@ if ! gh auth status >/dev/null 2>&1; then
   echo "error: gh CLI is not authenticated - cannot check PR state, skipping cleanup" >&2
   exit 1
 fi
-
-# Same live-session detection .claude/hooks/guard_workflow.py's R6 rule
-# already uses (a Claude session's control socket -> its /proc/<pid>/cwd),
-# reimplemented in bash since this script has no Python dependency
-# otherwise. Used below to refuse unlocking a worktree a live session is
-# actually sitting in, regardless of what the three staleness checks say -
-# a lock is the one signal this script previously honored unconditionally,
-# and code-review on the initial unlock fix (2026-08-28) correctly flagged
-# that stripping it without this check would silently defeat whatever
-# protection it was providing.
-worktree_has_live_session() {
-  local target sockdir sock pid cwd
-  target="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
-  sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/cc-socks"
-  [ -d "$sockdir" ] || return 1
-  for sock in "$sockdir"/*.sock; do
-    [ -e "$sock" ] || continue
-    pid="$(basename "$sock" .sock)"
-    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null)" || continue
-    if [ "$cwd" = "$target" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
 
 # Parse `git worktree list --porcelain` into parallel arrays of
 # path/branch, and find the primary checkout (real .git directory, not a
@@ -103,24 +77,61 @@ if [ -z "$PRIMARY" ]; then
   exit 1
 fi
 
+# Live-session detection is guard_workflow.py's `--sessions` ("#sessions v1"
+# header, then one line per session: pid, self|other, cwd) - the same
+# implementation R6 and orient.sh use, so this script can never see a
+# different set of sessions than the guard does. The guard is the copy that
+# ships next to THIS script (same commit), never the primary's: the primary
+# can sit on an older branch whose guard ignores the flag and prints nothing,
+# which would read as "no sessions" and delete a worktree someone is in
+# (fail open, caught in review 2026-08-28). A missing guard, a non-zero
+# exit, or output without the header therefore all mean "assume occupied".
+# Used below to refuse unlocking or removing a worktree any live session
+# (this one included) is sitting in or under, whatever the three staleness
+# checks say: a lock is the one signal this script once honored
+# unconditionally, and stripping it without this check silently defeated
+# whatever protection it was providing (2026-08-28 code review).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+worktree_has_live_session() {
+  local target guard out cwd
+  target="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  guard="${CLEANUP_WORKTREES_GUARD:-$SCRIPT_DIR/../.claude/hooks/guard_workflow.py}"
+  if [ ! -f "$guard" ]; then
+    echo "warning: $guard is missing - treating $1 as occupied by a live session" >&2
+    return 0
+  fi
+  if ! out="$(python3 "$guard" --sessions 2>/dev/null </dev/null)" || [ "${out%%$'\n'*}" != "#sessions v1" ]; then
+    echo "warning: $guard --sessions gave no usable answer (older guard?) - treating $1 as occupied" >&2
+    return 0
+  fi
+  while IFS=$'\t' read -r _pid _tag cwd; do
+    [ -n "$cwd" ] || continue
+    cwd="$(cd "$cwd" 2>/dev/null && pwd -P)" || continue
+    case "$cwd" in
+      "$target"|"$target"/*) return 0 ;;
+    esac
+  done <<< "$out"
+  return 1
+}
+
 if [ "${#WORKTREE_PATHS[@]}" -eq 0 ]; then
   echo "no non-primary worktrees registered - nothing to check"
   exit 0
 fi
 
 # Fetch first - this unconditionally refreshes origin/main, which is what
-# the ancestor check below now compares against directly. Also
-# fast-forward the LOCAL main branch when it's what's actually checked
-# out in the primary (never force a checkout there) - purely a courtesy
-# for anything else that reads local main; the ancestor check itself no
-# longer depends on this happening, so `|| true` here: a failure (e.g.
-# local main has diverged from origin/main) must not abort the whole
-# script under set -e before the cleanup loop even starts, for a step
-# nothing downstream actually needs.
+# the ancestor check below compares against. Also fast-forward the LOCAL
+# main branch when it is what's checked out in the primary (never force a
+# checkout there) - a courtesy for anything else that reads local main;
+# nothing downstream depends on it, so a failure (local main diverged)
+# must not abort the whole script under set -e.
 git -C "$PRIMARY" fetch origin main --quiet
 if [ "$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null || echo "")" = "main" ]; then
   git -C "$PRIMARY" merge --ff-only refs/remotes/origin/main --quiet || true
 fi
+
+remove_err="$(mktemp)"
+trap 'rm -f "$remove_err"' EXIT
 
 removed=0
 kept=0
@@ -139,24 +150,10 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     is_merged=1
   fi
 
-  # refs/remotes/origin/main, not bare origin/main and not local main:
-  # local main is only fast-forwarded above when $PRIMARY's HEAD is
-  # literally main, so whenever $PRIMARY sits on any other branch - the
-  # common case in this multi-worktree workflow - local main can be
-  # arbitrarily stale. Real bug found live 2026-08-28: this under-reported
-  # a just-merged branch as "not yet in main" and blocked its own cleanup,
-  # because $PRIMARY was on feat/realtime-data-plane-remediation at the
-  # time. origin/main is unconditionally fresh (fetched above regardless
-  # of what's checked out in $PRIMARY). The fully-qualified
-  # refs/remotes/origin/main form matters too, not just cosmetically:
-  # git's ref-resolution order checks refs/heads/<name> before
-  # refs/remotes/<name> (gitrevisions(7)), so a bare `origin/main` would
-  # silently resolve to a local branch literally named that instead, if
-  # one ever existed - turning a false "not merged" into a worse false
-  # "merged", i.e. an actual unsafe-deletion path rather than just an
-  # overly-conservative keep. Verified live: with such a shadowing local
-  # branch present, the bare form misresolves; the refs/remotes/ form
-  # doesn't.
+  # refs/remotes/origin/main, fully qualified: git resolves refs/heads/<name>
+  # before refs/remotes/<name> (gitrevisions(7)), so a bare `origin/main`
+  # would silently resolve to a local branch literally named that if one
+  # ever existed - turning a false "not merged" into a worse false "merged".
   is_ancestor=0
   if git -C "$PRIMARY" merge-base --is-ancestor "$branch" refs/remotes/origin/main 2>/dev/null; then
     is_ancestor=1
@@ -182,42 +179,34 @@ for i in "${!WORKTREE_PATHS[@]}"; do
 
     # Unlock before attempting removal - both `worktree remove` below and
     # `worktree prune` in the ddev fallback refuse a locked worktree. A
-    # lock left over from whatever agent session used this worktree (and
-    # already confirmed above not to be a currently-live session) has no
-    # further bearing on whether it's provably stale by the three checks
-    # above. was_locked tracks whether this call actually changed
-    # anything, so a failed removal below can restore the original lock
-    # state instead of silently leaving a previously-locked worktree
-    # unprotected. Real bug found 2026-08-28: without the unlock, the ddev
-    # fallback deleted a locked worktree's directory but `worktree prune`
-    # silently skipped deregistering it, leaving git's worktree metadata
-    # pointing at a now-nonexistent path - `branch -d` then refused with
-    # "used by worktree", aborting the whole script (set -e) with the
-    # branch never deleted, locally or remotely.
+    # lock left over from a session already confirmed above not to be live
+    # has no bearing on the three staleness checks. was_locked lets a
+    # failed removal restore the original lock instead of leaving a
+    # previously-locked worktree unprotected.
     was_locked=0
     if git -C "$PRIMARY" worktree unlock "$path" 2>/dev/null; then
       was_locked=1
     fi
 
-    if ! git -C "$PRIMARY" worktree remove "$path" 2>/tmp/cleanup-worktrees-remove-err; then
+    if ! git -C "$PRIMARY" worktree remove "$path" 2>"$remove_err"; then
       rel="${path#"$PRIMARY"/}"
       if command -v ddev >/dev/null 2>&1 && (cd "$PRIMARY" && ddev describe >/dev/null 2>&1); then
         (cd "$PRIMARY" && ddev exec -s fastapi rm -rf "/app/$rel") || true
-        git -C "$PRIMARY" worktree prune
       fi
       if [ -e "$path" ]; then
         if [ "$was_locked" = "1" ]; then
           git -C "$PRIMARY" worktree lock "$path" \
             --reason "cleanup-worktrees: removal attempt failed, restoring prior lock" 2>/dev/null || true
         fi
-        echo "kept: $branch - worktree removal blocked and ddev fallback did not clear it: $(cat /tmp/cleanup-worktrees-remove-err)" >&2
+        echo "kept: $branch - worktree removal blocked and ddev fallback did not clear it: $(cat "$remove_err")" >&2
         kept=$((kept + 1))
         continue
       fi
+      git -C "$PRIMARY" worktree prune
     fi
 
     git -C "$PRIMARY" branch -d "$branch"
-    if [ -n "$(git ls-remote --heads origin "$branch" 2>/dev/null)" ]; then
+    if [ -n "$(git -C "$PRIMARY" ls-remote --heads origin "$branch" 2>/dev/null)" ]; then
       git -C "$PRIMARY" push origin --delete "$branch"
     fi
     echo "removed: $branch (worktree $path, PR #$pr_number merged)"

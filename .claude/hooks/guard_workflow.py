@@ -1,36 +1,51 @@
 #!/usr/bin/env python3
-"""Workflow guard. Turns the rules the 2026-08-27 audit found unenforced into
-harness decisions instead of prose:
+"""Workflow guard: the standing rules a session must not talk itself out of,
+enforced as harness decisions instead of prose.
 
 PreToolUse (Bash):
-  R1 full-suite pytest with no test path       -> deny   (CI owns the full suite)
-  R2 ad hoc sqlite3/python on data/*.db before  -> deny once, then allow
-     any /api/quality|health read this session
-  R6 checkout/stash/reset/rebase/merge/worktree -> deny   (another live session
-     in a checkout another session occupies        owns that working tree)
-  R8 git add -A / git add .                     -> deny   (stage specific paths)
-  R7 `ddev exec` from a linked worktree         -> deny with the working command
+  R8 `git add -A` / `git add .`                        -> deny (stage specific paths)
+  R6 checkout/switch/stash/reset --hard/rebase/merge/  -> deny (another live session
+     `worktree remove` in a checkout another live          sits in that working tree,
+     session sits in or under                              at its root or anywhere below)
+  R2 ad hoc sqlite3/python on data/*.db before any     -> deny once, then allow
+     /api/quality|health read this session
+  R7 `ddev exec` from a linked worktree                -> deny, with the working command
 PreToolUse (Edit|Write):
-  R3 Kalshi-shaped file without a docs/kalshi   -> deny   (HARD RULE, CLAUDE.md)
-     read this session
-  R4 hot money/strategy file without a GitNexus -> deny once, then allow
-     run this session
-  R5 a NEW plan doc while a plan touched on this -> deny   (finish or supersede)
-     branch still has unchecked tasks
+  R3 Kalshi-shaped file, no docs/kalshi read yet       -> deny (HARD RULE, CLAUDE.md)
+  R4 money/strategy hot file, no GitNexus run yet      -> deny once, then allow
 PostToolUse (Bash|Read|Edit|Write|mcp__gitnexus__*):
-  records the markers the gates read; nudges dimensional-analysis once on a
-  hot-file edit; reports a plan doc over its 300-line budget (exit 2).
+  records the markers the gates read; nudges dimensional-analysis once per
+  session on a hot-file edit; at most every 10 minutes measures the
+  uncommitted diff and nudges /checkpoint once it passes 5 files or 150
+  lines (the mechanism CLAUDE.md's "checkpoint often" used to have).
+
+Every event also records this session in a registry the harness feeds:
+<state>/session.json = {pid of the Claude process this hook runs under, its
+comm, the payload's cwd}. The payload cwd follows EnterWorktree, so the
+registry knows where a session really works even when /proc's cwd is stale
+or "(deleted)".
+
+`--sessions` prints a "#sessions v1" header, then one line per live Claude
+session: `<pid>\t<self|other>\t<cwd>`. orient.sh and
+scripts/cleanup-worktrees.sh read that instead of re-implementing discovery
+(the header is how a consumer tells a real answer from an older guard that
+ignores the flag). Sessions come from three sources, later ones winning on
+cwd: control sockets under $XDG_RUNTIME_DIR/cc-socks (only some entrypoints
+register one), every process named `claude` owned by this user in /proc, and
+the registry above (a record counts while its pid is alive with the same
+comm, so a reused pid never resurrects a dead session).
 
 State lives per session under $XDG_RUNTIME_DIR/claude-workflow-guard/<session_id>/
-(tmpfs, shared across worktrees, gone at logout) - nothing in the repo.
-Every rule is a pure function of (payload, state, live sessions, git) so
-tests/test_guard_workflow.py can drive it without a harness.
+(tmpfs, shared across worktrees). Every rule is a pure function of (payload,
+state, live sessions, git) so tests/test_guard_workflow.py drives it without a
+harness.
 """
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 KALSHI_PATHS = (
@@ -44,12 +59,13 @@ HOT_PATHS = (
     "services/whale_calibration/", "services/exits/", "services/position/",
     "services/kalshi_client.py", "services/kalshi_account_client.py",
 )
-PLAN_DIR = "docs/superpowers/plans/"
-PLAN_LINE_BUDGET = 300
 DDEV_PROJECT = "kalshi-whale-poc"
+GITNEXUS = "npx gitnexus@1.6.10"
+SESSIONS_HEADER = "#sessions v1"
+NUDGE_EVERY_SEC = 600
+NUDGE_FILES = 5
+NUDGE_LINES = 150
 
-_PYTEST = re.compile(r"\bpytest\b")
-_PYTEST_SCOPED = re.compile(r"tests/\S*\.py|tests/test_\w+|(^|\s)-k\s|--lf\b|--last-failed\b")
 _SQLITE_ON_DATA = re.compile(r"sqlite3.*data/|data/\S*\.db.*sqlite3|sqlite3\.connect\([^)]*data/")
 _DIAG_READ = re.compile(r"api/quality/summary|api/health/|api/observability/")
 _RISKY_GIT = re.compile(
@@ -57,13 +73,16 @@ _RISKY_GIT = re.compile(
 )
 _GIT_ADD_ALL = re.compile(r"\bgit\s+add\s+(-A\b|--all\b|\.\s*$|\.\s)")
 _DDEV_EXEC = re.compile(r"^\s*ddev\s+exec\s+(?:-s\s+\S+\s+)?(.*)$", re.S)
-_UNCHECKED = re.compile(r"^\s*- \[ \] ", re.M)
+_SHORTSTAT_NUM = re.compile(r"(\d+) (?:insertion|deletion)")
 
 
 # ---------------------------------------------------------------- state
+def registry_root() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-workflow-guard"
+
+
 def state_dir(session_id: str) -> Path:
-    base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-workflow-guard"
-    d = base / (session_id or "no-session")
+    d = registry_root() / (session_id or "no-session")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -77,32 +96,129 @@ def mark(state: Path, marker: str) -> None:
 
 
 # ---------------------------------------------------------- live sessions
-def live_sessions(uid: int | None = None) -> dict[int, str]:
-    """pid -> cwd for every Claude session with a control socket on this machine."""
-    d = Path(f"/run/user/{os.getuid() if uid is None else uid}/cc-socks")
+def proc_root() -> Path:
+    return Path(os.environ.get("CLAUDE_PROC_ROOT") or "/proc")
+
+
+def sock_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_SOCK_DIR") or f"/run/user/{os.getuid()}/cc-socks")
+
+
+def process_comm(pid: int, root: Path | None = None) -> str | None:
+    try:
+        return (Path(root or proc_root()) / str(pid) / "comm").read_text().strip()
+    except OSError:
+        return None
+
+
+def process_cwd(pid: int, root: Path | None = None) -> str | None:
+    try:
+        cwd = os.readlink(f"{root or proc_root()}/{pid}/cwd")
+    except OSError:
+        return None
+    return None if cwd.endswith(" (deleted)") else cwd
+
+
+def sessions_from_proc(root: Path | None = None, uid: int | None = None) -> dict[int, str]:
+    """pid -> cwd for every process named `claude` that this user owns."""
+    root = Path(root or proc_root())
+    uid = os.getuid() if uid is None else uid
     out: dict[int, str] = {}
-    for s in d.glob("*.sock") if d.exists() else []:
-        try:
-            out[int(s.stem)] = os.readlink(f"/proc/{s.stem}/cwd")
-        except (OSError, ValueError):
+    for entry in (root.iterdir() if root.is_dir() else []):
+        if not entry.name.isdigit():
             continue
+        try:
+            if entry.stat().st_uid != uid or (entry / "comm").read_text().strip() != "claude":
+                continue
+        except OSError:
+            continue
+        cwd = process_cwd(int(entry.name), root)
+        if cwd:
+            out[int(entry.name)] = cwd
     return out
 
 
-def ancestor_pids() -> set[int]:
-    pids: set[int] = set()
+def sessions_from_socks(directory: Path) -> dict[int, str]:
+    out: dict[int, str] = {}
+    d = Path(directory)
+    for s in (d.glob("*.sock") if d.is_dir() else []):
+        try:
+            pid = int(s.stem)
+        except ValueError:
+            continue
+        cwd = process_cwd(pid)
+        if cwd:
+            out[pid] = cwd
+    return out
+
+
+def sessions_from_registry(base: Path | None = None, root: Path | None = None) -> dict[int, str]:
+    """Sessions this guard has seen, still alive: pid present with the recorded comm."""
+    out: dict[int, str] = {}
+    base = Path(base or registry_root())
+    for f in (base.glob("*/session.json") if base.is_dir() else []):
+        try:
+            rec = json.loads(f.read_text())
+            pid = int(rec["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if process_comm(pid, root) != rec.get("comm"):
+            continue
+        cwd = rec.get("cwd")
+        if cwd:
+            out[pid] = cwd
+    return out
+
+
+def live_sessions() -> dict[int, str]:
+    return {**sessions_from_socks(sock_dir()), **sessions_from_proc(), **sessions_from_registry()}
+
+
+def ancestor_chain(root: Path | None = None) -> list[int]:
+    """This process and its ancestors, nearest first, stopping below pid 1."""
+    root = Path(root or proc_root())
+    chain: list[int] = []
     pid = os.getpid()
     for _ in range(30):
         try:
-            stat = Path(f"/proc/{pid}/stat").read_text()
+            stat = (root / str(pid) / "stat").read_text()
         except OSError:
             break
-        pids.add(pid)
+        chain.append(pid)
         ppid = int(stat.rsplit(")", 1)[1].split()[1])
         if ppid <= 1:
             break
         pid = ppid
-    return pids
+    return chain
+
+
+def ancestor_pids() -> set[int]:
+    return set(ancestor_chain())
+
+
+def claude_pid(chain: list[int] | None = None, root: Path | None = None) -> int | None:
+    """The Claude process this hook runs under: the nearest ancestor named `claude`,
+    else the nearest `node` (a node-hosted CLI), else None."""
+    fallback = None
+    for pid in (chain if chain is not None else ancestor_chain(root)):
+        comm = process_comm(pid, root)
+        if comm == "claude":
+            return pid
+        if comm == "node" and fallback is None:
+            fallback = pid
+    return fallback
+
+
+def record_session(state: Path, cwd: str, pid: int | None, root: Path | None = None) -> None:
+    if pid is None or not cwd:
+        return
+    comm = process_comm(pid, root)
+    if comm is None:
+        return
+    try:
+        (state / "session.json").write_text(json.dumps({"pid": pid, "comm": comm, "cwd": cwd, "at": time.time()}))
+    except OSError:
+        pass
 
 
 def other_sessions(sessions: dict[int, str], self_pids: set[int]) -> dict[int, str]:
@@ -119,6 +235,9 @@ def repo_root(cwd: str) -> Path:
 
 
 def primary_root(root: Path) -> Path:
+    """<primary>/.claude/worktrees/<name> -> <primary>. Path-only on purpose: ddev
+    mounts the primary at /app, so only a worktree under it is reachable from the
+    container, which is the only reason R7 and run_tests.py need this."""
     parts = root.parts
     for i in range(len(parts) - 2, 0, -1):
         if parts[i] == ".claude" and parts[i + 1] == "worktrees":
@@ -159,15 +278,12 @@ def pre_bash(command: str, cwd: str, state: Path, sessions: dict[int, str], self
     if m:
         target = Path(m.group(1)).resolve() if m.group(1) else Path(cwd).resolve()
         for pid, other_cwd in other_sessions(sessions, self_pids).items():
-            if Path(other_cwd).resolve() == target:
+            oc = Path(other_cwd).resolve()
+            if oc == target or target in oc.parents:
                 return _deny(f"R6: `git {m.group(2)}` in {target} - another live Claude session (pid {pid}) "
-                             "works in that checkout. Never checkout/stash/reset/rebase/merge under "
+                             f"works in {oc}. Never checkout/stash/reset/rebase/merge under "
                              "another session's working tree; do it from your own worktree "
                              "(.claude/worktrees/<name>, EnterWorktree) or ask that session.")
-
-    if _PYTEST.search(cmd) and not _PYTEST_SCOPED.search(cmd):
-        return _deny("R1: full-suite pytest is CI's job (.woodpecker/tests-pytest.yml; ~4 min round trip). "
-                     "Locally run only the file(s) you touched: `pytest tests/test_<module>.py`, or push.")
 
     if _SQLITE_ON_DATA.search(cmd) and not has(state, "diag_checked") and not has(state, "sqlite_warned"):
         mark(state, "sqlite_warned")
@@ -188,8 +304,14 @@ def pre_bash(command: str, cwd: str, state: Path, sessions: dict[int, str], self
     return None
 
 
-def pre_edit(tool: str, file_path: str, content: str, cwd: str, state: Path, git_run, exists) -> dict | None:
+def _is_code(rel: str) -> bool:
+    return rel.endswith(".py")
+
+
+def pre_edit(tool: str, file_path: str, cwd: str, state: Path) -> dict | None:
     rel = rel_path(file_path, cwd)
+    if not _is_code(rel):  # READMEs and cheatsheets under these packages are prose, not Kalshi-shaped code
+        return None
 
     if rel.startswith(KALSHI_PATHS) and not has(state, "kalshi_docs_read"):
         return _deny(f"R3: {rel} carries Kalshi-sourced data and no docs/kalshi/ page has been read this session "
@@ -199,28 +321,34 @@ def pre_edit(tool: str, file_path: str, content: str, cwd: str, state: Path, git
     if rel.startswith(HOT_PATHS) and not has(state, "gitnexus_ran") and not has(state, "hot_edit_warned"):
         mark(state, "hot_edit_warned")
         return _deny(f"R4: {rel} is on the money/strategy hot path. Run a blast-radius check first - "
-                     "`npx gitnexus@latest impact <symbol>` or the gitnexus MCP impact tool - then retry. "
+                     f"`{GITNEXUS} impact <symbol>` or the gitnexus MCP impact tool - then retry. "
                      "This gate fires once per session; the check is what the tool exists for.")
-
-    if tool == "Write" and rel.startswith(PLAN_DIR) and not exists(rel):
-        names = git_run(["log", "origin/main..HEAD", "--name-only", "--format="]).split()
-        unfinished = []
-        for name in sorted(set(names)):
-            if name.startswith(PLAN_DIR) and name != rel and exists(name):
-                text = Path(repo_root(cwd), name).read_text()
-                if _UNCHECKED.search(text) and Path(name).name not in content:
-                    unfinished.append(name)
-        if unfinished:
-            return _deny("R5: a new plan while this branch already carries a plan with unchecked tasks: "
-                         + ", ".join(unfinished)
-                         + ". Finish it, tick its tasks, or name it in the new plan's header "
-                         "(`Supersedes: <file>`) so the hand-off is explicit. Plans that never run to completion "
-                         "are the failure this gate exists for.")
     return None
 
 
-def post(tool: str, tool_input: dict, cwd: str, state: Path) -> dict | None:
-    """Returns {"context": str} | {"stderr": str, "exit": 2} | None."""
+def checkpoint_nudge(state: Path, git_run, now: float | None = None) -> str | None:
+    """At most every NUDGE_EVERY_SEC: measure the uncommitted diff; nudge past the thresholds."""
+    marker = state / "nudge_checked"
+    now = time.time() if now is None else now
+    try:
+        last = marker.stat().st_mtime
+    except OSError:
+        last = 0.0
+    if now - last < NUDGE_EVERY_SEC:
+        return None
+    marker.touch()
+    os.utime(marker, (now, now))
+    files = len([ln for ln in git_run(["status", "--porcelain"]).splitlines() if ln.strip()])
+    lines = sum(int(n) for n in _SHORTSTAT_NUM.findall(git_run(["diff", "--shortstat", "HEAD"])))
+    if files >= NUDGE_FILES or lines >= NUDGE_LINES:
+        return (f"checkpoint nudge: {files} changed file(s), {lines} changed line(s) sitting uncommitted - "
+                "run /checkpoint (commit verified units, push, confirm CI) before this grows further.")
+    return None
+
+
+def post(tool: str, tool_input: dict, cwd: str, state: Path, git_run=None) -> dict | None:
+    """Returns {"context": str} | None."""
+    notes: list[str] = []
     if tool == "Bash":
         cmd = tool_input.get("command") or ""
         if _DIAG_READ.search(cmd):
@@ -229,34 +357,38 @@ def post(tool: str, tool_input: dict, cwd: str, state: Path) -> dict | None:
             mark(state, "kalshi_docs_read")
         if "gitnexus" in cmd:
             mark(state, "gitnexus_ran")
-        return None
-    if tool.startswith("mcp__gitnexus__"):
+    elif tool.startswith("mcp__gitnexus__"):
         mark(state, "gitnexus_ran")
-        return None
-    if tool == "Read":
+    elif tool == "Read":
         if "docs/kalshi/" in (tool_input.get("file_path") or ""):
             mark(state, "kalshi_docs_read")
-        return None
-    if tool in ("Edit", "Write"):
+    elif tool in ("Edit", "Write"):
         rel = rel_path(tool_input.get("file_path") or "", cwd)
-        if rel.startswith(PLAN_DIR):
-            p = Path(cwd) / rel if not Path(tool_input.get("file_path") or "").is_absolute() else Path(tool_input["file_path"])
-            try:
-                n = len(p.read_text().splitlines())
-            except OSError:
-                n = 0
-            if n > PLAN_LINE_BUDGET:
-                return {"stderr": f"{rel} is {n} lines, over the {PLAN_LINE_BUDGET}-line plan budget (stop rule): "
-                                  "cut it or split it before continuing.", "exit": 2}
-        if rel.startswith(HOT_PATHS) and not has(state, "dim_nudged"):
+        if _is_code(rel) and rel.startswith(HOT_PATHS) and not has(state, "dim_nudged"):
             mark(state, "dim_nudged")
-            return {"context": f"{rel} is money/probability math: run the dimensional-analysis skill on the change "
-                               "before calling it done (two shipped bugs of that class here)."}
-    return None
+            notes.append(f"{rel} is money/probability math: run the dimensional-analysis skill on the change "
+                         "before calling it done (two shipped bugs of that class here).")
+    if tool in ("Bash", "Edit", "Write") and git_run is not None:
+        nudge = checkpoint_nudge(state, git_run)
+        if nudge:
+            notes.append(nudge)
+    return {"context": "\n".join(notes)} if notes else None
 
 
 # ---------------------------------------------------------------- main
-def main() -> int:
+def print_sessions(sessions: dict[int, str], self_pids: set[int]) -> None:
+    sys.stdout.write(SESSIONS_HEADER + "\n")
+    for pid in sorted(sessions):
+        tag = "self" if pid in self_pids else "other"
+        sys.stdout.write(f"{pid}\t{tag}\t{sessions[pid]}\n")
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--sessions"]:
+        print_sessions(live_sessions(), ancestor_pids())
+        return 0
+
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -266,14 +398,13 @@ def main() -> int:
     tool_input = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or os.getcwd()
     state = state_dir(payload.get("session_id") or "")
+    record_session(state, cwd, claude_pid())
 
     if event == "PreToolUse":
         if tool == "Bash":
             out = pre_bash(tool_input.get("command") or "", cwd, state, live_sessions(), ancestor_pids())
         elif tool in ("Edit", "Write"):
-            root = repo_root(cwd)
-            out = pre_edit(tool, tool_input.get("file_path") or "", tool_input.get("content") or "",
-                           cwd, state, _git_runner_real(str(root)), lambda rel: (root / rel).exists())
+            out = pre_edit(tool, tool_input.get("file_path") or "", cwd, state)
         else:
             out = None
         if out:
@@ -285,10 +416,7 @@ def main() -> int:
         return 0
 
     if event == "PostToolUse":
-        out = post(tool, tool_input, cwd, state)
-        if out and "stderr" in out:
-            sys.stderr.write(out["stderr"] + "\n")
-            return out["exit"]
+        out = post(tool, tool_input, cwd, state, _git_runner_real(str(repo_root(cwd))))
         if out and "context" in out:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
                                                      "additionalContext": out["context"]}}))

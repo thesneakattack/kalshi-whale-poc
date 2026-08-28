@@ -12,7 +12,7 @@ section for the full standing rule this file backs.
 ### Entry format
 
 Each real entry below is an `##` heading (a short question), so
-`.claude/hooks/session_orient.sh` can list titles at session start via
+`.claude/hooks/orient.sh` can list titles at session start via
 `grep '^## '` — keep this section itself at `###` so it doesn't get
 matched as an entry. Each entry then has `**Answer:**`, `**Source:**`,
 `**Gotcha:**` (if there is one), `**Found:**` (date + one-line context).

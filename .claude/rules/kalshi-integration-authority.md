@@ -33,8 +33,8 @@ The dual-phase initiative is defined by:
 - `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md`
 - `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md`
 
-When implementing that initiative, use
-`.claude/skills/kalshi-integration-refactor/SKILL.md` as the top-level orchestrator.
+When implementing that initiative, drive its plans with `superpowers:executing-plans`
+and run `kalshi-contract-review` before every task that touches a Kalshi field.
 
 ## Permanent semantic rule
 

@@ -157,9 +157,8 @@ steps:
   #     this pays no download at runtime. The Selenium step above spends
   #     ~2-3 minutes on `apt-get install chromium chromium-driver` every
   #     run; this step deliberately does not repeat that mistake.
-  #   - a separate named step means a red check says WHICH stack broke, per
-  #     .claude/skills/ci-cd-guardrails' "a red job should tell the developer
-  #     what class of problem occurred".
+  #   - a separate named step means a red check says WHICH stack broke - a
+  #     red job should tell the developer what class of problem occurred.
   # The image tag and requirements-playwright.txt's pin must move together.
   #
   # The uv venv is not optional plumbing - this image is Ubuntu 24.04 and

@@ -1,7 +1,7 @@
 # Woodpecker CI (.woodpecker/tests-pytest.yml, .woodpecker/tests-
 # dependency-audit.yml - shared portfolio instance at portfolio/ci-cd/,
-# see .claude/skills/ci-cd-guardrails/SKILL.md's "Local vs CI verification
-# policy") is now the authoritative executor for ordinary push/PR
+# see .claude/rules/branching-and-ci.md) is now the authoritative executor
+# for ordinary push/PR
 # validation. This workflow stays as a manual-trigger fallback for when
 # Woodpecker is unavailable or a GitHub-native run is specifically wanted -
 # not deleted, since it's a working, independently-verified equivalent -

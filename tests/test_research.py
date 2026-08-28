@@ -214,7 +214,9 @@ def test_latest_is_none_with_no_persisted_reports():
 
 async def _call_maybe_run_research(cfg):
     research._maybe_run_research(cfg)
-    await asyncio.sleep(0.05)  # let any scheduled background task actually run
+    task = state["research"].get("task")
+    if task is not None:
+        await task  # the supervised run itself - a fixed sleep raced it under -n 4 (CI #582, 2026-08-28)
 
 
 def test_disabled_never_fires_regardless_of_history(monkeypatch):

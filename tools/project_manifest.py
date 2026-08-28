@@ -246,10 +246,9 @@ _EXACT_LEAVES = ("schema_version",)
 # That noise had already caused real harm rather than just annoyance: the
 # pipeline sat red across three consecutive real pushes (d644034, 21a303a,
 # b28a380) with nobody noticing, because a check that cries wolf every
-# fifth commit stops being read. See .claude/skills/ci-cd-guardrails, which
-# records that incident, and its failure semantics - a high-confidence
-# deterministic regression should fail CI, a low-signal finding should be
-# reported instead.
+# fifth commit stops being read. The failure semantics that incident set:
+# a high-confidence deterministic regression should fail CI, a low-signal
+# finding should be reported instead.
 #
 # What this guard actually exists to prevent is status.html displaying
 # "5,189 lines / 29 files / 20 API routes" for a repo that had grown an
