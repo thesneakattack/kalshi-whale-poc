@@ -87,10 +87,9 @@ Optional cloud/embedding features are deliberately **not** enabled
 (`--embeddings`); `.gitnexusrc` keeps `indexOnly: true` so GitNexus never
 injects competing `CLAUDE.md`/`AGENTS.md`/skills.
 
-**⚠️ Its auto-augment and freshness hooks are supposed to be disabled but
-are currently STILL ENABLED** — see "Known unresolved" at the end of this
-file. They spawn a node process on every Grep/Glob/Bash call, which is the
-exact idle overhead the policy below forbids.
+Its auto-augment and freshness hooks are disabled (verified 2026-08-28:
+`~/.claude/settings.json` carries only `sql_guard.py`). Invoke GitNexus
+deliberately per the routing rules; nothing runs on every tool call.
 
 ### dimensional-analysis — trading-math correctness
 Local skill (trailofbits 3.0.1), no credentials. Apply *after*
@@ -247,56 +246,9 @@ Normal lightweight workflow. **No specialized plugin.**
 
 Do not let the toolchain tax every task:
 - No GitNexus / 42Crunch / dimensional-analysis on every edit.
-- GitNexus auto-augment + freshness hooks are **meant to be disabled** (a
-  node process per Grep/Glob/Bash call); they are currently still enabled —
-  see "Known unresolved" below. Invoke GitNexus deliberately regardless.
+- GitNexus auto-augment + freshness hooks are disabled (verified 2026-08-28);
+  invoke GitNexus deliberately.
 - `gitnexus context` can return >140KB for a single symbol — prefer
   `impact --summaryOnly`, or `grep`, when that's all you need.
 - Chrome DevTools only for browser-facing work.
 - No account checks, auth prompts, or retries for blocked plugins.
-
----
-
-# Known unresolved — needs a user action
-
-## GitNexus always-on hooks are still live in `~/.claude/settings.json`
-
-Still present as of 2026-08-25 (Session C):
-
-- `PreToolUse` matcher `Grep|Glob|Bash` → `gitnexus-hook.cjs`
-- `PostToolUse` matcher `Bash` → `gitnexus-hook.cjs`
-
-These spawn a node process on *every* search and Bash call — the idle
-overhead the "Idle overhead" section above forbids. Confirmed still firing
-this session (a `[GitNexus] N related symbols found` block was injected into
-routine `grep` output).
-
-**Three sessions (A, B, C) have now tried to remove them and all three were
-refused by Claude Code's own permission classifier**, which guards the
-user-global settings file against agent edits — via `Bash`/`python3` and via
-the `Edit` tool alike. This is not a `sudo`/file-ownership problem (the file
-is owned and writable by the user), so escalating with `sudo` would be
-circumventing the guard rather than satisfying it. **It requires the user.**
-
-A corrected copy of the file — GitNexus hooks stripped, the `sql_guard.py`
-`PreToolUse` hook preserved, everything else byte-identical — is generated
-at `.claude/settings-json-gitnexus-hooks-removed.json` by:
-
-```bash
-python3 .claude/tools/strip_gitnexus_hooks.py
-```
-
-Apply it manually (the user, not Claude):
-
-```bash
-cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%F)
-cp <repo>/.claude/settings-json-gitnexus-hooks-removed.json ~/.claude/settings.json
-```
-
-Then restart Claude Code. The hook script stays on disk, so this is fully
-reversible. Pre-install original:
-`~/claude-toolchain-backup-2026-08-25/user-settings.json`.
-
-**Do not re-litigate this every session.** Until it is applied, simply
-ignore the injected `[GitNexus]` blocks; they are noise, not findings, and
-GitNexus should still be invoked deliberately per the routing rules above.
