@@ -113,7 +113,9 @@ _CFG = {"backup": {"enabled": True, "interval_sec": 21600}}  # matches config/se
 
 async def _call_maybe_run_backup(cfg):
     backup._maybe_run_backup(cfg)
-    await asyncio.sleep(0.05)  # let any scheduled background task actually run
+    task = state["backup"].get("task")
+    if task is not None:
+        await task  # the supervised run itself - a fixed sleep is the CI #582 race class (2026-08-28)
 
 
 def test_cold_start_does_not_refire_when_a_recent_backup_is_already_persisted():

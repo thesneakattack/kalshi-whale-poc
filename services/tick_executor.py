@@ -50,9 +50,9 @@ the real call graph, not intuition:
      a worse, and for series_watcher specifically a directly
      regression-causing (see finding #2's own "zero silent loss" test
      coverage), failure mode than the loop-stall problem this module
-     exists to fix. .claude/rules/realtime-data-plane-evidence.md
-     explicitly forbids tuning a timeout/retry parameter without measuring
-     the actual bottleneck first; no live-traffic measurement of real lock
+     exists to fix. CLAUDE.md's data-plane HARD RULE explicitly forbids
+     tuning a timeout/retry parameter without measuring the actual
+     bottleneck first; no live-traffic measurement of real lock
      contention on these specific tables exists, so this was not forced in
      on an unverified "should help" basis.
 

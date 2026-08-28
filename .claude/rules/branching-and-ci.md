@@ -63,6 +63,15 @@ messages explain *why* in this repo's existing terse tone. No `--force` to
 `main`, no `--no-verify`, never `--amend` pushed history, stage specific paths
 (never `git add -A` — R8 denies it).
 
+## Ending a session
+
+Before `/clear`, a long `/compact`, or stopping for the day: `/checkpoint`
+(commit verified units, push, confirm CI); name the branch and any open PR
+in the closing message; state the last completed unit, the first incomplete
+one, and anything uncommitted or unverified. The procedure below
+reconstructs from the repository, so nothing that matters may live only in
+chat.
+
 ## Resuming in a fresh session
 
 On "resume" / "continue" / "pick up where we left off": do not rely on
