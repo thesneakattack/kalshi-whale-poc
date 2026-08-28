@@ -529,6 +529,99 @@ to report into any of them. `services/observability/README.md` is the one except
 (above) because the capture_writer finding materially updates something that doc
 already documents (its "Unwired today" framing, now stale).
 
+## Phase P3.5 live-scale attempt, successful run (2026-08-27, post-reload-fix)
+
+Re-run of the same `tools.watchlist_scale_stress_test` (`--measure-after-sec 120`) after
+the uvicorn reload-collision root cause above was actually fixed (`.ddev/docker-
+compose.fastapi.yaml` gained `--reload-exclude /app/.claude/worktrees`, PR #123, merged
+and loaded via `ddev restart` at 2026-08-27 23:15 UTC; end-to-end confirmed live by
+touching a real file inside an active worktree and observing no reload before this run
+started). **This is the first of the 4 total attempts to run to completion** - all 5
+`widen_scope*` steps plus the search probe, uninterrupted. Safety gate re-confirmed
+before and after: `mode: paper`, `kalshi_account.trading_enabled: False` throughout.
+
+**Side-finding first, since it explains an oddity in this run's own baseline: the live
+app's config had already drifted from `config/settings.yaml`'s committed defaults**
+before this run even started - `categories: ['Sports', 'Crypto']` and
+`min_volume_24h: 1000` (should be `['Sports']` / `10000`), left behind by one of the 3
+earlier failed attempts whose `finally`-block revert either didn't run cleanly or was
+itself caught in a reload-restart. `run_stress_steps` correctly captured and reverted to
+*that* (already-widened) state as its own "original," so its own revert logic isn't at
+fault - the live app had simply been running in a wider-than-intended configuration for
+several hours before this run. Restored to the real committed defaults by hand
+immediately after discovering this (`POST /api/config` with `config/settings.yaml`'s
+values) - confirmed via `GET /api/config` afterward. Worth remembering for any future
+live experiment: don't trust `run_stress_steps`' captured `original_config` as proof of
+"the intended default" - it only proves "whatever was live when this run started."
+
+**Headline result: zero data loss at every step.** `dropped_messages: 0` and
+`last_tick_rate_limit_hits: 0` in all 5 `GET /api/health/pipeline` snapshots, cumulative
+`ingest.messages_received` climbing 34,117 → 116,445 over the ~10-minute run (roughly
+1,400-2,700 trade-class messages per 2-minute step window). Queue depth stayed
+effectively empty between snapshots (`queue.depth` 0-1) and peak `high_water` across the
+whole run was 2,593 of a 20,000 capacity (13%) - no evidence of the widened scope
+(`categories: [Sports, Crypto]`, `min_volume_24h: 1000`, `live_markets_only` toggled off
+then back on, `max_children_per_parent` uncapped, `whale_watcher_kalshi.min_contracts`
+lowered to 500-1000) pushing the consumer anywhere near its capacity ceiling at this
+account's current live market population. Per-step 2-minute-window `queue_wait.max_sec`
+stayed under ~6.5s at every step (`widen_scope`: 6.476s; the other 4: 0.665-3.961s) -
+healthy, not the multi-minute backlog H1/H2 hypothesized.
+
+**`markets_watched` barely moved** (15 → 15 → 13 → 13 → 14) despite the scope-widening
+config changes across all 5 steps - at this account's current live market population,
+none of `min_volume_24h`, `categories`, `live_markets_only`, `max_children_per_parent`,
+or the whale-signal `min_contracts` thresholds materially changed the REST-discovered
+watchlist size. This means this run mainly stress-tested the **exchange-wide trade
+WebSocket's** ingest/queue/consumer path (which was already exchange-wide regardless of
+watchlist size, per `trade_stream_exchange_wide: true` and the CHEATSHEET's own "How do
+you subscribe to the WHOLE exchange" entry) rather than the REST catalog/discovery path
+P4/P5 also care about - a real result, but a narrower one than the step names imply;
+REST-demand-at-scale remains untested by this run.
+
+**Useful incidental confirmation for the P3 reader-gate flip decision:** the shadow-mode
+`prefiltered.trade` / `gate_would_reject` counters (added by Task 17's
+`_gate_check_and_maybe_filter`, still shadow-only per `reader_gate_enabled: false`) show
+the gate would have rejected ~99.6-99.9% of received trade-class messages at every step
+(e.g. step 1: 32,510 of 32,559 trade messages; step 5: 111,142 of 112,031) - consistent
+with the P3 gate design's whole premise (most exchange-wide trade volume is below the
+whale-size threshold), and this holds up under a genuinely widened scope, not just the
+narrow single-series baseline it was originally measured against.
+
+**One 89.3-second stall/queue-wait outlier appears identically in every step's `lifetime`
+stats** (`loop_watchdog.stall_max_ms` max 89189.525, `queue_wait.lifetime.max_sec`
+89.2997, `handler_time_by_class.trade.lifetime.max_ms` 89300.1559) alongside an identical
+`connection.last_disconnect` timestamp (`ConnectionClosedError: ... keepalive ping
+timeout`) in every step - a single historical WS disconnect/reconnect event sitting in
+the metrics' lifetime/1h-lookback window, not something that recurred across steps or
+was caused by this run's own load (each step's own 2-minute `window` stats stayed low;
+only the carried-forward `lifetime` max reflects it). Not chased further - out of this
+measurement task's scope, and it predates this run.
+
+**`capture_writer`/`series_watcher` SQLite lock contention - fresh data point, still not
+fixed, but now leaning toward "not scope-correlated."** `GET /api/health/faults` showed
+`capture_writer`/`flush`/`database is locked` at count **181** (`last_seen` 2026-08-27
+23:46 UTC) versus the **178** recorded in the previous (crashed) attempt's write-up
+(`last_seen` 22:41 UTC) - only **+3** across roughly 5 hours that included this run's
+first-ever full, clean, sustained ~10-minute widened-scope window (the 3 earlier attempts
+never got a clean window at all). That's a materially smaller increment than the
+2h-baseline rate implied by the original 177→178 datapoint, weakly suggesting the
+collision rate is dominated by the two writers' independent flush/snapshot cadences
+(Task 14's 50ms `busy_timeout`) rather than by trade volume or watchlist scope - still
+**not proven** (one run, small numbers, no controlled A/B), so this stays a directional
+update, not a resolved conclusion. The underlying fix (documented in the prior section)
+remains open and out of scope for this measurement task.
+
+**Cross-post disposition, superseding the prior "none received a cross-post" note:**
+`services/observability/README.md`'s `writer.*` section already covers the lock-
+contention finding (no change needed here). None of `services/market_watch/CHEATSHEET.md`,
+`services/market_catalog/CHEATSHEET.md`, `services/kalshi/CHEATSHEET.md`, or
+`services/quality/README.md` are getting a cross-post from *this* run either - despite
+now having real data, none of it is REST-catalog/discovery-path data (per the
+`markets_watched` finding above), which is the layer those four docs cover; this run's
+real findings are entirely in the exchange-wide WS ingest/queue path, which doesn't have
+its own `CHEATSHEET.md`/`README.md` outside this research doc and
+`services/kalshi/websocket.py`'s own module docstring.
+
 ## What the investigation must not assume
 
 Do not assume any of the following is automatically correct:
