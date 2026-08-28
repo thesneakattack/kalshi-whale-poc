@@ -536,6 +536,39 @@ rather than silently avoided:
   and repeating that pattern a fourth time is the thing being explicitly corrected
   against here.
 
+**CORRECTION (2026-08-27, found while re-grounding P7 Task 29 against HEAD before
+implementing it - the mechanism above is misstated, and the correction matters for
+the fix's design):** `main.py`'s wholesale rebuild does **not** discard WS-written
+prices. `services/market_watch/market_fetch.py::_fetch_markets` (its tail, ~lines
+282-293, shipped 2026-08-15 in commit `8b0a7c9` "websocket stream everything you
+can") overlays the current in-memory `state["latest_prices"]`/`latest_asks` back
+onto every REST market row *before* returning, so the rebuild on the next line
+reproduces the in-memory (WS-updated) value for every ticker already in the dict.
+Confirmed live, not just by reading: sampling `GET /api/state` four times over ~10s
+showed open-position prices moving at sub-6s granularity (KXNFLGAME-LAC 0.22 → 0.21 →
+0.20, ATP 0.39 → 0.32), i.e. WS updates survive the tick. The rebuild's only real
+effect on known tickers is *membership* (tickers that rotate off the watchlist and
+aren't positions are dropped - correct and bounded); REST seeds only never-seen
+tickers.
+
+**The real gap is the reverse of what H12 said**: once a ticker is in
+`latest_prices`, REST never refreshes it again. `_cached_market_fetch`'s own
+docstring is explicit that price "comes from the WS ticker-channel stream instead...
+never price", and the overlay keeps the in-memory value unconditionally, with no
+age check. So a ticker whose WS `ticker` channel goes quiet has its price **frozen at
+its last value indefinitely** - the 300s-TTL REST refresh fetches a fresh price every
+tick-after-expiry and the overlay discards it. P8 Task 34's first live sample
+measured exactly this population: 4 of 10 open positions had received *no* ticker
+message in the process's lifetime (their price is whatever REST seeded once, then
+copied forward every tick since), and the median tracked position was 62s stale.
+This is the H12/R4 staleness concern in its sharpest form, with the direction
+inverted: the fix is not "stop REST overwriting WS" (it doesn't), it is "let a
+fresher REST row win over a stale in-memory value" - which requires the per-ticker
+`latest_prices_updated_at` timestamp R4 already named as the load-bearing piece.
+Task 29 in the remediation plan is redesigned accordingly (2026-08-27). The other
+H12 conclusions - the four candidate families, the rejection of Family D, the
+"different-cadence concerns bundled into one tick" observation - stand unchanged.
+
 **Not yet done, needed before any family can be selected**: authoritative research on
 Kalshi's own WS reconnect/gap semantics (does a reconnect replay missed ticker updates,
 or does the client need its own REST-backfill-on-reconnect logic regardless of which

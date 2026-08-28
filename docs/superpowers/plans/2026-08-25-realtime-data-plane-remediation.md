@@ -3979,77 +3979,79 @@ async def test_drain_pending_verifications_triggers_one_account_snapshot_refresh
 - Test: append to `tests/test_trading_gate.py` or wherever `trading_loop`'s
   `latest_prices` behavior is currently tested (`grep -rn "latest_prices" tests/`)
 
+**REDESIGNED 2026-08-27, on re-grounding against HEAD before implementing (see the
+CORRECTION addendum under H12 in the known-findings doc):** the premise "REST
+wholesale-overwrites WS data every tick" was wrong. `market_fetch.py::_fetch_markets`'s
+tail (2026-08-15, `8b0a7c9`) already overlays in-memory `latest_prices`/`latest_asks`
+onto the REST rows before the rebuild, so WS values survive - confirmed live at
+sub-tick granularity. The **real** gap is the reverse: the overlay keeps the
+in-memory value unconditionally, so once a ticker is in the dict REST never refreshes
+it - a WS-quiet ticker's price is frozen indefinitely (Task 34 measured 4 of 10 open
+positions with no ticker message ever received). The "merge instead of overwrite"
+steps originally written here are therefore moot; the R4 timestamp is the
+load-bearing piece, and the fix is an **age-aware overlay**.
+
 **Interfaces:**
-- Changes: the REST-driven assignment becomes a **merge that never overwrites a
-  ticker `_process_stream_ticker` has already written this connection**, not a
-  dict-literal replacement. New tickers this tick's `_fetch_markets` result
-  introduces (never seen via WS yet) are seeded from REST, exactly as today, since
-  that's the genuine gap-fill case, not the overwrite case H12 found.
-- Cold-start / no-WS-yet case stays REST-seeded - this is not a wholesale removal of
-  REST from `latest_prices`, it's fixing which case REST is allowed to win.
-- **R4 addition (adversarial review above):** `state["latest_prices_updated_at"]:
-  dict[str, float]` - set alongside every write to `latest_prices`, both the WS path
-  (`_process_stream_ticker`) and the REST-seed path here. Exposed via
-  `ingest_metrics()` or `/api/health/pipeline` as a simple derived figure (e.g. oldest
-  update age among currently-open-position tickers) - visibility only, not a gating
-  change to `check_exits` itself. Whether `check_exits` should ever skip or flag a
-  position on stale-enough data is a separate, bigger design question this task does
-  not answer - named, not silently left unaddressed, matching this plan's own
-  established discipline for deferred-but-recorded findings.
+- Produces: `state["latest_prices_updated_at"]: dict[str, float]` and
+  `state["latest_asks_updated_at"]: dict[str, float]` - stamped at every write site:
+  the WS path (`_process_stream_ticker`, which additionally starts writing
+  `latest_asks` from the ticker message's own `yes_ask_dollars` - it already reads
+  that field onto the market row but never into `latest_asks`, which today has **no
+  WS writer at all**, so asks are frozen at their REST seed forever), the REST seed
+  path, and the REST-wins path below. Pruned alongside the parent dict (the rebuild's
+  membership semantics are kept - they bound the dict).
+- Changes: the overlay becomes age-aware. Extracted into a pure, testable
+  `market_fetch.overlay_live_prices(markets, state, now)`: keep the in-memory value
+  only while `now - updated_at[ticker] <= _PINNED_MARKET_REFRESH_SEC` (300s, the
+  system's own existing bound on how stale a REST row can be - reused, not a new
+  constant); past that, the REST row's own price wins and is stamped. Net effect,
+  provably: WS stays primary whenever it is actually flowing; a WS-quiet ticker is
+  refreshed from REST every ~300s instead of never; no entry can be older than
+  300s + one tick without a REST correction while its market is still fetched (open
+  positions always are, via `extra_tickers`). This is Family A exactly - WS-primary,
+  REST fills the gap it can see - not a new mechanism.
+- Visibility (R4): `/api/health/pipeline` gains `price_staleness: {open_position_
+  oldest_age_sec, open_position_count, stale_over_300s_count}` derived from the new
+  timestamps. Visibility only - whether `check_exits` should act on staleness is
+  Task 35's job, on top of this.
 
 - [ ] **Step 1: Read the current exact code at `main.py:782-793`** and
   `_process_stream_ticker`'s `state["latest_prices"][ticker] = ...` assignment
   (`services/whale_stream/whale_stream_handlers.py`, confirm the current line - it
   was ~251 when H12 was written, re-verify) before writing the fix, per this plan's
   own established grounding discipline.
-- [ ] **Step 2: Write the failing test** - a ticker gets a WS-driven price update
-  between two ticks; asserts the next tick's REST-driven refresh does not revert it.
-
-```python
-def test_ws_ticker_price_update_survives_the_next_tick_rest_refresh(monkeypatch):
-    # Seed state["latest_prices"][ticker] via the WS path (call
-    # _process_stream_ticker directly with a synthetic ticker_msg, matching the
-    # real shape - yes_bid_dollars present), then simulate one more trading_loop
-    # tick's REST-driven latest_prices assignment with an OLDER price for the same
-    # ticker in that tick's `markets` result. Assert the WS-set price survives.
-    ...
-```
-
-- [ ] **Step 3: Run it, watch it fail** - today's wholesale overwrite reverts it
-  every time.
-- [ ] **Step 4: Change `main.py:782-784`'s assignment to a merge**:
-
-```python
-for m in markets:
-    ticker = m.get("ticker")
-    if not ticker:
-        continue
-    if ticker not in state["latest_prices"]:  # never seen via WS this connection - REST seeds it
-        state["latest_prices"][ticker] = float(m.get("yes_bid_dollars") or 0.5)
-```
-
-  (Read this against the real current code before finalizing - `state["latest_
-  prices"]` needs a real initial value for every genuinely new ticker, and the exact
-  condition for "never seen via WS" needs to match how `_process_stream_ticker`
-  actually keys the dict, which this plan's earlier read already confirmed is the
-  same ticker string.) Apply the identical merge shape to `state["latest_asks"]`
-  (lines 790-793).
-- [ ] **Step 5: Run it, watch it pass.**
-- [ ] **Step 6: Add `state["latest_prices_updated_at"][ticker] = time.time()`** at
-  both write sites (the REST-seed branch here, and `_process_stream_ticker`'s own
-  assignment) and a small derived figure in `ingest_metrics()`/`/api/health/pipeline`
-  (R4) - write a test asserting the timestamp updates on both paths independently.
-- [ ] **Step 7: Run the full `check_exits`/exit-management test suite for a
-  regression check** - this is the safety-adjacent part. Confirm no test depended on
-  `latest_prices` being wholesale-replaced every tick (none should, per Step 2's own
-  design, but confirm rather than assume, matching Task 20's own "pay particular
-  attention" precedent for this exact function).
-- [ ] **Step 8: Live verification** (paper mode only) - confirm via `GET /api/state`
-  that a position's displayed price tracks WS ticker pushes between REST ticks
-  rather than only updating every 6s, and that the new staleness figure moves
-  correctly. Not just unit-tested - this is exactly the kind of claim this plan's own
-  P3.5 live-scale work insisted on confirming live, not just in a test double.
-- [ ] **Step 9: Commit:** `git commit -m "fix: stop state[latest_prices] from wholesale-overwriting WS-driven data every tick, add staleness visibility (H12 P7)"`
+- [ ] **Step 2: Write the failing tests** (`tests/test_market_fetch_overlay.py`, new)
+  against the pure helper: (a) a WS-fresh in-memory price (updated <300s ago) beats
+  the REST row; (b) a stale in-memory price (>300s, or with no timestamp at all -
+  unknown age is not trusted) loses to the REST row and is re-stamped; (c) a
+  never-seen ticker is seeded from REST and stamped; (d) asks follow the same rules
+  via their own dicts; (e) input rows are never mutated (shallow-copy invariant the
+  existing overlay already has). Plus, in `tests/test_trading_gate.py`:
+  `_process_stream_ticker` now writes `latest_asks` from the message and stamps
+  both timestamps.
+- [ ] **Step 3: Run them, watch them fail** - no helper, no timestamps, no ask
+  writer exist yet.
+- [ ] **Step 4: Extract `market_fetch.overlay_live_prices(markets, state, now)`**
+  from `_fetch_markets`'s tail, make it age-aware and stamping per the Interfaces
+  above; `_fetch_markets` calls it. Add the two `*_updated_at` dicts to
+  `services/app_state.py`'s state init. In `_process_stream_ticker`, stamp
+  `latest_prices_updated_at` and start writing `latest_asks` + its stamp. In
+  `main.py`'s rebuild, prune both `*_updated_at` dicts to the rebuilt keys (bounded).
+- [ ] **Step 5: Run them, watch them pass.**
+- [ ] **Step 6: Add `price_staleness` to `/api/health/pipeline`**
+  (`services/diagnostics/routes.py`) derived from the timestamps for
+  `state["open_position_tickers"]`; test via the existing route test idiom.
+- [ ] **Step 7: Run the full `check_exits`/exit-management + market_watch + trading_
+  gate suites for a regression check** - safety-adjacent; `check_pending_fills` in
+  particular now sees WS-driven asks for the first time, confirm its "no fresh ask"
+  distinction still holds (it reads `latest_asks.get(ticker)` - an absent key must
+  stay absent, never a fabricated 0.5).
+- [ ] **Step 8: Live verification** (paper mode) - `price_staleness` present on
+  `/api/health/pipeline`; over a >300s window, a WS-quiet open position's price is
+  observed to change on a REST refresh (previously impossible); WS-active positions
+  still move at sub-tick granularity. Task 34's `position_ticker.never_seen_count`
+  gives the population to watch.
+- [ ] **Step 9: Commit:** `git commit -m "fix: age-aware live-price overlay - REST refreshes WS-quiet tickers instead of never; WS asks; staleness visibility (P7 Task 29, redesigned)"`
 
 ---
 
