@@ -3849,10 +3849,46 @@ evaluated against, not just "fewer REST calls":
 - Per the HARD RULE's own instruction, every task's hot-path cost is measured, not
   assumed - see each task's own verification step.
 
+### Adversarial review of Tasks 28/29/31/33 (2026-08-27), matching I12's own
+    code-anchored internal-review methodology
+
+The original investigation's solution-selection workflow (steps 3-6: prototype,
+benchmark, fault-inject, score) was initially skipped for P7 in favor of reasoning
+alone - corrected on direct instruction, since P0-P6 met that bar
+(`2026-08-25-realtime-architecture-review.md`) and P7 should too. P7's actual
+question (data freshness/correctness across a connection-loss window) isn't a
+queueing/throughput question the existing replay harnesses (`realtime_pipeline_
+replay.py`, `rest_scheduler_replay.py`) model - so this review follows I12's
+*other* real methodology instead, the code-anchored internal review pass (I12 §2),
+which is equally real rigor, not a lesser substitute.
+
+| # | Finding | Mechanism (code/docs) | Verdict |
+|---|---|---|---|
+| R1 | **Task 28's reconnect-triggered REST-verify for ticker prices is redundant with WS's own reconnect behavior.** `_sync_subscriptions(force_subscribe=True)` already re-subscribes `ticker` with `send_initial_snapshot: True` (`services/kalshi/websocket.py:965`) for every currently-desired ticker - which already includes open positions, since `main.py`'s watchlist fetch folds them in via `extra_tickers`. A reconnect already gets a fresh WS-pushed price for every open position with no REST call needed. | `websocket-connection.md`'s `send_initial_snapshot` param (ticker-scoped); `services/kalshi/websocket.py:960-968` | **Needs a design change**: narrow Task 28/31 to account-state verification only (`fill`/`market_positions`, which has no snapshot-on-subscribe equivalent - see R2). Drop the position-ticker REST-verify from Task 28's scope entirely - it would be a real REST call paying for something WS already delivers for free. Simpler design, not a weaker one. |
+| R2 | **`fill`/`market_positions` have no snapshot-on-subscribe capability at all**, confirmed by direct absence in their own doc pages (zero "snapshot"/"initial" mentions in `user-fills.md`/`market-positions.md`, unlike `ticker`'s explicit flag). A disconnect genuinely loses any fill/position event that occurred during the outage - no replay, no reconnect snapshot. | `docs/kalshi/user-fills.md`, `docs/kalshi/market-positions.md` (absence checked directly, not assumed from silence) | **Confirms Task 31 is correctly scoped and genuinely necessary** - the one piece of this phase where a reconnect-triggered REST-verify is not redundant with anything WS already provides. |
+| R3 | **Mid-connection ticker additions (`add_markets`) don't request a snapshot** - `services/kalshi/websocket.py:996-1002`'s `to_add` branch omits `send_initial_snapshot`, even though the same param is documented as available there too (`websocket-connection.md` line 718, default `false`). A position opened while already connected gets zero WS-driven price until the next natural ticker tick for that market - Task 29's "seed from REST only if missing" merge clause is what actually covers this today. | `websocket-connection.md` (`update_subscription` "Add Markets" schema) | **Real, easy improvement, folded into Task 33** (already touching this file's subscribe-message construction): set `send_initial_snapshot: True` on the `add_markets` call too. Reduces reliance on Task 29's REST-seed fallback and gets a newly-opened position its first price faster, at zero extra REST cost - the flag changes what WS sends, not an additional call. |
+| R4 | **Long-outage staleness has no visibility gate.** Once Task 29 stops the periodic REST-overwrite, `state["latest_prices"][ticker]` holds whatever it last had, indefinitely, with nothing telling `check_exits` the connection has been down and that value might be stale - the same "a bug looks like quiet, not broken" shape I12 §2.8 already named for a different mechanism. | `services/whale_stream/whale_stream_handlers.py::_process_stream_ticker` (only path that ever updates the dict going forward) | **Needs a design addition to Task 29, not a blocker**: expose `state["latest_prices_updated_at"][ticker]` (set alongside every write) and a `trade_stream.status.connected`-aware staleness metric, matching I12's own "observability moves with the cost" precedent (§2.8/§3.12) rather than solving full staleness-gated exit logic in this phase - that's a bigger, separate design question (would `check_exits` skip a position outright on stale data, or just flag it?) than P7's scope, named here rather than silently left unaddressed. |
+| R5 | **Combined-subscribe atomicity is a genuine, unresolved doc ambiguity** for Task 33 - does a multi-channel `subscribe` command fail as one unit if one channel is rejected, or partially succeed? The docs don't say either way; the `Subscribed Response` schema shows one channel/`sid` per response message (`websocket-connection.md` line ~1376-1386, confirmed - not one combined list), which at least means the *existing* per-message handler (`_handle_message`'s `"subscribed"` branch, already one-channel-at-a-time) needs no change to correctly process either outcome. | `websocket-connection.md` (`Subscribed Response`/`Error Response` schemas - neither documents partial-failure semantics) | **Not resolved from static reading alone, named per this plan's own "explicit ambiguity" discipline (H13 §5) rather than assumed either way.** Not a blocker: the response-parsing path already handles it correctly regardless of which way the server actually behaves. |
+| R6 | **Pre-existing, out-of-scope**: every current subscribe call (not just Task 33's) sets its own `_X_subscribed = True` flag immediately after `_send()`, without waiting for the server's `"subscribed"` confirmation (`services/kalshi/websocket.py:924`, `937`, unchanged pattern). If a subscribe command is ever actually rejected, the app would wrongly believe it succeeded and never retry - `_sync_subscriptions`'s own gating (`not self._X_subscribed`) would never re-fire. | `services/kalshi/websocket.py` (all subscribe call sites, current behavior) | **Real gap, but pre-existing and not introduced or worsened by Task 33** (same shape whether channels are combined or separate) - recorded here rather than silently noticed and dropped, explicitly out of P7's scope. Candidate for its own future task if a real subscribe rejection is ever observed live. |
+
+**Verdict on the leading P7 design**: holds, with two required amendments (R1/R3, folded into Task 28/29/33 below) and one required addition (R4, folded into Task 29). R2 confirms rather than changes Task 31. R5/R6 are named, not blocking - matching I12's own precedent of separating "needs a design change" from "real but out of this pass's scope" rather than treating every finding as equally urgent.
+
 ---
 
 ### Task 28: Generalize Task 27's reconnect/error-25 loss-event callback into a
-    shared hook, add a position/account REST-verify subscriber
+    shared hook, add an account-state REST-verify subscriber
+
+**Narrowed per R1/R2 of the adversarial review above**: this task originally also
+covered a position-ticker REST-verify on reconnect. Dropped - `ticker`'s own
+`send_initial_snapshot: True` on `force_subscribe=True` reconnect already delivers a
+fresh WS-pushed price for every open position with no REST call needed (R1); a REST
+call here would pay for something WS already gives for free. `fill`/`market_positions`
+have no such snapshot-on-subscribe capability at all (R2, confirmed absent in their own
+doc pages) - that asymmetry is *why* this task still exists, scoped to account state
+only. Task 31 (originally a separate account-state task) is now this task's own
+target, not a second implementation of the same mechanism - see Task 31 below, which
+is now a thin change to `_fetch_account_snapshot` consuming what this task produces,
+not its own reconnect-detection logic.
 
 **Files:**
 - Modify: `services/diagnostics/trade_capture_reconciliation.py` (Task 27's
@@ -3869,15 +3905,12 @@ evaluated against, not just "fewer REST calls":
 - Produces: `ws_state_verify.on_connection_loss(reason: str, *, occurred_at: float) -> None`
   - schedules a bounded, single-shot REST-verify pass (mirrors Task 27's
     `_schedule_sweep`/`drain_pending_sweeps` shape exactly - reuse that pattern, don't
-    invent a second one) for (a) every currently-open position's ticker
-    (`broker.positions.keys() | real_position_tickers`, same set `main.py`'s
-    `open_position_tickers` already computes) and (b) the real account's
-    balance/positions/fills.
+    invent a second one) for the real account's balance/positions/fills only - **not**
+    position tickers, per R1 above.
   - `ws_state_verify.drain_pending_verifications(client, cfg) -> dict` - called from
     `main.py`'s tick loop (bounded, max one pending verification drained per tick,
-    same shape as Task 27's own drain), does a single `get_markets_by_tickers` for
-    open-position tickers and one `_fetch_account_snapshot`-shaped call, both marked
-    `caller_class("critical_position")`.
+    same shape as Task 27's own drain), does one `_fetch_account_snapshot`-shaped
+    call, marked `caller_class("critical_position")`.
 
 - [ ] **Step 1: Read Task 27's actual shipped implementation first** - this task
   depends on it directly (same call sites, same callback shape). If Task 27 hasn't
@@ -3899,23 +3932,17 @@ def test_on_connection_loss_schedules_a_verification_pass(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_drain_pending_verifications_refreshes_only_open_position_tickers(monkeypatch):
+async def test_drain_pending_verifications_triggers_one_account_snapshot_refresh(monkeypatch):
     from services.position import ws_state_verify as wsv
     wsv._pending_verifications.clear()
     wsv.on_connection_loss("reconnect", occurred_at=100.0)
 
     calls = []
+    monkeypatch.setattr(wsv, "_force_account_snapshot_refresh", lambda cfg: calls.append(cfg) or {"connected": True})
 
-    class _FakeClient:
-        async def get_markets_by_tickers(self, tickers):
-            calls.append(sorted(tickers))
-            return {t: {"ticker": t, "yes_bid_dollars": "0.42"} for t in tickers}
-
-    result = await wsv.drain_pending_verifications(
-        _FakeClient(), open_position_tickers=["TICK-A", "TICK-B"], cfg={"kalshi_account": {"trading_enabled": False}},
-    )
-    assert calls == [["TICK-A", "TICK-B"]]
-    assert result["verified_tickers"] == ["TICK-A", "TICK-B"]
+    result = await wsv.drain_pending_verifications(cfg={"kalshi_account": {"trading_enabled": False}})
+    assert len(calls) == 1
+    assert result["account_verified"] is True
 ```
 
 - [ ] **Step 3: Run it, watch it fail** (`ws_state_verify` doesn't exist yet).
@@ -3924,8 +3951,10 @@ async def test_drain_pending_verifications_refreshes_only_open_position_tickers(
   `on_loss_event` shape exactly (same bounded-queue, single-drain-per-tick pattern -
   read that file's real current code for the precise structure to copy, don't
   re-derive it from this plan's earlier description alone since Task 27 may have
-  refined it during implementation).
-- [ ] **Step 5: Wire the second callback** in `services/kalshi/websocket.py`'s
+  refined it during implementation). `_force_account_snapshot_refresh` calls into
+  Task 31's own forced-refresh entry point (see below) - implement Task 31 first if
+  picking these up out of order.
+- [ ] **Step 5: Wire the callback** in `services/kalshi/websocket.py`'s
   `_record_disconnect` and error-25 handling, alongside Task 27's existing
   `trade_capture_reconciliation.on_loss_event(...)` call - both fire from the same
   two call sites, independently.
@@ -3937,7 +3966,7 @@ async def test_drain_pending_verifications_refreshes_only_open_position_tickers(
   bounded list, the actual REST work happens later on the tick loop's own existing
   `critical_position` budget, not synchronously on the WS reader.
 - [ ] **Step 8: Run the full test suite for a regression check.**
-- [ ] **Step 9: Commit:** `git commit -m "feat: reconnect-triggered position/account REST-verify, reusing Task 27's loss-event pattern (H12/H13 P7)"`
+- [ ] **Step 9: Commit:** `git commit -m "feat: reconnect-triggered account-state REST-verify, reusing Task 27's loss-event pattern (H12/H13 P7)"`
 
 ---
 
@@ -3958,6 +3987,15 @@ async def test_drain_pending_verifications_refreshes_only_open_position_tickers(
   that's the genuine gap-fill case, not the overwrite case H12 found.
 - Cold-start / no-WS-yet case stays REST-seeded - this is not a wholesale removal of
   REST from `latest_prices`, it's fixing which case REST is allowed to win.
+- **R4 addition (adversarial review above):** `state["latest_prices_updated_at"]:
+  dict[str, float]` - set alongside every write to `latest_prices`, both the WS path
+  (`_process_stream_ticker`) and the REST-seed path here. Exposed via
+  `ingest_metrics()` or `/api/health/pipeline` as a simple derived figure (e.g. oldest
+  update age among currently-open-position tickers) - visibility only, not a gating
+  change to `check_exits` itself. Whether `check_exits` should ever skip or flag a
+  position on stale-enough data is a separate, bigger design question this task does
+  not answer - named, not silently left unaddressed, matching this plan's own
+  established discipline for deferred-but-recorded findings.
 
 - [ ] **Step 1: Read the current exact code at `main.py:782-793`** and
   `_process_stream_ticker`'s `state["latest_prices"][ticker] = ...` assignment
@@ -3997,17 +4035,21 @@ for m in markets:
   same ticker string.) Apply the identical merge shape to `state["latest_asks"]`
   (lines 790-793).
 - [ ] **Step 5: Run it, watch it pass.**
-- [ ] **Step 6: Run the full `check_exits`/exit-management test suite for a
+- [ ] **Step 6: Add `state["latest_prices_updated_at"][ticker] = time.time()`** at
+  both write sites (the REST-seed branch here, and `_process_stream_ticker`'s own
+  assignment) and a small derived figure in `ingest_metrics()`/`/api/health/pipeline`
+  (R4) - write a test asserting the timestamp updates on both paths independently.
+- [ ] **Step 7: Run the full `check_exits`/exit-management test suite for a
   regression check** - this is the safety-adjacent part. Confirm no test depended on
   `latest_prices` being wholesale-replaced every tick (none should, per Step 2's own
   design, but confirm rather than assume, matching Task 20's own "pay particular
   attention" precedent for this exact function).
-- [ ] **Step 7: Live verification** (paper mode only) - confirm via `GET /api/state`
+- [ ] **Step 8: Live verification** (paper mode only) - confirm via `GET /api/state`
   that a position's displayed price tracks WS ticker pushes between REST ticks
-  rather than only updating every 6s. Not just unit-tested - this is exactly the
-  kind of claim this plan's own P3.5 live-scale work insisted on confirming live,
-  not just in a test double.
-- [ ] **Step 8: Commit:** `git commit -m "fix: stop state[latest_prices] from wholesale-overwriting WS-driven data every tick (H12 P7)"`
+  rather than only updating every 6s, and that the new staleness figure moves
+  correctly. Not just unit-tested - this is exactly the kind of claim this plan's own
+  P3.5 live-scale work insisted on confirming live, not just in a test double.
+- [ ] **Step 9: Commit:** `git commit -m "fix: stop state[latest_prices] from wholesale-overwriting WS-driven data every tick, add staleness visibility (H12 P7)"`
 
 ---
 
@@ -4098,6 +4140,12 @@ def resolve_from_market_results(ticker: str, result: str) -> int:
   independent, much-longer interval cache (e.g. 60s, not 20s - balance changes only
   on a fill, which WS already reports) rather than being folded into the same
   reconcile-everything call.
+- Produces: `account_positions.force_refresh(cfg) -> dict` - bypasses the interval
+  cache entirely and does the real `get_balance`/`get_positions`/`get_fills` gather
+  unconditionally, returning the same shape `_fetch_account_snapshot` normally
+  returns. This is the entry point Task 28's `ws_state_verify._force_account_
+  snapshot_refresh` calls on a reconnect - build this task first if picking up P7
+  out of order, since Task 28 depends on it existing.
 - Real-account impact today is architectural, not behavioral: `trading_enabled` is
   `false`, so no live fill/position traffic exists yet to observe the difference -
   this task is about being correctly designed for when it's enabled, not fixing a
@@ -4119,9 +4167,12 @@ def resolve_from_market_results(ticker: str, result: str) -> int:
   when `ws_state_verify`'s reconnect-triggered pass (Task 28) requests it, or when
   `state["account"]` has never been populated at all (cold start, same "seed only
   what's genuinely missing" shape as Task 29).
-- [ ] **Step 5: Run it, watch it pass; run the account/position test suite for a
+- [ ] **Step 5: Add `force_refresh(cfg)`** - factor the existing gather-and-slim
+  logic out of `_fetch_account_snapshot` into a shared helper both the interval path
+  and `force_refresh` call, rather than duplicating the three-call gather.
+- [ ] **Step 6: Run it, watch it pass; run the account/position test suite for a
   regression check.**
-- [ ] **Step 6: Commit:** `git commit -m "fix: stop unconditionally REST-reconciling WS-sourced account state every 20s (H13 P7)"`
+- [ ] **Step 7: Commit:** `git commit -m "fix: stop unconditionally REST-reconciling WS-sourced account state every 20s, add reconnect-triggered force_refresh (H13 P7)"`
 
 ---
 
@@ -4229,24 +4280,41 @@ rather than left to be re-found.
 - Connection-setup-only cost (fires once per connect/reconnect, not per-tick or
   per-message) - real but low-urgency, included here because it's a genuine documented-
   but-unused capability, not because it's a hot-path bottleneck.
+- **R3 addition (adversarial review above):** the `to_add` branch's `add_markets`
+  call (`services/kalshi/websocket.py:996-1002`) gains `"send_initial_snapshot": True`
+  - documented as available there too (`websocket-connection.md` line 718, default
+  `false`, currently omitted), so a ticker added mid-connection (a position opening
+  while already connected) gets its first price directly from WS instead of relying
+  entirely on Task 29's REST-seed fallback. Zero extra REST cost - the flag changes
+  what the server sends over the existing connection, not an additional call.
+- **R5/R6 (adversarial review above), named not fixed here:** whether a rejected
+  multi-channel subscribe fails atomically or partially is an unresolved doc
+  ambiguity - not blocking, since the existing per-message `"subscribed"` handler
+  already processes one channel/`sid` per response regardless of which way the
+  server behaves. Every current subscribe call (not just this task's) sets its own
+  `_X_subscribed` flag immediately after sending, without waiting for confirmation -
+  a pre-existing gap this task doesn't introduce or worsen, out of scope here.
 
 - [ ] **Step 1: Write the failing test** - asserts exactly one `_send()` call carries
   both `"trade"` and `"market_lifecycle_v2"` in its `channels` list on a fresh
-  connect, where today's code sends two separate calls.
+  connect, where today's code sends two separate calls; a second assertion for R3
+  confirms the `add_markets` call includes `"send_initial_snapshot": True`.
 - [ ] **Step 2: Run it, watch it fail.**
 - [ ] **Step 3: Combine the two `_send()` calls** in `_sync_subscriptions`'s
   `force_subscribe` branch into one, preserving each channel's own gating
   (`self.exchange_wide_trades or desired` for trade, `self.subscribe_lifecycle` for
   lifecycle - both must independently gate whether they're included in the combined
-  list, not become unconditionally coupled).
+  list, not become unconditionally coupled). Add `"send_initial_snapshot": True` to
+  the `to_add` branch's `add_markets` params (R3).
 - [ ] **Step 4: Run it, watch it pass; run the full WS-client test suite for a
   regression check.**
 - [ ] **Step 5: Live verification** - a real `ddev restart`, confirm via `ddev logs -s
   fastapi` that the fresh connection sends one combined subscribe for trade+lifecycle
   instead of two, and that both channels' data still flows normally afterward (`GET
   /api/health/pipeline`'s `ingest.received_by_class` for both `trade` and `lifecycle`
-  growing).
-- [ ] **Step 6: Commit:** `git commit -m "perf: combine trade+market_lifecycle_v2 into one subscribe message on connect, matching fill+market_positions' existing pattern (H12/H13 P7)"`
+  growing). Separately, confirm a ticker added mid-connection (e.g. widen the
+  watchlist live) gets a WS-pushed price without waiting for the next natural tick.
+- [ ] **Step 6: Commit:** `git commit -m "perf: combine trade+market_lifecycle_v2 into one subscribe message, request an initial snapshot on add_markets too (H12/H13 P7)"`
 
 ---
 
@@ -4259,7 +4327,9 @@ position updates between REST ticks; a `settled` lifecycle event resolves
 `ws_state_verify`'s drain (new counter, exposed via `ingest_metrics()` or
 `/api/health/pipeline`, matching every other phase's own visibility requirement);
 a fresh connect sends one combined subscribe message for `trade`+`market_lifecycle_v2`
-(Task 33), confirmed via `ddev logs`.
+(Task 33), confirmed via `ddev logs`; `state["latest_prices_updated_at"]`'s staleness
+figure (Task 29/R4) is present and moves correctly during a real disconnect/reconnect
+cycle, not just in a test double.
 Cross-post the shipped findings into `services/position/README.md` (or create it,
 following an existing module's format, per CLAUDE.md's cross-posting rule) and
 `services/signal_log`'s own module docstring, so a future audit of either module
