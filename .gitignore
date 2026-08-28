@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .claude/hooks/.checkpoint_nudge_state
+.claude/hooks/.aqc_bg_lock
 venv/
 data/*.db
 data/*.db-shm

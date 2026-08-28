@@ -42,6 +42,7 @@ End to end, every piece of this app depends on optimal data completeness, accura
 - `ddev describe` first; it is usually already running. `web` (nginx, docroot `static`) is the only public entry; `fastapi` is reachable only as `fastapi:8000` inside the docker network (deliberate: Traefik tie-break bug).
 - `.py` edits hot-reload in ~1–2 s; `.ddev/**` edits need `ddev restart`; anything that must survive a real process restart needs a real `ddev restart`.
 - `ddev exec -s fastapi <cmd>` for in-container commands (runs as root; use it to delete root-owned leftovers). It refuses to run from a linked worktree directory: run it from the primary root and `cd /app/.claude/worktrees/<name>` inside.
+- Hooks: `.claude/settings.json` is read from the current worktree but `$CLAUDE_PROJECT_DIR` is the primary checkout, so every hook command goes through `.claude/hooks/run_hook.py`, which runs the session's own checkout's copy (CI-enforced by `tests/test_workflow_budgets.py`).
 - App: `https://kalshi-whale-poc.ddev.site:8443`; `GET /api/state` is the fastest live read; `ddev logs -s fastapi|web` for logs; `/run` skill for detail.
 - Public tunnel `autotrade.webfoundry.dev` is Basic-Auth gated in `.ddev/nginx/kalshi-proxy.conf`; `.env` `SITE_BASIC_AUTH_*` is the source of truth, regenerated on `ddev start`.
 - CORS stays restricted to the ddev host + `localhost:8000` (`ALLOWED_ORIGINS` in `.env`).

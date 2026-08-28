@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_orient.sh\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" session_orient.sh; else bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_orient.sh\"; fi",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_compact_reorient.sh\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" post_compact_reorient.sh; else bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_compact_reorient.sh\"; fi",
             "timeout": 15
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/midsession_checkpoint_nudge.sh\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" midsession_checkpoint_nudge.sh; else bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/midsession_checkpoint_nudge.sh\"; fi",
             "timeout": 10
           }
         ]
@@ -39,13 +39,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_data_db.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" guard_data_db.py; else python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_data_db.py\"; fi",
             "timeout": 5,
             "statusMessage": "Checking for data/*.db writes..."
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" guard_workflow.py; fi",
             "timeout": 10,
             "statusMessage": "Workflow guard..."
           }
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" guard_workflow.py; fi",
             "timeout": 10,
             "statusMessage": "Workflow guard..."
           }
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" guard_workflow.py; fi",
             "timeout": 10
           }
         ]
@@ -79,17 +79,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" guard_workflow.py; fi",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_py_syntax.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" check_py_syntax.py; else python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_py_syntax.py\"; fi",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_tests.py\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py\" run_tests.py; else python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_tests.py\"; fi",
             "timeout": 60,
             "statusMessage": "Running tests..."
           }

@@ -72,14 +72,26 @@ def test_every_hook_harness_timeout_exceeds_the_hooks_own_budget():
     assert seen == set(budgets), f"hooks with a budget but no settings entry: {set(budgets) - seen}"
 
 
-def test_guard_hooks_are_wired_for_the_events_they_implement():
+def _commands():
     settings = json.loads((ROOT / ".claude" / "settings.json").read_text())
-    wired = {(event, group.get("matcher", ""), h["command"].split("/")[-1].rstrip('"'))
-             for event, groups in settings["hooks"].items()
-             for group in groups for h in group.get("hooks", [])}
-    assert ("PreToolUse", "Bash", "guard_workflow.py") in wired
-    assert ("PreToolUse", "Edit|Write", "guard_workflow.py") in wired
-    assert any(e == "PostToolUse" and c == "guard_workflow.py" for e, _, c in wired)
+    return [(event, group.get("matcher", ""), h["command"])
+            for event, groups in settings["hooks"].items()
+            for group in groups for h in group.get("hooks", [])]
+
+
+def test_guard_hooks_are_wired_for_the_events_they_implement():
+    wired = {(e, m) for e, m, c in _commands() if "guard_workflow.py" in c}
+    assert ("PreToolUse", "Bash") in wired
+    assert ("PreToolUse", "Edit|Write") in wired
+    assert any(e == "PostToolUse" for e, _ in wired)
+
+
+def test_every_hook_command_goes_through_the_launcher():
+    """settings.json is read from the current worktree but $CLAUDE_PROJECT_DIR is the
+    primary checkout, so a hook referenced directly runs the primary's copy of the
+    script (2026-08-28 finding). run_hook.py resolves the session's own checkout."""
+    direct = [c for _, _, c in _commands() if "run_hook.py" not in c]
+    assert not direct, direct
 
 
 def test_every_hook_script_has_a_test_file():
