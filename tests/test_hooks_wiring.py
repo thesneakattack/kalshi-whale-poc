@@ -70,13 +70,30 @@ def test_every_hook_script_and_repo_script_has_a_test_file():
     }
     missing = []
     for script in sorted([*HOOKS.glob("*.py"), *HOOKS.glob("*.sh"), *(ROOT / "scripts").glob("*.sh")]):
-        if script.name in untested_legacy or script.name == "orient.sh":
+        if script.name in untested_legacy:
             continue
         stem = script.stem.replace("-", "_")
         candidates = (ROOT / "tests" / f"test_{stem}.py", ROOT / "tests" / f"test_{stem}_hook.py")
         if not any(c.exists() for c in candidates):
             missing.append(script.name)
     assert not missing, missing
+
+
+def test_settings_keeps_project_scoped_plugin_enablement():
+    """settings.json is also where project-scoped plugins are enabled (enabledPlugins) and
+    their marketplaces registered (extraKnownMarketplaces). A hooks-only rewrite of the
+    file silently disables every one of them - caught in review of the 2026-08-28 rebuild
+    before it merged. Each enabled plugin's marketplace must be known."""
+    settings = json.loads(SETTINGS.read_text())
+    enabled = settings.get("enabledPlugins") or {}
+    markets = settings.get("extraKnownMarketplaces") or {}
+    assert enabled, "enabledPlugins missing - project-scoped plugins would all be disabled"
+    for plugin, on in enabled.items():
+        assert on is True, plugin
+        _, _, market = plugin.partition("@")
+        assert market == "claude-plugins-official" or market in markets, (plugin, sorted(markets))
+    for name, spec in markets.items():
+        assert spec.get("source", {}).get("repo"), name
 
 
 def test_no_effort_budget_survives_in_the_hook_layer():
