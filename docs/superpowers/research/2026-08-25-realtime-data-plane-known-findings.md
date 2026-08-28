@@ -420,6 +420,132 @@ Live-measured (2026-08-26), not assumed:
   concrete symptom that motivated the original report (CH2). Not a confirmed
   bottleneck today. Commit: `docs: classify H11 (CH3)`.
 
+## Hypothesis H12 — position management's data is REST-authoritative by
+   construction, not WS-primary with REST-as-verification, despite three
+   prior passes that each believed they were fixing this
+
+Direct standing instruction, originally given 2026-08-15, restated 2026-08-27 after
+three intervening audits each claimed partial progress: *"position management should
+be decoupled from constant polling... polling should be removed altogether in favor of
+taking data from websockets and only use the rest api to verify ws data when executing
+decisions or we need data the webstream cant give."* Direct correction the same day,
+after a first response proposed patching a single line: *"stop making monkey patches
+and research solutions like you were supposed to. what did that audit even do."*
+
+**What the three prior audits (2026-08-15, 2026-08-17, 2026-08-23) actually shipped,
+checked against current code rather than trusted from their own doc prose:**
+
+- 2026-08-15 ("no stone unturned" API audit): moved four REST call sites off the
+  tick's hot path - discovery, catalog-scanning, and signal-resolution became
+  independent background tasks with their own cadence; `_fetch_account_snapshot`
+  gained a 20s interval cache. **Effect: throttled REST. Did not change what is
+  authoritative.**
+- 2026-08-17: correctly identified that price/trade, settlement, `market_history`
+  snapshots, and live sports state were four things wrongly sharing one
+  `poll_interval_sec` cadence, and correctly named WS replacements for three of them.
+  What shipped: `market_history.record_snapshot_from_ticker` **interleaves** WS
+  samples between REST ticks (its own docstring's word - "rather than replacing it
+  outright"); `close_date_updated` lifecycle WS updates `state["markets"]` as an
+  overlay. **Effect: WS supplements REST. REST remained the thing that gets
+  overwritten-and-trusted every tick.**
+- 2026-08-23: `determined`/`settled` wired into the real settlement/outcome
+  resolvers (`market_history`, `settlement_edge`, `market_analyst_agent`,
+  `candidate_log`) - WS-primary, with a single-ticker REST call only at the moment
+  of final resolution to catch dispute corrections. **This is the one genuine
+  inversion in the whole history** - but scoped only to settlement, never
+  generalized to price or position metadata.
+
+**The mechanism that never got touched, three audits later** - confirmed by reading
+`main.py::trading_loop` directly, not inferred from any doc: every tick, unconditionally,
+`main.py:782-784` does
+
+```python
+state["latest_prices"] = {
+    m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
+}
+```
+
+`markets` is that tick's own `_fetch_markets(client, cfg, extra_tickers=open_position_tickers)`
+REST result. This **wholesale-replaces** the dict, not merges into it - so whatever
+`_process_stream_ticker` wrote from real-time WS pushes in the seconds since the last tick
+is discarded and rebuilt from REST every `poll_interval_sec` (6s), regardless of whether
+the WS value was fresher. Three separate `check_exits` call sites exist
+(`main.py`'s tick loop, `_process_stream_trade`, `_process_stream_ticker` - both in
+`services/whale_stream/whale_stream_handlers.py`); two of the three already run off WS
+pushes with no tick dependency, but the tick-loop's own call - which still runs every 6s
+regardless of whether anything changed - reads prices that were *just* reset to REST
+values on the same line above it. This is why "position management" still reads as
+tick-bound even though WS updates are demonstrably flowing: REST doesn't just supplement
+the picture, it periodically **overwrites** it.
+
+Beyond that one line, the same tick still bundles many *different*-cadence concerns
+behind one `_fetch_markets` call and one `poll_interval_sec` gate - `event_titles`,
+`live_status`, `series_track_record`, `market_titles` are all recomputed every tick, and
+several of their own inline comments already say some version of "same until the next
+tick anyway." Live sports game state (`_fetch_event_live_data`) has no WS equivalent
+(confirmed against `docs/kalshi/get-live-data.md`/`get-milestone.md` by the 2026-08-17
+audit) but doesn't need 6s freshness either, and was flagged "still open" then - no
+evidence since that it was ever decoupled from the shared cadence.
+
+**Explicitly not concluding a fix here.** Per this file's own header purpose ("seed an
+investigation, not dictate its conclusion") and `.claude/rules/realtime-data-plane-
+evidence.md`'s candidate-solution rule, the next task is solution-family enumeration
+and comparison, not a chosen architecture. Recording the candidate families surfaced so
+far so they aren't lost, explicitly including the one that should be named and rejected
+rather than silently avoided:
+
+- **Family A - WS-primary state, REST only for cold-start fill and decision-time
+  verification.** Closest literal reading of the direct instruction. `state["latest_
+  prices"]`/market metadata are written only by WS handlers; REST is called (a) once
+  per ticker that has no WS-derived value yet (a position just opened, or a ticker
+  with no ticker-channel traffic recently), and (b) immediately before `check_exits`/
+  `strategy.evaluate` actually commits to a decision, as a bounded verification read
+  (matching the 2026-08-23 settlement pattern, generalized). Open questions before this
+  can be scored: what staleness/gap-detection strategy proves a WS-derived price hasn't
+  silently gone stale (a ticker that stops receiving ticker-channel messages looks
+  identical to "the price hasn't moved" from a WS-primary cache's point of view) -
+  needs research into the Kalshi WS reconnect/backlog contract and the installed
+  `websockets` library's own gap-handling guidance, not assumed.
+- **Family B - shared cache with per-field freshness contracts.** One `MarketStateCache`
+  per ticker; every field carries its own source and as-of timestamp (price: WS,
+  continuous; close_time/status: WS lifecycle + REST fallback; volume_24h/category:
+  REST-only, refreshed on its own multi-minute schedule, not every 6s). Callers read
+  through one interface and can assert their own tolerance rather than inheriting
+  whatever the tick happened to fetch. Directly addresses the "different-cadence
+  concerns bundled into one tick" half of the finding, independent of the price-specific
+  fix Family A targets - the two are not mutually exclusive.
+- **Family C - dissolve `trading_loop` into WS-triggered handlers plus independent
+  background schedulers, no unifying tick for decision-relevant data at all.** Two of
+  three `check_exits` sites are already WS-triggered; discovery/catalog-scan/signal-
+  resolution are already independent background tasks. This family is "finish that
+  pattern" - the tick-loop's own `check_exits` call and its REST-refresh-and-decide
+  shape would be removed rather than patched, with only the genuinely-REST-only,
+  low-frequency concerns (sports game state, catalog discovery) kept on their own
+  schedules. Highest potential REST-load reduction and the most literal match to
+  "polling removed altogether," also the largest blast-radius change to a live,
+  safety-adjacent hot path - needs the most fault-injection scrutiny of the three
+  (reconnect gaps, a WS handler silently stalling per the trade-stream-consumer
+  incident above, partial-state windows during startup).
+- **Family D, named to be rejected rather than silently skipped: deeper REST
+  caching/conditional-fetch (ETag-style or narrower field selection).** Would reduce
+  REST call volume further without changing what's authoritative - i.e., a faster,
+  more sophisticated version of exactly the pattern all three prior audits already
+  used. Rejected as a candidate for *this* investigation's actual question (REST vs.
+  WS as source of truth), not because caching is bad in general - it doesn't address
+  the direct instruction's own framing, "removed altogether in favor of websockets,"
+  and repeating that pattern a fourth time is the thing being explicitly corrected
+  against here.
+
+**Not yet done, needed before any family can be selected**: authoritative research on
+Kalshi's own WS reconnect/gap semantics (does a reconnect replay missed ticker updates,
+or does the client need its own REST-backfill-on-reconnect logic regardless of which
+family is chosen - `docs/kalshi/websocket-connection.md` first, not memory); a
+representative benchmark of each family's REST-call volume and decision latency under
+the same synthetic workload; fault injection (WS disconnect mid-position, a stalled
+consumer per the incident recorded above, a ticker rotating off discovery scope while a
+position is still open); and a scored comparison before any implementation plan gets
+written.
+
 ## Phase P3.5 live-scale attempt (2026-08-27) - 3/3 runs failed before producing
    comparable data
 
