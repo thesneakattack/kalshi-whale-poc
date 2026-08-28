@@ -105,7 +105,8 @@ async def run_pending(
     config_fp: str, tick_now: float, *, now: float | None = None,
 ) -> dict:
     """The sole owner of retrying + removing entries from _pending. Call
-    from exactly one place (main.py's tick loop) - a second concurrent
+    from exactly one place (main.py's _candidate_retry_loop, its own
+    supervised loop since P8 Task 37; the tick loop before that) - a second concurrent
     caller would violate R7's single-mutator requirement (two callers
     could both retry the same trade_id in the same tick, double-counting
     attempts against the backoff budget).

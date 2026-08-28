@@ -562,6 +562,43 @@ _SCHEDULER_TRIGGERS = (
 )
 
 
+async def _candidate_retry_loop() -> None:
+    """candidate_retry.run_pending's one and only caller (P8 Task 37) - it
+    used to be invoked once per tick from trading_loop's body (P2 Task 13).
+    Its documented single-mutator contract (services/candidate_retry.py:
+    "call from exactly one place") is preserved by relocation, not
+    duplication: trading_loop's call is gone, this loop is the single
+    caller. Owns its own KalshiPublicGateway per run - the tick's own client
+    closes at the end of each tick, the same reason every other background
+    task here owns one (see _check_signal_resolutions_background) - and
+    constructs it only when something is actually pending, so the idle path
+    is one snapshot() read, no client churn. Same stream-mode gate the tick
+    applied: a retry's own market lookup is only meaningful when the
+    exchange-wide stream is what feeds whale candidates in the first place.
+    whale_provider + _handle_signal are still threaded through so a
+    recovered candidate is scored and evaluated through the same pipeline a
+    first-try trade uses, not just claimed and dropped."""
+    loop_state = state["candidate_retry_loop"]
+    while True:
+        await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
+        if not state["running"] or not _streaming_trade_tape_enabled():
+            continue
+        if candidate_retry.snapshot().get("pending", 0) <= 0:
+            continue
+        cfg = config_store.get()
+        loop_state["running"] = True
+        loop_state["last_started_at"] = time.time()
+        client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+        try:
+            await candidate_retry.run_pending(
+                client, whale_provider, _handle_signal, cfg, state.get("market_results") or {},
+                config_performance.fingerprint(cfg), time.time(),
+            )
+        finally:
+            loop_state["running"] = False
+            await client.close()
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -722,20 +759,9 @@ async def trading_loop():
                     _fetch_live_status(client, markets),
                 )
                 state["trade_tape_last_fetch_ts"] = tick_now
-            if _streaming_trade_tape_enabled():
-                # P2 Task 13: retries H4-unmarked candidates (services/
-                # candidate_retry.py) once per tick, stream mode only -
-                # mirrors the trade-tape branch above since a retry's own
-                # market lookup is only meaningful when the exchange-wide
-                # stream is what feeds whale candidates in the first
-                # place. Normally a near-instant no-op (nothing due).
-                # whale_provider + _handle_signal passed through (code-review
-                # fix, finding #1) so a recovered candidate is actually
-                # scored and evaluated through the same pipeline a first-try
-                # trade uses, not just claimed and dropped.
-                await candidate_retry.run_pending(
-                    client, whale_provider, _handle_signal, cfg, market_results, config_fp, tick_now,
-                )
+            # candidate_retry.run_pending (P2 Task 13) runs from its own
+            # supervised loop now - _candidate_retry_loop, P8 Task 37 - which
+            # keeps its single-mutator contract (still exactly one caller).
             phase_timings["event_and_tradetape_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
             state["event_titles"].update(event_titles)
@@ -1120,6 +1146,9 @@ async def lifespan(app: FastAPI):
         )
         for name, trigger in _SCHEDULER_TRIGGERS
     ]
+    scheduler_tasks.append(task_supervisor.supervise(
+        _candidate_retry_loop, component="scheduler", operation="candidate_retry", restart=True,
+    ))
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(

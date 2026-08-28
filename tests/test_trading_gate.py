@@ -3368,7 +3368,7 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
 
     body = client.get("/api/health/pipeline").json()["schedulers"]
 
-    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "auto_apply"} <= set(body)
+    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "candidate_retry", "auto_apply"} <= set(body)
     assert 10 <= body["signal_resolution"]["last_started_sec_ago"] <= 15
     assert body["signal_resolution"]["busy"] is False
     assert body["catalog_scan"]["busy"] is True

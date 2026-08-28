@@ -250,6 +250,9 @@ state = {
     # Same background-task decoupling as discovery_cache above, for
     # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
     "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
+    # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
+    "candidate_retry_loop": {"running": False, "last_started_at": 0.0},
     # Same background-task decoupling as discovery_cache/catalog_scan
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.

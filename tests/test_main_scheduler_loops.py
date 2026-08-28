@@ -84,3 +84,77 @@ def test_maybe_run_auto_apply_reaches_the_moved_calibration_block_when_due(monke
     })
 
     assert reached["called"] == ([], 7)  # the block moved intact and is reachable from its new home
+
+
+# --- P8 Task 37: candidate_retry.run_pending from its own supervised loop -----
+
+def _drive(n_sleeps: int, coro_fn, running: bool, monkeypatch):
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_sec):
+        sleeps["n"] += 1
+        if sleeps["n"] > n_sleeps:
+            raise _Stop
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.state["running"] = running
+    with pytest.raises(_Stop):
+        asyncio.run(coro_fn())
+
+
+def _wire_candidate_retry(monkeypatch, pending: int, streaming: bool = True):
+    calls, closed, constructed = [], [], []
+
+    class FakeClient:
+        def __init__(self, base_url, timeout):
+            constructed.append(base_url)
+
+        async def close(self):
+            closed.append(True)
+
+    async def fake_run_pending(client, provider, handle_signal, cfg, market_results, config_fp, tick_now, **_kw):
+        calls.append((client, provider, handle_signal, cfg, market_results, config_fp, tick_now))
+        return {}
+
+    monkeypatch.setattr(main, "KalshiPublicGateway", FakeClient)
+    monkeypatch.setattr(main.candidate_retry, "run_pending", fake_run_pending)
+    monkeypatch.setattr(main.candidate_retry, "snapshot", lambda: {"pending": pending})
+    monkeypatch.setattr(main, "_streaming_trade_tape_enabled", lambda: streaming)
+    monkeypatch.setattr(main.config_store, "get", lambda: {
+        "kalshi": {"base_url": "u", "request_timeout_sec": 1}, "strategy": {"entry_threshold": 0.5},
+    })
+    monkeypatch.setitem(main.state, "market_results", {"K1": "yes"})
+    monkeypatch.setitem(main.state, "candidate_retry_loop", {"running": False, "last_started_at": 0.0})
+    return calls, closed, constructed, FakeClient
+
+
+def test_candidate_retry_loop_runs_run_pending_with_its_own_client_when_work_is_pending(monkeypatch):
+    calls, closed, constructed, FakeClient = _wire_candidate_retry(monkeypatch, pending=2)
+
+    _drive(2, main._candidate_retry_loop, running=True, monkeypatch=monkeypatch)
+
+    assert len(calls) == 2 and len(closed) == 2 and len(constructed) == 2  # one client per run, always closed
+    client, provider, handle_signal, cfg, market_results, config_fp, tick_now = calls[0]
+    assert isinstance(client, FakeClient)
+    assert provider is main.whale_provider and handle_signal is main._handle_signal  # scored, not claim-and-dropped
+    assert market_results == {"K1": "yes"}
+    assert config_fp == main.config_performance.fingerprint(cfg)
+    assert main.state["candidate_retry_loop"]["last_started_at"] > 0
+
+
+def test_candidate_retry_loop_skips_entirely_when_nothing_is_pending(monkeypatch):
+    calls, closed, constructed, _ = _wire_candidate_retry(monkeypatch, pending=0)
+
+    _drive(3, main._candidate_retry_loop, running=True, monkeypatch=monkeypatch)
+
+    assert calls == [] and constructed == []  # no client churn on the idle path
+
+
+def test_candidate_retry_loop_respects_stream_mode_and_pause(monkeypatch):
+    calls, *_ = _wire_candidate_retry(monkeypatch, pending=2, streaming=False)
+    _drive(2, main._candidate_retry_loop, running=True, monkeypatch=monkeypatch)
+    assert calls == []
+
+    calls, *_ = _wire_candidate_retry(monkeypatch, pending=2, streaming=True)
+    _drive(2, main._candidate_retry_loop, running=False, monkeypatch=monkeypatch)
+    assert calls == []

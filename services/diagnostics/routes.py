@@ -179,6 +179,7 @@ def _scheduler_status(now: float) -> dict:
         "research": {"last_started_sec_ago": None, "busy": bool((state.get("research") or {}).get("running"))},
         "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
         "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
+        "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         "auto_apply": {
             "calibration_last_applied_sec_ago": _applied("calibration-auto-apply"),
             "advisory_last_applied_sec_ago": _applied("unified-advisory-auto"),
