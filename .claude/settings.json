@@ -42,14 +42,46 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_data_db.py\"",
             "timeout": 5,
             "statusMessage": "Checking for data/*.db writes..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "timeout": 10,
+            "statusMessage": "Workflow guard..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "timeout": 10,
+            "statusMessage": "Workflow guard..."
           }
         ]
       }
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash|Read|mcp__gitnexus__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_workflow.py\"",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_py_syntax.py\"",

@@ -19,6 +19,26 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 fi
 
+# Other live Claude sessions on this machine, and where each one works. This is
+# the mechanical form of "never checkout/stash under another session's work":
+# guard_workflow.py denies those git operations in an occupied checkout; this
+# line makes the occupancy visible before the first command.
+sock_dir="/run/user/$(id -u)/cc-socks"
+if [ -d "$sock_dir" ]; then
+  me_pids=""
+  p=$$
+  while [ "$p" -gt 1 ] 2>/dev/null; do me_pids="$me_pids $p"; p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null || echo 1); done
+  for s in "$sock_dir"/*.sock; do
+    [ -e "$s" ] || continue
+    pid=$(basename "$s" .sock)
+    case " $me_pids " in *" $pid "*) continue ;; esac
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+    obr=$(git -C "$cwd" branch --show-current 2>/dev/null)
+    odirty=$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    echo "live session pid $pid works in $cwd (branch '$obr', $odirty uncommitted) - do not checkout/stash/commit there; coordinate via SendMessage (ListAgents) before touching files it names"
+  done
+fi
+
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   # Cheap, network-free count (no gh calls here - this hook has a 15s
   # budget and scripts/cleanup-worktrees.sh's PR-state check is a network
@@ -117,9 +137,33 @@ plugins (use them; never write a project skill or tool that duplicates one):
   github MCP / gh: PRs, statuses, issues; github-issues-kanban skill owns claim/dispatch on the board
 EOF
 
-# AQC (tools/quality_coordination.py) - the user-built workflow janitor. Too
-# slow for this hook's budget (15.8s measured, network calls), so /checkpoint
-# runs it; this prints the last stored result so no session forgets it exists.
+# Feedback memories - the user's corrections - printed unconditionally. Claude
+# Code loads memory by relevance, which is exactly how 9 of 29 corrections got
+# re-learned; this makes every `type: feedback` entry always-loaded.
+# Memory is keyed by the PRIMARY project path; a linked worktree shares it.
+primary_dir="${CLAUDE_PROJECT_DIR%%/.claude/worktrees/*}"
+mem_dir="$HOME/.claude/projects/$(echo "$primary_dir" | sed 's|/|-|g')/memory"
+if [ -d "$mem_dir" ]; then
+  fb=$(grep -l '^  type: feedback' "$mem_dir"/*.md 2>/dev/null)
+  if [ -n "$fb" ]; then
+    echo "standing corrections (memory type=feedback, always loaded):"
+    for f in $fb; do
+      printf "  - %s\n" "$(grep -m1 '^description:' "$f" | cut -c14- | sed 's/^"//; s/"$//' | cut -c1-220)"
+    done
+  fi
+fi
+
+# AQC (tools/quality_coordination.py) - the user-built workflow janitor.
+# 16-26s with network calls, so it runs detached here (result lands in its own
+# store for the next session) and /checkpoint runs it inline; this prints the
+# last stored result so no session forgets the tool exists.
+aqc_lock=".claude/hooks/.aqc_bg_lock"
+if [ -f tools/quality_coordination.py ] && command -v python3 >/dev/null 2>&1; then
+  if [ ! -f "$aqc_lock" ] || [ $(( $(date +%s) - $(stat -c %Y "$aqc_lock" 2>/dev/null || echo 0) )) -gt 21600 ]; then
+    touch "$aqc_lock"
+    ( setsid nohup python3 -m tools.quality_coordination >/dev/null 2>&1 & ) >/dev/null 2>&1
+  fi
+fi
 if [ -f tools/quality_coordination_data/quality_coordination.db ]; then
   python3 - <<'PY' 2>/dev/null || echo "AQC: store unreadable - run: python -m tools.quality_coordination"
 import sqlite3
