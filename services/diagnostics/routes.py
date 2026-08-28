@@ -156,6 +156,36 @@ async def get_settlement_edge(min_samples: int = 200):
     return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
 
 
+def _scheduler_status(now: float) -> dict:
+    """P8 Task 36: with the background trigger checks relocated out of
+    trading_loop into their own supervised loops (main._scheduler_loop),
+    this is the one place to confirm each is still firing - last-started
+    age and busy flag per scheduler. Unknown (never started, or a scheduler
+    that keeps no timestamp of its own) is None, never a fabricated value."""
+    from services.config import config_performance
+
+    def _entry(key: str, started_key: str, busy_key: str) -> dict:
+        s = state.get(key) or {}
+        last = s.get(started_key) or 0.0
+        return {"last_started_sec_ago": round(now - last, 1) if last else None, "busy": bool(s.get(busy_key))}
+
+    def _applied(source: str) -> float | None:
+        last = config_performance.last_applied_at(source)
+        return round(now - last, 1) if last else None
+
+    return {
+        "signal_resolution": _entry("signal_resolution_check", "last_checked_at", "checking"),
+        "backup": _entry("backup", "last_started_at", "running"),
+        "research": {"last_started_sec_ago": None, "busy": bool((state.get("research") or {}).get("running"))},
+        "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
+        "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
+        "auto_apply": {
+            "calibration_last_applied_sec_ago": _applied("calibration-auto-apply"),
+            "advisory_last_applied_sec_ago": _applied("unified-advisory-auto"),
+        },
+    }
+
+
 def _price_staleness(now: float) -> dict:
     """P7 Task 29 (redesigned) / R4 visibility: age of the price each open
     position would be exit-checked against, from the per-ticker write
@@ -212,6 +242,9 @@ async def get_pipeline_health():
         # fabricated as fresh - a position with no entry at all is exactly
         # the case the age-aware overlay exists to catch.
         "price_staleness": _price_staleness(now),
+        # P8 Task 36: per-scheduler liveness now that none of them are
+        # called from the tick - see _scheduler_status.
+        "schedulers": _scheduler_status(now),
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a

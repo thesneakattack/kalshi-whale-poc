@@ -374,6 +374,194 @@ async def _build_series_track_record_async(tickers: list, days: int = 30) -> dic
     return await tick_executor.run(lambda: signal_log.series_stats_bulk(tickers, days=days))
 
 
+_SCHEDULER_TRIGGER_INTERVAL_SEC = 5.0
+
+
+async def _scheduler_loop(trigger, name: str) -> None:
+    """One supervised loop per background trigger check (P8 Task 36). The
+    five _maybe_* functions and _maybe_run_auto_apply used to be invoked from
+    inside trading_loop's body, which made every one of them tick-cadenced by
+    accident of where the call lived, not by design - each already carries
+    its own due()/overlap guard and spawns its real work as an independent
+    task. Only the caller moved. Gated on state["running"] so nothing fires
+    while the app is paused, exactly as trading_loop's own gate behaved. The
+    interval sits well under every trigger's own due() interval (the tightest
+    is catalog_scan's 15s), so due()-precision is preserved; a not-due call
+    is one dict comparison."""
+    while True:
+        await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
+        if not state["running"]:
+            continue
+        trigger(config_store.get())
+
+
+def _maybe_run_auto_apply(cfg: dict) -> None:
+    """Calibration-history snapshot + calibration auto-apply, and unified
+    advisory auto-apply - moved verbatim out of trading_loop (P8 Task 36).
+    Both are hours-scale (snapshot_interval_sec 21600, auto_apply_cooldown_sec
+    86400) and were the one place the tick still did real inline work when
+    due instead of the _maybe_* trigger shape everything else uses. Still
+    inline-when-due here (same blocking profile as before, once every several
+    hours); offloading the due-time work itself via tick_executor is a
+    follow-up, not part of this pure relocation."""
+    tick_now = time.time()
+
+    # Calibration-history tracking (Gap 6, docs/config-tuning-data-
+    # gaps-2026-08-10.md) - confidence_calibration.py already
+    # computes a real report on demand, but only ever as a single
+    # point-in-time snapshot, discarded the moment the request
+    # ends. due() is a single cheap MAX() query, so this tick's
+    # cost stays negligible unless a snapshot is actually due; only
+    # then does the expensive full-table-scan report computation
+    # run. Costs zero API tokens (pure local computation), unlike
+    # the market analyst - automatic background capture is fine
+    # here.
+    cc_cfg = cfg.get("confidence_calibration") or {}
+    if cc_cfg.get("enabled") and calibration_history.due(
+        tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
+    ):
+        cc_rows = signal_log.resolved_signals_with_factors()
+        cc_result = confidence_calibration.generate_calibration_report(
+            cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
+        )
+        if cc_result["report"] is not None:
+            calibration_history.record_snapshot(cc_result["report"], tick_now)
+            # Auto-apply (2026-08-10, direct request) - off by
+            # default, only reachable via the typed-confirmation-
+            # gated /api/confidence-calibration/auto-apply/enable.
+            # Same cooldown idiom as the snapshot check itself:
+            # last_applied_at() is one cheap indexed query, so this
+            # only pays for the real work (blend + config write)
+            # once the cooldown has actually elapsed.
+            if cc_cfg.get("auto_apply_enabled"):
+                last_auto = config_performance.last_applied_at("calibration-auto-apply")
+                cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
+                # Direct report (2026-08-11): "auto apply should wait for a
+                # significant dataset... before applying changes." The report
+                # itself only needs min_resolved_signals (default 50) to exist
+                # at all - reasonable for a human reading a read-only panel, too
+                # thin a bar for the system to act on unsupervised. A separate,
+                # stricter floor specifically for the automatic-write path, same
+                # "manual can be more permissive than automatic" split
+                # auto_apply_min_n below applies to advisory.
+                auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
+                if (
+                    last_auto is None or (tick_now - last_auto) >= cooldown
+                ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
+                    current_weights = cfg.get("whale_confidence_weights") or {}
+                    blended = confidence_calibration.blended_weights_for_auto_apply(
+                        current_weights, cc_result["report"].get("suggested_weights"),
+                    )
+                    if blended is not None and blended != current_weights:
+                        fp_before = config_performance.fingerprint(cfg)
+                        config_store.update({"whale_confidence_weights": blended})
+                        fp_after = config_performance.fingerprint(config_store.get())
+                        # "predict how those changes may improve (or worsen)"
+                        # (direct report) - the biggest observed calibration
+                        # gap is exactly what suggested_weights was derived to
+                        # address (services/whale_calibration/confidence_calibration.py's
+                        # _suggested_weights renormalizes toward the
+                        # best-discriminating factors) - cite it plainly rather
+                        # than fabricate a forward win-rate number this app has
+                        # no way to honestly back before the new weights have
+                        # actually scored any signals yet.
+                        ranked = cc_result["report"].get("ranked_by_discrimination") or []
+                        top_factor = ranked[0] if ranked else None
+                        top_gap = next(
+                            (f["gap_pts"] for f in cc_result["report"]["per_factor"] if f["factor"] == top_factor),
+                            None,
+                        ) if top_factor else None
+                        predicted = (
+                            f" Largest observed calibration gap was {top_factor} at {top_gap:+.1f}pts - "
+                            f"this reweighting shifts weight toward the factors that discriminate best."
+                            if top_factor and top_gap is not None else ""
+                        )
+                        config_performance.log_applied_change(
+                            config_path="whale_confidence_weights",
+                            old_value=current_weights, new_value=blended,
+                            rationale=(
+                                f"Auto-applied calibration-suggested weights "
+                                f"(n={cc_result['report']['resolved_count']} resolved signals)."
+                                f"{predicted}"
+                            ),
+                            trade_count=cc_result["report"]["resolved_count"],
+                            fingerprint_before=fp_before, fingerprint_after=fp_after,
+                            auto_applied=True, source="calibration-auto-apply",
+                        )
+                        bump_generation()
+
+    # Advisory auto-apply - real bug found live (2026-08-10):
+    # advisory.auto_apply_enabled was already protected from
+    # generic config edits and had a min_confidence/cooldown_sec
+    # config surface, but nothing anywhere actually read those
+    # fields or auto-applied anything - the feature was reachable
+    # from no path at all (see the two new /api/advisory/auto-
+    # apply/* routes' own comment for the full story). Same
+    # cheap-cooldown-check-first shape as calibration's own
+    # auto-apply above; only applies the single highest-priority
+    # (first) recommendation clearing auto_apply_min_confidence
+    # per cooldown window, not a burst of every qualifying one at
+    # once - same "auto-apply is inherently conservative" posture
+    # calibration's own auto-apply follows.
+    adv_cfg = cfg.get("advisory") or {}
+    if adv_cfg.get("enabled") and adv_cfg.get("auto_apply_enabled"):
+        last_adv_auto = config_performance.last_applied_at("unified-advisory-auto")
+        adv_cooldown = adv_cfg.get("auto_apply_cooldown_sec", 86400)
+        if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
+            adv_current_fp = config_performance.fingerprint(cfg)
+            adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
+            adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
+            adv_result = advisory_engine.generate_recommendations(
+                adv_all_rows, cfg, adv_current_fp, adv_variants,
+                adv_cfg["min_resolved_trades_per_variant"],
+                gate_summaries=candidate_log.gate_summary(),
+                # Staleness filter (2026-08-11, direct bug report) matters most
+                # right here - unlike a manual click, auto-apply has no human
+                # to notice it's repeatedly nudging the same field off the
+                # exact same stale evidence every cooldown window.
+                last_applied_by_path=config_performance.all_last_applied_by_path(),
+                series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
+                category_rows=regime_analytics.by_category(adv_all_rows),
+            )
+            min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
+            # Direct report (2026-08-11): "auto apply should wait for a
+            # significant dataset... before applying changes." confidence_
+            # label's "higher" tier already starts at n=15 (trade_analytics.
+            # confidence_label) - a reasonable bar for a human to read a
+            # suggestion, thinner than what should trigger an unsupervised
+            # config write. A dedicated, separately-tunable floor for the
+            # automatic path only - manual Apply (see apply_advisory_
+            # recommendation) is untouched by this, same "manual can be more
+            # permissive than automatic" split as the calibration side above.
+            min_n = adv_cfg.get("auto_apply_min_n", 25)
+            qualifying = [
+                r for r in adv_result.get("recommendations", [])
+                if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
+            ]
+            if qualifying:
+                rec = qualifying[0]
+                section, _, field = rec["config_path"].partition(".")
+                config_store.update({section: {field: rec["suggested_value"]}})
+                adv_new_fp = config_performance.fingerprint(config_store.get())
+                config_performance.log_applied_change(
+                    config_path=rec["config_path"], old_value=rec["current_value"],
+                    new_value=rec["suggested_value"], rationale=rec["rationale"], trade_count=rec["n"],
+                    fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
+                    auto_applied=True, source="unified-advisory-auto",
+                )
+                bump_generation()
+
+
+_SCHEDULER_TRIGGERS = (
+    ("signal_resolution", _maybe_check_signal_resolutions),
+    ("backup", _maybe_run_backup),
+    ("research", _maybe_run_research),
+    ("event_schedule", event_schedule._maybe_resolve_event_schedules),
+    ("catalog_scan", _maybe_scan_catalog_batch),
+    ("auto_apply", _maybe_run_auto_apply),
+)
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -458,10 +646,8 @@ async def trading_loop():
             # observability sampler both key per-position cadence off, so
             # "which tickers count as open" has exactly one definition.
             state["open_position_tickers"] = set(open_position_tickers)
-            _maybe_check_signal_resolutions(cfg)
-            _maybe_run_backup(cfg)
-            _maybe_run_research(cfg)
-            event_schedule._maybe_resolve_event_schedules(cfg)
+            # signal-resolution / backup / research / event-schedule trigger checks
+            # run from their own supervised loops now (P8 Task 36, _scheduler_loop).
             await check_and_alert(cfg)
             markets, account_snapshot, exchange_status = await asyncio.gather(
                 _fetch_markets(client, cfg, extra_tickers=open_position_tickers), _fetch_account_snapshot(cfg),
@@ -476,7 +662,9 @@ async def trading_loop():
             # about to need. Triggering it only after that gather returns
             # means the critical fetch's own calls are already dispatched
             # first.
-            _maybe_scan_catalog_batch(cfg)
+            # _maybe_scan_catalog_batch runs from its own supervised loop now (P8
+            # Task 36). The launch-order concern in the comment above is moot:
+            # it no longer shares this coroutine at all.
             await _fetch_category_metadata(client)
             phase_timings["market_fetch"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
@@ -508,152 +696,10 @@ async def trading_loop():
             phase_timings["resolve_and_record"] = round(time.time() - _phase_t, 3)
             _phase_t = time.time()
 
-            # Calibration-history tracking (Gap 6, docs/config-tuning-data-
-            # gaps-2026-08-10.md) - confidence_calibration.py already
-            # computes a real report on demand, but only ever as a single
-            # point-in-time snapshot, discarded the moment the request
-            # ends. due() is a single cheap MAX() query, so this tick's
-            # cost stays negligible unless a snapshot is actually due; only
-            # then does the expensive full-table-scan report computation
-            # run. Costs zero API tokens (pure local computation), unlike
-            # the market analyst - automatic background capture is fine
-            # here.
-            cc_cfg = cfg.get("confidence_calibration") or {}
-            if cc_cfg.get("enabled") and calibration_history.due(
-                tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
-            ):
-                cc_rows = signal_log.resolved_signals_with_factors()
-                cc_result = confidence_calibration.generate_calibration_report(
-                    cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
-                )
-                if cc_result["report"] is not None:
-                    calibration_history.record_snapshot(cc_result["report"], tick_now)
-                    # Auto-apply (2026-08-10, direct request) - off by
-                    # default, only reachable via the typed-confirmation-
-                    # gated /api/confidence-calibration/auto-apply/enable.
-                    # Same cooldown idiom as the snapshot check itself:
-                    # last_applied_at() is one cheap indexed query, so this
-                    # only pays for the real work (blend + config write)
-                    # once the cooldown has actually elapsed.
-                    if cc_cfg.get("auto_apply_enabled"):
-                        last_auto = config_performance.last_applied_at("calibration-auto-apply")
-                        cooldown = cc_cfg.get("auto_apply_cooldown_sec", 86400)
-                        # Direct report (2026-08-11): "auto apply should wait for a
-                        # significant dataset... before applying changes." The report
-                        # itself only needs min_resolved_signals (default 50) to exist
-                        # at all - reasonable for a human reading a read-only panel, too
-                        # thin a bar for the system to act on unsupervised. A separate,
-                        # stricter floor specifically for the automatic-write path, same
-                        # "manual can be more permissive than automatic" split
-                        # auto_apply_min_n below applies to advisory.
-                        auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
-                        if (
-                            last_auto is None or (tick_now - last_auto) >= cooldown
-                        ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
-                            current_weights = cfg.get("whale_confidence_weights") or {}
-                            blended = confidence_calibration.blended_weights_for_auto_apply(
-                                current_weights, cc_result["report"].get("suggested_weights"),
-                            )
-                            if blended is not None and blended != current_weights:
-                                fp_before = config_performance.fingerprint(cfg)
-                                config_store.update({"whale_confidence_weights": blended})
-                                fp_after = config_performance.fingerprint(config_store.get())
-                                # "predict how those changes may improve (or worsen)"
-                                # (direct report) - the biggest observed calibration
-                                # gap is exactly what suggested_weights was derived to
-                                # address (services/whale_calibration/confidence_calibration.py's
-                                # _suggested_weights renormalizes toward the
-                                # best-discriminating factors) - cite it plainly rather
-                                # than fabricate a forward win-rate number this app has
-                                # no way to honestly back before the new weights have
-                                # actually scored any signals yet.
-                                ranked = cc_result["report"].get("ranked_by_discrimination") or []
-                                top_factor = ranked[0] if ranked else None
-                                top_gap = next(
-                                    (f["gap_pts"] for f in cc_result["report"]["per_factor"] if f["factor"] == top_factor),
-                                    None,
-                                ) if top_factor else None
-                                predicted = (
-                                    f" Largest observed calibration gap was {top_factor} at {top_gap:+.1f}pts - "
-                                    f"this reweighting shifts weight toward the factors that discriminate best."
-                                    if top_factor and top_gap is not None else ""
-                                )
-                                config_performance.log_applied_change(
-                                    config_path="whale_confidence_weights",
-                                    old_value=current_weights, new_value=blended,
-                                    rationale=(
-                                        f"Auto-applied calibration-suggested weights "
-                                        f"(n={cc_result['report']['resolved_count']} resolved signals)."
-                                        f"{predicted}"
-                                    ),
-                                    trade_count=cc_result["report"]["resolved_count"],
-                                    fingerprint_before=fp_before, fingerprint_after=fp_after,
-                                    auto_applied=True, source="calibration-auto-apply",
-                                )
-                                bump_generation()
-
-            # Advisory auto-apply - real bug found live (2026-08-10):
-            # advisory.auto_apply_enabled was already protected from
-            # generic config edits and had a min_confidence/cooldown_sec
-            # config surface, but nothing anywhere actually read those
-            # fields or auto-applied anything - the feature was reachable
-            # from no path at all (see the two new /api/advisory/auto-
-            # apply/* routes' own comment for the full story). Same
-            # cheap-cooldown-check-first shape as calibration's own
-            # auto-apply above; only applies the single highest-priority
-            # (first) recommendation clearing auto_apply_min_confidence
-            # per cooldown window, not a burst of every qualifying one at
-            # once - same "auto-apply is inherently conservative" posture
-            # calibration's own auto-apply follows.
-            adv_cfg = cfg.get("advisory") or {}
-            if adv_cfg.get("enabled") and adv_cfg.get("auto_apply_enabled"):
-                last_adv_auto = config_performance.last_applied_at("unified-advisory-auto")
-                adv_cooldown = adv_cfg.get("auto_apply_cooldown_sec", 86400)
-                if last_adv_auto is None or (tick_now - last_adv_auto) >= adv_cooldown:
-                    adv_current_fp = config_performance.fingerprint(cfg)
-                    adv_all_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
-                    adv_variants = {v["fingerprint"]: v for v in config_performance.all_variants()}
-                    adv_result = advisory_engine.generate_recommendations(
-                        adv_all_rows, cfg, adv_current_fp, adv_variants,
-                        adv_cfg["min_resolved_trades_per_variant"],
-                        gate_summaries=candidate_log.gate_summary(),
-                        # Staleness filter (2026-08-11, direct bug report) matters most
-                        # right here - unlike a manual click, auto-apply has no human
-                        # to notice it's repeatedly nudging the same field off the
-                        # exact same stale evidence every cooldown window.
-                        last_applied_by_path=config_performance.all_last_applied_by_path(),
-                        series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
-                        category_rows=regime_analytics.by_category(adv_all_rows),
-                    )
-                    min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
-                    # Direct report (2026-08-11): "auto apply should wait for a
-                    # significant dataset... before applying changes." confidence_
-                    # label's "higher" tier already starts at n=15 (trade_analytics.
-                    # confidence_label) - a reasonable bar for a human to read a
-                    # suggestion, thinner than what should trigger an unsupervised
-                    # config write. A dedicated, separately-tunable floor for the
-                    # automatic path only - manual Apply (see apply_advisory_
-                    # recommendation) is untouched by this, same "manual can be more
-                    # permissive than automatic" split as the calibration side above.
-                    min_n = adv_cfg.get("auto_apply_min_n", 25)
-                    qualifying = [
-                        r for r in adv_result.get("recommendations", [])
-                        if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
-                    ]
-                    if qualifying:
-                        rec = qualifying[0]
-                        section, _, field = rec["config_path"].partition(".")
-                        config_store.update({section: {field: rec["suggested_value"]}})
-                        adv_new_fp = config_performance.fingerprint(config_store.get())
-                        config_performance.log_applied_change(
-                            config_path=rec["config_path"], old_value=rec["current_value"],
-                            new_value=rec["suggested_value"], rationale=rec["rationale"], trade_count=rec["n"],
-                            fingerprint_before=adv_current_fp, fingerprint_after=adv_new_fp,
-                            auto_applied=True, source="unified-advisory-auto",
-                        )
-                        bump_generation()
-            phase_timings["calibration_advisory"] = round(time.time() - _phase_t, 3)
-            _phase_t = time.time()
+            # Calibration-history snapshot / calibration auto-apply / unified
+            # advisory auto-apply moved to their own supervised loop (P8 Task 36,
+            # _maybe_run_auto_apply) - the tick no longer does hours-scale work
+            # inline when it happens to be due.
 
             state["market_results"] = market_results
             if _streaming_trade_tape_enabled():
@@ -1065,6 +1111,15 @@ async def lifespan(app: FastAPI):
     capture_writer_liveness_task = task_supervisor.supervise(
         _capture_writer_liveness_loop, component="capture_writer", operation="liveness", restart=True,
     )
+    # P8 Task 36: the background trigger checks run from their own supervised
+    # loops, not from trading_loop's body - see _scheduler_loop.
+    scheduler_tasks = [
+        task_supervisor.supervise(
+            lambda t=trigger, n=name: _scheduler_loop(t, n),
+            component="scheduler", operation=name, restart=True,
+        )
+        for name, trigger in _SCHEDULER_TRIGGERS
+    ]
     trade_stream_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
@@ -1099,6 +1154,8 @@ async def lifespan(app: FastAPI):
     task.cancel()
     loop_watchdog_task.cancel()
     capture_writer_liveness_task.cancel()
+    for scheduler_task in scheduler_tasks:
+        scheduler_task.cancel()
     capture_writer.stop()
     await close_client()
     # `account` is a long-lived singleton (unlike the per-tick market-data

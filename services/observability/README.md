@@ -687,3 +687,18 @@ process's lifetime, and the median tracked position was over a minute
 stale. That is exactly the "a quiet ticker looks identical to an unchanged
 price" gap H12 named, now measured rather than hypothesized, and the input
 Task 35's staleness-corroboration threshold is meant to be tuned from.
+
+## Metric change: `tick.phase.calibration_advisory_sec` retired (P8 Task 36, 2026-08-28)
+
+The calibration-history snapshot / calibration auto-apply / unified advisory
+auto-apply blocks moved out of `trading_loop` into their own supervised
+scheduler loop (`main._maybe_run_auto_apply`, driven by `main._scheduler_loop`
+like the five `_maybe_*` trigger checks, which also left the tick body the
+same day). The tick therefore no longer records a `calibration_advisory`
+phase, and `tick.phase.calibration_advisory_sec` stops being emitted - a real
+metric-meaning change recorded here per I12 §3.12, not a gap. Its
+replacement for "did auto-apply run" is `GET /api/health/pipeline`'s new
+`schedulers.auto_apply` block (last-applied ages read from
+`config_performance`), alongside `schedulers.{signal_resolution,backup,
+research,event_schedule,catalog_scan}` (last-started age + busy flag from
+each scheduler's own state). Every other `tick.phase.*` metric is unchanged.

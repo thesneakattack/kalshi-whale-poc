@@ -3355,3 +3355,20 @@ def test_lifecycle_settled_also_resolves_signal_log_rows_for_the_ticker(tmp_path
     assert rows["yes"]["resolved"] == 1 and rows["yes"]["correct"] == 1
     assert rows["no"]["resolved"] == 1 and rows["no"]["correct"] == 0
     assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] >= 2
+
+
+def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
+    """P8 Task 36: with the trigger checks relocated out of trading_loop, the
+    pipeline route is the one place a human can confirm each scheduler is
+    still firing - last-started age + busy flag per scheduler, unknown
+    reported as None rather than fabricated."""
+    now = time.time()
+    monkeypatch.setitem(main.state, "signal_resolution_check", {"last_checked_at": now - 12, "checking": False, "task": None})
+    monkeypatch.setitem(main.state, "catalog_scan", {"scanning": True, "last_started_at": now - 3, "task": None})
+
+    body = client.get("/api/health/pipeline").json()["schedulers"]
+
+    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "auto_apply"} <= set(body)
+    assert 10 <= body["signal_resolution"]["last_started_sec_ago"] <= 15
+    assert body["signal_resolution"]["busy"] is False
+    assert body["catalog_scan"]["busy"] is True
