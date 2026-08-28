@@ -78,3 +78,45 @@ def test_check_exits_wall_clock_cost_at_scale(n, capsys):
         exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}})
         elapsed = time.monotonic() - t0
     print(f"n={n} positions: check_exits took {elapsed * 1000:.1f}ms")
+
+
+# ---- Task 20: tick_cache memoization (I13 P4) -----------------------------
+#
+# PaperBroker.positions is dict[str, Position] - one entry per ticker (see
+# services/paper_broker.py) - so two Position objects can never literally
+# coexist under the same ticker key inside one check_exits() call. What
+# tick_cache actually protects against, in terms this real data model can
+# reproduce, is the same shape from the other angle described in services/
+# exits/README.md's "partial-hedge positions on the same market" note: two
+# check_exits() passes for the same ticker, within the same tick, sharing
+# one tick_cache dict - the second pass's read for that ticker is served
+# from cache instead of re-querying.
+
+
+def test_check_exits_shares_tick_cache_across_calls_on_the_same_ticker():
+    """Two check_exits() calls for the same ticker, sharing one tick_cache={},
+    should hit market_history.recent_price only once - not twice."""
+    ticker = "KXBTC15M-A"
+    pos = Position(ticker=ticker, side="yes", size=10, entry_price=0.5, opened_at=time.time())
+    broker = _FakeBroker({ticker: pos})
+    latest_prices = {ticker: pos.entry_price}
+    tick_cache = {}
+    with patch("services.market_history.recent_price", return_value=None) as recent_price:
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}}, tick_cache=tick_cache)
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}}, tick_cache=tick_cache)
+    assert recent_price.call_count == 1
+
+
+def test_check_exits_tick_cache_default_none_is_byte_identical_to_before():
+    """tick_cache defaults to None - strictly additive, so every existing
+    caller (main.py's stream-path call sites, every pre-Task-20 test) must
+    see the exact same behavior as before this parameter existed: a fresh,
+    uncached read on every call, not a cache hit on the second one."""
+    ticker = "KXBTC15M-A"
+    pos = Position(ticker=ticker, side="yes", size=10, entry_price=0.5, opened_at=time.time())
+    broker = _FakeBroker({ticker: pos})
+    latest_prices = {ticker: pos.entry_price}
+    with patch("services.market_history.recent_price", return_value=None) as recent_price:
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}})
+        exit_engine.check_exits(broker, latest_prices, signal_feed=[], cfg={"strategy": {}})
+    assert recent_price.call_count == 2

@@ -2600,6 +2600,25 @@ Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker),
 - [ ] **Step 7: Run the full exit_engine test suite for a regression check** — pay particular attention to any test relying on `recent_price` etc. being called fresh per position (none should, since the underlying value for the same ticker is identical within one tick, but confirm).
 - [ ] **Step 8: Commit:** `git commit -m "perf: memoize check_exits per-tick DB reads across positions on the same ticker (I13 P4)"`
 
+**Task 20 shipped (2026-08-27).** Tests pass, wired only at `main.py`'s real
+call site per Step 6, exactly as scoped above. Confirmed against source
+while implementing: `PaperBroker.positions` is one `Position` per ticker
+(`services/paper_broker.py`), so this task's own same-ticker target case
+cannot occur within a single `check_exits()` call today, and `main.py`
+calls `check_exits` once per tick with a fresh `tick_cache` — meaning
+Task 20's memoization is correctly implemented but currently produces zero
+cache hits in the live app, not just zero help with the distinct-ticker
+case already called out above. See `services/exits/README.md`'s "Task 20
+shipped" entry for the full account.
+
+- [ ] **Follow-up, not implemented here:** the distinct-ticker case this
+  task's own Known-scope-gap note anticipated and Task 17c's benchmark
+  confirmed dominates the live crash report still needs its own fix —
+  either a bulk-fetch query across all open tickers in one call (precedent:
+  `signal_log.series_stats_bulk`, referenced in `services/tick_executor.py`'s
+  module docstring) or a `tick_executor` offload of the whole `check_exits`
+  call. Decide with real numbers when picked up, not a guess made here.
+
 ---
 
 ### Task 18: Split the single consumer into `critical` and `market` queues

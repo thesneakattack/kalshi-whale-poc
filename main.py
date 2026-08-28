@@ -964,9 +964,19 @@ async def trading_loop():
             # position's own entry price, if it came from a live trade-tape
             # print newer than the last quote poll. See check_exits's
             # docstring for the live incident this fixes.
+            #
+            # tick_cache (I13 P4 Task 20, 2026-08-27): shared across every
+            # position this call processes, so positions on the same ticker
+            # share one recent_price/volatility/analyst_lean/series_stats
+            # read instead of one each - see exit_engine.check_exits's own
+            # tick_cache docstring for the full mechanism and its known
+            # scope gap (distinct-ticker positions still cost one read
+            # each; this only dedupes same-ticker repeats).
+            tick_cache: dict = {}
             for close_decision in strategy.check_exits(
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
                 category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+                tick_cache=tick_cache,
             ):
                 await _handle_close_decision(close_decision)
 
