@@ -71,6 +71,15 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     # buffering/throughput guidance against measured behavior.
     "ingest_metrics": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
     "reset_ingest_window": ("docs/kalshi/websocket-connection.md",),
+    # Consumer-stall backstop (issue #145): quick_start_websockets.md's own
+    # reconnection guidance ("implement reconnection logic with exponential
+    # backoff") is the documented recovery path these two reuse - there is
+    # no per-message gap-detection/resume capability on this API tier (P7's
+    # own research, websocket-connection.md's AsyncAPI schema), so a forced
+    # reconnect through the existing backoff path is the correct mechanism,
+    # not a Kalshi-specific operation of its own.
+    "force_reconnect": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
+    "ensure_consumer_progressing": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
 }
 
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
