@@ -795,6 +795,14 @@ async def trading_loop():
                 m["ticker"]: float(m["yes_ask_dollars"]) for m in markets
                 if m.get("ticker") and m.get("yes_ask_dollars") not in (None, "")
             }
+            # P7 Task 29 (redesigned): the rebuilds above bound both dicts to
+            # this tick's fetched markets (open positions always included via
+            # extra_tickers); keep their per-ticker write stamps bounded the
+            # same way so neither grows with every ticker ever seen.
+            for key in ("latest_prices", "latest_asks"):
+                stamps = state[f"{key}_updated_at"]
+                for stale_ticker in [t for t in stamps if t not in state[key]]:
+                    del stamps[stale_ticker]
             _join_real_position_prices(state["account"], state["latest_prices"])
             # Human-readable label for a ticker — whale signals/decisions/positions
             # only carry the raw ticker string, so the dashboard looks this up to

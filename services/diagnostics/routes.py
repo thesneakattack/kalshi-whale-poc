@@ -156,6 +156,23 @@ async def get_settlement_edge(min_samples: int = 200):
     return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
 
 
+def _price_staleness(now: float) -> dict:
+    """P7 Task 29 (redesigned) / R4 visibility: age of the price each open
+    position would be exit-checked against, from the per-ticker write
+    stamps. A position with no stamp is counted as unknown, not fabricated
+    as fresh."""
+    open_tickers = state.get("open_position_tickers") or set()
+    stamps = state.get("latest_prices_updated_at") or {}
+    ages = [now - stamps[t] for t in open_tickers if t in stamps]
+    return {
+        "open_position_count": len(open_tickers),
+        "stamped_count": len(ages),
+        "unstamped_count": len(open_tickers) - len(ages),
+        "open_position_oldest_age_sec": round(max(ages), 1) if ages else None,
+        "stale_over_300s_count": sum(1 for a in ages if a > 300.0),
+    }
+
+
 @router.get("/api/health/pipeline")
 async def get_pipeline_health():
     """One place to confirm the whole flow is actually alive between
@@ -189,6 +206,12 @@ async def get_pipeline_health():
         "last_tick_duration_sec": state.get("last_tick_duration_sec"),
         "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
         "markets_watched": len(state.get("markets") or []),
+        # P7 Task 29 (redesigned) / R4: how stale the price each open
+        # position would be exit-checked against actually is, from the
+        # per-ticker write stamps. "No stamp" is counted as unknown, never
+        # fabricated as fresh - a position with no entry at all is exactly
+        # the case the age-aware overlay exists to catch.
+        "price_staleness": _price_staleness(now),
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a

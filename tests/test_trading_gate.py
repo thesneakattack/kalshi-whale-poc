@@ -3217,3 +3217,56 @@ def test_process_stream_ticker_records_cadence_only_for_open_position_tickers(mo
     seen = main.state["open_position_ticker_seen_at"]
     assert set(seen) == {"TICK-A"}
     assert before <= seen["TICK-A"] <= after
+
+
+def test_process_stream_ticker_writes_asks_and_stamps_both_timestamps(monkeypatch):
+    """P7 Task 29 (redesigned): the WS ticker handler is the primary writer
+    for BOTH price dicts - before this, latest_asks had no WS writer at all
+    (the handler read yes_ask_dollars onto the market row but never into
+    latest_asks), so asks were frozen at their REST seed forever."""
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    before = time.time()
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.40", "yes_ask_dollars": "0.45"}))
+    after = time.time()
+
+    assert main.state["latest_prices"]["TICK-A"] == 0.40
+    assert main.state["latest_asks"]["TICK-A"] == 0.45
+    assert before <= main.state["latest_prices_updated_at"]["TICK-A"] <= after
+    assert before <= main.state["latest_asks_updated_at"]["TICK-A"] <= after
+
+
+def test_process_stream_ticker_never_fabricates_an_ask_when_the_message_has_none(monkeypatch):
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.40"}))
+
+    assert "TICK-A" not in main.state["latest_asks"]  # check_pending_fills must see absent, not 0.5
+
+
+def test_pipeline_health_reports_open_position_price_staleness():
+    """P7 Task 29 (redesigned) / R4: /api/health/pipeline derives per-open-
+    position price staleness from the write stamps - visibility only."""
+    now = time.time()
+    main.state["open_position_tickers"] = {"FRESH", "STALE", "UNSTAMPED"}
+    main.state["latest_prices_updated_at"] = {"FRESH": now - 5, "STALE": now - 400}
+
+    body = client.get("/api/health/pipeline").json()["price_staleness"]
+
+    assert body["open_position_count"] == 3
+    assert body["stamped_count"] == 2
+    assert body["unstamped_count"] == 1
+    assert 395 <= body["open_position_oldest_age_sec"] <= 405
+    assert body["stale_over_300s_count"] == 1

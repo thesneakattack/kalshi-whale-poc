@@ -258,6 +258,22 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
         return
+    # P7 Task 29 (redesigned): this handler is the primary writer for BOTH
+    # price dicts, and stamps each write so market_fetch.overlay_live_prices
+    # can tell a WS-fresh value from one that has been copied forward since
+    # its REST seed. latest_asks had no WS writer at all before this - the
+    # ask below was read onto the market row but never into latest_asks, so
+    # check_pending_fills only ever saw REST-seeded asks, frozen forever. A
+    # message without an ask leaves latest_asks untouched: check_pending_
+    # fills relies on "absent" meaning "no fresh ask", never a default.
+    state["latest_prices_updated_at"][ticker] = now
+    ask_raw = ticker_msg.get("yes_ask_dollars")
+    if ask_raw not in (None, ""):
+        try:
+            state["latest_asks"][ticker] = float(ask_raw)
+            state["latest_asks_updated_at"][ticker] = now
+        except (TypeError, ValueError):
+            pass
     matched_market = None
     for market in state["markets"]:
         if market.get("ticker") == ticker:

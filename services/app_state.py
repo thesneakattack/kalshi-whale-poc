@@ -170,6 +170,13 @@ state = {
     # observability sampler. Never serialized (not in _build_state_body).
     "open_position_tickers": set(),
     "open_position_ticker_seen_at": {},
+    # P7 Task 29 (redesigned) - per-ticker last-write time for the two price
+    # dicts, stamped by every writer (WS ticker handler, REST seed, REST-wins
+    # overlay). The load-bearing input for the age-aware overlay in
+    # market_fetch.overlay_live_prices and for Task 35's staleness-triggered
+    # corroboration. Pruned with their parent dicts in the tick's rebuild.
+    "latest_prices_updated_at": {},
+    "latest_asks_updated_at": {},
     "event_phase": {},  # event_ticker -> pre_tail/mid_series/post_tail/no_occurrence, see services/market_events/event_lifecycle.py
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
     # than {} - these two accumulate over the app's whole lifetime, not just

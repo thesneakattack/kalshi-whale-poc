@@ -139,3 +139,30 @@ where that fix would plug in — nothing about tick performance was changed
 in this extraction itself (pure move, verified byte-for-byte via a full
 `pytest` pass plus a live tick-timing sample before/after, both
 statistically unchanged).
+
+## Age-aware live-price overlay (P7 Task 29, redesigned 2026-08-27)
+
+`market_fetch.overlay_live_prices(markets, state, now)` - extracted from
+`_fetch_markets`'s tail, now a pure, tested helper (`tests/test_market_fetch_
+overlay.py`). The 2026-08-15 overlay kept the in-memory `state["latest_prices"]`/
+`latest_asks` value **unconditionally** whenever the ticker was already in the
+dict. Consequence, found while re-grounding the task against HEAD (and
+contradicting the earlier H12 write-up, corrected in the known-findings doc): once
+a ticker entered the dict, REST never refreshed it - a WS-quiet ticker's price was
+copied forward every tick, forever. P8 Task 34's first live sample measured the
+population directly: 4 of 10 open positions had received no ticker message in the
+process's lifetime. `latest_asks` was worse - no WS writer existed at all, so
+asks were frozen at their REST seed.
+
+Now: every writer stamps `state["latest_prices_updated_at"]`/`latest_asks_updated_
+at`; a value older than `_PINNED_MARKET_REFRESH_SEC` (300s - the system's own
+existing bound on REST-row staleness, reused, not a new constant) or with no stamp
+at all (unknown age is not trusted) loses to the REST row and is restamped. WS
+stays primary while flowing; a quiet ticker is refreshed from REST every ~300s
+instead of never. A REST row with no price of its own cannot win (a stale-but-real
+value beats a fabricated default). `_process_stream_ticker` now also writes
+`latest_asks` from the message's `yes_ask_dollars`, stamped, leaving a message with
+no ask untouched so `check_pending_fills`' "absent means no fresh ask" contract
+holds. `/api/health/pipeline` exposes `price_staleness` (per-open-position stamp
+ages) - live on shipping: 9/9 positions stamped, oldest 19.5s, 0 over 300s, where
+before this the never-WS-seen positions had no bound at all.
