@@ -301,6 +301,33 @@ which can run in parallel right now.
       each mutating test's own setup - `_reset_trading_state()` had existed
       since 2026-08-22 and was still called at setup-only in the test that
       leaked.
+      **PR #146** (`fix/xdist-lifecycle-test-isolation`, same day) found
+      and fixed a third instance in the same file, this time a persisted
+      store rather than an in-memory singleton: `test_lifecycle_settled_
+      resolves_outcome_via_a_fresh_rest_read` resolves a `candidate_log`
+      row through the real settled path, and `test_lifecycle_determined_
+      updates_catalog_status_but_does_not_resolve_outcome` then
+      `record_rejection()`s the same (ticker, strategy, gate_name) key -
+      capture_writer's UPSERT deliberately never reopens a resolved row
+      (`WHERE resolved = 0`, the production invariant), so the leaked row
+      stayed resolved and `resolved_count == 0` saw 1. Nothing in the
+      file had ever cleared `cl_module.DB_PATH` between tests; the
+      per-test `_reset_lifecycle_stats()` helper only cleared the market
+      catalog. Same autouse-fixture idiom, `cl_module.clear_all()` before
+      and after every test. Measurement worth keeping: running the file in
+      full *reverse* definition order isolated exactly that one test on
+      the unfixed file and nothing else - a cheap, deterministic detector
+      for this whole class, where Woodpecker's `pytest -n 4` only catches
+      it when the scheduler happens to produce the adversarial order.
+- [ ] **Deterministic order-dependence guard for the test suite.** Three
+      xdist-isolation leaks in one day (PRs #119, #125, #146) were each
+      only caught probabilistically by `pytest -n 4`. A reverse-definition-
+      order run of each test file (collect node IDs, feed them back
+      reversed - no plugin needed) isolated PR #146's leak deterministically
+      on the unfixed file. Decide whether that earns its own Woodpecker
+      lane (cost: roughly one extra sequential suite run per push) or a
+      scheduled/manual pipeline; a CI-configuration change, so its own
+      branch per `.claude/rules/branching-and-ci.md`, not a drive-by.
 - [ ] **Move analytics/advisory computation out of the live tick loop —
       dump the underlying data and let external tooling analyze it.**
       Direct instruction (2026-08-21). Queued behind the main.py
