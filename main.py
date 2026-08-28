@@ -454,6 +454,10 @@ async def trading_loop():
             # fetch.
             real_position_tickers = _real_account_position_tickers(state.get("account") or {})
             open_position_tickers = list(set(broker.positions.keys()) | real_position_tickers)
+            # P8 Task 34 - the one set the WS ticker handler and the
+            # observability sampler both key per-position cadence off, so
+            # "which tickers count as open" has exactly one definition.
+            state["open_position_tickers"] = set(open_position_tickers)
             _maybe_check_signal_resolutions(cfg)
             _maybe_run_backup(cfg)
             _maybe_run_research(cfg)

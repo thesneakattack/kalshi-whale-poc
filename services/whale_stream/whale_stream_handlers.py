@@ -224,6 +224,13 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     ticker = ticker_msg.get("ticker")
     if not ticker:
         return
+    # P8 Task 34 - per-open-position ticker cadence. Bounded by construction
+    # (only open-position tickers are written) and deliberately nothing
+    # more than a set-membership check plus one dict assignment on this
+    # exchange-wide hot path; pruning of closed positions happens in the
+    # observability sampler, off this path.
+    if ticker in state["open_position_tickers"]:
+        state["open_position_ticker_seen_at"][ticker] = time.time()
     # opened_since=now (2026-08-16 self-review finding): this was the one
     # of check_exits' three call sites (main tick loop, _process_stream_trade,
     # here) missing the 2026-08-11 same-tick stale-price guard - see

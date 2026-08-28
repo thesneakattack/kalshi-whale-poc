@@ -617,3 +617,35 @@ def test_reader_gate_enabled_gate_exception_still_falls_open_and_enqueues(monkey
     assert enqueued is True  # never filtered on an exception, even with the gate live
     assert gw._queue.qsize() == 1
     assert gw.ingest_metrics(now=1.0)["gate_exceptions"] == 1
+
+
+# --- reconnect gap duration (P8 Task 34) ---------------------------------
+
+def test_reconnect_gap_duration_is_computed_on_the_next_connection():
+    gw = _gateway()  # first connect, no prior disconnect
+    c = gw.ingest_metrics(now=100.0)["connection"]
+    assert c.get("last_gap_sec") is None  # never disconnected - no fabricated 0
+
+    gw._record_disconnect(RuntimeError("socket closed"), now=100.0)
+    gw._begin_connection(now=107.5)  # reconnect completes 7.5s later
+    c = gw.ingest_metrics(now=107.5)["connection"]
+    assert c["last_gap_sec"] == pytest.approx(7.5)
+    assert c["gap_sec_window"] == pytest.approx(7.5)
+
+
+def test_reconnect_gap_window_resets_but_lifetime_value_survives():
+    gw = _gateway()
+    gw._record_disconnect(RuntimeError("x"), now=10.0)
+    gw._begin_connection(now=12.0)
+    gw.reset_ingest_window()
+    c = gw.ingest_metrics(now=13.0)["connection"]
+    assert c["last_gap_sec"] == pytest.approx(2.0)  # lifetime: still known
+    assert c.get("gap_sec_window") is None  # window: consumed by the sampler
+
+
+def test_negative_gap_from_clock_skew_is_not_recorded():
+    gw = _gateway()
+    gw._record_disconnect(RuntimeError("x"), now=50.0)
+    gw._begin_connection(now=49.0)  # wall clock went backwards
+    c = gw.ingest_metrics(now=50.0)["connection"]
+    assert c.get("last_gap_sec") is None

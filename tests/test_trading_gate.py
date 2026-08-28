@@ -3196,3 +3196,24 @@ def test_shadow_risk_resume_route():
     assert resp.status_code == 200
     assert resp.json()["halted"] is False
     assert main.shadow.halted is False
+
+
+def test_process_stream_ticker_records_cadence_only_for_open_position_tickers(monkeypatch):
+    """P8 Task 34: the per-position ticker-cadence write is gated on the tick
+    loop's own open_position_tickers set - an open position's ticker is
+    stamped, any other ticker on the exchange-wide stream is not (bounded by
+    position count by construction, never exchange-wide)."""
+    main.state["running"] = False  # skip check_exits; this test is about the cadence stamp only
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["open_position_tickers"] = {"TICK-A"}
+    main.state["open_position_ticker_seen_at"] = {}
+
+    before = time.time()
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
+    _run_stream_ticker(({"market_ticker": "TICK-Z", "yes_bid_dollars": "0.5"}))
+    after = time.time()
+
+    seen = main.state["open_position_ticker_seen_at"]
+    assert set(seen) == {"TICK-A"}
+    assert before <= seen["TICK-A"] <= after

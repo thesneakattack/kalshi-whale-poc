@@ -164,6 +164,12 @@ state = {
     "markets": [],
     "latest_prices": {},
     "latest_asks": {},  # maker/limit-order path (2026-08-15) - see check_pending_fills wiring below
+    # P8 Task 34 - per-open-position WS ticker cadence. open_position_tickers
+    # is the tick loop's own derived set (paper + real); seen_at is written by
+    # _process_stream_ticker only for tickers in that set, read/pruned by the
+    # observability sampler. Never serialized (not in _build_state_body).
+    "open_position_tickers": set(),
+    "open_position_ticker_seen_at": {},
     "event_phase": {},  # event_ticker -> pre_tail/mid_series/post_tail/no_occurrence, see services/market_events/event_lifecycle.py
     # Seeded from data/title_cache.db (see services/title_cache.py) rather
     # than {} - these two accumulate over the app's whole lifetime, not just

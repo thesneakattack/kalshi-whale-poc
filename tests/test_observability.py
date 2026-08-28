@@ -857,3 +857,71 @@ def test_capture_writer_dead_finding_critical_when_started_but_not_alive(monkeyp
     assert len(matches) == 1
     assert matches[0].severity == "critical"
     assert matches[0].evidence == {"depth": {"raw_trades": 2}}
+
+
+# --- P8 Task 34: reconnect gap duration + per-position ticker cadence ------
+
+def test_capture_from_runtime_flattens_reconnect_gap_when_one_completed_this_window():
+    trade_stream = _fake_stream_with_ingest()
+    metrics_dict = _fake_ingest_metrics()
+    metrics_dict["connection"] = {
+        "connects": 2, "reconnects": 1,
+        "last_disconnect": {"reason": "x", "at": 100.0},
+        "last_gap_sec": 7.5, "gap_sec_window": 7.5,
+    }
+    trade_stream.ingest_metrics = lambda: metrics_dict
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert metrics["trade_stream.ingest.last_gap_sec"] == 7.5
+
+
+def test_capture_from_runtime_omits_reconnect_gap_when_none_this_window():
+    trade_stream = _fake_stream_with_ingest()
+    metrics_dict = _fake_ingest_metrics()
+    metrics_dict["connection"] = {
+        "connects": 2, "reconnects": 1,
+        "last_disconnect": {"reason": "x", "at": 100.0},
+        "last_gap_sec": 7.5, "gap_sec_window": None,  # window already consumed
+    }
+    trade_stream.ingest_metrics = lambda: metrics_dict
+
+    metrics = observability.capture_from_runtime({}, {}, trade_stream, None)
+
+    assert "trade_stream.ingest.last_gap_sec" not in metrics
+
+
+def test_capture_from_runtime_flattens_open_position_ticker_cadence():
+    now = 1000.0
+    state = {
+        "open_position_tickers": {"K1", "K2", "K3"},
+        "open_position_ticker_seen_at": {"K1": 990.0, "K2": 940.0, "GONE": 100.0},
+    }
+
+    metrics = observability.capture_from_runtime({}, state, None, None, now=now)
+
+    # GONE is not an open position - excluded, not counted
+    assert metrics["position_ticker.tracked_count"] == 2.0
+    assert metrics["position_ticker.oldest_update_age_sec"] == 60.0
+    assert metrics["position_ticker.newest_update_age_sec"] == 10.0
+    # K3 is open but has never received a ticker message - counted separately,
+    # never fabricated as an age of "now - 0"
+    assert metrics["position_ticker.never_seen_count"] == 1.0
+
+
+def test_capture_from_runtime_omits_position_ticker_cadence_with_no_positions():
+    metrics = observability.capture_from_runtime({}, {"open_position_tickers": set()}, None, None, now=1000.0)
+    assert not any(k.startswith("position_ticker.") for k in metrics)
+
+
+def test_maybe_capture_prunes_closed_positions_from_ticker_cadence_after_persisting():
+    cfg = {"observability": {"enabled": True, "sample_interval_sec": 60}}
+    state = {
+        "observability": {"last_sample_at": time.time() - 999},
+        "open_position_tickers": {"K1"},
+        "open_position_ticker_seen_at": {"K1": time.time() - 5, "CLOSED": time.time() - 500},
+    }
+
+    observability.maybe_capture(cfg, state, None, None)
+
+    assert set(state["open_position_ticker_seen_at"]) == {"K1"}  # CLOSED pruned, K1 kept

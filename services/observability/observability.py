@@ -129,7 +129,35 @@ def _latest_sample_time() -> float | None:
     return row[0] if row and row[0] is not None else None
 
 
-def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> dict:
+def _flatten_position_ticker_cadence(state: dict, now: float) -> dict:
+    """Per-open-position ticker-message cadence (P8 Task 34) - how long since
+    each currently-open position's ticker last received a WS ticker update.
+    This is the second of the two measured inputs the staleness benchmark
+    (P8 Task 40) is explicitly gated behind, and the input Task 35's
+    staleness-corroboration threshold should be tuned from rather than
+    guessed. Bounded by open-position count by construction: the writer
+    (_process_stream_ticker) only records tickers that are open positions,
+    and this read intersects against the current open set so a closed
+    position's leftover entry is excluded, never counted as a huge age.
+    "Open but never seen" is counted separately, not fabricated as an age -
+    same unknown-over-fabricated rule as everything else here."""
+    open_tickers = state.get("open_position_tickers") or set()
+    if not open_tickers:
+        return {}
+    seen_at = state.get("open_position_ticker_seen_at") or {}
+    ages = [now - seen_at[t] for t in open_tickers if t in seen_at]
+    out: dict = {
+        "position_ticker.tracked_count": float(len(ages)),
+        "position_ticker.never_seen_count": float(len(open_tickers) - len(ages)),
+    }
+    if ages:
+        out["position_ticker.oldest_update_age_sec"] = round(max(ages), 3)
+        out["position_ticker.newest_update_age_sec"] = round(min(ages), 3)
+        out["position_ticker.median_update_age_sec"] = round(sorted(ages)[len(ages) // 2], 3)
+    return out
+
+
+def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream, now: float | None = None) -> dict:
     """Pure mapping from already-computed in-memory counters to stable
     metric names - no I/O. A missing/None source is simply omitted rather
     than recorded as a fabricated 0 (CLAUDE.md / the design spec's "unknown
@@ -226,6 +254,12 @@ def capture_from_runtime(cfg: dict, state: dict, trade_stream, index_stream) -> 
     # depth of 0.
     if capture_writer.is_alive():
         metrics.update(_flatten_capture_writer(capture_writer.depth(), capture_writer.last_flush_age_ms()))
+
+    # position_ticker.* (P8 Task 34) - per-open-position ticker cadence.
+    # Same pure-read contract; nothing here mutates the seen_at dict
+    # (pruning of closed positions' leftover entries happens in
+    # maybe_capture, post-persist, alongside the window rolls).
+    metrics.update(_flatten_position_ticker_cadence(state, now if now is not None else time.time()))
 
     return metrics
 
@@ -362,6 +396,14 @@ def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
     out[f"{p}.error_25_total"] = float(im.get("error_25_total") or 0)
     out[f"{p}.error_25_window"] = float(im.get("error_25_window") or 0)
     out[f"{p}.reconnects"] = float((im.get("connection") or {}).get("reconnects") or 0)
+    # Reconnect gap duration (P8 Task 34) - emitted only in windows where a
+    # reconnect actually completed (gap_sec_window is set by _begin_connection
+    # and consumed by reset_ingest_window), so the persisted series is one
+    # real outage-duration sample per reconnect event: the measured
+    # distribution the staleness benchmark (P8 Task 40) is gated behind.
+    gap_window = (im.get("connection") or {}).get("gap_sec_window")
+    if gap_window is not None:
+        out[f"{p}.last_gap_sec"] = float(gap_window)
     # subscription_churn (2026-08-26, investigating a direct report that
     # WS-subscription churn per market-discovery scan is "taxing everything
     # downstream and upstream") - how often _sync_subscriptions actually
@@ -412,6 +454,15 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
     http_client.reset_rest_latency_window()
     loop_watchdog.reset_window()
     candidate_retry.reset_window()
+    # Prune closed positions' leftover ticker-cadence entries (P8 Task 34),
+    # here post-persist rather than on the WS message path, so the hot-path
+    # writer stays a bare dict assignment and the dict stays bounded by the
+    # open-position count instead of by every ticker ever held.
+    seen_at = state.get("open_position_ticker_seen_at")
+    if seen_at:
+        open_tickers = state.get("open_position_tickers") or set()
+        for ticker in [t for t in seen_at if t not in open_tickers]:
+            del seen_at[ticker]
 
 
 # --- runtime anomaly rules (QCP Task 10) ----------------------------------

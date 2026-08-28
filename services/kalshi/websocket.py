@@ -298,6 +298,12 @@ class KalshiStreamGateway:
         self._connects = 0
         self._reconnects = 0
         self._last_disconnect: dict | None = None
+        # Reconnect gap duration (P8 Task 34) - lifetime holds the most
+        # recent measured outage; window is consumed by the observability
+        # sampler (one persisted sample per reconnect event, so the series
+        # in observability.db is a real distribution over time).
+        self._last_gap_sec: float | None = None
+        self._gap_sec_window: float | None = None
         if self.key_id and self.private_key_path:
             try:
                 with open(self.private_key_path, "rb") as f:
@@ -594,12 +600,24 @@ class KalshiStreamGateway:
     # counter here. Before I1 the first and third collapsed into one
     # ephemeral status string plus one lifetime int.
 
-    def _begin_connection(self) -> asyncio.Queue:
+    def _begin_connection(self, now: float | None = None) -> asyncio.Queue:
         """Fresh bounded reader->consumer queue for one physical connection.
         run() calls this right after the socket is up, so a reconnect starts
-        empty with its own depth history; tests call it directly."""
+        empty with its own depth history; tests call it directly.
+
+        Reconnect gap duration (P8 Task 34): when this connection follows a
+        recorded disconnect, the wall-clock gap between the two is the real
+        outage duration - the input the staleness benchmark (P8 Task 40)
+        needs a measured distribution of, not an assumed one. Negative gaps
+        (wall-clock skew - _record_disconnect and this both read
+        time.time()) are dropped rather than recorded as fabricated data."""
         self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
         self._connects += 1
+        if self._last_disconnect is not None:
+            gap = (now if now is not None else time.time()) - self._last_disconnect["at"]
+            if gap >= 0.0:
+                self._last_gap_sec = round(gap, 3)
+                self._gap_sec_window = self._last_gap_sec
         return self._queue
 
     @staticmethod
@@ -813,6 +831,7 @@ class KalshiStreamGateway:
         self._subscription_syncs_window = 0
         self._subscription_tickers_added_window = 0
         self._subscription_tickers_removed_window = 0
+        self._gap_sec_window = None
 
     def _oldest_message_age(self, now: float) -> float | None:
         queue = self._queue
@@ -880,6 +899,8 @@ class KalshiStreamGateway:
                 "connects": self._connects,
                 "reconnects": self._reconnects,
                 "last_disconnect": dict(self._last_disconnect) if self._last_disconnect else None,
+                "last_gap_sec": self._last_gap_sec,
+                "gap_sec_window": self._gap_sec_window,
             },
             "subscription_churn": {
                 "syncs_total": self._subscription_syncs_total,

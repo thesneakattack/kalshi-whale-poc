@@ -651,3 +651,39 @@ notification path from this module.
   this process — expected, not an observability bug; `trade_stream.
   dropped_messages`/`messages_received` (cumulative, always real) are the
   metrics to check first if the stream-perf pair looks perpetually missing.
+
+## Reconnect gap duration + per-position ticker cadence (P8 Task 34, 2026-08-27)
+
+Two new metric families, both added because a benchmark planned for the
+realtime data-plane remediation (P8 Task 40, `docs/superpowers/plans/
+2026-08-25-realtime-data-plane-remediation.md`) needs *measured* input
+distributions rather than assumed ones - and a first research pass had
+wrongly claimed reconnect telemetry didn't exist at all (it did:
+`<stream>.ingest.reconnects` has been persisted here since I1). What was
+genuinely missing was outage *duration* and per-position *cadence*:
+
+- **`<stream>.ingest.last_gap_sec`** - wall-clock seconds between a recorded
+  disconnect (`_record_disconnect`) and the next successful connection
+  (`_begin_connection`), computed in `services/kalshi/websocket.py`. Emitted
+  only in windows where a reconnect actually completed (the gateway's
+  `gap_sec_window` is consumed by `reset_ingest_window`), so the persisted
+  series is one real sample per reconnect event. Negative gaps from
+  wall-clock skew are dropped, never recorded.
+- **`position_ticker.{tracked_count,never_seen_count,oldest/newest/median_
+  update_age_sec}`** - seconds since each currently-open position's ticker
+  last received a WS `ticker` message. Written by `_process_stream_ticker`
+  (`services/whale_stream/whale_stream_handlers.py`) as a bare set-membership
+  check + dict assignment on the exchange-wide hot path (measured 0.23 µs/msg
+  hit, 0.10 µs/msg miss), keyed off the tick loop's own
+  `state["open_position_tickers"]` so "open" has exactly one definition
+  (paper + real account). Closed positions' leftover entries are pruned in
+  `maybe_capture` post-persist, off the hot path. "Open but never seen" is
+  counted separately, never fabricated as an age.
+
+Live on first sample after shipping (2026-08-27): `tracked_count 6`,
+`never_seen_count 4`, `oldest_update_age_sec 151`, `median 62.6` - i.e. four
+of ten open positions had received *no* ticker message at all in the
+process's lifetime, and the median tracked position was over a minute
+stale. That is exactly the "a quiet ticker looks identical to an unchanged
+price" gap H12 named, now measured rather than hypothesized, and the input
+Task 35's staleness-corroboration threshold is meant to be tuned from.
