@@ -4337,6 +4337,266 @@ finds this there rather than needing to know this plan doc exists.
 
 ---
 
+## Phase P8 — Staleness resolution, real-data benchmarking, Family-C-lite
+   (approved plan, 2026-08-27)
+
+**Source:** the approved plan at `~/.claude/plans/valiant-yawning-cascade.md`
+(2026-08-27), produced after direct user pushback that P7 was still under-scoped
+against CLAUDE.md's HARD RULE ("the data plane is the product"), on three specific
+points, each investigated by a dedicated read-only research pass before this phase
+was designed: (1) `check_exits`'s staleness question was left open by R4, not
+resolved; (2) P7 never got the benchmark rigor P0-P6 got; (3) Family C was rejected
+too quickly — the rejection reasoned only about `check_exits` and missed both the
+two other decision-relevant tick-only functions and how much of the target shape
+already exists live.
+
+**A fourth correction is baked into this phase's own design**: the initial
+benchmark-feasibility research claimed "no live data exists for reconnect
+frequency" — directly challenged by the user (a standing instruction days earlier
+had built out observability precisely so this kind of gap wouldn't recur), and
+verified wrong: `trade_stream.ingest.reconnects` is already persisted to
+`data/observability.db` every 60s, with real reconnect events confirmed live via
+`GET /api/observability/history` (3 in one 6h window, 30 in an 18.9h window).
+Reconnect *frequency* is not a gap. The two genuinely-missing inputs are reconnect
+*gap duration* and *per-open-position ticker cadence* — Task 34 adds both to the
+existing capture pipeline, and the benchmark (Task 40) is explicitly sequenced
+behind a real-data-collection window rather than built on guessed inputs, which
+would look more rigorous than the R1-R6 review while actually being less.
+
+**Key research findings this phase's design rests on** (each from a dedicated
+evidence-cited pass; re-verify named line numbers against HEAD when implementing):
+- `check_exits`'s staleness exposure is exactly one path: `current_price`/`pnl_pct`
+  (take-profit/stop-loss + `auto_exit`'s diluted `pnl_factor`). Sentiment-reversal
+  and time-to-close exits never read price. This codebase has **zero** precedent for
+  fail-closed on data staleness (every freshness check fails open, explicitly - see
+  `market_history.recent_price`'s own docstring); the proven third shape is the
+  existing corroboration check's **re-verify via independent REST at decision time**.
+- `trading_loop`'s genuinely tick-bound, decision-relevant, not-yet-event-driven
+  surface is short: `latest_prices`/`latest_asks` (Task 29's target),
+  `check_pending_fills` (zero WS precedent), `position_netting.review` (zero WS
+  precedent), and `check_exits`'s message-independent safety-net role (the "runway
+  exhausted" forced exit - a quiet ticker approaching close would never trigger
+  either WS call site; named in `exit_engine.py`'s own docstring as exactly the
+  failure mode that rule exists for). Entry-signal generation is already dead code
+  in streaming mode (`_handle_signal` fires only from `_process_stream_trade`), and
+  both WS `check_exits` sites already re-evaluate the entire position book per call.
+- The five `_maybe_*` trigger checks (signal-resolution, backup, research,
+  event-schedule, catalog-scan) are already mechanically independent background
+  tasks - `trading_loop` only hosts their due()-checks. Calibration-history
+  snapshotting and advisory auto-apply are the exception: real work still runs
+  inline-on-due on the tick's own coroutine (`main.py:507-650`).
+
+### Task 34: Capture reconnect gap duration + per-open-position ticker cadence
+
+**Files:**
+- Modify: `services/kalshi/websocket.py` (`_record_disconnect` + the reconnect-
+  success path in `run()`)
+- Modify: `services/observability/observability.py` (`_flatten_ingest_metrics`)
+- Modify: `services/whale_stream/whale_stream_handlers.py` (`_process_stream_ticker`)
+- Test: append to `tests/test_kalshi_ws_ingest_metrics.py` and
+  `tests/test_observability.py`
+
+**Interfaces:**
+- Produces: `ingest_metrics()["connection"]["last_gap_sec"]` - on each successful
+  reconnect, the gateway computes `reconnected_at - last_disconnect["at"]` and
+  stores it; `_flatten_ingest_metrics` emits `{prefix}.ingest.last_gap_sec` only in
+  windows where a reconnect completed (zero-window omitted, matching the
+  subscription_churn precedent in the same function).
+- Produces: `state["open_position_ticker_seen_at"]: dict[str, float]` - updated by
+  `_process_stream_ticker` **only when the ticker is an open-position ticker**
+  (bounded by position count, never exchange-wide). A new `_flatten_position_ticker_
+  cadence` in observability emits, per sample window, the min/max/median seconds-
+  since-last-ticker-update across open positions (`observability.position_ticker.
+  oldest_update_age_sec` etc.) - distribution over time, matching the existing
+  `_flatten_*` pattern exactly.
+- Hot-path constraint (HARD RULE): the `_process_stream_ticker` addition must be a
+  guarded dict assignment (`if ticker in broker.positions or ...`), never a DB
+  write or a scan - measure its per-message cost before commit, same discipline as
+  Task 28's Step 7.
+
+- [ ] **Step 1: Write the failing tests** - (a) a simulated disconnect + reconnect
+  produces a real `last_gap_sec` in `ingest_metrics()`; (b) a ticker message for an
+  open-position ticker updates `open_position_ticker_seen_at`, a non-position ticker
+  doesn't; (c) `_flatten_ingest_metrics`/`_flatten_position_ticker_cadence` emit the
+  new metrics with real values and omit them in windows with nothing to report.
+- [ ] **Step 2: Run them, watch them fail.**
+- [ ] **Step 3: Implement** - gateway first (gap computation at the reconnect-success
+  point in `run()`, where `on_status({"connected": True, ...})` fires), then the
+  handler dict, then the two flatten functions.
+- [ ] **Step 4: Run them, watch them pass; run the observability + WS-client suites.**
+- [ ] **Step 5: Measure the per-message cost** of the `_process_stream_ticker`
+  addition (microseconds expected - confirm, don't assume).
+- [ ] **Step 6: Live verification** - `GET /api/observability/history?metric=trade_
+  stream.ingest.last_gap_sec` and the new cadence metric show real values after a
+  real reconnect / with a real open position (paper mode).
+- [ ] **Step 7: Commit:** `git commit -m "feat: capture reconnect gap duration and per-position ticker cadence (P8 Task 34)"`
+
+### Task 35: `check_exits` staleness-triggered REST corroboration (resolves R4)
+
+**Depends on Task 29** (`state["latest_prices_updated_at"]` must exist).
+
+**Files:**
+- Modify: `services/exits/exit_engine.py` (the corroboration block, currently
+  ~lines 236-265 - re-verify against HEAD)
+- Modify: `config/settings.yaml` + `services/config/config_bounds.py` (new tunable)
+- Test: append to the exit-engine test file
+
+**Interfaces:**
+- Changes: the existing corroboration check gains a second trigger. Today:
+  corroborate only when `abs(current_price - corroborated) > 0.30`. New: ALSO force
+  the same `market_history.recent_price` read when `now - latest_prices_updated_at.
+  get(ticker, now) > strategy.price_staleness_corroborate_sec` (new config field,
+  default chosen from Task 34's real cadence data once it exists; ship with a
+  deliberately conservative provisional default, e.g. 120.0 matching
+  `_PRICE_CORROBORATION_MAX_AGE_SEC`, and a comment naming Task 40 as the
+  re-tuning owner). On staleness-trigger: if the corroborated price is present and
+  differs, prefer it (same override the deviation path already does); if the
+  corroboration read itself returns None (REST also stale/down - the combined-outage
+  case), fail open exactly as today BUT record one fault_log entry per
+  ticker-per-window (`component="exit_engine", operation="stale_price_uncorroborated"`)
+  so the condition is visible, never silent. No skip/block path is added - fail-open
+  stays the rule, matching the codebase's own uniform precedent.
+
+- [ ] **Step 1: Re-read the current corroboration block and Task 29's shipped
+  implementation** before writing anything.
+- [ ] **Step 2: Write the failing tests** - (a) a stale-but-plausible price (older
+  than threshold, within 0.30 of corroborated) now triggers the corroboration read
+  (today it wouldn't); (b) fresh price under threshold does NOT trigger it (no new
+  REST cost on the healthy path); (c) staleness + corroboration-unavailable records
+  the fault_log entry and still proceeds (fail-open confirmed).
+- [ ] **Step 3: Run them, watch them fail.**
+- [ ] **Step 4: Implement**, including the config field + bounds registration.
+- [ ] **Step 5: Run the full exit-engine suite for a regression check.**
+- [ ] **Step 6: Commit:** `git commit -m "feat: staleness-triggered price corroboration in check_exits, fail-open with visibility (P8 Task 35, resolves R4)"`
+
+### Task 36: Relocate the five `_maybe_*` trigger checks + calibration/advisory
+    auto-apply out of `trading_loop`
+
+**Files:**
+- Modify: `main.py` (`trading_loop`, `lifespan()`)
+- Test: append to the wiring/scheduler test files (`grep -rn "_maybe_check_signal_
+  resolutions\|_maybe_run_backup" tests/`)
+
+**Interfaces:**
+- Changes: `_maybe_check_signal_resolutions`, `_maybe_run_backup`,
+  `_maybe_run_research`, `event_schedule._maybe_resolve_event_schedules`,
+  `_maybe_scan_catalog_batch` stop being called from `trading_loop`'s body; each
+  gets its own small supervised loop (`task_supervisor.supervise(...)` at startup in
+  `lifespan()`, `while True: await asyncio.sleep(N); _maybe_X(cfg)` with N well
+  under each function's own internal interval so due()-precision is preserved).
+  Their own internal due()/overlap guards are untouched - the relocation changes
+  who calls them, not when they fire. Calibration-history snapshotting and advisory
+  auto-apply (`main.py:507-650`) additionally move their *inline-on-due work* into
+  the same pattern (the one genuinely new decoupling here - they currently run
+  synchronously on the tick when due).
+- Preserve Task 9's ordering fix: `_maybe_scan_catalog_batch`'s loop must still not
+  compete with the critical gather - its own loop's sleep phase makes the original
+  "after the gather" ordering moot (it no longer shares the tick's coroutine), but
+  confirm the rate-limiter caller-class separation still holds under the new shape.
+
+- [ ] **Step 1: Write the failing tests** - each relocated function still fires on
+  its own cadence when the app runs without `trading_loop` invoking it (test via the
+  new loop wrapper directly, monkeypatched intervals).
+- [ ] **Step 2: Run them, watch them fail.**
+- [ ] **Step 3: Relocate** - one commit-sized move; the tick body loses seven call
+  sites, `lifespan()` gains seven supervised loops.
+- [ ] **Step 4: Regression** - full scheduler/wiring suite; confirm
+  `GET /api/health/pipeline`'s scheduler section still reports every mover.
+- [ ] **Step 5: Live verification** - all seven still fire on schedule
+  (`/api/health/pipeline` last-fired timestamps advance) after a real restart.
+- [ ] **Step 6: Commit:** `git commit -m "refactor: move background trigger checks + auto-apply out of trading_loop into supervised loops (P8 Task 36)"`
+
+### Task 37: `candidate_retry.run_pending` gets its own single background loop
+
+**Files:** `main.py`, `services/candidate_retry.py` (docstring), test file.
+- Same relocation shape as Task 36, with the documented single-mutator constraint
+  preserved: still exactly one caller, now a dedicated supervised loop instead of
+  the tick. Update the module docstring's "call from exactly one place" note to name
+  the new caller.
+- [ ] Failing test → relocate → regression → live check → commit:
+  `git commit -m "refactor: candidate_retry gets its own supervised loop, single-mutator preserved (P8 Task 37)"`
+
+### Task 38: Wire `check_pending_fills` + `position_netting.review` into the WS
+    ticker path (concurrency-tested first)
+
+**The one piece of genuinely new work** - neither has any WS-trigger precedent.
+**Files:** `services/whale_stream/whale_stream_handlers.py`
+(`_process_stream_ticker`), `main.py`, tests.
+
+- [ ] **Step 1: Write the concurrency test FIRST** - near-simultaneous ticker
+  messages must not produce overlapping/duplicate fill or netting decisions on the
+  same position. `check_exits`'s two coexisting WS sites are precedent this is
+  manageable, but these two functions have only ever run single-caller inside the
+  tick - prove it, don't assume it. If the test finds a real race, add the minimal
+  guard (an asyncio.Lock or an in-flight flag, matching whatever `check_exits`
+  itself relies on - investigate that first) before wiring anything.
+- [ ] **Step 2: Wire both calls** into `_process_stream_ticker` alongside the
+  existing `check_exits` call, same gating (`state["running"]`).
+- [ ] **Step 3: Keep the tick-loop call sites for now** (they become the safety-net
+  copies Task 39 then consolidates) - both paths are idempotent-by-construction or
+  must be proven so in Step 1.
+- [ ] **Step 4: Regression + live verification, then commit:**
+  `git commit -m "feat: check_pending_fills + position_netting.review fire from the WS ticker path (P8 Task 38)"`
+
+### Task 39: Slow the remaining tick loop down to safety-net cadence
+
+**Depends on Tasks 29, 36, 37, 38 all being live.** After them, `trading_loop`'s
+remaining jobs are: the genuinely-REST-only slow feeds (exchange status, category
+metadata, live sports state - none need sub-minute freshness per H13's inventory)
+and the message-independent safety-net calls (`check_exits` for the
+runway-exhaustion rule, plus the Task 38 pair's fallback invocation).
+**Files:** `main.py`, `config/settings.yaml`.
+
+- [ ] **Step 1: Inventory what's left in the tick at that point against HEAD** - do
+  not trust this plan's own list, things will have moved.
+- [ ] **Step 2: Raise the loop cadence** from `poll_interval_sec: 6` to a
+  safety-net interval (new config field, e.g. `safety_net_interval_sec: 30`;
+  keep `poll_interval_sec` as the fallback-mode cadence for streaming-off mode,
+  where the tick is still the primary data path - the slow cadence applies ONLY
+  when `_streaming_trade_tape_enabled()`).
+- [ ] **Step 3: Confirm the runway-exhaustion rule's worst-case detection latency**
+  at the new cadence stays acceptable (a 30s-late forced exit on a
+  seconds-to-close gate - check the gate's own margin, `exit_min_seconds_to_close`
+  defaults, before picking the number).
+- [ ] **Step 4: Full suite + a multi-hour live paper soak** (the P3.5 pattern)
+  comparing decision latency and REST volume before/after.
+- [ ] **Step 5: Commit:** `git commit -m "feat: tick loop drops to safety-net cadence in streaming mode (P8 Task 39)"`
+
+### Task 40: Build the P7/P8 staleness benchmark from real captured data
+
+**Sequenced explicitly behind Task 34 + a real data-collection window (days).**
+Do not build this on assumed inputs - that was this phase's founding correction.
+**Files:** new `tools/staleness_replay.py` (own file - the existing two harnesses
+model message-delivery timing, not state-cache staleness; confirmed by direct
+reading, not assumption), tests.
+
+- [ ] **Step 1: Pull the real distributions** from `data/observability.db`
+  (reconnect frequency: already accumulating; gap duration + per-position cadence:
+  Task 34's new metrics) - fit/sample them directly, cite the extraction window.
+- [ ] **Step 2: Model** per-ticker cached-price-with-age updated by sampled WS
+  arrivals and disconnect/reconnect cycles; simulated `check_exits` reads scoring
+  staleness-at-decision-time; candidate designs: WS-primary+reconnect-verify
+  (P7 as shipped), periodic-refresh (the old 6s overwrite, as the baseline), and
+  WS-primary+staleness-corroboration (Task 35's shape). Reuse the existing
+  harnesses' primitives (LogNormal/seeded-heap/`_stats()` percentile reporting)
+  without inheriting their message-queue scope.
+- [ ] **Step 3: Score** on staleness-at-decision-time distribution, REST volume,
+  and the fraction of decisions made against data older than N - the correctness
+  axis neither existing tool has.
+- [ ] **Step 4: Use the results to re-tune Task 35's provisional threshold** and
+  record the finding in the known-findings doc either way.
+- [ ] **Step 5: Commit:** `git commit -m "feat: staleness replay harness fed by real captured distributions (P8 Task 40)"`
+
+**P8 gate:** Tasks 34-38 shipped and live-verified individually; Task 39's soak
+shows no regression in decision latency with materially lower REST volume in
+streaming mode; Task 40's benchmark ran on real (not assumed) distributions and
+its threshold recommendation is applied or explicitly declined with reasons in the
+known-findings doc. Cross-post the shipped P8 findings per CLAUDE.md's rule:
+`services/exits/README.md` (Task 35), `services/observability/README.md`
+(Task 34), and the module docstrings Task 36/37 touch.
+
+---
+
 ## Self-review
 
 **Spec coverage:** every numbered section of
