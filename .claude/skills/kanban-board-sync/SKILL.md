@@ -54,11 +54,24 @@ duplicate.
    by `active-tracks-board.md`.
 
 4. **Classify each candidate.** For each filename this is a judgment call,
-   not a checkbox scan (spec §5 measured why a plan doc's own `- [ ]`
-   state is unreliable in this repo): read
+   not a checkbox scan (spec §5 measured why plan-doc `- [ ]` state is
+   unreliable in this repo).
+
+   **Check the existing issue state first:**
+   ```bash
+   gh issue list --search 'autotrade-sync: plan:<filename>' --state all \
+     --json number,state,title --limit 1
+   ```
+   If the issue exists and is **CLOSED**: read its most recent comment
+   (`gh issue view <N> --comments`). A "done, merged in PR #N" or
+   equivalent comment means classify `done` immediately — this is the
+   strongest available signal and overrides git-log evidence.
+
+   Only when the issue is open or absent: read
    `git log --oneline -- docs/superpowers/plans/<file>`, cross-reference
    `CLAUDE.md` and `ROADMAP.md` for whether that initiative is described
    as shipped, and classify as `done`, `in-progress`, or `not-started`.
+
    Write the result to a JSON file, e.g. `/tmp/kanban-plan-classifications.json`:
    ```json
    {
