@@ -28,7 +28,9 @@ def _in_scope(file_path: str) -> bool:
     name = Path(file_path).name
     if "/tests/" in file_path or file_path.startswith("tests/"):
         return name.startswith("test_") and name.endswith(".py")
-    if not (file_path.endswith(".py") or file_path.endswith(".sh")):
+    if ("/scripts/" in file_path or file_path.startswith("scripts/")) and "." not in name:
+        return True  # extension-less shell scripts (scripts/woodpecker-status)
+    if not (name.endswith(".py") or name.endswith(".sh")):
         return False
     return any(f"/{s}" in file_path or file_path.startswith(s) for s in SCOPES)
 
@@ -98,7 +100,7 @@ def main(argv=None, run=subprocess.run, tests_dir=TESTS_DIR, cwd=None, primary=N
         )
         return 2
     except FileNotFoundError:
-        print("run_tests hook: ddev not found; skipped")
+        _context(f"run_tests hook: ddev not found, so {files} did NOT run for {file_path} - run them yourself or let CI own it.")
         return 0
     if r.returncode != 0:
         sys.stderr.write(f"pytest failed after editing {file_path}:\n{r.stdout}\n{r.stderr}")

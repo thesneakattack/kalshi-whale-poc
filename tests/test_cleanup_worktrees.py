@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.synthetic_git_repo import make_synthetic_repo
+from tests.support.synthetic_git_repo import git as _git, make_synthetic_repo
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "cleanup-worktrees.sh"
@@ -47,13 +47,8 @@ fi
 exit 1
 '''
 
-FAKE_GUARD = "import os\nprint(os.environ.get('FAKE_SESSIONS', ''), end='')\n"
-
-
-def _git(args, cwd) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
-    assert r.returncode == 0, f"git {' '.join(args)}: {r.stderr}"
-    return r.stdout.strip()
+FAKE_GUARD = "import os\nprint('#sessions v1')\nprint(os.environ.get('FAKE_SESSIONS', ''), end='')\n"
+OLD_GUARD = "import sys\nsys.exit(0)\n"  # the pre-2026-08-28 guard: ignores --sessions, prints nothing
 
 
 def _setup(tmp_path: Path, pr_state: str = "MERGED"):
@@ -152,6 +147,34 @@ def test_worktree_a_live_session_sits_in_is_left_alone_and_stays_locked(tmp_path
     assert "live Claude session" in r.stderr and "0 removed, 1 kept" in r.stdout
     assert wt.exists() and "feat/x" in _branches(primary)
     assert "locked" in _worktrees(primary)
+
+
+def test_a_guard_that_cannot_answer_means_occupied_not_empty(tmp_path):
+    """Review finding 2026-08-28: the session check used the PRIMARY's guard, and an
+    older guard there answers --sessions with nothing and exit 0 - which read as 'no
+    live session' and would have deleted an occupied worktree. Missing guard or no
+    header must both fail closed."""
+    primary, wt, env = _setup(tmp_path)
+    old = tmp_path / "old_guard.py"
+    old.write_text(OLD_GUARD)
+    env["CLEANUP_WORKTREES_GUARD"] = str(old)
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "older guard" in r.stderr and "0 removed, 1 kept" in r.stdout and wt.exists()
+
+    env["CLEANUP_WORKTREES_GUARD"] = str(tmp_path / "nowhere.py")
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "missing" in r.stderr and "0 removed, 1 kept" in r.stdout and wt.exists()
+
+
+def test_the_default_guard_is_the_one_shipped_beside_the_script(tmp_path):
+    """Version-locks the check to the script: the primary may sit on any branch."""
+    primary, wt, env = _setup(tmp_path)
+    del env["CLEANUP_WORKTREES_GUARD"]
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "warning" not in r.stderr and "removed: feat/x" in r.stdout
 
 
 def test_stale_local_main_does_not_hide_a_branch_merged_into_origin_main(tmp_path):

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" orient.sh; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" orient.sh; fi",
             "timeout": 15
           }
         ]
@@ -18,13 +18,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" guard_data_db.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_data_db.py; fi",
             "timeout": 5,
             "statusMessage": "Checking for data/*.db writes..."
           },
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" guard_workflow.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_workflow.py; fi",
             "timeout": 10
           }
         ]
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" guard_workflow.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_workflow.py; fi",
             "timeout": 10
           }
         ]
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" guard_workflow.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_workflow.py; fi",
             "timeout": 10
           }
         ]
@@ -56,17 +56,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" guard_workflow.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_workflow.py; fi",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" check_py_syntax.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" check_py_syntax.py; fi",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | python3 \"$h\" run_tests.py; fi",
+            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" run_tests.py; fi",
             "timeout": 60,
             "statusMessage": "Running the edited module's tests..."
           }

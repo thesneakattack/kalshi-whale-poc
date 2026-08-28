@@ -2,11 +2,14 @@
 # SessionStart hook: the facts a session would otherwise rediscover. Runs via
 # run_hook.py, so CLAUDE_PROJECT_DIR is the session's own checkout (a linked
 # worktree or the primary); ddev, data/*.db, and the GitNexus index all live in
-# the primary.
+# the primary, which git itself names (the common dir's parent) - no path
+# convention to keep in sync with the Python hooks.
 set -uo pipefail
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
 cd "$root" 2>/dev/null || exit 0
-primary="${root%%/.claude/worktrees/*}"
+primary="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+primary="${primary%/.git}"
+[ -n "$primary" ] || primary="$root"
 
 echo "=== autotrade orientation ==="
 branch=$(git branch --show-current 2>/dev/null)
@@ -67,6 +70,19 @@ if [ -f docs/open-decisions.md ]; then
   grep '^- ' docs/open-decisions.md | sed 's/^/  /'
 fi
 
+# AQC (tools/quality_coordination.py), the user-built workflow janitor: refresh
+# it in the background at most every 6 h (16-26 s with network calls, too slow
+# for a 15 s hook), say so, and print whatever the store holds right now.
+# /checkpoint runs it inline. The throttle marker lives in the runtime dir,
+# not the repo.
+aqc_mark="${XDG_RUNTIME_DIR:-/tmp}/claude-workflow-guard/aqc-last-start"
+if [ -f "$primary/tools/quality_coordination.py" ]; then
+  if [ ! -f "$aqc_mark" ] || [ $(( $(date +%s) - $(stat -c %Y "$aqc_mark" 2>/dev/null || echo 0) )) -gt 21600 ]; then
+    mkdir -p "$(dirname "$aqc_mark")" && touch "$aqc_mark"
+    ( cd "$primary" && setsid nohup python3 -m tools.quality_coordination >/dev/null 2>&1 & ) >/dev/null 2>&1
+    echo "AQC: refreshing in the background (at most every 6 h); the line below is the previous run"
+  fi
+fi
 aqc_db="$primary/tools/quality_coordination_data/quality_coordination.db"
 if [ -f "$aqc_db" ]; then
   python3 - "$aqc_db" <<'PY' 2>/dev/null || echo "AQC: store unreadable - python -m tools.quality_coordination"

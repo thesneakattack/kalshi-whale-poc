@@ -33,7 +33,7 @@ def test_scope_covers_app_code_and_tooling_but_not_docs_or_frontend():
     for p in ("services/risk_manager.py", "/abs/repo/services/exits/exit_engine.py", "main.py", "/abs/main.py",
               ".claude/hooks/guard_workflow.py", "/abs/repo/.claude/hooks/run_tests.py",
               "tools/kanban_sync/sync.py", "tools/quality_coordination.py",
-              "scripts/cleanup-worktrees.sh", "/abs/repo/scripts/woodpecker-status.py",
+              "scripts/cleanup-worktrees.sh", "/abs/repo/scripts/woodpecker-status",
               "tests/test_guard_workflow.py"):
         assert m._in_scope(p), p
     for p in ("docs/x.md", "static/index.html", "frontend/src/js/app.js", "config/settings.yaml",

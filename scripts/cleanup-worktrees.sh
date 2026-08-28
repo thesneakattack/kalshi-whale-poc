@@ -77,26 +77,40 @@ if [ -z "$PRIMARY" ]; then
   exit 1
 fi
 
-# Live-session detection is guard_workflow.py's `--sessions` (one line per
-# session: pid, self|other, cwd) - the same implementation R6 and orient.sh
-# use, so this script can never see a different set of sessions than the
-# guard does. Used below to refuse unlocking or removing a worktree any
-# live session (this one included) is sitting in, regardless of what the
-# three staleness checks say: a lock is the one signal this script once
-# honored unconditionally, and stripping it without this check silently
-# defeated whatever protection it was providing (2026-08-28 code review).
+# Live-session detection is guard_workflow.py's `--sessions` ("#sessions v1"
+# header, then one line per session: pid, self|other, cwd) - the same
+# implementation R6 and orient.sh use, so this script can never see a
+# different set of sessions than the guard does. The guard is the copy that
+# ships next to THIS script (same commit), never the primary's: the primary
+# can sit on an older branch whose guard ignores the flag and prints nothing,
+# which would read as "no sessions" and delete a worktree someone is in
+# (fail open, caught in review 2026-08-28). A missing guard, a non-zero
+# exit, or output without the header therefore all mean "assume occupied".
+# Used below to refuse unlocking or removing a worktree any live session
+# (this one included) is sitting in or under, whatever the three staleness
+# checks say: a lock is the one signal this script once honored
+# unconditionally, and stripping it without this check silently defeated
+# whatever protection it was providing (2026-08-28 code review).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 worktree_has_live_session() {
-  local target guard cwd
+  local target guard out cwd
   target="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
-  guard="${CLEANUP_WORKTREES_GUARD:-$PRIMARY/.claude/hooks/guard_workflow.py}"
-  [ -f "$guard" ] || return 1
+  guard="${CLEANUP_WORKTREES_GUARD:-$SCRIPT_DIR/../.claude/hooks/guard_workflow.py}"
+  if [ ! -f "$guard" ]; then
+    echo "warning: $guard is missing - treating $1 as occupied by a live session" >&2
+    return 0
+  fi
+  if ! out="$(python3 "$guard" --sessions 2>/dev/null </dev/null)" || [ "${out%%$'\n'*}" != "#sessions v1" ]; then
+    echo "warning: $guard --sessions gave no usable answer (older guard?) - treating $1 as occupied" >&2
+    return 0
+  fi
   while IFS=$'\t' read -r _pid _tag cwd; do
     [ -n "$cwd" ] || continue
     cwd="$(cd "$cwd" 2>/dev/null && pwd -P)" || continue
     case "$cwd" in
       "$target"|"$target"/*) return 0 ;;
     esac
-  done < <(python3 "$guard" --sessions 2>/dev/null)
+  done <<< "$out"
   return 1
 }
 
@@ -178,7 +192,6 @@ for i in "${!WORKTREE_PATHS[@]}"; do
       rel="${path#"$PRIMARY"/}"
       if command -v ddev >/dev/null 2>&1 && (cd "$PRIMARY" && ddev describe >/dev/null 2>&1); then
         (cd "$PRIMARY" && ddev exec -s fastapi rm -rf "/app/$rel") || true
-        git -C "$PRIMARY" worktree prune
       fi
       if [ -e "$path" ]; then
         if [ "$was_locked" = "1" ]; then

@@ -9,15 +9,18 @@ state for orientation/nudge hooks, and a hard failure (exit 2 = tool blocked)
 when the script only exists on the worktree's branch. Found 2026-08-28 when the
 new guard_workflow.py blocked every tool call in its own worktree.
 
-This reads the payload's `cwd`, resolves that checkout's root, and runs its copy
-of the hook with CLAUDE_PROJECT_DIR set to that root; a hook that does not exist
-there is skipped silently (exit 0). stdout/stderr and the exit code pass through
-untouched, so JSON decisions and exit-2 blocks behave exactly as before.
+This runs the named hook from the session's own checkout with CLAUDE_PROJECT_DIR
+set to that root; a hook that does not exist there is skipped silently (exit 0).
+stdout/stderr and the exit code pass through untouched, so JSON decisions and
+exit-2 blocks behave exactly as before. The root comes from CLAUDE_HOOK_ROOT
+when the settings.json prelude has already resolved it (it has: the prelude
+must locate this file from the payload's cwd, never from $CLAUDE_PROJECT_DIR,
+which is always the primary checkout); otherwise from the payload's `cwd` via
+`git rev-parse --show-toplevel`.
 
-Usage in settings.json (the fallback keeps hooks working until this file is
-merged into the primary checkout):
-  if [ -f "$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py" ]; then
-    python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.py" <hook-file>; fi
+Every settings.json entry is the same prelude with only the hook name varying
+(tests/test_hooks_wiring.py asserts that); copy an existing entry, never the
+old `$CLAUDE_PROJECT_DIR/.claude/hooks/...` form.
 """
 import json
 import os
@@ -45,7 +48,8 @@ def main(argv: list[str] | None = None, stdin_text: str | None = None, run=subpr
         cwd = json.loads(raw).get("cwd") or os.getcwd()
     except Exception:
         cwd = os.getcwd()
-    root = resolve_root(cwd, os.environ.get("CLAUDE_PROJECT_DIR"))
+    pre_resolved = os.environ.get("CLAUDE_HOOK_ROOT")
+    root = Path(pre_resolved) if pre_resolved else resolve_root(cwd, os.environ.get("CLAUDE_PROJECT_DIR"))
     hook = root / ".claude" / "hooks" / name
     if not hook.exists():
         return 0

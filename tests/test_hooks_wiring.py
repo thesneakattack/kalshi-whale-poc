@@ -3,15 +3,25 @@ failure class that was diagnosed at least twice before a test existed: a hook
 killed by a harness timeout smaller than its own budget; a hook located through
 $CLAUDE_PROJECT_DIR (always the primary checkout, so every worktree session lost
 every hook when the primary sat on a branch without the launcher); a guard
-implemented for an event it is not wired to; a hook or script with no test.
-Ratchet direction is down: the untested allowlist shrinks, never grows."""
+implemented for an event it is not wired to; a hook or script with no test; a
+settings.json rewrite that drops the project's plugin enablement. Ratchet
+direction is down: the untested allowlist shrinks, never grows."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS = ROOT / ".claude" / "settings.json"
 HOOKS = ROOT / ".claude" / "hooks"
+
+
+def _load_hook(name: str):
+    path = HOOKS / name
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _commands():
@@ -24,9 +34,7 @@ def _commands():
 def test_every_hook_harness_timeout_exceeds_the_hooks_own_budget():
     budgets = {}
     for hook in HOOKS.glob("*.py"):
-        spec = importlib.util.spec_from_file_location(hook.stem, hook)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_hook(hook.name)
         if hasattr(mod, "BUDGET_SEC"):
             budgets[hook.name] = mod.BUDGET_SEC
     assert "run_tests.py" in budgets
@@ -54,28 +62,45 @@ def test_every_hook_command_locates_the_launcher_from_the_payload_cwd():
         assert "$CLAUDE_PROJECT_DIR/.claude/hooks" not in command, command
 
 
+def test_all_preludes_are_one_prelude():
+    """The harness forces one command string per entry, so the F1 invariant lives in N
+    copies. Masking the hook name, they must be byte-identical - a hand edit to one
+    copy that keeps the substrings above but breaks the tail would otherwise pass."""
+    masked = {re.sub(r'python3 "\$h" \S+; fi$', 'python3 "$h" HOOK; fi', c) for _, _, c, _ in _commands()}
+    assert len(masked) == 1, masked
+    (prelude,) = masked
+    assert prelude.endswith('python3 "$h" HOOK; fi')
+    assert 'CLAUDE_HOOK_ROOT="$r"' in prelude  # the launcher reuses the root the prelude already found
+
+
 def test_guard_hooks_are_wired_for_the_events_they_implement():
     wired = {(e, m) for e, m, c, _ in _commands() if "guard_workflow.py" in c}
     assert ("PreToolUse", "Bash") in wired
     assert ("PreToolUse", "Edit|Write") in wired
-    assert any(e == "PostToolUse" for e, _ in wired)
+    assert ("PostToolUse", "Edit|Write") in wired and ("PostToolUse", "Bash|Read|mcp__gitnexus__.*") in wired
     data_guard = {(e, m) for e, m, c, _ in _commands() if "guard_data_db.py" in c}
     assert ("PreToolUse", "Bash") in data_guard
     assert any(e == "SessionStart" for e, _, c, _ in _commands() if "orient.sh" in c)
 
 
-def test_every_hook_script_and_repo_script_has_a_test_file():
+def test_every_hook_and_script_has_a_test_the_edit_hook_would_run():
+    """One definition of 'covered': run_tests.py's own tests_for(), so the per-edit hook
+    and this CI check can never disagree about a file. Extension-less scripts count."""
+    run_tests = _load_hook("run_tests.py")
     untested_legacy = {  # ratchet: shrink, never grow
         "check_py_syntax.py", "guard_data_db.py", "ci-skip-heavy-suite.sh", "ci-testmon-run.sh",
+        "woodpecker-status", "woodpecker-trigger",
     }
+    scripts = sorted(p for p in [*HOOKS.iterdir(), *(ROOT / "scripts").iterdir()]
+                     if p.is_file() and not p.name.startswith(".") and "__pycache__" not in p.parts)
     missing = []
-    for script in sorted([*HOOKS.glob("*.py"), *HOOKS.glob("*.sh"), *(ROOT / "scripts").glob("*.sh")]):
+    for script in scripts:
         if script.name in untested_legacy:
             continue
-        stem = script.stem.replace("-", "_")
-        candidates = (ROOT / "tests" / f"test_{stem}.py", ROOT / "tests" / f"test_{stem}_hook.py")
-        if not any(c.exists() for c in candidates):
-            missing.append(script.name)
+        rel = script.relative_to(ROOT).as_posix()
+        assert run_tests._in_scope(rel), f"{rel} is not in the edit hook's scope"
+        if not run_tests.tests_for(rel, ROOT / "tests"):
+            missing.append(rel)
     assert not missing, missing
 
 
@@ -96,9 +121,26 @@ def test_settings_keeps_project_scoped_plugin_enablement():
         assert spec.get("source", {}).get("repo"), name
 
 
+def test_gitnexus_version_is_pinned_identically_everywhere():
+    """The pin is a literal in several files; skew between them reproduces the
+    'index rewritten by one version, queried by another' failure the pin exists to
+    prevent. One version, everywhere it is spelled out."""
+    files = [ROOT / "CLAUDE.md", HOOKS / "orient.sh", HOOKS / "guard_workflow.py",
+             ROOT / ".claude" / "skills" / "checkpoint" / "SKILL.md"]
+    found = {}
+    for f in files:
+        versions = set(re.findall(r"gitnexus@(\d+\.\d+\.\d+)", f.read_text()))
+        assert versions, f"{f.name} no longer pins a gitnexus version"
+        found[f.name] = versions
+    assert len(set().union(*found.values())) == 1, found
+    assert "gitnexus@latest" not in (ROOT / "CLAUDE.md").read_text()
+
+
 def test_no_effort_budget_survives_in_the_hook_layer():
     """Line caps and one-session stop rules were the 2026-08-27 audit's answer to
-    'no budget'; the user withdrew them 2026-08-28 as kneecapping. Keep them out."""
+    'no budget'; the user withdrew them 2026-08-28 as kneecapping. Keep the real
+    symbols out (not the rule labels - R10 would contain "R1")."""
     text = (HOOKS / "guard_workflow.py").read_text()
-    assert "PLAN_LINE_BUDGET" not in text and "R1" not in text and "R5" not in text
+    for symbol in ("PLAN_LINE_BUDGET", "_PYTEST_SCOPED", "_UNCHECKED", "PLAN_DIR"):
+        assert symbol not in text, symbol
     assert not (ROOT / "tests" / "test_workflow_budgets.py").exists()
