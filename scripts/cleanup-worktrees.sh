@@ -121,6 +121,19 @@ for i in "${!WORKTREE_PATHS[@]}"; do
       continue
     fi
 
+    # Unlock unconditionally before attempting removal - both `worktree
+    # remove` below and `worktree prune` in the ddev fallback refuse a
+    # locked worktree, and a lock left over from whatever agent session
+    # used this worktree has no bearing on whether it's provably stale by
+    # the three checks above. Harmless no-op (suppressed error) if it
+    # wasn't locked. Real bug found 2026-08-28: without this, the ddev
+    # fallback deleted a locked worktree's directory but `worktree prune`
+    # silently skipped deregistering it, leaving git's worktree metadata
+    # pointing at a now-nonexistent path - `branch -d` then refused with
+    # "used by worktree", aborting the whole script (set -e) with the
+    # branch never deleted, locally or remotely.
+    git -C "$PRIMARY" worktree unlock "$path" 2>/dev/null || true
+
     if ! git -C "$PRIMARY" worktree remove "$path" 2>/tmp/cleanup-worktrees-remove-err; then
       rel="${path#"$PRIMARY"/}"
       if command -v ddev >/dev/null 2>&1 && (cd "$PRIMARY" && ddev describe >/dev/null 2>&1); then
