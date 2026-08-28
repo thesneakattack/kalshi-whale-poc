@@ -67,5 +67,6 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
             # PHASE_IMPLEMENTING/PHASE_VERIFICATION - those are
             # worktree-only, see labels.py's own docstring.
             phase_label=labels.PHASE_DONE if done else labels.PHASE_PLAN,
+            classification=info["status"],
         ))
     return items

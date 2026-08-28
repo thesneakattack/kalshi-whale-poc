@@ -20,6 +20,7 @@ class SyncItem:
     depends_on_keys: tuple[tuple[str, str], ...] = ()  # (kind, key) pairs
     done: bool = False
     phase_label: str | None = None  # labels.PHASE_* - None when a source can't determine one
+    classification: str = ""  # plan status string set by sources_plan; empty for all other kinds
 
 
 @dataclass
