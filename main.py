@@ -1127,6 +1127,19 @@ async def _capture_writer_liveness_loop() -> None:
         capture_writer.ensure_alive()
 
 
+async def _stream_consumer_liveness_loop(gateway, *, interval_sec: float = 10.0) -> None:
+    """Backstop for a stuck stream consumer (issue #145) - polls
+    gateway.ensure_consumer_progressing() every interval_sec. One instance
+    per active KalshiStreamGateway (trade_stream, index_stream - same
+    class, each its own connection/queue/consumer). See that method's own
+    docstring for the detection signal and services/kalshi/websocket.py's
+    _HANDLER_TIMEOUT_SEC for the complementary per-message bound this is a
+    backstop for, not a replacement of."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        await gateway.ensure_consumer_progressing()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # restart=True on these three: they're the long-running loops the app
@@ -1159,6 +1172,7 @@ async def lifespan(app: FastAPI):
         _candidate_retry_loop, component="scheduler", operation="candidate_retry", restart=True,
     ))
     trade_stream_task = None
+    trade_stream_liveness_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
             lambda: trade_stream.run(
@@ -1170,7 +1184,11 @@ async def lifespan(app: FastAPI):
             ),
             component="trade_stream", operation="run", restart=True,
         )
+        trade_stream_liveness_task = task_supervisor.supervise(
+            lambda: _stream_consumer_liveness_loop(trade_stream), component="trade_stream", operation="liveness", restart=True,
+        )
     index_stream_task = None
+    index_stream_liveness_task = None
     if index_stream.enabled and (index_stream.index_ids or index_stream.underlying_tickers):
         # Its own connection and its own task - see index_stream's own
         # comment for why this isn't just another channel on trade_stream.
@@ -1182,13 +1200,18 @@ async def lifespan(app: FastAPI):
             ),
             component="index_stream", operation="run", restart=True,
         )
+        index_stream_liveness_task = task_supervisor.supervise(
+            lambda: _stream_consumer_liveness_loop(index_stream), component="index_stream", operation="liveness", restart=True,
+        )
     yield
     if trade_stream_task is not None:
         await trade_stream.close()
         trade_stream_task.cancel()
+        trade_stream_liveness_task.cancel()
     if index_stream_task is not None:
         await index_stream.close()
         index_stream_task.cancel()
+        index_stream_liveness_task.cancel()
     task.cancel()
     loop_watchdog_task.cancel()
     capture_writer_liveness_task.cancel()

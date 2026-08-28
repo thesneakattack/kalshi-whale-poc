@@ -445,6 +445,7 @@ def _fake_ingest_metrics() -> dict:
         "processed_by_class": {"trade": 476, "ticker": 20},
         "dropped_by_class": {"trade": 4},
         "handler_exceptions_total": 3, "handler_exceptions_by_class": {"trade": 3},
+        "handler_timeouts_total": 1, "handler_timeouts_by_class": {"trade": 1},
         "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75},
         "queue_wait": {
             "last_sec": 0.2,
@@ -489,6 +490,7 @@ def test_capture_from_runtime_flattens_ws_ingest_metrics_under_the_stream_prefix
     assert metrics["trade_stream.ingest.dropped_window"] == 1.0
     assert metrics["trade_stream.ingest.malformed_messages"] == 2.0
     assert metrics["trade_stream.ingest.handler_exceptions"] == 3.0
+    assert metrics["trade_stream.ingest.handler_timeouts"] == 1.0
     assert metrics["trade_stream.ingest.queue_depth"] == 12.0
     assert metrics["trade_stream.ingest.queue_high_water"] == 900.0
     assert metrics["trade_stream.ingest.oldest_message_age_sec"] == 0.75

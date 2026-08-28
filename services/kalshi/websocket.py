@@ -121,13 +121,38 @@ _KALSHI_SUBSCRIPTION_OVERFLOW_CODE = 25  # docs/kalshi/websocket-connection.md e
 _MAX_SERVER_ERROR_CODES_TRACKED = 64  # documented codes are a small fixed set; cap defensively
 _MAX_DISCONNECT_REASON_CHARS = 200
 
+# Bounds every message's handler dispatch (issue #145's consumer-stall
+# incident, 2026-08-27: a hung await inside a handler - most likely
+# services/whalewatchers/kalshi_trade_tape.py's unbounded
+# asyncio.to_thread(self._process_trades_timed, ...) - stalled the consumer
+# forever while the reader kept enqueuing, filling the queue and dropping
+# messages with no automated recovery. Ten seconds against a real window
+# avg_ms of ~7 and p-max under 1s (see /api/health/pipeline's
+# receive_to_handler_end.window) leaves large headroom while still bounding
+# the worst case. Cancelling a timed-out asyncio.to_thread call does NOT
+# stop the underlying OS thread (confirmed against CPython's own
+# Future.cancel(): "cannot be cancelled if it is running") - a known,
+# accepted, not-yet-fixed tradeoff, tracked in issue #150, watched via
+# handler_timeouts_total/handler_timeouts_by_class below rather than
+# guessed at.
+_HANDLER_TIMEOUT_SEC = 10.0
+
+# ensure_consumer_progressing's backstop threshold: consecutive liveness
+# checks with zero processed-count progress (while new messages keep
+# arriving and the queue isn't empty) before forcing a reconnect. Catches
+# whatever _HANDLER_TIMEOUT_SEC doesn't structurally cover - e.g. a hang
+# inside _sync_subscriptions, which runs on the reader's own task, not the
+# consumer's.
+_LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
+
 
 class KalshiStreamGateway:
     def __init__(self, base_url: str, exchange_wide_trades: bool = False,
                  index_ids: list[str] | None = None,
                  underlying_tickers: list[str] | None = None,
                  subscribe_lifecycle: bool = False,
-                 ingest_queue_max: int = _INGEST_QUEUE_MAX):
+                 ingest_queue_max: int = _INGEST_QUEUE_MAX,
+                 handler_timeout_sec: float = _HANDLER_TIMEOUT_SEC):
         # exchange_wide_trades (2026-08-17, direct goal: "realtime data
         # across everything" / "zero latency and maximum insight"):
         # subscribe the `trade` channel with NO market_tickers, which
@@ -242,6 +267,15 @@ class KalshiStreamGateway:
         self._handler_exceptions_by_class: dict[str, int] = {}
         self._handler_exceptions_total = 0
         self._fault_logged_classes_this_window: set[str] = set()
+        # Consumer-stall bound + backstop (issue #145/#150) - see
+        # _HANDLER_TIMEOUT_SEC's own comment for the incident this answers.
+        self._handler_timeout_sec = handler_timeout_sec
+        self._handler_timeouts_by_class: dict[str, int] = {}
+        self._handler_timeouts_total = 0
+        self._fault_logged_timeout_classes_this_window: set[str] = set()
+        self._liveness_last_processed_total: int | None = None
+        self._liveness_last_messages_received = 0
+        self._liveness_stuck_samples = 0
         self._queue_high_water = 0
         self._wait_last: float | None = None
         self._wait_lifetime = LatencyAgg()
@@ -338,6 +372,63 @@ class KalshiStreamGateway:
             ws = self._ws
         if ws is not None:
             await ws.close()
+
+    async def force_reconnect(self, reason: str) -> None:
+        """Closes only the current connection - unlike close(), never sets
+        self._stop, so run()'s existing exception -> _record_disconnect ->
+        backoff -> reconnect path takes over exactly as it would for a real
+        network drop. That path already discards the stuck consumer task
+        (run()'s own `finally: consumer.cancel()`) and starts a fresh one on
+        the next connection. Called by ensure_consumer_progressing(); see
+        its docstring and issue #145 for why this exists."""
+        logger.warning("kalshi_websocket: forcing reconnect (%s)", reason)
+        fault_log.record_fault("kalshi_websocket", "consumer_stalled_forced_reconnect", reason, severity="error")
+        async with self._lock:
+            ws = self._ws
+        if ws is not None:
+            await ws.close()
+
+    async def ensure_consumer_progressing(self) -> bool:
+        """Backstop liveness check (issue #145) for whatever
+        _HANDLER_TIMEOUT_SEC doesn't structurally bound - e.g. a hang inside
+        _sync_subscriptions, which runs on the reader's own task, not the
+        consumer's _consume() task. Call on a timer (main.py).
+
+        Signal is direct, not a proxy: total processed-message count held
+        flat across _LIVENESS_STUCK_SAMPLES_THRESHOLD consecutive calls
+        while messages_received kept climbing and the queue holds a
+        backlog. That's "new work arrived, nothing got consumed" - the
+        exact shape of the 2026-08-27 incident (queue at capacity,
+        oldest_message_age_sec growing 1:1 with wall clock, zero drain).
+        A genuinely quiet market (messages_received not climbing) or a
+        slow-but-progressing consumer (processed count still advancing)
+        both correctly report not-stuck.
+
+        Returns whether this call forced a reconnect."""
+        if self._queue is None:
+            return False
+        processed_total = sum(self._processed_by_class.values())
+        received_total = self.messages_received
+        stuck = (
+            self._liveness_last_processed_total is not None
+            and processed_total == self._liveness_last_processed_total
+            and received_total > self._liveness_last_messages_received
+            and self._queue.qsize() > 0
+        )
+        self._liveness_last_processed_total = processed_total
+        self._liveness_last_messages_received = received_total
+        if not stuck:
+            self._liveness_stuck_samples = 0
+            return False
+        self._liveness_stuck_samples += 1
+        if self._liveness_stuck_samples < _LIVENESS_STUCK_SAMPLES_THRESHOLD:
+            return False
+        self._liveness_stuck_samples = 0
+        await self.force_reconnect(
+            f"consumer made no progress across {_LIVENESS_STUCK_SAMPLES_THRESHOLD} liveness checks "
+            f"while messages kept arriving (queue depth {self._queue.qsize()})"
+        )
+        return True
 
     async def set_market_tickers(self, tickers: list[str]) -> None:
         normalized = {t for t in tickers if t}
@@ -774,9 +865,28 @@ class KalshiStreamGateway:
         started = time.monotonic()
         token = MESSAGE_ENQUEUED_AT.set(enqueued_at)
         try:
-            await self._handle_message(
-                data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+            await asyncio.wait_for(
+                self._handle_message(
+                    data, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+                ),
+                timeout=self._handler_timeout_sec,
             )
+        except TimeoutError:
+            # Bounds an otherwise-unbounded hang (issue #145) - does NOT
+            # free a stuck asyncio.to_thread's underlying OS thread (issue
+            # #150, known/accepted). Kept distinct from handler_exceptions_*
+            # below: conflating them would hide exactly the signal that
+            # tells us whether this is happening often enough to matter.
+            self._handler_timeouts_total += 1
+            self._handler_timeouts_by_class[cls] = self._handler_timeouts_by_class.get(cls, 0) + 1
+            if cls not in self._fault_logged_timeout_classes_this_window:
+                self._fault_logged_timeout_classes_this_window.add(cls)
+                fault_log.record_fault(
+                    "kalshi_websocket", f"handle_message_timeout:{cls}",
+                    f"{cls} handler exceeded {self._handler_timeout_sec:.0f}s - see issue #150 "
+                    "for the known thread-pool-leak tradeoff this can incur",
+                    severity="warn",
+                )
         except Exception as exc:
             self._handler_exceptions_total += 1
             self._handler_exceptions_by_class[cls] = self._handler_exceptions_by_class.get(cls, 0) + 1
@@ -828,6 +938,7 @@ class KalshiStreamGateway:
         self._wait_buckets = empty_buckets()
         self._handler_window = {cls: LatencyAgg() for cls in self._handler_lifetime}
         self._fault_logged_classes_this_window.clear()
+        self._fault_logged_timeout_classes_this_window.clear()
         self._subscription_syncs_window = 0
         self._subscription_tickers_added_window = 0
         self._subscription_tickers_removed_window = 0
@@ -866,6 +977,8 @@ class KalshiStreamGateway:
             "dropped_by_class": dict(self._dropped_by_class),
             "handler_exceptions_total": self._handler_exceptions_total,
             "handler_exceptions_by_class": dict(self._handler_exceptions_by_class),
+            "handler_timeouts_total": self._handler_timeouts_total,
+            "handler_timeouts_by_class": dict(self._handler_timeouts_by_class),
             "queue": {
                 "depth": queue.qsize() if queue is not None else 0,
                 "capacity": self._ingest_queue_max,

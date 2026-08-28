@@ -372,6 +372,7 @@ def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
     out[f"{p}.dropped_window"] = float(im.get("dropped_window") or 0)
     out[f"{p}.malformed_messages"] = float(im.get("malformed_messages") or 0)
     out[f"{p}.handler_exceptions"] = float(im.get("handler_exceptions_total") or 0)
+    out[f"{p}.handler_timeouts"] = float(im.get("handler_timeouts_total") or 0)
     queue = im.get("queue") or {}
     out[f"{p}.queue_depth"] = float(queue.get("depth") or 0)
     out[f"{p}.queue_high_water"] = float(queue.get("high_water") or 0)

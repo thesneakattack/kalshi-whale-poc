@@ -138,6 +138,17 @@ Names (all `float`; zero-count classes are omitted, never fabricated):
   exceptions the consumer used to swallow with a bare `except: pass`; each
   class is also fault-logged (`kalshi_websocket` / `handle_message:<class>`)
   once per window, never once per message.
+- `…ingest.handler_timeouts` (issue #145/#150, 2026-08-28) — count of
+  `_process_item`'s `asyncio.wait_for(..., timeout=_HANDLER_TIMEOUT_SEC)`
+  actually timing out. Deliberately separate from `handler_exceptions`
+  (per-class breakdown, `handler_timeouts_by_class`, is live-only via
+  `ingest_metrics()`/`/api/health/pipeline`, same as
+  `handler_exceptions_by_class` — only the aggregate is persisted here).
+  This is the signal to watch for issue #150's known, accepted
+  thread-pool-leak tradeoff (cancelling a timed-out
+  `asyncio.to_thread(...)` call doesn't stop the underlying OS thread) —
+  see `services/kalshi/CHEATSHEET.md`'s "Consumer-stall bound + liveness
+  backstop" entry for the full incident and design.
 - `…ingest.queue_depth`, `…ingest.queue_high_water`,
   `…ingest.oldest_message_age_sec` — the head-of-queue age is the direct
   "received promptly but processed stale" measurement.

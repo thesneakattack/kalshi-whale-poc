@@ -184,3 +184,38 @@ def test_trading_loop_sleeps_for_the_computed_tick_interval():
     source = inspect.getsource(main.trading_loop)
     assert "await asyncio.sleep(_tick_interval_sec(cfg))" in source
     assert 'await asyncio.sleep(cfg["kalshi"]["poll_interval_sec"])' not in source
+
+
+# --- consumer-liveness watchdog wiring (issue #145) -------------------------
+# The detection/recovery logic itself lives on KalshiStreamGateway and is
+# unit-tested directly in tests/test_kalshi_ws_consumer_liveness.py; this
+# file only checks the small loop that polls it on a timer and that
+# main.lifespan actually starts one per active stream.
+
+def test_stream_consumer_liveness_loop_polls_ensure_consumer_progressing(monkeypatch):
+    calls = []
+
+    class FakeGateway:
+        async def ensure_consumer_progressing(self):
+            calls.append(True)
+            return False
+
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_sec):
+        sleeps["n"] += 1
+        if sleeps["n"] > 3:
+            raise _Stop
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    with pytest.raises(_Stop):
+        asyncio.run(main._stream_consumer_liveness_loop(FakeGateway()))
+
+    assert len(calls) == 3  # one check per sleep interval
+
+
+def test_lifespan_starts_a_liveness_loop_for_each_active_stream():
+    source = inspect.getsource(main.lifespan)
+    assert source.count("_stream_consumer_liveness_loop") == 2  # trade_stream and index_stream
+    assert "trade_stream_liveness_task" in source and "index_stream_liveness_task" in source
+    assert "trade_stream_liveness_task.cancel()" in source and "index_stream_liveness_task.cancel()" in source
