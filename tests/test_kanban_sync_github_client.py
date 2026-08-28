@@ -566,3 +566,25 @@ def test_set_milestone_none_removes_the_milestone():
 
     call = runner.calls[0]
     assert "--remove-milestone" in call
+
+
+def test_get_issue_returns_issue_state_for_open_issue():
+    runner = FakeRunner()
+    runner.queue(json.dumps({
+        "number": 96, "state": "OPEN",
+        "labels": [{"name": "status:claimable"}, {"name": "type:plan-task"}],
+    }))
+    client = GithubClient(REPO, runner=runner)
+    result = client.get_issue(96)
+    assert result is not None and result.number == 96 and result.open is True
+    assert result.labels == frozenset({"status:claimable", "type:plan-task"})
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "view"] and "96" in call
+    assert "--json" in call and "number,state,labels" in call
+
+
+def test_get_issue_returns_none_on_cli_error():
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
+    client = GithubClient(REPO, runner=runner)
+    assert client.get_issue(9999) is None

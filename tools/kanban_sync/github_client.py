@@ -188,6 +188,18 @@ class GithubClient:
         data = json.loads(stdout)["subIssuesSummary"]
         return data["completed"], data["total"]
 
+    def get_issue(self, number: int) -> IssueState | None:
+        try:
+            stdout = self._run(["issue", "view", str(number), "--json", "number,state,labels"])
+        except GithubCliError:
+            return None
+        item = json.loads(stdout)
+        return IssueState(
+            number=item["number"],
+            open=item["state"] == "OPEN",
+            labels=frozenset(label["name"] for label in item["labels"]),
+        )
+
     def set_milestone(self, issue_number: int, title: str | None) -> None:
         if title is None:
             self._run(["issue", "edit", str(issue_number), "--remove-milestone"])
