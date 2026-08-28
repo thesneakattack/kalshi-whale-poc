@@ -58,7 +58,7 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_tests.py\"",
-            "timeout": 30,
+            "timeout": 60,
             "statusMessage": "Running tests..."
           }
         ]

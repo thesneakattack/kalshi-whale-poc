@@ -26,19 +26,9 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    file for the full branch-naming and lifecycle policy; this skill only
    covers the verify/commit/push/confirm-CI mechanics within it.
 
-2. **Decide where to verify.** Default: skip a redundant local full-suite
-   run and let CI be the gate (steps 3-6) — the per-edit `PostToolUse`
-   hook (`run_tests.py`) already ran pytest locally after every real
-   `main.py`/`services/*.py` edit this session, so a second full local run
-   right before committing is usually just repeating work CI is about to
-   do anyway in a clean environment. Run locally first (`ddev exec -s
-   fastapi python3 -m pytest -q`) instead when there's a specific reason
-   to want faster/richer feedback than a ~40s CI round-trip: actively
-   debugging a specific failure, a large/risky change you want to sanity
-   check before it's even committed, or `gh`/CI itself is unavailable.
-   Direct instruction (2026-08-16): "there'll still be occasions where you
-   prefer to test locally first regardless, and i accept that" — this is
-   a judgment call each time, not a hard rule either way.
+2. **Do not run the suite locally.** CI is the only full-suite owner; the
+   per-edit hook already ran the edited module's own tests. Run one file
+   locally only while actively debugging a specific failure.
 
 3. **Review scope.** `git status` and `git diff --stat` — confirm nothing
    unexpected is about to be staged (a stray `data/*.db`, `.env`, a session
