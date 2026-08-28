@@ -298,6 +298,56 @@ def collect_ledger_signals(ledger_paths: list[Path], *, at: datetime) -> list[Si
     return signals
 
 
+# Spec §6.2's second identity kind: a numbered-plan file path. This repo's orchestrator
+# skills deliberately never create .superpowers/sdd ledgers ("reconstruct progress from
+# HEAD, do not keep a separate ledger"), so until 2026-08-28 this domain had no input at
+# all and "plans never run to completion" had no detector. Plan docs under
+# docs/superpowers/plans/ use `- [ ]` / `- [x]` task checkboxes; an unchecked box is the
+# plan's own statement that a task is not done. Commit age comes from the plan file's own
+# history (unlike SDD ledgers, plan docs are committed), which is the cheapest honest
+# proxy for "is anyone still working this."
+_CHECKBOX_RE = re.compile(r"^\s*- \[( |x|X)\] (.*)$")
+
+
+def collect_plan_doc_signals(
+    plan_paths: list[Path], *, repo_root: Path, git_runner: Runner, at: datetime,
+) -> list[Signal]:
+    signals: list[Signal] = []
+    for path in plan_paths:
+        if not path.exists():
+            continue
+        unchecked: list[str] = []
+        checked = 0
+        for line in path.read_text().splitlines():
+            m = _CHECKBOX_RE.match(line)
+            if not m:
+                continue
+            if m.group(1) == " ":
+                unchecked.append(m.group(2).strip())
+            else:
+                checked += 1
+        if not unchecked:
+            continue
+        try:
+            rel = str(path.relative_to(repo_root))
+        except ValueError:
+            rel = path.name
+        out = git_runner(["git", "log", "-1", "--format=%ct", "--", str(path)]).stdout.strip()
+        last_commit_days = int((at.timestamp() - int(out)) // 86400) if out.isdigit() else None
+        signals.append(Signal(
+            identity=f"ledger:plan:{rel}",
+            domain="ledger",
+            payload={
+                "unchecked": len(unchecked),
+                "checked": checked,
+                "first_unchecked": unchecked[0][:120],
+                "last_commit_days": last_commit_days,
+            },
+            still_present=True,
+        ))
+    return signals
+
+
 """Standing-rule and process-hygiene compliance signal domain (spec §6.3). Identity: a
 specific rule-instance key. Concrete instance implemented here: tools/quality_audit/
 baseline.json's accepted_finding_ids entries lacking a dated notes addendum
@@ -538,6 +588,11 @@ def run_detect_cycle(
     ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
         if (repo_root / ".superpowers" / "sdd").exists() else []
     ledger_signals = collect_ledger_signals(ledger_paths, at=at)
+    plans_dir = repo_root / "docs" / "superpowers" / "plans"
+    plan_paths = sorted(plans_dir.glob("*.md")) if plans_dir.exists() else []
+    ledger_signals += collect_plan_doc_signals(
+        plan_paths, repo_root=repo_root, git_runner=git_runner, at=at,
+    )
 
     baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
     process_hygiene_signals = (

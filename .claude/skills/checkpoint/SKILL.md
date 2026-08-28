@@ -115,6 +115,17 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    getting that scope added is a one-time human action
    (`gh auth refresh -s project`), not something to fix mid-checkpoint.
 
+8b. **AQC run (workflow janitor).** Run the user-built coordination tool
+   and read what it escalates — stale branches/worktrees, plans with
+   unfinished tasks and no recent commits, baseline hygiene:
+   ```bash
+   python -m tools.quality_coordination
+   ```
+   Report every `escalation_eligible` line in the checkpoint summary and
+   add any new one to `docs/open-decisions.md` with a next action. Never
+   silence a signal by deleting the thing it points at; ~16 s, read-only
+   (`--clean` is the only mutating mode and is not part of a checkpoint).
+
 9. **PR check — only when this checkpoint completes the initiative, not
    every mid-initiative checkpoint.** If the branch has no open PR yet and
    the initiative this branch covers is actually done, `gh pr create`; if

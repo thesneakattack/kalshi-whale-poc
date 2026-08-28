@@ -117,6 +117,27 @@ plugins (use them; never write a project skill or tool that duplicates one):
   github MCP / gh: PRs, statuses, issues; github-issues-kanban skill owns claim/dispatch on the board
 EOF
 
+# AQC (tools/quality_coordination.py) - the user-built workflow janitor. Too
+# slow for this hook's budget (15.8s measured, network calls), so /checkpoint
+# runs it; this prints the last stored result so no session forgets it exists.
+if [ -f tools/quality_coordination_data/quality_coordination.db ]; then
+  python3 - <<'PY' 2>/dev/null || echo "AQC: store unreadable - run: python -m tools.quality_coordination"
+import sqlite3
+c = sqlite3.connect("file:tools/quality_coordination_data/quality_coordination.db?mode=ro", uri=True)
+run = c.execute("select ran_at, signals_observed, signals_escalated from coordination_runs order by id desc limit 1").fetchone()
+if not run:
+    print("AQC: never run - run: python -m tools.quality_coordination (or /checkpoint)")
+else:
+    esc = c.execute("select identity from signal_state where state='escalation_eligible' order by identity").fetchall()
+    plans = c.execute("select count(*) from signal_state where identity like 'ledger:plan:%' and state!='resolved'").fetchone()[0]
+    print(f"AQC: last run {run[0][:16]}Z, {run[1]} signals, {run[2]} escalation-eligible, {plans} plan(s) with unfinished tasks - /checkpoint re-runs it; python -m tools.quality_coordination for detail")
+    for (ident,) in esc[:8]:
+        print(f"  - {ident}")
+PY
+else
+  echo "AQC: never run in this checkout - run: python -m tools.quality_coordination (or /checkpoint)"
+fi
+
 if [ -f docs/open-decisions.md ]; then
   echo "open decisions (docs/open-decisions.md - act on or ask about these; don't re-discover them, don't write a new plan for them):"
   grep '^- ' docs/open-decisions.md | sed 's/^/  /'
