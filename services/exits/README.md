@@ -166,3 +166,45 @@ shaped single query across all open tickers, or a `tick_executor` offload of
 the whole `check_exits` call) in addition to Task 20's per-ticker
 memoization, not instead of it — same-ticker positions (partial hedges) still
 benefit from Task 20 once it ships.
+
+## Task 20 shipped, 2026-08-27: `tick_cache` is correct but currently inert
+in the live app — the same-ticker case it targets cannot occur today
+
+Task 20 (`check_exits(..., tick_cache=None)`) memoizes `recent_price`/
+`volatility`/`analyst_lean`/`series_stats` reads keyed by `(function_name,
+ticker)`, wired at `main.py`'s single per-tick call site. Verified against
+source while implementing it, not assumed: `PaperBroker.positions` is
+`dict[str, Position]` — **exactly one `Position` per ticker key**
+(`services/paper_broker.py`'s own type annotation, and `open_position`
+unconditionally does `self.positions[ticker] = Position(...)`, overwriting
+rather than accumulating). `check_exits`' per-position loop
+(`for ticker, pos in list(broker.positions.items())`) therefore visits each
+ticker **at most once per call**, and `main.py`'s tick loop calls
+`check_exits` exactly once per tick with a fresh `tick_cache = {}` each
+time — so no cache key can ever be requested twice within that call. The
+"two partial-hedge positions on the same market" scenario the Known-scope-
+gap note above uses as its same-ticker example cannot happen under this
+data model: two positions "hedging the same market" are necessarily two
+*different* tickers (different strikes/sides of a structured event), which
+is exactly the distinct-ticker case already documented as unfixed by this
+task, not the same-ticker case it actually targets.
+
+Net effect: the memoization mechanism itself is implemented correctly and
+is exercised by real tests (`tests/test_check_exits_scale_benchmark.py`'s
+`test_check_exits_shares_tick_cache_across_calls_on_the_same_ticker` proves
+it dedupes when two `check_exits()` calls for the same ticker share one
+`tick_cache` dict) — but at the one place it's actually wired today, it
+produces zero cache hits and zero measured speedup, because that call site
+never gets a repeat ticker to dedupe. It would start doing real work only
+if either (a) `PaperBroker` ever supports more than one concurrent position
+per ticker, or (b) a `tick_cache` were shared across more than one
+`check_exits()` call within a short window (e.g. across `main.py`'s tick
+loop and the two `services/whale_stream/whale_stream_handlers.py` call
+sites, which Task 20 deliberately left unwired — see its own scope in
+`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`).
+Not a defect in the shipped code — `tick_cache=None` stays the byte-
+identical default everywhere it isn't passed — but a real gap between "the
+interface Task 20 specified" and "what actually reduces read count in the
+live app," worth knowing before treating Task 20 as delivering any part of
+the live crash report's fix. The distinct-ticker bulk-fetch/`tick_executor`
+follow-up above remains the only path with a real chance of doing that.

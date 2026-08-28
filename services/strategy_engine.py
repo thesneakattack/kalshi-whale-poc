@@ -606,7 +606,7 @@ class FollowTheWhaleStrategy:
     def check_exits(
         self, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
         opened_since: float | None = None, category_by_ticker: dict | None = None,
-        close_times: dict | None = None,
+        close_times: dict | None = None, tick_cache: dict | None = None,
     ) -> list[dict]:
         """Actively manages already-open positions - real implementation now
         lives in services/exits/exit_engine.py (2026-08-22 modularization
@@ -615,8 +615,13 @@ class FollowTheWhaleStrategy:
         existing `strategy.check_exits(...)` call sites don't need to
         change - see exit_engine.check_exits's own docstring for the full
         behavior (settlement close, take-profit/stop-loss, time-to-close
-        forced exit, sentiment-reversal, auto-exit composite scoring)."""
+        forced exit, sentiment-reversal, auto-exit composite scoring).
+
+        tick_cache (I13 P4 Task 20): passed straight through to
+        exit_engine.check_exits's own tick_cache - see its docstring.
+        Optional and additive; omitted callers get identical behavior."""
         return exit_engine.check_exits(
             self.broker, latest_prices, signal_feed, cfg, market_results=market_results,
             opened_since=opened_since, category_by_ticker=category_by_ticker, close_times=close_times,
+            tick_cache=tick_cache,
         )
