@@ -85,6 +85,38 @@ which can run in parallel right now.
       gate check on every rejected candidate, by design) needs real
       retention or a pre-aggregated summary table - the SQL rewrite fixed
       the loop-blocking, not the underlying growth.
+- [ ] **The trade-stream consumer can stall completely with no automated
+      detection or recovery - live-observed 2026-08-27, mitigated (a
+      restart), not fixed.** `GET /api/health/pipeline` showed
+      `queue.depth == capacity` (20,000/20,000) with `oldest_message_age_sec`
+      growing 1:1 with wall-clock time across two polls - zero drain
+      progress, not merely slow - while `dropped_messages` climbed in real
+      time (13,858 → 18,619 in ~40s). `GET /api/quality/summary` had
+      already independently flagged it (`observability:ws-dropped-messages:
+      trade_stream`, error severity) before anyone checked by hand - the
+      detection worked, nothing was watching it or acting on it. Timing
+      correlated with (but didn't conclusively prove) a legitimate
+      `uvicorn --reload` triggered by a real `git merge` to the primary
+      checkout - a different mechanism from the worktree-reload-collision
+      bug fixed the same day (see P3.5 below), since the primary checkout
+      is *supposed* to keep triggering reloads. Ruled out `check_exits`'s
+      O(N)-per-position cost (only 8 open positions live at the time -
+      negligible per Task 17c's own measured numbers) and ruled out the
+      event loop itself being synchronously blocked (`loop_watchdog`'s
+      `stall_max_ms` measures exactly that, and `last_tick_duration_sec` was
+      normal throughout) - narrows the mechanism to a stuck `await` inside
+      the consumer's own task (a hung network call, a lock that never
+      releases), not identified further before mitigating. Full writeup:
+      `docs/superpowers/research/2026-08-25-realtime-data-plane-known-
+      findings.md`'s "Live incident (2026-08-27...)" section. **Real gap
+      that's still open**: `task_supervisor.supervise(..., restart=True)`
+      only restarts `trade_stream.run` on an unhandled exception - a hung
+      `await` that never raises is invisible to it. No runtime diagnostic
+      watches "is the consumer's queue still draining." Needs an actual
+      consumer-liveness watchdog (e.g., force-reconnect when `queue.depth ==
+      capacity` and `oldest_message_age_sec` exceeds a threshold for N
+      consecutive samples), not attempted here - this was incident response,
+      not a design/implementation task.
 - [x] **A second, unrelated event-loop-blocking bug**, found the same day
       while investigating WS-subscription churn (below): three
       `services/whale_calibration/routes.py` routes ran synchronous work

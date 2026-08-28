@@ -622,6 +622,70 @@ real findings are entirely in the exchange-wide WS ingest/queue path, which does
 its own `CHEATSHEET.md`/`README.md` outside this research doc and
 `services/kalshi/websocket.py`'s own module docstring.
 
+## Live incident (2026-08-27, shortly after the successful run above) - consumer stall,
+   queue saturated, real message loss, no automated detection or recovery
+
+Reported live by direct user observation ("just now messages started dropping") a short
+time after the successful widened-scope run above and its config revert. `GET /api/
+health/pipeline` confirmed immediately: `queue.depth: 20000` == `capacity: 20000` (full),
+`oldest_message_age_sec` growing 1:1 with wall-clock time across two polls ~40s apart
+(219.3s -> 259.6s, i.e. **zero drain progress** - not merely slow, the consumer was fully
+stopped), `dropped_messages` climbing in real time (13,858 -> 18,619 in the same ~40s).
+`GET /api/quality/summary` had already independently flagged this
+(`observability:ws-dropped-messages:trade_stream`, severity error, high confidence) before
+this investigation checked it by hand - the detection worked, nothing was watching it.
+
+**Timing correlates with, but does not conclusively prove, a specific trigger**: `ddev
+logs -s fastapi` showed exactly one `WatchFiles ... Reloading` event since the prior
+restart, listing `tools/kanban_sync/sync.py`, `tests/test_trading_gate.py`,
+`tests/test_kanban_sync_sync.py` - precisely the file set a `git merge origin/main` had
+just written to the **primary checkout** (bringing in PRs #124 and #125). This is a
+legitimate, correctly-triggered reload, not a recurrence of the worktree-reload-collision
+bug fixed earlier this session (PR #123's `--reload-exclude` only scopes out
+`.claude/worktrees/` - the primary checkout, where real merges land, is supposed to keep
+triggering reloads). The open question this investigation could not resolve before
+mitigating: whether that reload's own post-restart reconnect sequence left the consumer
+task stuck, or whether something unrelated in the following minutes (the config-revert's
+resulting watchlist resync, `subscription_churn.syncs_total` 7->14) did. **Logs were lost
+to the mitigating restart before a precise timestamp correlation could be pulled** - a
+real evidence gap, stated plainly rather than papered over.
+
+**Ruled out, not just assumed innocent:** `check_exits`'s O(N)-per-open-position cost
+(Task 17c/Task 20's own subject) was the first hypothesis tried, since `_process_stream_
+ticker` and `_process_stream_trade` (`services/whale_stream/whale_stream_handlers.py`,
+two of the three call sites feeding `exit_engine.check_exits` via `strategy.check_exits`)
+both call it unconditionally on qualifying messages, un-cached, on the same hot consumer
+path this incident stalled. Checked `GET /api/state`: only **8** open positions live at
+the time - at Task 17c's own measured ~0.2ms/position, this is negligible cost, not a
+plausible cause here. Also checked: `services/loop_watchdog.py` (`stall_max_ms`) measures
+*event-loop scheduling delay* (whether periodic `asyncio.sleep` wakeups run late) - it
+would only catch the event loop itself being synchronously blocked, and
+`last_tick_duration_sec: 1.91` (normal) during the stall confirms the loop was NOT
+blocked; only the trade_stream consumer's own task was stuck on something, consistent
+with a stuck `await` (a hung network call, a lock that never releases) rather than a
+synchronous CPU/DB hog - narrows the mechanism but doesn't identify it.
+
+**Mitigation:** `ddev restart` (safe, paper mode, zero capital risk) - confirmed
+recovery immediately after: `queue.depth: 0`, `oldest_message_age_sec: 0.0`, trade stream
+reconnected and receiving normally. Chose immediate mitigation over continued live
+forensics because the queue being saturated means **every new arrival was being dropped
+in real time** - each additional minute of diagnosis was itself actively costing
+irrecoverable data under CLAUDE.md's completeness rule, a case where stopping the bleeding
+correctly took priority over root-causing with the process still in its broken state.
+
+**Real, permanent gap this exposes, independent of whatever the exact trigger turns out to
+be:** no runtime diagnostic or `task_supervisor` mechanism actually watches "is the
+trade_stream consumer's queue still draining." `task_supervisor.supervise(...,
+restart=True)` only restarts `trade_stream.run` on an *unhandled exception* - a hung
+`await` that never raises is invisible to it, exactly this incident's shape. The only
+existing signal (`observability:ws-dropped-messages`) is passive - it correctly flagged
+the state but nothing acts on it or pages anyone; this incident was caught by a human
+noticing symptoms, not by any automated recovery path. **Not fixed here** - implementing
+an actual consumer-liveness watchdog (e.g., alert or force-reconnect when `queue.depth ==
+capacity` and `oldest_message_age_sec` exceeds a threshold for N consecutive samples) is
+real design/implementation work of its own, out of scope for this incident response.
+Recorded as a ROADMAP item rather than attempted here.
+
 ## What the investigation must not assume
 
 Do not assume any of the following is automatically correct:
