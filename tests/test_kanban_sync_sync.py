@@ -2,7 +2,7 @@ from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import IssueState
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync import project_status
-from tools.kanban_sync.sync import close_completed_plan_parents, close_stale_worktree_issues, reconcile, sync_pass_one
+from tools.kanban_sync.sync import close_completed_plan_parents, close_stale_worktree_issues, reconcile, sync_pass_one, _mismatch_comment
 
 
 class FakeGithubClient:
@@ -548,3 +548,26 @@ def test_close_completed_plan_parents_ignores_marker_less_issues_even_with_type_
     # Sub-issue must NOT close (no marker, despite type:plan-task label and complete subs)
     assert client.issues[sub_issue_number]["open"] is True
     assert sub_issue_number not in [int(c.split()[0][1:]) for c in report.closed]
+
+
+def test_mismatch_comment_for_plan_kind_names_the_classification():
+    plan_item = SyncItem(
+        kind=labels.SYNC_MARKER_KIND_PLAN, key="2026-08-27-x.md",
+        title="Plan: 2026-08-27-x.md", status_label=labels.STATUS_CLAIMABLE,
+        type_label=labels.TYPE_PLAN_TASK, context_body="",
+        acceptance_criteria=(), classification="in-progress",
+    )
+    comment = _mismatch_comment(plan_item)
+    assert "in-progress" in comment and "reclassify" in comment
+    assert "sync --sources plan" in comment
+
+
+def test_mismatch_comment_for_non_plan_kind_uses_generic_message():
+    track_item = SyncItem(
+        kind=labels.SYNC_MARKER_KIND_WORKTREE, key="feat/x",
+        title="feat/x", status_label=labels.STATUS_CLAIMABLE,
+        type_label=labels.TYPE_TRACKING, context_body="",
+        acceptance_criteria=(),
+    )
+    comment = _mismatch_comment(track_item)
+    assert "still open" in comment and "reclassify" not in comment

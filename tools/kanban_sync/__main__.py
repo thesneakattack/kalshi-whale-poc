@@ -188,6 +188,16 @@ def _cmd_decompose_plan(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         parent_number = existing.number
+    parent_issue_state = client.get_issue(parent_number)
+    if parent_issue_state is not None and not parent_issue_state.open:
+        print(
+            f"error: parent issue #{parent_number} is closed.\n"
+            f"If the plan is done, reclassify it as 'done' in your classification JSON\n"
+            f"and re-run 'sync --sources plan' — that is the correct resolution path,\n"
+            f"not decompose.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     plan_path = PLANS_DIR / args.plan
     if not plan_path.exists():
         print(f"error: plan doc not found: {plan_path}", file=sys.stderr)

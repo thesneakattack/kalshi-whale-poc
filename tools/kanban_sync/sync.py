@@ -74,6 +74,14 @@ def _render_body(item: SyncItem) -> str:
 
 def _mismatch_comment(item: SyncItem) -> str:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if item.kind == labels.SYNC_MARKER_KIND_PLAN and item.classification:
+        return (
+            f"<!-- event: sync-mismatch | agent: kanban-board-sync | ts: {ts} -->\n"
+            f"This issue is closed on GitHub, but this sync run classified its plan as "
+            f"`{item.classification}` (not `done`). To resolve: reclassify the plan as "
+            f"`done` in your classification JSON and re-run `sync --sources plan` — the "
+            f"sync will then leave this issue closed correctly. Not reopening automatically."
+        )
     return (
         f"<!-- event: sync-mismatch | agent: kanban-board-sync | ts: {ts} -->\n"
         f"This issue is closed on GitHub, but its source (`{item.kind}:{item.key}`) "

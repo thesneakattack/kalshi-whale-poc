@@ -222,6 +222,10 @@ class _FakeParentIssueClient:
     def find_by_marker(self, marker):
         raise AssertionError("find_by_marker must not be called when --parent-issue is given")
 
+    def get_issue(self, number):
+        from tools.kanban_sync.github_client import IssueState
+        return IssueState(number=number, open=True, labels=frozenset())
+
 
 def test_decompose_plan_subcommand_uses_parent_issue_directly_when_given(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
@@ -285,3 +289,40 @@ def test_cmd_sync_skips_close_completed_plan_parents_when_plan_not_in_sources(mo
     cli._cmd_sync(argparse.Namespace(sources="roadmap", dry_run=False, plan_classifications=None))
 
     assert calls == []
+
+
+class _FakeClosedParentClient:
+    """find_by_marker returns an open-looking issue (marker lookup succeeds),
+    but get_issue returns it as closed — simulates the issue being closed
+    between classification and decompose-plan invocation."""
+    def find_by_marker(self, marker):
+        from tools.kanban_sync.github_client import IssueState
+        return IssueState(number=96, open=True, labels=frozenset())
+
+    def get_issue(self, number):
+        from tools.kanban_sync.github_client import IssueState
+        return IssueState(number=number, open=False, labels=frozenset())
+
+
+def test_decompose_plan_subcommand_errors_when_parent_is_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeClosedParentClient())
+    monkeypatch.setattr(cli, "PLANS_DIR", tmp_path)
+    (tmp_path / "x.md").write_text("# X\n")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["decompose-plan", "--plan", "x.md"])
+
+    assert exc.value.code == 1
+
+
+def test_decompose_plan_subcommand_errors_when_parent_is_closed_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeClosedParentClient())
+    monkeypatch.setattr(cli, "PLANS_DIR", tmp_path)
+    (tmp_path / "x.md").write_text("# X\n")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["decompose-plan", "--plan", "x.md", "--dry-run"])
+
+    assert exc.value.code == 1

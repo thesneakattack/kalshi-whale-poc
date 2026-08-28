@@ -91,3 +91,14 @@ def test_build_plan_items_never_emits_implementing_or_verification_phase():
     assert all(
         i.phase_label in {labels.PHASE_PLAN, labels.PHASE_DONE} for i in items
     )
+
+
+def test_build_plan_items_sets_classification_from_status():
+    items = build_plan_items({
+        "x.md": {"status": "in-progress", "note": "partial"},
+        "y.md": {"status": "done", "note": ""},
+    })
+    x = next(i for i in items if i.key == "x.md")
+    y = next(i for i in items if i.key == "y.md")
+    assert x.classification == "in-progress"
+    assert y.classification == "done"
