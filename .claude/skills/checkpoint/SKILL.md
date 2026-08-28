@@ -126,6 +126,14 @@ of) the local per-edit hook. See `run_tests.py` / `session_orient.sh` /
    silence a signal by deleting the thing it points at; ~16 s, read-only
    (`--clean` is the only mutating mode and is not part of a checkpoint).
 
+8c. **Quality ratchet (background).** Fire and forget — adds a data point
+   to the persisted observation series over `tools.quality_audit` findings:
+   ```bash
+   python -m tools.quality_ratchet &
+   ```
+   Non-blocking; inspect `tools/quality_ratchet_data/quality_ratchet.db`
+   directly if you want to read trends.
+
 9. **PR check — only when this checkpoint completes the initiative, not
    every mid-initiative checkpoint.** If the branch has no open PR yet and
    the initiative this branch covers is actually done, `gh pr create`; if
