@@ -153,15 +153,22 @@ def sessions_from_socks(directory: Path) -> dict[int, str]:
 
 
 def sessions_from_registry(base: Path | None = None, root: Path | None = None) -> dict[int, str]:
-    """Sessions this guard has seen, still alive: pid present with the recorded comm."""
+    """Sessions this guard has seen, still alive: pid present with the recorded comm.
+
+    One process can own several records - a session id rotates while the pid does
+    not - so records are applied oldest first and the newest `at` wins. Ordering by
+    the filesystem's glob order instead would hand back whichever cwd happened to be
+    listed last (observed 2026-08-28 with two stale records for one pid)."""
     out: dict[int, str] = {}
     base = Path(base or registry_root())
+    records = []
     for f in (base.glob("*/session.json") if base.is_dir() else []):
         try:
             rec = json.loads(f.read_text())
-            pid = int(rec["pid"])
+            records.append((float(rec.get("at") or 0.0), int(rec["pid"]), rec))
         except (OSError, ValueError, KeyError, TypeError):
             continue
+    for _, pid, rec in sorted(records, key=lambda r: r[0]):
         if process_comm(pid, root) != rec.get("comm"):
             continue
         cwd = rec.get("cwd")

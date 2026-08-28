@@ -48,34 +48,63 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
-# Parse `git worktree list --porcelain` into parallel arrays of
-# path/branch, and find the primary checkout (real .git directory, not a
-# linked worktree's .git file).
+# Parse `git worktree list --porcelain` into parallel arrays of path/branch,
+# and find the primary checkout (real .git directory, not a linked worktree's
+# .git file).
+#
+# A porcelain record is `worktree <path>`, then `HEAD <sha>`, then either
+# `branch refs/heads/<name>` or `detached`, then a blank line. Records are
+# closed on the next `worktree ` line (and at EOF) rather than on the branch
+# line, so a DETACHED worktree is seen at all: keying off `branch` alone made
+# every detached entry invisible - never listed, never reported, never
+# cleaned. Real leak, 2026-08-28: `git worktree add --detach` (what the
+# code-review skill's agents create) left an entry that accumulated silently
+# and had to be removed by hand. Detached worktrees are reported and always
+# kept - with no branch there is no PR to prove staleness against.
 PRIMARY=""
 WORKTREE_PATHS=()
 WORKTREE_BRANCHES=()
+DETACHED_PATHS=()
 current_path=""
+current_branch=""
+
+flush_worktree() {
+  [ -n "$current_path" ] || return 0
+  if [ -d "$current_path/.git" ]; then
+    PRIMARY="$current_path"
+  elif [ -n "$current_branch" ]; then
+    WORKTREE_PATHS+=("$current_path")
+    WORKTREE_BRANCHES+=("$current_branch")
+  else
+    DETACHED_PATHS+=("$current_path")
+  fi
+  current_path=""
+  current_branch=""
+}
+
 while IFS= read -r line; do
   case "$line" in
     "worktree "*)
+      flush_worktree
       current_path="${line#worktree }"
       ;;
     "branch refs/heads/"*)
-      branch="${line#branch refs/heads/}"
-      if [ -d "$current_path/.git" ]; then
-        PRIMARY="$current_path"
-      else
-        WORKTREE_PATHS+=("$current_path")
-        WORKTREE_BRANCHES+=("$branch")
-      fi
+      current_branch="${line#branch refs/heads/}"
       ;;
   esac
 done < <(git worktree list --porcelain)
+flush_worktree
 
 if [ -z "$PRIMARY" ]; then
   echo "error: could not identify the primary checkout among registered worktrees" >&2
   exit 1
 fi
+
+detached_kept=0
+for path in ${DETACHED_PATHS+"${DETACHED_PATHS[@]}"}; do
+  echo "keeping: $path (detached HEAD - no branch, so no PR state to check; remove it by hand once you know it is finished)"
+  detached_kept=$((detached_kept + 1))
+done
 
 # Live-session detection is guard_workflow.py's `--sessions` ("#sessions v1"
 # header, then one line per session: pid, self|other, cwd) - the same
@@ -115,7 +144,7 @@ worktree_has_live_session() {
 }
 
 if [ "${#WORKTREE_PATHS[@]}" -eq 0 ]; then
-  echo "no non-primary worktrees registered - nothing to check"
+  echo "cleanup-worktrees: 0 removed, $detached_kept kept"
   exit 0
 fi
 
@@ -134,7 +163,7 @@ remove_err="$(mktemp)"
 trap 'rm -f "$remove_err"' EXIT
 
 removed=0
-kept=0
+kept=$detached_kept
 
 for i in "${!WORKTREE_PATHS[@]}"; do
   path="${WORKTREE_PATHS[$i]}"
