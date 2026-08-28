@@ -1,6 +1,6 @@
 # Autonomous Quality Coordination Investigation Execution Plan
 
-> **Agentic execution:** Use `.claude/skills/autonomous-quality-coordination-investigation/SKILL.md` as the authoritative orchestrator. Execute exactly one numbered investigation task, verify, commit, report, and stop. Superpowers skills are supporting disciplines and process gates, not a replacement progress ledger.
+> **Agentic execution:** complete (I0-I13). The bespoke orchestrator skill was removed 2026-08-28; any follow-up runs under `.claude/skills/plan-task/SKILL.md` with `domains/workflow.md`. Execute exactly one numbered task, verify, commit, report, and stop.
 
 **Goal:** Determine, through current-repo evidence, historical analysis, authoritative platform research, simulation, and fault injection, how the existing Quality Control Plane can report/escalate/remediate durable findings without stepping on concurrent work or exposing excessive GitHub authority.
 

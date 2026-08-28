@@ -7,15 +7,16 @@ to the current task and load/use the relevant skill before acting.
 
 ## Available quality/reliability capabilities
 
-- **quality-plan-task** — implementing or resuming a numbered task from the
-  Quality Control Plane work; re-ground against current HEAD, work one task
-  at a time, TDD, verify, commit, stop.
-- **frontend-modularization-task** — implementing or resuming a numbered task
-  from the frontend modularization plan (Preact + signals + htm strangler-fig
-  migration, schema-driven Config tab, charts module); reconstruct progress
-  from `frontend/src/js/{panels,legacy}` and the `frontend-*` baseline
-  ratchets, one task at a time, TDD, verify, commit, stop.
-- **autonomous-quality-coordination-investigation** — **complete** (I0-I13,
+- **plan-task** — implementing or resuming any numbered task from a plan
+  under `docs/superpowers/plans/`; one shared re-ground/one-task/TDD/verify/
+  commit/stop skeleton plus `domains/{quality,frontend,kalshi,realtime,
+  economic,workflow}.md` for the routing that differs per initiative.
+  Supersedes `quality-plan-task` and `frontend-modularization-task`
+  (removed 2026-08-28); `kalshi-integration-refactor` and
+  `realtime-data-plane-investigation` fold in once their in-flight
+  references close (see `docs/open-decisions.md`).
+- **autonomous-quality-coordination-investigation** (skill removed
+  2026-08-28; its plan/spec/research docs remain) — **complete** (I0-I13,
   `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`).
   Investigated how Quality Control Plane findings could be reported,
   escalated, or mechanically remediated without stepping on active
@@ -79,7 +80,8 @@ to the current task and load/use the relevant skill before acting.
   Design: `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-
   design.md`. Plan: `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
   workflow.md`.
-- **economic-strategy-effectiveness-investigation** — **substantially complete**
+- **economic-strategy-effectiveness-investigation** (skill removed
+  2026-08-28; use `plan-task` + `domains/economic.md`) — **substantially complete**
   (E1-E7, E11-E12 done with real evidence; E8-E10 explicitly scoped-not-
   executed or closed-infeasible —
   `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-
@@ -127,9 +129,9 @@ to the current task and load/use the relevant skill before acting.
 - **session-handoff** — ending a substantial working session or preparing for
   `/compact`, `/clear`, or a fresh session. Leave exact HEAD, verification
   state, and next work reconstructable from git.
-- **final-verification** — before claiming a large multi-module initiative is
-  complete. Prove the guardrails themselves with safe fault injection, then
-  run the full verification matrix.
+- **superpowers:verification-before-completion** — before claiming anything
+  is complete (replaces the project-local `final-verification`, removed
+  2026-08-28; its guard-proof checklist lives in `plan-task/domains/quality.md`).
 
 Existing project skills remain authoritative for their own responsibilities,
 including `/checkpoint`, `/config-field-edit`, `/run`, and

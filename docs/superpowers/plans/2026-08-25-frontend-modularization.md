@@ -1,9 +1,9 @@
 # Frontend Modularization Execution Plan
 
-> **Agentic execution:** Use `.claude/skills/frontend-modularization-task/SKILL.md` as the
-> authoritative orchestrator. Reconstruct progress from current HEAD, execute exactly one
-> numbered task, verify, commit, report, and stop. Superpowers skills are supporting
-> disciplines, not a replacement progress/orchestration system.
+> **Agentic execution:** Use `.claude/skills/plan-task/SKILL.md` with `domains/frontend.md`
+> (the bespoke `frontend-modularization-task` skill was folded into it 2026-08-28).
+> Reconstruct progress from current HEAD, execute exactly one numbered task, verify,
+> commit, report, and stop.
 
 **Goal:** Turn the 13-module, single-import-cycle dashboard frontend into owned, testable
 panels on Preact + signals + htm behind a schema-driven Config tab and a real charts module —

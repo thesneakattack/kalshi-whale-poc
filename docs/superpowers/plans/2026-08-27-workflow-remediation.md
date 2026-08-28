@@ -12,6 +12,12 @@
 
 **Branch / worktree:** `chore/workflow-remediation` in `.claude/worktrees/chore-workflow-remediation`, off `origin/main` @ `a9bab31`. Another session (autotrade-73, notified 2026-08-28) owns `feat/realtime-data-plane-remediation` in the primary checkout: `main.py`, `services/{exits,observability,strategy_engine,whale_stream,market_watch,diagnostics}`, `tests/`, `services/*/README.md`. **Do not touch those paths.** It will message before editing `ROADMAP.md`.
 
+## Status (2026-08-28)
+
+- Tasks 1–5: shipped on this branch (`2d42793` hook, `e3008e2` session_orient, `e818218` open-decisions, `385623c` CLAUDE.md, `ecde431` stop rule). Deviation from Task 5: `realtime-data-plane-evidence.md` keeps its Completion rule verbatim for the in-flight realtime plan; the stop rule is appended for investigations started after 2026-08-28.
+- Task 6: shipped for `final-verification`, `quality-plan-task`, `frontend-modularization-task`, and the two completed investigation skills. Deferred by agreement with the session executing the realtime plan (multi-day): `realtime-data-plane-investigation`, `root-cause-debugging`, and `kalshi-integration-refactor` (named by the frozen `kalshi-integration-authority.md`) stay until that plan closes — tracked in `docs/open-decisions.md`.
+- Tasks 7–9: measurements taken; decisions put to the user. Task 10 pending.
+
 ## Global Constraints
 
 - Touch only `.claude/`, `CLAUDE.md`, `ROADMAP.md`, `docs/`, `tools/`, `scripts/`, `tests/test_run_tests_hook.py`. Never `services/`, `main.py`, `frontend/`, `data/`.

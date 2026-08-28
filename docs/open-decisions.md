@@ -6,7 +6,7 @@ archive here. A `feedback` memory or "standing guidance" gets its line here
 in the same session it is written. This list is the track — no new plan doc
 for anything already on it.
 
-- Retire `realtime-data-plane-investigation` and `root-cause-debugging` skills and replace `realtime-data-plane-evidence.md`'s Completion rule with the stop rule · only after the realtime session closes `2026-08-25-realtime-data-plane-remediation.md` (multi-day, P8 Task 40 telemetry-gated) and repoints its header to `plan-task` + `domains/realtime.md` · me, on that session's signal · 2026-08-28
+- Retire `realtime-data-plane-investigation`, `root-cause-debugging`, and `kalshi-integration-refactor` skills (the last is named by `kalshi-integration-authority.md`, frozen while the realtime plan runs) and replace `realtime-data-plane-evidence.md`'s Completion rule with the stop rule · only after the realtime session closes `2026-08-25-realtime-data-plane-remediation.md` (multi-day, P8 Task 40 telemetry-gated) and repoints its header to `plan-task` + `domains/realtime.md` · me, on that session's signal · 2026-08-28
 - Retire AQC tools or keep one on cron · workflow-remediation Task 7 → decision · you · 2026-08-27
 - `tools/kanban_sync` vs github-issues-kanban plugin: one writer · workflow-remediation Task 8 → decision · you · 2026-08-27
 - Keep the per-edit test hook at all (now 9s, scoped) · workflow-remediation Task 9 → decision · you · 2026-08-27

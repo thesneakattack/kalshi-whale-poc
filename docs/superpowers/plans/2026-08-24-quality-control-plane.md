@@ -6,8 +6,9 @@
 > `superpowers:subagent-driven-development`, `superpowers:executing-plans`,
 > isolated worktrees, per-task implementer/reviewer subagents, or a separate
 > progress ledger is superseded by the repository's current Claude workflow.
-> `.claude/skills/quality-plan-task/SKILL.md` is the execution orchestrator for
-> this initiative. Superpowers skills remain available selectively as supporting
+> `.claude/skills/plan-task/SKILL.md` with `domains/quality.md` is the execution
+> orchestrator for this initiative (the bespoke `quality-plan-task` skill was
+> folded into it 2026-08-28). Superpowers skills remain available selectively as supporting
 > engineering capabilities—especially TDD, systematic debugging,
 > verification-before-completion, brainstorming, and code review—but they do
 > not replace the repository-specific task/commit/checkpoint/CI workflow unless
