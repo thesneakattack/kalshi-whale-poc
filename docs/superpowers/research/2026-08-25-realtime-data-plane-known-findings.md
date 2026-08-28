@@ -546,6 +546,88 @@ consumer per the incident recorded above, a ticker rotating off discovery scope 
 position is still open); and a scored comparison before any implementation plan gets
 written.
 
+## Hypothesis H13 — application-wide REST-vs-WS inventory (2026-08-27):
+   H12 generalizes beyond position management, with three new concrete gaps
+
+Direct follow-up correction to H12: *"its not just the positioning management. its the
+entire application."* Full inventory produced separately (not duplicated here in full):
+`docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`. That
+document (1) checked all 12 documented Kalshi WS channels against what this app actually
+subscribes to, and (2) swept every REST call site app-wide (not just `main.py`), each
+classified as WS-equivalent-exists/used-to-reduce-this-call/gap.
+
+**Channel coverage**: 7 of 12 subscribed (5 live-active, `pyth_value` code-wired but
+inactive since `index_feed.underlying_tickers` is empty in config), 3 of 12 not
+applicable to anything this app does (`multivariate_market_lifecycle`, `communications`,
+`order_group_updates` - zero references anywhere in app code), 2 of 12 genuinely unused
+despite being applicable (`orderbook_delta`, `user_orders` - both interactive-tier REST
+call sites only, `market_catalog/routes.py`'s `get_orderbook`/`position/routes.py`'s
+`get_orders`, low live impact today since `trading_enabled: false` means no real order
+exists for `user_orders` to report on yet).
+
+**REST call sites**: ~27 distinct REST-calling functions found app-wide, versus the
+2026-08-25 baseline doc's 15 rows (`main.py`/`trading_loop`-scoped) - the difference is
+mostly interactive/on-demand dashboard routes the baseline didn't cover, not new
+tick-cadence discoveries; the hot path itself was already well-inventoried.
+
+**Three new gaps beyond H12's own scope** (H12 covered only `state["latest_prices"]`):
+
+1. **`signal_log.mark_resolved` - the clearest gap found, strongest in the whole
+   document.** Has exactly one caller in the entire codebase: `main.py`'s 30s/200-batch
+   REST poll (`_check_signal_resolutions`). The exact same `market_lifecycle_v2`
+   `determined`/`settled` events, for the exact same tickers, already resolve 4 *other*
+   stores instantly via WS (`market_history`, `settlement_edge`, `market_analyst_agent`,
+   `candidate_log`, via `_process_stream_lifecycle`) - `signal_log` is the one store left
+   100% REST-poll-dependent on data the app already has in hand at settlement time.
+2. **`_fetch_account_snapshot` - real-account balance/positions/fills stay a flat 20s
+   REST poll, never inverted to WS-primary, by the code's own explicit admission**
+   (`services/position/account_positions.py:137-150`): the WS parsing (`fill`/
+   `market_positions`) writes into `state["account"]` already, but the REST poll still
+   "reconciles/overwrites" it regardless of freshness, because that parsing was never
+   verified against a real fill (`trading_enabled` has always been `false`). The
+   verification blocker (`market_position` singular/plural, `fill_id`/`trade_id` field
+   naming) was fixed 2026-08-24 - the architectural flip itself was never done. **Same
+   day this gap was fixed at the parsing level, a direct instruction was given and not
+   yet acted on** (`docs/next-session-pickup-2026-08-24.md`, surfaced by the parallel
+   doc-consolidation pass): *"i dont need it to be wholesale overwritten every 6
+   seconds... rest api should only be used to confirm decisions before theyre made."*
+   Third time this exact instruction has been given (2026-08-15, 2026-08-24, and the
+   2026-08-27 correction that prompted H12/H13) without the architecture actually
+   changing.
+3. **5 of 8 `market_lifecycle_v2` event types arrive over WS and are discarded.**
+   `created`/`activated`/`deactivated`/`metadata_updated`/`price_level_structure_updated`
+   are counted into `lifecycle_stream_stats.events_by_type` (visible on `/api/state`) and
+   never applied - new-market/event discovery is still 100% driven by
+   `catalog_scan._scan_catalog_batch`'s own periodic per-series REST rescan (≥15s
+   kickoff), even though the WS channel already announces a market's existence,
+   exchange-wide, the instant it happens. Feasibility of wiring this (net REST-volume
+   reduction vs. a second redundant discovery path) is explicitly flagged as unassessed -
+   architecture work, not this inventory's scope.
+
+**Positive precedent, worth keeping as reference for the eventual solution-family
+decision**: the target pattern already exists, live, in three places. `_fetch_trade_tape`
+is a **complete** inversion, not a partial one - when streaming mode is active (the live
+default), `main.py`'s REST-trade-tape branch is dead code, fully replaced by the `trade`
+WS channel. The `settled`-handler's single-ticker `get_market` call is REST-as-
+verification-at-decision-time, exactly the target shape, already shipped (2026-08-23).
+`diagnostics/routes.py`'s coverage check and the I4 reconciliation both use REST purely
+to *audit* WS capture, never as a replacement path. None of these are hypothetical -
+they're proof the pattern is buildable in this codebase, not just requested.
+
+**Genuinely REST-only, re-confirmed against docs, not re-litigate later**: live
+sports/game state, exchange status/maintenance, series/event/market static metadata
+(title, `strike_type`, `occurrence_datetime`, category/tag taxonomy - no channel carries
+descriptive metadata, only transactional/state-transition/numeric data), candlesticks,
+and order placement/cancellation (confirmed against `websocket-connection.md`'s full
+AsyncAPI operations list - no order-entry command exists in the WS protocol at all, not
+just "the app doesn't use one").
+
+**Still not concluding a fix** - this remains inventory, same as H12. Combined evidence
+base for the eventual solution-family selection now covers the whole app, not just
+position management; the "not yet done" list from H12 (Kalshi WS reconnect/gap-recovery
+semantics, benchmarks, fault injection, scored comparison) is unchanged and still the
+next real step.
+
 ## Phase P3.5 live-scale attempt (2026-08-27) - 3/3 runs failed before producing
    comparable data
 
