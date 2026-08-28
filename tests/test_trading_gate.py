@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from services import candidate_log as cl_module
+from services import capture_writer as cw_module
 from services.config import config_performance as cp_module
 from services.config import config_store as config_store_module
 from services.market_catalog import market_catalog as mc_module
@@ -69,6 +70,19 @@ sw_module.DB_PATH = _tmp_dir / "series_watcher.db"
 # touched it; that stopped being true once test_lifecycle_* below started
 # exercising the real "determined" path instead of just observing stats.
 cl_module.DB_PATH = _tmp_dir / "candidate_log.db"
+# cl_module.record_rejection() routes both its writes through
+# capture_writer now (P3 Task 16/17), not cl_module.DB_PATH directly -
+# redirect its stores too. Module-level, matching every other redirect in
+# this block (not monkeypatch) - later test files still correctly
+# override this via their own per-test monkeypatch fixtures, since
+# monkeypatch.setattr always sets a fresh value regardless of what was
+# there before.
+cw_module._STORE_PATHS = {
+    "rejected_candidates": cl_module.DB_PATH, "rejection_events": cl_module.DB_PATH,
+}
+cw_module._buffers = {"rejected_candidates": {}, "rejection_events": []}
+cw_module._last_flush_at = {"rejected_candidates": 0.0, "rejection_events": 0.0}
+cw_module._dropped_counts = {"rejected_candidates": 0, "rejection_events": 0}
 sedge_module.DB_PATH = _tmp_dir / "settlement_edge.db"
 maa_db_module.DB_PATH = _tmp_dir / "market_analyst.db"
 

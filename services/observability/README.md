@@ -376,6 +376,67 @@ surfaces as a quality finding" — reads `candidate_retry.abandoned` from
 here, once Task 13 wires the finding.
 
 
+### `writer.*` — capture writer thread depth/flush recency (realtime data-plane remediation P3 Task 14, 2026-08-27)
+
+Source: `services/capture_writer.py`, the daemon thread that batches
+capture-store writes off both the asyncio loop and the reader coroutine.
+Unwired today — nothing calls `capture_writer.submit()` yet (Task 15
+routes `series_watcher.record_trade`'s row through it instead of its own
+local buffer); the thread itself is started/stopped and liveness-
+supervised from `main.py`'s `lifespan()` regardless, so it runs idle
+(empty buffers never open a DB connection — `_flush_store`'s own early
+return) until Task 15 wires a real producer.
+
+Names (`float`; gated on `capture_writer.is_alive()`, not on the depth/age
+dicts being non-empty — those always return an entry per known store,
+populated at module import, so gating on non-emptiness would emit a
+misleadingly "live-looking" `0` for a process that never called
+`capture_writer.start()` at all):
+
+- `writer.depth.<store>` — `len(capture_writer._buffers[store])` at
+  capture time, a live gauge, not a windowed count.
+- `writer.last_flush_age_ms.<store>` — milliseconds since that store's
+  last flush (successful or not — see `capture_writer.py`'s own
+  `_last_flush_at` comment), also live, not windowed.
+
+**Use.** A sustained rise in `writer.depth.<store>` alongside a rising
+`writer.last_flush_age_ms.<store>` means the writer thread is falling
+behind or stuck (not dead — `writer.alive`-style detection is the
+separate `observability:capture-writer-dead:capture_writer` finding
+below, not a metric threshold on these two gauges).
+
+**Finding: `capture-writer-alive`.** `_capture_writer_dead_finding()`
+fires `critical` when `capture_writer.was_started()` is true but
+`capture_writer.is_alive()` is false — the thread was running and died.
+Absent (not a finding at all, not a lower severity) when the writer was
+never started in this process at all, since that's not an anomaly, just
+a process that hasn't reached `capture_writer.start()` yet. `main.py`'s
+`_capture_writer_liveness_loop` already restarts a dead thread within
+~5s via `capture_writer.ensure_alive()` — this finding makes a dead
+stretch visible in `/api/quality/summary` too, not just recoverable,
+same "counted, not silent" bar P2's own retry-abandonment finding set.
+
+**Update (2026-08-27) — "Unwired today" above is now stale; a real completeness
+gap found while live.** Task 15 has since shipped: `series_watcher.record_trade`'s
+row now does route through `capture_writer.submit()` for the `raw_trades` store,
+confirmed live (not from source alone) via `GET /api/health/faults` during Phase
+P3.5's stress-test session
+(`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s
+"Phase P3.5 live-scale attempt" entry has the full detail) — `capture_writer`/
+`flush`/`OperationalError: database is locked`, 178 occurrences, first_seen
+2026-08-27 20:22:15 UTC, still accumulating. Root cause: `capture_writer.py:122`'s
+`_flush_store` uses `PRAGMA busy_timeout=50` (50ms) on its `raw_trades` connection
+to `data/series_watcher.db`; `series_watcher.py`'s own `book_snapshots` flush
+writes to the *same physical file* via an independent connection, and a collision
+inside that 50ms window drops the **whole raw_trades batch** (by `_flush_store`'s
+own "never raises" design), counted only in `dropped_count()`, not retried and not
+currently surfaced as its own `writer.*` metric above (only depth/last-flush-age
+are). A real, ongoing raw_trades completeness gap per CLAUDE.md's data-plane HARD
+RULE — not fixed here, since the 50ms `busy_timeout` was a deliberate Task 14
+tradeoff needing its own dedicated investigation, not a fix folded into a
+measurement task.
+
+
 ### `kalshi_rest_class.*` / `kalshi_rest_limiter.*` — REST latency by caller class (realtime data-plane I5, 2026-08-25)
 
 Source: `services/http_client.py`'s `rest_latency_snapshot()` (pure read),

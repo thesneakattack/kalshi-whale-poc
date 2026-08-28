@@ -1739,6 +1739,33 @@ git commit -m "feat: add supervised capture writer thread, unwired (I13 P3)"
 - [ ] **Step 7: Run the full candidate_log test suite for a regression check.**
 - [ ] **Step 8: Commit:** `git commit -m "perf: aggregate sub-threshold rejection rows by minute instead of per print (I13 P3)"`
 
+**Redesigned at execution time (2026-08-27) — do not implement the aggregation
+above.** Step 1's own re-grounding instruction ("read `rejected_candidates`'s
+schema in full... before designing the aggregate schema") surfaced that this
+task's premise is stale: `rejected_candidates` already has
+`PRIMARY KEY (ticker, strategy, gate_name)` and was never one-row-per-print.
+A second table, `rejection_events`, was added 2026-08-23 - two days before
+this plan - specifically *without* a dedup key, because `rejected_candidates`'
+own dedup made population statistics ("a ticker rejected fifty times... counts
+as ONE data point") unusable; it exists to preserve full per-print granularity
+including `unit_cost`, which CLAUDE.md's Standing goal section still names as
+an open research target ("rejected candidates in the 0.60-0.95 unit-cost band
+show negative hypothetical EV... a real gate-tuning target"). Aggregating it
+into `(ticker, side, minute_bucket, count)` as originally specified above
+would have silently destroyed that per-row data - exactly what the HARD RULE
+forbids trading away without an explicit decision.
+
+Implemented instead (same real cost problem - `record_rejection()`'s
+`rejection_events` insert was a fresh `sqlite3.connect()` per call, the same
+hot-path anti-pattern already fixed elsewhere in this plan): route
+`rejection_events` through `capture_writer` as a new store, same shape as
+`raw_trades` (Task 14/15) - every row preserved, only the write batched.
+`population_gate_summary()`/`clear_all()`/`count_range()`/`clear_range()`/
+`resolve_from_market_results()` each flush the buffer first, so no caller
+(test or production) has to know the writes are asynchronous now. Confirmed
+with the user before implementing (a real fork with research-relevant
+consequences, not a mechanical choice) - see commit for full detail.
+
 ---
 
 ### Task 17: Enable the reader gate for real (flip Task 3's shadow mode to filtering)
@@ -2577,6 +2604,15 @@ Wrap each of the four call sites: `_cached(tick_cache, ("recent_price", ticker),
 
 ### Task 18: Split the single consumer into `critical` and `market` queues
 
+**Task 17b result (2026-08-27):** no real-scale calibration data available for this
+threshold - all 3 live `widen_scope` attempts crashed before producing comparable
+`queue.depth`/`queue_wait` data (root cause: concurrent Claude Code worktree sessions
+triggering `uvicorn --reload` mid-experiment, not the widened scope itself - see
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s "Phase
+P3.5 live-scale attempt" entry). Use CH1's existing negligible-cost baseline as the
+current best evidence until a successful rerun produces a real number to calibrate
+against.
+
 **Files:**
 - Modify: `services/kalshi/websocket.py` (`run`, `_consume`, queue construction, `_process_item`'s enqueue target)
 - Test: append to `tests/test_kalshi_ws_ingest_metrics.py`, new `tests/test_kalshi_ws_two_consumers.py`
@@ -2949,6 +2985,14 @@ with `two_consumer_mode`, `keep_queue_on_reconnect`, and `reader_gate_enabled` a
 ## Phase P5 — REST scheduler rewrite, settled resolver, shared caches
 
 ### Task 22: Critical-first waiter queues with background aging (no lock-held-while-sleeping)
+
+**Task 17b result (2026-08-27):** no real-scale REST-demand calibration data
+available - all 3 live `widen_scope` attempts crashed before completing any config
+step (root cause: concurrent Claude Code worktree sessions triggering `uvicorn
+--reload` mid-experiment, not the widened scope itself - see
+`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s "Phase
+P3.5 live-scale attempt" entry). Keep the synthetic `rest_scheduler_replay.py`
+presets as the current basis until a successful rerun produces a real number.
 
 **Files:**
 - Modify: `services/http_client.py` (`_TokenBucketRateLimiter`)

@@ -453,3 +453,167 @@ def test_shadow_gate_check_refreshes_the_cached_config_after_the_ttl_expires(mon
     gw._gate_cfg_cache = (gw._gate_cfg_cache[0] - 2.0, gw._gate_cfg_cache[1])
     gw._ingest_raw(_trade_with_count("t2", "K1", "1"), now=1.0)
     assert calls["n"] == 2  # cache was stale - a fresh config_store.get() happened
+
+
+# --- reader gate live filtering (realtime data-plane remediation P3 Task 17) --
+
+def _trade_full(trade_id: str, ticker: str, count_fp: str, side: str = "yes",
+                 yes_price_dollars: str | None = "0.60") -> str:
+    msg = {
+        "market_ticker": ticker, "trade_id": trade_id, "count_fp": count_fp,
+        "taker_outcome_side": side,
+    }
+    if yes_price_dollars is not None:
+        msg["yes_price_dollars"] = yes_price_dollars
+    return json.dumps({"type": "trade", "msg": msg})
+
+
+def test_reader_gate_enabled_drops_sub_threshold_trades_from_the_queue_but_still_captures(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    captured = []
+    rejections = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: captured.append(trade))
+    monkeypatch.setattr(
+        ws_module.candidate_log, "record_rejection",
+        lambda *a, **k: rejections.append((a, k)),
+    )
+    gw = _gateway()
+
+    enqueued = gw._ingest_raw(_trade_full("t1", "K1", "1"), now=1.0)
+
+    assert enqueued is False  # gated out
+    assert gw._queue.qsize() == 0
+    assert len(captured) == 1  # still captured (design spec's capture contract)
+    assert len(rejections) == 1
+    args, kwargs = rejections[0]
+    assert args == ("K1", "whale_watcher", "min_contracts", 1.0, 100.0)
+    assert kwargs["side"] == "yes"
+    assert kwargs["unit_cost"] == pytest.approx(0.60)
+    m = gw.ingest_metrics(now=1.0)
+    assert m["gate_would_reject"] == 1
+    assert m["prefiltered"]["trade"] == 1
+
+
+def test_reader_gate_disabled_keeps_shadow_behavior_even_though_the_gate_still_rejects(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": False}},
+    )
+    captured = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: captured.append(trade))
+    gw = _gateway()
+
+    enqueued = gw._ingest_raw(_trade_full("t1", "K1", "1"), now=1.0)
+
+    assert enqueued is True  # unchanged - still shadow mode
+    assert gw._queue.qsize() == 1
+    assert captured == []  # not recorded here - the consumer's own on_trade path still will be
+    m = gw.ingest_metrics(now=1.0)
+    assert m["gate_would_reject"] == 1  # shadow counting still runs
+    assert m["prefiltered"]["trade"] == 1  # ingest.prefiltered.trade increments either way
+
+
+def test_reader_gate_enabled_unresolvable_side_still_filters_but_records_nothing(monkeypatch):
+    """Matches kalshi_trade_tape.py's own `if side is None: continue` -
+    nothing to attribute a hypothetical win/loss to, so recording would
+    just be noise. Still filtered (not enqueued) either way - downstream
+    would never have produced a candidate from it."""
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    captured = []
+    rejections = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: captured.append(trade))
+    monkeypatch.setattr(ws_module.candidate_log, "record_rejection", lambda *a, **k: rejections.append((a, k)))
+    gw = _gateway()
+
+    raw = json.dumps({"type": "trade", "msg": {"market_ticker": "K1", "trade_id": "t1", "count_fp": "1"}})
+    enqueued = gw._ingest_raw(raw, now=1.0)
+
+    assert enqueued is False  # still filtered
+    assert captured == []  # nothing to capture with an unreadable side
+    assert rejections == []  # nothing to record either
+
+
+def test_reader_gate_enabled_unparseable_count_records_the_distinct_gate_name(monkeypatch):
+    """Conflating "too small" with "couldn't even be read" would mislabel
+    population_gate_summary()'s per-gate breakdown - matches
+    kalshi_trade_tape.py's own separate unparseable_count bucket."""
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    rejections = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: None)
+    monkeypatch.setattr(ws_module.candidate_log, "record_rejection", lambda *a, **k: rejections.append((a, k)))
+    gw = _gateway()
+
+    raw = json.dumps({"type": "trade", "msg": {
+        "market_ticker": "K1", "trade_id": "t1", "count_fp": "not-a-number", "taker_outcome_side": "yes",
+    }})
+    enqueued = gw._ingest_raw(raw, now=1.0)
+
+    assert enqueued is False
+    assert len(rejections) == 1
+    args, kwargs = rejections[0]
+    assert args == ("K1", "whale_watcher", "unparseable_count", 0.0, 0.0)
+    assert kwargs == {"side": "yes"}  # no unit_cost kwarg - matches kalshi_trade_tape.py's own call
+
+
+def test_reader_gate_enabled_unparseable_price_records_unknown_unit_cost_not_fabricated(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    rejections = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: None)
+    monkeypatch.setattr(ws_module.candidate_log, "record_rejection", lambda *a, **k: rejections.append((a, k)))
+    gw = _gateway()
+
+    enqueued = gw._ingest_raw(_trade_full("t1", "K1", "1", yes_price_dollars=None), now=1.0)
+
+    assert enqueued is False
+    assert len(rejections) == 1
+    _, kwargs = rejections[0]
+    assert kwargs["unit_cost"] is None  # unknown, not fabricated as 0
+
+
+def test_reader_gate_enabled_no_side_price_inversion_for_a_no_taker(monkeypatch):
+    """yes_price_dollars is always the YES price by convention - a "no"
+    taker's real unit cost is 1 - price, not price itself (the exact no-
+    side inversion bug class CLAUDE.md's own "Bug pattern to watch for"
+    section documents)."""
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"whale_watcher_kalshi": {"min_contracts": 100}, "realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    rejections = []
+    monkeypatch.setattr(ws_module.series_watcher, "record_trade", lambda trade, **k: None)
+    monkeypatch.setattr(ws_module.candidate_log, "record_rejection", lambda *a, **k: rejections.append((a, k)))
+    gw = _gateway()
+
+    enqueued = gw._ingest_raw(_trade_full("t1", "K1", "1", side="no", yes_price_dollars="0.60"), now=1.0)
+
+    assert enqueued is False
+    _, kwargs = rejections[0]
+    assert kwargs["unit_cost"] == pytest.approx(0.40)  # 1 - 0.60, not 0.60
+
+
+def test_reader_gate_enabled_gate_exception_still_falls_open_and_enqueues(monkeypatch):
+    monkeypatch.setattr(
+        ws_module.config_store, "get",
+        lambda: {"realtime_data_plane": {"reader_gate_enabled": True}},
+    )
+    monkeypatch.setattr(ws_module.whale_gate, "passes", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
+    monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: True)
+    gw = _gateway()
+
+    enqueued = gw._ingest_raw(_trade_full("t1", "K1", "500"), now=1.0)
+
+    assert enqueued is True  # never filtered on an exception, even with the gate live
+    assert gw._queue.qsize() == 1
+    assert gw.ingest_metrics(now=1.0)["gate_exceptions"] == 1

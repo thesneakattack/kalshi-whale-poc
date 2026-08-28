@@ -1,11 +1,24 @@
 import pytest
 
 from services import candidate_log as cl
+from services import capture_writer as cw
 
 
 @pytest.fixture(autouse=True)
 def _redirect_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(cl, "DB_PATH", tmp_path / "candidate_log.db")
+    db_path = tmp_path / "candidate_log.db"
+    monkeypatch.setattr(cl, "DB_PATH", db_path)
+    # Both rejected_candidates (P3 Task 17) and rejection_events (P3 Task
+    # 16) route through capture_writer now - point both stores at the
+    # same isolated tmp path, and reset their module-global buffers/
+    # counters (same cross-test-pollution reasoning as
+    # test_series_watcher.py's own fixture). rejected_candidates is
+    # upsert-mode (a dict buffer), rejection_events is insert-mode (a
+    # list) - see capture_writer.py's own _empty_buffer().
+    monkeypatch.setattr(cw, "_STORE_PATHS", {"rejected_candidates": db_path, "rejection_events": db_path})
+    monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
+    monkeypatch.setattr(cw, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
+    monkeypatch.setattr(cw, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
 
 
 def test_record_rejection_creates_unresolved_row():
@@ -131,6 +144,49 @@ def test_gate_summary_sorted_by_resolved_count_descending():
 # that additively - these tests lock in that it's a true, undeduped
 # population, and that every existing danger-zone/reset operation stays in
 # sync between the two tables.
+
+def test_record_rejection_batches_rejection_events_through_capture_writer_not_synchronously():
+    """The actual P3 Task 16 change, proven directly rather than only
+    through population_gate_summary() (which flushes internally, so it
+    would pass even if this regressed back to a synchronous write). A
+    fresh row must sit in capture_writer's buffer - genuinely not yet in
+    the table - until something flushes it; every real reader flushing
+    internally is what makes that invisible to callers, not the absence of
+    batching. record_rejection() no longer calls candidate_log._connect()
+    at all (P3 Task 17 - rejected_candidates' own write moved off it too),
+    so neither table exists on disk yet at this point, not just empty."""
+    import sqlite3
+
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    assert cw.depth()["rejection_events"] == 1
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        with sqlite3.connect(cl.DB_PATH) as conn:
+            conn.execute("SELECT COUNT(*) FROM rejection_events").fetchone()
+    cw.flush_now("rejection_events")
+    assert cw.depth()["rejection_events"] == 0
+    with sqlite3.connect(cl.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM rejection_events").fetchone()[0] == 1
+
+
+def test_record_rejection_batches_rejected_candidates_through_capture_writer_too():
+    """Same proof as the rejection_events test above, for the other table
+    (P3 Task 17 - rejected_candidates' UPSERT moved off the synchronous
+    connect() path too, once the reader-gate call site needed
+    record_rejection() safe to call directly from the WS reader hot
+    path). gate_summary() flushes internally, so it alone wouldn't catch
+    a regression back to a synchronous write."""
+    import sqlite3
+
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    assert cw.depth()["rejected_candidates"] == 1
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        with sqlite3.connect(cl.DB_PATH) as conn:
+            conn.execute("SELECT COUNT(*) FROM rejected_candidates").fetchone()
+    cw.flush_now("rejected_candidates")
+    assert cw.depth()["rejected_candidates"] == 0
+    with sqlite3.connect(cl.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM rejected_candidates").fetchone()[0] == 1
+
 
 def test_repeated_rejection_grows_the_population_table_not_deduped():
     """The exact gap gate_summary() can't answer - three rejections of the

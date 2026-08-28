@@ -116,6 +116,51 @@ def test_whale_sized_missing_trades_are_called_out_separately():
     assert r["rest"]["whale_sized_count"] == 2
 
 
+def test_exchange_wide_completeness_is_count_based_against_received_by_class():
+    # I4 completeness split (P3 Task 17 Step 6): exchange_wide_completeness
+    # is a raw trade-class message COUNT from the WS reader (services/
+    # kalshi/websocket.py's ingest_metrics()' received_by_class) against the
+    # REST trade COUNT for the window - not an id-based comparison against
+    # the bounded seen-record ring the way capture_completeness/
+    # whale_capture_completeness are. It has to stay independent of those
+    # two: a reader-gate drop never reaches seen_exchange_ts_by_id (so the
+    # id-based fields see it as "missing"), but it was still received off
+    # the wire, so the count-based field should not move with it.
+    t0 = 1_000_000.0
+    client = _PagedClient([[_rest_trade("a", t0 + 10), _rest_trade("b", t0 + 20)]])
+    evidence = {"received_by_class": {"trade": 1, "ticker": 40}}
+
+    r = _run(client, {}, window_start=t0, window_end=t0 + 60, ingest_evidence=evidence)
+
+    assert r["rest"]["count"] == 2
+    assert r["exchange_wide_completeness"] == pytest.approx(0.5)  # 1 received / 2 REST
+    assert r["capture_completeness"] == 0.0  # id-based, empty ring here - unaffected
+    assert r["whale_capture_completeness"] is None
+
+
+def test_exchange_wide_completeness_is_none_without_a_received_count():
+    t0 = 1_000_000.0
+    client = _PagedClient([[_rest_trade("a", t0 + 10)]])
+
+    r = _run(client, {}, window_start=t0, window_end=t0 + 60)  # no ingest_evidence at all
+    assert r["exchange_wide_completeness"] is None
+
+    r2 = _run(client, {}, window_start=t0, window_end=t0 + 60,
+              ingest_evidence={"received_by_class": {"ticker": 5}})  # no "trade" key
+    assert r2["exchange_wide_completeness"] is None
+
+    r3 = _run(client, {}, window_start=t0, window_end=t0 + 60,
+              ingest_evidence={"dropped_window": 0})  # no received_by_class key at all
+    assert r3["exchange_wide_completeness"] is None
+
+
+def test_exchange_wide_completeness_is_none_when_no_rest_trades_in_window():
+    t0 = 1_000_000.0
+    r = _run(_PagedClient([[]]), {}, window_start=t0, window_end=t0 + 60,
+             ingest_evidence={"received_by_class": {"trade": 5}})
+    assert r["exchange_wide_completeness"] is None
+
+
 def test_ws_only_ids_in_window_are_counted_not_treated_as_misses():
     t0 = 1_000_000.0
     client = _PagedClient([[_rest_trade("a", t0 + 1)]])

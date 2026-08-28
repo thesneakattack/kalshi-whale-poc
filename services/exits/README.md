@@ -114,3 +114,55 @@ incident this traces to.
 - `_exit_confidence` calls `market_analyst_agent.analyst_lean()` (a cheap
   indexed read, never a fresh LLM call) and `signal_log.series_stats()` —
   both real cross-module reads, not incidental.
+
+## Benchmark finding, 2026-08-27: `check_exits` scales linearly with open
+position count, and the distinct-ticker case dominates the live crash report
+
+P3.5 Task 17c (`docs/superpowers/plans/2026-08-25-realtime-data-plane-
+remediation.md`), following `root-cause-debugging`, quantifies a live-reported
+symptom ("having a large amount of open positions causes things to lag or
+crash," 2026-08-27) before Task 20 fixes it. `tests/test_check_exits_scale_
+benchmark.py` proves the mechanism directly: `market_history.recent_price`
+(the stop-loss/take-profit price-corroboration read, `check_exits`'s own loop
+body) is called exactly once per open position, unconditionally — ahead of
+and outside all three opt-in exit rules (`take_profit_pct`/`stop_loss_pct`/
+`exit_on_sentiment_reversal`/`auto_exit_enabled`), and regardless of
+`cost_basis`. N open positions means N reads every tick, not O(1).
+
+Wall-clock cost at increasing N (synthetic `Position` objects, `recent_price`
+mocked to sleep 0.0001s per call — a representative single-row SQLite read,
+not real I/O; measured via `ddev exec -s fastapi python -m pytest tests/
+test_check_exits_scale_benchmark.py -v -s`):
+
+| n (open positions) | wall-clock cost |
+|---|---|
+| 10  | 2.2ms |
+| 50  | 10.6ms |
+| 200 | 39.2ms |
+| 500 | 103.0ms |
+
+Near-perfectly linear (~0.2ms/position throughout — 0.22, 0.212, 0.196,
+0.206ms/position respectively), confirming O(N) with no hidden superlinear
+term at this scale.
+
+**Distinct-ticker case, not same-ticker, dominates — the design of this
+benchmark makes that conclusion direct, not inferred.** Every synthetic
+position in this benchmark carries its own distinct ticker
+(`KXBTC15M-T0`..`KXBTC15M-TN`), the same shape "a large amount of open
+positions" describes in practice (many different markets held at once, not
+many partial-hedge positions piled onto one market). Task 20's planned
+`tick_cache` fix memoizes `recent_price`/`volatility`/`analyst_lean`/
+`series_stats` reads keyed by `(function_name, ticker)` — it dedupes repeat
+reads *for positions sharing one ticker within a tick*. Because no ticker
+repeats anywhere in this benchmark, that cache would have a 100% miss rate
+against this exact workload: **Task 20 alone provides zero speedup for the
+distinct-ticker case**, which per this benchmark's own construction is also
+the case that actually produces the linear O(N) cost. Task 20's own "Known
+scope gap" note already flagged this as a real possibility rather than
+asserting the fix was sufficient — this benchmark confirms it is the
+dominant shape, not just a possibility. The live crash report needs the
+bulk-fetch follow-up that same note names (a `signal_log.series_stats_bulk`-
+shaped single query across all open tickers, or a `tick_executor` offload of
+the whole `check_exits` call) in addition to Task 20's per-ticker
+memoization, not instead of it — same-ticker positions (partial hedges) still
+benefit from Task 20 once it ships.

@@ -247,6 +247,28 @@ which can run in parallel right now.
 
 ## P4 — Nice-to-haves
 
+- [x] **Recurring xdist-parallel test flakiness, `ci/woodpecker/push/tests-pytest`.**
+      Root-caused and fixed 2026-08-27 across two PRs, both merged to `main`:
+      **PR #119** (`fix/xdist-parallel-test-isolation`) added autouse reset
+      fixtures for `main.state["discovery_cache"]`, `main.config_store`, and
+      `services/http_client.py`'s `_rest_class_stats`/`_endpoint_window` -
+      shared module-level singletons that xdist's work-stealing scheduler
+      exposed by not preserving file-definition order within a worker.
+      **PR #125** (`fix/xdist-trading-gate-isolation`) found and fixed a
+      second instance the same day: `test_enable_trading_succeeds_with_
+      correct_phrase_and_connected_account` flips `main.account.
+      trading_enabled` True via the real `/api/trading/enable` route and
+      never reset it - `monkeypatch`'s auto-restore covered `_client` but not
+      a real-route mutation, leaking into whichever test xdist scheduled
+      next. Fixed with the same autouse-fixture idiom PR #119 established.
+      Both confirmed via real `pytest -n 4` full-suite runs (12 consecutive,
+      zero recurrence) and via deterministic single-worker reproduction of
+      the exact adversarial test pairs. General lesson worth keeping: a
+      shared module-level singleton needs an autouse reset fixture the
+      moment more than one test can mutate it, not just a manual reset at
+      each mutating test's own setup - `_reset_trading_state()` had existed
+      since 2026-08-22 and was still called at setup-only in the test that
+      leaked.
 - [ ] **Move analytics/advisory computation out of the live tick loop —
       dump the underlying data and let external tooling analyze it.**
       Direct instruction (2026-08-21). Queued behind the main.py

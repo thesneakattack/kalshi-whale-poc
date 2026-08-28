@@ -45,7 +45,9 @@ from services.kalshi.contracts import position as position_contract
 from services.kalshi.contracts import ticker as ticker_contract
 from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
+from services import candidate_log
 from services import fault_log
+from services import series_watcher
 from services import whale_gate
 from services.config.config_store import config_store
 from services.latency_agg import LatencyAgg, bucket_for, empty_buckets, p95_upper_bound
@@ -265,13 +267,20 @@ class KalshiStreamGateway:
         self._subscription_tickers_added_window = 0
         self._subscription_tickers_removed_total = 0
         self._subscription_tickers_removed_window = 0
-        # Reader-side whale-size gate shadow counters (realtime data-plane
-        # remediation P0 Task 3). Shadow mode never drops anything on their
-        # account - gate_would_reject just counts what a live gate WOULD
-        # have rejected, and gate_exceptions counts the gate's own failures
-        # (fall-open: a broken gate must never hide a whale).
+        # Reader-side whale-size gate counters (realtime data-plane
+        # remediation P0 Task 3 / P3 Task 17). gate_would_reject counts
+        # what the gate rejected, in shadow mode AND when actually
+        # filtering (the name predates Task 17's live-filtering flip -
+        # kept as-is since it's an existing tested field, not renamed).
+        # gate_exceptions counts the gate's own failures (fall-open: a
+        # broken gate must never hide a whale - the message is enqueued
+        # exactly as it is today either way, never filtered on an
+        # exception). prefiltered_by_class is the same trigger, exposed
+        # per-class (today only ever "trade") to match ingest_metrics()'s
+        # existing received_by_class/dropped_by_class shape.
         self._gate_would_reject = 0
         self._gate_exceptions = 0
+        self._prefiltered_by_class: dict[str, int] = {}
         # (timestamp, cfg) cache for _shadow_gate_check (code-review finding
         # #6, /code-review high pass against PR #23) - same shape as
         # services/series_watcher.py's own _quarantine_active() cache.
@@ -609,20 +618,87 @@ class KalshiStreamGateway:
             self._gate_cfg_cache = (now, config_store.get())
         return self._gate_cfg_cache[1]
 
-    def _shadow_gate_check(self, trade_msg: dict) -> None:
-        """Shadow-mode only (realtime data-plane remediation P0 Task 3):
-        counts what whale_gate.passes() would reject, never drops anything
-        - Task 17 is what flips this to actually filtering the market
-        queue. A gate exception falls open (counted, not raised) so a bug
-        in the gate itself can never hide a real whale print; the message
-        is still enqueued below exactly as it is today either way."""
+    def _gate_check_and_maybe_filter(self, trade_msg: dict) -> bool:
+        """Realtime data-plane remediation P0 Task 3 (shadow counting) / P3
+        Task 17 (live filtering, gated by config/settings.yaml's
+        realtime_data_plane.reader_gate_enabled, default false). Returns
+        whether _ingest_raw should skip enqueueing this message - only
+        True when the reader gate is actually enabled AND whale_gate.
+        passes() rejected it.
+
+        gate_would_reject/prefiltered_by_class always count a rejection,
+        in shadow mode or live - the design spec's shadow-counting
+        contract never stops just because filtering is also happening. A
+        gate exception falls open (counted, not raised, never treated as
+        a rejection) so a bug in the gate itself can never hide a real
+        whale print; the message is enqueued exactly as it is today
+        either way.
+
+        When actually filtering (live, rejected), this method also does
+        what would otherwise have happened downstream after dequeue -
+        series_watcher.record_trade and candidate_log.record_rejection
+        (design spec's capture contract: filtering must never mean
+        losing the data) - because _ingest_raw will not enqueue this
+        message, so on_trade/_process_stream_trade's own calls to both
+        will never run for it. In shadow mode, or when the gate passes,
+        neither is called here: the message still reaches the consumer
+        normally, which already calls both exactly as it does today - a
+        second call here would be redundant work on the hot path, not a
+        correctness issue (record_trade's own trade_id PRIMARY KEY makes
+        a duplicate harmless), but there is no reason to pay for it.
+
+        Deliberately simpler than kalshi_trade_tape.py's own multi-stage
+        rejection taxonomy (unparseable_count / unparseable_price /
+        market_unresolved / min_contracts, on/off-watchlist distinguished)
+        - full parity would mean duplicating watchlist/market-catalog
+        resolution into this transport-layer reader, which belongs in
+        kalshi_trade_tape.py, not here. Two things ARE still worth
+        replicating cheaply (both are single dict-field reads on data
+        already in hand, no lookup, no extra cost):
+        - side unreadable (resolve_taker_outcome_side returns None): skip
+          recording entirely, matching kalshi_trade_tape.py's own
+          `if side is None: continue` - there is nothing to attribute a
+          hypothetical win/loss to. Still filtered (not enqueued) either
+          way - downstream would not have produced a candidate from it.
+        - count unparseable (trade_contract_count returns None):
+          gate_name="unparseable_count", not "min_contracts" - conflating
+          "too small" with "couldn't even be read" would mislabel
+          population_gate_summary()'s own per-gate breakdown.
+        unit_cost is simply None when yes_price_dollars is unparseable
+        (record_rejection's own established "unknown, not fabricated"
+        contract) rather than its own third gate_name - a real, accepted
+        simplification relative to kalshi_trade_tape.py's own separate
+        "unparseable_price" bucket, documented here rather than silently
+        diverging."""
+        cfg = self._cached_gate_cfg()
+        ticker = trade_msg.get("market_ticker") or ""
+        min_contracts = whale_gate.min_contracts_for(ticker, cfg)
         try:
-            min_contracts = whale_gate.min_contracts_for(trade_msg.get("market_ticker") or "", self._cached_gate_cfg())
-            if not whale_gate.passes(trade_msg, min_contracts=min_contracts):
-                self._gate_would_reject += 1
+            rejected = not whale_gate.passes(trade_msg, min_contracts=min_contracts)
         except Exception as exc:
             self._gate_exceptions += 1
             fault_log.record("whale_gate", "passes", exc)
+            return False
+        if not rejected:
+            return False
+        self._gate_would_reject += 1
+        self._prefiltered_by_class["trade"] = self._prefiltered_by_class.get("trade", 0) + 1
+        if not (cfg.get("realtime_data_plane") or {}).get("reader_gate_enabled"):
+            return False  # shadow mode - still enqueue below exactly as today
+        side = trade_contract.resolve_taker_outcome_side(trade_msg)
+        if side is None:
+            return True  # filter, but nothing to record - see docstring
+        series_watcher.record_trade(trade_msg)
+        count = trade_contract.trade_contract_count(trade_msg)
+        if count is None:
+            candidate_log.record_rejection(ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side)
+            return True
+        price = trade_contract._dollars(trade_msg.get("yes_price_dollars"))
+        unit_cost = (price if side == "yes" else (1.0 - price)) if price is not None else None
+        candidate_log.record_rejection(
+            ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side, unit_cost=unit_cost,
+        )
+        return True
 
     def _ingest_raw(self, raw_message, now: float | None = None) -> bool:
         """Reader side: parse, classify, count, then enqueue or drop. Returns
@@ -644,8 +720,8 @@ class KalshiStreamGateway:
             return False
         cls = self._message_class(data)
         self._received_by_class[cls] = self._received_by_class.get(cls, 0) + 1
-        if cls == "trade":
-            self._shadow_gate_check(data.get("msg") or {})
+        if cls == "trade" and self._gate_check_and_maybe_filter(data.get("msg") or {}):
+            return False  # reader gate live and rejected - not a drop (queue had room), not enqueued
         queue = self._queue
         if queue is None:
             queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
@@ -799,6 +875,7 @@ class KalshiStreamGateway:
             "error_25_window": self._error_25_window,
             "gate_would_reject": self._gate_would_reject,
             "gate_exceptions": self._gate_exceptions,
+            "prefiltered": dict(self._prefiltered_by_class),
             "connection": {
                 "connects": self._connects,
                 "reconnects": self._reconnects,

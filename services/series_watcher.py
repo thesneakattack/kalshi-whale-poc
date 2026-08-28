@@ -63,6 +63,7 @@ from contextlib import closing
 import time
 from pathlib import Path
 
+from services import capture_writer
 from services import fault_log
 from services import signal_log
 from services.history import trade_analytics
@@ -93,42 +94,47 @@ _BOOK_MATCH_WINDOW_SEC = 30.0
 
 _last_book_write: dict[str, float] = {}
 
-# Buffered writes (2026-08-17, exchange-wide subscription). record_trade is
-# now called once per inbound websocket trade message, and with the trade
-# channel subscribed exchange-wide that is thousands per minute rather than
-# the watchlist's handful. A per-message sqlite3.connect() + INSERT on the
+# Buffered writes (2026-08-17, exchange-wide subscription). record_book is
+# called once per inbound websocket ticker message, and with the trade
+# channel subscribed exchange-wide that was originally thousands per
+# minute for trades too. A per-message sqlite3.connect() + INSERT on the
 # event loop is precisely the pattern that froze the whole app for minutes
 # on 2026-08-11 (see kalshi_trade_tape.fetch_signals' docstring) - so rows
 # accumulate in memory and land as one executemany per batch instead.
 #
-# The trade-off is explicit: up to _FLUSH_BATCH rows can be lost if the
-# process dies uncleanly. That is acceptable here and nowhere else in this
-# app - this store is an observability record, not trading state, and
-# paper_broker/risk_manager still write through immediately.
+# Trade capture moved off this module's own buffer (2026-08-27, realtime
+# data-plane remediation P3 Task 15): record_trade now calls
+# capture_writer.submit("raw_trades", row) directly - a shared daemon
+# thread (services/capture_writer.py) owns raw_trades' batching/flush
+# cadence and its own cross-thread locking entirely independently of this
+# module. _book_buffer/_buffer_lock below are book-snapshots-only now; the
+# trade-side version of every race this lock originally guarded against is
+# tested in tests/test_capture_writer.py, not here.
+#
+# The trade-off is explicit: up to _FLUSH_BATCH book rows can be lost if
+# the process dies uncleanly (capture_writer has its own, separate loss
+# accounting for raw_trades - see its dropped_count()). That is acceptable
+# here and nowhere else in this app - this store is an observability
+# record, not trading state, and paper_broker/risk_manager still write
+# through immediately.
 #
 # _buffer_lock (code-review fix, finding #2 - /code-review high pass
-# against PR #23): the realtime data-plane remediation plan's own P1 work
-# made record_trade/record_book and flush() genuinely cross-thread - a
-# tick_executor worker thread (main.py's _flush_trade_capture_async) and
-# the main asyncio event-loop thread (services/whale_stream/
-# whale_stream_handlers.py's _process_stream_trade, which calls
-# record_trade() directly and synchronously per WS message) both touch
-# these two lists, and flush()'s swap-and-clear
-# (`trades, books = _trade_buffer, _book_buffer; _trade_buffer,
-# _book_buffer = [], []`) was never synchronized against a concurrent
-# .append() or a concurrent second flush() (record_trade's own
-# batch-triggered inline flush() call can race the tick_executor's
-# scheduled one). book_snapshots has no unique constraint (only an
-# AUTOINCREMENT surrogate key), so an unsynchronized double-flush can
-# insert the same buffered rows twice; the same race can also orphan an
-# appended row into a buffer nothing ever flushes again - a silently lost
-# row, no error, no drop counter increment. A plain threading.Lock (not
-# asyncio.Lock - the two real callers are on different OS threads, not
-# just different coroutines on one event loop) now guards every touch of
-# _trade_buffer/_book_buffer: both .append() calls below and flush()'s own
-# swap-and-clear.
+# against PR #23, originally guarding both buffers): a tick_executor
+# worker thread (main.py's _flush_trade_capture_async, still calling this
+# module's flush() for the book half) and the main asyncio event-loop
+# thread (services/whale_stream/whale_stream_handlers.py's
+# _process_stream_trade/_process_stream_ticker) both touch _book_buffer,
+# and flush()'s swap-and-clear was never synchronized against a concurrent
+# .append() or a concurrent second flush(). book_snapshots has no unique
+# constraint (only an AUTOINCREMENT surrogate key), so an unsynchronized
+# double-flush can insert the same buffered rows twice; the same race can
+# also orphan an appended row into a buffer nothing ever flushes again - a
+# silently lost row, no error, no drop counter increment. A plain
+# threading.Lock (not asyncio.Lock - the two real callers are on different
+# OS threads, not just different coroutines on one event loop) now guards
+# every touch of _book_buffer: both record_book()'s .append() and flush()'s
+# own swap-and-clear.
 _buffer_lock = threading.Lock()
-_trade_buffer: list[tuple] = []
 _book_buffer: list[tuple] = []
 _FLUSH_BATCH = 500
 # Hard ceiling if flush() somehow never runs - drop oldest rather than grow
@@ -238,9 +244,15 @@ _exchange_ts = trade_exchange_ts
 
 
 def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None) -> bool:
-    """Persist one trade-tape print in full. Returns whether a row was
-    written (False for an unwatched series, a duplicate trade_id, capture
-    being disabled, or any storage error).
+    """Submits one trade-tape print in full to capture_writer for
+    persistence (realtime data-plane remediation P3 Task 15 - previously
+    this module batched trades in its own _trade_buffer; now it's a pure
+    row-builder). Returns whether the row was ACCEPTED for capture, not
+    whether it was written or is new - False for an unwatched series or
+    capture being disabled; True for a duplicate trade_id too (dedup
+    happens at flush time via raw_trades' trade_id PRIMARY KEY + INSERT OR
+    IGNORE, not here - deliberately, since checking here would mean a
+    second read against data this module no longer owns synchronously).
 
     Never raises: this is called from the websocket handler, where an
     exception would kill the stream. A watcher that silently misses a row
@@ -275,17 +287,10 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
             1 if _quarantine_active() else 0,
             json.dumps(trade, default=str),
         )
-        # _buffer_lock (finding #2): append + the length check must be
-        # atomic with flush()'s own swap-and-clear, or an append can land
-        # in a buffer flush() has already captured and will never read
-        # again - a silently lost row. flush() itself is called OUTSIDE
-        # the lock (below) since it does its own locking internally and a
-        # plain threading.Lock is not reentrant.
-        with _buffer_lock:
-            _trade_buffer.append(row)
-            should_flush = len(_trade_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
+        # capture_writer owns raw_trades' batching/flush cadence and its
+        # own cross-thread locking entirely (P3 Task 15) - this module's
+        # _buffer_lock no longer guards trade capture at all.
+        capture_writer.submit("raw_trades", row)
         return True
     except Exception as exc:
         fault_log.record("series_watcher", "record_trade", exc)
@@ -355,59 +360,49 @@ def _quarantine_active() -> bool:
 
 
 def flush() -> dict:
-    """Write buffered captures as two executemany batches. Called from the
-    trading loop each tick and automatically once a buffer reaches
-    _FLUSH_BATCH - see the buffer declarations above for why this is
-    batched rather than written per message.
+    """Write buffered book snapshots as one executemany batch. Called from
+    the trading loop each tick and automatically once the buffer reaches
+    _FLUSH_BATCH - see the buffer declaration above for why this is
+    batched rather than written per message. Trade capture no longer flows
+    through here (P3 Task 15 routed it through capture_writer instead,
+    which has its own independent flush cadence/loss-accounting) - this
+    function is book_snapshots-only now.
 
-    Never raises, for the same reason record_trade doesn't: a failed
+    Never raises, for the same reason record_book doesn't: a failed
     observability write must not take down the trading loop that called
     it. On failure the rows are dropped rather than retried forever, and
     counted in _dropped_rows so the loss is visible in capture_stats
     instead of silent."""
-    global _trade_buffer, _book_buffer, _dropped_rows
+    global _book_buffer, _dropped_rows
     # _buffer_lock (finding #2): the swap-and-clear itself must be atomic
-    # with record_trade/record_book's own append (above) and with a
-    # concurrent second flush() call (record_trade's batch-triggered
-    # inline flush racing the tick_executor's scheduled one) - without
-    # this, two flush() calls can both capture the same not-yet-reset
-    # buffer (book_snapshots has no unique constraint, so that means literal
-    # duplicate rows), or an append can land in a buffer neither flush()
-    # call will ever read again (a silently lost row). The DB write itself
-    # stays outside the lock - only the buffer swap needs it, and holding
-    # a lock across blocking disk I/O would needlessly serialize captures
-    # against a flush that's still writing.
+    # with record_book's own append (above) and with a concurrent second
+    # flush() call - without this, two flush() calls can both capture the
+    # same not-yet-reset buffer (book_snapshots has no unique constraint,
+    # so that means literal duplicate rows), or an append can land in a
+    # buffer neither flush() call will ever read again (a silently lost
+    # row). The DB write itself stays outside the lock - only the buffer
+    # swap needs it, and holding a lock across blocking disk I/O would
+    # needlessly serialize captures against a flush that's still writing.
     with _buffer_lock:
-        trades, books = _trade_buffer, _book_buffer
-        _trade_buffer, _book_buffer = [], []
-    if not trades and not books:
-        return {"trades": 0, "books": 0}
+        books, _book_buffer = _book_buffer, []
+    if not books:
+        return {"books": 0}
     try:
         with _connect() as conn:
-            if trades:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO raw_trades "
-                    "(trade_id, ticker, series, observed_at, exchange_ts, taker_outcome_side, "
-                    " taker_book_side, taker_side_legacy, resolved_side, count_fp, yes_price_dollars, "
-                    " no_price_dollars, notional_usd, is_block_trade, excluded, raw_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    trades,
-                )
-            if books:
-                conn.executemany(
-                    "INSERT INTO book_snapshots "
-                    "(ticker, series, observed_at, exchange_ts, price_dollars, yes_bid_dollars, "
-                    " yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, volume_fp, open_interest_fp, "
-                    " dollar_volume, dollar_open_interest, last_trade_size_fp, raw_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    books,
-                )
+            conn.executemany(
+                "INSERT INTO book_snapshots "
+                "(ticker, series, observed_at, exchange_ts, price_dollars, yes_bid_dollars, "
+                " yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, volume_fp, open_interest_fp, "
+                " dollar_volume, dollar_open_interest, last_trade_size_fp, raw_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                books,
+            )
     except Exception as exc:
-        _dropped_rows += len(trades) + len(books)
+        _dropped_rows += len(books)
         fault_log.record("series_watcher", "flush", exc,
-                         context=f"{len(trades)} trade + {len(books)} book row(s) dropped")
-        return {"trades": 0, "books": 0, "dropped": len(trades) + len(books)}
-    return {"trades": len(trades), "books": len(books)}
+                         context=f"{len(books)} book row(s) dropped")
+        return {"books": 0, "dropped": len(books)}
+    return {"books": len(books)}
 
 
 def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
@@ -446,10 +441,19 @@ def capture_stats(series: str | None = None) -> dict:
         "series": series,
         "raw_trades": trades, "raw_trades_first_at": first_t, "raw_trades_last_at": last_t,
         "book_snapshots": books, "book_first_at": first_b, "book_last_at": last_b,
-        # Rows captured but not yet written (see flush()). Reported so a
-        # count read right after a burst isn't mistaken for data loss.
-        "buffered_trades": len(_trade_buffer), "buffered_books": len(_book_buffer),
-        "dropped_rows": _dropped_rows,
+        # Rows captured but not yet written. Reported so a count read
+        # right after a burst isn't mistaken for data loss. buffered_trades
+        # now reads capture_writer's own depth (P3 Task 15 - this module no
+        # longer buffers trades itself); buffered_books is still this
+        # module's own _book_buffer.
+        "buffered_trades": capture_writer.depth().get("raw_trades", 0),
+        "buffered_books": len(_book_buffer),
+        # dropped_rows sums this module's own book-flush failures with
+        # capture_writer's raw_trades flush failures - both are real loss
+        # against the SAME series_watcher-owned dataset, so a caller
+        # reading this field shouldn't have to know the two now live in
+        # different modules to get an honest total.
+        "dropped_rows": _dropped_rows + capture_writer.dropped_count().get("raw_trades", 0),
     }
 
 

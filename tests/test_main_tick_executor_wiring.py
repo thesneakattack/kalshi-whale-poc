@@ -71,16 +71,30 @@ def test_flush_trade_capture_runs_via_tick_executor(monkeypatch):
 
 
 def test_flush_trade_capture_writes_the_same_rows_as_before_extraction(monkeypatch, tmp_path):
-    monkeypatch.setattr(sw_module, "DB_PATH", tmp_path / "series_watcher_isolated.db")
-    monkeypatch.setattr(sw_module, "_trade_buffer", [])
+    from services import capture_writer as cw_module
+
+    db_path = tmp_path / "series_watcher_isolated.db"
+    monkeypatch.setattr(sw_module, "DB_PATH", db_path)
     monkeypatch.setattr(sw_module, "_book_buffer", [])
     monkeypatch.setattr(sw_module, "_dropped_rows", 0)
     monkeypatch.setattr(sw_module, "_quarantine_cache", None)
+    # Trades route through capture_writer now (P3 Task 15), not sw_module's
+    # own buffer - point its raw_trades store at the same isolated tmp path.
+    monkeypatch.setattr(cw_module, "_STORE_PATHS", {"raw_trades": db_path})
+    monkeypatch.setattr(cw_module, "_buffers", {"raw_trades": []})
+    monkeypatch.setattr(cw_module, "_last_flush_at", {"raw_trades": 0.0})
+    monkeypatch.setattr(cw_module, "_dropped_counts", {"raw_trades": 0})
 
     trade_tape = [_trade("t1"), _trade("t2")]
     result = asyncio.run(main._flush_trade_capture_async(trade_tape, CFG))
 
-    assert result.get("trades") == 2
+    # flush() is book-only post-Task-15 (trades no longer flow through it,
+    # or through this function's return value at all) - no book messages
+    # in this trade-only tape, so nothing to flush there either.
+    assert result == {"books": 0}
+    # capture_writer flushes on its own thread's cadence, not synchronously
+    # - force it for a deterministic assertion, same as test_series_watcher.py.
+    cw_module.flush_now("raw_trades")
     stats = sw_module.capture_stats("KXBTC15M")
     assert stats.get("raw_trades") == 2
 
