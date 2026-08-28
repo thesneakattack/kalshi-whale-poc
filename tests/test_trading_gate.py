@@ -2166,6 +2166,107 @@ def test_process_stream_ticker_passes_opened_since_to_check_exits(monkeypatch):
     assert before <= captured["opened_since"] <= after
 
 
+# --- _process_stream_ticker: check_pending_fills / position_netting.review
+# wiring (P8 Task 38, Family-C-lite). Both used to run only from trading_
+# loop's own tick; concurrency safety under a second, WS-triggered caller is
+# proven directly against the pure functions in
+# tests/test_position_management_concurrency.py - these confirm the wiring
+# itself: the calls actually happen from this handler, on the right gate.
+
+def test_process_stream_ticker_fills_a_pending_limit_order(monkeypatch):
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    # A yes_bid print alone doesn't move latest_asks; seed it directly the
+    # way a prior ticker message already would have, then a bid print that
+    # doesn't touch the ask keeps the same fillable ask in place.
+    main.state["latest_asks"]["TICK-A"] = 0.50
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert main.broker.pending_orders == {}  # resolved, not left dangling
+    assert "TICK-A" in main.broker.positions
+    assert main.broker.positions["TICK-A"].size == 10
+    assert any(d.get("action") == "trade" and d.get("source") == "limit_order" for d in main.state["decision_feed"])
+
+
+def test_process_stream_ticker_runs_check_pending_fills_even_without_signal_feed(monkeypatch):
+    """check_exits' own gate (state.get("signal_feed")) must not also gate
+    check_pending_fills/position_netting.review - neither reads signal_feed
+    at all, and trading_loop's tick never gated them on it either."""
+    main.state["running"] = True
+    main.state["signal_feed"] = []  # falsy - would skip check_exits, must not skip the other two
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert "TICK-A" in main.broker.positions  # filled despite the empty signal_feed
+
+
+def test_process_stream_ticker_skips_check_pending_fills_when_not_running(monkeypatch):
+    main.state["running"] = False
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.48"})
+
+    assert main.broker.pending_orders  # untouched - the app is paused
+    main.state["running"] = True  # restore for later tests in this module
+
+
+def test_process_stream_ticker_calls_position_netting_review_when_enabled(monkeypatch):
+    monkeypatch.setattr(main.config_store, "get", lambda: {"position_netting": {"enabled": True, "min_dwell_sec": 0}})
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {"TICK-A": 0.6, "TICK-B": 0.6}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {"TICK-A": {"event_ticker": "EVT-1"}, "TICK-B": {"event_ticker": "EVT-1"}}
+    main.state["event_titles"] = {"EVT-1": {"mutually_exclusive": True}}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", 100, 0.6, "r")
+    main.broker.open_position("TICK-B", "yes", 100, 0.6, "r")
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.6"})
+
+    assert main.broker.positions == {}  # locked-loss pair closed via the WS path
+
+
+def test_process_stream_ticker_position_netting_is_a_noop_when_disabled(monkeypatch):
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {"TICK-A": 0.6, "TICK-B": 0.6}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {"TICK-A": {"event_ticker": "EVT-1"}, "TICK-B": {"event_ticker": "EVT-1"}}
+    main.state["event_titles"] = {"EVT-1": {"mutually_exclusive": True}}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", 100, 0.6, "r")
+    main.broker.open_position("TICK-B", "yes", 100, 0.6, "r")
+
+    _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.6"})
+
+    assert set(main.broker.positions) == {"TICK-A", "TICK-B"}  # position_netting.enabled defaults False
+
+
 # --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,
 # docs/next-session-pickup-2026-08-17.md item #2 of the REST-vs-websocket
 # architecture finding). close_date_updated (2026-08-17) and

@@ -100,7 +100,7 @@ from services.whale_stream.decision_bridge import (  # noqa: E402
 from services.whale_stream.whale_stream_handlers import (  # noqa: E402
     _fetch_trade_tape, _fetch_trades_for_ticker, _process_stream_fill, _process_stream_lifecycle,
     _process_stream_position, _process_stream_ticker, _process_stream_trade, _stream_market_client,
-    _streaming_trade_tape_enabled, _TRADE_TAPE_UI_CAP,
+    _streaming_trade_tape_enabled, _TRADE_TAPE_UI_CAP, build_fill_validator,
 )
 from services.whale_stream.index_stream_handlers import (  # noqa: E402
     _noop_stream_trade, _noop_stream_ticker, _process_stream_index, _record_settlement_observations,
@@ -1013,26 +1013,14 @@ async def trading_loop():
             # state["latest_prices"], snapshotted before this fill happened.
             #
             # validate_fn re-checks the fill-time price/confidence against
-            # the same gates evaluate() applied at placement time (the
-            # "four-entry gate bypass" fix - see strategy_engine.py's
-            # validate_pending_fill/_validate_entry_price docstrings). Same
-            # is_live/category/seconds_to_close derivation as
-            # _handle_signal's own (decision_bridge.py), just computed
-            # fresh at fill time instead of signal time.
-            def _validate_fill(ticker: str, side: str, price: float, confidence: float | None) -> tuple[bool, str | None]:
-                market_info = state["market_titles"].get(ticker) or {}
-                event_ticker = market_info.get("event_ticker")
-                is_live = state["live_status"].get(event_ticker) == "live" if event_ticker else False
-                if not is_live and event_ticker:
-                    is_live = state["event_phase"].get(event_ticker) == event_lifecycle.MID_SERIES
-                seconds_to_close = market_history.seconds_to_close(_close_time_by_ticker().get(ticker), tick_now)
-                return strategy.validate_pending_fill(
-                    ticker, side, price, confidence, cfg,
-                    category=_category_by_ticker().get(ticker), is_live=is_live, seconds_to_close=seconds_to_close,
-                )
-
+            # the same gates evaluate() applied at placement time - see
+            # build_fill_validator's own docstring (services/whale_stream/
+            # whale_stream_handlers.py; extracted from this exact closure,
+            # P8 Task 38, so _process_stream_ticker's own check_pending_
+            # fills call shares one implementation instead of a second,
+            # drifting copy).
             for fill_decision in broker.check_pending_fills(
-                state["latest_prices"], state["latest_asks"], validate_fn=_validate_fill,
+                state["latest_prices"], state["latest_asks"], validate_fn=build_fill_validator(cfg, tick_now),
             ):
                 await _handle_fill_decision(fill_decision, tick_now)
 

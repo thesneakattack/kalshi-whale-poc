@@ -239,3 +239,30 @@ rolled by `maybe_capture`) — never silent, per the HARD RULE. Only the
 `current_price`/`pnl_pct` path is affected; sentiment-reversal and
 time-to-close exits never read price and are untouched. Threshold re-tuning
 belongs to P8 Task 40's benchmark on real captured cadence data.
+
+## Family-C-lite: position_netting.review gets a second, WS-triggered caller (P8 Task 38, 2026-08-28)
+
+`position_netting.review` used to run only once per tick from `trading_loop`'s
+body, after `strategy.check_exits`. It now also runs from
+`services/whale_stream/whale_stream_handlers.py::_process_stream_ticker`,
+right after that handler's own `check_exits` call, on the ticker WS path -
+same "iterate everything" shape `check_exits` already used there. Gated on
+`state["running"]` only, deliberately *not* on `state.get("signal_feed")`
+(that's `check_exits`'s own gate, since it searches `signal_feed` for the
+position to check) - `review` never reads `signal_feed` and `trading_loop`'s
+tick never gated it on that either, so gating it there would have been a
+real behavior narrowing, not a no-op.
+
+Concurrency safety for this second caller was proven before the wiring
+landed, not assumed: `review` is a plain synchronous `def` that mutates
+`broker.positions` via `broker.close_position(...)` as the last step before
+returning each decision - no `await` anywhere inside it, so the asyncio
+scheduler can never interrupt one call mid-execution. That means a second
+caller racing to act on the same position (this WS site vs. `trading_loop`'s
+own tick, until Task 39 slows it) always reads the *post-mutation* state:
+a position `review` already closed is simply gone from `broker.positions`,
+so a racing second call finds nothing left to close. Proven directly with
+`asyncio.gather` forcing real interleaving in
+`tests/test_position_management_concurrency.py` rather than inferred from
+the shape of the code. `PaperBroker.check_pending_fills` got the identical
+treatment, same call site, same reasoning, same test file.
