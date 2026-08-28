@@ -2,8 +2,8 @@
 
 Living reference for how this repo's CI actually runs. The policy (what
 Claude runs locally vs. what CI owns) lives in
-`.claude/skills/ci-cd-guardrails/SKILL.md`'s "Local vs CI verification
-policy" — this doc is the "how do I actually operate it" companion.
+`.claude/rules/branching-and-ci.md` — this doc is the "how do I actually
+operate it" companion.
 
 ## Architecture
 
@@ -145,8 +145,7 @@ step's log text without a browser. **Actually run this after every push —
 found live 2026-08-25 that `quality-architecture-audit` sat red across
 three real pushes (`d644034`, `21a303a`, `b28a380`, a stale
 `static/project-manifest.json`) with nobody noticing, because this check
-was never exercised.** See `.claude/skills/ci-cd-guardrails/SKILL.md`'s
-"After push" section and `.claude/skills/checkpoint/SKILL.md` step 5 for
+was never exercised.** See `.claude/skills/checkpoint/SKILL.md` step 6 for
 where this is now the documented default.
 
 ## Dependency cache (`wp-uv-cache`)

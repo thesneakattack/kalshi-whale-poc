@@ -31,7 +31,7 @@ def test_naive_branch_only_filter_matches_real_main_push():
 
 
 def test_naive_branch_only_filter_wrongly_matches_real_pr_targeting_main():
-    """The documented hazard (.claude/rules/autonomous-quality-coordination-evidence.md:
+    """The documented hazard (docs/superpowers/research/2026-08-25-autonomous-quality-threat-model.md:
     'a Woodpecker branch: main condition alone also matches a PR whose target is main'),
     reproduced against a real recorded pipeline, not a hypothetical one."""
     assert matches(NAIVE, REAL_PR_TARGETING_MAIN) is True

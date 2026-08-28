@@ -1,7 +1,7 @@
 # Woodpecker CI (.woodpecker/quality-frontend-build.yml,
 # .woodpecker/quality-architecture-audit.yml - shared portfolio instance at
-# portfolio/ci-cd/, see .claude/skills/ci-cd-guardrails/SKILL.md's "Local
-# vs CI verification policy") is now the authoritative executor for
+# portfolio/ci-cd/, see .claude/rules/branching-and-ci.md) is now the
+# authoritative executor for
 # ordinary push/PR validation. Kept as a manual-trigger fallback, not
 # deleted - a working, independently-verified equivalent - but no longer
 # runs automatically on every push/PR.

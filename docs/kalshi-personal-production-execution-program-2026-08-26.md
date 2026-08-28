@@ -316,8 +316,8 @@ wiring it blind would be unsafe (no schema-init DDL, and it would convert
 today's harmless lock-wait into new `database is locked` exceptions under
 the real cross-thread contention finding #2's own fix introduced) —
 documented in the module docstring rather than forced in, consistent with
-`.claude/rules/realtime-data-plane-evidence.md`'s rule against tuning
-concurrency parameters without measuring the actual bottleneck. Full
+CLAUDE.md's data-plane HARD RULE against tuning concurrency parameters
+without measuring the actual bottleneck. Full
 local suite (1936 tests) and CI (10/10 required + push contexts) both
 green independently. Merged as PR #23 into `main`@`22d1a79`.
 

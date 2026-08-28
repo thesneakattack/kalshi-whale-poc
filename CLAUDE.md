@@ -13,7 +13,11 @@ End to end, every piece of this app depends on optimal data completeness, accura
 - Fidelity: store and replay what the exchange sent; no lossy normalization on the way in (`.claude/rules/kalshi-integration-authority.md`).
 - Speed of execution: signal-to-order latency is part of the edge; the trading/WebSocket hot path stays hot.
 - These properties fail silently: measure them (see "Start investigations here"); never infer health from the absence of errors, green tests, or unremarkable P&L.
-- Never trade one property for another silently; make the tradeoff explicit and measured (`.claude/rules/realtime-data-plane-evidence.md`).
+- Never trade one property for another silently; make the tradeoff explicit and measured.
+- Never change queue capacity, consumer/connection/thread counts, subscription scope, REST rate, batch size, cache TTL, retry budget, or polling frequency because it "should help": identify the measured bottleneck and its mechanism first.
+- A root-cause claim rests on, in order of preference: deterministic reproduction, correlated runtime telemetry, source state-transition proof, protocol/library documentation. "Queue depth was high when latency was high" is correlation, not causation.
+- Any diagnostic or abstraction on the exchange-wide hot path is measured for runtime cost before it ships.
+- A confirmed bottleneck gets competing solution families compared on mechanism, benchmark, correctness, failure behavior, and complexity, and permanent detection for recurrence — not the first fix that works.
 - "Optimal" is measured against what `docs/kalshi/` says the exchange permits, not against today's behavior.
 - This rule never justifies shortcutting a safety gate, weakening a kill switch, enabling real trading, or discarding accumulated history.
 
@@ -28,9 +32,8 @@ End to end, every piece of this app depends on optimal data completeness, accura
 ## Start investigations here (in order, before any ad hoc script or `sqlite3`)
 
 1. `GET /api/quality/summary` 2. `GET /api/health/pipeline` 3. `GET /api/health/faults` 4. `GET /api/observability/summary` 5. `GET /api/health/storage` (+ `POST /api/health/storage/scan`) 6. `python -m tools.quality_audit`.
-- Investigation-to-guard: every real bug class gets a disposition (runtime diagnostic / CI guard / shared logic / already covered / one-off) recorded in the commit message (`.claude/rules/quality-capabilities.md`).
+- Investigation-to-guard: every real bug class gets a disposition (runtime diagnostic / CI guard / shared logic / already covered / one-off) recorded in the commit message. A rarely-exercised fallback path's guard must prove the path is reachable end to end, not that its code exists.
 - `tools/quality_audit/baseline.json`: adding an ID is a reviewed decision with a dated note in `notes`, never a way to make CI green; remove an ID when its finding resolves and say why.
-- Budget: one investigation pass, at most one session, before a code change lands; plans stay under 300 lines; the write-up comes after the fix and fits on one page.
 
 ## Docs and history
 
@@ -42,7 +45,7 @@ End to end, every piece of this app depends on optimal data completeness, accura
 - `ddev describe` first; it is usually already running. `web` (nginx, docroot `static`) is the only public entry; `fastapi` is reachable only as `fastapi:8000` inside the docker network (deliberate: Traefik tie-break bug).
 - `.py` edits hot-reload in ~1–2 s; `.ddev/**` edits need `ddev restart`; anything that must survive a real process restart needs a real `ddev restart`.
 - `ddev exec -s fastapi <cmd>` for in-container commands (runs as root; use it to delete root-owned leftovers). It refuses to run from a linked worktree directory: run it from the primary root and `cd /app/.claude/worktrees/<name>` inside.
-- Hooks: `.claude/settings.json` is read from the current worktree but `$CLAUDE_PROJECT_DIR` is the primary checkout, so every hook command goes through `.claude/hooks/run_hook.py`, which runs the session's own checkout's copy (CI-enforced by `tests/test_workflow_budgets.py`).
+- Hooks: `.claude/settings.json` is read from the session's current checkout (worktree or primary); every entry resolves that checkout from the hook payload's `cwd` and runs its `.claude/hooks/run_hook.py` — never via `$CLAUDE_PROJECT_DIR`, which is always the primary (a primary parked on a branch without the launcher silently disabled every hook in every worktree session, 2026-08-28; CI-enforced by `tests/test_hooks_wiring.py`). Never reference a hook script directly.
 - App: `https://kalshi-whale-poc.ddev.site:8443`; `GET /api/state` is the fastest live read; `ddev logs -s fastapi|web` for logs; `/run` skill for detail.
 - Public tunnel `autotrade.webfoundry.dev` is Basic-Auth gated in `.ddev/nginx/kalshi-proxy.conf`; `.env` `SITE_BASIC_AUTH_*` is the source of truth, regenerated on `ddev start`.
 - CORS stays restricted to the ddev host + `localhost:8000` (`ALLOWED_ORIGINS` in `.env`).
@@ -70,6 +73,7 @@ def _connect() -> sqlite3.Connection:
 - `mode: paper` by default. Real orders (`services/kalshi_account_client.py`) are gated by `kalshi_account.trading_enabled` (default `false`) plus a typed confirmation (`POST /api/trading/enable`).
 - The daily-loss kill switch (`services/risk_manager.py`) and paper-broker state persist (`risk_state.db`, `paper_broker.db`); keep `day_start_bankroll` consistent with the broker's persisted bankroll.
 - Nothing in diagnostics, verification, refactoring, or quality work enables real trading, weakens a gate, or resets live data.
+- Automation — hooks, CI, anything under `tools/` — never edits trading, risk, sizing, calibration, strategy, settlement, auth, or CI-credential code, and never weakens, baselines, or bypasses a guard to go green.
 
 ## A displayed value must match its label
 
@@ -90,14 +94,16 @@ def _connect() -> sqlite3.Connection:
 - `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Read a PR body before merging.
 - CI (Woodpecker, `.woodpecker/*.yml`) is the only full-suite owner. Locally run only the targeted test files; the per-edit hook already does this. Confirm CI via `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`.
 - Checkpoint often (`/checkpoint`): commit verified units, stage specific paths, never `git add -A`, never commit a failing state.
-- Parallel sessions share one checkout: `ListAgents` first; work in a worktree under `.claude/worktrees/`; never checkout/stash under another session's work; never edit a file another session names as in use.
+- Parallel sessions share one primary checkout: `orient.sh` lists the live ones and `ListAgents` names them; work in a worktree under `.claude/worktrees/` (`git worktree add … origin/main`, then `EnterWorktree`); never checkout/stash/reset/rebase/merge under another session's work (R6 denies it); never edit a file another session names as in use.
 - Suggest `/compact` at every phase boundary and `/clear` before unrelated work; keep working through usage limits.
 - Subagents: `model: haiku` for mechanical read-only work; `isolation: "worktree"` for heavy self-contained tasks; Explore/Plan agents skip CLAUDE.md — pure lookup only.
 
 ## Toolchain
 
-- Use installed plugins before writing anything of your own; `session_orient.sh` prints the list every session; routing detail in `.claude/rules/tooling-plugins.md`. Never build a project skill or tool that duplicates a plugin.
-- Numbered plans run under the `plan-task` skill (+ `domains/<domain>.md`); bugs under `superpowers:systematic-debugging`; nothing is "done" without `superpowers:verification-before-completion`.
+- Process is `superpowers:*` — brainstorming, writing-plans, executing-plans (numbered plans under `docs/superpowers/plans/` included), test-driven-development, systematic-debugging for any bug, verification-before-completion before "done", requesting-code-review, using-git-worktrees. Project skills are only `/run`, `/checkpoint`, `/kalshi-contract-review`, `/kanban-board-sync`, `/close-roadmap-item`, `/config-field-edit`; never add one that duplicates a plugin.
+- GitNexus is pinned: `npx gitnexus@1.6.10`, never `@latest` — an in-place upgrade under a running MCP server breaks every query until sessions restart (2026-08-28). `impact`/`context`/`trace` before multi-file edits to strategy, risk, advisory, calibration, kalshi client, or shared state (R4 asks once per session). Its Claude Code hooks stay installed (`npx gitnexus@1.6.10 setup -c claude`, user-run); `orient.sh` reports index staleness; `/checkpoint` re-analyzes after a merge. It never walks dot-directories (`dot: false` in its walker; no `.gitnexusignore` rule can reach them), so `.claude/hooks/` is covered by `tests/`, not by the graph. If two unrelated symbols return the same impact set, the index is corrupt — `clean` then `analyze --force`; never reason from it.
+- `dimensional-analysis` after any cents/dollars/probability/contracts/P&L math; chrome-devtools MCP for browser evidence (`https://kalshi-whale-poc.ddev.site:8443`); context7 for FastAPI/Pydantic/asyncio docs, never for Kalshi; 42crunch and second-opinion are blocked (no account) — skip silently, never a completion gate.
+- The user's own tools under `tools/` (`kanban_sync`, `quality_coordination`, `quality_ratchet`, `quality_audit`) are wired into `/checkpoint`; an unused tool is a workflow gap to wire in, never cruft to retire.
 
 ## Quick file map
 

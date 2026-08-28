@@ -456,8 +456,9 @@ def collect_docs_roadmap_feed(roadmap_text: str, recent_commit_subjects: list[st
 (spec §5); callers only invoke these when Task 8's CLI is run with --clean, and even then
 only for identities Task 8's own eligibility check already confirmed. Every action is
 deterministic, idempotent, path-contained, and independently verifiable
-(.claude/rules/autonomous-quality-coordination-evidence.md's "Remediation authority rule",
-generalized from GitHub-write to git/filesystem-write per spec §3). main is never a target
+(the "Remediation authority rule" recorded in docs/superpowers/specs/
+2026-08-27-autonomous-quality-coordination-workflow-design.md, generalized from
+GitHub-write to git/filesystem-write per spec §3). main is never a target
 under any code path (spec §11).
 """
 _MAIN_BRANCH_PROTECTED_NAMES = {"main"}
