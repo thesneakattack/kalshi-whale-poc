@@ -12,4 +12,3 @@ for anything already on it.
 - Banded cost-aware gate EV diagnostic (0.60–0.95 band negative-EV) · approve `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` or close · you · 2026-08-26
 - Shadow-mode evaluation stretch has never run · schedule a dated stretch · you · 2026-08-26
 - Path-based CI test selection for code changes · find the original rejection incident, then decide · me → you · 2026-08-26
-- `feat/realtime-data-plane-remediation` has zero delta from `main` (its four phases landed in PRs #23, #107, #142, #152) but is kept checked out as the primary's parked branch, so AQC flags it `escalation_eligible` on every run · either record here that it stays parked deliberately, or delete it and park the primary on `main` · you · 2026-08-29

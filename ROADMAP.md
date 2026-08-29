@@ -51,8 +51,12 @@ code-level work still sits ahead of this checklist too — realtime
 data-plane correctness (P0-P2 of a 6-phase plan merged 2026-08-26; P3's
 live-gate flip **authorized 2026-08-26** in a reprioritization pass
 (ahead of Program 2R, since it's data-completeness work rather than a
-trading-decision change) but not yet started; P4-P6 remain open),
-economic/strategy validation (investigated 2026-08-26 — the originally-
+trading-decision change) but not yet started; the settlement-cascade root
+cause behind the historical drop episodes was found and fixed 2026-08-29
+(queue split + deferred batched resolver, PR #198) and is mid-soak behind
+`realtime_data_plane.two_consumer_mode` — see
+`docs/superpowers/plans/README.md`'s realtime-plan row for exactly which
+P4-P6 tasks still remain), economic/strategy validation (investigated 2026-08-26 — the originally-
 reported entry-gate adverse-selection defect below turned out not to
 reproduce in its original form, replaced by a different, still-open,
 currently-unimplemented finding), and canonical decision/execution
