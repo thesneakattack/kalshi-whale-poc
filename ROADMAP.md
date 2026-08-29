@@ -344,15 +344,6 @@ which can run in parallel right now.
       the unfixed file and nothing else - a cheap, deterministic detector
       for this whole class, where Woodpecker's `pytest -n 4` only catches
       it when the scheduler happens to produce the adversarial order.
-- [ ] **Deterministic order-dependence guard for the test suite.** Three
-      xdist-isolation leaks in one day (PRs #119, #125, #146) were each
-      only caught probabilistically by `pytest -n 4`. A reverse-definition-
-      order run of each test file (collect node IDs, feed them back
-      reversed - no plugin needed) isolated PR #146's leak deterministically
-      on the unfixed file. Decide whether that earns its own Woodpecker
-      lane (cost: roughly one extra sequential suite run per push) or a
-      scheduled/manual pipeline; a CI-configuration change, so its own
-      branch per `.claude/rules/branching-and-ci.md`, not a drive-by.
 - [ ] **Move analytics/advisory computation out of the live tick loop —
       dump the underlying data and let external tooling analyze it.**
       Direct instruction (2026-08-21). Queued behind the main.py

@@ -32,7 +32,7 @@ End to end, every piece of this app depends on optimal data completeness, accura
 ## Start investigations here (in order, before any ad hoc script or `sqlite3`)
 
 1. `GET /api/quality/summary` 2. `GET /api/health/pipeline` 3. `GET /api/health/faults` 4. `GET /api/observability/summary` 5. `GET /api/health/storage` (+ `POST /api/health/storage/scan`) 6. `python -m tools.quality_audit`.
-- Investigation-to-guard: every real bug class gets a disposition (runtime diagnostic / CI guard / shared logic / already covered / one-off) recorded in the commit message. A rarely-exercised fallback path's guard must prove the path is reachable end to end, not that its code exists.
+- Investigation-to-guard: every real bug class gets a disposition (runtime diagnostic / CI guard / shared logic / already covered / one-off) recorded in the commit message.
 - `tools/quality_audit/baseline.json`: adding an ID is a reviewed decision with a dated note in `notes`, never a way to make CI green; remove an ID when its finding resolves and say why.
 
 ## Docs and history
