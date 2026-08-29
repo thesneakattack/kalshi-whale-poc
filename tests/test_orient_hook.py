@@ -24,6 +24,8 @@ def _checkout(tmp_path: Path) -> tuple[Path, dict]:
         "import sys\nsys.stdout.write('111\\tother\\t/elsewhere/wt\\n4242\\tself\\t/me\\n')\n")
     (repo / "docs").mkdir()
     (repo / "docs" / "open-decisions.md").write_text("# Open\n\n- decide X · do Y · me · 2026-08-28\n")
+    (repo / "docs" / "next-action.md").write_text(
+        "# Next action\n\nCorrelate the drop episode.\n\n## Fallback\n\nAdd stage timing.\n")
     shims = tmp_path / "bin"
     shims.mkdir()
     (shims / "ddev").write_text("#!/bin/bash\nexit 1\n")
@@ -50,3 +52,21 @@ def test_orient_never_fails_the_hook_outside_a_checkout(tmp_path):
     env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path / "nowhere")}
     r = subprocess.run(["bash", str(HOOK)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
+
+
+def test_orient_prints_the_next_action_so_continue_needs_no_context(tmp_path):
+    """Typing `continue` in a fresh session must surface the one next action by
+    itself - the banner is the only thing guaranteed to be read."""
+    repo, env = _checkout(tmp_path)
+    r = subprocess.run(["bash", str(HOOK)], cwd=repo, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "NEXT (docs/next-action.md" in r.stdout
+    assert "Correlate the drop episode." in r.stdout
+
+
+def test_orient_survives_a_missing_next_action_file(tmp_path):
+    repo, env = _checkout(tmp_path)
+    (repo / "docs" / "next-action.md").unlink()
+    r = subprocess.run(["bash", str(HOOK)], cwd=repo, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "NEXT" not in r.stdout
