@@ -59,6 +59,9 @@ HOT_PATHS = (
     "services/whale_calibration/", "services/exits/", "services/position/",
     "services/kalshi_client.py", "services/kalshi_account_client.py",
 )
+# The dashboard derives money client-side too - the no-side `1 - price` inversion
+# shipped here, not in services/. static/js is esbuild output, never hand-edited.
+MONEY_UI_PATHS = ("frontend/src/js/",)
 DDEV_PROJECT = "kalshi-whale-poc"
 GITNEXUS = "npx gitnexus@1.6.10"
 SESSIONS_HEADER = "#sessions v1"
@@ -315,6 +318,10 @@ def _is_code(rel: str) -> bool:
     return rel.endswith(".py")
 
 
+def _is_money_ui(rel: str) -> bool:
+    return rel.startswith(MONEY_UI_PATHS) and rel.endswith(".js")
+
+
 def pre_edit(tool: str, file_path: str, cwd: str, state: Path) -> dict | None:
     rel = rel_path(file_path, cwd)
     if not _is_code(rel):  # READMEs and cheatsheets under these packages are prose, not Kalshi-shaped code
@@ -371,9 +378,12 @@ def post(tool: str, tool_input: dict, cwd: str, state: Path, git_run=None) -> di
             mark(state, "kalshi_docs_read")
     elif tool in ("Edit", "Write"):
         rel = rel_path(tool_input.get("file_path") or "", cwd)
-        if _is_code(rel) and rel.startswith(HOT_PATHS) and not has(state, "dim_nudged"):
+        backend = _is_code(rel) and rel.startswith(HOT_PATHS)
+        if (backend or _is_money_ui(rel)) and not has(state, "dim_nudged"):
             mark(state, "dim_nudged")
-            notes.append(f"{rel} is money/probability math: run the dimensional-analysis skill on the change "
+            where = ("money/probability math" if backend else
+                     "a displayed financial figure - expose a backend-computed field rather than re-deriving here")
+            notes.append(f"{rel} is {where}: run the dimensional-analysis skill on the change "
                          "before calling it done (two shipped bugs of that class here).")
     if tool in ("Bash", "Edit", "Write") and git_run is not None:
         nudge = checkpoint_nudge(state, git_run)

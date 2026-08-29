@@ -136,6 +136,35 @@ def test_hot_file_edit_nudges_dimensional_analysis_once(tmp_path):
     assert g.post("Edit", {"file_path": str(repo / "services/paper_broker.py")}, str(repo), st) is None
 
 
+def test_dashboard_money_math_nudges_dimensional_analysis(tmp_path):
+    """The no-side `1 - price` inversion shipped in the dashboard, not the backend:
+    a client-side money/probability edit must nudge too, though it is never denied."""
+    g = _load()
+    st = tmp_path / "st"; st.mkdir()
+    repo = _repo(tmp_path)
+    out = g.post("Edit", {"file_path": str(repo / "frontend/src/js/equity-and-cards.js")}, str(repo), st)
+    assert out and "dimensional-analysis" in out["context"]
+    assert g.pre_edit("Edit", "frontend/src/js/equity-and-cards.js", str(repo), st) is None
+
+
+def test_dashboard_nudge_shares_one_budget_with_the_backend_nudge(tmp_path):
+    g = _load()
+    st = tmp_path / "st"; st.mkdir()
+    repo = _repo(tmp_path)
+    assert g.post("Edit", {"file_path": str(repo / "services/paper_broker.py")}, str(repo), st)
+    assert g.post("Edit", {"file_path": str(repo / "frontend/src/js/signals-feed.js")}, str(repo), st) is None
+
+
+def test_generated_bundle_and_non_money_assets_do_not_nudge(tmp_path):
+    """static/js is esbuild output and CSS/HTML are not arithmetic - neither is edited math."""
+    g = _load()
+    st = tmp_path / "st"; st.mkdir()
+    repo = _repo(tmp_path)
+    assert g.post("Edit", {"file_path": str(repo / "static/js/bundle.js")}, str(repo), st) is None
+    assert g.post("Edit", {"file_path": str(repo / "static/css/dashboard.css")}, str(repo), st) is None
+    assert g.post("Edit", {"file_path": str(repo / "static/index.html")}, str(repo), st) is None
+
+
 def test_prose_under_kalshi_and_hot_packages_is_not_gated(tmp_path):
     """A README or CHEATSHEET under services/exits/ or services/kalshi/ is not money
     math and carries no Kalshi field semantics in code - no R3, no R4, no nudge."""
