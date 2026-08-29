@@ -1,18 +1,27 @@
 # Next action
 
-Verify the settlement-cascade fix live across an hourly boundary (~15 min at
-:55->:10): after the settlement-resolver branch merges and the app reloads,
-watch `GET /api/health/pipeline` through the :00-:09 window that used to
-produce the drops (71 of 81 episodes started there - root cause and evidence
-in docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md,
-2026-08-29 entry).
+Soak `two_consumer_mode` (enabled 2026-08-29 18:49 UTC) across several more
+hourly boundaries, then decide whether it stays on permanently (P4 gate).
 
-Confirm: `schedulers.settlement_resolver` shows recent `last_started_sec_ago`
-after settlements occur; `ingest.queue_health.dropped_window` stays 0 through
-the boundary; `oldest_message_age_sec` stays near 0. If drops recur at a
-boundary anyway, the residual is the queue-split soak question - do NOT raise
-queue capacity (CLAUDE.md names that exact anti-move).
+The 19:00 UTC boundary verification PASSED on all three criteria, under a
+real cascade far larger than the ones that used to drop (7,600 lifecycle
+events, resolver backlog peaking at 1,885 pending):
+`dropped_window` 0 and lifetime drops 0 throughout; queue depth 0-7 with
+`oldest_message_age_sec` ~0 at every sample (vs. 20,000/262s in the old
+episodes); resolver firing every few seconds, 1,385 tickers resolved by
+window end, backlog draining monotonically, 0 dropped; 3,600 ticker updates
+coalesced; trades flowed uninterrupted (21k -> 203k processed).
 
-Then decide (user call, config change - surface, don't auto-apply): flip
-`realtime_data_plane.two_consumer_mode` to true for the paper-mode soak the
-P4 gate requires. The flag defaults false; Tasks 18+19a shipped dark.
+Check the next 2-3 boundaries the same way (~5 min each):
+`GET /api/health/pipeline` - `dropped_window` 0, `oldest_message_age_sec`
+near 0, `schedulers.settlement_resolver.dropped_total` 0 and pending
+falling after each cascade. If all clean for ~24h, record the flag as
+permanent in config/settings.yaml's comment and close the P4 gate; also
+revisit the three deferred review Minors before/with that decision
+(open-position ticker priority in the coalescing pop, pending-map staleness
+in _oldest_message_age, resolver draining while paused - PR #198 comment).
+
+Watch item: quality summary shows rate-limit hits in 6/49 recent samples -
+expected from the post-reload catch-up burst; if it persists past the soak's
+first day, that's the next investigation (via the six diagnostic endpoints,
+not sqlite3).
