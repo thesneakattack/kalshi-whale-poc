@@ -32,6 +32,14 @@ realtime_data_plane:
   # Flipping this requires a paper-mode soak per the P3 gate criteria in
   # docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md.
   reader_gate_enabled: false
+  # P4 Task 18: routes decision-critical WS classes (fill/position/
+  # lifecycle/control) and bulk market flow (trade/ticker/index/other)
+  # onto separate queues with independent consumers, so one slow class
+  # can't stall the drain of every other - the 2026-08-29 settlement-
+  # cascade drop mechanism. Default false = single queue, today's
+  # behavior unchanged. Flip only with a paper-mode soak, same
+  # discipline as reader_gate_enabled above.
+  two_consumer_mode: false
 whale_signal:
   signal_frequency_sec: 12
   whale_size_range:
