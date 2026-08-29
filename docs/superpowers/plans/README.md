@@ -71,7 +71,12 @@ tags and against the source itself.
   with no phase tag on its commit — `check_exits` takes `tick_cache` at
   `services/exits/exit_engine.py:111`. The plan had deliberately relocated it ahead
   of Tasks 18/19 after a live crash report.
-- **Never implemented:** Tasks **18, 19, 21–28** — the rest of Phases P4, P5 and P6 —
+- **Shipped 2026-08-29 (PR #198):** Tasks **18**, **19** and **24** — the
+  critical/market queue split (behind `realtime_data_plane.two_consumer_mode`),
+  ticker coalescing, and the batched deferred settlement resolver
+  (`services/settlement_resolver.py`) — after the settlement-cascade drop
+  root cause was confirmed. Boundary-verified live the same day.
+- **Never implemented:** Tasks **21–23**, **25–28** (the rest of P4/P5/P6)
   plus **31**, **32**, **40**.
 
 Checked individually, by each task's own named deliverable, not by assuming a range:
@@ -83,16 +88,12 @@ Checked individually, by each task's own named deliverable, not by assuming a ra
 spot checks and got Task 20 wrong; the phase-tag sweep alone is not sufficient,
 because tags were applied inconsistently.
 
-Each of these is independently decisive:
+Each remaining absence is independently decisive:
 
-- Task 18 (split the single consumer into critical/market queues) is absent —
-  `services/kalshi/websocket.py:566` still creates one `asyncio.Queue` and one
-  `_consume()` task.
 - Task 22 (critical-first waiter queues) is absent — `_TokenBucketRateLimiter` in
   `services/http_client.py` has a flat `waiters` counter and no priority queues.
-- Task 31 is absent — `services/whale_stream/whale_stream_handlers.py:400` records
-  `_fetch_account_snapshot`'s periodic REST poll as "still running", and
-  `main.py:711` still calls it unconditionally inside the tick gather.
+- Task 31 is absent — `_fetch_account_snapshot`'s periodic REST poll still runs
+  unconditionally inside the tick gather (`main.py`).
 
 P4/P5 are where the competing solution families for the message-drop bottleneck are
 already written: A isolate the consumer (18), B evict REST from it (19, 24), C fix
