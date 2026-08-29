@@ -253,6 +253,9 @@ state = {
     # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
     # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
     "candidate_retry_loop": {"running": False, "last_started_at": 0.0},
+    # Same contract for the settled-market resolver's loop (P4 Tasks 19+24,
+    # main._settlement_resolver_loop); same pipeline-route consumer.
+    "settlement_resolver_loop": {"running": False, "last_started_at": 0.0},
     # Same background-task decoupling as discovery_cache/catalog_scan
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.

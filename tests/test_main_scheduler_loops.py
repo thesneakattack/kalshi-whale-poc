@@ -219,3 +219,71 @@ def test_lifespan_starts_a_liveness_loop_for_each_active_stream():
     assert source.count("_stream_consumer_liveness_loop") == 2  # trade_stream and index_stream
     assert "trade_stream_liveness_task" in source and "index_stream_liveness_task" in source
     assert "trade_stream_liveness_task.cancel()" in source and "index_stream_liveness_task.cancel()" in source
+
+
+# --- _settlement_resolver_loop (P4 Tasks 19+24) ----------------------------
+# Mirrors _candidate_retry_loop's shape: own supervised loop, own client per
+# run, idle path is one snapshot() read. No streaming gate on purpose - the
+# pending dict only fills from the WS settled handler, but items already
+# enqueued must still drain if streaming is toggled off before they resolve.
+
+def _wire_settlement_resolver(monkeypatch, pending: int):
+    calls, closed, constructed = [], [], []
+
+    class FakeClient:
+        def __init__(self, base_url, timeout):
+            constructed.append(base_url)
+
+        async def close(self):
+            closed.append(True)
+
+    async def fake_run_pending(client, **_kw):
+        calls.append(client)
+        return {"resolved": 1, "still_pending": 0, "resolved_rows": 3}
+
+    monkeypatch.setattr(main, "KalshiPublicGateway", FakeClient)
+    monkeypatch.setattr(main.settlement_resolver, "run_pending", fake_run_pending)
+    monkeypatch.setattr(main.settlement_resolver, "snapshot", lambda: {"pending": pending})
+    monkeypatch.setattr(main.config_store, "get", lambda: {
+        "kalshi": {"base_url": "u", "request_timeout_sec": 1},
+    })
+    monkeypatch.setitem(main.state, "settlement_resolver_loop", {"running": False, "last_started_at": 0.0})
+    monkeypatch.setitem(main.state, "lifecycle_stream_stats", {
+        "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
+        "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
+    })
+    return calls, closed, constructed, FakeClient
+
+
+def test_settlement_resolver_loop_drains_and_feeds_the_lifecycle_stat(monkeypatch):
+    calls, closed, constructed, FakeClient = _wire_settlement_resolver(monkeypatch, pending=2)
+
+    _drive(2, main._settlement_resolver_loop, running=True, monkeypatch=monkeypatch)
+
+    assert len(calls) == 2 and len(closed) == 2 and len(constructed) == 2  # one client per run, always closed
+    assert isinstance(calls[0], FakeClient)
+    # resolved_rows (store rows, the counter's historical meaning) reaches
+    # the same stat the inline settled branch used to increment.
+    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] == 6
+    assert main.state["settlement_resolver_loop"]["last_started_at"] > 0
+
+
+def test_settlement_resolver_loop_skips_entirely_when_nothing_is_pending(monkeypatch):
+    calls, closed, constructed, _ = _wire_settlement_resolver(monkeypatch, pending=0)
+
+    _drive(3, main._settlement_resolver_loop, running=True, monkeypatch=monkeypatch)
+
+    assert calls == [] and constructed == []  # no client churn on the idle path
+
+
+def test_settlement_resolver_loop_respects_pause(monkeypatch):
+    calls, *_ = _wire_settlement_resolver(monkeypatch, pending=2)
+
+    _drive(2, main._settlement_resolver_loop, running=False, monkeypatch=monkeypatch)
+
+    assert calls == []
+
+
+def test_settlement_resolver_loop_is_supervised_from_lifespan():
+    source = inspect.getsource(main.lifespan)
+    assert "_settlement_resolver_loop" in source

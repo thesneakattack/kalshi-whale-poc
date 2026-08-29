@@ -24,7 +24,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import index_feed, series_watcher, settlement_edge
+from services import index_feed, series_watcher, settlement_edge, settlement_resolver
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import trade_capture_reconciliation
@@ -180,6 +180,14 @@ def _scheduler_status(now: float) -> dict:
         "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
         "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
+        # The resolver's own counters ride along (pending backlog, lifetime
+        # enqueued/resolved/dropped): dropped_total growth is the recurrence
+        # signal for a settlement that silently never resolved - for a
+        # non-watchlist ticker, four of the five stores have no other path.
+        "settlement_resolver": {
+            **_entry("settlement_resolver_loop", "last_started_at", "running"),
+            **settlement_resolver.snapshot(),
+        },
         "auto_apply": {
             "calibration_last_applied_sec_ago": _applied("calibration-auto-apply"),
             "advisory_last_applied_sec_ago": _applied("unified-advisory-auto"),

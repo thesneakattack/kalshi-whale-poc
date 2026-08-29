@@ -117,6 +117,39 @@ _CLASS_BY_MESSAGE_TYPE: dict[str, str] = {
 }
 _OTHER_CLASS = "other"
 
+# P4 Task 18: classes routed to the critical queue when
+# realtime_data_plane.two_consumer_mode is on. Decision-critical, low-volume
+# flow (account fills/positions, lifecycle transitions, protocol control
+# frames) is isolated from bulk market flow (trade/ticker/index/other) so a
+# slow handler class can only ever stall its own queue - the 2026-08-29
+# settlement-cascade finding (serial lifecycle handling starved trades) and
+# the cfbenchmarks starvation incident in run()'s comments are both this
+# failure with different slow classes.
+_CRITICAL_CLASSES = frozenset({"fill", "position", "lifecycle", "control"})
+
+# P4 Task 19a: pseudo-class for the market consumer's wake-up sentinel. Pushed
+# into the market queue only on the coalescing map's empty -> non-empty
+# transition (the queue cannot be full then only when it matters: a parked
+# consumer implies an empty queue, so the sentinel always lands when it is
+# needed; when the queue is busy the drain loop reaches the map on its own).
+# Never dispatched to _process_item and never counted as a message.
+_TICKER_WAKE = "_ticker_wake"
+
+
+def _update_ts_ms(msg: dict) -> float | None:
+    """A ticker update's exchange timestamp, normalized to MILLISECONDS.
+    docs/kalshi/market-ticker.md marks `ts` (seconds) and `time` (RFC3339)
+    deprecated in favor of `ts_ms`; prefer ts_ms, fall back to ts * 1000
+    (seconds -> ms), else None (arrival order decides). Never compare a raw
+    ts to a raw ts_ms - they differ by 1000x."""
+    ts_ms = msg.get("ts_ms")
+    if isinstance(ts_ms, (int, float)):
+        return float(ts_ms)
+    ts = msg.get("ts")
+    if isinstance(ts, (int, float)):
+        return float(ts) * 1000.0
+    return None
+
 # The monotonic enqueue timestamp of the message currently being handled,
 # visible to application callbacks for the duration of their call (I2:
 # services/whale_stream/whale_stream_handlers.py reads it to measure true
@@ -268,6 +301,20 @@ class KalshiStreamGateway:
         # deterministic without a socket.
         self._ingest_queue_max = ingest_queue_max
         self._queue: asyncio.Queue | None = None
+        # P4 Task 18: populated alongside _queue; used only when
+        # realtime_data_plane.two_consumer_mode is on (default off).
+        self._critical_queue: asyncio.Queue | None = None
+        self._market_queue: asyncio.Queue | None = None
+        # P4 Task 19a: pending coalesced ticker state, ticker -> (enqueue
+        # monotonic ts, parsed message). A ticker burst for one market is
+        # price state, not history - only the newest update matters (the
+        # consumer overwrites state["latest_prices"]), so consecutive
+        # updates collapse here, newest exchange `ts` winning
+        # (docs/kalshi/market-ticker.md). _coalesced counts absorbed
+        # updates (superseded or stale-discarded) - visible in
+        # ingest_metrics, never silent.
+        self._ticker_by_market: dict[str, tuple[float, dict]] = {}
+        self._coalesced = 0
         self.malformed_messages = 0
         self._received_by_class: dict[str, int] = {}
         self._processed_by_class: dict[str, int] = {}
@@ -282,7 +329,7 @@ class KalshiStreamGateway:
         self._handler_timeouts_by_class: dict[str, int] = {}
         self._handler_timeouts_total = 0
         self._fault_logged_timeout_classes_this_window: set[str] = set()
-        self._liveness_last_processed_total: int | None = None
+        self._liveness_last_processed: dict[str, int] | None = None
         self._liveness_last_messages_received = 0
         self._liveness_stuck_samples = 0
         self._queue_high_water = 0
@@ -416,15 +463,33 @@ class KalshiStreamGateway:
         Returns whether this call forced a reconnect."""
         if self._queue is None:
             return False
-        processed_total = sum(self._processed_by_class.values())
+        # Per-group progress (P4 Task 18): a wedged market consumer must not
+        # hide behind a healthy critical consumer's advancing total (the
+        # exact hang class this backstop exists for, issue #145). Each group
+        # is checked against the queue its own consumer drains; the single
+        # queue keeps the original total-progress check, since one consumer
+        # drains every class there.
+        critical_processed = sum(
+            n for cls, n in self._processed_by_class.items() if cls in _CRITICAL_CLASSES)
+        processed = {
+            "total": sum(self._processed_by_class.values()),
+            "critical": critical_processed,
+        }
+        processed["market"] = processed["total"] - critical_processed
         received_total = self.messages_received
-        stuck = (
-            self._liveness_last_processed_total is not None
-            and processed_total == self._liveness_last_processed_total
-            and received_total > self._liveness_last_messages_received
-            and self._queue.qsize() > 0
+        last = self._liveness_last_processed
+        market_backlog = (
+            (self._market_queue.qsize() if self._market_queue is not None else 0)
+            + len(self._ticker_by_market)
         )
-        self._liveness_last_processed_total = processed_total
+        frozen_with_backlog = last is not None and (
+            (processed["total"] == last["total"] and self._queue.qsize() > 0)
+            or (processed["critical"] == last["critical"]
+                and self._critical_queue is not None and self._critical_queue.qsize() > 0)
+            or (processed["market"] == last["market"] and market_backlog > 0)
+        )
+        stuck = frozen_with_backlog and received_total > self._liveness_last_messages_received
+        self._liveness_last_processed = processed
         self._liveness_last_messages_received = received_total
         if not stuck:
             self._liveness_stuck_samples = 0
@@ -435,7 +500,7 @@ class KalshiStreamGateway:
         self._liveness_stuck_samples = 0
         await self.force_reconnect(
             f"consumer made no progress across {_LIVENESS_STUCK_SAMPLES_THRESHOLD} liveness checks "
-            f"while messages kept arriving (queue depth {self._queue.qsize()})"
+            f"while messages kept arriving (queue depth {self._total_queue_depth()})"
         )
         return True
 
@@ -543,27 +608,37 @@ class KalshiStreamGateway:
                     # self.dropped_messages / ingest_metrics()), not disguised
                     # as a quiet market.
                     queue = self._begin_connection()
+                    # _begin_connection just created all three; local,
+                    # non-Optional handles for the consumer tasks below.
+                    market_queue = self._ensure_split_queues()
+                    critical_queue = self._critical_queue
+                    assert critical_queue is not None
 
-                    async def _consume():
-                        while True:
-                            item = await queue.get()
-                            try:
-                                # _process_item never raises for a handler
-                                # failure: it counts it and fault-logs once
-                                # per class per window, so one mishandled
-                                # message still can't tear down the socket -
-                                # but it no longer vanishes either (I1: the
-                                # old bare `except: pass` here made a
-                                # systematically failing handler class
-                                # indistinguishable from a quiet market).
-                                await self._process_item(
-                                    item, on_trade, on_ticker, on_status, on_fill,
-                                    on_position, on_index, on_lifecycle,
-                                )
-                            finally:
-                                queue.task_done()
+                    def _spawn(q):
+                        return asyncio.create_task(self._consume_from(
+                            q, on_trade, on_ticker, on_status, on_fill,
+                            on_position, on_index, on_lifecycle,
+                        ))
 
-                    consumer = asyncio.create_task(_consume())
+                    # P4 Task 18: all three consumers run every connection
+                    # (an idle queue's consumer just parks on .get()), so a
+                    # runtime two_consumer_mode flip mid-connection strands
+                    # nothing - the reader's routing decides which queues
+                    # actually receive work. Same per-connection create_task
+                    # lifecycle as the original single consumer: teardown
+                    # cancels them with the socket, ensure_consumer_
+                    # progressing() + the per-message handler timeout cover
+                    # stalls (issue #145), which supervise(restart=True)
+                    # could not - a consumer's queue closure dies with its
+                    # connection, so restarting the coroutine alone would
+                    # resurrect it on a dead queue.
+                    consumers = [
+                        _spawn(queue), _spawn(critical_queue),
+                        asyncio.create_task(self._consume_market_from(
+                            market_queue, on_trade, on_ticker, on_status, on_fill,
+                            on_position, on_index, on_lifecycle,
+                        )),
+                    ]
                     try:
                         while not self._stop:
                             update_task = asyncio.create_task(self._update_event.wait())
@@ -579,7 +654,8 @@ class KalshiStreamGateway:
                             if recv_task in done:
                                 self._ingest_raw(recv_task.result())
                     finally:
-                        consumer.cancel()
+                        for consumer in consumers:
+                            consumer.cancel()
             except Exception as exc:
                 self._record_disconnect(exc)
                 if on_status is not None:
@@ -712,6 +788,15 @@ class KalshiStreamGateway:
         (wall-clock skew - _record_disconnect and this both read
         time.time()) are dropped rather than recorded as fabricated data."""
         self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        # P4 Task 18: the split queues are rebuilt alongside the single one
+        # every connection - always constructed (cheap, empty) so a runtime
+        # flag flip mid-connection routes into a real queue either way.
+        self._critical_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        self._market_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        # Pending coalesced tickers die with the connection, same as queued
+        # messages today - the ticker channel re-snapshots on resubscribe
+        # (send_initial_snapshot) and staleness is visible either way.
+        self._ticker_by_market = {}
         self._connects += 1
         if self._last_disconnect is not None:
             gap = (now if now is not None else time.time()) - self._last_disconnect["at"]
@@ -735,6 +820,20 @@ class KalshiStreamGateway:
         if self._gate_cfg_cache is None or (now - self._gate_cfg_cache[0]) > 1.0:
             self._gate_cfg_cache = (now, config_store.get())
         return self._gate_cfg_cache[1]
+
+    def _two_consumer_mode(self) -> bool:
+        """P4 Task 18 flag, read through the same 1s-cached config as the
+        reader gate - a flag flip routes new messages within a second; the
+        consumers for both topologies are always running (run() launches
+        them per-connection), so no message is stranded by a mid-connection
+        flip."""
+        return bool((self._cached_gate_cfg().get("realtime_data_plane") or {}).get("two_consumer_mode"))
+
+    def _total_queue_depth(self) -> int:
+        """Backlog across every ingest queue this connection may be using -
+        the liveness backstop and depth metrics must see a backlog wherever
+        it lives (single, critical, or market queue)."""
+        return sum(q.qsize() for q in (self._queue, self._critical_queue, self._market_queue) if q is not None)
 
     def _gate_check_and_maybe_filter(self, trade_msg: dict) -> bool:
         """Realtime data-plane remediation P0 Task 3 (shadow counting) / P3
@@ -840,9 +939,18 @@ class KalshiStreamGateway:
         self._received_by_class[cls] = self._received_by_class.get(cls, 0) + 1
         if cls == "trade" and self._gate_check_and_maybe_filter(data.get("msg") or {}):
             return False  # reader gate live and rejected - not a drop (queue had room), not enqueued
-        queue = self._queue
-        if queue is None:
-            queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        if self._two_consumer_mode():
+            if cls == "ticker":
+                return self._coalesce_ticker(data, now)
+            market_queue = self._ensure_split_queues()
+            critical_queue = self._critical_queue
+            assert critical_queue is not None  # _ensure_split_queues just set it
+            queue = critical_queue if cls in _CRITICAL_CLASSES else market_queue
+        else:
+            single_queue = self._queue
+            if single_queue is None:
+                single_queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+            queue = single_queue
         if now is None:
             now = time.monotonic()
         try:
@@ -856,6 +964,111 @@ class KalshiStreamGateway:
         if depth > self._queue_high_water:
             self._queue_high_water = depth
         return True
+
+    def _ensure_split_queues(self) -> asyncio.Queue:
+        """Lazy-create the split queues, same fallback pattern as
+        self._queue in _ingest_raw - direct-ingest callers (tests, replay)
+        may not have run _begin_connection. Returns the market queue (the
+        one every caller of this helper needs a non-None handle to)."""
+        if self._market_queue is None or self._critical_queue is None:
+            self._critical_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+            self._market_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        return self._market_queue
+
+    def _coalesce_ticker(self, data: dict, now: float | None) -> bool:
+        """P4 Task 19a (two-consumer mode only): fold this ticker update into
+        the per-market pending map, newest exchange `ts` winning. Returns
+        True (the update is accepted - absorbed, not dropped; _coalesced
+        counts every absorption so the volume stays visible)."""
+        msg = data.get("msg") or {}
+        ticker = msg.get("market_ticker") or msg.get("ticker")
+        if now is None:
+            now = time.monotonic()
+        market_queue = self._ensure_split_queues()
+        if not ticker:
+            # Unroutable without a market key - hand it to the market queue
+            # unchanged rather than inventing a coalescing identity for it.
+            try:
+                market_queue.put_nowait((now, "ticker", data))
+            except asyncio.QueueFull:
+                self.dropped_messages += 1
+                self._dropped_window += 1
+                self._dropped_by_class["ticker"] = self._dropped_by_class.get("ticker", 0) + 1
+                return False
+            return True
+        existing = self._ticker_by_market.get(ticker)
+        if existing is not None:
+            new_ts, old_ts = _update_ts_ms(msg), _update_ts_ms(existing[1].get("msg") or {})
+            if new_ts is not None and old_ts is not None and new_ts < old_ts:
+                self._coalesced += 1  # stale (older exchange ts arrived later) - discarded
+                return True
+            self._coalesced += 1  # supersedes the unconsumed pending update
+            self._ticker_by_market[ticker] = (now, data)
+            return True
+        was_empty = not self._ticker_by_market
+        self._ticker_by_market[ticker] = (now, data)
+        if was_empty:
+            # Wake a market consumer parked on an empty queue. Only the
+            # empty -> non-empty transition needs it, and put_nowait cannot
+            # fail precisely when it matters (a parked consumer implies an
+            # empty queue); with a busy queue the drain loop reaches the
+            # map on its own, so a Full here is safely ignored.
+            try:
+                market_queue.put_nowait((now, _TICKER_WAKE, None))
+            except asyncio.QueueFull:
+                pass
+        return True
+
+    def _pending_ticker_by_market(self) -> dict[str, dict]:
+        return {ticker: data for ticker, (_, data) in self._ticker_by_market.items()}
+
+    async def _consume_market_from(self, queue: asyncio.Queue, on_trade=None, on_ticker=None, on_status=None,
+                                   on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
+        """Market-queue consumer (P4 Task 19a): FIFO-drains real queue items
+        first, then processes pending coalesced tickers one per iteration
+        when the queue is momentarily empty - trades keep strict arrival
+        order, tickers are level state where cross-market order is
+        deliberately unguaranteed (design spec §3)."""
+        while True:
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                if self._ticker_by_market:
+                    ticker = next(iter(self._ticker_by_market))
+                    enqueued_at, data = self._ticker_by_market.pop(ticker)
+                    await self._process_item(
+                        (enqueued_at, "ticker", data), on_trade, on_ticker, on_status,
+                        on_fill, on_position, on_index, on_lifecycle,
+                    )
+                    continue
+                item = await queue.get()
+            try:
+                if item[1] != _TICKER_WAKE:
+                    await self._process_item(
+                        item, on_trade, on_ticker, on_status, on_fill,
+                        on_position, on_index, on_lifecycle,
+                    )
+            finally:
+                queue.task_done()
+
+    async def _consume_from(self, queue: asyncio.Queue, on_trade=None, on_ticker=None, on_status=None,
+                            on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
+        """Drain one ingest queue forever (P4 Task 18 - the former run()-local
+        _consume(), extracted so run() can launch one per queue). _process_item
+        never raises for a handler failure: it counts it and fault-logs once
+        per class per window, so one mishandled message still can't tear down
+        the socket - but it no longer vanishes either (I1: the old bare
+        `except: pass` here made a systematically failing handler class
+        indistinguishable from a quiet market)."""
+        while True:
+            item = await queue.get()
+            try:
+                await self._process_item(
+                    item, on_trade, on_ticker, on_status, on_fill,
+                    on_position, on_index, on_lifecycle,
+                )
+            finally:
+                queue.task_done()
 
     async def _process_item(self, item, on_trade, on_ticker, on_status, on_fill=None, on_position=None,
                             on_index=None, on_lifecycle=None, now: float | None = None) -> None:
@@ -954,18 +1167,23 @@ class KalshiStreamGateway:
         self._gap_sec_window = None
 
     def _oldest_message_age(self, now: float) -> float | None:
-        queue = self._queue
-        if queue is None or queue.empty():
-            return 0.0
-        try:
-            # asyncio.Queue keeps its items in a deque named _queue (the
-            # attribute its own stdlib subclasses override). Peeking the
-            # head is read-only; if the implementation ever changes, report
-            # unknown (None) rather than a fabricated age.
-            head = queue._queue[0]  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        return round(max(now - head[0], 0.0), 4)
+        """Age of the oldest unconsumed message across every ingest queue in
+        use (single/critical/market - P4 Task 18): staleness lives wherever
+        the backlog does, so this is the max over the non-empty queues."""
+        ages: list[float] = []
+        for queue in (self._queue, self._critical_queue, self._market_queue):
+            if queue is None or queue.empty():
+                continue
+            try:
+                # asyncio.Queue keeps its items in a deque named _queue (the
+                # attribute its own stdlib subclasses override). Peeking the
+                # head is read-only; if the implementation ever changes,
+                # report unknown (None) rather than a fabricated age.
+                head = queue._queue[0]  # type: ignore[attr-defined]
+            except Exception:
+                return None
+            ages.append(max(now - head[0], 0.0))
+        return round(max(ages), 4) if ages else 0.0
 
     def ingest_metrics(self, now: float | None = None) -> dict:
         """Point-in-time queue-health snapshot. Pure read - no resets (the
@@ -989,8 +1207,14 @@ class KalshiStreamGateway:
             "handler_timeouts_total": self._handler_timeouts_total,
             "handler_timeouts_by_class": dict(self._handler_timeouts_by_class),
             "queue": {
-                "depth": queue.qsize() if queue is not None else 0,
+                # Total backlog across every queue in use (P4 Task 18) -
+                # in single-consumer mode this equals the one queue's depth.
+                "depth": self._total_queue_depth(),
                 "capacity": self._ingest_queue_max,
+                # Task 19a coalescing visibility: absorbed ticker updates
+                # (lifetime, monotone) and the pending map's current size.
+                "coalesced_tickers": self._coalesced,
+                "pending_tickers": len(self._ticker_by_market),
                 "high_water": self._queue_high_water,
                 "oldest_message_age_sec": self._oldest_message_age(now),
             },
