@@ -35,6 +35,7 @@ from services import series_evaluator as se_module
 from services import series_watcher as sw_module
 from services import settlement_edge as sedge_module
 from services.whale_stream import whale_stream_handlers as wsh_module
+from services import settlement_resolver
 
 _tmp_dir = Path(tempfile.mkdtemp(prefix="trading_gate_test_"))
 # pb_module.DB_PATH is deliberately NOT re-overridden here (2026-08-27 real
@@ -2275,6 +2276,7 @@ def test_process_stream_ticker_position_netting_is_a_noop_when_disabled(monkeypa
 # function's own docstring) are all wired to real effects now.
 
 def _reset_lifecycle_stats():
+    settlement_resolver._pending.clear()
     main.state["lifecycle_stream_stats"] = {
         "events_by_type": {}, "close_time_updates_applied": 0, "last_event_at": None,
         "catalog_updates_applied": 0, "outcomes_resolved_via_lifecycle": 0,
@@ -2372,29 +2374,34 @@ def test_lifecycle_determined_still_updates_catalog_for_a_scalar_result():
     assert stats["outcomes_resolved_via_lifecycle"] == 0
 
 
-class _FakeLifecycleSettleClient:
-    """get_market() fake for the settled handler's fresh REST verification
-    (2026-08-23) - settled carries no result field of its own, so this is
-    the only source of the truly-final, dispute-corrected result."""
+class _FakeBatchSettleClient:
+    """get_markets_by_tickers() fake for the deferred resolver path (P4
+    Tasks 19+24) - the settled handler no longer does any REST of its own;
+    resolution happens later, batched, in settlement_resolver.run_pending."""
 
-    def __init__(self, market_detail=None, raises=False):
-        self._market_detail = market_detail
-        self._raises = raises
-        self.get_market_calls = []
+    def __init__(self, markets_by_ticker):
+        self._markets = markets_by_ticker
+        self.calls = []
 
-    async def get_market(self, ticker):
-        self.get_market_calls.append(ticker)
-        if self._raises:
-            raise RuntimeError("network error")
-        return self._market_detail
+    async def get_markets_by_tickers(self, tickers):
+        self.calls.append(sorted(tickers))
+        return {t: self._markets[t] for t in tickers if t in self._markets}
 
 
-def test_lifecycle_settled_resolves_outcome_via_a_fresh_rest_read(monkeypatch):
+def _forbid_inline_stream_client(monkeypatch):
+    def _must_not_construct(cfg):
+        raise AssertionError("the settled handler must not construct a REST client inline anymore (P4 Task 19)")
+    monkeypatch.setattr(wsh_module, "_stream_market_client", _must_not_construct)
+
+
+def test_lifecycle_settled_enqueues_deferred_resolution_without_inline_rest(monkeypatch):
+    # P4 Task 19: the settled branch's inline get_market() was 23% of all
+    # REST demand (I8) and, run serially on the WS consumer during
+    # settlement cascades, the driver of the queue-saturation drop episodes
+    # (71/81 started at :00-:09). The handler now only enqueues.
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
-    cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
-    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
-    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+    _forbid_inline_stream_client(monkeypatch)
 
     _run_lifecycle((
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
@@ -2402,48 +2409,53 @@ def test_lifecycle_settled_resolves_outcome_via_a_fresh_rest_read(monkeypatch):
 
     stats = main.state["lifecycle_stream_stats"]
     assert stats["events_by_type"]["settled"] == 1
-    assert stats["catalog_updates_applied"] == 1
-    assert stats["outcomes_resolved_via_lifecycle"] >= 1
-    assert fake_client.get_market_calls == ["TICK-A"]
+    assert stats["catalog_updates_applied"] == 1  # status -> finalized, from the event itself
+    assert stats["outcomes_resolved_via_lifecycle"] == 0  # resolution is deferred now
+    assert settlement_resolver.pending() == [("TICK-A", 1735689600.0)]
     with mc_module._connect(mc_module.DB_PATH) as conn:
         status = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("TICK-A",)).fetchone()[0]
     assert status == "finalized"
+
+
+def test_lifecycle_settled_end_to_end_resolves_through_the_batched_resolver(monkeypatch):
+    # The same end-to-end guarantee the old inline test gave (a settled
+    # event ends with candidate_log rows resolved), now through the
+    # enqueue -> run_pending path that replaced it.
+    _reset_lifecycle_stats()
+    _seed_catalog_row("TICK-A")
+    _forbid_inline_stream_client(monkeypatch)
+    cl_module.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.1, 0.5, "yes", now=time.time())
+
+    _run_lifecycle((
+        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+    ))
+    client = _FakeBatchSettleClient({"TICK-A": {"ticker": "TICK-A", "status": "finalized", "result": "yes"}})
+    result = asyncio.run(settlement_resolver.run_pending(client, now=time.time() + 61.0))
+
+    assert result["resolved"] == 1
+    assert client.calls == [["TICK-A"]]
     summary = cl_module.gate_summary()
     matching = [g for g in summary if g["strategy"] == "whale_follow" and g["gate_name"] == "entry_threshold"]
     assert matching and matching[0]["resolved_count"] >= 1
 
 
-def test_lifecycle_settled_does_not_resolve_when_the_fresh_read_disagrees_it_is_finalized(monkeypatch):
-    # A settled event whose own just-fetched market object doesn't actually
-    # show status=="finalized" (a race, an inconsistent read) must not
-    # resolve on that - same conservative gate as the REST-tick path.
+def test_lifecycle_settled_tolerates_a_missing_settled_ts(monkeypatch):
+    # A malformed/partial settled payload must still enqueue (falling back
+    # to the arrival clock) - dropping it would orphan the ticker until the
+    # slower REST-tick fallback happens to see it.
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
-    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "determined", "result": "yes"})
-    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
+    _forbid_inline_stream_client(monkeypatch)
+    before = time.time()
 
     _run_lifecycle((
-        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
+        {"event_type": "settled", "market_ticker": "TICK-A"},
     ))
 
-    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] == 0
-
-
-def test_lifecycle_settled_degrades_cleanly_when_the_rest_read_fails(monkeypatch):
-    _reset_lifecycle_stats()
-    _seed_catalog_row("TICK-A")
-    fake_client = _FakeLifecycleSettleClient(raises=True)
-    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
-
-    _run_lifecycle((
-        {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
-    ))
-
-    stats = main.state["lifecycle_stream_stats"]
-    # Catalog status is still marked finalized from the event itself - only
-    # sourcing the *result* needs the REST round-trip.
-    assert stats["catalog_updates_applied"] == 1
-    assert stats["outcomes_resolved_via_lifecycle"] == 0
+    pending = settlement_resolver.pending()
+    assert len(pending) == 1 and pending[0][0] == "TICK-A"
+    assert pending[0][1] >= before  # fell back to now, not 0/None
+    assert main.state["lifecycle_stream_stats"]["catalog_updates_applied"] == 1
 
 
 def test_lifecycle_ignores_message_missing_event_type_or_ticker():
@@ -3434,28 +3446,28 @@ def test_pipeline_health_reports_open_position_price_staleness():
 
 
 def test_lifecycle_settled_also_resolves_signal_log_rows_for_the_ticker(tmp_path, monkeypatch):
-    """P8 Task 30: signal_log was the one store the settled lifecycle path did
-    not resolve - mark_resolved's only caller was the 30s REST poll - even
-    though the same event already resolved four other stores for the same
-    ticker. Now it resolves alongside them, per row (each signal keeps its
-    own side)."""
+    """P8 Task 30: signal_log resolves alongside the other four stores, per
+    row (each signal keeps its own side) - now through the deferred batched
+    resolver (P4 Tasks 19+24) instead of the settled handler's former
+    inline REST read."""
     import services.signal_log as signal_log_module
     monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
     _reset_lifecycle_stats()
     _seed_catalog_row("TICK-A")
+    _forbid_inline_stream_client(monkeypatch)
     signal_log_module.log_signal("TICK-A", "yes", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
     signal_log_module.log_signal("TICK-A", "no", 1000, 0.8, "kalshi_trade_tape", seen_at=time.time() - 3600)
-    fake_client = _FakeLifecycleSettleClient({"ticker": "TICK-A", "status": "finalized", "result": "yes"})
-    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: fake_client)
 
     _run_lifecycle((
         {"event_type": "settled", "market_ticker": "TICK-A", "settled_ts": 1735689600},
     ))
+    client = _FakeBatchSettleClient({"TICK-A": {"ticker": "TICK-A", "status": "finalized", "result": "yes"}})
+    result = asyncio.run(settlement_resolver.run_pending(client, now=time.time() + 61.0))
 
     rows = {r["side"]: r for r in signal_log_module.recent(limit=10) if r["ticker"] == "TICK-A"}
     assert rows["yes"]["resolved"] == 1 and rows["yes"]["correct"] == 1
     assert rows["no"]["resolved"] == 1 and rows["no"]["correct"] == 0
-    assert main.state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] >= 2
+    assert result["resolved_rows"] >= 2  # the counter the stats loop feeds from
 
 
 def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
@@ -3469,7 +3481,7 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
 
     body = client.get("/api/health/pipeline").json()["schedulers"]
 
-    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "candidate_retry", "auto_apply"} <= set(body)
+    assert {"signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "candidate_retry", "settlement_resolver", "auto_apply"} <= set(body)
     assert 10 <= body["signal_resolution"]["last_started_sec_ago"] <= 15
     assert body["signal_resolution"]["busy"] is False
     assert body["catalog_scan"]["busy"] is True

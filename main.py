@@ -26,6 +26,7 @@ from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import candidate_retry
+from services import settlement_resolver
 from services import capture_writer
 from services.diagnostics import diagnostics
 from services.history import regime_analytics
@@ -620,6 +621,37 @@ async def _candidate_retry_loop() -> None:
             await client.close()
 
 
+async def _settlement_resolver_loop() -> None:
+    """settlement_resolver.run_pending's one and only caller (P4 Tasks
+    19+24) - the settled lifecycle handler enqueues, this loop drains in
+    one GET /markets?tickers= batch per run instead of the former one
+    get_market() per settlement inline on the WS consumer. Same shape as
+    _candidate_retry_loop: own client per run, idle path is one snapshot()
+    read. Deliberately NO streaming-mode gate: pending only fills from the
+    WS settled handler, but tickers already enqueued must still drain if
+    streaming is toggled off before they resolve - the REST read is the
+    resolution, not the stream. resolved_rows feeds the same
+    outcomes_resolved_via_lifecycle stat the inline branch incremented, so
+    that counter keeps its meaning (store rows) across the relocation."""
+    loop_state = state["settlement_resolver_loop"]
+    while True:
+        await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
+        if not state["running"]:
+            continue
+        if settlement_resolver.snapshot().get("pending", 0) <= 0:
+            continue
+        cfg = config_store.get()
+        loop_state["running"] = True
+        loop_state["last_started_at"] = time.time()
+        client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+        try:
+            result = await settlement_resolver.run_pending(client)
+            state["lifecycle_stream_stats"]["outcomes_resolved_via_lifecycle"] += result.get("resolved_rows", 0)
+        finally:
+            loop_state["running"] = False
+            await client.close()
+
+
 async def trading_loop():
     while True:
         cfg = config_store.get()
@@ -1170,6 +1202,9 @@ async def lifespan(app: FastAPI):
     ]
     scheduler_tasks.append(task_supervisor.supervise(
         _candidate_retry_loop, component="scheduler", operation="candidate_retry", restart=True,
+    ))
+    scheduler_tasks.append(task_supervisor.supervise(
+        _settlement_resolver_loop, component="scheduler", operation="settlement_resolver", restart=True,
     ))
     trade_stream_task = None
     trade_stream_liveness_task = None

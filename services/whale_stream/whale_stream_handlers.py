@@ -12,7 +12,7 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge, signal_log
+from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge, settlement_resolver, signal_log
 from services.config import config_performance
 from services import whale_pipeline_perf
 from services import http_client
@@ -574,33 +574,17 @@ async def _process_stream_lifecycle(msg: dict) -> None:
         if market_catalog.apply_lifecycle_update(ticker, status="finalized"):
             stats["catalog_updates_applied"] += 1
         # settled carries no result field, and there is no distinct
-        # dispute/amendment event to watch for either - a fresh REST read is
-        # the only way to get a result that's actually final. Best-effort:
-        # a failed/degraded fetch just leaves this ticker for the REST-tick
-        # fallback path to catch if it ever resurfaces on the watchlist.
-        try:
-            client = _stream_market_client(config_store.get())
-            with http_client.caller_class("background_resolution"):
-                market = await client.get_market(ticker)
-        except Exception:
-            return
-        if (market.get("status") or "") != "finalized":
-            return
-        result = (market.get("result") or "").strip().lower()
-        if result not in ("yes", "no"):
-            return
-        now = time.time()
-        market_history.record_outcome(ticker, result, resolved_at=now)
-        resolved = settlement_edge.resolve_window(ticker, result == "yes")
-        resolved += market_analyst_agent.resolve_from_market_results({ticker: result})
-        resolved += candidate_log.resolve_from_market_results({ticker: result})
-        # P8 Task 30: the fifth store. signal_log's only resolver used to be
-        # main.py's 30s/200-batch REST poll, which stays as the slower safety
-        # net (a ticker this app wasn't watching at settlement time, or a
-        # missed lifecycle event); both paths are idempotent (WHERE resolved
-        # = 0), so firing from both is safe, same as the four above.
-        resolved += signal_log.resolve_from_market_results(ticker, result)
-        stats["outcomes_resolved_via_lifecycle"] += resolved
+        # dispute/amendment event to watch for either - a REST read is still
+        # the only way to get a result that's actually final. But NOT here
+        # (P4 Tasks 19+24): this handler runs on the serial WS consumer, and
+        # the former inline `await client.get_market(ticker)` plus five
+        # SQLite resolvers - one settlement at a time - is what stalled the
+        # drain during settlement cascades (71 of 81 recorded drop episodes
+        # started at :00-:09; the inline read alone was 23% of all REST
+        # demand, I8). Enqueue is O(1); services/settlement_resolver.py's
+        # supervised loop does the batched, deferred, finalized-gated
+        # resolution - same five stores, same disputed-result conservatism.
+        settlement_resolver.enqueue(ticker, msg.get("settled_ts"))
         return
 
 
