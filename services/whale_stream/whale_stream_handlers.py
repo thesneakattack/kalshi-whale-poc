@@ -12,10 +12,9 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import candidate_log, market_analyst_agent, market_history, series_watcher, settlement_edge, settlement_resolver, signal_log
+from services import market_history, series_watcher, settlement_resolver
 from services.config import config_performance
 from services import whale_pipeline_perf
-from services import http_client
 from services.exits import position_netting
 from services.kalshi import websocket as kalshi_websocket
 from services.market_events import event_lifecycle

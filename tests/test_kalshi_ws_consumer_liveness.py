@@ -157,3 +157,42 @@ def test_never_connected_is_a_safe_noop():
     triggered = asyncio.run(gw.ensure_consumer_progressing())
 
     assert triggered is False
+
+
+# --- per-group progress (P4 Task 18 review finding) -------------------------
+# A wedged market consumer must not hide behind a healthy critical consumer's
+# advancing total: each group is checked against its own queue's backlog.
+
+def test_a_wedged_market_consumer_is_caught_despite_critical_progress(monkeypatch):
+    gw = _gateway()
+    calls = []
+    monkeypatch.setattr(gw, "force_reconnect", lambda reason: calls.append(reason) or _noop_coro())
+
+    def _seed_split(critical_processed: int, received: int):
+        gw._processed_by_class = {"fill": critical_processed, "trade": 7}  # market frozen at 7
+        gw.messages_received = received
+        while not gw._market_queue.empty():
+            gw._market_queue.get_nowait()
+        gw._market_queue.put_nowait((0.0, "trade", {"type": "trade", "msg": {}}))
+
+    _seed_split(1, 10)
+    asyncio.run(gw.ensure_consumer_progressing())  # baseline
+    triggered = False
+    for i in range(1, 4):  # critical keeps advancing, market frozen with backlog
+        _seed_split(1 + i, 10 + i)
+        triggered = asyncio.run(gw.ensure_consumer_progressing())
+
+    assert triggered is True and len(calls) == 1
+
+
+def test_an_idle_market_group_with_no_backlog_never_triggers(monkeypatch):
+    gw = _gateway()
+    calls = []
+    monkeypatch.setattr(gw, "force_reconnect", lambda reason: calls.append(reason) or _noop_coro())
+
+    for i in range(5):  # only critical traffic exists; market queue and map empty
+        gw._processed_by_class = {"fill": 1 + i}
+        gw.messages_received = 10 + i
+        asyncio.run(gw.ensure_consumer_progressing())
+
+    assert calls == []

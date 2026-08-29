@@ -188,3 +188,60 @@ def test_a_failed_batch_read_leaves_everything_pending(monkeypatch):
     assert result["resolved"] == 0
     assert result["still_pending"] == 1  # a transient network error must not lose the ticker
     assert recorded == []
+
+
+def test_a_raising_store_resolver_is_contained_retried_and_eventually_dropped(monkeypatch):
+    # Review finding (PR #198): a raising store must not crash run_pending -
+    # that would crash-loop the supervised scheduler and permanently starve
+    # every settlement enqueued behind the poisoned ticker.
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    def _poisoned_record(ticker, result, resolved_at):
+        if ticker == "POISON":
+            raise RuntimeError("db locked")
+        recorded.append(("market_history", ticker, result))
+    monkeypatch.setattr("services.market_history.record_outcome", _poisoned_record)
+    faults = []
+    monkeypatch.setattr("services.fault_log.record", lambda *a, **k: faults.append(a) or True)
+    monkeypatch.setattr("services.fault_log.record_fault", lambda *a, **k: faults.append(a) or True)
+    now = time.time()
+    settlement_resolver.enqueue("POISON", now, now=now)
+    settlement_resolver.enqueue("OK", now, now=now)
+    client = _FakeClient({
+        "POISON": {"ticker": "POISON", "status": "finalized", "result": "yes"},
+        "OK": {"ticker": "OK", "status": "finalized", "result": "no"},
+    })
+
+    result = asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0, max_attempts=2))
+
+    # The healthy ticker in the same batch still resolves.
+    assert result["resolved"] == 1
+    assert ("signal_log", "OK", "no") in recorded
+    assert result["still_pending"] == 1  # POISON retried, not lost, not crashing
+    assert any("resolve:POISON" in str(f) for f in faults)
+
+    # Second failure hits max_attempts=2: dropped, counted, fault-logged.
+    before_dropped = settlement_resolver.snapshot()["dropped_total"]
+    result = asyncio.run(settlement_resolver.run_pending(client, now=now + 122.0, max_attempts=2))
+    assert result["still_pending"] == 0
+    assert settlement_resolver.snapshot()["dropped_total"] == before_dropped + 1
+    assert any("dropped_after_max_attempts" in str(f) for f in faults)
+
+
+def test_retries_are_spaced_by_delay_sec_not_by_caller_cadence(monkeypatch):
+    # Review finding (PR #198): without not_before, a 5s scheduler loop
+    # burned the whole max_attempts budget in ~50s of wall clock. An
+    # attempt must only be consumed after delay_sec has re-elapsed.
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    now = time.time()
+    settlement_resolver.enqueue("K1", now, now=now)
+    client = _FakeClient({"K1": {"ticker": "K1", "status": "determined"}})
+
+    asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0))  # attempt 1
+    for tick in (66.0, 71.0, 100.0):  # scheduler keeps firing every few seconds
+        asyncio.run(settlement_resolver.run_pending(client, now=now + tick))
+
+    assert settlement_resolver._pending["K1"]["attempts"] == 1  # backoff held; cadence didn't burn budget
+    asyncio.run(settlement_resolver.run_pending(client, now=now + 122.0))  # delay re-elapsed
+    assert settlement_resolver._pending["K1"]["attempts"] == 2

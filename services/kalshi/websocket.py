@@ -135,6 +135,21 @@ _CRITICAL_CLASSES = frozenset({"fill", "position", "lifecycle", "control"})
 # Never dispatched to _process_item and never counted as a message.
 _TICKER_WAKE = "_ticker_wake"
 
+
+def _update_ts_ms(msg: dict) -> float | None:
+    """A ticker update's exchange timestamp, normalized to MILLISECONDS.
+    docs/kalshi/market-ticker.md marks `ts` (seconds) and `time` (RFC3339)
+    deprecated in favor of `ts_ms`; prefer ts_ms, fall back to ts * 1000
+    (seconds -> ms), else None (arrival order decides). Never compare a raw
+    ts to a raw ts_ms - they differ by 1000x."""
+    ts_ms = msg.get("ts_ms")
+    if isinstance(ts_ms, (int, float)):
+        return float(ts_ms)
+    ts = msg.get("ts")
+    if isinstance(ts, (int, float)):
+        return float(ts) * 1000.0
+    return None
+
 # The monotonic enqueue timestamp of the message currently being handled,
 # visible to application callbacks for the duration of their call (I2:
 # services/whale_stream/whale_stream_handlers.py reads it to measure true
@@ -314,7 +329,7 @@ class KalshiStreamGateway:
         self._handler_timeouts_by_class: dict[str, int] = {}
         self._handler_timeouts_total = 0
         self._fault_logged_timeout_classes_this_window: set[str] = set()
-        self._liveness_last_processed_total: int | None = None
+        self._liveness_last_processed: dict[str, int] | None = None
         self._liveness_last_messages_received = 0
         self._liveness_stuck_samples = 0
         self._queue_high_water = 0
@@ -448,18 +463,33 @@ class KalshiStreamGateway:
         Returns whether this call forced a reconnect."""
         if self._queue is None:
             return False
-        processed_total = sum(self._processed_by_class.values())
+        # Per-group progress (P4 Task 18): a wedged market consumer must not
+        # hide behind a healthy critical consumer's advancing total (the
+        # exact hang class this backstop exists for, issue #145). Each group
+        # is checked against the queue its own consumer drains; the single
+        # queue keeps the original total-progress check, since one consumer
+        # drains every class there.
+        critical_processed = sum(
+            n for cls, n in self._processed_by_class.items() if cls in _CRITICAL_CLASSES)
+        processed = {
+            "total": sum(self._processed_by_class.values()),
+            "critical": critical_processed,
+        }
+        processed["market"] = processed["total"] - critical_processed
         received_total = self.messages_received
-        stuck = (
-            self._liveness_last_processed_total is not None
-            and processed_total == self._liveness_last_processed_total
-            and received_total > self._liveness_last_messages_received
-            # Backlog wherever it lives - single OR split queues (P4 Task
-            # 18); a stuck _consume_market with the single queue empty must
-            # still read as stuck.
-            and self._total_queue_depth() > 0
+        last = self._liveness_last_processed
+        market_backlog = (
+            (self._market_queue.qsize() if self._market_queue is not None else 0)
+            + len(self._ticker_by_market)
         )
-        self._liveness_last_processed_total = processed_total
+        frozen_with_backlog = last is not None and (
+            (processed["total"] == last["total"] and self._queue.qsize() > 0)
+            or (processed["critical"] == last["critical"]
+                and self._critical_queue is not None and self._critical_queue.qsize() > 0)
+            or (processed["market"] == last["market"] and market_backlog > 0)
+        )
+        stuck = frozen_with_backlog and received_total > self._liveness_last_messages_received
+        self._liveness_last_processed = processed
         self._liveness_last_messages_received = received_total
         if not stuck:
             self._liveness_stuck_samples = 0
@@ -968,9 +998,9 @@ class KalshiStreamGateway:
             return True
         existing = self._ticker_by_market.get(ticker)
         if existing is not None:
-            new_ts, old_ts = msg.get("ts"), (existing[1].get("msg") or {}).get("ts")
-            if isinstance(new_ts, (int, float)) and isinstance(old_ts, (int, float)) and new_ts < old_ts:
-                self._coalesced += 1  # stale (older ts arrived later) - discarded
+            new_ts, old_ts = _update_ts_ms(msg), _update_ts_ms(existing[1].get("msg") or {})
+            if new_ts is not None and old_ts is not None and new_ts < old_ts:
+                self._coalesced += 1  # stale (older exchange ts arrived later) - discarded
                 return True
             self._coalesced += 1  # supersedes the unconsumed pending update
             self._ticker_by_market[ticker] = (now, data)

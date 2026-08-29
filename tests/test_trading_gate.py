@@ -3485,3 +3485,7 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
     assert 10 <= body["signal_resolution"]["last_started_sec_ago"] <= 15
     assert body["signal_resolution"]["busy"] is False
     assert body["catalog_scan"]["busy"] is True
+    # Review finding (PR #198): the resolver's own counters must be
+    # reachable, or a dropped settlement is invisible data loss.
+    for key in ("pending", "enqueued_total", "resolved_total", "dropped_total"):
+        assert key in body["settlement_resolver"]
