@@ -12,3 +12,4 @@ for anything already on it.
 - Banded cost-aware gate EV diagnostic (0.60–0.95 band negative-EV) · approve `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` or close · you · 2026-08-26
 - Shadow-mode evaluation stretch has never run · schedule a dated stretch · you · 2026-08-26
 - Path-based CI test selection for code changes · find the original rejection incident, then decide · me → you · 2026-08-26
+- `position_netting` closes lose money at scale (34 closed trades, 11 wins, -$2,693.99 total realized P&L, -$79.23 avg; not concentrated in the flagged 0.60-0.95 entry-price band — entry prices span 0.12-0.89) · investigate the netting mechanism (`services/exits/position_netting.py`) or accept as a known cost of the design · me → you · 2026-08-29
