@@ -74,8 +74,11 @@ chat.
 
 ## Resuming in a fresh session
 
-On "resume" / "continue" / "pick up where we left off": do not rely on
-conversational memory. Read `CLAUDE.md` and `.claude/rules/*.md`; inspect
+On "resume" / "continue" / "pick up where we left off": read
+`docs/next-action.md` first and do exactly what it says - it names the single
+next action and is printed in every session banner by `orient.sh`. It is the
+answer to "continue"; everything below is for reconstructing context around it,
+not for choosing different work. Do not rely on conversational memory. Read `CLAUDE.md` and `.claude/rules/*.md`; inspect
 `git status --short`, `git branch --show-current`, `git log --oneline -20`,
 `git log origin/main..HEAD --oneline`, `ROADMAP.md`, the relevant module
 `README.md` (`CHEATSHEET.md` for the Kalshi-boundary packages), and the active

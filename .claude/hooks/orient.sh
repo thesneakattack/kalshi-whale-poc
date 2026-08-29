@@ -15,6 +15,14 @@ echo "=== autotrade orientation ==="
 branch=$(git branch --show-current 2>/dev/null)
 dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 echo "git: branch '$branch', $dirty uncommitted change(s)$( [ "$root" != "$primary" ] && echo " (linked worktree; primary: $primary)" )"
+
+# The single next action. Printed first and unconditionally: `continue` in a
+# fresh session must not depend on the user remembering anything, and the
+# banner is the only text guaranteed to be read (2026-08-29).
+if [ -f docs/next-action.md ]; then
+  echo "NEXT (docs/next-action.md - this is what 'continue' means; do this one thing, nothing else):"
+  grep -v '^#' docs/next-action.md | grep -v '^[[:space:]]*$' | sed 's/^/  /'
+fi
 if [ "$branch" = "main" ]; then
   echo "branch policy: on main - create feat/|fix/|refactor/|chore/|docs/<name> before implementing (.claude/rules/branching-and-ci.md)"
 fi
