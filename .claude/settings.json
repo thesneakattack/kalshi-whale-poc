@@ -77,8 +77,6 @@
   "enabledPlugins": {
     "context7@claude-plugins-official": true,
     "dimensional-analysis@trailofbits": true,
-    "second-opinion@trailofbits": true,
-    "42crunch-api-security-testing@42crunch-marketplace": true,
     "chrome-devtools-mcp@chrome-devtools-plugins": true
   },
   "extraKnownMarketplaces": {
@@ -86,12 +84,6 @@
       "source": {
         "source": "github",
         "repo": "trailofbits/skills"
-      }
-    },
-    "42crunch-marketplace": {
-      "source": {
-        "source": "github",
-        "repo": "42Crunch-AI/claude-plugins"
       }
     },
     "chrome-devtools-plugins": {
