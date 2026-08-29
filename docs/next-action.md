@@ -1,18 +1,18 @@
 # Next action
 
-Correlate the drop episode against read-limiter saturation in `data/observability.db`:
-find when `trade_stream.dropped_messages` jumped, then check whether read-limiter
-waiters and `background_live_status` errors spiked in that same window. ~20 min.
+Verify the settlement-cascade fix live across an hourly boundary (~15 min at
+:55->:10): after the settlement-resolver branch merges and the app reloads,
+watch `GET /api/health/pipeline` through the :00-:09 window that used to
+produce the drops (71 of 81 episodes started there - root cause and evidence
+in docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md,
+2026-08-29 entry).
 
-Confirmed already, in source - do not re-derive: one serial consumer drains the ingest
-queue (`services/kalshi/websocket.py:547`) and the trade path awaits rate-limited REST
-inside it (`services/http_client.py:37`), so a REST stall fills the 20,000 queue and
-`put_nowait` sheds (`websocket.py:848`). That is the drop mechanism.
+Confirm: `schedulers.settlement_resolver` shows recent `last_started_sec_ago`
+after settlements occur; `ingest.queue_health.dropped_window` stays 0 through
+the boundary; `oldest_message_age_sec` stays near 0. If drops recur at a
+boundary anyway, the residual is the queue-split soak question - do NOT raise
+queue capacity (CLAUDE.md names that exact anti-move).
 
-If they coincide: root cause confirmed - design the fix as decoupling REST from the
-serial consumer, NOT raising queue capacity (CLAUDE.md's hard rule names that exact
-anti-move). If they do not: next hypothesis is that the stall sits inside
-`_handle_message` outside the instrumented stages - `handler_total` max 56,382 ms vs
-largest stage 5,411 ms leaves ~51 s unaccounted; add stage timing before guessing.
-
-Do not open a branch, write a plan, or implement until this correlation is answered.
+Then decide (user call, config change - surface, don't auto-apply): flip
+`realtime_data_plane.two_consumer_mode` to true for the paper-mode soak the
+P4 gate requires. The flag defaults false; Tasks 18+19a shipped dark.

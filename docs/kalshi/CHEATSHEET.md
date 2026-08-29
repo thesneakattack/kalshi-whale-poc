@@ -541,7 +541,7 @@ handler re-reads the market immediately and drops the ticker if it isn't
 resurfaces on the watchlist") — that immediate read was 23% of all REST
 demand in I8, and the settlement-processing race means part of it is wasted.
 The remediation design (I13) batches and defers it (`GET /markets?tickers=…`
-for N settlements after a delay, with retry) rather than removing it: the app
+for N settlements after a delay, with retry) rather than removing it: **shipped 2026-08-29** (`services/settlement_resolver.py`; the settled handler only enqueues now) — the app
 deliberately grades on `finalized`, not `determined` (2026-08-23 correction,
 "disputed-and-reversed-result gap"), so some REST read stays necessary.
 **Source:** `market-and-event-lifecycle.md` (message field tables),

@@ -927,6 +927,49 @@ capacity` and `oldest_message_age_sec` exceeds a threshold for N consecutive sam
 real design/implementation work of its own, out of scope for this incident response.
 Recorded as a ROADMAP item rather than attempted here.
 
+## Root cause confirmed (2026-08-29): settlement cascades + inline REST on the lifecycle path
+
+Population-scale correlation over `data/observability.db` (5,977 samples,
+08-24 -> 08-29; 81 drop episodes totaling 2.4M shed messages), then source
+confirmation. The mechanism: `_process_stream_lifecycle`'s `settled` branch ran
+`await client.get_market(ticker)` plus five SQLite resolvers inline on the
+serial consumer, per settlement. Settlements cascade at boundary times, so the
+consumer stopped draining and the 20,000 queue filled and shed.
+
+Discriminating evidence (each independently):
+- **71 of 81 episodes started in minutes :00-:09** of the hour (uniform ~13.5);
+  zero started :10-:19.
+- lifecycle messages/window 331 vs 22 median during drop windows (15x);
+  lifecycle handler window-max 1,497ms vs 79ms (19x).
+- `background_resolution` limiter wait 0 -> 1,045ms median in drop windows.
+- Live at the time of the check: 15,136 of 50,754 drops were lifecycle-class.
+
+Falsified along the way, each by the instrument built for it:
+- Thread-pool leak (issue #150): `thread_wait` 4.8ms during drops vs 5.3ms
+  quiet; `handler_timeouts_total` 0 - fails #150's own evidence gate.
+- Limiter starvation of the whale path: `critical_whale` limiter wait ~0
+  during drops.
+- `check_exits` direct cost: `tick.phase.exit_management_sec` ~0.0 (Task 20's
+  memoization is working). **This narrows, not contradicts, the 2026-08-27
+  incident note above that "ruled out" check_exits from n=8 positions at one
+  instant: the exit path is innocent of THESE 81 episodes; its REST volume
+  (`critical_position` calls p90 231 vs 28) still spikes in the same windows
+  as a co-symptom of the boundary cascade, not the driver.**
+- The old "~51s unaccounted inside `_handle_message`" hypothesis: stage
+  accounting now closes - `provider` tracks `handler_total` at every
+  percentile; the unaccounted share inside `provider` was event-loop
+  scheduling (loop_watchdog stall_count 47 vs 5 in drop windows).
+
+Fix shipped 2026-08-29 (this branch): P4 Tasks 19+24 (settled handler
+enqueues; `services/settlement_resolver.py` drains in one batched, deferred,
+finalized-gated `GET /markets?tickers=` per run, all five stores, supervised
+loop in main.py), Task 18 (critical/market queue split behind
+`realtime_data_plane.two_consumer_mode`, default false), Task 19a (per-market
+ticker coalescing, apply-if-newer, in two-consumer mode). Recurrence
+detection: `settlement_resolver` scheduler in `/api/health/pipeline`,
+`queue.coalesced_tickers`/`pending_tickers` in ingest metrics, and the
+existing ws-dropped-messages quality signal.
+
 ## What the investigation must not assume
 
 Do not assume any of the following is automatically correct:
