@@ -140,6 +140,7 @@ def test_queue_high_water_tracks_peak_depth_across_the_connection():
         gw._ingest_raw(_trade(str(i)), now=1.0)
     assert gw.ingest_metrics(now=1.0)["queue"] == {
         "depth": 3, "capacity": 20000, "high_water": 3, "oldest_message_age_sec": 0.0,
+        "coalesced_tickers": 0, "pending_tickers": 0,
     }
     asyncio.run(_drain(gw, now=1.0))
     gw._ingest_raw(_trade("x"), now=1.0)
@@ -406,7 +407,10 @@ def test_handle_message_still_accepts_a_raw_json_string():
 def test_ingest_metrics_before_any_connection_reports_an_empty_queue_rather_than_failing():
     gw = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2")
     m = gw.ingest_metrics(now=0.0)
-    assert m["queue"] == {"depth": 0, "capacity": 20000, "high_water": 0, "oldest_message_age_sec": 0.0}
+    assert m["queue"] == {
+        "depth": 0, "capacity": 20000, "high_water": 0, "oldest_message_age_sec": 0.0,
+        "coalesced_tickers": 0, "pending_tickers": 0,
+    }
     assert m["connection"]["connects"] == 0
 
 

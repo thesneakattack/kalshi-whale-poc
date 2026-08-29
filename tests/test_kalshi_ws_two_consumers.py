@@ -69,7 +69,10 @@ def test_critical_classes_route_critical_and_market_classes_route_market(monkeyp
     gw._ingest_raw(_trade())
     gw._ingest_raw(_ticker())
     assert gw._critical_queue.qsize() == 3  # fill + lifecycle + control
-    assert gw._market_queue.qsize() == 2   # trade + ticker
+    # trade + the ticker's wake sentinel: the ticker itself coalesces into
+    # the pending map (Task 19a), it does not ride the queue.
+    assert gw._market_queue.qsize() == 2
+    assert set(gw._pending_ticker_by_market()) == {"K1"}
 
 
 def test_single_queue_mode_is_unchanged_when_disabled(monkeypatch):
@@ -133,3 +136,97 @@ def test_liveness_backstop_sees_backlog_on_a_split_queue(monkeypatch):
     gw._ingest_raw(_trade())
     assert gw._queue.qsize() == 0
     assert gw._total_queue_depth() == 1
+
+
+# --- Task 19a: ticker coalescing with apply-if-newer ------------------------
+# Only in two-consumer mode. A burst of ticker updates for one market is
+# price state, not history: only the newest matters to any consumer
+# (state["latest_prices"] overwrite semantics), so consecutive updates for
+# the same market collapse to one pending entry, newest exchange `ts` wins
+# (docs/kalshi/market-ticker.md documents ts on every ticker message).
+
+
+def _ticker_ts(ticker: str, ts: int, bid: int) -> str:
+    return json.dumps({"type": "ticker", "msg": {"market_ticker": ticker, "ts": ts, "yes_bid": bid}})
+
+
+def test_ticker_coalescing_keeps_only_the_newest_ts_per_market(monkeypatch):
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))
+    gw._ingest_raw(_ticker_ts("K1", 150, 52))  # arrives after but is OLDER - discarded
+
+    pending = gw._pending_ticker_by_market()
+    assert pending["K1"]["msg"]["ts"] == 200
+    assert pending["K1"]["msg"]["yes_bid"] == 55
+    assert gw._coalesced == 2  # one superseded (100), one stale discard (150)
+    # No per-update backlog: the market queue holds at most the wake sentinel.
+    assert gw._market_queue.qsize() <= 1
+
+
+def test_tickers_for_different_markets_coalesce_independently(monkeypatch):
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    gw._ingest_raw(_ticker_ts("K2", 100, 60))
+    pending = gw._pending_ticker_by_market()
+    assert set(pending) == {"K1", "K2"}
+    assert gw._coalesced == 0
+
+
+def test_consume_market_processes_trades_before_pending_tickers(monkeypatch):
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    handled = []
+
+    async def fake_handle(data, *cbs) -> None:
+        handled.append((data.get("type"), (data.get("msg") or {}).get("ts")))
+
+    gw._handle_message = fake_handle
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    gw._ingest_raw(_trade())
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))
+
+    async def _drive():
+        task = asyncio.create_task(gw._consume_market_from(gw._market_queue))
+        for _ in range(200):
+            if len([h for h in handled if h[0] == "ticker"]) and len([h for h in handled if h[0] == "trade"]):
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+
+    asyncio.run(_drive())
+    types = [h[0] for h in handled]
+    assert types.count("trade") == 1
+    assert types.count("ticker") == 1  # coalesced: two updates, one processed
+    assert types.index("trade") < types.index("ticker")  # queue drains before pending tickers
+    assert [h[1] for h in handled if h[0] == "ticker"] == [200]
+
+
+def test_a_ticker_arriving_while_the_market_consumer_is_parked_wakes_it(monkeypatch):
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    handled = []
+
+    async def fake_handle(data, *cbs) -> None:
+        handled.append(data.get("type"))
+
+    gw._handle_message = fake_handle
+
+    async def _drive():
+        task = asyncio.create_task(gw._consume_market_from(gw._market_queue))
+        await asyncio.sleep(0.01)  # consumer is parked on an empty queue
+        gw._ingest_raw(_ticker_ts("K1", 100, 50))
+        for _ in range(200):
+            if handled:
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+
+    asyncio.run(_drive())
+    assert handled == ["ticker"]
+
+
+def test_single_queue_mode_does_not_coalesce(monkeypatch):
+    gw = _gateway(two_consumer=False, monkeypatch=monkeypatch)
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))
+    assert gw._queue.qsize() == 2  # every update kept, exactly today's behavior
+    assert gw._pending_ticker_by_market() == {}
