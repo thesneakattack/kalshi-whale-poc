@@ -67,8 +67,21 @@ tags and against the source itself.
   in source by their plan-named interfaces `candidate_ledger`, `whale_gate`,
   `tick_executor`, `capture_writer`, `loop_watchdog`, `candidate_retry`), 14–17
   (P3), 17a/17b/17c (P3.5), 29, 30, 33 (P7), 34–39 (P8).
-- **Never implemented:** Tasks **18–28** — all of Phases P4, P5 and P6 — plus
-  **31**, **32**, **40**.
+- **Task 20** (`check_exits` per-tick memoization) also shipped, out of phase and
+  with no phase tag on its commit — `check_exits` takes `tick_cache` at
+  `services/exits/exit_engine.py:111`. The plan had deliberately relocated it ahead
+  of Tasks 18/19 after a live crash report.
+- **Never implemented:** Tasks **18, 19, 21–28** — the rest of Phases P4, P5 and P6 —
+  plus **31**, **32**, **40**.
+
+Checked individually, by each task's own named deliverable, not by assuming a range:
+`_critical_queue`/`_consume_market` (18), `services/settlement_resolver.py` (19, 24),
+`_connection_generation` (21), limiter priority queues (22), `trip_brake` (23),
+`services/milestone_cache.py` (25), the `trade_tape_poll` caller class (26),
+`on_loss_event` (27), `services/position/ws_state_verify.py` (28) — all absent from
+`services/` and `main.py`. A first pass here generalized ‘18–28 unshipped’ from three
+spot checks and got Task 20 wrong; the phase-tag sweep alone is not sufficient,
+because tags were applied inconsistently.
 
 Each of these is independently decisive:
 
