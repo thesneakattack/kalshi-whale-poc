@@ -21,6 +21,18 @@ End to end, every piece of this app depends on optimal data completeness, accura
 - "Optimal" is measured against what `docs/kalshi/` says the exchange permits, not against today's behavior.
 - This rule never justifies shortcutting a safety gate, weakening a kill switch, enabling real trading, or discarding accumulated history.
 
+## HARD RULE — never guess; verify or falsify (permanent, 2026-08-29)
+
+Not knowing is a research task, not a probability estimate. Permanent: applies equally to app code, tooling, MCP/plugin calls, shell flags, and any claim made to the user.
+
+- A field, parameter, signature, endpoint, flag, config key, or schema comes from reading the authoritative source — `docs/kalshi/` for Kalshi, the tool's own loaded schema for a tool, the module for a symbol, the DB for a value — never from recall or plausibility.
+- Read before writing, every time: the call site, the function, the doc page, the tool definition. "It is probably called X" is the failure mode, and one wrong guess at a parameter name is indistinguishable from broken wiring.
+- When a check is cheap, run it instead of reasoning about it; one probe beats a paragraph of inference.
+- A claim ships with its evidence and with what would falsify it. Anything unverified is labeled an assumption, in the same sentence.
+- A retry that succeeds is not verification: establish why the first attempt failed before changing the input, or the next failure is unexplained too.
+- Correlation is not a mechanism, and one passing observation is not a property (see the data-plane rule).
+- If the authoritative source cannot answer, say so and stop; a gap filled with a guess is read as fact by the next session.
+
 ## Standing goal (2026-08-26) and current objective (2026-08-23)
 
 - Destination: a personal-use, real-money trading system — reached only through ROADMAP.md "Path to production"; several items there are human decisions (position sizes, kill-switch numbers, sports-category legal exposure, auth model, deployment target), not commits.
