@@ -578,6 +578,11 @@ class KalshiStreamGateway:
                     # self.dropped_messages / ingest_metrics()), not disguised
                     # as a quiet market.
                     queue = self._begin_connection()
+                    # _begin_connection just created all three; local,
+                    # non-Optional handles for the consumer tasks below.
+                    market_queue = self._ensure_split_queues()
+                    critical_queue = self._critical_queue
+                    assert critical_queue is not None
 
                     def _spawn(q):
                         return asyncio.create_task(self._consume_from(
@@ -598,9 +603,9 @@ class KalshiStreamGateway:
                     # connection, so restarting the coroutine alone would
                     # resurrect it on a dead queue.
                     consumers = [
-                        _spawn(queue), _spawn(self._critical_queue),
+                        _spawn(queue), _spawn(critical_queue),
                         asyncio.create_task(self._consume_market_from(
-                            self._market_queue, on_trade, on_ticker, on_status, on_fill,
+                            market_queue, on_trade, on_ticker, on_status, on_fill,
                             on_position, on_index, on_lifecycle,
                         )),
                     ]
@@ -907,18 +912,15 @@ class KalshiStreamGateway:
         if self._two_consumer_mode():
             if cls == "ticker":
                 return self._coalesce_ticker(data, now)
-            queue = self._critical_queue if cls in _CRITICAL_CLASSES else self._market_queue
-            if queue is None:
-                # Same lazy-creation fallback pattern as self._queue below -
-                # direct-ingest callers (tests, replay) may not have run
-                # _begin_connection.
-                self._critical_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
-                self._market_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
-                queue = self._critical_queue if cls in _CRITICAL_CLASSES else self._market_queue
+            market_queue = self._ensure_split_queues()
+            critical_queue = self._critical_queue
+            assert critical_queue is not None  # _ensure_split_queues just set it
+            queue = critical_queue if cls in _CRITICAL_CLASSES else market_queue
         else:
-            queue = self._queue
-            if queue is None:
-                queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+            single_queue = self._queue
+            if single_queue is None:
+                single_queue = self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+            queue = single_queue
         if now is None:
             now = time.monotonic()
         try:
@@ -933,6 +935,16 @@ class KalshiStreamGateway:
             self._queue_high_water = depth
         return True
 
+    def _ensure_split_queues(self) -> asyncio.Queue:
+        """Lazy-create the split queues, same fallback pattern as
+        self._queue in _ingest_raw - direct-ingest callers (tests, replay)
+        may not have run _begin_connection. Returns the market queue (the
+        one every caller of this helper needs a non-None handle to)."""
+        if self._market_queue is None or self._critical_queue is None:
+            self._critical_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+            self._market_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
+        return self._market_queue
+
     def _coalesce_ticker(self, data: dict, now: float | None) -> bool:
         """P4 Task 19a (two-consumer mode only): fold this ticker update into
         the per-market pending map, newest exchange `ts` winning. Returns
@@ -942,11 +954,12 @@ class KalshiStreamGateway:
         ticker = msg.get("market_ticker") or msg.get("ticker")
         if now is None:
             now = time.monotonic()
+        market_queue = self._ensure_split_queues()
         if not ticker:
             # Unroutable without a market key - hand it to the market queue
             # unchanged rather than inventing a coalescing identity for it.
             try:
-                self._market_queue.put_nowait((now, "ticker", data))
+                market_queue.put_nowait((now, "ticker", data))
             except asyncio.QueueFull:
                 self.dropped_messages += 1
                 self._dropped_window += 1
@@ -971,7 +984,7 @@ class KalshiStreamGateway:
             # empty queue); with a busy queue the drain loop reaches the
             # map on its own, so a Full here is safely ignored.
             try:
-                self._market_queue.put_nowait((now, _TICKER_WAKE, None))
+                market_queue.put_nowait((now, _TICKER_WAKE, None))
             except asyncio.QueueFull:
                 pass
         return True
