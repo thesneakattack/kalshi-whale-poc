@@ -1172,6 +1172,45 @@ def test_advisory_status_reports_disabled_by_default():
     assert "current_fingerprint" in body
 
 
+def test_advisory_status_includes_evidence_provenance_block(monkeypatch):
+    _reset_advisory_state()
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
+
+    resp = client.get("/api/advisory/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["evidence_provenance"] == {"degraded": False, "defects": [], "checked_at": 0.0}
+
+
+def test_advisory_recommendations_includes_evidence_provenance_when_disabled(monkeypatch):
+    _reset_advisory_state()
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": True, "defects": [{"component": "index_feed"}], "checked_at": 1.0},
+    )
+
+    resp = client.get("/api/advisory/recommendations")
+
+    assert resp.json()["evidence_provenance"]["degraded"] is True
+
+
+def test_advisory_recommendations_includes_evidence_provenance_when_enabled(monkeypatch):
+    _reset_advisory_state()
+    main.config_store.update({"advisory": {"enabled": True}})
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": True, "defects": [], "checked_at": 2.0},
+    )
+
+    resp = client.get("/api/advisory/recommendations")
+
+    assert resp.status_code == 200
+    assert resp.json()["evidence_provenance"]["checked_at"] == 2.0
+
+
 def test_advisory_recommendations_empty_and_gated_when_disabled():
     _reset_advisory_state()
     resp = client.get("/api/advisory/recommendations")
