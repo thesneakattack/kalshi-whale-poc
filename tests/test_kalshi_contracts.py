@@ -176,6 +176,10 @@ def test_process_stream_fill_records_a_real_ws_fill_by_trade_id():
     assert len(fills) == 1
     assert fills[0]["trade_id"] == "d91bc706-ee49-470d-82d8-11418bda6fed"
     assert fills[0]["market_ticker"] == "HIGHNY-22DEC23-B53.5"
+    # exchange_index (2026-08-30, issue #251, Trade API 3.29.0): required on
+    # the WS fill message (user-fills.md:207) - identifies which exchange
+    # shard the fill occurred on. _FILL_FIELDS used to drop it silently.
+    assert fills[0]["exchange_index"] == 2
 
 
 def test_process_stream_fill_dedupes_a_repeated_message_by_trade_id():
@@ -685,6 +689,11 @@ def test_rest_position_slims_to_the_documented_presentation_fields():
     assert slimmed["position_fp"] == "-40.00"
     assert slimmed["realized_pnl_dollars"] == "1.2500"
     assert slimmed["fees_paid_dollars"] == "0.3400"
+    # exchange_index (2026-08-30, issue #251, Trade API 3.29.0): required on
+    # the REST MarketPosition schema (get-positions.md:189) - identifies
+    # which exchange shard the position lives on. _POSITION_FIELDS used to
+    # drop it silently.
+    assert slimmed["exchange_index"] == 0
 
 
 def test_flatten_closes_a_doc_sourced_rest_no_position_by_buying_yes():
@@ -728,6 +737,10 @@ def test_rest_fill_slims_with_both_documented_identity_spellings():
     assert slimmed["ticker"] == slimmed["market_ticker"] == "HIGHNY-22DEC23-B53.5"
     assert slimmed["count_fp"] == "10.00"
     assert slimmed["created_time"] == "2022-12-23T18:30:00Z"
+    # exchange_index (2026-08-30, issue #251, Trade API 3.29.0): required on
+    # the REST Fill schema (get-fills.md:194) - identifies which exchange
+    # shard the fill occurred on. _FILL_FIELDS used to drop it silently.
+    assert slimmed["exchange_index"] == 0
 
 
 def test_cfbenchmarks_value_records_settlement_average_and_spot():

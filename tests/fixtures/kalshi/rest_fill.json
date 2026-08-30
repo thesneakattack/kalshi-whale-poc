@@ -1,11 +1,12 @@
 {
   "_meta": {
     "source_doc": "docs/kalshi/get-fills.md",
-    "note": "REST GetFills Fill schema. Carries BOTH identity spellings (trade_id documented as 'legacy field name, same as fill_id') and BOTH ticker spellings (market_ticker documented as 'legacy field name, same as ticker') - the exact inverse of the WS user-fills message (fill.json), which has neither fill_id nor ticker. side is the deprecated legacy direction vocabulary; outcome_side/book_side are canonical."
+    "note": "REST GetFills Fill schema. Carries BOTH identity spellings (trade_id documented as 'legacy field name, same as fill_id') and BOTH ticker spellings (market_ticker documented as 'legacy field name, same as ticker') - the exact inverse of the WS user-fills message (fill.json), which has neither fill_id nor ticker. side is the deprecated legacy direction vocabulary; outcome_side/book_side are canonical. exchange_index (2026-08-30, issue #251, Trade API 3.29.0) is now a required field of this schema (get-fills.md:194) - value is the ExchangeIndex schema's own generic example (get-fills.md:316: example: 0)."
   },
   "payload": {
     "fill_id": "aa1e3f60-8ec6-4441-9d67-c2cf6a2c9d1e",
     "trade_id": "aa1e3f60-8ec6-4441-9d67-c2cf6a2c9d1e",
+    "exchange_index": 0,
     "order_id": "e2565a48-70b7-4d31-8cbf-207b1d61b5c9",
     "ticker": "HIGHNY-22DEC23-B53.5",
     "market_ticker": "HIGHNY-22DEC23-B53.5",
