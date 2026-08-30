@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-multivariate-events.md",
+    "note": "GET /events/multivariate EventData (with_nested_markets=true), field names per that page's own OpenAPI schema. sub_title is literally the string 'MVE' and collateral_return_type is an empty string on every real multivariate event sampled (not a fixture omission) - confirmed live 2026-08-30 against production KXMVECROSSCATEGORY-SHARD1 data, see docs/kalshi/CHEATSHEET.md. occurrence_datetime is null on the nested market - also confirmed live, never populated for a combo market by construction (no single occurrence moment when legs can span unrelated events)."
+  },
+  "payload": {
+    "event_ticker": "KXMVECROSSCATEGORY-SHARD1-S2026FF7C4259D33",
+    "series_ticker": "KXMVECROSSCATEGORY-SHARD1",
+    "sub_title": "MVE",
+    "title": "Seattle vs Houston",
+    "collateral_return_type": "",
+    "mutually_exclusive": false,
+    "category": "Exotics",
+    "strike_date": null,
+    "strike_period": "",
+    "available_on_brokers": false,
+    "product_metadata": null,
+    "settlement_sources": [{"name": "the league governing the game", "url": "https://www.nfl.com/"}],
+    "last_updated_ts": "0001-01-01T00:00:00Z",
+    "fee_type_override": null,
+    "fee_multiplier_override": null,
+    "markets": [
+      {
+        "ticker": "KXMVECROSSCATEGORY-SHARD1-S2026FF7C4259D33-71884BBDB4F",
+        "event_ticker": "KXMVECROSSCATEGORY-SHARD1-S2026FF7C4259D33",
+        "status": "active",
+        "occurrence_datetime": null,
+        "close_time": "2026-09-02T01:30:00Z",
+        "title": "yes Randy Arozarena: 3+,yes Florida St.",
+        "yes_sub_title": "yes Randy Arozarena: 3+,yes Florida St.",
+        "no_sub_title": "yes Randy Arozarena: 3+,yes Florida St.",
+        "volume_24h_fp": "0.00",
+        "mve_collection_ticker": "KXMVECROSSCATEGORY-R",
+        "mve_selected_legs": [
+          {"event_ticker": "KXMLBTB-26AUG161920SEAHOU", "market_ticker": "KXMLBTB-26AUG161920SEAHOU-SEARAROZARENA56-3", "side": "yes", "yes_settlement_value_dollars": null},
+          {"event_ticker": "KXNCAAFGAME-26AUG29NMSUFSU", "market_ticker": "KXNCAAFGAME-26AUG29NMSUFSU-FSU", "side": "yes", "yes_settlement_value_dollars": null}
+        ]
+      }
+    ]
+  }
+}

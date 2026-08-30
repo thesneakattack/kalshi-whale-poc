@@ -774,6 +774,91 @@ on now.
 `get-order.md:10`, `exchange_sharding.md:60-62,88,91`.
 **Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
 
+## How do you actually discover multivariate (combo) markets, and why did the categories widening not fix KXMVECROSSCATEGORY?
+**Answer:** Two distinct endpoints, neither reachable through the regular
+series/market browsing this app already uses. `GET
+/multivariate_event_collections` (`get-multivariate-event-collections.md`)
+returns the static *template* a combo is generated from
+(`collection_ticker`, `series_ticker`, `associated_events`, `is_ordered`,
+`size_min`/`size_max`) — filterable by `status`/`series_ticker`/
+`associated_event_ticker`, paginated. `GET /events/multivariate`
+(`get-multivariate-events.md`) returns the dynamically-created *instances*
+that actually trade — filterable by `series_ticker` XOR
+`collection_ticker` (mutually exclusive per the doc), with
+`with_nested_markets=true` embedding each event's own `Market` objects in
+one call. `GET /markets` also has an `mve_filter` param (`only`/`exclude`)
+that includes/excludes combos, but plain `GET /events` explicitly
+"excludes multivariate events" — a combo's own `title`/`sub_title`/
+`mutually_exclusive` is ONLY ever available from `/events/multivariate`.
+**Root cause (live-verified 2026-08-30, not assumed):** every
+multivariate-producing series reports `volume_fp: "0.00"` on its own
+`/series` (`get-series-list.md`) entry — confirmed on all 16 real series
+sampled, `KXMVECROSSCATEGORY`/`KXMVECROSSCATEGORY-SHARD1` included — even
+while its dynamically-created markets carry real trading activity. This
+app's `_get_series_cache` (`services/market_watch/catalog_scan.py`)
+filters `get_series_list()` down to `volume_fp > 0` before any category
+logic ever runs, so an MVE series is silently excluded regardless of which
+categories are configured. The 2026-08-30 `kalshi.categories` widening
+(`docs/open-decisions.md`) could not have fixed this no matter which
+categories it added — the series never reaches the category bucket at
+all.
+**Gotcha 1 (occurrence_datetime):** a multivariate market's own
+`occurrence_datetime` is **always** null — 2,000+ real
+`KXMVECROSSCATEGORY-SHARD1` markets sampled via `with_nested_markets=true`,
+zero exceptions. A combo has no single "occurrence" moment by
+construction (its legs can span unrelated events/times). `close_time` is
+always populated and is the right near-term-horizon anchor instead (same
+"close_time is the one signal every market shape agrees means trading has
+stopped" reasoning already used for `KXBTC15M`'s own
+occurrence/close mismatch).
+**Gotcha 2 (no recency/status filter, and shards):** `/events/multivariate`
+has no timestamp or status query param at all (only
+`limit`/`cursor`/`series_ticker`/`collection_ticker`/
+`with_nested_markets`), and its pagination order is not simply
+chronological or status-correlated. The **base** (unsharded) series
+ticker `KXMVECROSSCATEGORY` was 100% `finalized` across 2,000 sampled
+events with zero `occurrence_ts`/active rows, while its sharded sibling
+`KXMVECROSSCATEGORY-SHARD1` (also a real, distinct `/series` entry) was
+1,818/2,000 `active` on page 1 of the identical query — Kalshi appears to
+retire a base series ticker once cardinality grows and route new combos to
+a `-SHARDn` sibling, with no documented signal saying which is "current."
+`get_markets(status="open", mve_filter="only", series_ticker=X)` looked
+promising (regular `get_markets` already supports real status filtering)
+but returned `status: "closed"` rows for the base ticker despite the
+explicit `status="open"` filter — the filter IS honored correctly for
+`-SHARD1` (`status: "active"` rows with real near-future `close_time`),
+so this is the base ticker's own history being mixed in, not a broken
+filter.
+**Gotcha 3 (series discovery heuristics don't work):** `get_series_list()`
+ticker-naming (`"MVE" in ticker`) or category (`category == "Exotics"`)
+heuristics silently **miss real cases** — `KXCITIESWEATHER` appeared as a
+real collection's `series_ticker` (confirmed live) with neither an
+"MVE"-shaped name nor category `"Exotics"`. `get_multivariate_event_collections`
+(no filter, ~1,389 rows / 7 pages at the documented 200-row max) is the
+only reliable discovery source for "which series currently produce MVE
+events."
+**Gotcha 4 (always-empty/placeholder fields):** on every real multivariate
+event sampled, `sub_title` is the literal string `"MVE"` (not a real
+subtitle), `collateral_return_type` is `""` (empty string, not the
+populated value a regular event carries), `product_metadata` is `null`,
+and `last_updated_ts` is `"0001-01-01T00:00:00Z"` (Go's zero-value
+timestamp, not a real update time). None of these are fixture/mirror
+gaps — confirmed directly against live production responses.
+**Fix:** `services/market_watch/mve_scan.py` (issue #268) — its own
+discovery path, independent of `kalshi.categories`, using
+`get_multivariate_event_collections` (TTL-cached) to find MVE series and
+`get_multivariate_events(series_ticker=X, with_nested_markets=True)` (one
+page per series per cycle) to populate both `market_catalog.db`
+(`market_catalog.upsert_mve_markets`, anchored on `close_ts`) and
+`title_cache`'s `market_titles`/`event_titles`.
+**Source:** `get-multivariate-events.md`, `get-multivariate-event-collections.md`,
+`get-markets.md` (`MveFilterQuery`), `get-events.md` ("excludes
+multivariate events"), `get-series-list.md`; live-verified 2026-08-30
+directly against `https://external-api.kalshi.com/trade-api/v2` (public,
+unauthenticated GET endpoints).
+**Found:** 2026-08-30, issue #268 (KXMVECROSSCATEGORY: 13,841 of 95,535
+logged signals, 14.5%, with zero rows in `market_catalog.db`).
+
 ## How does the CF Benchmarks REST passthrough's history endpoint actually work, and what does it cost?
 **Answer:** `GET /trade-api/v2/cfbenchmarks/history/values?id=<index>&
 timespan=<span>&timestamp=<ISO8601>` forwards verbatim (query string

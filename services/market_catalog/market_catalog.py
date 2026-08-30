@@ -179,6 +179,30 @@ def mark_scanned(series_tickers: list[str], scanned_at: float | None = None):
         )
 
 
+def _upsert_market_rows(rows: list[tuple]) -> None:
+    """Shared INSERT ... ON CONFLICT for the `markets` table - the one
+    write path both upsert_markets (regular per-series scan) and
+    upsert_mve_markets (issue #268's combo-market scan) funnel through, so
+    the row shape/conflict semantics can't drift between the two."""
+    if not rows:
+        return
+    with _connect(DB_PATH) as conn:
+        conn.executemany(
+            """
+            INSERT INTO markets
+                (ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status, updated_at,
+                 title, yes_sub_title, no_sub_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticker) DO UPDATE SET
+                event_ticker=excluded.event_ticker, category=excluded.category,
+                volume_24h_fp=excluded.volume_24h_fp, occurrence_ts=excluded.occurrence_ts,
+                close_ts=excluded.close_ts, status=excluded.status, updated_at=excluded.updated_at,
+                title=excluded.title, yes_sub_title=excluded.yes_sub_title, no_sub_title=excluded.no_sub_title
+            """,
+            rows,
+        )
+
+
 def upsert_markets(series_ticker: str, category: str | None, markets: list[dict], updated_at: float | None = None):
     """One series' worth of real get_markets(series_ticker=...) results,
     written into the catalog. Called once per series per scan batch - see
@@ -206,23 +230,62 @@ def upsert_markets(series_ticker: str, category: str | None, markets: list[dict]
             _parse_ts(m.get("close_time")), m.get("status"), updated_at,
             title_fields["title"], title_fields["yes_sub_title"], title_fields["no_sub_title"],
         ))
-    if not rows:
-        return
-    with _connect(DB_PATH) as conn:
-        conn.executemany(
-            """
-            INSERT INTO markets
-                (ticker, event_ticker, series_ticker, category, volume_24h_fp, occurrence_ts, close_ts, status, updated_at,
-                 title, yes_sub_title, no_sub_title)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(ticker) DO UPDATE SET
-                event_ticker=excluded.event_ticker, category=excluded.category,
-                volume_24h_fp=excluded.volume_24h_fp, occurrence_ts=excluded.occurrence_ts,
-                close_ts=excluded.close_ts, status=excluded.status, updated_at=excluded.updated_at,
-                title=excluded.title, yes_sub_title=excluded.yes_sub_title, no_sub_title=excluded.no_sub_title
-            """,
-            rows,
-        )
+    _upsert_market_rows(rows)
+
+
+def upsert_mve_markets(markets: list[dict], updated_at: float | None = None):
+    """Multivariate (combo) markets, from services/market_watch/
+    mve_scan.py's own get_multivariate_events(with_nested_markets=True)
+    scan (issue #268) - written into this SAME `markets` table upsert_
+    markets uses, so every existing catalog consumer (open_candidates,
+    series_with_expired_data, ...) sees them transparently.
+
+    Deliberately NOT upsert_markets with an optional flag: MVE markets are
+    a structurally different shape in two ways confirmed live 2026-08-30
+    (see services/market_watch/mve_scan.py's own docstring and docs/kalshi/
+    CHEATSHEET.md), not a guess -
+
+    1. occurrence_datetime is always null (2,000+ real KXMVECROSSCATEGORY-
+       SHARD1 markets sampled, zero exceptions) - a combo has no single
+       "occurrence" moment by construction, since it can combine legs from
+       unrelated events/times. upsert_markets' own occurrence_ts-required
+       skip would silently drop every MVE row, reproducing exactly the gap
+       this function exists to close. close_ts is used as the near-term-
+       horizon anchor instead (same "close_time is the one signal every
+       market shape agrees means trading has stopped" reasoning
+       candidates_in_window's own docstring already established for
+       KXBTC15M's occurrence/close mismatch) - occurrence_ts is stored as
+       NULL, which every existing read path already tolerates
+       (candidates_in_window explicitly requires it non-null and so
+       correctly never surfaces a combo there; open_candidates, the actual
+       default discovery path per its own docstring, has no such
+       requirement).
+    2. Market objects here carry no series_ticker/category of their own
+       (confirmed against the real Market schema in docs/kalshi/
+       get-multivariate-events.md and a live response) - each dict in
+       `markets` must carry its own 'series_ticker'/'category', tagged by
+       the caller from the market's PARENT multivariate EventData, unlike
+       upsert_markets' single series_ticker/category applying to a whole
+       per-series batch."""
+    updated_at = updated_at if updated_at is not None else time.time()
+    rows = []
+    for m in markets:
+        ticker = m.get("ticker")
+        if not ticker:
+            continue
+        close_ts = _parse_ts(m.get("close_time"))
+        if close_ts is None:
+            continue
+        if not (updated_at - _MAX_PAST_HORIZON_SEC <= close_ts <= updated_at + _MAX_FUTURE_HORIZON_SEC):
+            continue
+        title_fields = title_cache.market_title_fields(m)
+        rows.append((
+            ticker, m.get("event_ticker"), m.get("series_ticker"), m.get("category"),
+            float(m.get("volume_24h_fp") or 0), None,
+            close_ts, m.get("status"), updated_at,
+            title_fields["title"], title_fields["yes_sub_title"], title_fields["no_sub_title"],
+        ))
+    _upsert_market_rows(rows)
 
 
 def apply_lifecycle_update(ticker: str, *, close_ts: float | None = None, status: str | None = None,

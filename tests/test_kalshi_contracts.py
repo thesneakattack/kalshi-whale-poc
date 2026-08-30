@@ -50,6 +50,7 @@ from services.kalshi.account import (  # noqa: E402
 from services.kalshi.account_client import KalshiAccountClient  # noqa: E402
 from services.kalshi.websocket import KalshiStreamGateway  # noqa: E402
 from services.market_watch import _MARKET_FIELDS  # noqa: E402
+from services.market_watch import mve_scan  # noqa: E402
 from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side  # noqa: E402
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "kalshi"
@@ -320,6 +321,33 @@ def test_fetch_event_titles_reads_sub_title_not_subtitle():
 
     assert result[event["event_ticker"]]["sub_title"] == "SD vs AZ (Dec 23)"
     assert result[event["event_ticker"]]["mutually_exclusive"] is True
+
+
+# --- multivariate (combo) event REST object: services/market_watch/
+# mve_scan.py (issue #268) - the ONLY place a combo's own title/sub_title/
+# mutually_exclusive comes from, since plain get_events "excludes
+# multivariate events" per its own doc (docs/kalshi/get-events.md).
+
+def test_event_title_fields_reads_the_documented_multivariate_event_fields():
+    event = _payload("multivariate_event.json")
+    result = mve_scan._event_title_fields(event)
+    assert result["sub_title"] == "MVE"
+    assert result["mutually_exclusive"] is False
+    assert result["series_ticker"] == "KXMVECROSSCATEGORY-SHARD1"
+    assert result["category"] == "Exotics"
+
+
+def test_market_rows_from_event_tags_each_market_with_the_parent_events_series_and_category():
+    # The Market schema itself carries neither series_ticker nor category
+    # (confirmed against docs/kalshi/get-multivariate-events.md's own
+    # Market schema and a live response) - only the parent EventData does.
+    event = _payload("multivariate_event.json")
+    rows = mve_scan._market_rows_from_event(event)
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "KXMVECROSSCATEGORY-SHARD1-S2026FF7C4259D33-71884BBDB4F"
+    assert rows[0]["series_ticker"] == "KXMVECROSSCATEGORY-SHARD1"
+    assert rows[0]["category"] == "Exotics"
+    assert rows[0]["occurrence_datetime"] is None  # never populated for a combo market
 
 
 # --- create/cancel order: services/kalshi_account_client.py -----------------

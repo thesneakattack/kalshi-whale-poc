@@ -221,6 +221,119 @@ def test_get_markets_by_tickers_chunks_above_the_batch_size(monkeypatch):
     assert set(result.keys()) == {"A", "B", "C"}
 
 
+# ---- Multivariate (combo) event discovery (issue #268) ---------------------
+# docs/kalshi/get-multivariate-events.md ("GET /events/multivariate") and
+# docs/kalshi/get-multivariate-event-collections.md ("GET
+# /multivariate_event_collections") - live-verified 2026-08-30 against the
+# real production API (unauthenticated, GET-only, security: [] on both
+# OpenAPI paths) that both SDK methods exist on kalshi_python_async 3.27.0's
+# composed KalshiClient (get_multivariate_events lives on EventsApi despite
+# the "multivariate" name; get_multivariate_event_collections lives on
+# MultivariateApi) and both accept exactly the kwargs the two doc pages
+# document - confirmed by introspecting the installed SDK's method
+# signatures directly, not assumed from the doc's parameter table alone.
+
+def test_get_multivariate_events_returns_events_and_cursor(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_multivariate_events(**kwargs):
+        calls.append(kwargs)
+        return type("R", (), {
+            "events": [_FakeModel({"event_ticker": "EVT-A", "series_ticker": "KXMVECROSSCATEGORY-SHARD1"})],
+            "cursor": "next-page-token",
+        })()
+
+    monkeypatch.setattr(client._client, "get_multivariate_events", fake_get_multivariate_events)
+    result = asyncio.run(client.get_multivariate_events(series_ticker="KXMVECROSSCATEGORY-SHARD1", with_nested_markets=True))
+    assert result == {
+        "events": [{"event_ticker": "EVT-A", "series_ticker": "KXMVECROSSCATEGORY-SHARD1"}],
+        "cursor": "next-page-token",
+    }
+    # collection_ticker/cursor omitted when unset - same "don't pass explicit
+    # None" convention get_markets already established (explicit None
+    # differs from omitted at the SDK's wire level for at least one other
+    # operation, confirmed directly - see get_markets' own docstring).
+    assert calls == [{"limit": 200, "with_nested_markets": True, "series_ticker": "KXMVECROSSCATEGORY-SHARD1"}]
+
+
+def test_get_multivariate_events_passes_collection_ticker_and_cursor_when_set(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_multivariate_events(**kwargs):
+        calls.append(kwargs)
+        return type("R", (), {"events": [], "cursor": ""})()
+
+    monkeypatch.setattr(client._client, "get_multivariate_events", fake_get_multivariate_events)
+    asyncio.run(client.get_multivariate_events(collection_ticker="KXMVECROSSCATEGORY-R", cursor="resume-token", limit=50))
+    assert calls == [{"limit": 50, "with_nested_markets": False, "collection_ticker": "KXMVECROSSCATEGORY-R", "cursor": "resume-token"}]
+
+
+def test_get_multivariate_event_collections_paginates_to_completion(monkeypatch):
+    # Confirmed live 2026-08-30: this series' collections alone paginate
+    # across multiple 200-row pages (1,389 total collections system-wide
+    # across 7 pages at the documented max limit) - the gateway must follow
+    # `cursor` until it comes back empty, not just return page 1.
+    client = _client()
+    pages = [
+        type("R", (), {
+            "multivariate_contracts": [_FakeModel({"collection_ticker": "C1", "series_ticker": "KXMVECROSSCATEGORY"})],
+            "cursor": "page-2-token",
+        })(),
+        type("R", (), {
+            "multivariate_contracts": [_FakeModel({"collection_ticker": "C2", "series_ticker": "KXMVECROSSCATEGORY-SHARD1"})],
+            "cursor": "",
+        })(),
+    ]
+    calls = []
+
+    async def fake_get_multivariate_event_collections(**kwargs):
+        calls.append(kwargs)
+        return pages.pop(0)
+
+    monkeypatch.setattr(client._client, "get_multivariate_event_collections", fake_get_multivariate_event_collections)
+    result = asyncio.run(client.get_multivariate_event_collections())
+    assert [c["collection_ticker"] for c in result] == ["C1", "C2"]
+    assert calls[0].get("cursor") is None
+    assert calls[1]["cursor"] == "page-2-token"
+
+
+def test_get_multivariate_event_collections_passes_status_and_series_filters(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_multivariate_event_collections(**kwargs):
+        calls.append(kwargs)
+        return type("R", (), {"multivariate_contracts": [], "cursor": ""})()
+
+    monkeypatch.setattr(client._client, "get_multivariate_event_collections", fake_get_multivariate_event_collections)
+    asyncio.run(client.get_multivariate_event_collections(status="open", series_ticker="KXMVECROSSCATEGORY"))
+    assert calls == [{"limit": 200, "status": "open", "series_ticker": "KXMVECROSSCATEGORY"}]
+
+
+def test_get_multivariate_event_collections_stops_at_the_page_safety_cap(monkeypatch):
+    # Defensive bound (this module's own rate-discipline convention, e.g.
+    # catalog_scan._CATALOG_SCAN_BATCH_SIZE) - a cursor that never empties
+    # (a real Kalshi bug, or a test double misconfigured) must not spin the
+    # scheduler loop forever.
+    client = _client()
+    client._MVE_COLLECTIONS_MAX_PAGES = 3
+    calls = []
+
+    async def fake_get_multivariate_event_collections(**kwargs):
+        calls.append(kwargs)
+        return type("R", (), {
+            "multivariate_contracts": [_FakeModel({"collection_ticker": f"C{len(calls)}"})],
+            "cursor": "always-more",
+        })()
+
+    monkeypatch.setattr(client._client, "get_multivariate_event_collections", fake_get_multivariate_event_collections)
+    result = asyncio.run(client.get_multivariate_event_collections())
+    assert len(calls) == 3
+    assert len(result) == 3
+
+
 # ---- A5 transport delegation (Kalshi Integration Phase A) ------------------
 
 

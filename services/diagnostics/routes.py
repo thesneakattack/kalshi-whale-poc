@@ -260,6 +260,10 @@ def _scheduler_status(now: float) -> dict:
         "research": {"last_started_sec_ago": None, "busy": bool((state.get("research") or {}).get("running"))},
         "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
         "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
+        # Multivariate (combo) event discovery (issue #268) - independent
+        # scheduler from catalog_scan above, see services/market_watch/
+        # mve_scan.py's own docstring for why.
+        "mve_scan": _entry("mve_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         # The resolver's own counters ride along (pending backlog, lifetime
         # enqueued/resolved/dropped). `dropped_after_max_attempts` growth is

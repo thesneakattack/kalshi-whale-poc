@@ -250,6 +250,21 @@ state = {
     # Same background-task decoupling as discovery_cache above, for
     # market_catalog's incremental scan (see _maybe_scan_catalog_batch).
     "catalog_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # Multivariate (combo) event discovery (issue #268) - services/
+    # market_watch/mve_scan.py. Same background-task decoupling shape as
+    # catalog_scan above, but independent of it: MVE isn't a
+    # kalshi.categories-scoped "series," so it runs on its own interval
+    # regardless of which categories are configured.
+    "mve_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # Distinct series_tickers discovered from get_multivariate_event_
+    # collections (a small, stable universe - ~16 confirmed live
+    # 2026-08-30, versus get_series_list's ~9,400) - cached with a TTL the
+    # same way catalog_scan._get_series_cache caches the regular series
+    # list, since collections rarely change. Memory-only (not persisted
+    # like series_cache above): re-fetching ~7 pages once per TTL window
+    # after a restart is cheap, and this list is small enough that a cold
+    # start costs one extra scan cycle, not a real gap.
+    "mve_series_cache": {"fetched_at": 0.0, "series_tickers": []},
     # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
     # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
     "candidate_retry_loop": {"running": False, "last_started_at": 0.0},

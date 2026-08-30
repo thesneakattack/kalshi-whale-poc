@@ -431,3 +431,111 @@ def test_open_candidates_carries_real_display_titles_and_schedule(tmp_path, monk
     assert result[0]["event_ticker"] == "EVT-A"
     assert "occurrence_datetime" in result[0]
     assert "close_time" in result[0]
+
+
+# --- upsert_mve_markets (issue #268) -----------------------------------------
+# Multivariate (combo) markets never carry occurrence_datetime at all -
+# confirmed live 2026-08-30 against the real production API (2,000+ real
+# KXMVECROSSCATEGORY-SHARD1 markets sampled via GET /events/multivariate,
+# occurrence_datetime null on every single one - see
+# services/market_watch/mve_scan.py's own module docstring and docs/kalshi/
+# CHEATSHEET.md). upsert_markets' own occurrence_ts-required skip would
+# silently drop every MVE row, reproducing exactly the gap issue #268 exists
+# to close - this uses close_ts as the near-term-horizon anchor instead,
+# and each row carries its OWN series_ticker/category (tagged from its
+# parent multivariate EventData by services/market_watch/mve_scan.py),
+# unlike upsert_markets' one series_ticker/category per whole batch.
+
+def _mve_market(ticker, event_ticker, series_ticker, category, close_offset_sec, volume=0, status="active"):
+    now = time.time()
+    return {
+        "ticker": ticker, "event_ticker": event_ticker, "series_ticker": series_ticker,
+        "category": category, "volume_24h_fp": str(volume), "status": status,
+        "occurrence_datetime": None, "close_time": _iso(now + close_offset_sec),
+    }
+
+
+def test_upsert_mve_markets_stores_null_occurrence_ts(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _mve_market("MVE-A", "MVE-EVT-A", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600)
+    cat.upsert_mve_markets([m], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert len(result) == 1
+    assert result[0]["ticker"] == "MVE-A"
+    assert result[0]["series_ticker"] == "KXMVECROSSCATEGORY-SHARD1"
+    assert result[0]["category"] == "Exotics"
+    assert "occurrence_datetime" not in result[0]  # never set - upsert_markets' rows always carry it
+
+
+def test_upsert_mve_markets_never_surfaces_in_candidates_in_window(tmp_path, monkeypatch):
+    # candidates_in_window is the narrow "what's live right now" query
+    # (main.py's live-status polling) - it explicitly requires occurrence_ts
+    # IS NOT NULL. A combo has no single occurrence moment by construction
+    # (it can combine legs from unrelated events/times), so being absent
+    # from this query is correct, not a regression - open_candidates (the
+    # default discovery path, per its own docstring) is what's supposed to
+    # surface these instead, and does (see the test above).
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _mve_market("MVE-A", "MVE-EVT-A", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600)
+    cat.upsert_mve_markets([m], updated_at=now)
+    result = cat.candidates_in_window(now, lookahead_sec=3600 * 24, lookback_sec=3600 * 24)
+    assert result == []
+
+
+def test_upsert_mve_markets_respects_the_near_term_horizon_via_close_ts(tmp_path, monkeypatch):
+    # Same bounded-catalog-size intent as upsert_markets' own
+    # _MAX_PAST_HORIZON_SEC/_MAX_FUTURE_HORIZON_SEC check, just anchored on
+    # close_ts (the one schedule field MVE markets actually populate)
+    # instead of occurrence_ts (which they never do).
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    far_future = _mve_market("MVE-FAR", "MVE-EVT-FAR", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=90 * 24 * 3600)
+    long_closed = _mve_market("MVE-OLD", "MVE-EVT-OLD", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=-30 * 24 * 3600)
+    near_term = _mve_market("MVE-NEAR", "MVE-EVT-NEAR", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600)
+    cat.upsert_mve_markets([far_future, long_closed, near_term], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert [r["ticker"] for r in result] == ["MVE-NEAR"]
+
+
+def test_upsert_mve_markets_skips_a_row_with_no_close_time_at_all(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _mve_market("MVE-NOCLOSE", "MVE-EVT", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600)
+    del m["close_time"]
+    cat.upsert_mve_markets([m], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert result == []
+
+
+def test_upsert_mve_markets_carries_real_display_titles(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m = _mve_market("MVE-A", "MVE-EVT-A", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600)
+    m["title"] = "yes Randy Arozarena: 3+,yes Florida St."
+    m["yes_sub_title"] = "yes Randy Arozarena: 3+,yes Florida St."
+    m["no_sub_title"] = "yes Randy Arozarena: 3+,yes Florida St."
+    cat.upsert_mve_markets([m], updated_at=now)
+    result = cat.open_candidates(min_volume=0)
+    assert result[0]["title"] == "yes Randy Arozarena: 3+,yes Florida St."
+
+
+def test_upsert_mve_markets_overwrites_on_conflict(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    m1 = _mve_market("MVE-A", "MVE-EVT-A", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600, status="active")
+    cat.upsert_mve_markets([m1], updated_at=now)
+    m2 = _mve_market("MVE-A", "MVE-EVT-A", "KXMVECROSSCATEGORY-SHARD1", "Exotics", close_offset_sec=3600, status="finalized")
+    cat.upsert_mve_markets([m2], updated_at=now + 10)
+    # finalized is excluded from open_candidates' own status filter - the
+    # overwrite (not a duplicate row) is the thing under test here.
+    with cat._connect(cat.DB_PATH) as conn:
+        rows = conn.execute("SELECT status FROM markets WHERE ticker = ?", ("MVE-A",)).fetchall()
+    assert rows == [("finalized",)]
+
+
+def test_upsert_mve_markets_empty_list_is_a_noop(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    cat.upsert_mve_markets([], updated_at=time.time())
+    assert cat.scan_progress()["total_markets"] == 0
