@@ -22,6 +22,112 @@ names twice. Caught by verifying the field's definition in source before
 trusting a second pass's numbers, not by inspection. §2 below is the
 corrected version; the original 0.60–0.95-raw-price framing is retracted.
 
+## 0. CORRECTIONS (independent verification, 2026-08-30) — READ FIRST
+
+This document was verified claim-by-claim against the live data after it was
+written. **§1, §2, §3, §6's headline split, §10's raw correlations, and §11's
+dead-config pass all reproduce exactly and can be trusted.** The following
+claims were WRONG, and three of them were load-bearing for config changes
+that were already applied. Corrections here override the body text below.
+
+**C1 (HIGH, safety). `risk.max_daily_loss_pct` is 0.8, NOT 0.20.** §12/§13
+present 0.20 as applied and rank it the #1 watch item. The audit trail
+(`data/config_performance.db`): applied 0.85→0.2 at 02:25:52 with the rest of
+the change-set, then **0.2→0.8 at 02:32:21 by a separate manual change** (not
+part of this analysis). Live `config/settings.yaml` and `GET /api/config` both
+read 0.8. CLAUDE.md already calls 0.85 "not protective"; 0.8 is not materially
+different, so the kill switch remains effectively non-protective and the
+Tier-1 watch item as written watches a threshold that does not exist. The real
+allowance is ~$9,150/day, not ~$2,460. **The other 6 of 7 applied fields
+verified correct.**
+
+**C2 (HIGH). "All 34 netting closes were `locked_loss`" is FALSE: 24 are, 10
+are `variable`.** The 10 variable trims cleared EV bars of $28.70–$114.62 and
+were **net −$483.05**. This falsifies §12's stated justification for the
+applied `min_edge_improvement_usd` 50→10 ("a $50 floor plausibly never
+cleared" — it cleared 10 times), and inverts its direction: the variable-stage
+trims that did fire LOST money, so admitting more of them is not supported by
+this history. §13's "falsifiable prediction #5" was already falsified when
+written.
+
+**C3 (HIGH). The netting volatility clamp is NOT pinned at its 0.25 floor.**
+§13's "new finding" (and its `open-decisions.md` line) is false. The bar is
+printed in every variable `exit_reason`: $28.70, $46.60, $58.35, $59.49,
+$60.97, $63.99, $68.78, $100.03, $103.02, $114.62 — against `min_edge 50` that
+is `vol_ratio` 0.574–2.29, never at the floor, never at the ceiling. The
+evidence was in the same rows this document already used.
+
+**C4 (MED-HIGH). "Every other sports series nets positive (+$1,388.96
+combined)" is FALSE.** That figure is a residual (total minus the two named
+series), not a per-series fact. **Eleven** non-crypto series are negative,
+totaling −$4,260.36 (beyond ATP/UFC: KXEPLTOTAL −$420.66, KXEPLBTTS −$406.80,
+KXNCAAFTOTAL −$395.85, KXT20MATCH −$340.47, KXSERIEA1H −$326.27, KXEPLGAME
+−$301.41, KXNCAAFGAME −$242.85, KXFEDDECISION −$79.11, KXMLBGAME −$16.25).
+This framing supported the applied `excluded_series` decision.
+
+**C5 (HIGH). The "+$3,000–3,500 better on replay" figure exceeds its own
+arithmetic ceiling.** Its two components double-count: ATP's own netting
+closes (−$1,339.38, n=15) sit in BOTH "+$819 ATP exclusion" and "up to +$2,694
+netting mitigation"; the union of the two trade sets is −$2,173.60. Even
+assuming perfect mitigation the doc calls partial, the ceiling is **+$2,329**.
+Worse for the applied change: conditional on the caps fixing netting,
+excluding ATP removes ATP's **non-netting** trades, which are **+$520.39**
+(n=8) — so `excluded_series: [KXATPMATCH]` has NEGATIVE marginal value on this
+book once the caps are in place.
+
+**C6 (LOW, favors the change). The ceiling trim's direction is backwards in
+§12.** The slice `max_unit_cost: 0.85` removes (unit_cost > 0.85, n=25, 84.0%
+win) is −$155.85 — the trim would have ADDED ~$156, not forgone ~$200.
+
+**C7 (MED). §7's "exactly 11 fields, all under `strategy.*`" understates
+advisory's reach.** The 11 hand-written paths are right, but
+`advisory_engine.py:733/:841` also emit `strategy_overrides.by_category`/
+`by_series`, and `:496`'s variant-comparison branch can emit ANY of the 38
+fingerprinted `strategy.*` fields. The core finding survives —
+`whale_watcher_kalshi`, `risk`, `position_netting` are genuinely unreachable,
+and `whale_watcher.min_contracts` has **14,297,769** logged rejection events
+with no map entry — but "every other section is structurally invisible"
+overstates it for the other 27 strategy fields.
+
+**C8 (MED — and it is CLAUDE.md's own "value must match its label" class).**
+§10 says "high `depth_factor` printed correct less often (mean 0.21) than low
+(mean 0.41)." Those are `mean(depth_factor | correct)` and
+`mean(depth_factor | incorrect)` — group means OF THE FACTOR, not correctness
+rates. The actual correctness rates are 0.403 (depth ≥0.9) vs 0.691 (depth ≤0.1).
+
+**C9 (HIGH for framing). §10's depth_factor conclusion does not survive a
+series control.** `depth_factor ≈ 1.0` is 62% `KXMVECROSSCATEGORY` (n=12,631,
+33.3% correct) plus KXBTC15M — structurally low-volume series where
+`depth_ratio` saturates; low-depth rows are tennis/MLB (66–82% correct).
+Within-series r: depth **−0.092** (pooled −0.244), unusualness **−0.206**
+(pooled −0.172), context +0.068, cluster +0.067, agreement +0.056, trend
++0.169. **Within series, `unusualness_factor` is the strongest factor, not
+depth** — so §10's "strongest effect of any factor, never checked before"
+headline is confounded by series mix. No weight was changed, so no decision
+broke, but the `open-decisions.md` line overstated its evidence.
+
+**C10 (MED). `KXTRUMPMENTION` is not unreachable** (§11): it is in this very
+book (+$182.90, settled_win). The same reasoning was applied to KXTRUMPSAY /
+KXMAMDANIMENTION and is unverified for them.
+
+**C11 (LOW). §11's longshot scanner reasoning is wrong** (right conclusion):
+all three longshot fields ARE flagged unread by the scanner and sit in the
+accepted baseline — they are read off `strat_cfg`, an intermediate the v1
+scanner cannot follow. The dead-mechanism conclusion itself is confirmed
+(2,432 `min_unit_cost` rejections, zero longshot-gated entries).
+
+**C12 (LOW). Snapshot boundary.** This document pins no cutoff, so re-running
+its own queries today returns a larger book. Its numbers are the **oldest 257
+trades by exit timestamp** (last exit ts 1788058891). Also: 256 of 257 share
+one `config_fingerprint` — one row has null entry_price/cost_basis and is
+silently excluded from the $91,610.29 deployed total.
+
+**Consequence for the applied change-set:** `min_edge_improvement_usd` 50→10
+(C2, C3) and `excluded_series: [KXATPMATCH]` (C4, C5) both rest on
+contradicted premises and should be reconsidered; `max_daily_loss_pct` is not
+what this document says (C1). `max_unit_cost` 0.85, the two concentration caps
+and the KXBTC15M override are unaffected by these corrections.
+
 ## 1. Overall book (257 closed trades)
 
 | Metric | Value |
