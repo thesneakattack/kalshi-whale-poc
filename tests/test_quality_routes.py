@@ -118,3 +118,37 @@ def test_quality_summary_status_is_error_while_a_critical_alert_is_active():
     after = client.get("/api/quality/summary").json()
     assert not [f for f in after["findings"] if f["check"] == "active-alert"]
     assert after["counts"]["error"] == before["counts"]["error"]
+
+
+def test_quality_summary_surfaces_a_completeness_defect_as_a_warning_finding(monkeypatch):
+    monkeypatch.setattr(
+        main.quality_routes.evidence_provenance, "current_completeness_state",
+        lambda: {
+            "degraded": True,
+            "defects": [{
+                "component": "settlement_resolver", "field": "dropped_after_max_attempts",
+                "count": 3, "detail": "3 settlement(s) gave up after the retry budget",
+            }],
+            "checked_at": 0.0,
+        },
+    )
+
+    resp = client.get("/api/quality/summary")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = [f["finding_id"] for f in body["findings"]]
+    assert "evidence_provenance:settlement_resolver:dropped_after_max_attempts" in ids
+    assert body["status"] in ("warning", "error")
+
+
+def test_quality_summary_has_no_evidence_provenance_findings_when_clean(monkeypatch):
+    monkeypatch.setattr(
+        main.quality_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
+
+    resp = client.get("/api/quality/summary")
+
+    ids = [f["finding_id"] for f in resp.json()["findings"]]
+    assert not any(i.startswith("evidence_provenance:") for i in ids)

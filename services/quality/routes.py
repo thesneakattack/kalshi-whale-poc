@@ -26,6 +26,7 @@ from services.backup import backup
 from services.config.config_store import config_store
 from services.diagnostics import diagnostics
 from services.observability import observability
+from services.quality import evidence_provenance
 from services.quality.models import QualityReport
 from services.research import research
 from services.storage_health import storage_health
@@ -48,6 +49,7 @@ async def get_quality_summary():
     # alert-derived findings that let a critical alert drive `status` (#71).
     active_alerts = alerting.active_alerts()
     findings += alerting.alert_findings(active_alerts)
+    findings += evidence_provenance.findings()
     report = QualityReport(findings=findings)
     # Deliberately just the timestamp/running flag, never the full report
     # (services/research/research.py's own build_report composes seven other
