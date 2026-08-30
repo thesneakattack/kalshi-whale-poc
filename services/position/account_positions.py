@@ -189,6 +189,26 @@ async def _fetch_account_snapshot(cfg: dict) -> dict:
     try:
         # balance, positions, and fills are independent reads — fetch all three
         # at once instead of one after another.
+        #
+        # account.get_balance() (2026-08-30, issue #252): Trade API 3.29.0
+        # changed GET /portfolio/balance's default aggregation - "Both values
+        # include all exchange indexes unless exchange_index is provided"
+        # (docs/kalshi/get-balance.md), replacing the old shard-0-only
+        # default. get_balance() here passes no exchange_index, so this
+        # balance/portfolio_value is now a cross-shard aggregate, not
+        # shard-0-scoped as it was pre-3.29.0. Traced every consumer of this
+        # value (main.py's real_balance_history / real_portfolio_value
+        # session series, the header-strip and account-bar labels in
+        # frontend/src/js/screener-and-header.js): purely display, with zero
+        # connection to risk_manager.py, Kelly sizing, or the paper broker's
+        # own simulated bankroll. Decision: keep the aggregate - it's the
+        # more useful "how much do I have at Kalshi total" number for a
+        # whole-account display - and label it as such rather than force the
+        # old per-shard semantics back with exchange_index. If real
+        # position-sizing/risk logic is ever built to consume real balance
+        # for actual capital-availability decisions (Program 3+), THAT
+        # future feature needs a per-shard query (pass exchange_index here)
+        # at that point - this display line intentionally does not do that.
         balance, positions, fills = await asyncio.gather(
             account.get_balance(), account.get_positions(), account.get_fills(limit=50)
         )
