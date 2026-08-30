@@ -54,15 +54,14 @@ strategy:
   cooldown_sec: 60
   close_window_sec: 2764800
   special_market_min_seconds_to_close: 120
-  max_open_positions_per_series: 2
+  max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
   min_unit_cost: 0.5
-  max_unit_cost: 0.85
+  max_unit_cost: 0.9
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 20
   live_markets_only: false
-  excluded_series:
-  - KXATPMATCH
+  excluded_series: []
   take_profit_pct: null
   stop_loss_pct: null
   exit_on_sentiment_reversal: false
@@ -102,7 +101,7 @@ risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.8
   kill_switch_enabled: true
-  max_total_exposure_pct: 0.45
+  max_total_exposure_pct: null
 kalshi_account:
   trading_enabled: false
 whale_watcher_kalshi:
@@ -160,7 +159,7 @@ market_analyst:
 position_netting:
   enabled: true
   min_dwell_sec: 300
-  min_edge_improvement_usd: 10
+  min_edge_improvement_usd: 50
   normal_volatility: 0.02
   volatility_lookback_sec: 1800
 index_feed:
@@ -246,7 +245,7 @@ event_schedule:
   web_search_enabled: true
   max_resolutions_per_tick: 5
 strategy_overrides:
-  by_category: {}
-  by_series:
-    KXBTC15M:
-      max_open_positions_per_series: 3
+  by_category:
+    Sports:
+      stop_loss_pct: null
+  by_series: {}
