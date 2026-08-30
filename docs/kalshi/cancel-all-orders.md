@@ -2,15 +2,18 @@
 > Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
 > Use this file to discover all available pages before exploring further.
 
-# Reset Order Group
+# Cancel All Orders
 
->  Resets the order group's matched contracts counter to zero, allowing new orders to be placed again after the limit was hit.
+> Cancels all resting event-market orders for the authenticated Direct member across every exchange shard. If `subaccount` is omitted, matching orders may come from any subaccount. If it is provided, only orders for that subaccount are eligible. Newly placed orders may also be cancelled during the minute after the request.
 
+<Note>
+  **Rate limit:** A request consumes the same number of write tokens as a batch cancel containing the maximum number of orders allowed for the caller's API tier.
+</Note>
 
 
 ## OpenAPI
 
-````yaml /openapi.yaml put /portfolio/order_groups/{order_group_id}/reset
+````yaml /openapi.yaml delete /portfolio/events/orders
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
@@ -60,34 +63,27 @@ tags:
   - name: structured-targets
     description: Structured targets endpoints
 paths:
-  /portfolio/order_groups/{order_group_id}/reset:
-    put:
+  /portfolio/events/orders:
+    delete:
       tags:
-        - order-groups
-      summary: Reset Order Group
-      description: ' Resets the order group''s matched contracts counter to zero, allowing new orders to be placed again after the limit was hit.'
-      operationId: ResetOrderGroup
+        - orders
+      summary: Cancel All Orders
+      description: >-
+        Cancels all resting event-market orders for the authenticated Direct
+        member across every exchange shard. If `subaccount` is omitted, matching
+        orders may come from any subaccount. If it is provided, only orders for
+        that subaccount are eligible. Newly placed orders may also be cancelled
+        during the minute after the request.
+      operationId: CancelAllOrders
       parameters:
-        - $ref: '#/components/parameters/OrderGroupIdPath'
-        - $ref: '#/components/parameters/SubaccountQueryDefaultPrimary'
-        - $ref: '#/components/parameters/ExchangeIndexQuery'
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EmptyResponse'
+        - $ref: '#/components/parameters/SubaccountQuery'
       responses:
-        '200':
-          description: Order group reset successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EmptyResponse'
+        '204':
+          description: All matching resting orders were cancelled
         '401':
           $ref: '#/components/responses/UnauthorizedError'
-        '404':
-          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
         '500':
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -96,34 +92,36 @@ paths:
           kalshiAccessTimestamp: []
 components:
   parameters:
-    OrderGroupIdPath:
-      name: order_group_id
-      in: path
-      required: true
-      description: Order group ID
-      schema:
-        type: string
-    SubaccountQueryDefaultPrimary:
+    SubaccountQuery:
       name: subaccount
       in: query
-      description: Subaccount number (0 for primary, 1-63 for subaccounts). Defaults to 0.
+      description: >-
+        Subaccount number (0 for primary, 1-63 for subaccounts). If omitted,
+        defaults to all subaccounts.
       schema:
         type: integer
-    ExchangeIndexQuery:
-      name: exchange_index
-      in: query
-      description: Identifier for an exchange shard. Defaults to 0.
-      schema:
-        $ref: '#/components/schemas/ExchangeIndex'
-      x-go-type-skip-optional-pointer: true
+  responses:
+    UnauthorizedError:
+      description: Unauthorized - authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimitError:
+      description: >-
+        Rate limit exceeded. The default cost is 10 tokens per request. Use GET
+        /trade-api/v2/account/endpoint_costs to list non-default endpoint costs.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
-    EmptyResponse:
-      type: object
-      description: An empty response body
-    ExchangeIndex:
-      type: integer
-      description: Identifier for an exchange shard.
-      example: 0
     ErrorResponse:
       type: object
       properties:
@@ -136,25 +134,6 @@ components:
         details:
           type: string
           description: Additional details about the error, if available
-  responses:
-    UnauthorizedError:
-      description: Unauthorized - authentication required
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    NotFoundError:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    InternalServerError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
   securitySchemes:
     kalshiAccessKey:
       type: apiKey

@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -135,11 +135,15 @@ components:
         exchange_index:
           allOf:
             - $ref: '#/components/schemas/ExchangeIndex'
-          default: 0
-          x-go-type-skip-optional-pointer: true
+          description: >-
+            Exchange shard index. If omitted, auto-routes when market_ticker is
+            provided; otherwise defaults to 0. Use -1 to require auto-routing by
+            market ticker.
         market_ticker:
           type: string
-          description: Market ticker. Required when exchange_index is -1 (auto).
+          description: >-
+            Market ticker used for auto-routing when exchange_index is omitted
+            or -1.
           x-go-type-skip-optional-pointer: true
     DecreaseOrderV2Response:
       type: object
@@ -177,7 +181,7 @@ components:
       example: '10.00'
     ExchangeIndex:
       type: integer
-      description: Identifier for an exchange shard. Defaults to 0 if unspecified.
+      description: Identifier for an exchange shard.
       example: 0
     ErrorResponse:
       type: object

@@ -69,7 +69,7 @@ Each market's valid prices form a fixed grid, described by two fields on Market 
 
 Newer structures follow the naming convention `center_{center}_edge_{edge}_cent`, where the shorthands are `whole` = \$0.01, `half` = \$0.005, `quint` = \$0.002, `deci` = \$0.001, and `centi` = \$0.0001. Tapered structures apply the finer edge tick near the boundaries of the price range — where small absolute price differences represent large relative changes in implied probability — and the center tick in between; most taper below \$0.10 and above \$0.90, while `center_deci_edge_centi_cent` tapers below \$0.01 and above \$0.99. When the center and edge ticks are equal, the grid is uniform. The older names (`linear_cent`, `tapered_deci_cent`, `deci_cent`) predate this convention.
 
-Whole-cent prices are valid in every structure. Structures are assigned per market — for example, multivariate (combo) markets use `center_centi_edge_centi_cent`. When a market's structure changes, the `price_level_structure_updated` event on the market lifecycle WebSocket channels carries the new `price_ranges`.
+Whole-cent prices are valid in every structure. Structures are assigned per market — for example, multivariate (combo) markets use `center_deci_edge_centi_cent`. When a market's structure changes, the `price_level_structure_updated` event on the market lifecycle WebSocket channels carries the new `price_ranges`.
 
 ***
 

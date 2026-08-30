@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -213,7 +213,10 @@ components:
           x-go-type-skip-optional-pointer: true
         available_on_brokers:
           type: boolean
-          description: Whether this event is available to trade on brokers.
+          description: >-
+            Deprecated. No longer populated and always returns false; it will be
+            removed in a future release.
+          deprecated: true
         product_metadata:
           type: object
           nullable: true
@@ -556,7 +559,7 @@ components:
           x-go-type-skip-optional-pointer: true
     ExchangeIndex:
       type: integer
-      description: Identifier for an exchange shard. Defaults to 0 if unspecified.
+      description: Identifier for an exchange shard.
       example: 0
     FixedPointDollars:
       type: string

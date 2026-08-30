@@ -679,3 +679,97 @@ boundary; derivation only where the exchange sent nothing to read.
 **Found:** 2026-08-30, issue #212 — consolidating 26 inline `1 - price`
 re-derivations (the no-side inversion class CLAUDE.md names twice) behind
 one helper; needed the documented statement, not the convention, to cite.
+
+## Which portfolio objects now carry a required `exchange_index`, and do this app's readers keep it?
+**Answer:** Trade API 3.29.0 added `exchange_index` (integer, "Identifier
+for the exchange shard where the fill occurred") as a **required** field of
+the WS fill message (`user-fills.md:207` required list, property at :241,
+`"exchange_index": 2` in the example at :326), the WS order message
+(`user-orders.md:250`, property :284), the REST Fill (`get-fills.md:194`,
+property :210), the REST MarketPosition (`get-positions.md:189`), and the
+REST Settlement (`get-settlements.md:171`). The same name is also a new
+optional query *filter* on GetFills/GetPositions/GetOrders
+(`get-fills.md:166`, `get-positions.md:149`, `get-orders.md:174`) — same
+spelling, different role.
+**Gotcha:** No file under `services/` or `tests/` mentions `exchange_index`
+at all (grepped 2026-08-30). `services/kalshi/contracts/fill.py`'s
+`normalize_fill` spreads `**msg` so the field survives the normalizer
+itself, but the module docstring's field inventory ("every documented field
+survives intact") predates it, `services/position/account_positions.py`'s
+`_FILL_FIELDS` whitelist (line 48) silently strips it from `/api/state`,
+and `tests/fixtures/kalshi/fill.json` lacks a field the message schema now
+marks required — fixture tests exercise a pre-3.29.0 shape. With crypto on
+shard 2 and tennis/baseball on shard 3 (`exchange_sharding.md:22,81-82`),
+two positions with the same ticker on different shards would be
+indistinguishable to every downstream consumer. App fix tracked in its own
+issue; do not hand-edit the fixture without the reader change.
+**Source:** `user-fills.md` (lines 99/207/241/326), `user-orders.md`
+(97/250/284/424), `get-fills.md` (166/194/210), `get-positions.md`
+(149/189), `get-settlements.md` (171), `exchange_sharding.md` (22, 81-82).
+**Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
+
+## What do GET /portfolio/balance's `balance` and `portfolio_value` aggregate over?
+**Answer:** All exchange shards, unless the (new) `exchange_index` query
+param is passed: "Both values include all exchange indexes unless
+`exchange_index` is provided" (`get-balance.md:7`). This is a 3.29.0
+**semantics flip**: the pre-3.29.0 mirror of the same page said the
+opposite — "`portfolio_value` is always scoped to the requested
+`exchange_index` (defaulting to 0)" (old `get-balance.md:7`, see
+`git log -p -- docs/kalshi/get-balance.md`).
+**Gotcha:** `services/kalshi/account.py` `get_balance()` (line 70) passes
+no index, so the number this app displays and records **changed meaning
+underneath it**: previously shard-0-scoped, now a cross-shard aggregate —
+and shards 2 (crypto) and 3 (tennis/baseball) have been live since
+2026-08-24 (`exchange_sharding.md:22`). `main.py`'s real-balance /
+real-portfolio-value session series (~line 993-1010) and the header strip
+therefore changed scope without any code change here, and recorded history
+spanning the flip mixes two scopes. "A displayed value must match its
+label" — at the ground-truth layer. App-side decision tracked in its own
+issue (this may be the *desired* scope, but it must be a decision, not an
+accident).
+**Source:** `get-balance.md:7` (new mirror) vs the pre-3.29.0 mirror's
+line 7; `exchange_sharding.md:22,81-82`; `services/kalshi/account.py:70-72`.
+**Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
+
+## What precision is a trade fee rounded (up) to?
+**Answer:** `$0.000001` — six-decimal dollar amounts: "Fees are six-decimal
+dollar amounts (`$0.000001` granularity) — the finest precision a fill's
+revenue (price × quantity) can occupy" (`fee_rounding.md:18`); the trade
+fee component is "rounded up to the nearest `$0.000001`"
+(`fee_rounding.md:22`). Pre-3.29.0 the same lines said `$0.0001`
+(centicent). Unchanged: direct-member *balances* still align to `$0.0001`
+(:13) and rebates still use target balance precision — `$0.0001` direct,
+`$0.01` non-direct (:42, :72).
+**Gotcha:** `services/kalshi_fees.py` still ceils per fill to `$0.0001`
+(`math.ceil(raw * 10000) / 10000`, lines 117/137), overstating a fill's
+trade fee by up to $0.000099. PR #224's convergence argument (ceiling
+applied once per fill, not per contract) still holds — a finer ceiling only
+*tightens* that bound — so this is a constant-precision update, not a
+mechanism change. App fix tracked in its own issue.
+**Source:** `fee_rounding.md` (lines 13, 18, 22, 42, 72).
+**Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
+
+## Where does an order route when `exchange_index` is omitted, and what does a single REST write cost?
+**Answer:** 3.29.0 changed the omitted-field default from "shard 0" to
+**auto-routing**: "Exchange shard index. If omitted, auto-routes when
+ticker is provided; otherwise defaults to 0. Use -1 to require
+auto-routing" (`create-order-v2.md:215-216`; cancel's `ticker` param is
+"Market ticker used for auto-routing when exchange_index is omitted",
+`cancel-order-v2.md:90`; REST rule spelled out at
+`exchange_sharding.md:60-62`). Billing: auto-routed single REST order
+writes are billed to the unscoped Write bucket **and every nonzero shard's
+Write bucket**; explicitly targeting a nonzero shard bills only that
+shard's budget; batch writes and explicit shard-0 writes use only the
+unscoped budget (`exchange_sharding.md:88`). Auto-routing "will incur an
+additional latency cost" (:91). Related 3.29.0 note: `cancel-order-v2.md:10`
+and `get-order.md:10` now state "**Rate limit:** 2 tokens per request".
+**Gotcha:** This app never passes `exchange_index` anywhere (no hit in
+`services/`), so a future real order would be auto-routed and billed
+against *every* nonzero shard's write budget — a per-shard rate-limit and
+latency consideration for the live order path. Paper mode is unaffected
+and real trading stays gated (`kalshi_account.trading_enabled` default
+false); this is a Program 3 (live execution) item, deliberately not acted
+on now.
+**Source:** `create-order-v2.md:215-216`, `cancel-order-v2.md:10,79-90`,
+`get-order.md:10`, `exchange_sharding.md:60-62,88,91`.
+**Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.

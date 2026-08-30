@@ -6,6 +6,9 @@
 
 > DEPRECATED: Use PUT /communications/rfqs/{rfq_id}/quotes/{quote_id}/confirm instead. Endpoint for confirming a quote. This will start a timer for order execution.
 
+<Warning>
+  This endpoint is deprecated. Use `PUT /communications/rfqs/{rfq_id}/quotes/{quote_id}/confirm` instead.
+</Warning>
 
 
 ## OpenAPI
@@ -14,7 +17,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach

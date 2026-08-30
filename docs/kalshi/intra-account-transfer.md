@@ -4,7 +4,12 @@
 
 # Intra Account Transfer
 
-> Endpoint for transferring funds within the same account.
+> Transfers funds within the same account.
+
+When `source_exchange_shard` and `destination_exchange_shard` are the same, Kalshi treats the request as a subaccount transfer. The returned transfer ID appears in the subaccount transfer history.
+
+Cross-exchange-index subaccount transfers run in up to three non-atomic steps. If a later step fails, completed steps are not undone, so funds may remain in the primary account on the source or destination exchange index.
+
 
 
 
@@ -14,7 +19,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -65,7 +70,19 @@ paths:
       tags:
         - portfolio
       summary: Intra Account Transfer
-      description: Endpoint for transferring funds within the same account.
+      description: >
+        Transfers funds within the same account.
+
+
+        When `source_exchange_shard` and `destination_exchange_shard` are the
+        same, Kalshi treats the request as a subaccount transfer. The returned
+        transfer ID appears in the subaccount transfer history.
+
+
+        Cross-exchange-index subaccount transfers run in up to three non-atomic
+        steps. If a later step fails, completed steps are not undone, so funds
+        may remain in the primary account on the source or destination exchange
+        index.
       operationId: IntraExchangeInstanceTransfer
       requestBody:
         required: true
@@ -129,6 +146,24 @@ components:
           description: Destination exchange shard index (default 0)
           x-oapi-codegen-extra-tags:
             validate: gte=0,lte=100
+        source_subaccount:
+          type: integer
+          default: 0
+          x-go-type-skip-optional-pointer: true
+          description: >-
+            Source subaccount number (default 0 for the primary account). Only
+            supported for event contract to event contract transfers.
+          x-oapi-codegen-extra-tags:
+            validate: gte=0
+        destination_subaccount:
+          type: integer
+          default: 0
+          x-go-type-skip-optional-pointer: true
+          description: >-
+            Destination subaccount number (default 0 for the primary account).
+            Only supported for event contract to event contract transfers.
+          x-oapi-codegen-extra-tags:
+            validate: gte=0
     IntraExchangeInstanceTransferResponse:
       type: object
       required:

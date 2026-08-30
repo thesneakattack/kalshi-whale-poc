@@ -74,6 +74,8 @@ For participants requiring network-level isolation, Kalshi supports private conn
 
 Members on the Premier tier or above can contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to provision a PrivateLink endpoint for their AWS account.
 
+Members on the Prime tier or above can also contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to discuss VPC peering for production connectivity from their AWS VPC.
+
 ## Rate Limits
 
 * **Limit**: FIX application messages use the same token model, token costs, and Read/Write buckets as the equivalent REST API operations.
@@ -81,6 +83,7 @@ Members on the Premier tier or above can contact [institutional@kalshi.com](mail
 * **Excluded**: Logout (35=5), Heartbeat (35=0), TestRequest (35=1)
 * Logon (35=A) **is** rate-limited.
 * Order-entry and RFQ messages use the Write bucket. See [Rate Limits and Tiers](/getting_started/rate_limits) for tier budgets and token-cost behavior.
+* Order-entry messages (35=D, 35=F, 35=G) carrying `ExDestination` (tag 100) with a value `>= 1` are billed to a [per-shard Write budget](/getting_started/rate_limits#sharded-exchanges-have-per-shard-write-budgets). RFQ quote accepts (35=D carrying `QuoteID`) always bill the unscoped Write budget.
 * Mass Cancel Request (35=q) is limited to 1 request/second.
 
 ## Maintenance Window

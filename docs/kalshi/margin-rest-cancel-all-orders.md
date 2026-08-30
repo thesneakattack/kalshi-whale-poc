@@ -2,15 +2,18 @@
 > Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
 > Use this file to discover all available pages before exploring further.
 
-# Get Notional Risk Limit
+# Cancel All Orders
 
-> Endpoint for retrieving the notional value risk limit for the authenticated margin user.
+> Cancels all resting margin orders for the authenticated Direct member. If `subaccount` is omitted, matching orders may come from any subaccount. If it is provided, only orders for that subaccount are eligible. Newly placed orders may also be cancelled during the minute after the request.
 
+<Note>
+  **Rate limit:** A request consumes the same number of write tokens as a batch cancel containing the maximum number of orders allowed for the caller's margin API tier.
+</Note>
 
 
 ## OpenAPI
 
-````yaml /perps_openapi.yaml get /margin/notional_risk_limit
+````yaml /perps_openapi.yaml delete /margin/orders
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
@@ -48,24 +51,27 @@ tags:
   - name: exit-triggers
     description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
-  /margin/notional_risk_limit:
-    get:
+  /margin/orders:
+    delete:
       tags:
-        - risk
-      summary: Get Notional Risk Limit
+        - orders
+      summary: Cancel All Orders
       description: >-
-        Endpoint for retrieving the notional value risk limit for the
-        authenticated margin user.
-      operationId: GetMarginNotionalRiskLimit
+        Cancels all resting margin orders for the authenticated Direct member.
+        If `subaccount` is omitted, matching orders may come from any
+        subaccount. If it is provided, only orders for that subaccount are
+        eligible. Newly placed orders may also be cancelled during the minute
+        after the request.
+      operationId: CancelAllMarginOrders
+      parameters:
+        - $ref: '#/components/parameters/SubaccountQuery'
       responses:
-        '200':
-          description: Notional risk limit retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NotionalRiskLimitResponse'
+        '204':
+          description: All matching resting margin orders were cancelled
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
         '500':
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -73,30 +79,39 @@ paths:
           kalshiAccessSignature: []
           kalshiAccessTimestamp: []
 components:
+  parameters:
+    SubaccountQuery:
+      name: subaccount
+      in: query
+      required: false
+      description: >-
+        Subaccount number (0 for primary, 1-63 for subaccounts). If omitted,
+        defaults to all subaccounts.
+      schema:
+        type: integer
+        minimum: 0
+  responses:
+    UnauthorizedError:
+      description: Unauthorized - authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimitError:
+      description: >-
+        Rate limit exceeded. The default cost is 10 tokens per request. Use GET
+        /trade-api/v2/account/endpoint_costs to list non-default endpoint costs.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
-    NotionalRiskLimitResponse:
-      type: object
-      required:
-        - default_notional_value_risk_limit
-        - notional_value_risk_limits_by_market_ticker
-      properties:
-        default_notional_value_risk_limit:
-          type: string
-          description: >-
-            The notional value risk limit for the user as a fixed-point dollar
-            string with 4 decimal places (e.g., "5000.0000")
-          example: '5000.0000'
-        notional_value_risk_limits_by_market_ticker:
-          type: object
-          additionalProperties:
-            type: string
-          description: >-
-            Map of market_ticker to notional value risk limit as a fixed-point
-            dollar string with 4 decimal places (e.g., "5000.0000"). If present,
-            the market-level risk limit overrides the default notional value
-            risk limit.
-          example:
-            market-abc-123: '5000.0000'
     ErrorResponse:
       type: object
       properties:
@@ -109,19 +124,6 @@ components:
         details:
           type: string
           description: Additional details about the error, if available
-  responses:
-    UnauthorizedError:
-      description: Unauthorized - authentication required
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    InternalServerError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
   securitySchemes:
     kalshiAccessKey:
       type: apiKey

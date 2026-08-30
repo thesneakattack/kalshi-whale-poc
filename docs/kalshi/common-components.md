@@ -6,7 +6,7 @@
 
 > Standard header, trailer, and shared components across all FIX messages
 
-Kalshi's FIX implementation uses **FIXT.1.1** with application version **FIX50SP2**. Members on the Premier tier or above have FIX access by default. For all other tiers, contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to inquire about access.
+Kalshi's FIX implementation uses **FIXT.1.1** with application version **FIX50SP2**. Members on the Premier tier or above have FIX access by default.
 
 ## FIX Dictionary
 

@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -92,7 +92,8 @@ paths:
           in: query
           description: >-
             Filter by competition. Matches against the league, conference,
-            division, or tour in the structured target details.
+            division, or tour in the structured target details, or any entry in
+            the details leagues array.
           required: false
           schema:
             type: string

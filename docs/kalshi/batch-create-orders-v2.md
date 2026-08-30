@@ -6,6 +6,9 @@
 
 > Endpoint for submitting a batch of event-market orders using the V2 request/response shape. The maximum batch size scales with your tier's write budget — see [Rate Limits and Tiers](/getting_started/rate_limits).
 
+<Note>
+  **Rate limit:** 10 tokens per order in the batch — billed per item, so total cost for a batch of N orders is N × 10. See `GET /trade-api/v2/account/endpoint_costs` for current non-default endpoint costs.
+</Note>
 
 
 ## OpenAPI
@@ -14,7 +17,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -302,11 +305,10 @@ components:
         exchange_index:
           allOf:
             - $ref: '#/components/schemas/ExchangeIndex'
-          default: 0
           description: >-
-            Exchange shard index. Defaults to 0. Use -1 to auto-route by market
+            Exchange shard index. If omitted, auto-routes when ticker is
+            provided; otherwise defaults to 0. Use -1 to require auto-routing by
             ticker.
-          x-go-type-skip-optional-pointer: true
     FixedPointCount:
       type: string
       description: >-
@@ -359,7 +361,7 @@ components:
         matching.
     ExchangeIndex:
       type: integer
-      description: Identifier for an exchange shard. Defaults to 0 if unspecified.
+      description: Identifier for an exchange shard.
       example: 0
   responses:
     BadRequestError:

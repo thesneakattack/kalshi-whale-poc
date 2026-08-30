@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -168,6 +168,7 @@ components:
       type: object
       required:
         - ticker
+        - exchange_index
         - event_ticker
         - market_result
         - yes_count_fp
@@ -181,6 +182,8 @@ components:
         ticker:
           type: string
           description: The ticker symbol of the market that was settled.
+        exchange_index:
+          $ref: '#/components/schemas/ExchangeIndex'
         event_ticker:
           type: string
           description: The event ticker symbol of the market that was settled.
@@ -239,6 +242,10 @@ components:
         details:
           type: string
           description: Additional details about the error, if available
+    ExchangeIndex:
+      type: integer
+      description: Identifier for an exchange shard.
+      example: 0
     FixedPointCount:
       type: string
       description: >-

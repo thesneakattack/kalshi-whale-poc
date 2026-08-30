@@ -1,7 +1,5 @@
 # API Documentation
 
-## Docs
-
 - [Introduction](https://docs.kalshi.com/welcome/index.md): Welcome to the Kalshi API documentation
 - [API Environments and Endpoints](https://docs.kalshi.com/getting_started/api_environments.md): REST and WebSocket base URLs for production and demo
 - [Quick Start: Market Data](https://docs.kalshi.com/getting_started/quick_start_market_data.md): Learn how to access real-time market data without authentication
@@ -19,7 +17,7 @@
 - [Order Groups](https://docs.kalshi.com/getting_started/order_groups.md): Automatic order cancellation based on rolling contract limits
 - [Subaccounts](https://docs.kalshi.com/getting_started/subaccounts.md): Isolate balances and positions within a single Direct account
 - [Fixed-Point Representation](https://docs.kalshi.com/getting_started/fixed_point_migration.md): Fixed-point prices, price level structures, and fractional contract quantities.
-- [Fee Rounding](https://docs.kalshi.com/getting_started/fee_rounding.md): How the exchange rounds fees to maintain balance precision.
+- [Fee Rounding](https://docs.kalshi.com/getting_started/fee_rounding.md): How trade fees and balances are rounded.
 - [Historical Data](https://docs.kalshi.com/getting_started/historical_data.md): Accessing historical exchange data via the Kalshi API.
 - [Targets & Milestones](https://docs.kalshi.com/getting_started/targets_and_milestones.md): Using milestones and structured targets in the Trade API
 - [Market Lifecycle](https://docs.kalshi.com/getting_started/market_lifecycle.md): How markets move from creation to settlement
@@ -53,6 +51,7 @@
 - [Get Queue Positions for Orders](https://docs.kalshi.com/api-reference/orders/get-queue-positions-for-orders.md): Endpoint for getting queue positions for all resting orders. Queue position represents the number of contracts that need to be matched before an order receives a partial or full match, determined using price-time priority.
 - [Get Order Queue Position](https://docs.kalshi.com/api-reference/orders/get-order-queue-position.md): Endpoint for getting an order's queue position in the order book. This represents the amount of orders that need to be matched before this order receives a partial or full match. Queue position is determined using a price-time priority.
 - [Create Order (V2)](https://docs.kalshi.com/api-reference/orders/create-order-v2.md): Endpoint for submitting event-market orders using the V2 request/response shape (single-book `bid`/`ask` side and fixed-point dollar prices). The legacy `/portfolio/orders` endpoint will be deprecated no earlier than May 6, 2026 — clients should migrate to this path.
+- [Cancel All Orders](https://docs.kalshi.com/api-reference/orders/cancel-all-orders.md): Cancels all resting event-market orders for the authenticated Direct member across every exchange shard. If `subaccount` is omitted, matching orders may come from any subaccount. If it is provided, only orders for that subaccount are eligible. Newly placed orders may also be cancelled during the min…
 - [Batch Create Orders (V2)](https://docs.kalshi.com/api-reference/orders/batch-create-orders-v2.md): Endpoint for submitting a batch of event-market orders using the V2 request/response shape. The maximum batch size scales with your tier's write budget — see [Rate Limits and Tiers](/getting_started/rate_limits).
 - [Batch Cancel Orders (V2)](https://docs.kalshi.com/api-reference/orders/batch-cancel-orders-v2.md): Endpoint for cancelling a batch of event-market orders using the V2 response shape. The maximum batch size scales with your tier's write budget — see [Rate Limits and Tiers](/getting_started/rate_limits).
 - [Cancel Order (V2)](https://docs.kalshi.com/api-reference/orders/cancel-order-v2.md): Endpoint for cancelling event-market orders using the V2 response shape. Returns `{order_id, client_order_id, reduced_by}` rather than a full order object.
@@ -177,6 +176,7 @@
 - [Get Risk](https://docs.kalshi.com/margin-rest/risk/get-risk.md): Endpoint for retrieving leverage and liquidation price data for the authenticated direct margin user. Returns account-level leverage plus per-position leverage and liquidation prices, grouped by subaccount and market.
 - [Get Orders](https://docs.kalshi.com/margin-rest/orders/get-orders.md): Endpoint for listing margin orders with optional filtering.
 - [Create Order](https://docs.kalshi.com/margin-rest/orders/create-order.md): Endpoint for submitting orders in a market.
+- [Cancel All Orders](https://docs.kalshi.com/margin-rest/orders/cancel-all-orders.md): Cancels all resting margin orders for the authenticated Direct member. If `subaccount` is omitted, matching orders may come from any subaccount. If it is provided, only orders for that subaccount are eligible. Newly placed orders may also be cancelled during the minute after the request.
 - [Get Order](https://docs.kalshi.com/margin-rest/orders/get-order.md): Endpoint for retrieving a specific margin order.
 - [Cancel Order](https://docs.kalshi.com/margin-rest/orders/cancel-order.md): Endpoint for canceling an order. Cancels all remaining resting contracts and returns the canceled order details.
 - [Decrease Order](https://docs.kalshi.com/margin-rest/orders/decrease-order.md): Endpoint for decreasing the number of contracts in an existing order. Exactly one of `reduce_by` or `reduce_to` must be provided. Canceling an order is equivalent to decreasing to zero.
@@ -231,11 +231,11 @@
 
 ## OpenAPI Specs
 
-- [openapi](https://docs.kalshi.com/openapi.yaml)
-- [perps_openapi](https://docs.kalshi.com/perps_openapi.yaml)
-- [perps_scm_openapi](https://docs.kalshi.com/perps_scm_openapi.yaml)
+- [openapi](/openapi.yaml)
+- [perps_openapi](/perps_openapi.yaml)
+- [perps_scm_openapi](/perps_scm_openapi.yaml)
 
 ## AsyncAPI Specs
 
-- [asyncapi](https://docs.kalshi.com/asyncapi.yaml)
-- [perps_asyncapi](https://docs.kalshi.com/perps_asyncapi.yaml)
+- [asyncapi](/asyncapi.yaml)
+- [perps_asyncapi](/perps_asyncapi.yaml)
