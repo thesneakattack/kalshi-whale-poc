@@ -80,6 +80,16 @@ _FEE_MULTIPLIER_BY_SERIES = {
 }
 
 
+def _multiplier(ticker: str | None) -> float:
+    """The real per-series fee multiplier for `ticker` (1.0 for every series
+    not in _FEE_MULTIPLIER_BY_SERIES, and 1.0 when no ticker is in scope at
+    the call site). One lookup, shared by every fee function here, so a
+    future correction to the table can never land in one of them only."""
+    if ticker is None:
+        return 1.0
+    return _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0)
+
+
 def taker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
     """Real Kalshi taker fee for one leg of a trade (open OR close - Kalshi
     charges per fill, not per round-trip), in dollars. contracts <= 0
@@ -94,7 +104,7 @@ def taker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     formula."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    multiplier = _multiplier(ticker)
     if multiplier == 0.0:
         return 0.0
     raw = _TAKER_RATE * multiplier * contracts * price * (1 - price)
@@ -114,8 +124,53 @@ def maker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     limit-order simulation this now feeds."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    multiplier = _multiplier(ticker)
     if multiplier == 0.0:
         return 0.0
     raw = _MAKER_RATE * multiplier * contracts * price * (1 - price)
     return math.ceil(raw * 10000) / 10000
+
+
+def taker_fee_per_contract(price: float, ticker: str | None = None) -> float:
+    """Taker fee in DOLLARS PER CONTRACT at `price` - the same rate, same
+    per-series multiplier, as taker_fee(), deliberately WITHOUT its
+    per-fill $0.0001 ceiling.
+
+    That ceiling is charged once per fill, not once per contract: the real
+    fills this module was verified against (14.11 contracts @ $0.84 ->
+    $0.1328) round the whole order total exactly once. Carrying it into a
+    per-contract rate would price every contract as if it were its own
+    one-contract order, overstating the rate by up to $0.0001/contract, and
+    would make an aggregate metric depend on a fill size that isn't real.
+    So this is the exact rate, and taker_fee(n, p)/n converges to it as n
+    grows.
+
+    Exists because "what does a contract at price c really cost me" is a
+    question two separate analytics modules ask (series_watcher.reconcile,
+    reset.trade_archive._summarise) and neither may re-derive 0.07 or the
+    multiplier table locally."""
+    if price <= 0 or price >= 1:
+        return 0.0
+    return _TAKER_RATE * _multiplier(ticker) * price * (1 - price)
+
+
+def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:
+    """The win probability a contract bought at `unit_cost` needs just to
+    break even, expressed as a unit cost in dollars per contract (the two
+    are the same number: a contract pays $1 or $0, so EV per contract is
+    exactly p - unit_cost - fee, and EV = 0 at p = unit_cost + fee).
+
+    `unit_cost` is the side-aware per-contract cost - (1 - yes_price) for a
+    no-side position - not the raw yes price. The fee is symmetric in price
+    and its complement (see this module's docstring), so it is the same
+    either way, but the cost it is added to is not.
+
+    Fee-free breakeven ("breakeven accuracy IS the entry price") was shipped
+    and displayed until 2026-08-30 - issue #205, the "a displayed value must
+    match its label" class in CLAUDE.md. The understatement is exactly
+    100 * _TAKER_RATE * multiplier * c * (1-c) points: 1.75 at c = 0.50 down
+    to 0.63 at c = 0.90, the band config/settings.yaml actually enforces
+    (min_unit_cost 0.5 / max_unit_cost 0.9, read 2026-08-30 - the 0.60-0.85
+    quoted in older notes is stale), halved for the MLB proposition family
+    and exactly zero for the multiplier-0 series."""
+    return unit_cost + taker_fee_per_contract(unit_cost, ticker=ticker)
