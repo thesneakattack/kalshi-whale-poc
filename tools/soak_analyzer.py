@@ -76,6 +76,47 @@ class Check:
     measured: dict = field(default_factory=dict)
     # ANALYSIS_READINESS only: which downstream analysis this compromises.
     invalidates: str | None = None
+    # ids of checks whose metrics this one is derived from. A derived check
+    # inherits its inputs' untrustworthiness - see resolve_dependencies().
+    depends_on: tuple[str, ...] = ()
+    # False when the data source behind this check is known to be partial
+    # (a truncated list, a sampled window). A partial source can produce
+    # FAIL - what it found is real - but never PASS, because "nothing found
+    # in an incomplete sample" is not evidence that nothing is there.
+    source_complete: bool = True
+
+
+def resolve_dependencies(checks: list[Check]) -> list[Check]:
+    """Propagate untrustworthiness from inputs to the metrics built on them.
+
+    An instrument that derives a metric from other metrics is only as
+    trustworthy as its worst input. A derived check that reports PASS while
+    an input is BLIND or UNKNOWN is making exactly the claim this tool
+    exists to catch: reporting health it did not measure.
+
+    Applied after all checks run, so ordering in run_checks() does not
+    matter. Downgrades only - it never promotes a FAIL.
+    """
+    by_id = {c.id: c for c in checks}
+    for c in checks:
+        # A partial source cannot clear a check on its own.
+        if not c.source_complete and c.status == PASS:
+            c.status = UNKNOWN
+            c.detail += (" [source is partial - cannot distinguish 'nothing "
+                         "found' from 'not all of it was looked at']")
+        for dep_id in c.depends_on:
+            dep = by_id.get(dep_id)
+            if dep is None:
+                continue
+            if dep.status == BLIND and c.status != BLIND:
+                c.status = BLIND
+                c.detail += (f" [inherited BLIND from {dep_id}: this metric "
+                             "is derived from one that can lie]")
+            elif dep.status == UNKNOWN and c.status == PASS:
+                c.status = UNKNOWN
+                c.detail += (f" [inherited UNKNOWN from {dep_id}: an input "
+                             "was not measured, so this cannot claim to pass]")
+    return checks
 
 
 def _is_local(base_url: str) -> bool:
@@ -185,6 +226,27 @@ def check_staleness_metric_trustworthy(qh: dict) -> Check:
     )
 
 
+def check_backlog_timeliness(qh: dict) -> Check:
+    """Timeliness judged from oldest_message_age_sec - which is exactly the
+    metric staleness_metric_trustworthy audits. Declaring the dependency is
+    the point: when that metric is BLIND this inherits BLIND instead of
+    reporting a reassuring 0.0s, which is how the soak's own pass criterion
+    came to be believed in the first place."""
+    q = qh.get("queue") or {}
+    age = q.get("oldest_message_age_sec")
+    if age is None:
+        return Check("backlog_timeliness", DATA_PLANE, UNKNOWN,
+                     "oldest_message_age_sec absent",
+                     depends_on=("staleness_metric_trustworthy",))
+    return Check(
+        "backlog_timeliness", DATA_PLANE,
+        PASS if age < 1.0 else FAIL,
+        f"oldest unconsumed message is {age}s old (threshold 1.0s)",
+        {"oldest_message_age_sec": age},
+        depends_on=("staleness_metric_trustworthy",),
+    )
+
+
 def check_queue_headroom(qh: dict) -> Check:
     """Gate on CURRENT occupancy; report the lifetime peak as context.
 
@@ -256,16 +318,17 @@ def check_settlement_completeness(sched: dict) -> Check:
 
 
 def check_price_completeness(qh: dict) -> Check:
+    """Derived from ticker_conservation - the dependency is declared, not
+    re-computed, so resolve_dependencies() propagates BLIND/UNKNOWN from it
+    automatically rather than each derived check re-implementing that."""
     cons = check_ticker_conservation(qh)
-    if cons.status in (UNKNOWN,):
-        return Check("price_completeness", ANALYSIS_READINESS, UNKNOWN,
-                     f"depends on ticker_conservation: {cons.detail}")
     gap = cons.measured.get("gap", 0)
+    status = UNKNOWN if cons.status == UNKNOWN else (PASS if gap == 0 else FAIL)
     return Check(
-        "price_completeness", ANALYSIS_READINESS,
-        PASS if gap == 0 else FAIL,
+        "price_completeness", ANALYSIS_READINESS, status,
         f"{gap} ticker updates received but never accounted for",
         {"gap": gap},
+        depends_on=("ticker_conservation",),
         invalidates=(
             "Mark-to-market, unrealized P&L, exit-engine decisions, and the "
             "netting materiality bar - all read the latest price. Missing "
@@ -332,14 +395,16 @@ def check_exit_engine_faults(faults: dict) -> Check:
 
 
 def run_checks(payload: dict) -> list[Check]:
+    """Run every check, then resolve derived-metric trust."""
     ingest = payload.get("ingest") or {}
     qh = ingest.get("queue_health") or {}
     sched = payload.get("schedulers") or {}
     faults = payload.get("faults_last_24h") or {}
-    return [
+    checks = [
         check_ingest_drops(qh),
         check_ticker_conservation(qh),
         check_staleness_metric_trustworthy(qh),
+        check_backlog_timeliness(qh),
         check_queue_headroom(qh),
         check_resolver_accounting(sched),
         check_settlement_completeness(sched),
@@ -347,6 +412,7 @@ def run_checks(payload: dict) -> list[Check]:
         check_capture_writer_health(faults),
         check_exit_engine_faults(faults),
     ]
+    return resolve_dependencies(checks)
 
 
 def verdict(checks: list[Check]) -> str:

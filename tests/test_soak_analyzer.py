@@ -234,7 +234,7 @@ def test_json_mode_emits_parseable_output_with_every_check(tmp_path, capsys):
     sa.main(["--from-file", str(f), "--json"])
     d = json.loads(capsys.readouterr().out)
     assert d["verdict"] == sa.PASS
-    assert len(d["checks"]) == 9
+    assert len(d["checks"]) == 10
 
 
 # --- fetch hardening ------------------------------------------------------
@@ -259,3 +259,64 @@ def test_tls_verification_kept_for_a_non_local_host():
     assert sa._is_local("https://kalshi-whale-poc.ddev.site:8443")
     assert sa._is_local("http://localhost:8000")
     assert not sa._is_local("https://example.com")
+
+
+# --- transitive trust: a derived metric never outranks its inputs --------
+
+def test_backlog_timeliness_inherits_blind_from_the_metric_it_reads():
+    """The whole point: a wedged coalescing map makes
+    oldest_message_age_sec report 0.0. A timeliness check reading that
+    number must not answer PASS - it must inherit BLIND. This is how the
+    soak's pass criterion came to be believed."""
+    p = _payload(queue={"pending_tickers": 42, "depth": 0,
+                        "oldest_message_age_sec": 0.0})
+    ids = _by_id(sa.run_checks(p))
+    assert ids["staleness_metric_trustworthy"].status == sa.BLIND
+    assert ids["backlog_timeliness"].status == sa.BLIND
+    assert "inherited BLIND" in ids["backlog_timeliness"].detail
+
+
+def test_price_completeness_inherits_unknown_from_conservation():
+    p = _payload(queue={"depth": 5})  # not quiescent -> conservation UNKNOWN
+    ids = _by_id(sa.run_checks(p))
+    assert ids["ticker_conservation"].status == sa.UNKNOWN
+    assert ids["price_completeness"].status == sa.UNKNOWN
+
+
+def test_dependency_resolution_never_promotes_a_failure():
+    """Downgrade only. A healthy input must not rescue a real FAIL."""
+    checks = [sa.Check("dep", sa.DATA_PLANE, sa.PASS, ""),
+              sa.Check("derived", sa.DATA_PLANE, sa.FAIL, "",
+                       depends_on=("dep",))]
+    assert sa.resolve_dependencies(checks)[1].status == sa.FAIL
+
+
+def test_partial_source_cannot_yield_a_pass():
+    """'Nothing found' in an incomplete sample is not evidence that nothing
+    is there, so a partial source downgrades PASS to UNKNOWN."""
+    checks = [sa.Check("c", sa.DATA_PLANE, sa.PASS, "clean",
+                       source_complete=False)]
+    out = sa.resolve_dependencies(checks)[0]
+    assert out.status == sa.UNKNOWN and "source is partial" in out.detail
+
+
+def test_partial_source_still_reports_a_real_failure():
+    """What a partial sample DID find is real - only the all-clear is void."""
+    checks = [sa.Check("c", sa.DATA_PLANE, sa.FAIL, "found 3",
+                       source_complete=False)]
+    assert sa.resolve_dependencies(checks)[0].status == sa.FAIL
+
+
+def test_a_missing_dependency_is_ignored_not_crashed_on():
+    checks = [sa.Check("derived", sa.DATA_PLANE, sa.PASS, "",
+                       depends_on=("nonexistent",))]
+    assert sa.resolve_dependencies(checks)[0].status == sa.PASS
+
+
+def test_every_declared_dependency_names_a_real_check():
+    """A typo in depends_on would silently disable propagation."""
+    checks = sa.run_checks(_payload())
+    ids = {c.id for c in checks}
+    for c in checks:
+        for dep in c.depends_on:
+            assert dep in ids, f"{c.id} depends on unknown check {dep!r}"
