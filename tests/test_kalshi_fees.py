@@ -6,10 +6,24 @@ from services.kalshi_fees import breakeven_unit_cost, taker_fee, taker_fee_per_c
 def test_taker_fee_matches_real_verified_fills():
     # Verified 2026-08-09 directly against three real fills on a connected
     # Kalshi account (docs/prediction-markets-research-reference.md Part 2.4) -
-    # not derived from the formula itself, these are the real numbers.
-    assert taker_fee(14.11, 0.84) == 0.1328
+    # not derived from the formula itself, these are the real numbers, and
+    # under the pre-3.29.0 $0.0001 trade-fee ceiling then documented, all
+    # three matched exactly (0.1328, 0.1592, 0.2149).
+    #
+    # Trade API 3.29.0 (issue #253) documents the trade-fee ceiling as
+    # $0.000001, not $0.0001 (docs/kalshi/fee_rounding.md:18,22 - "Fees are
+    # six-decimal dollar amounts"; pre-3.29.0 the same lines said $0.0001).
+    # The values below are the SAME rate/formula re-ceiled to that finer
+    # precision - a recomputation, not a fresh real-fill re-verification
+    # (kalshi_account.trading_enabled has always been false, so no real
+    # fill exists to re-check the exact 6dp value against; see this
+    # module's own docstring). 9.13 @ 0.53 happens to land on the same
+    # value at both precisions (0.15919981 ceils to 0.1592 either way);
+    # the other two shift by a fraction of a cent, exactly the "up to
+    # $0.000099" overstatement issue #253 named.
+    assert taker_fee(14.11, 0.84) == 0.132747
     assert taker_fee(9.13, 0.53) == 0.1592
-    assert taker_fee(21.75, 0.17) == 0.2149
+    assert taker_fee(21.75, 0.17) == 0.214825
 
 
 def test_taker_fee_is_symmetric_in_price_and_its_complement():
@@ -81,17 +95,20 @@ def test_taker_fee_zero_for_series_missed_by_the_original_pdf_pass():
 
 
 def test_taker_fee_per_contract_is_the_rate_without_the_per_fill_ceiling():
-    """The $0.0001 ceiling in taker_fee() is charged once per FILL, not once
-    per contract - the real-fill evidence in kalshi_fees' own docstring
-    rounds the whole 14.11-contract order, not each contract. A per-contract
-    rate therefore must not carry it, and is exactly the limit of the
-    per-fill fee spread across many contracts."""
+    """The $0.000001 ceiling in taker_fee() (issue #253, Trade API 3.29.0 -
+    was $0.0001) is charged once per FILL, not once per contract - the
+    real-fill evidence in kalshi_fees' own docstring rounds the whole
+    14.11-contract order, not each contract. A per-contract rate therefore
+    must not carry it, and is exactly the limit of the per-fill fee spread
+    across many contracts."""
     assert taker_fee_per_contract(0.70) == pytest.approx(0.0147, abs=1e-12)
     assert taker_fee_per_contract(0.85) == pytest.approx(0.008925, abs=1e-12)
-    # The per-fill ceiling adds at most $0.0001 to the ORDER, so spread over
-    # n contracts the gap is bounded by 1e-4/n and is one-sided (the per-fill
-    # rate never understates). n = 1e5 leaves an order of magnitude of margin
-    # rather than asserting exactly on the bound.
+    # The per-fill ceiling adds at most $0.000001 to the ORDER (was $0.0001
+    # pre-3.29.0), so spread over n contracts the gap is bounded by 1e-6/n
+    # and is one-sided (the per-fill rate never understates). n = 1e5 leaves
+    # an order of magnitude of margin rather than asserting exactly on the
+    # bound - tighter than before (was margin against a 1e-4/n bound), not
+    # looser.
     assert taker_fee(100000, 0.85) / 100000 == pytest.approx(
         taker_fee_per_contract(0.85), abs=1e-8)
 
