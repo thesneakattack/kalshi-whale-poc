@@ -123,6 +123,7 @@ from services.alerting import routes as alerting_routes  # noqa: E402
 from services.observability import maybe_capture as _maybe_capture_observability  # noqa: E402
 from services.observability import observability  # noqa: E402
 from services.observability import routes as observability_routes  # noqa: E402
+from services.quality import evidence_provenance  # noqa: E402
 from services.quality import routes as quality_routes  # noqa: E402
 from services.research import _maybe_run_research  # noqa: E402
 from services.research import routes as research_routes  # noqa: E402
@@ -448,8 +449,10 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 # auto_apply_min_n below applies to advisory.
                 auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
                 if (
-                    last_auto is None or (tick_now - last_auto) >= cooldown
-                ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
+                    (last_auto is None or (tick_now - last_auto) >= cooldown)
+                    and cc_result["report"]["resolved_count"] >= auto_apply_floor
+                    and not evidence_provenance.current_completeness_state()["degraded"]
+                ):
                     current_weights = cfg.get("whale_confidence_weights") or {}
                     blended = confidence_calibration.blended_weights_for_auto_apply(
                         current_weights, cc_result["report"].get("suggested_weights"),
@@ -540,7 +543,7 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 r for r in adv_result.get("recommendations", [])
                 if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
             ]
-            if qualifying:
+            if qualifying and not evidence_provenance.current_completeness_state()["degraded"]:
                 rec = qualifying[0]
                 section, _, field = rec["config_path"].partition(".")
                 config_store.update({section: {field: rec["suggested_value"]}})
