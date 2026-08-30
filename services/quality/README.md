@@ -26,6 +26,23 @@ configured `backup.interval_sec` directly, to pass into
 `services/storage_health/README.md`'s own note on why
 `storage_health.py` itself never imports `services.backup`.
 
+## Evidence-completeness signal (2026-08-30, #214)
+
+`evidence_provenance.py` composes three already-existing, already-public
+defect counters into `current_completeness_state()`: `settlement_resolver.
+snapshot()["dropped_after_max_attempts"]`, `index_feed.ingestion.
+snapshot()["dropped_rows"]`, and `capture_writer.dropped_count()`/
+`overflow_dropped_count()` (per store). Its `findings()` wrapper feeds
+`GET /api/quality/summary` the same way `alerting.alert_findings()` does.
+Deliberately NOT `settlement_resolver.dropped_total` - that field is a
+conservation sum (also incremented by the expected non-binary-result skip
+branch), not a defect count; its own source comment says so.
+`services/advisory/routes.py` and `services/whale_calibration/routes.py`
+also call `current_completeness_state()` directly, and `main.py`'s
+`_maybe_run_auto_apply` uses it to refuse an automatic config write while
+a defect is open - see `docs/superpowers/specs/2026-08-30-self-feeding-
+loop-provenance-design.md`.
+
 **Deliberately not included yet** — Task 16 territory, expected to be
 folded in here once it lands rather than duplicated: latest research-sweep
 metadata (`services/research/`, when it exists).

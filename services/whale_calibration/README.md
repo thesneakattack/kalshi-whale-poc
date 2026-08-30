@@ -79,3 +79,21 @@ needing to first measure how often it happens.
 - **`confidence_scoring.DEFAULT_WEIGHTS`** is this module's one real
   cross-service import — the baseline `composite_confidence_breakdown`
   weights every suggestion is blended against.
+
+## Evidence-completeness provenance + the series blind spot (2026-08-30, #214 + #60)
+
+`GET /api/confidence-calibration/status` and `.../report` both carry an
+`evidence_provenance` block, same mechanism and same route-boundary-only
+placement as `services/advisory/routes.py`'s own addition - `confidence_
+calibration.generate_calibration_report()` itself is unchanged.
+`main.py`'s calibration auto-apply block gets the same silent-skip-on-
+degraded-evidence guard as advisory's.
+
+Separately (#60): `signal_log.resolved_signals_with_factors()` now selects
+`series` - a real, indexed, `NOT NULL` column it stored but never
+returned, so this module never saw it. `generate_calibration_report()`'s
+`report` dict now carries a `by_series` breakdown
+(`confidence_calibration._series_win_rates()`), a plain categorical
+group-by (not `_bucket_win_rates`' numeric tertile split - `series` isn't
+inside `factors_json`), dropping any series under the module's existing
+`_MIN_BAND_SIZE` (3) floor.
