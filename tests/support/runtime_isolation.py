@@ -28,6 +28,7 @@ against a live AST scan of services/ so that sync gap itself has a test.
 """
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import shutil
@@ -101,6 +102,38 @@ DATA_DIR_MODULE_PATHS: tuple[str, ...] = (
     "services.storage_health.storage_health",
 )
 
+# Config sections whose committed values are LIVE RUNTIME STATE, not test
+# fixtures (issue #229, 2026-08-30). config/settings.yaml is the running
+# app's own live-reloadable config and the user commits it as-is, so a flag
+# the soak owner flips in production lands in the file every test reads:
+# PR #222 committed realtime_data_plane.two_consumer_mode: true and 16
+# gateway tests that never set the flag - they passed only while the file
+# said false - failed at once. _redirect_config_store() below only protects
+# the file from tests; it copies the file's VALUES, so it cannot protect
+# tests from the file. Every section listed here is served to the whole
+# suite as exactly this dict by tests/conftest.py's autouse
+# _pinned_runtime_config fixture, whatever the file says. A test that needs
+# a specific value patches config_store.get itself (the idiom
+# tests/test_kalshi_ws_two_consumers.py's _gateway() uses) and that explicit
+# patch replaces the pin outright; config_store.update() on a pinned section
+# is invisible through get() by design - the file is what the pin exists to
+# make irrelevant. Whole sections, with every key explicit: a flag added to
+# a pinned section must be given a test value here, and
+# tests/test_runtime_isolation.py cross-checks each pinned section's key set
+# against the committed file - the same discipline PERSISTENCE_MODULE_PATHS
+# gets - so no flag can be inherited again by omission.
+PINNED_CONFIG_SECTIONS: dict[str, dict] = {
+    "realtime_data_plane": {
+        # Single queue: the legacy topology and the code's own default when
+        # the key is absent. tests/test_kalshi_ws_ingest_metrics.py runs its
+        # accounting under both topologies explicitly.
+        "two_consumer_mode": False,
+        # Shadow-count only, never filter; the reader-gate tests set True
+        # themselves where filtering is the subject.
+        "reader_gate_enabled": False,
+    },
+}
+
 
 @dataclass(frozen=True)
 class IsolationContext:
@@ -173,6 +206,21 @@ def _redirect_config_store(temp_root: Path) -> None:
     shutil.copy(config_store_module.CONFIG_PATH, tmp_config_path)
     config_store_module.config_store._path = tmp_config_path
     config_store_module.config_store.reload()
+
+
+def pinned_config_get(original_get):
+    """Wrap a ConfigStore.get so every PINNED_CONFIG_SECTIONS section in the
+    dict it returns is a fresh copy of the pinned dict, never the file's.
+    Everything else - the schema, tuning values, safety defaults, anything a
+    test wrote through update() - still comes from the isolated copy exactly
+    as before. A copy per call so a test mutating what it got back cannot
+    edit the registry for the tests after it."""
+    def get() -> dict:
+        cfg = original_get()
+        for section, pinned in PINNED_CONFIG_SECTIONS.items():
+            cfg[section] = copy.deepcopy(pinned)
+        return cfg
+    return get
 
 
 def _is_repo_data_path(database: object) -> bool:

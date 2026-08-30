@@ -4,7 +4,10 @@ realtime-data-plane-investigation.md).
 
 Deterministic: every clock the gateway reads is injectable, no socket is
 opened, and the bounded reader->consumer queue is exercised directly via
-the same two methods run() itself uses (_ingest_raw / _process_item)."""
+the same two methods run() itself uses (_ingest_raw / _process_item).
+Every test that ingests runs under both queue topologies (the queue_mode
+fixture): the accounting asserted here must hold whichever queue a message
+rides."""
 import asyncio
 import json
 import time
@@ -15,24 +18,38 @@ from services.kalshi import websocket as ws_module
 from services.kalshi.websocket import KalshiStreamGateway
 
 
-def _single_queue_mode(gw: KalshiStreamGateway, monkeypatch) -> None:
-    """Every test here is single-queue accounting, so it says so instead of
-    inheriting realtime_data_plane.two_consumer_mode from the committed
-    config/settings.yaml (16 tests failed the moment that flag was committed
-    as true, 2026-08-30). Same injection test_kalshi_ws_two_consumers.py's
-    _gateway() uses for the opposite mode."""
-    if monkeypatch is not None:
-        monkeypatch.setattr(ws_module.config_store, "get", lambda: {
-            "realtime_data_plane": {"two_consumer_mode": False},
-        })
+@pytest.fixture(params=["single_queue", "two_consumer"])
+def queue_mode(request, monkeypatch) -> str:
+    """Runs a gateway test under BOTH ingest topologies - single queue (the
+    legacy default) and realtime_data_plane.two_consumer_mode (what
+    production runs since PR #222 committed it) - because the accounting
+    asserted here is meant to hold whichever queue a message rides. Set
+    explicitly, never inherited: 16 of these tests failed the moment the
+    flag was committed as true (2026-08-30, issue #229). tests/conftest.py
+    now pins the section suite-wide so nothing can inherit the file's value
+    again; this patch replaces that pin for the test's duration - the same
+    injection test_kalshi_ws_two_consumers.py's _gateway() uses."""
+    two_consumer = request.param == "two_consumer"
+    monkeypatch.setattr(ws_module.config_store, "get", lambda: {
+        "realtime_data_plane": {"two_consumer_mode": two_consumer},
+    })
+    return request.param
+
+
+def _gateway(queue_max: int = 20000, **kwargs) -> KalshiStreamGateway:
+    gw = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2", ingest_queue_max=queue_max, **kwargs)
     gw._gate_cfg_cache = None  # force a fresh config read past the 1s cache
-
-
-def _gateway(queue_max: int = 20000, monkeypatch=None) -> KalshiStreamGateway:
-    gw = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2", ingest_queue_max=queue_max)
-    _single_queue_mode(gw, monkeypatch)
     gw._begin_connection()
     return gw
+
+
+def _queue_for(gw: KalshiStreamGateway, cls: str) -> asyncio.Queue:
+    """The queue a `cls` message rides in the gateway's current mode - the
+    routing decision _ingest_raw itself makes (one queue, or the
+    critical/market split)."""
+    if not gw._two_consumer_mode():
+        return gw._queue
+    return gw._critical_queue if cls in ws_module._CRITICAL_CLASSES else gw._market_queue
 
 
 def _trade(trade_id: str = "t1") -> str:
@@ -58,18 +75,33 @@ async def _noop(*_args):
 
 
 async def _drain(gw: KalshiStreamGateway, now: float, on_trade=_noop) -> int:
+    """Consume everything the gateway holds, in whichever topology it is in,
+    the way its own consumers do: each queue FIFO (critical before market -
+    the two consumers are independent and no test here asserts cross-queue
+    order), the market consumer's wake sentinel skipped (never a message),
+    then the coalesced pending tickers, which _consume_market_from only
+    reaches once its queue is empty. Returns how many messages reached
+    _process_item."""
     processed = 0
-    while not gw._queue.empty():
-        item = gw._queue.get_nowait()
-        await gw._process_item(item, on_trade=on_trade, on_ticker=_noop, on_status=_noop, now=now)
+    for queue in (gw._queue, gw._critical_queue, gw._market_queue):
+        while not queue.empty():
+            item = queue.get_nowait()
+            if item[1] == ws_module._TICKER_WAKE:
+                continue
+            await gw._process_item(item, on_trade=on_trade, on_ticker=_noop, on_status=_noop, now=now)
+            processed += 1
+    while gw._ticker_by_market:
+        ticker = next(iter(gw._ticker_by_market))
+        enqueued_at, data = gw._ticker_by_market.pop(ticker)
+        await gw._process_item((enqueued_at, "ticker", data), on_trade=on_trade, on_ticker=_noop, on_status=_noop, now=now)
         processed += 1
     return processed
 
 
 # --- received / processed / dropped by message class ----------------------
 
-def test_received_and_processed_are_counted_by_message_class(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_received_and_processed_are_counted_by_message_class(queue_mode):
+    gw = _gateway()
     for raw in (_trade("a"), _trade("b"), _ticker(), _subscribed()):
         assert gw._ingest_raw(raw, now=1.0) is True
     assert asyncio.run(_drain(gw, now=1.0)) == 4
@@ -82,8 +114,8 @@ def test_received_and_processed_are_counted_by_message_class(monkeypatch):
     assert m["dropped_by_class"] == {}
 
 
-def test_queue_full_drops_are_counted_by_class_and_are_not_server_errors(monkeypatch):
-    gw = _gateway(queue_max=2, monkeypatch=monkeypatch)
+def test_queue_full_drops_are_counted_by_class_and_are_not_server_errors(queue_mode):
+    gw = _gateway(queue_max=2)
     assert gw._ingest_raw(_trade("a"), now=1.0) is True
     assert gw._ingest_raw(_ticker(), now=1.0) is True
     assert gw._ingest_raw(_trade("c"), now=1.0) is False  # third message: queue full
@@ -98,8 +130,8 @@ def test_queue_full_drops_are_counted_by_class_and_are_not_server_errors(monkeyp
     assert m["error_25_total"] == 0
 
 
-def test_server_error_25_is_counted_separately_from_local_drops(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_server_error_25_is_counted_separately_from_local_drops(queue_mode):
+    gw = _gateway()
     statuses = []
 
     async def on_status(status):
@@ -107,7 +139,8 @@ def test_server_error_25_is_counted_separately_from_local_drops(monkeypatch):
 
     gw._ingest_raw(_server_error(25), now=1.0)
     gw._ingest_raw(_server_error(6, "Already subscribed"), now=1.0)
-    item1, item2 = gw._queue.get_nowait(), gw._queue.get_nowait()
+    control_queue = _queue_for(gw, "control")
+    item1, item2 = control_queue.get_nowait(), control_queue.get_nowait()
     asyncio.run(gw._process_item(item1, on_trade=_noop, on_ticker=_noop, on_status=on_status, now=2.0))
     asyncio.run(gw._process_item(item2, on_trade=_noop, on_ticker=_noop, on_status=on_status, now=2.0))
 
@@ -125,8 +158,8 @@ def test_server_error_25_is_counted_separately_from_local_drops(monkeypatch):
     assert any("Kalshi WS error 25" in (s.get("error") or "") for s in statuses)
 
 
-def test_unknown_message_types_fall_into_a_bounded_other_class(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_unknown_message_types_fall_into_a_bounded_other_class(queue_mode):
+    gw = _gateway()
     gw._ingest_raw(json.dumps({"type": "something_new", "msg": {}}), now=1.0)
     gw._ingest_raw(json.dumps({"msg": {}}), now=1.0)  # no type at all
     asyncio.run(_drain(gw, now=1.0))
@@ -135,7 +168,7 @@ def test_unknown_message_types_fall_into_a_bounded_other_class(monkeypatch):
     assert m["processed_by_class"] == {"other": 2}
 
 
-def test_malformed_json_is_counted_and_neither_enqueued_nor_dropped():
+def test_malformed_json_is_counted_and_neither_enqueued_nor_dropped(queue_mode):
     gw = _gateway()
     assert gw._ingest_raw("{not json", now=1.0) is False
     m = gw.ingest_metrics(now=1.0)
@@ -148,8 +181,8 @@ def test_malformed_json_is_counted_and_neither_enqueued_nor_dropped():
 
 # --- queue depth / high-water / oldest age / wait ------------------------
 
-def test_queue_high_water_tracks_peak_depth_across_the_connection(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_queue_high_water_tracks_peak_depth_across_the_connection(queue_mode):
+    gw = _gateway()
     for i in range(3):
         gw._ingest_raw(_trade(str(i)), now=1.0)
     assert gw.ingest_metrics(now=1.0)["queue"] == {
@@ -163,12 +196,12 @@ def test_queue_high_water_tracks_peak_depth_across_the_connection(monkeypatch):
     assert q["high_water"] == 3
 
 
-def test_oldest_message_age_is_measured_from_the_queue_head_with_the_injected_clock(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_oldest_message_age_is_measured_from_the_queue_head_with_the_injected_clock(queue_mode):
+    gw = _gateway()
     gw._ingest_raw(_trade("a"), now=10.0)
     gw._ingest_raw(_trade("b"), now=11.0)
     assert gw.ingest_metrics(now=12.0)["queue"]["oldest_message_age_sec"] == pytest.approx(2.0)
-    item = gw._queue.get_nowait()
+    item = _queue_for(gw, "trade").get_nowait()
     asyncio.run(gw._process_item(item, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=12.0))
     assert gw.ingest_metrics(now=12.0)["queue"]["oldest_message_age_sec"] == pytest.approx(1.0)
     asyncio.run(_drain(gw, now=12.0))
@@ -186,7 +219,6 @@ def test_oldest_message_age_counts_pending_coalesced_tickers_with_every_queue_dr
         "realtime_data_plane": {"two_consumer_mode": True},
     })
     gw = _gateway()
-    gw._gate_cfg_cache = None  # force a fresh config read past the 1s cache
     assert gw._ingest_raw(_ticker(), now=50.0) is True
     for queue in (gw._queue, gw._critical_queue, gw._market_queue):
         while not queue.empty():
@@ -199,11 +231,12 @@ def test_oldest_message_age_counts_pending_coalesced_tickers_with_every_queue_dr
     assert q["oldest_message_age_sec"] == pytest.approx(60.0)
 
 
-def test_queue_wait_is_the_monotonic_gap_between_enqueue_and_dequeue(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_queue_wait_is_the_monotonic_gap_between_enqueue_and_dequeue(queue_mode):
+    gw = _gateway()
     gw._ingest_raw(_trade("a"), now=100.0)
     gw._ingest_raw(_trade("b"), now=100.0)
-    first, second = gw._queue.get_nowait(), gw._queue.get_nowait()
+    trade_queue = _queue_for(gw, "trade")
+    first, second = trade_queue.get_nowait(), trade_queue.get_nowait()
     asyncio.run(gw._process_item(first, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=100.25))
     asyncio.run(gw._process_item(second, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=102.0))
 
@@ -220,14 +253,14 @@ def test_queue_wait_is_the_monotonic_gap_between_enqueue_and_dequeue(monkeypatch
     assert w["window"]["p95_upper_bound_sec"] == 10.0
 
 
-def test_queue_wait_p95_upper_bound_is_the_bucket_holding_the_95th_percentile(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_queue_wait_p95_upper_bound_is_the_bucket_holding_the_95th_percentile(queue_mode):
+    gw = _gateway()
     for i in range(20):
         gw._ingest_raw(_trade(str(i)), now=0.0)
     # 19 sub-millisecond waits and one 5 s wait: p95 lands in the last
     # sub-ms sample, so the bound is 1 ms, not the outlier's 10 s bucket.
     for i in range(20):
-        item = gw._queue.get_nowait()
+        item = _queue_for(gw, "trade").get_nowait()
         now = 5.0 if i == 19 else 0.0005
         asyncio.run(gw._process_item(item, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=now))
     w = gw.ingest_metrics(now=5.0)["queue_wait"]
@@ -235,7 +268,7 @@ def test_queue_wait_p95_upper_bound_is_the_bucket_holding_the_95th_percentile(mo
     assert w["window"]["max_sec"] == pytest.approx(5.0)
 
 
-def test_queue_wait_p95_is_none_when_nothing_was_processed_this_window():
+def test_queue_wait_p95_is_none_when_nothing_was_processed_this_window(queue_mode):
     gw = _gateway()
     w = gw.ingest_metrics(now=0.0)["queue_wait"]
     assert w["window"] == {"count": 0, "max_sec": None, "avg_sec": None, "p95_upper_bound_sec": None}
@@ -244,8 +277,8 @@ def test_queue_wait_p95_is_none_when_nothing_was_processed_this_window():
 
 # --- handler time by class -------------------------------------------------
 
-def test_handler_time_is_recorded_per_message_class(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_handler_time_is_recorded_per_message_class(queue_mode):
+    gw = _gateway()
 
     async def slow_trade(_trade):
         await asyncio.sleep(0.02)
@@ -266,10 +299,10 @@ def test_handler_time_is_recorded_per_message_class(monkeypatch):
 
 # --- consumer exceptions: counted, fault-logged once per class per window --
 
-def test_handler_exceptions_are_counted_and_fault_logged_once_per_class_per_window(monkeypatch):
+def test_handler_exceptions_are_counted_and_fault_logged_once_per_class_per_window(queue_mode, monkeypatch):
     recorded = []
     monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: recorded.append((a, k)) or True)
-    gw = _gateway(monkeypatch=monkeypatch)
+    gw = _gateway()
 
     async def broken_trade(_trade):
         raise ValueError("bad trade")
@@ -296,20 +329,10 @@ def test_handler_exceptions_are_counted_and_fault_logged_once_per_class_per_wind
 
 # --- consumer handler timeouts: bounds an unbounded hang (issue #145/#150) -
 
-def _gateway_with_timeout(timeout_sec: float, queue_max: int = 20000, monkeypatch=None) -> KalshiStreamGateway:
-    gw = KalshiStreamGateway(
-        "https://external-api.kalshi.com/trade-api/v2",
-        ingest_queue_max=queue_max, handler_timeout_sec=timeout_sec,
-    )
-    _single_queue_mode(gw, monkeypatch)
-    gw._begin_connection()
-    return gw
-
-
-def test_a_handler_that_hangs_past_the_timeout_is_bounded_and_counted_separately(monkeypatch):
+def test_a_handler_that_hangs_past_the_timeout_is_bounded_and_counted_separately(queue_mode, monkeypatch):
     recorded = []
     monkeypatch.setattr(ws_module.fault_log, "record_fault", lambda *a, **k: recorded.append((a, k)) or True)
-    gw = _gateway_with_timeout(0.02, monkeypatch=monkeypatch)
+    gw = _gateway(handler_timeout_sec=0.02)
 
     async def hung_trade(_trade):
         await asyncio.sleep(10)  # far past the 0.02s timeout - never actually waited out
@@ -328,10 +351,10 @@ def test_a_handler_that_hangs_past_the_timeout_is_bounded_and_counted_separately
     assert kwargs.get("severity") == "warn"
 
 
-def test_handler_timeouts_are_fault_logged_once_per_class_per_window(monkeypatch):
+def test_handler_timeouts_are_fault_logged_once_per_class_per_window(queue_mode, monkeypatch):
     recorded = []
     monkeypatch.setattr(ws_module.fault_log, "record_fault", lambda *a, **k: recorded.append((a, k)) or True)
-    gw = _gateway_with_timeout(0.01, monkeypatch=monkeypatch)
+    gw = _gateway(handler_timeout_sec=0.01)
 
     async def hung(_msg):
         await asyncio.sleep(10)
@@ -350,8 +373,8 @@ def test_handler_timeouts_are_fault_logged_once_per_class_per_window(monkeypatch
     assert gw.ingest_metrics(now=0.0)["handler_timeouts_total"] == 4
 
 
-def test_a_handler_well_under_the_timeout_is_unaffected(monkeypatch):
-    gw = _gateway_with_timeout(1.0, monkeypatch=monkeypatch)
+def test_a_handler_well_under_the_timeout_is_unaffected(queue_mode):
+    gw = _gateway(handler_timeout_sec=1.0)
 
     async def quick_trade(_trade):
         await asyncio.sleep(0.001)
@@ -366,14 +389,14 @@ def test_a_handler_well_under_the_timeout_is_unaffected(monkeypatch):
 
 # --- window reset semantics ------------------------------------------------
 
-def test_reset_ingest_window_clears_window_stats_but_keeps_lifetime_counters(monkeypatch):
-    gw = _gateway(queue_max=1, monkeypatch=monkeypatch)
+def test_reset_ingest_window_clears_window_stats_but_keeps_lifetime_counters(queue_mode):
+    gw = _gateway(queue_max=1)
     gw._ingest_raw(_trade("a"), now=0.0)
     gw._ingest_raw(_trade("b"), now=0.0)  # dropped
-    item = gw._queue.get_nowait()
+    item = _queue_for(gw, "trade").get_nowait()
     asyncio.run(gw._process_item(item, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=0.5))
     gw._ingest_raw(_server_error(25), now=0.5)
-    item = gw._queue.get_nowait()
+    item = _queue_for(gw, "control").get_nowait()
     asyncio.run(gw._process_item(item, on_trade=_noop, on_ticker=_noop, on_status=_noop, now=0.5))
 
     before = gw.ingest_metrics(now=0.5)
@@ -455,30 +478,30 @@ def test_ingest_metrics_before_any_connection_reports_an_empty_queue_rather_than
 
 # --- enqueue timestamp handoff to application handlers (I2) ---------------
 
-def test_handlers_can_read_the_message_enqueue_timestamp_via_the_contextvar(monkeypatch):
-    gw = _gateway(monkeypatch=monkeypatch)
+def test_handlers_can_read_the_message_enqueue_timestamp_via_the_contextvar(queue_mode):
+    gw = _gateway()
     seen = []
 
     async def on_trade(_trade):
         seen.append(ws_module.MESSAGE_ENQUEUED_AT.get())
 
     gw._ingest_raw(_trade("a"), now=123.5)
-    item = gw._queue.get_nowait()
+    item = _queue_for(gw, "trade").get_nowait()
     asyncio.run(gw._process_item(item, on_trade=on_trade, on_ticker=_noop, on_status=_noop, now=124.0))
 
     assert seen == [123.5]
     assert ws_module.MESSAGE_ENQUEUED_AT.get() is None  # reset after the handler, never leaks
 
 
-def test_contextvar_is_reset_even_when_the_handler_raises(monkeypatch):
+def test_contextvar_is_reset_even_when_the_handler_raises(queue_mode, monkeypatch):
     monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: True)
-    gw = _gateway(monkeypatch=monkeypatch)
+    gw = _gateway()
 
     async def broken(_trade):
         raise RuntimeError("boom")
 
     gw._ingest_raw(_trade("a"), now=1.0)
-    asyncio.run(gw._process_item(gw._queue.get_nowait(), on_trade=broken, on_ticker=_noop, on_status=_noop, now=2.0))
+    asyncio.run(gw._process_item(_queue_for(gw, "trade").get_nowait(), on_trade=broken, on_ticker=_noop, on_status=_noop, now=2.0))
     assert ws_module.MESSAGE_ENQUEUED_AT.get() is None
 
 
@@ -511,13 +534,13 @@ def test_shadow_gate_does_not_count_a_whale_sized_trade(monkeypatch):
     assert gw.ingest_metrics(now=1.0)["gate_would_reject"] == 0
 
 
-def test_gate_exception_falls_open_and_still_enqueues(monkeypatch):
+def test_gate_exception_falls_open_and_still_enqueues(queue_mode, monkeypatch):
     monkeypatch.setattr(ws_module.whale_gate, "passes", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
     monkeypatch.setattr(ws_module.fault_log, "record", lambda *a, **k: True)
-    gw = _gateway(monkeypatch=monkeypatch)
+    gw = _gateway()
     assert gw._ingest_raw(_trade_with_count("t1", "K1", "500"), now=1.0) is True
     assert gw.ingest_metrics(now=1.0)["gate_exceptions"] == 1
-    assert gw._queue.qsize() == 1
+    assert _queue_for(gw, "trade").qsize() == 1
 
 
 # --- _shadow_gate_check's config cache (code-review finding #6) -----------
