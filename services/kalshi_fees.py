@@ -71,9 +71,62 @@ side-aware per-contract cost every dollar figure in this app derives from.
 It lives here rather than in a new module because this is the money-math
 module every consumer of it already imports, and breakeven_unit_cost()
 consumes its output directly.
+
+Event-level fee overrides and the quadratic_with_combo_maker_fees fee type
+(2026-08-30, issues #264/#258). `fee_type` was never read here at all
+before this (grep for it in the pre-fix module found nothing) - every fee
+went through _multiplier(ticker), a per-SERIES lookup only, even though:
+
+(1) services/title_cache.py and services/market_watch/event_metadata.py
+    already capture and persist `fee_type_override`/`fee_multiplier_override`
+    into event_titles for every event (get_event()'s own response fields -
+    nothing new is fetched by this fix). docs/kalshi/
+    get-event-fee-changes.md: "Event fees are an override layered on top
+    of the parent series' fee structure. If fee_type_override and
+    fee_multiplier_override are null, that indicates the override is
+    cleared." Each column falls back independently - an event can override
+    only the multiplier, only the type, both, or neither.
+(2) docs/kalshi/get-series-list.md's FeeType schema: "'quadratic_with_
+    combo_maker_fees' is the same maker-fee structure with a 0.5 maker
+    multiplier instead of 0.25" - corroborated independently by docs/
+    kalshi/changelog-index.md's 2026-08-22 "Combo RFQ fee assignment for
+    briefly resting orders" entry ("The maker fee uses a fee multiplier of
+    0.5, rather than the standard 0.25"). Both docs describe a MAKER-fee-
+    only difference - the taker rate (General Trading Fees Table) is the
+    same across quadratic/quadratic_with_maker_fees/
+    quadratic_with_combo_maker_fees, so this only ever changes maker_fee().
+    `flat` (the fourth FeeType value, "Specific Trading Fees Table") isn't
+    modeled here - no market/event in this app's own data has ever
+    resolved to it, and inventing its formula from the enum name alone
+    would be exactly the guess CLAUDE.md's "never guess" rule forbids;
+    revisit if one ever does.
+
+_event_fee_override() resolves both via title_cache.fee_override_for_ticker
+- a single indexed join (market_titles.event_ticker -> event_titles), not
+the full-table load_market_titles()/load_event_titles() scans main.py uses
+to rebuild its in-memory caches. Fee calculation happens once per fill
+(order open/close), not on the WS ingestion hot path CLAUDE.md's data-plane
+rule is about, so one small indexed read per call is the right tradeoff
+here over threading a new parameter through every existing call site
+(paper_broker.py x4, exits/exit_engine.py, exits/position_netting.py,
+series_watcher.py, reset/trade_archive.py) - which would also risk a
+forgotten call site silently never seeing an override, the exact
+completeness failure the data-plane rule calls out.
+
+Issue #258's KXMVECROSSCATEGORY0-SHARD1 NFL-combo maker-fee exemption is
+its own separate mechanism, not a case of the above: it's a SERIES-wide
+policy (docs/kalshi/changelog-index.md's 2026-08-20 entry, "no maker fee"),
+not a per-EVENT override, and this app has no pipeline for a series' own
+base (non-override) fee_type - only per-event overrides are captured. It
+also can't reuse _FEE_MULTIPLIER_BY_SERIES (shared by taker_fee() AND
+maker_fee() via _multiplier()) - the changelog says nothing about the
+taker fee for this series, so a 0.0 entry there would incorrectly zero
+taker fees too. See _is_nfl_combo_maker_exempt() below for why it also
+can't be matched via series_of() + a dict key.
 """
 import math
 
+from services import title_cache
 from services.signal_log import series_of
 
 _TAKER_RATE = 0.07
@@ -106,10 +159,74 @@ def _multiplier(ticker: str | None) -> float:
     """The real per-series fee multiplier for `ticker` (1.0 for every series
     not in _FEE_MULTIPLIER_BY_SERIES, and 1.0 when no ticker is in scope at
     the call site). One lookup, shared by every fee function here, so a
-    future correction to the table can never land in one of them only."""
+    future correction to the table can never land in one of them only.
+    This is the SERIES-level fallback - _effective_multiplier() below is
+    what every fee function actually calls, and prefers an event-level
+    override over this when one is active."""
     if ticker is None:
         return 1.0
     return _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0)
+
+
+def _event_fee_override(ticker: str | None) -> tuple[str | None, float | None]:
+    """(fee_type_override, fee_multiplier_override) the event `ticker`
+    belongs to has active right now, via title_cache.fee_override_for_ticker
+    (services/title_cache.py - already persists both columns from every
+    get_event() fetch; nothing here re-fetches anything). (None, None) for
+    ticker=None, an uncached market/event, or an event with no active
+    override in either column (docs/kalshi/get-event-fee-changes.md - null
+    means "override cleared") - every fee function below falls back to
+    _FEE_MULTIPLIER_BY_SERIES / the standard 0.25 maker rate in that case,
+    identical to before this override existed."""
+    if ticker is None:
+        return None, None
+    return title_cache.fee_override_for_ticker(ticker)
+
+
+def _effective_multiplier(ticker: str | None, fee_multiplier_override: float | None) -> float:
+    """The multiplier that actually applies: the event-level override when
+    it's set (docs/kalshi/get-event-fee-changes.md - an event override is
+    "layered on top of the parent series' fee structure" and, per that same
+    line, wins whenever it isn't null - including an override of exactly
+    0.0, a real waiver, not "no override"), otherwise the series-level
+    _multiplier() lookup, unchanged from before event overrides existed
+    here."""
+    if fee_multiplier_override is not None:
+        return fee_multiplier_override
+    return _multiplier(ticker)
+
+
+# docs/kalshi/get-series-list.md's FeeType schema (see this module's own
+# docstring) - only this one fee_type changes the MAKER multiplier from
+# the standard 0.25 to 0.5, i.e. 2x. Every other value (including no
+# override at all, the None key .get() falls back to) leaves it unchanged.
+_MAKER_TYPE_MULTIPLIER = {"quadratic_with_combo_maker_fees": 2.0}
+
+# Issue #258: docs/kalshi/changelog-index.md's 2026-08-20 "Maker fee
+# exemption for independent NFL combo markets" entry - independent-NFL-
+# component combo markets created after 2026-08-19 under this series pay
+# NO maker fee (taker fee unaffected - see this module's own docstring for
+# why that rules out _FEE_MULTIPLIER_BY_SERIES). Verified as the literal
+# series ticker by grepping docs/kalshi/changelog-index.md directly, not
+# copied from a paraphrase.
+_NFL_COMBO_MAKER_EXEMPT_SERIES = "KXMVECROSSCATEGORY0-SHARD1"
+
+
+def _is_nfl_combo_maker_exempt(ticker: str | None) -> bool:
+    """Whether `ticker` belongs to the KXMVECROSSCATEGORY0-SHARD1 maker-fee
+    exemption. NOT implemented as series_of(ticker) in a dict: series_of()
+    (services/signal_log.py) splits on the FIRST hyphen only, and this
+    series ticker itself contains one -
+    series_of("KXMVECROSSCATEGORY0-SHARD1-25NOV02-X") returns just
+    "KXMVECROSSCATEGORY0", silently dropping "-SHARD1". Every entry in
+    _FEE_MULTIPLIER_BY_SERIES is hyphen-free, so that table's series_of()
+    convention has never had to handle this before. Matched by exact
+    ticker or a "<series>-" prefix instead, so an unrelated series that
+    happens to share the truncated series_of() prefix (e.g.
+    KXMVECROSSCATEGORY0-SHARD11, or -OTHER) is never mistaken for it."""
+    if ticker is None:
+        return False
+    return ticker == _NFL_COMBO_MAKER_EXEMPT_SERIES or ticker.startswith(_NFL_COMBO_MAKER_EXEMPT_SERIES + "-")
 
 
 def taker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
@@ -118,15 +235,19 @@ def taker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     returns 0.0 rather than a negative/nonsensical fee.
 
     ticker: optional, same series_of() definition used everywhere else in
-    this app (signal_log.series_of) - when given, applies the real
-    per-series multiplier in _FEE_MULTIPLIER_BY_SERIES (1.0, i.e. no
-    change, for every series not listed there). Omitting it (any call site
-    that genuinely has no ticker in scope) keeps the default multiplier of
-    1 everywhere, same as this function's original, real-fill-verified
-    formula."""
+    this app (signal_log.series_of) - when given, applies (in precedence
+    order) the event-level fee_multiplier_override if title_cache has one
+    cached (issue #264), else the real per-series multiplier in
+    _FEE_MULTIPLIER_BY_SERIES (1.0, i.e. no change, for every series not
+    listed there). Omitting it (any call site that genuinely has no ticker
+    in scope) keeps the default multiplier of 1 everywhere, same as this
+    function's original, real-fill-verified formula. fee_type never
+    changes the taker rate (see this module's own docstring), so
+    fee_type_override is not consulted here."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _multiplier(ticker)
+    _, fee_multiplier_override = _event_fee_override(ticker)
+    multiplier = _effective_multiplier(ticker, fee_multiplier_override)
     if multiplier == 0.0:
         return 0.0
     raw = _TAKER_RATE * multiplier * contracts * price * (1 - price)
@@ -143,13 +264,25 @@ def maker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     taker order), and the paper broker filled everything instantly at the
     quoted price, which is also inherently a taker fill. See services/
     paper_broker.py's PendingOrder/check_pending_fills for the paper-mode
-    limit-order simulation this now feeds."""
+    limit-order simulation this now feeds.
+
+    Two 2026-08-30 additions layered on top of that, both from this
+    module's own docstring: KXMVECROSSCATEGORY0-SHARD1 is a full,
+    unconditional exemption (issue #258, checked first, before any
+    override lookup); otherwise an event-level fee_type_override of
+    quadratic_with_combo_maker_fees doubles the maker multiplier from 0.25
+    to 0.5 (issue #264), independently of whatever fee_multiplier_override
+    or the series table says."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _multiplier(ticker)
+    if _is_nfl_combo_maker_exempt(ticker):
+        return 0.0
+    fee_type_override, fee_multiplier_override = _event_fee_override(ticker)
+    multiplier = _effective_multiplier(ticker, fee_multiplier_override)
     if multiplier == 0.0:
         return 0.0
-    raw = _MAKER_RATE * multiplier * contracts * price * (1 - price)
+    maker_type_factor = _MAKER_TYPE_MULTIPLIER.get(fee_type_override, 1.0)
+    raw = _MAKER_RATE * maker_type_factor * multiplier * contracts * price * (1 - price)
     return math.ceil(raw * 1_000_000) / 1_000_000
 
 
@@ -176,10 +309,15 @@ def taker_fee_per_contract(price: float, ticker: str | None = None) -> float:
     Exists because "what does a contract at price c really cost me" is a
     question two separate analytics modules ask (series_watcher.reconcile,
     reset.trade_archive._summarise) and neither may re-derive 0.07 or the
-    multiplier table locally."""
+    multiplier table locally.
+
+    Same event-level fee_multiplier_override precedence as taker_fee()
+    (issue #264) - breakeven_unit_cost() below calls this, so an override
+    reaches breakeven math automatically, with no separate plumbing."""
     if price <= 0 or price >= 1:
         return 0.0
-    return _TAKER_RATE * _multiplier(ticker) * price * (1 - price)
+    _, fee_multiplier_override = _event_fee_override(ticker)
+    return _TAKER_RATE * _effective_multiplier(ticker, fee_multiplier_override) * price * (1 - price)
 
 
 def unit_cost(side: str, yes_price: float | None) -> float | None:
