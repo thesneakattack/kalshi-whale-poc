@@ -492,21 +492,15 @@ which can run in parallel right now.
 - [ ] Notifications (email/push) for real trades, kill-switch triggers, or a
       tracked whale crossing the avoidance threshold — see "Path to
       production" above.
-- [ ] **`docs/kalshi/` mirror is stale relative to upstream — 111 of 197
+- [x] **`docs/kalshi/` mirror is stale relative to upstream — 111 of 197
       verbatim-mirrored pages drifted** since the 2026-08-16 full-index
       fetch, found live the moment QCP Task 12's new content-drift checker
       (`tools/kalshi_docs_drift.py --check`) was pointed at the real
-      internet for the first time (2026-08-24). Several are schema-
-      relevant, not cosmetic: a new `x-go-type-skip-optional-pointer`
-      field and `exchange_shard_index` default/description changes across
-      many order/portfolio endpoints, a new "Subaccounts" section added to
-      `rfqs.md`, a formal `<Warning>`/`<Note>` deprecation/rate-limit
-      callout added to several pages. Re-mirroring 111 pages is real,
-      separate work (review each diff, not a bulk overwrite) — out of
-      Task 12's own scope, which was building the *detector*, not doing
-      the refresh. The weekly scheduled check will now catch future drift
-      automatically; this item is the one-time backlog of what it already
-      found on day one.
+      internet for the first time (2026-08-24). Superseded by a larger
+      forced re-sync to Trade API 3.29.0 (issue #248, commit `08924b4`):
+      154 pages refreshed verbatim, `kalshi_docs_drift --check` verified
+      0 changed / 0 unavailable afterward — the 111-page backlog is
+      covered by that broader refresh, not a separate pass.
 - [x] **`docs/kalshi/llms.txt`'s mirrored index is stale relative to the
       real upstream index — 11 pages exist upstream with no local mirror**
       — resolved 2026-08-25 during the Phase A completion gate (A17): all
