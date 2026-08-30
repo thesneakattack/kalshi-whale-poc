@@ -241,7 +241,11 @@ function renderPortfolio(state, broker) {
   $('toggle-btn-real').classList.toggle('active', accountMode === 'real');
 
   if (accountMode === 'real') {
-    $('equity-title-text').textContent = 'Balance over time (real)';
+    // "all shards" (2026-08-30, issue #252): this plots real_balance_history,
+    // recorded from the same cross-shard-aggregate get_balance() figure as
+    // the header strip (see screener-and-header.js's renderHeaderStrip) -
+    // the title says so for the same reason those labels do.
+    $('equity-title-text').textContent = 'Balance over time (real, all shards)';
     $('positions-title-text').textContent = 'Real Positions';
     $('tradelog-title-text').textContent = 'Recent Fills';
     const firstBalance = (state.real_balance_history || [])[0];
