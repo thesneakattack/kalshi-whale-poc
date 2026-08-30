@@ -7,6 +7,12 @@ Why this exists as a tool and not a feature: the soak for
 already failed (`settlement_resolver.dropped_total` was 64, not 0). A
 checklist a human reads is not a mechanism.
 
+That criterion was itself wrong, which is the second lesson: `dropped_total`
+conflated retry give-ups with correctly-skipped non-binary markets, and all
+64 were the latter (issue #208). `check_settlement_completeness` now gates on
+`dropped_after_max_attempts`. A mechanism reading a mislabelled number is
+still a mechanism reading a mislabelled number.
+
 ## The two layers, and why they stay apart
 
 **Data layer** (ingest, websocket, queues, resolver) *produces* telemetry.
@@ -281,6 +287,9 @@ def check_resolver_accounting(sched: dict) -> Check:
     if None in (enq, res, pend, drop):
         return Check("resolver_accounting", DATA_PLANE, UNKNOWN,
                      "settlement_resolver counters absent")
+    # dropped_total is the conservation term - the sum of the give-up and
+    # the expected-skip counters (issue #208) - which is exactly what this
+    # identity needs, and the reason the name was kept rather than retired.
     gap = enq - (res + pend + drop)
     return Check(
         "resolver_accounting", DATA_PLANE, PASS if gap == 0 else FAIL,
@@ -295,18 +304,44 @@ def check_resolver_accounting(sched: dict) -> Check:
 # --------------------------------------------------------------------------
 
 def check_settlement_completeness(sched: dict) -> Check:
+    """Gates on the give-up counter, never on `dropped_total` (issue #208).
+
+    This check used to read `dropped_total`, which the resolver bumped from
+    two branches meaning opposite things: retry exhaustion (markets whose
+    outcome really was lost) and a finalized market with no binary result
+    (correctly skipped - `result` is `yes`, `no`, or `scalar`, per
+    docs/kalshi/market_lifecycle.md:68 and
+    docs/kalshi/market-settlement.md:23). Every one of the 64 drops that
+    failed this criterion live on 2026-08-30 turned out to be the second
+    kind, so the criterion was unsatisfiable whenever a scalar market
+    settled - a number whose name did not match its meaning, used as a
+    pass/fail gate. The skips are still reported here, just not gated on.
+
+    An app predating the split exposes only `dropped_total`; that reads
+    UNKNOWN rather than being reinterpreted as the defect count, because
+    reinterpreting it is the bug.
+    """
     r = (sched or {}).get("settlement_resolver") or {}
-    drop, enq = r.get("dropped_total"), r.get("enqueued_total")
+    drop, enq = r.get("dropped_after_max_attempts"), r.get("enqueued_total")
+    skipped = r.get("skipped_non_binary_result")
     if drop is None:
         return Check("settlement_completeness", ANALYSIS_READINESS, UNKNOWN,
-                     "settlement_resolver.dropped_total absent")
+                     "settlement_resolver.dropped_after_max_attempts absent "
+                     "(dropped_total is the conflated sum and must not be "
+                     "read as the defect count - issue #208)")
     pct = (drop / enq * 100) if enq else 0.0
+    skip_note = (
+        f"; {skipped} more were skipped for a non-binary result, which is "
+        "expected and not gated on"
+    ) if skipped else ""
     return Check(
         "settlement_completeness", ANALYSIS_READINESS,
         PASS if drop == 0 else FAIL,
         f"{drop} of {enq} settled markets ({pct:.3f}%) were dropped after "
-        "exhausting retries and carry no resolved outcome",
-        {"dropped_total": drop, "enqueued_total": enq},
+        f"exhausting retries and carry no resolved outcome{skip_note}",
+        {"dropped_after_max_attempts": drop, "enqueued_total": enq,
+         "skipped_non_binary_result": skipped,
+         "dropped_total": r.get("dropped_total")},
         invalidates=(
             "Realized P&L, win rate, and every per-series statistic derived "
             "from settled outcomes. A dropped market's positions never "

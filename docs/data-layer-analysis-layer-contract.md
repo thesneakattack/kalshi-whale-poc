@@ -46,16 +46,37 @@ Each is a data-layer condition whose damage lands in the trade layer.
 
 | Data-layer condition | Measured | Lands in the trade layer as |
 |---|---|---|
-| `settlement_resolver.dropped_total` | 64 of 32,128 (0.199%) | Up to 64 markets whose positions never received a settlement result: realized P&L, win rate, and per-series stats are short by that much, invisibly |
+| ~~`settlement_resolver.dropped_total`~~ | ~~64 of 32,128 (0.199%)~~ | **Withdrawn 2026-08-30 (#208): not a breach.** The counter conflated retry give-ups with markets correctly skipped for having no binary outcome (`result` is `yes`, `no`, or `scalar` — `docs/kalshi/market_lifecycle.md:68`, `docs/kalshi/market-settlement.md:23`), and all 64 were the second kind. `dropped_after_max_attempts` — the counter that actually means lost settlements — was 0. See below. |
 | Ticker conservation gap | 74 updates unaccounted | Mark-to-market, unrealized P&L, exit decisions, and the netting materiality bar all read a price the exchange may have already superseded |
 | `capture_writer` faults | 220 in 24h ("database is locked") | Holes in the `raw_trades` archive — every backtest, replay, and whale-density statistic computed from it |
 | `exit_engine.stale_price_uncorroborated` | 3 | Exits recorded as decisions whose justifying price was never confirmed |
 
 The settlement figure is the sharpest illustration of why the layers stay
-apart: `docs/next-action.md` names `dropped_total == 0` as a soak pass
-criterion. It was 64. A human reading a prose checklist did not catch it.
-That is the entire argument for the analyzer being a mechanism rather than a
-list.
+apart, and then of a second failure on top of it. `docs/next-action.md` names
+`dropped_total == 0` as a soak pass criterion. It was 64, and a human reading
+a prose checklist did not catch it — the entire argument for the analyzer
+being a mechanism rather than a list.
+
+But the criterion was also wrong, which the mechanism could not see. The
+resolver incremented `dropped_total` from two branches meaning opposite
+things: retry exhaustion (an outcome genuinely lost) and a finalized market
+with a non-binary `result` (correctly skipped, since retrying never changes
+it). Only the first branch ever wrote to `fault_log`, and `fault_log.db` held
+zero `settlement_resolver` rows across 8 days of retention — so all 64 came
+from the skip branch, and `dropped_total == 0` was a criterion no scalar
+settlement could ever satisfy. Fixed in #208 by splitting the counter
+(`dropped_after_max_attempts` vs `skipped_non_binary_result`, with
+`dropped_total` kept as their sum for the conservation identity above) and by
+pointing `check_settlement_completeness` at the defect counter.
+
+The lesson generalizes past this row: **a mechanism reading a mislabelled
+number is still reading a mislabelled number.** An automated check inherits
+the semantics of the metric it gates on, so a counter whose name does not
+match its meaning converts a checklist error into a permanently red check —
+and a permanently red check gets baselined, which is how the failure hides.
+Every criterion here therefore names the exact counter it reads, and a
+counter that cannot be evaluated returns UNKNOWN rather than being
+reinterpreted as its nearest neighbour.
 
 ## The reverse gap: logging that defeats analysis
 

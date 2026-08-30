@@ -629,3 +629,34 @@ scoped to "newly added market tickers on the ticker channel."
 **Source:** `websocket-connection.md` (Subscribe Command, Update Subscription -
 Add Markets, Subscribed Response, Error Response schemas).
 **Found:** 2026-08-27/28, P7 Task 33 + its adversarial review (R3/R5).
+
+## What `result` values can a finalized market carry — is it only yes/no?
+**Answer:** No — `scalar` is a third documented value, and it currently
+arrives as an empty string. `market_lifecycle.md:68`: "After a market closes
+and the outcome is known, the market is determined and `result` is set to
+`yes`, `no`, or `scalar`." `market-settlement.md:23` says the same on the FIX
+side (tag 20107 `MarketResult`, "Result of the market when determined: `yes`,
+`no`, or `scalar`", Required=Yes). `changelog-index.md:3245-3246` adds the
+spelling trap: "Currently, a market settled to a scalar result will return
+`""` in the `market_result` field. Starting in the next release, this value
+will read `"scalar"` instead." So a scalar market is `""` today and `scalar`
+after that release ships — code must handle both, which is why the resolver's
+condition stays `result not in ("yes", "no")` rather than testing for either
+spelling.
+**Gotcha:** `services/settlement_resolver.py` skipped those markets silently
+and counted them in the same `dropped_total` as retry give-ups, so one number
+meant both "correctly skipped a market with no binary outcome" (expected) and
+"gave up and lost a settlement outcome" (a completeness defect) — and
+`docs/next-action.md` gated a soak on that number being 0, which no scalar
+settlement can ever satisfy. All 64 drops observed live on 2026-08-30 came
+from the skip branch: `data/fault_log.db` held zero `settlement_resolver` rows
+across 8 days of retention and the give-up branch always fault-logs. Which
+values they actually carried was unrecoverable, because the branch recorded
+neither ticker nor result. Split into `dropped_after_max_attempts` (defect,
+expect 0) and `skipped_non_binary_result` (expected), with a bounded
+count-by-observed-value map so `""` vs `scalar` vs an absent field stay
+distinguishable; `dropped_total` survives as the conservation sum only.
+**Source:** `market_lifecycle.md` (Determination and settlement, line 68),
+`market-settlement.md` (Message Structure, tag 20107, line 23),
+`changelog-index.md` ("Get markets may return scalar result", lines 3245-3246).
+**Found:** 2026-08-30, #208.

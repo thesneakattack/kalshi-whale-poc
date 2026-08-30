@@ -26,7 +26,9 @@ def _payload(**over):
           "dropped_by_class": {}, "queue": q}
     qh.update(over.pop("queue_health", {}))
     sched = {"settlement_resolver": {"enqueued_total": 100, "resolved_total": 90,
-                                     "pending": 10, "dropped_total": 0}}
+                                     "pending": 10, "dropped_total": 0,
+                                     "dropped_after_max_attempts": 0,
+                                     "skipped_non_binary_result": 0}}
     sched.update(over.pop("schedulers", {}))
     faults = {"by_component": {"capture_writer": 0, "exit_engine": 0},
               "most_frequent": []}
@@ -119,8 +121,20 @@ def test_queue_headroom_does_not_latch_on_a_historical_high_water():
 def test_resolver_accounting_fails_when_totals_do_not_balance():
     p = _payload(schedulers={"settlement_resolver": {
         "enqueued_total": 100, "resolved_total": 90,
-        "pending": 5, "dropped_total": 0}})
+        "pending": 5, "dropped_total": 0,
+        "dropped_after_max_attempts": 0, "skipped_non_binary_result": 0}})
     assert _by_id(sa.run_checks(p))["resolver_accounting"].status == sa.FAIL
+
+
+def test_resolver_accounting_still_balances_on_the_conflated_sum():
+    """dropped_total keeps counting both branches on purpose (issue #208):
+    it is the conservation term, and enqueued == resolved + pending +
+    dropped_total only holds if it stays the sum."""
+    p = _payload(schedulers={"settlement_resolver": {
+        "enqueued_total": 100, "resolved_total": 90, "pending": 4,
+        "dropped_total": 6, "dropped_after_max_attempts": 2,
+        "skipped_non_binary_result": 4}})
+    assert _by_id(sa.run_checks(p))["resolver_accounting"].status == sa.PASS
 
 
 def test_missing_counters_are_unknown_never_pass():
@@ -136,11 +150,38 @@ def test_missing_counters_are_unknown_never_pass():
 def test_settlement_drops_fail_and_name_the_invalidated_analysis():
     p = _payload(schedulers={"settlement_resolver": {
         "enqueued_total": 32128, "resolved_total": 30903,
-        "pending": 1161, "dropped_total": 64}})
+        "pending": 1161, "dropped_total": 64,
+        "dropped_after_max_attempts": 64, "skipped_non_binary_result": 0}})
     c = _by_id(sa.run_checks(p))["settlement_completeness"]
     assert c.status == sa.FAIL
     assert c.layer == sa.ANALYSIS_READINESS
     assert c.invalidates and "P&L" in c.invalidates
+
+
+def test_non_binary_skips_alone_do_not_fail_settlement_completeness():
+    """Issue #208, the whole point: a finalized market with no binary
+    outcome (docs/kalshi/market_lifecycle.md:68, market-settlement.md:23 -
+    `yes`, `no`, or `scalar`) is correctly skipped, not a completeness
+    defect. Gating on the conflated total made the criterion unsatisfiable
+    whenever any scalar market settled."""
+    p = _payload(schedulers={"settlement_resolver": {
+        "enqueued_total": 32128, "resolved_total": 30903,
+        "pending": 1161, "dropped_total": 64,
+        "dropped_after_max_attempts": 0, "skipped_non_binary_result": 64}})
+    c = _by_id(sa.run_checks(p))["settlement_completeness"]
+    assert c.status == sa.PASS
+    assert c.measured["skipped_non_binary_result"] == 64
+    assert "64" in c.detail  # reported, just not gated on
+
+
+def test_settlement_completeness_is_unknown_when_only_the_conflated_total_exists():
+    """An app predating the split exposes dropped_total alone. Reading it
+    as the defect counter is exactly the bug; UNKNOWN is the honest answer,
+    and UNKNOWN is never a pass."""
+    p = _payload(schedulers={"settlement_resolver": {
+        "enqueued_total": 32128, "resolved_total": 30903,
+        "pending": 1161, "dropped_total": 64}})
+    assert _by_id(sa.run_checks(p))["settlement_completeness"].status == sa.UNKNOWN
 
 
 def test_every_failing_analysis_check_states_what_it_invalidates():
@@ -151,7 +192,9 @@ def test_every_failing_analysis_check_states_what_it_invalidates():
                       "processed_by_class": {"ticker": 1000}},
         schedulers={"settlement_resolver": {
             "enqueued_total": 100, "resolved_total": 30,
-            "pending": 6, "dropped_total": 64}},
+            "pending": 6, "dropped_total": 64,
+            "dropped_after_max_attempts": 64,
+            "skipped_non_binary_result": 0}},
         faults_last_24h={"by_component": {"capture_writer": 220,
                                           "exit_engine": 175},
                          "most_frequent": [
