@@ -3486,6 +3486,13 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
     assert body["signal_resolution"]["busy"] is False
     assert body["catalog_scan"]["busy"] is True
     # Review finding (PR #198): the resolver's own counters must be
-    # reachable, or a dropped settlement is invisible data loss.
-    for key in ("pending", "enqueued_total", "resolved_total", "dropped_total"):
+    # reachable, or a dropped settlement is invisible data loss. Issue #208
+    # added the split: `dropped_total` is the conservation sum, and the two
+    # counters that mean opposite things are reachable separately, along
+    # with what the skipped markets actually carried.
+    for key in ("pending", "enqueued_total", "resolved_total", "dropped_total",
+                "dropped_after_max_attempts", "skipped_non_binary_result",
+                "non_binary_by_result", "non_binary_recent"):
         assert key in body["settlement_resolver"]
+    sr = body["settlement_resolver"]
+    assert sr["dropped_total"] == sr["dropped_after_max_attempts"] + sr["skipped_non_binary_result"]

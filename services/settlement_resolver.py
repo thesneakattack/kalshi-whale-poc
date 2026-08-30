@@ -33,6 +33,7 @@ only from the event loop; the five store resolvers run on the tick
 executor's worker pool so a cascade's SQLite work never lands on the loop.
 """
 import time
+from collections import deque
 
 from services import candidate_log, market_analyst_agent, market_history, settlement_edge, signal_log
 from services import fault_log, http_client, tick_executor
@@ -52,7 +53,64 @@ _pending: dict[str, dict] = {}
 
 # Lifetime counters for /api/health/pipeline's schedulers block - monotone,
 # reset only by process restart, same idiom as the WS ingest counters.
-_stats = {"enqueued_total": 0, "resolved_total": 0, "dropped_total": 0, "last_run_at": 0.0}
+#
+# The two drop counters are split deliberately (issue #208). A single
+# `dropped_total` was incremented by two branches that mean opposite
+# things, and `docs/next-action.md` gated a soak on it being 0 - a
+# criterion that can never be met once any scalar market settles. All 64
+# drops observed live on 2026-08-30 came from the expected branch:
+# fault_log held zero `settlement_resolver` rows across 8 days of
+# retention, and the give-up branch always fault-logs.
+_stats = {
+    "enqueued_total": 0,
+    "resolved_total": 0,
+    # Conservation term ONLY, kept under its original name because
+    # tools/soak_analyzer.check_resolver_accounting balances
+    # enqueued == resolved + pending + dropped_total. It is the sum of the
+    # two counters below and means no more than "left _pending without an
+    # outcome". Never read it as a defect count - that was the bug.
+    "dropped_total": 0,
+    # The defect: Kalshi stopped returning the ticker, or a store resolver
+    # kept raising, until the retry budget ran out. Expected 0; every
+    # increment also writes a warn-severity fault. This is the counter a
+    # completeness criterion gates on.
+    "dropped_after_max_attempts": 0,
+    # Expected, and non-zero is normal: a finalized market whose result is
+    # not yes/no has no binary outcome to record, and retrying never
+    # changes that. docs/kalshi/market_lifecycle.md:68 and
+    # docs/kalshi/market-settlement.md:23 (FIX tag 20107) both document
+    # `result` as yes | no | scalar.
+    "skipped_non_binary_result": 0,
+    "last_run_at": 0.0,
+}
+
+# What the skipped markets actually carried. The give-up branch names its
+# ticker in a fault; the skip branch recorded nothing at all, which is why
+# "were those 64 all scalar?" was unanswerable after the fact and stays
+# unanswerable retroactively.
+#
+# Shape: a bounded count-by-observed-value map plus a small ring of recent
+# samples, not a fault_log row per skip. Three reasons this shape and not
+# that one. (1) Cost: run_pending drains a settlement cascade on the event
+# loop, and this module already pushes even the store resolvers onto the
+# tick executor so a cascade's SQLite work never lands on the loop - a
+# synchronous fault_log write per skip would put it right back. (2) Store
+# fit: fault_log deduplicates on (component, operation, exc_type, message),
+# so a per-ticker message defeats the dedup the store is built around and
+# grows a row per settled scalar market forever, while a shared message
+# with the ticker in `context` keeps one row whose context is whichever
+# ticker was last - i.e. loses every ticker but one. (3) Signal: fault_log
+# feeds /api/health/faults, and filing an expected event there dilutes the
+# by_severity counts that page exists to make legible. An `info` severity
+# would not fix (1) or (2).
+#
+# Both bounds matter: an upstream that starts returning unique junk must
+# not grow either structure without limit on a background loop.
+_MAX_RESULT_KEYS = 12
+_MAX_RESULT_KEY_CHARS = 32
+_MAX_RECENT_SKIPS = 20
+_non_binary_by_result: dict[str, int] = {}
+_non_binary_recent: deque = deque(maxlen=_MAX_RECENT_SKIPS)
 
 
 def enqueue(ticker: str, settled_ts: float | None = None, now: float | None = None) -> None:
@@ -79,7 +137,35 @@ def pending() -> list[tuple[str, float]]:
 
 
 def snapshot() -> dict:
-    return {"pending": len(_pending), **_stats}
+    return {
+        "pending": len(_pending),
+        **_stats,
+        "non_binary_by_result": dict(_non_binary_by_result),
+        "non_binary_recent": list(_non_binary_recent),
+    }
+
+
+def _note_non_binary(ticker: str, raw_result, now: float) -> None:
+    """Record the observed value, not just the count, so the next audit can
+    answer what the skips were. O(1), in memory, no I/O - see the comment
+    on _non_binary_by_result for why this is not a fault_log write.
+
+    An absent `result` field and an empty one are kept apart on purpose:
+    docs/kalshi/changelog-index.md:3245-3246 says a scalar-settled market
+    returns "" today and will read "scalar" after a later release, so both
+    spellings are the same expected case but must stay individually
+    attributable - and a field that never arrived is a different story
+    from one that arrived empty. The angle-bracket sentinels cannot
+    collide with a real result value.
+    """
+    if raw_result is None:
+        key = "<absent>"
+    else:
+        key = str(raw_result).strip().lower()[:_MAX_RESULT_KEY_CHARS] or "<empty>"
+    if key not in _non_binary_by_result and len(_non_binary_by_result) >= _MAX_RESULT_KEYS:
+        key = "__other__"
+    _non_binary_by_result[key] = _non_binary_by_result.get(key, 0) + 1
+    _non_binary_recent.append({"ticker": ticker, "result": key, "at": now})
 
 
 def _resolve_one_sync(ticker: str, result: str, now: float) -> int:
@@ -109,9 +195,12 @@ async def run_pending(
     A not-yet-finalized market stays pending for the next run (settlement
     race, see module docstring). A ticker Kalshi stops returning is retried
     up to max_attempts then dropped - the REST-tick fallback path still
-    exists for it. A non-yes/no result is dropped immediately: retrying a
+    exists for it. A non-yes/no result is skipped immediately: retrying a
     scalar market never changes the answer, matching the inline path's
-    give-up. A failed batch read leaves everything pending untouched.
+    give-up. The two removals are counted apart - `dropped_after_max_attempts`
+    is a completeness defect, `skipped_non_binary_result` is expected - and
+    `dropped_total` remains their sum for the conservation identity. A
+    failed batch read leaves everything pending untouched.
 
     Every retryable failure (missing from the batch, not yet finalized, a
     raising store resolver) sets not_before = now + delay_sec, so the real
@@ -135,7 +224,8 @@ async def run_pending(
         entry["not_before"] = now + delay_sec
         if entry["attempts"] >= max_attempts:
             del _pending[ticker]
-            _stats["dropped_total"] += 1
+            _stats["dropped_after_max_attempts"] += 1
+            _stats["dropped_total"] += 1  # conservation sum, not a defect count
             fault_log.record_fault(
                 "settlement_resolver", "dropped_after_max_attempts",
                 f"{ticker}: gave up after {entry['attempts']} attempts - the REST-tick "
@@ -164,10 +254,17 @@ async def run_pending(
             if (market.get("status") or "") != TERMINAL_REST_STATUS:
                 _retry_or_drop(ticker, entry)
                 continue
-            result = (market.get("result") or "").strip().lower()
+            raw_result = market.get("result")
+            result = (raw_result or "").strip().lower()
+            # Stays `not in ("yes", "no")` on purpose: docs/kalshi/
+            # changelog-index.md:3245-3246 has scalar markets returning ""
+            # today and "scalar" after a later release, so narrowing this
+            # to either spelling would break on the other.
             if result not in ("yes", "no"):
                 del _pending[ticker]
-                _stats["dropped_total"] += 1
+                _stats["skipped_non_binary_result"] += 1
+                _stats["dropped_total"] += 1  # conservation sum, not a defect count
+                _note_non_binary(ticker, raw_result, now)
                 continue
             try:
                 resolved_rows += await tick_executor.run(
