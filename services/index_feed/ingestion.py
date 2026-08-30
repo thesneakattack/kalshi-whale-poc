@@ -35,6 +35,14 @@ DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "index_feed.d
 # config uses when nothing narrower is set.
 DEFAULT_INDEX_IDS = ["BRTI", "ETHUSD_RTI"]
 
+# services/index_feed/backfill.py (issue #260) stores historical CF
+# Benchmarks points fetched via the REST passthrough (docs/kalshi/
+# rest-passthrough.md) after a WS reconnect gap under this source value -
+# same table, same shape as a live "cfbenchmarks" row, told apart only by
+# this column, per the fidelity rule (store what Kalshi sent, no lossy
+# normalization either way).
+BACKFILL_SOURCE = "cfbenchmarks_backfill"
+
 _latest: dict[str, dict] = {}
 _tick_buffer: list[tuple] = []
 _FLUSH_BATCH = 200
@@ -168,6 +176,92 @@ def record_pyth(msg: dict, now: float | None = None) -> bool:
         return True
     except Exception:
         return False
+
+
+def last_tick_before(index_id: str, before_ts: float) -> float | None:
+    """Most recent `observed_at` for index_id strictly before before_ts -
+    the true start of a reconnect gap (services/index_feed/backfill.py,
+    issue #260), not just the running MAX(observed_at), which could
+    already include ticks recorded AFTER the reconnect by the time a
+    periodic gap check actually runs (the WS starts streaming again well
+    before a 10s-interval check task next executes). Flushes the buffer
+    first so a tick still sitting in _tick_buffer isn't missed."""
+    flush()
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(observed_at) FROM index_ticks WHERE index_id = ? AND observed_at < ?",
+                (index_id, before_ts),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        fault_log.record("index_feed", "last_tick_before", exc)
+        return None
+    return row[0] if row and row[0] is not None else None
+
+
+def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float | None = None) -> int:
+    """Persist historical CF Benchmarks points fetched via the REST
+    passthrough (services/index_feed/backfill.py, docs/kalshi/
+    rest-passthrough.md) to backfill a WS reconnect gap. Each entry in
+    `points` is one raw historical value object exactly as Kalshi/CF
+    Benchmarks returned it - stored as `raw_json` verbatim (fidelity rule:
+    no lossy normalization on the way in), with `value`/`source_ts_ms` read
+    out defensively the same way record_cfbenchmarks/_parse_cf_data already
+    do for the live stream.
+
+    Deliberately never touches `_latest`: unlike record_cfbenchmarks, this
+    runs well after the gap it's filling - by the time a backfill
+    completes, a fresher live tick has already arrived (that arrival is
+    *why* the gap is now known to be over), so backfilled history must
+    never regress the in-memory "current value" backward in time. Never
+    raises - same contract as record_cfbenchmarks/record_pyth.
+
+    `observed_at` is derived from each point's OWN historical timestamp
+    (source_ts_ms/1000), never from `now` (the wall-clock time the backfill
+    itself ran) - CLAUDE.md's accuracy rule ("a value means exactly what
+    its label says") applies here: a point observed_at time would otherwise
+    read as "just happened" when it actually happened during the outage,
+    corrupting every later MIN/MAX(observed_at) query and volatility/
+    settlement-window read keyed on that column
+    (last_tick_before/tick_stats/recent_volatility). `now` is only a
+    fallback for the (should-not-happen - callers filter this case out
+    before calling here) case of a point with no derivable timestamp at
+    all, and that fallback is logged rather than silent."""
+    now = now if now is not None else time.time()
+    stored = 0
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        try:
+            source_ts_ms = point.get("time")
+            if source_ts_ms is None:
+                source_ts_ms = point.get("timestamp", point.get("ts"))
+            value = _float(point.get("value") if "value" in point else point.get("price"))
+            if isinstance(source_ts_ms, (int, float)) and not isinstance(source_ts_ms, bool):
+                observed_at = source_ts_ms / 1000.0
+            else:
+                observed_at = now
+                fault_log.record_fault(
+                    "index_feed", "record_cfbenchmarks_backfill",
+                    f"{index_id} backfill point had no usable time field - stored under the backfill "
+                    "wall-clock time instead of its own historical timestamp",
+                    severity="warn",
+                )
+            _tick_buffer.append((
+                index_id, BACKFILL_SOURCE, observed_at, None, source_ts_ms, value,
+                None, None, None, None, json.dumps(point, default=str),
+            ))
+            stored += 1
+        except Exception as exc:
+            fault_log.record("index_feed", "record_cfbenchmarks_backfill", exc)
+    if stored:
+        # Backfill is rare (only on reconnect) and low-volume per event -
+        # persist immediately rather than waiting for the live stream's
+        # _FLUSH_BATCH threshold, so a backfilled gap is durable right away
+        # instead of sitting in memory behind whatever the live stream
+        # happens to be buffering.
+        flush()
+    return stored
 
 
 def flush() -> dict:

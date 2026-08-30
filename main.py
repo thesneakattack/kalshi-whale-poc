@@ -49,6 +49,7 @@ from services import tick_executor
 from services import task_supervisor
 from services import game_state
 from services import index_feed
+from services.index_feed import backfill as index_feed_backfill
 from services import settlement_edge
 from services.reset import trade_archive
 from services import signal_log
@@ -1172,6 +1173,43 @@ async def _stream_consumer_liveness_loop(gateway, *, interval_sec: float = 10.0)
         await gateway.ensure_consumer_progressing()
 
 
+async def _index_feed_backfill_loop(gateway, *, interval_sec: float = 10.0) -> None:
+    """Reconnect-gap backfill for services/index_feed/ (issue #260): every
+    interval_sec, checks gateway.ingest_metrics()['connection'] for a
+    reconnect this session hasn't backfilled yet and, if one just
+    happened, fetches the missed CF Benchmarks window via the REST
+    passthrough (services/index_feed/backfill.py) - the WS channel itself
+    has no resume/replay capability (that module's own docstring), so a
+    lost window is otherwise gone for good, degrading settlement_algebra's
+    settlement-edge math for every crypto market that settles against it.
+
+    Same interval as _stream_consumer_liveness_loop (10s), the existing
+    periodic hook this piggybacks the same gating on: frequent enough that
+    a gap is backfilled within one polling cycle of reconnecting, and an
+    idle check (the overwhelmingly common case - no new reconnect) costs
+    one dict comparison, no REST call, no signing. Skips entirely when
+    credentials aren't loaded (gateway.signing_credentials() is None) -
+    lifespan() only starts this loop when index_stream.enabled is already
+    true, so that should never actually happen at runtime; the check is
+    defense in depth, not the real gate."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        credentials = gateway.signing_credentials()
+        if credentials is None:
+            continue
+        key_id, private_key = credentials
+
+        async def _fetch(index_id, start_ts, end_ts, _key_id=key_id, _private_key=private_key):
+            return await index_feed_backfill.fetch_cfbenchmarks_history(
+                index_id, start_ts, end_ts,
+                key_id=_key_id, private_key=_private_key, base_url=gateway.base_url,
+            )
+
+        await index_feed_backfill.check_and_backfill(
+            gateway.ingest_metrics()["connection"], _fetch, gateway.index_ids,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # restart=True on these three: they're the long-running loops the app
@@ -1238,6 +1276,15 @@ async def lifespan(app: FastAPI):
         index_stream_liveness_task = task_supervisor.supervise(
             lambda: _stream_consumer_liveness_loop(index_stream), component="index_stream", operation="liveness", restart=True,
         )
+    index_feed_backfill_task = None
+    if index_stream_task is not None and index_stream.index_ids:
+        # Scoped to index_ids (CF Benchmarks) specifically, not
+        # underlying_tickers (Pyth) - docs/kalshi/rest-passthrough.md's
+        # historical-values backfill is CF Benchmarks-only; there is no
+        # equivalent documented REST passthrough for Pyth to backfill from.
+        index_feed_backfill_task = task_supervisor.supervise(
+            lambda: _index_feed_backfill_loop(index_stream), component="index_stream", operation="backfill", restart=True,
+        )
     yield
     if trade_stream_task is not None:
         await trade_stream.close()
@@ -1247,6 +1294,8 @@ async def lifespan(app: FastAPI):
         await index_stream.close()
         index_stream_task.cancel()
         index_stream_liveness_task.cancel()
+        if index_feed_backfill_task is not None:
+            index_feed_backfill_task.cancel()
     task.cancel()
     loop_watchdog_task.cancel()
     capture_writer_liveness_task.cancel()
