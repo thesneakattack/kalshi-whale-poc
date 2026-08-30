@@ -207,3 +207,108 @@ def test_review_closes_locked_loss_group_when_enabled(tmp_path, monkeypatch):
     assert {d["ticker"] for d in decisions} == {"A", "B"}
     assert all(d["source"] == "position_netting" for d in decisions)
     assert broker.positions == {}  # both legs closed
+
+
+def _flat_history(tickers, now, price=0.5, count=4, step_sec=60):
+    """count snapshots at one unchanging price - what an untraded market
+    looks like. volatility() needs >=3 snapshots to return anything at
+    all, so this is the shape that produces a real 0.0 (every consecutive
+    delta is zero) rather than the None of "not enough history"."""
+    for i in range(count):
+        mh_module.record_snapshots(
+            [{"ticker": t, "yes_price": price} for t in tickers],
+            timestamp=now - (count - i) * step_sec,
+        )
+
+
+def _wiggly_history(ticker, now, prices=(0.50, 0.54, 0.50, 0.54), step_sec=60):
+    """A ticker whose price actually moves - a genuine non-zero reading."""
+    for i, p in enumerate(prices):
+        mh_module.record_snapshots(
+            [{"ticker": ticker, "yes_price": p}], timestamp=now - (len(prices) - i) * step_sec,
+        )
+
+
+def _variable_pair(broker):
+    """The trim-worthy 'variable' group the two describe_groups tests
+    above already use, factored out so the volatility tests below differ
+    from them only in their volatility inputs."""
+    broker.open_position("A", "yes", 200, 0.76, "r")
+    broker.open_position("B", "no", 50, 0.25, "r")
+    return (
+        _titles({"A": "EVT-1", "B": "EVT-1"}),
+        {"EVT-1": {"mutually_exclusive": True}},
+        {"A": 0.75, "B": 0.24},
+    )
+
+
+def _net_cfg(**over):
+    cfg = {
+        "enabled": True, "min_dwell_sec": 0, "min_edge_improvement_usd": 10.0,
+        "normal_volatility": 0.02, "volatility_lookback_sec": 1800,
+    }
+    cfg.update(over)
+    return {"position_netting": cfg}
+
+
+def test_materiality_bar_treats_a_zero_volatility_reading_as_no_reading(tmp_path, monkeypatch):
+    # 2026-08-30 (issue #206): a real 0.0 from volatility() is "nobody has
+    # traded this in the lookback window," not "this market is calm" - the
+    # same defect exit_engine.py:526-547 was fixed for on 2026-08-17, where
+    # 142 of 183 well-sampled live markets read exactly 0.0. Feeding it
+    # through pinned vol_ratio to its 0.25 floor and QUARTERED the bar,
+    # inverting this function's own stated intent (a less trustworthy price
+    # read must require a BIGGER edge, not a 4x smaller one).
+    #
+    # Every other netting test passes normal_volatility=None, which returns
+    # at the `if not normal_vol` guard before the filter is ever reached -
+    # this one needs a real baseline AND (because the bar is set by
+    # max(vols)) every member reading 0.0.
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A", "B"), now)
+    assert mh_module.volatility("A", 1800, as_of=now) == 0.0  # a real reading, not None
+    assert mh_module.volatility("B", 1800, as_of=now) == 0.0
+
+    groups = describe_groups(broker, market_titles, event_titles, latest_prices, _net_cfg(), now=now)
+    assert groups[0]["status"] == "variable"
+    # Unscaled min_edge_improvement_usd (vol_ratio 1.0, exit_engine's own
+    # "no reading -> today's unscaled behaviour" fallback). Was $2.50.
+    assert groups[0]["recommendation"]["materiality_bar_usd"] == 10.0
+
+
+def test_all_stale_group_does_not_get_an_easier_bar_to_clear(tmp_path, monkeypatch):
+    # The consequence of the above, at the only level that matters: with a
+    # bar the group's $36.57 improvement sits between, the quartered bar
+    # ($25.00) let netting churn fire on prices nothing had traded, while
+    # the honest bar ($100.00) holds. Netting acted most easily exactly
+    # where its live-price inputs were least trustworthy.
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A", "B"), now)
+    cfg = _net_cfg(min_edge_improvement_usd=100.0)
+    rec = describe_groups(broker, market_titles, event_titles, latest_prices, cfg, now=now)[0]["recommendation"]
+    assert rec["materiality_bar_usd"] == 100.0
+    assert rec["action"] == "hold"
+
+
+def test_materiality_bar_still_scales_up_on_a_genuine_noisy_reading(tmp_path, monkeypatch):
+    # The other half of the contract, so the fix above can't be "over-
+    # corrected" into ignoring volatility altogether or bailing whenever
+    # any one member reads 0.0: a group with one stale member and one
+    # genuinely noisy member is set by the noisy one (max(vols)), and a
+    # ticker moving more than the configured normal RAISES the bar.
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A",), now)
+    _wiggly_history("B", now)
+    vol_b = mh_module.volatility("B", 1800, as_of=now)
+    assert mh_module.volatility("A", 1800, as_of=now) == 0.0
+    assert vol_b > 0.02  # noisier than the configured normal baseline
+
+    rec = describe_groups(broker, market_titles, event_titles, latest_prices, _net_cfg(), now=now)[0]["recommendation"]
+    assert rec["materiality_bar_usd"] == round(10.0 * min(4.0, vol_b / 0.02), 2)
+    assert rec["materiality_bar_usd"] > 10.0

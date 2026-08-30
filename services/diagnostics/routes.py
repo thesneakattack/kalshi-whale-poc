@@ -20,13 +20,15 @@ that answer real" - and they share a discipline: every one is read-only
 with respect to trading, and each degrades to an explicit "unknown" rather
 than a fabricated number.
 """
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import index_feed, series_watcher, settlement_edge, settlement_resolver
+from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
+from services.diagnostics import store_stats
 from services.diagnostics import trade_capture_reconciliation
 from services.app_state import state, trade_stream, whale_provider
 from services import whale_pipeline_perf
@@ -181,9 +183,12 @@ def _scheduler_status(now: float) -> dict:
         "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         # The resolver's own counters ride along (pending backlog, lifetime
-        # enqueued/resolved/dropped): dropped_total growth is the recurrence
-        # signal for a settlement that silently never resolved - for a
-        # non-watchlist ticker, four of the five stores have no other path.
+        # enqueued/resolved/dropped). `dropped_after_max_attempts` growth is
+        # the recurrence signal for a settlement that silently never resolved
+        # - for a non-watchlist ticker, four of the five stores have no other
+        # path. NOT `dropped_total`, which is the conservation sum and also
+        # counts markets correctly skipped for a non-binary result (#208);
+        # `non_binary_by_result` says which values those actually were.
         "settlement_resolver": {
             **_entry("settlement_resolver_loop", "last_started_at", "running"),
             **settlement_resolver.snapshot(),
@@ -212,8 +217,40 @@ def _price_staleness(now: float) -> dict:
     }
 
 
+# Every persisted store the pipeline health read walks, as
+# (db_path_owner, table, timestamp column). Named here rather than inline
+# so the cost of the block is one list to reason about: each entry is one
+# read-only connection, probed concurrently on worker threads.
+def _store_specs() -> dict[str, tuple]:
+    from services import candidate_log, game_state, signal_log
+
+    return {
+        "raw_trades": (series_watcher.DB_PATH, "raw_trades", "observed_at"),
+        "book_snapshots": (series_watcher.DB_PATH, "book_snapshots", "observed_at"),
+        "signals": (signal_log.DB_PATH, "signals", "seen_at"),
+        "rejections": (candidate_log.DB_PATH, "rejected_candidates", "rejected_at"),
+        "index_ticks": (index_feed.DB_PATH, "index_ticks", "observed_at"),
+        "settlement_observations": (settlement_edge.DB_PATH, "window_observations", "observed_at"),
+        "game_states": (game_state.DB_PATH, "game_states", "observed_at"),
+    }
+
+
+def _blocking_extras(now: float) -> dict:
+    """The rest of the handler's synchronous SQLite work, in one place so
+    it can ride the same thread hop as the store probes. Small stores, but
+    "small" is exactly what raw_trades was in 2026-08."""
+    from services import fault_log, game_state
+
+    return {
+        "schedulers": _scheduler_status(now),
+        "faults_last_24h": fault_log.summary(since_ts=now - 86400),
+        "settlement_edge_buffered": settlement_edge.stats().get("buffered"),
+        "game_state_buffered": game_state.stats().get("buffered"),
+    }
+
+
 @router.get("/api/health/pipeline")
-async def get_pipeline_health():
+async def get_pipeline_health(exact_rows: bool = False):
     """One place to confirm the whole flow is actually alive between
     sessions - capture, signal generation, evaluation and every persisted
     store, with the age of the most recent write for each.
@@ -224,20 +261,34 @@ async def get_pipeline_health():
     even if we scrap things data gathered is still useful"). The app can
     look perfectly healthy - ticking, connected, no errors - while
     producing nothing, and a stale last-write timestamp is the only thing
-    that shows it."""
-    import sqlite3 as _sq
+    that shows it.
 
-    from services import candidate_log, fault_log, game_state, signal_log
-
+    Every SQLite read below runs on a worker thread and answers from the
+    rowid index once a store outgrows services/diagnostics/store_stats.py's
+    row limit; `stores.<name>.rows_exact` / `.rows_method` say which form
+    each number came from. `?exact_rows=true` forces the exact COUNT(*)
+    everywhere - the expensive answer moved off the default path, it was
+    not removed, but it is opt-in for a reason: measured at 191s on
+    raw_trades alone. Both properties exist because this endpoint reached a
+    504 and dragged `last_tick_duration_sec` to 81.3s with it (issue #210,
+    2026-08-30); `stores_probe_ms` is the recurrence detection - the block
+    reports its own wall cost, measured 131.6s before / 0.28s after.
+    """
     now = time.time()
+    specs = _store_specs()
 
-    def _age(db_path, table, col):
-        try:
-            with _sq.connect(db_path) as conn:
-                n, last = conn.execute(f"SELECT COUNT(*), MAX({col}) FROM {table}").fetchone()
-            return {"rows": n, "last_write_sec_ago": round(now - last, 1) if last else None}
-        except Exception as exc:
-            return {"error": str(exc)}
+    probe_started = time.perf_counter()
+    results = await asyncio.gather(
+        asyncio.to_thread(_blocking_extras, now),
+        *(
+            asyncio.to_thread(
+                store_stats.store_stats, db_path, table, col, now, exact=exact_rows
+            )
+            for db_path, table, col in specs.values()
+        ),
+    )
+    extras, store_results = results[0], results[1:]
+    stores_probe_ms = round((time.perf_counter() - probe_started) * 1000.0, 2)
 
     return {
         "generated_at": now,
@@ -253,7 +304,7 @@ async def get_pipeline_health():
         "price_staleness": _price_staleness(now),
         # P8 Task 36: per-scheduler liveness now that none of them are
         # called from the tick - see _scheduler_status.
-        "schedulers": _scheduler_status(now),
+        "schedulers": extras["schedulers"],
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a
@@ -283,26 +334,27 @@ async def get_pipeline_health():
         # gauges (I5, services/http_client.py's rest_latency_snapshot):
         # limiter wait vs network vs backoff, so a slow call is attributable.
         "rest_latency": http_client.rest_latency_snapshot(),
-        "stores": {
-            "raw_trades": _age(series_watcher.DB_PATH, "raw_trades", "observed_at"),
-            "book_snapshots": _age(series_watcher.DB_PATH, "book_snapshots", "observed_at"),
-            "signals": _age(signal_log.DB_PATH, "signals", "seen_at"),
-            "rejections": _age(candidate_log.DB_PATH, "rejected_candidates", "rejected_at"),
-            "index_ticks": _age(index_feed.DB_PATH, "index_ticks", "observed_at"),
-            "settlement_observations": _age(
-                settlement_edge.DB_PATH, "window_observations", "observed_at"),
-            "game_states": _age(game_state.DB_PATH, "game_states", "observed_at"),
-        },
+        "stores": dict(zip(specs, store_results)),
+        # What the store block above cost, and whether it paid for exact
+        # counts. Reported so the next time this endpoint slows down the
+        # evidence is in the payload rather than in a stopwatch - the
+        # measurement CLAUDE.md requires of anything on this path.
+        "stores_probe_ms": stores_probe_ms,
+        "stores_exact_rows": exact_rows,
         # Anything that failed and was swallowed (services/fault_log.py).
         # A non-empty value here is the difference between "quiet market"
         # and "broken component" - the distinction that cost game_state
         # every row it should have written on 2026-08-17.
-        "faults_last_24h": fault_log.summary(since_ts=now - 86400),
+        "faults_last_24h": extras["faults_last_24h"],
         "buffered_unwritten": {
-            "series_watcher_trades": series_watcher.capture_stats().get("buffered_trades"),
+            # capture_writer owns the raw_trades queue (series_watcher's own
+            # capture_stats() only forwards this integer, and pays two
+            # COUNT(*)s over 30M rows of raw_trades to do it - 4.5s measured
+            # 2026-08-30). Read the owner directly.
+            "series_watcher_trades": capture_writer.depth().get("raw_trades", 0),
             "index_feed_ticks": index_feed.snapshot().get("buffered_ticks"),
-            "settlement_edge": settlement_edge.stats().get("buffered"),
-            "game_state": game_state.stats().get("buffered"),
+            "settlement_edge": extras["settlement_edge_buffered"],
+            "game_state": extras["game_state_buffered"],
         },
     }
 

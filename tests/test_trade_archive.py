@@ -72,8 +72,8 @@ def test_archive_captures_every_trade_and_position_before_a_reset():
 def test_archive_pairs_win_rate_with_the_entry_price_that_makes_it_mean_something():
     """CLAUDE.md's hard commandment: a win rate is meaningless without the
     mean unit cost beside it. One win at 0.70 and one loss at 0.70 is a 50%
-    win rate against a 70% breakeven - stored as a pair so the two can
-    never drift apart."""
+    win rate against a 71.47% fee-inclusive breakeven - stored as a pair so
+    the two can never drift apart."""
     _seed_broker(_TRADES)
     r = ta.archive_epoch("pairing test")
 
@@ -83,8 +83,11 @@ def test_archive_pairs_win_rate_with_the_entry_price_that_makes_it_mean_somethin
     # Both entries cost $0.70/contract: the yes at price 0.70, and the no at
     # yes-price 0.30 (side-aware inversion, not 0.30).
     assert r["mean_entry_unit_cost"] == pytest.approx(0.70)
-    assert r["breakeven_accuracy_pct"] == 70.0
-    assert r["edge_pts"] == -20.0
+    # Breakeven is the entry price PLUS the taker fee that fill really pays
+    # (issue #205): 0.70 + 0.07*0.70*0.30 = 0.7147. The fee-free 70.0 this
+    # used to assert pinned the wrong bar.
+    assert r["breakeven_accuracy_pct"] == 71.47
+    assert r["edge_pts"] == -21.5
     assert r["realised_pnl"] == pytest.approx(-41.0)
 
 
@@ -124,7 +127,32 @@ def test_compare_ranks_by_edge_not_by_win_rate():
     assert len(out["epochs"]) == 2
     # Both are 100% win rate here; edge is what separates them.
     assert out["best"]["label"] == "lower win rate, real edge"
-    assert out["best"]["edge_pts"] == pytest.approx(45.0)
+    # 100% win rate against a 0.55 + 0.07*0.55*0.45 = 56.73% breakeven.
+    assert out["best"]["edge_pts"] == pytest.approx(43.3)
+
+
+def test_epochs_puts_pre_fee_rows_on_the_current_breakeven_convention():
+    """An epoch row written before issue #205 stored a fee-free breakeven.
+    compare() ranks by edge_pts with max(), which reads numbers and not the
+    prose caveat beside them, so a legacy row would win on a bar 1.68pts
+    too low. epochs() recomputes both from the epoch's own archived trades
+    - which are complete and immutable - so one convention is ranked."""
+    _seed_broker([
+        ("e1", "KXA-1", "yes", 100, 0.60, "whale print", 1000.0, "fp", 0.0, None),
+        ("x1", "KXA-1", "yes", 100, 1.00, "closed: market settled yes - position won (realized +40.00)",
+         1100.0, "fp", 0.0, None),
+    ])
+    epoch_id = ta.archive_epoch("legacy row")["epoch_id"]
+    # Rewrite the stored pair the way the pre-fix code wrote it: fee-free.
+    with sqlite3.connect(ta.DB_PATH) as conn:
+        conn.execute("UPDATE epochs SET breakeven_accuracy_pct = 60.0, edge_pts = 40.0 "
+                     "WHERE id = ?", (epoch_id,))
+
+    row = ta.epochs()[0]
+    # 0.60 + 0.07*0.60*0.40 = 0.6168, and 100.0 - 61.68 = 38.32 -> 38.3.
+    assert row["breakeven_accuracy_pct"] == 61.68
+    assert row["edge_pts"] == pytest.approx(38.3)
+    assert ta.compare()["best"]["edge_pts"] == pytest.approx(38.3)
 
 
 def test_compare_says_so_when_nothing_is_archived():

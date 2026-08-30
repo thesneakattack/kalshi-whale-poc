@@ -224,6 +224,24 @@ def test_a_ticker_arriving_while_the_market_consumer_is_parked_wakes_it(monkeypa
     assert handled == ["ticker"]
 
 
+def test_the_wake_sentinel_is_enqueued_only_on_the_empty_to_non_empty_transition(monkeypatch):
+    # The `if was_empty:` guard is load-bearing and untested until now: one
+    # sentinel per pending-map transition, not one per accepted update, or a
+    # settlement cascade would push a sentinel per new market onto the very
+    # queue coalescing exists to keep short. The parked-consumer test above
+    # stays green with the guard deleted; this one does not - and the guard
+    # is precisely why _oldest_message_age has to read the map itself (#207).
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    assert gw._market_queue.qsize() == 1  # empty -> non-empty: one wake
+    gw._ingest_raw(_ticker_ts("K2", 100, 60))  # new market, map already non-empty
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))  # supersedes an existing entry
+    assert set(gw._pending_ticker_by_market()) == {"K1", "K2"}
+    assert gw._market_queue.qsize() == 1  # still exactly the one sentinel
+    now, kind, payload = gw._market_queue.get_nowait()
+    assert (kind, payload) == (ws_module._TICKER_WAKE, None)
+
+
 def test_single_queue_mode_does_not_coalesce(monkeypatch):
     gw = _gateway(two_consumer=False, monkeypatch=monkeypatch)
     gw._ingest_raw(_ticker_ts("K1", 100, 50))

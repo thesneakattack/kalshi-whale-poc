@@ -1,6 +1,6 @@
 import pytest
 
-from services.kalshi_fees import taker_fee
+from services.kalshi_fees import breakeven_unit_cost, taker_fee, taker_fee_per_contract
 
 
 def test_taker_fee_matches_real_verified_fills():
@@ -78,3 +78,46 @@ def test_taker_fee_zero_for_series_missed_by_the_original_pdf_pass():
     assert taker_fee(100, 0.5, ticker="KXNEXTIRANLEADER-26") == 0.0
     assert taker_fee(100, 0.5, ticker="KXTRUMPOUT-26") == 0.0
     assert taker_fee(100, 0.5, ticker="KXGDPYEAR-26") == 0.0
+
+
+def test_taker_fee_per_contract_is_the_rate_without_the_per_fill_ceiling():
+    """The $0.0001 ceiling in taker_fee() is charged once per FILL, not once
+    per contract - the real-fill evidence in kalshi_fees' own docstring
+    rounds the whole 14.11-contract order, not each contract. A per-contract
+    rate therefore must not carry it, and is exactly the limit of the
+    per-fill fee spread across many contracts."""
+    assert taker_fee_per_contract(0.70) == pytest.approx(0.0147, abs=1e-12)
+    assert taker_fee_per_contract(0.85) == pytest.approx(0.008925, abs=1e-12)
+    # The per-fill ceiling adds at most $0.0001 to the ORDER, so spread over
+    # n contracts the gap is bounded by 1e-4/n and is one-sided (the per-fill
+    # rate never understates). n = 1e5 leaves an order of magnitude of margin
+    # rather than asserting exactly on the bound.
+    assert taker_fee(100000, 0.85) / 100000 == pytest.approx(
+        taker_fee_per_contract(0.85), abs=1e-8)
+
+
+def test_taker_fee_per_contract_is_zero_at_the_price_extremes():
+    assert taker_fee_per_contract(0.0) == 0.0
+    assert taker_fee_per_contract(1.0) == 0.0
+
+
+def test_breakeven_unit_cost_is_the_price_plus_the_taker_fee():
+    """Issue #205: a contract bought at unit cost c pays $1 or $0, so its
+    breakeven win probability is what it COST, and what it cost includes the
+    taker fee on the fill. Table verified 2026-08-30 against
+    c + 0.07*c*(1-c)."""
+    assert breakeven_unit_cost(0.60) == pytest.approx(0.6168, abs=1e-12)
+    assert breakeven_unit_cost(0.70) == pytest.approx(0.7147, abs=1e-12)
+    assert breakeven_unit_cost(0.80) == pytest.approx(0.8112, abs=1e-12)
+    assert breakeven_unit_cost(0.85) == pytest.approx(0.858925, abs=1e-12)
+
+
+def test_breakeven_unit_cost_honours_the_real_per_series_fee_multiplier():
+    """A multiplier-0 series charges no taker fee at all, so its breakeven
+    really IS the entry price; the MLB proposition family pays half rate.
+    Applying the default rate to either would be the same mislabelling this
+    fix removes, just in the other direction."""
+    assert breakeven_unit_cost(0.70, ticker="KXBTCY-26-T150000") == pytest.approx(0.70)
+    assert breakeven_unit_cost(0.70, ticker="KXMLBGAME-26AUG13GBPIT-PIT") == pytest.approx(
+        0.70735, abs=1e-12)
+    assert breakeven_unit_cost(0.70, ticker="KXBTC15M-26AUG30") == pytest.approx(0.7147, abs=1e-12)
