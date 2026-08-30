@@ -2,7 +2,10 @@
 source, find-or-create the matching GitHub issue by its sync marker,
 reconcile labels, and close issues whose source item is now done -
 without ever reopening one a human closed by hand. Depends-on resolution
-(sync_pass_two, reconcile) is added in Task 8.
+(sync_pass_two, reconcile) is added in Task 8. The close_stale_* passes
+cover the case the per-item loop structurally cannot: a source item that
+has *vanished* from the scan (removed worktree, deleted ROADMAP bullet)
+rather than been marked done.
 """
 from __future__ import annotations
 
@@ -109,10 +112,12 @@ def close_stale_worktree_issues(
     from its body's sync marker) is no longer in `live_branches`. Needed
     because build_worktree_items only ever iterates *currently-existing*
     worktrees (git worktree list) - unlike sources_plan.py/sources_roadmap.py,
-    which iterate the full candidate set and correctly emit done=True items,
-    a removed worktree's item is simply absent from every future run's item
-    list, so sync_pass_one's per-item loop never sees it and never closes it
-    (issue #98, confirmed live 2026-08-27).
+    which iterate the full candidate set and correctly emit done=True items
+    for anything they can still see, a removed worktree's item is simply
+    absent from every future run's item list, so sync_pass_one's per-item
+    loop never sees it and never closes it (issue #98, confirmed live
+    2026-08-27). A *deleted* roadmap bullet has the same shape - see
+    close_stale_roadmap_issues (issue #227).
 
     Defensive by construction: client.list_open_by_label already scopes to
     type:tracking and to open issues only (so a manually-closed issue for a
@@ -132,6 +137,62 @@ def close_stale_worktree_issues(
             client.post_comment(issue.number, _stale_worktree_comment(key))
             client.close_issue(issue.number)
         report.closed.append(f"#{issue.number} worktree:{key} (branch no longer live)")
+    return report
+
+
+def _stale_roadmap_comment(key: str) -> str:
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return (
+        f"<!-- event: sync-stale-roadmap | agent: kanban-board-sync | ts: {ts} -->\n"
+        f"Closing automatically: the ROADMAP.md bullet this issue tracks "
+        f"(`roadmap:{key}`) is no longer present in ROADMAP.md - deleted, or "
+        f"reworded so its slug changed (in which case this sync run created a "
+        f"fresh issue for the new wording). If this is wrong, reopen manually."
+    )
+
+
+def close_stale_roadmap_issues(
+    current_keys: set[str],
+    client: SyncGithubClient,
+    *,
+    dry_run: bool,
+) -> SyncReport:
+    """Closes every open type:feature issue whose roadmap bullet (parsed
+    from its body's sync marker) is no longer among `current_keys` - the
+    slugs of every bullet, checked or unchecked, in this run's ROADMAP.md
+    parse. Needed because parse_roadmap_items can only emit done=True for
+    a bullet it can still see; a *deleted* bullet's item is simply absent
+    from the item list, so sync_pass_one never sees it and never closes it
+    (issue #227; live instance #149, whose bullet commit 1cf6e61 deleted
+    2026-08-28 and which stayed open until closed by hand 2026-08-30).
+    Same class as #98, which close_stale_worktree_issues fixed for the
+    worktree kind only.
+
+    The close condition is presence, not checkbox state: a still-present
+    `- [x]` bullet's key IS in current_keys, so this pass leaves it to
+    sync_pass_one's done path (which closes without a stale comment).
+
+    Same defensive construction as close_stale_worktree_issues:
+    client.list_open_by_label scopes to open issues only (a hand-closed
+    issue is never a candidate - no reopen risk), and a marker-less body or
+    a non-roadmap kind is skipped rather than trusting the label. One extra
+    guard: an empty current_keys makes no calls at all - a zero-bullet parse
+    means a broken or missing source, not an empty roadmap, and must not
+    mass-close every roadmap issue on the board."""
+    report = SyncReport(dry_run=dry_run)
+    if not current_keys:
+        return report
+    for issue in client.list_open_by_label(labels.TYPE_FEATURE):
+        parsed = parse_marker(issue.body)
+        if parsed is None:
+            continue
+        kind, key = parsed
+        if kind != labels.SYNC_MARKER_KIND_ROADMAP or key in current_keys:
+            continue
+        if not dry_run:
+            client.post_comment(issue.number, _stale_roadmap_comment(key))
+            client.close_issue(issue.number)
+        report.closed.append(f"#{issue.number} roadmap:{key} (bullet no longer in ROADMAP.md)")
     return report
 
 

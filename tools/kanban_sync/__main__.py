@@ -27,7 +27,8 @@ from tools.kanban_sync.sources_worktree import (
     collect_worktree_items, live_worktree_branches, parse_worktree_list,
 )
 from tools.kanban_sync.sync import (
-    close_completed_plan_parents, close_stale_worktree_issues, reconcile,
+    close_completed_plan_parents, close_stale_roadmap_issues,
+    close_stale_worktree_issues, reconcile,
 )
 
 REPO = "thesneakattack/kalshi-whale-poc"
@@ -147,6 +148,17 @@ def _cmd_sync(args: argparse.Namespace) -> None:
     if live_branches is not None:
         stale_report = close_stale_worktree_issues(live_branches, client, dry_run=args.dry_run)
         report.closed += stale_report.closed
+
+    if "roadmap" in sources:
+        # Every bullet this run parsed, checked or not - the stale pass
+        # closes on absence from this set, never on checkbox state.
+        roadmap_keys = {
+            item.key for item in items if item.kind == labels.SYNC_MARKER_KIND_ROADMAP
+        }
+        stale_roadmap_report = close_stale_roadmap_issues(
+            roadmap_keys, client, dry_run=args.dry_run,
+        )
+        report.closed += stale_roadmap_report.closed
 
     if "plan" in sources:
         plan_close_report = close_completed_plan_parents(client, dry_run=args.dry_run)

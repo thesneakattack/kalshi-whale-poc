@@ -326,3 +326,43 @@ def test_decompose_plan_subcommand_errors_when_parent_is_closed_dry_run(monkeypa
         cli.main(["decompose-plan", "--plan", "x.md", "--dry-run"])
 
     assert exc.value.code == 1
+
+
+def _sync_item(kind, key):
+    from tools.kanban_sync.models import SyncItem
+    return SyncItem(
+        kind=kind, key=key, title=key, status_label="status:claimable",
+        type_label="type:feature", context_body="", acceptance_criteria=(),
+    )
+
+
+def test_cmd_sync_runs_stale_roadmap_check_with_only_roadmap_keys_when_roadmap_in_sources(monkeypatch):
+    """Issue #227: the pass gets the slugs of every roadmap bullet this run
+    parsed (checked or not) and nothing from any other source's items."""
+    calls = []
+    _patch_sync_pipeline(
+        monkeypatch,
+        items=[_sync_item("roadmap", "a"), _sync_item("roadmap", "b"), _sync_item("track", "t")],
+        live_branches=None,
+    )
+    monkeypatch.setattr(
+        cli, "close_stale_roadmap_issues",
+        lambda current_keys, client, dry_run: calls.append(current_keys) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="roadmap,track", dry_run=False, plan_classifications=None))
+
+    assert calls == [{"a", "b"}]
+
+
+def test_cmd_sync_skips_stale_roadmap_check_when_roadmap_not_in_sources(monkeypatch):
+    calls = []
+    _patch_sync_pipeline(monkeypatch, items=[_sync_item("track", "t")], live_branches=None)
+    monkeypatch.setattr(
+        cli, "close_stale_roadmap_issues",
+        lambda current_keys, client, dry_run: calls.append(current_keys) or _FakeReport(),
+    )
+
+    cli._cmd_sync(argparse.Namespace(sources="track", dry_run=False, plan_classifications=None))
+
+    assert calls == []
