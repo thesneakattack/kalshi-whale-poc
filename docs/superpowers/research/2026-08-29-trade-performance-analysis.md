@@ -661,12 +661,62 @@ would raise the effective bar (~$2.50 → ~$10) and trim less — the
 opposite of the applied direction. The right fix is measuring the real
 volatility distribution first, then aligning both baselines to it.
 
-Post-apply watch items (next session, or after a day of trades):
-1. `position_netting` firing rate — if locked_loss closes keep appearing
-   at the same rate under the caps, the caps are insufficient.
-2. Entry-rate drop — the series caps + exposure cap deliberately trim the
-   most concentrated moments; confirm crypto volume is NOT reduced
-   (KXBTC15M's override matches its historical peak exactly, so any
-   reduction there means an unmodeled interaction).
-3. First trades above unit_cost 0.85 rejected — confirm via
-   candidate_log's max_unit_cost gate counter.
+Post-apply watch items, ranked by consequence. Items 1-4 are mandatory;
+5-7 are cheap because the counters already exist; 8 is a standing caveat.
+
+**Tier 1 - can silently stop everything**
+
+1. **Kill-switch trip.** `max_daily_loss_pct` went 0.85 -> 0.20, a 4x
+   tightening, on a book with NO losing day to calibrate from (worst
+   observed day: +$93.27) - the number was derived from the exposure cap,
+   not from data. If it trips, all trading halts and the only signal is
+   `halted: true` in `/api/state`. At the current $12,296 bankroll that is
+   a ~$2,460 daily drawdown; the worst single observed netting pair was
+   ~$700 combined, so 3-4 bad cascades in one session reaches it. This is
+   the highest-consequence field in the change-set and nothing watched it
+   before this line. Check `risk.halted` / `halt_reason` every time.
+
+**Tier 2 - the changes may be silently doing nothing, or too much**
+
+2. **Crypto entry volume specifically.** KXBTC15M's `by_series` override
+   of 3 is fitted to that series' exact historical peak. If
+   `config_overrides.resolve()` is not reached on the live entry path, or
+   the series key does not match what `signal_log.series_of()` derives,
+   crypto entries quietly drop and the change-set kills the profit engine
+   (+$5,624 of the book's +$5,283). The most expensive way to be wrong.
+3. **Combined entry-rate effect.** Four tightenings (max_unit_cost 0.85,
+   series cap 2, ATP exclusion, exposure cap) were modeled INDIVIDUALLY,
+   never jointly. Their intersection could cut entries far more than the
+   sum of the per-field reasoning. Watch entries/day vs the pre-change
+   baseline.
+4. **Exposure-cap rejections.** `max_total_exposure_pct` was null and is
+   now binding for the first time; peak observed deployment (~45% of cash)
+   WOULD have been trimmed. If it rejects constantly, 0.45 is too tight.
+
+**Tier 3 - falsifiable predictions**
+
+5. **Netting closes should change SHAPE, not just count.** The $50->$10
+   bar predicts `variable`-state trims start appearing; all 34 historical
+   closes were `locked_loss`. Still 100% locked_loss => the bar was not
+   the binding constraint, and item 6 is the likely reason.
+6. **Whether the netting materiality bar actually varies.** Section 6
+   found `position_netting.normal_volatility` (0.02) is 10x
+   `auto_exit_normal_volatility` (0.002) against the same measure, pinning
+   `vol_ratio` at its 0.25 clamp floor. If the observed bar is always
+   exactly `min_edge * 0.25`, that is confirmed - and it is a code fix,
+   not config.
+7. **Fee ratio.** Fees are maximal at unit_cost 0.50
+   (`0.07 * p * (1-p)`), which is also the most profitable band, so
+   trimming the top of the range concentrates the book into the
+   highest-fee zone. Baseline 2.7% of deployed capital ($2,487.80 /
+   $91,610.29) - watch it drift.
+8. **Does the crypto edge persist?** The whole thesis rests on 146 trades
+   in one series family over ~2 days: `moderate` confidence by this
+   repo's own `confidence_label` convention, not a settled edge.
+
+**Deferred until the event-scoped ME gate ships** (spec/plan in PR #202,
+revision 2): `me_gate_evaluated_total` / `me_gate_blocked_total` /
+`positions_with_event_ticker` coverage, and the blocked-flip held-leg P&L
+(that spec's section 4.4) - a strict gate always converts a hedge into a
+lingering single loss under today's code, and that is the data the
+softer-variant decision needs.
