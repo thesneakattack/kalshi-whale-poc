@@ -273,3 +273,48 @@ correctly.
   first. The actual right move — already true in every other wait in this
   session — was to just end the turn with a short status line and let the
   next task notification or user message re-invoke me.
+
+## Resolution (2026-08-30, later same day)
+
+Prompted by this log plus a fresh incident found running `/kanban-board-sync`
+in a follow-on session: `tools/kanban_sync`'s `find_by_marker` trusted GitHub
+search's top fuzzy hit unconditionally and wrongly closed a real, unrelated
+issue (#74) as a side effect. Investigation traced this and the R6 friction
+above to the same underlying pattern — handspun tooling built in the last
+~6 days of a 23-day project, largely in parallel with the `superpowers`
+plugin's install rather than after it, some of it duplicating what an
+already-installed plugin (`github-issues-kanban`) or `superpowers` itself
+already does. The repo's own 2026-08-27 self-audit had found this same
+pattern once already (Finding #5) and only partially acted on it (deleted
+duplicate orchestrator skills, left the underlying tools running).
+
+Direct instruction reversed the standing "never retire a tool" stance
+(`CLAUDE.md`, was line 120) to: prefer proven installed plugins/MCP
+servers/skills/commands over handspun equivalents; a handspun tool defaults
+to disabled until its own run history proves real value. Concrete actions
+taken under the new standard, same session:
+
+1. **Fixed both bugs** (`3462815`): `find_by_marker` now verifies a
+   candidate's body actually contains the marker instead of trusting the
+   top fuzzy search hit (issue #90, closed); `guard_workflow.py`'s R6
+   regex no longer matches `merge-tree` as a prefix of `merge` (negative
+   lookahead). The broader R6/session-registry design (item #3 above) and
+   `kanban_sync`'s core sync mechanism were kept running — no installed
+   replacement exists for either, so "disabled until proven" didn't apply
+   to the whole mechanism, just the demonstrated bugs in it.
+2. **AQC given one real supervised test** (`88db3f5`): `python -m
+   tools.quality_coordination --clean`, run for real for the first time
+   ever. Result: 0 cleanup actions taken, and `cleanup_actions` turned out
+   to have 0 rows across all 11 prior detect cycles — every branch signal
+   that ever escalated had already been deleted through the normal
+   `gh pr merge --delete-branch`/`scripts/cleanup-worktrees.sh` path first.
+   The one plausible real candidate this run was correctly held back by
+   the 8h persistence floor, not a bug. `_CLEANUP_ACTION_FOR_DOMAIN`'s
+   `branch` entry retired on this evidence; `ledger`/`process_hygiene`
+   domains and `coordination_engine.py`'s state machine left untouched —
+   the finding is specific to that one action, not AQC as a whole.
+
+Full detail: `git log 3462815 718cbe4 5205055 88db3f5` on
+`feat/realtime-data-plane-remediation`; `docs/open-decisions.md`'s
+2026-08-30 policy-reversal and AQC-resolution lines; `CLAUDE.md`'s
+Toolchain section for the current rule text.
