@@ -6,7 +6,7 @@ manager, or data sources.
 import time
 from typing import NamedTuple
 
-from services import candidate_log, kalshi_fees, market_history, signal_log
+from services import candidate_log, fault_log, kalshi_fees, market_history, signal_log
 from services.config import config_overrides
 from services.confidence_scoring import WhaleSignal
 from services.paper_broker import PaperBroker
@@ -200,6 +200,83 @@ def _validate_entry_price(
     return EntryValidation(True)
 
 
+# evaluate()'s special-market conservative gate reads market_titles/
+# event_titles to decide the mutually_exclusive flag (issue #267). Both
+# maps are populated only for tickers inside the category-scoped watchlist
+# - quantified 2026-08-30: 14,180 of 95,535 signal_log.db rows had no
+# market_catalog.db row at all - so a miss is common, not exceptional.
+# Before this, a miss and a genuine "checked, and it's not
+# mutually_exclusive" both silently produced the same
+# mutually_exclusive=False, wrapped in a bare `except Exception: pass` -
+# no fault, no counter, for either case. This is the exact input the
+# position-netting/hedge-conflict risk and the event-scoped ME gate design
+# (docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md) both
+# depend on, so the gap needed to be visible even though its fail-open
+# behavior (the codebase's uniform rule for missing data) does not change.
+#
+# me_gate_unknown_total is a monotone, lifetime, process-scoped counter -
+# never reset except by process restart, same idiom as services/
+# settlement_resolver.py's `_stats` ("Lifetime counters for /api/health/
+# pipeline's schedulers block - monotone, reset only by process restart,
+# same idiom as the WS ingest counters"). It increments on EVERY
+# occurrence where the ME flag could not actually be verified - whether
+# the cause was "no market_titles/event_titles entry" or a genuine
+# exception during the lookup - because both mean the same thing for this
+# counter's purpose: the gate defaulted instead of checking. A real
+# "checked, ev is non-empty, mutually_exclusive is genuinely False" never
+# touches it. Exposed read-only via me_gate_stats(), surfaced at
+# GET /api/health/pipeline.
+_me_gate_stats = {"me_gate_unknown_total": 0}
+
+# fault_log dedup, keyed by event ticker (falling back to the market
+# ticker when no event_ticker could even be resolved, so distinct unknown
+# markets don't collapse into one slot) - once per key per observability
+# WINDOW, not once per process. Mirrors services/exits/exit_engine.py's
+# _stale_uncorroborated_logged / reset_window (P8 Task 35: "one fault_log
+# row per ticker per window, not one per check_exits call"), rolled by
+# services/observability/observability.py's maybe_capture alongside every
+# other module's window - see this file's reset_window() below.
+#
+# Issue #267's own wording ("once per event per process") carries over
+# the design spec's revision-1 language; the spec's own revision-2 (4.1)
+# retracts that: "once per process" would write one fault_log row and then
+# go permanently silent, because fault_log's last_seen only advances on a
+# write - a still-ongoing problem would read as stale on every later
+# /api/health/faults check, which is the opposite of what a live health
+# signal needs. Per-window keeps last_seen fresh for as long as the
+# problem persists while still keeping this off the hot path at signal
+# rate (no per-signal SQLite write). me_gate_unknown_total (above) already
+# gives the true lifetime count regardless of how the fault_log side is
+# rate-limited.
+_me_gate_unknown_logged: set[str] = set()
+
+
+def reset_window() -> None:
+    """Called by services/observability/observability.py's maybe_capture,
+    same as exit_engine.reset_window() - rolls the fault_log dedup set
+    only, never the lifetime counter."""
+    _me_gate_unknown_logged.clear()
+
+
+def me_gate_stats() -> dict:
+    """Pure read for GET /api/health/pipeline - see _me_gate_stats above."""
+    return dict(_me_gate_stats)
+
+
+def _record_me_gate_unknown(ticker: str, event_ticker: str | None, operation: str, detail: str) -> None:
+    """Shared by both branches of evaluate()'s special-market gate that
+    could not verify the mutually_exclusive flag: the missing-lookup case
+    and the genuine-exception case. Same counter for both (see
+    _me_gate_stats' docstring); distinct fault_log `operation` values keep
+    them separately queryable at /api/health/faults?component=strategy_engine."""
+    _me_gate_stats["me_gate_unknown_total"] += 1
+    dedup_key = event_ticker or ticker
+    if dedup_key in _me_gate_unknown_logged:
+        return
+    _me_gate_unknown_logged.add(dedup_key)
+    fault_log.record_fault("strategy_engine", operation, detail, severity="warn")
+
+
 class FollowTheWhaleStrategy:
     def __init__(self, broker: PaperBroker, risk: RiskManager):
         self.broker = broker
@@ -361,21 +438,37 @@ class FollowTheWhaleStrategy:
             )
 
         # Conservative gate for markets with early-close or special settlement
+        et = None  # bound ahead of the try so the except branch below can
+        # use whatever was resolved before an exception fired, for a more
+        # precise fault_log dedup key (issue #267).
         try:
-            m_info = (market_titles or {}).get(signal.ticker) or {}
-            et = m_info.get("event_ticker")
+            m_info = (market_titles or {}).get(signal.ticker)
+            et = (m_info or {}).get("event_ticker") if m_info else None
+            # Distinguish "no data available to check" from "checked, and
+            # it's genuinely not mutually-exclusive" - issue #267: these
+            # silently collapsed to the same mutually_exclusive=False
+            # before this, with no fault and no counter either way.
+            if m_info is None:
+                unknown_reason = f"{signal.ticker}: no market_titles entry - mutually_exclusive gate fails open"
+            elif not et:
+                unknown_reason = f"{signal.ticker}: market_titles entry has no event_ticker - mutually_exclusive gate fails open"
+            elif et not in (event_titles or {}):
+                unknown_reason = f"{signal.ticker}: no event_titles entry for event {et!r} - mutually_exclusive gate fails open"
+            else:
+                unknown_reason = None
+            if unknown_reason is not None:
+                _record_me_gate_unknown(signal.ticker, et, "me_gate_unknown", unknown_reason)
             ev = (event_titles or {}).get(et) or {}
             special_flags = {
                 "can_close_early": False,
                 "collateral_return_type": None,
-                "mutually_exclusive": False,
+                "mutually_exclusive": bool(ev.get("mutually_exclusive")),
             }
             # market-level can_close_early is exposed in state["markets"] slim
             # maps - reuse this_market (looked up above for effective_close),
             # no need for a second loop over the same list.
             special_flags["can_close_early"] = bool((this_market or {}).get("can_close_early"))
             special_flags["collateral_return_type"] = ev.get("collateral_return_type")
-            special_flags["mutually_exclusive"] = bool(ev.get("mutually_exclusive"))
             # Only apply the special-market conservative gate when the market
             # is not currently live. If live, ignore scheduled close/grace
             # windows since the event is in-play and scheduled times may be
@@ -388,9 +481,16 @@ class FollowTheWhaleStrategy:
                         side=signal.side, unit_cost=unit_cost,
                     )
                     return self._skip(signal, "market has special settlement/early-close — skipping close-in-time")
-        except Exception:
-            # best-effort only - don't break trading on inspection failure
-            pass
+        except Exception as exc:
+            # Fail open, same as before (best-effort only - don't break
+            # trading on inspection failure) - but a genuine exception here
+            # is a different, real problem from "no data yet" above, and is
+            # now counted/logged the same way rather than swallowed
+            # (issue #267).
+            _record_me_gate_unknown(
+                signal.ticker, et, "me_gate_inspection_error",
+                f"{signal.ticker}: exception inspecting special-market gate inputs: {exc!r} - gate fails open",
+            )
 
         # Manual override on top of the automatic win-rate filter below - for
         # a series the user has out-of-band reason to distrust before it's
