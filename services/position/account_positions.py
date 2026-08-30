@@ -33,6 +33,19 @@ _POSITION_FIELDS = (
     # _process_stream_position, which now normalizes it back onto "ticker"
     # for downstream consumers that only ever expect that key.
     "market_ticker",
+    # exchange_index (2026-08-30, issue #251, Trade API 3.29.0): now a
+    # required field of the REST MarketPosition schema
+    # (docs/kalshi/get-positions.md:189) - the shared ExchangeIndex schema's
+    # "Identifier for an exchange shard." With crypto on shard 2 and
+    # tennis/baseball on shard 3 live since 2026-08-24
+    # (docs/kalshi/exchange_sharding.md:22,81-82), two real positions with
+    # the same ticker on different shards were indistinguishable without
+    # it. The WS market_position message does not carry this field
+    # (confirmed against docs/kalshi/market-positions.md - not part of its
+    # schema), so it is None on that path and populated on the REST path;
+    # both funnel through this one whitelist (_process_stream_position and
+    # _fetch_account_snapshot respectively).
+    "exchange_index",
 )
 # Kalshi's own EventPosition has no price field either (same as
 # MarketPosition - confirmed against the SDK's models), so this doesn't need
@@ -63,6 +76,16 @@ _FILL_FIELDS = (
     # only identifier, so services/whale_stream/whale_stream_handlers.py's
     # _process_stream_fill silently no-opped on every real fill.
     "trade_id",
+    # exchange_index (2026-08-30, issue #251, Trade API 3.29.0): now a
+    # required field of both the WS fill message (docs/kalshi/
+    # user-fills.md:207) and the REST Fill schema (docs/kalshi/
+    # get-fills.md:194) - "Identifier for the exchange shard where the fill
+    # occurred." Survives services/kalshi/contracts/fill.py's normalize_fill
+    # (spreads **msg) but was silently dropped here before every consumer
+    # of _slim_fill - _fetch_account_snapshot's REST poll and
+    # _process_stream_fill's WS path both funnel through this one
+    # whitelist. Same shard-collision risk as _POSITION_FIELDS above.
+    "exchange_index",
 )
 # Same trim idea as _slim_market: keep only what renderRealPositions/
 # renderRealFills actually read (field names confirmed against a real

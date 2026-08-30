@@ -12,7 +12,12 @@ Semantics owned:
   the position message's).
 - Raw-payload pass-through: every documented field (side/action/
   outcome_side/book_side/purchased_side, count_fp, prices, post_position_fp,
-  ts/ts_ms) survives intact.
+  ts/ts_ms, exchange_index) survives intact through normalize_fill's **msg
+  spread. exchange_index (2026-08-30, issue #251, Trade API 3.29.0) is now
+  a required field here (docs/kalshi/user-fills.md:207) - this inventory
+  omitted it even though the spread already carried it; the actual drop
+  was one layer downstream, in services/position/account_positions.py's
+  _FILL_FIELDS whitelist (fixed the same commit as this docstring).
 """
 from __future__ import annotations
 

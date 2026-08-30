@@ -1,10 +1,11 @@
 {
   "_meta": {
     "source_doc": "docs/kalshi/get-positions.md",
-    "note": "REST GetPositions MarketPosition schema - every field below is in the schema's required list. position_fp is NEGATIVE: 'Negative means NO contracts and positive means YES contracts' - the sign the real emergency flatten's side mapping depends on. The REST surface uses `ticker` (the WS market_position message uses market_ticker instead - see market_position.json)."
+    "note": "REST GetPositions MarketPosition schema - every field below is in the schema's required list, which since 2026-08-30 (issue #251, Trade API 3.29.0) includes exchange_index (get-positions.md:189) - value is the ExchangeIndex schema's own generic example (get-positions.md:269: example: 0). position_fp is NEGATIVE: 'Negative means NO contracts and positive means YES contracts' - the sign the real emergency flatten's side mapping depends on. The REST surface uses `ticker` (the WS market_position message uses market_ticker instead - see market_position.json)."
   },
   "payload": {
     "ticker": "FED-23DEC-T3.00",
+    "exchange_index": 0,
     "total_traded_dollars": "52.0000",
     "position_fp": "-40.00",
     "market_exposure_dollars": "20.8000",
