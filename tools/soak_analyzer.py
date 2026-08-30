@@ -172,12 +172,16 @@ def check_ticker_conservation(qh: dict) -> Check:
     with the previous connection - its queues and the coalescing map - on
     every reconnect: counted on arrival, deliberately discarded, and until
     it had its own counter indistinguishable from a leak (gap constant at
-    74 across 12 reconnects). An app that predates the counter exposes no
-    `discarded_on_reconnect_by_class` at all: the term is then assumed 0,
-    the detail says so, and the check's source is marked partial - a
-    balanced identity built on an assumed term resolves to UNKNOWN, never
-    PASS, while a gap stays a FAIL (the gap is real either way; only its
-    cause is ambiguous).
+    74 across 12 reconnects).
+
+    Either per-class counter dict may be absent from the payload - an app
+    that predates #209 exposes no `discarded_on_reconnect_by_class`; an
+    older app or a renamed key can drop `dropped_by_class` (#232). An
+    absent term is then assumed 0, the detail says so, and the check's
+    source is marked partial - a balanced identity built on an assumed term
+    resolves to UNKNOWN, never PASS, while a gap stays a FAIL (the gap is
+    real either way; only its cause is ambiguous). A key that is present
+    but lacks a "ticker" entry is a measured 0, not an absence.
 
     Only decidable on a QUIESCENT sample: with items still in the queue,
     the difference is legitimately in-flight and proves nothing. Reporting
@@ -190,7 +194,9 @@ def check_ticker_conservation(qh: dict) -> Check:
     recv = (qh.get("received_by_class") or {}).get("ticker")
     proc = (qh.get("processed_by_class") or {}).get("ticker")
     coal = q.get("coalesced_tickers")
-    dropped = (qh.get("dropped_by_class") or {}).get("ticker", 0)
+    dropped_by_class = qh.get("dropped_by_class")
+    dropped_measured = dropped_by_class is not None
+    dropped = (dropped_by_class or {}).get("ticker", 0)
     discarded_by_class = qh.get("discarded_on_reconnect_by_class")
     discarded_measured = discarded_by_class is not None
     discarded = (discarded_by_class or {}).get("ticker", 0)
@@ -208,6 +214,10 @@ def check_ticker_conservation(qh: dict) -> Check:
     pct = (gap / recv * 100) if recv else 0.0
     detail = (f"received={recv} accounted={accounted} gap={gap} ({pct:.4f}%) "
               "[processed+coalesced+pending+dropped+discarded_on_reconnect]")
+    if not dropped_measured:
+        detail += (" [dropped_by_class absent from the API response - assumed "
+                   "0; a non-zero gap here may be an uncounted drop rather "
+                   "than a leak]")
     if not discarded_measured:
         detail += (" [discarded_on_reconnect_by_class absent from the API "
                    "response (app predates #209) - assumed 0; a non-zero gap "
@@ -217,9 +227,10 @@ def check_ticker_conservation(qh: dict) -> Check:
         "ticker_conservation", DATA_PLANE, PASS if ok else FAIL, detail,
         {"received": recv, "processed": proc, "coalesced": coal,
          "pending": pending, "dropped": dropped,
+         "dropped_measured": dropped_measured,
          "discarded_on_reconnect": discarded,
          "discarded_on_reconnect_measured": discarded_measured, "gap": gap},
-        source_complete=discarded_measured,
+        source_complete=dropped_measured and discarded_measured,
     )
 
 
