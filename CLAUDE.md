@@ -39,7 +39,7 @@ Not knowing is a research task, not a probability estimate. Permanent: applies e
 - Current focus stays paper trading (Programs 1–2). Do not prioritize live execution, shadow qualification, or capital qualification (Program 3+) over realtime/economic correctness.
 - The 70%/70% target is retired. Judge each `services/<name>/` module on effectiveness, efficiency, and informativeness, plus the six data-plane properties above.
 - Read a module's `README.md` (`CHEATSHEET.md` for `services/kalshi/` and its raw-payload consumers `market_catalog`, `market_watch`, `market_events`, `whale_stream`) before auditing it; cross-post confirmed findings there with a date.
-- Open gaps (detail in ROADMAP.md): pricing/edge gap at entry (0.60–0.95 unit-cost band negative-EV, designed not implemented); shadow mode has never produced a trade; no deployment target; `risk.max_daily_loss_pct` is 0.85 (not protective); zero category-level legal-risk awareness; auto-apply has only tuned on paper history.
+- Open gaps (detail in ROADMAP.md): pricing/edge gap at entry (0.60–0.95 unit-cost band negative-EV, designed not implemented); shadow mode has never produced a trade; no deployment target; `risk.max_daily_loss_pct` is 0.8, deliberately non-protective while in paper-mode training (decided 2026-08-30 — see git log for that date); zero category-level legal-risk awareness; auto-apply has only tuned on paper history.
 
 ## Start investigations here (in order, before any ad hoc script or `sqlite3`)
 
