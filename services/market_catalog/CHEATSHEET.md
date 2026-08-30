@@ -108,3 +108,15 @@ watchlisted or not.
   by design), except `search_markets`' `live_only=True` path, which
   prefers the catalog when it already has near-term data for the matched
   series and falls back to a fresh REST fetch otherwise.
+- **New writer (2026-08-30, issue #268):** `services/market_watch/
+  mve_scan.py` calls `upsert_mve_markets` (a sibling of `upsert_markets`
+  sharing the same `markets` table via a common `_upsert_market_rows`
+  helper) for multivariate/combo markets — these never carry
+  `occurrence_datetime` at all (confirmed live), so this writer anchors
+  the same near-term-horizon check on `close_ts` instead and stores
+  `occurrence_ts` as NULL. `open_candidates`/`open_markets_for_series`
+  read these rows exactly like a regular scan's; `candidates_in_window`
+  (which requires `occurrence_ts IS NOT NULL`) correctly never surfaces
+  them — a combo has no single occurrence moment by construction. Full
+  root cause: `docs/kalshi/CHEATSHEET.md`'s "How do you actually discover
+  multivariate (combo) markets" entry.

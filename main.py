@@ -112,7 +112,7 @@ from services.market_watch import (  # noqa: E402
     _fetch_event_titles, _fetch_exchange_status, _fetch_live_status, _fetch_markets,
     _get_series_cache, _get_top_series, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC,
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _maybe_scan_catalog_batch,
-    _MILESTONE_REPOLL_SEC, propagate_milestone_winners, _refresh_discovery_cache,
+    _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners, _refresh_discovery_cache,
     _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
 from services.backup import _maybe_run_backup  # noqa: E402
@@ -559,6 +559,15 @@ _SCHEDULER_TRIGGERS = (
     ("research", _maybe_run_research),
     ("event_schedule", event_schedule._maybe_resolve_event_schedules),
     ("catalog_scan", _maybe_scan_catalog_batch),
+    # Multivariate (combo) event discovery (issue #268) - deliberately its
+    # own trigger, not folded into catalog_scan above: MVE discovery is
+    # independent of kalshi.categories scope (see
+    # services/market_watch/mve_scan.py's own module docstring for why a
+    # regular per-series scan structurally can't reach these markets at
+    # all - every MVE series reports volume_fp=0.00 on its own /series
+    # entry, which catalog_scan._get_series_cache already filters out
+    # before any category logic even runs).
+    ("mve_scan", _maybe_scan_mve_batch),
     ("auto_apply", _maybe_run_auto_apply),
 )
 

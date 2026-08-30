@@ -52,13 +52,13 @@ def test_trading_loop_no_longer_hosts_the_relocated_trigger_calls():
     source = inspect.getsource(main.trading_loop)
     for marker in (
         "_maybe_check_signal_resolutions(", "_maybe_run_backup(", "_maybe_run_research(",
-        "_maybe_resolve_event_schedules(", "_maybe_scan_catalog_batch(",
+        "_maybe_resolve_event_schedules(", "_maybe_scan_catalog_batch(", "_maybe_scan_mve_batch(",
         "calibration_history.due(", "advisory_engine.generate_recommendations(",
     ):
         assert marker not in source, f"{marker} still lives inside trading_loop"
     assert "_scheduler_loop" in inspect.getsource(main.lifespan)
     assert [name for name, _ in main._SCHEDULER_TRIGGERS] == [
-        "signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "auto_apply",
+        "signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "mve_scan", "auto_apply",
     ]
 
 

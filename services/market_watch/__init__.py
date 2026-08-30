@@ -18,6 +18,10 @@ live-status/milestone/event tracking. Was one 1,337-line file
 - selection.py - market-selection policy (candidate filtering, series-
   level round-robin, watchlist caps), moved out of the vendor client at
   Kalshi Integration Phase A Task A7.
+- mve_scan.py - multivariate (combo) event discovery (issue #268):
+  GET /events/multivariate + GET /multivariate_event_collections, a
+  structurally different endpoint family from catalog_scan.py's regular
+  per-series get_markets scan, independent of kalshi.categories.
 
 Every name external callers need is re-exported here, so
 `from services.market_watch import X` is the one import line to use -
@@ -44,4 +48,9 @@ from services.market_watch.live_status import (  # noqa: F401
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _LIVE_STATUS_TERMINAL,
 )
 from services.market_watch.market_fetch import _fetch_markets, _MARKET_FIELDS, _slim_market  # noqa: F401
+from services.market_watch import mve_scan  # noqa: F401
+from services.market_watch.mve_scan import (  # noqa: F401
+    _get_mve_series_cache, _maybe_scan_mve_batch, _MVE_COLLECTIONS_CACHE_TTL_SEC, _MVE_EVENTS_PAGE_LIMIT,
+    _MVE_SCAN_MIN_INTERVAL_SEC, _MVE_SCAN_PACE_LIMIT, _scan_mve_batch, _scan_mve_batch_background,
+)
 from services.market_watch import selection  # noqa: F401

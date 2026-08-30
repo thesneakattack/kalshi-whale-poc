@@ -61,6 +61,8 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     "get_event_live_data": ("docs/kalshi/get-event-live-data.md",),
     "get_tags_for_series_categories": ("docs/kalshi/get-tags-for-series-categories.md",),
     "get_filters_for_sports": ("docs/kalshi/get-filters-for-sports.md",),
+    "get_multivariate_events": ("docs/kalshi/get-multivariate-events.md",),
+    "get_multivariate_event_collections": ("docs/kalshi/get-multivariate-event-collections.md",),
 }
 
 
@@ -365,3 +367,101 @@ class KalshiPublicGateway:
 
     async def get_filters_for_sports(self) -> dict:
         return await self._get_json("/search/filters_by_sport", endpoint="get_filters_for_sports")
+
+    async def get_multivariate_events(
+        self, series_ticker: str | None = None, collection_ticker: str | None = None,
+        with_nested_markets: bool = False, limit: int = 200, cursor: str | None = None,
+    ) -> dict:
+        """Dynamically-created multivariate (combo) events - GET
+        /events/multivariate (docs/kalshi/get-multivariate-events.md, issue
+        #268). Distinct endpoint family from get_events/get_markets: plain
+        get_events "excludes multivariate events" (its own doc's exact
+        words), and a combo event's own title/sub_title/mutually_exclusive
+        is only ever available here, never from get_event(s).
+
+        series_ticker and collection_ticker are mutually exclusive per the
+        doc ("Cannot be used together") - not enforced here (Kalshi's own
+        400 on misuse is the real contract), same trust-the-server
+        convention every other gateway method here already uses.
+
+        with_nested_markets=True asks Kalshi to also embed each event's own
+        Market objects under a "markets" key - one call gets both the
+        event-level fields (title/sub_title/mutually_exclusive, needed for
+        title_cache's event_titles) and the market-level fields (ticker/
+        status/close_time/title, needed for market_catalog + market_titles)
+        that services/market_watch/mve_scan.py needs, instead of a second
+        round trip.
+
+        Returns the raw {"events": [...], "cursor": ...} envelope (not just
+        a flat list like get_events/get_markets) - unlike those two, which
+        return at most one page each (~100-1000 rows, well within a single
+        page), a real MVE series/collection can hold tens of thousands of
+        historical events with no documented way to filter by recency or
+        status (confirmed live 2026-08-30, see docs/kalshi/CHEATSHEET.md) -
+        the caller decides how many pages are worth walking per scan cycle,
+        this method stays a thin one-call wrapper like get_markets."""
+        kwargs: dict[str, Any] = {"limit": limit, "with_nested_markets": with_nested_markets}
+        if series_ticker is not None:
+            kwargs["series_ticker"] = series_ticker
+        if collection_ticker is not None:
+            kwargs["collection_ticker"] = collection_ticker
+        if cursor is not None:
+            kwargs["cursor"] = cursor
+        resp = await call_with_backoff(self._client.get_multivariate_events, **kwargs)
+        return {
+            "events": [e.model_dump(mode="json") for e in resp.events],
+            "cursor": resp.cursor,
+        }
+
+    _MVE_COLLECTIONS_PAGE_SIZE = 200  # documented max (docs/kalshi/
+    # get-multivariate-event-collections.md's own `limit` schema).
+    _MVE_COLLECTIONS_MAX_PAGES = 50  # Defensive bound, same rate-discipline
+    # convention as catalog_scan._CATALOG_SCAN_BATCH_SIZE - live-verified
+    # 2026-08-30 the real corpus is ~1,389 collections / 7 pages at this
+    # page size, so 50 pages (10,000 collections) is a wide, not a tight,
+    # margin; exists only so a cursor that never empties (Kalshi bug or a
+    # misbehaving test double) can't spin this call forever.
+
+    async def get_multivariate_event_collections(
+        self, status: str | None = None, series_ticker: str | None = None,
+        associated_event_ticker: str | None = None,
+    ) -> list[dict]:
+        """Every multivariate event collection matching the given filters -
+        GET /multivariate_event_collections (docs/kalshi/
+        get-multivariate-event-collections.md, issue #268). A collection is
+        the static template a combo is generated FROM (associated_events,
+        is_ordered, size_min/size_max) - NOT itself a tradable event/market;
+        get_multivariate_events above returns the actual dynamically-created
+        instances. Paginates to completion internally (unlike
+        get_multivariate_events, which returns one page) - live-verified
+        2026-08-30 this corpus is small and stable (~1,389 rows across 16
+        distinct series_tickers, a handful of get-series-list.md's ~13,600
+        total series), so eagerly walking every page here is the cheap,
+        one-time discovery step services/market_watch/mve_scan.py caches
+        with a TTL, the same _SERIES_CACHE_TTL_SEC-style pattern
+        catalog_scan._get_series_cache already uses for the ~9,400-series
+        regular catalog. This is the authoritative way to discover which
+        series currently produce MVE events - confirmed live these
+        series_tickers do NOT reliably share a naming pattern or category
+        (KXCITIESWEATHER appeared as a collection's series_ticker with
+        neither "MVE" in its name nor category "Exotics"), so deriving this
+        list from get_series_list()'s own ticker/category fields would
+        silently miss real cases."""
+        collections: list[dict] = []
+        cursor: str | None = None
+        for _ in range(self._MVE_COLLECTIONS_MAX_PAGES):
+            kwargs: dict[str, Any] = {"limit": self._MVE_COLLECTIONS_PAGE_SIZE}
+            if status is not None:
+                kwargs["status"] = status
+            if series_ticker is not None:
+                kwargs["series_ticker"] = series_ticker
+            if associated_event_ticker is not None:
+                kwargs["associated_event_ticker"] = associated_event_ticker
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await call_with_backoff(self._client.get_multivariate_event_collections, **kwargs)
+            collections.extend(c.model_dump(mode="json") for c in resp.multivariate_contracts)
+            cursor = resp.cursor
+            if not cursor:
+                break
+        return collections
