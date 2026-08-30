@@ -169,3 +169,105 @@ def test_archive_reports_an_unreadable_broker_rather_than_a_fake_epoch():
     result = ta.archive_epoch("broken")
     assert result["ok"] is False
     assert "unreadable" in result["error"]
+
+
+def test_archive_carries_the_netting_decision_columns_of_a_netting_close():
+    """Issue #242: PR #241 (#213) added trades.netting_improvement_usd /
+    netting_bar_usd / netting_vol_ratio - the inputs a netting close decided
+    on, stored as columns because prose is for the reader and columns are
+    for the analysis. The archive copied an explicit column list that
+    predated them, so every reset silently dropped the three inputs for
+    every archived row: nothing errored, the archive was simply less
+    complete than the live table - the exact gap #213 closed, reopened one
+    reset later. The broker schema here is the real one (PaperBroker creates
+    it under the tmp DB_PATH), so the row is what the live table holds."""
+    from services import paper_broker as pb_module
+
+    _seed_broker(_TRADES)
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
+            "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
+            "netting_bar_usd, netting_vol_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("e3", "KXBTC15M-C", "yes", 100, 0.60, "whale print (conf 0.80)",
+             1400.0, "fp", 1.0, 1399.0, None, None, None))
+        conn.execute(
+            "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
+            "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
+            "netting_bar_usd, netting_vol_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("x3", "KXBTC15M-C", "yes", 100, 0.80,
+             "closed: position netting (partial, event KXBTC15M): estimated $1.25 "
+             "expected-value improvement over holding (bar $0.80)",
+             1500.0, "fp", 0.0, None, 1.25, 0.80, 1.6))
+    result = ta.archive_epoch("netting close")
+
+    rows = {r["id"]: r for r in ta.epoch_trades(result["epoch_id"])}
+    assert rows["x3"]["netting_improvement_usd"] == pytest.approx(1.25)
+    assert rows["x3"]["netting_bar_usd"] == pytest.approx(0.80)
+    assert rows["x3"]["netting_vol_ratio"] == pytest.approx(1.6)
+    # NULL on a non-netting row IS the meaning ("no bar was computed"),
+    # carried over as-is rather than coerced to 0.
+    assert rows["e3"]["netting_improvement_usd"] is None
+    assert rows["x1"]["netting_bar_usd"] is None
+
+
+def test_an_archive_written_before_the_netting_columns_reads_null_and_still_accepts_new_epochs():
+    """Additive migration, the only kind this append-only store allows: an
+    archive file written before #242 has no netting columns. Opening it
+    adds them (NULL on every existing row - never rewritten), the old epoch
+    reads back intact, and a new epoch archived into the same file carries
+    the values."""
+    from services import paper_broker as pb_module
+
+    ta.DB_PATH.parent.mkdir(exist_ok=True)
+    with sqlite3.connect(ta.DB_PATH) as conn:
+        # Both tables exactly as they stood before #242 (epochs is unchanged
+        # by it). The epoch row matters: without it the next archive_epoch
+        # is assigned id 1 and its rows land in the old epoch.
+        conn.execute(
+            "CREATE TABLE epochs (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, "
+            "reason TEXT, archived_at REAL NOT NULL, first_trade_at REAL, last_trade_at REAL, "
+            "starting_bankroll REAL, ending_bankroll REAL, "
+            "trades_archived INTEGER NOT NULL DEFAULT 0, "
+            "positions_archived INTEGER NOT NULL DEFAULT 0, closed_positions INTEGER, "
+            "wins INTEGER, win_rate_pct REAL, mean_entry_unit_cost REAL, "
+            "breakeven_accuracy_pct REAL, edge_pts REAL, realised_pnl REAL, fees_paid REAL, "
+            "config_json TEXT)")
+        conn.execute(
+            "INSERT INTO epochs (id, label, archived_at, trades_archived) "
+            "VALUES (1, 'pre-#242', 900.0, 1)")
+        conn.execute(
+            "CREATE TABLE archived_trades (epoch_id INTEGER NOT NULL, id TEXT NOT NULL, "
+            "ticker TEXT NOT NULL, series TEXT, side TEXT NOT NULL, size INTEGER NOT NULL, "
+            "price REAL NOT NULL, reason TEXT NOT NULL, timestamp REAL NOT NULL, "
+            "config_fingerprint TEXT, fee REAL, signal_seen_at REAL, "
+            "PRIMARY KEY (epoch_id, id))")
+        conn.execute(
+            "INSERT INTO archived_trades VALUES (1, 'old1', 'KXA-1', 'KXA', 'yes', 100, 0.6, "
+            "'whale print', 1000.0, 'fp', 0.0, NULL)")
+
+    old = ta.epoch_trades(1)
+    assert len(old) == 1
+    assert old[0]["netting_improvement_usd"] is None
+    assert old[0]["netting_bar_usd"] is None
+    assert old[0]["netting_vol_ratio"] is None
+
+    _seed_broker([])
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
+            "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
+            "netting_bar_usd, netting_vol_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("x9", "KXB-1", "no", 50, 0.40,
+             "closed: position netting (partial, event KXB): estimated $0.40 "
+             "expected-value improvement over holding (bar $0.25)",
+             2000.0, "fp", 0.0, None, 0.40, 0.25, 2.1))
+    new_epoch = ta.archive_epoch("after migration")["epoch_id"]
+    assert new_epoch == 2
+    new = ta.epoch_trades(new_epoch)
+    assert len(new) == 1
+    assert new[0]["netting_improvement_usd"] == pytest.approx(0.40)
+    assert new[0]["netting_bar_usd"] == pytest.approx(0.25)
+    assert new[0]["netting_vol_ratio"] == pytest.approx(2.1)
+    # The pre-migration row is untouched.
+    assert ta.epoch_trades(1)[0]["netting_vol_ratio"] is None

@@ -41,6 +41,16 @@ from services import paper_broker as pb_module
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "trade_archive.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # data/trade_archive.db is a live, append-only file with existing rows
+    # (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone never adds a column to
+    # an existing table, so a new column is an explicit, idempotent ALTER
+    # TABLE guarded by a check, the same idiom services/paper_broker.py uses.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -89,6 +99,16 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # Netting decision inputs (issue #242): the columns #213 added to
+    # trades. archive_epoch copies an explicit column list on purpose - that
+    # is what keeps this schema stable - which is also why a column added to
+    # `trades` is silently dropped from every archive until it is added in
+    # both places here. Guarded ALTER, not a DDL edit: the live file already
+    # has rows. NULL on every pre-#242 row and every non-netting row IS the
+    # meaning ("no bar was computed"), not a gap to backfill.
+    _add_column_if_missing(conn, "archived_trades", "netting_improvement_usd", "REAL")
+    _add_column_if_missing(conn, "archived_trades", "netting_bar_usd", "REAL")
+    _add_column_if_missing(conn, "archived_trades", "netting_vol_ratio", "REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_trades_epoch ON archived_trades (epoch_id, timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_trades_series ON archived_trades (series, timestamp)")
     conn.execute(
@@ -187,7 +207,8 @@ def archive_epoch(label: str, reason: str | None = None, cfg: dict | None = None
             conn.row_factory = sqlite3.Row
             trades = [dict(r) for r in conn.execute(
                 "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
-                "fee, signal_seen_at FROM trades ORDER BY timestamp")]
+                "fee, signal_seen_at, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+                "FROM trades ORDER BY timestamp")]
             positions = [dict(r) for r in conn.execute(
                 "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee "
                 "FROM positions")]
@@ -220,11 +241,13 @@ def archive_epoch(label: str, reason: str | None = None, cfg: dict | None = None
         epoch_id = cur.lastrowid
         arch.executemany(
             "INSERT OR IGNORE INTO archived_trades (epoch_id, id, ticker, series, side, size, "
-            "price, reason, timestamp, config_fingerprint, fee, signal_seen_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "price, reason, timestamp, config_fingerprint, fee, signal_seen_at, "
+            "netting_improvement_usd, netting_bar_usd, netting_vol_ratio) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(epoch_id, t["id"], t["ticker"], signal_log.series_of(t["ticker"]), t["side"],
               t["size"], t["price"], t["reason"], t["timestamp"], t["config_fingerprint"],
-              t["fee"], t["signal_seen_at"]) for t in trades],
+              t["fee"], t["signal_seen_at"], t["netting_improvement_usd"], t["netting_bar_usd"],
+              t["netting_vol_ratio"]) for t in trades],
         )
         arch.executemany(
             "INSERT OR IGNORE INTO archived_positions (epoch_id, ticker, side, size, entry_price, "
