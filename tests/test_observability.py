@@ -444,6 +444,7 @@ def _fake_ingest_metrics() -> dict:
         "received_by_class": {"trade": 480, "ticker": 20},
         "processed_by_class": {"trade": 476, "ticker": 20},
         "dropped_by_class": {"trade": 4},
+        "discarded_on_reconnect_by_class": {"ticker": 7},
         "handler_exceptions_total": 3, "handler_exceptions_by_class": {"trade": 3},
         "handler_timeouts_total": 1, "handler_timeouts_by_class": {"trade": 1},
         "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75},
@@ -487,6 +488,8 @@ def test_capture_from_runtime_flattens_ws_ingest_metrics_under_the_stream_prefix
     assert metrics["trade_stream.ingest.processed.trade"] == 476.0
     assert metrics["trade_stream.ingest.dropped.trade"] == 4.0
     assert "trade_stream.ingest.dropped.ticker" not in metrics  # zero counts omitted, not fabricated
+    assert metrics["trade_stream.ingest.discarded_on_reconnect.ticker"] == 7.0  # #209: a reconnect discard is not a drop
+    assert "trade_stream.ingest.discarded_on_reconnect.trade" not in metrics
     assert metrics["trade_stream.ingest.dropped_window"] == 1.0
     assert metrics["trade_stream.ingest.malformed_messages"] == 2.0
     assert metrics["trade_stream.ingest.handler_exceptions"] == 3.0

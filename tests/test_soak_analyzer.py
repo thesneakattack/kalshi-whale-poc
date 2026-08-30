@@ -23,7 +23,8 @@ def _payload(**over):
     qh = {"dropped_messages": 0, "dropped_window": 0,
           "received_by_class": {"ticker": 1100},
           "processed_by_class": {"ticker": 1000},
-          "dropped_by_class": {}, "queue": q}
+          "dropped_by_class": {}, "discarded_on_reconnect_by_class": {},
+          "queue": q}
     qh.update(over.pop("queue_health", {}))
     sched = {"settlement_resolver": {"enqueued_total": 100, "resolved_total": 90,
                                      "pending": 10, "dropped_total": 0}}
@@ -80,6 +81,52 @@ def test_conservation_fails_and_reports_the_gap():
     c = _by_id(sa.run_checks(p))["ticker_conservation"]
     assert c.status == sa.FAIL
     assert c.measured["gap"] == 74
+
+
+def test_conservation_counts_reconnect_discards_as_accounted():
+    """#209: _begin_connection throws away every queued item and the pending
+    map on each reconnect - counted on arrival, deliberately discarded, and
+    until counted indistinguishable from a leak (gap constant at 74 across
+    12 reconnects). A distinct term, not folded into dropped."""
+    p = _payload(queue_health={"received_by_class": {"ticker": 1174},
+                               "processed_by_class": {"ticker": 1000},
+                               "discarded_on_reconnect_by_class": {"ticker": 74}},
+                 queue={"coalesced_tickers": 100, "pending_tickers": 0})
+    c = _by_id(sa.run_checks(p))["ticker_conservation"]
+    assert c.status == sa.PASS
+    assert c.measured["discarded_on_reconnect"] == 74
+    assert c.measured["gap"] == 0
+    assert "discarded_on_reconnect" in c.detail
+
+
+def test_conservation_with_the_discard_counter_absent_never_passes_silently():
+    """An app that predates #209 exposes no discarded_on_reconnect_by_class.
+    The term is assumed 0 - and the check says so - and an identity that
+    balances only with an assumed term is UNKNOWN, never PASS."""
+    p = _payload(queue_health={"received_by_class": {"ticker": 1100},
+                               "processed_by_class": {"ticker": 1000}},
+                 queue={"coalesced_tickers": 100, "pending_tickers": 0})
+    del p["ingest"]["queue_health"]["discarded_on_reconnect_by_class"]
+    c = _by_id(sa.run_checks(p))["ticker_conservation"]
+    assert c.status == sa.UNKNOWN
+    assert "discarded_on_reconnect_by_class absent" in c.detail
+    assert "assumed 0" in c.detail
+    assert c.measured["discarded_on_reconnect"] == 0
+    assert c.measured["discarded_on_reconnect_measured"] is False
+
+
+def test_conservation_with_the_discard_counter_absent_still_fails_on_a_gap():
+    """A gap is real whatever the app version: FAIL is kept, and the detail
+    still names the unmeasured term so the reader knows the gap may be an
+    uncounted reconnect discard rather than a leak."""
+    p = _payload(queue_health={"received_by_class": {"ticker": 1174},
+                               "processed_by_class": {"ticker": 1000}},
+                 queue={"coalesced_tickers": 100, "pending_tickers": 0})
+    del p["ingest"]["queue_health"]["discarded_on_reconnect_by_class"]
+    c = _by_id(sa.run_checks(p))["ticker_conservation"]
+    assert c.status == sa.FAIL
+    assert c.measured["gap"] == 74
+    assert "discarded_on_reconnect_by_class absent" in c.detail
 
 
 def test_conservation_is_unknown_not_failed_while_items_are_in_flight():

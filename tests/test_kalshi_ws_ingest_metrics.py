@@ -746,3 +746,24 @@ def test_negative_gap_from_clock_skew_is_not_recorded():
     gw._begin_connection(now=49.0)  # wall clock went backwards
     c = gw.ingest_metrics(now=50.0)["connection"]
     assert c.get("last_gap_sec") is None
+
+
+# --- reconnect discards are counted by class, never as drops (#209) --------
+
+def test_reconnect_discards_from_the_single_queue_are_counted_by_class_not_as_drops():
+    """Single-queue mode has discarded its backlog on every reconnect since
+    before the coalescing map existed ("same as queued messages today").
+    Counted on arrival, then thrown away uncounted, that backlog read as a
+    leak in received - (processed + dropped)."""
+    gw = _gateway()
+    assert gw.ingest_metrics(now=1.0)["discarded_on_reconnect_by_class"] == {}
+    for raw in (_trade("a"), _trade("b"), _ticker()):
+        assert gw._ingest_raw(raw, now=1.0) is True
+
+    gw._begin_connection()
+
+    m = gw.ingest_metrics(now=2.0)
+    assert m["discarded_on_reconnect_by_class"] == {"trade": 2, "ticker": 1}
+    assert m["dropped_by_class"] == {}
+    assert m["dropped_messages"] == 0
+    assert gw._queue.empty()
