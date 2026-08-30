@@ -4,7 +4,12 @@ from pathlib import Path
 
 from tests.support.synthetic_git_repo import make_synthetic_repo
 from tools import coordination_engine as ce
-from tools.quality_coordination import delete_merged_branch, prune_worktrees, run_cleanup_actions
+from tools.quality_coordination import (
+    _CLEANUP_ACTION_FOR_DOMAIN,
+    delete_merged_branch,
+    prune_worktrees,
+    run_cleanup_actions,
+)
 
 AT = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -99,3 +104,15 @@ def test_run_cleanup_actions_logs_every_attempt_dry_run(tmp_path, monkeypatch):
     row = conn.execute("SELECT * FROM cleanup_actions").fetchone()
     assert row["action_type"] == "worktree_prune"
     assert bool(row["dry_run"]) is True
+
+
+def test_branch_domain_no_longer_has_an_automated_cleanup_action():
+    """Retired 2026-08-30 (issue #90's fix-out): this module's first-ever real --clean
+    run found 0 cleanup_actions rows across 11 prior detect cycles and 20 total
+    escalations - every branch signal that ever escalated had already been deleted
+    through the normal `gh pr merge --delete-branch`/scripts/cleanup-worktrees.sh path
+    first. main()'s eligible-action selection (`identity.split(":", 1)[0] in
+    _CLEANUP_ACTION_FOR_DOMAIN`) is keyed off this dict, so an empty "branch" entry is
+    what actually stops --clean from ever calling delete_merged_branch again -
+    delete_merged_branch() itself stays defined and tested, just unreachable from main()."""
+    assert "branch" not in _CLEANUP_ACTION_FOR_DOMAIN
