@@ -1,5 +1,22 @@
 # Next action
 
+Run `python -m tools.soak_analyzer` (add `--json` for machine output). It
+replaces the hand-checked prose criteria below and is aware of the gaps that
+hand-checking missed. **As of 2026-08-30 it returns FAIL**, and one of the
+failures is a criterion this file already required and nobody caught:
+`settlement_resolver.dropped_total` is **64**, not 0.
+
+The soak's collected data is NOT scrap. `pending_tickers` is 0 and queues are
+drained, so the staleness metric was reporting truthfully during the
+observation window and the drop/queue/throughput evidence stands. What changes
+is the verdict, not the data: the run has already failed on settlement
+completeness, so it cannot be closed as a pass. Fix the failures, then
+continue the remaining boundaries with the analyzer rather than by eye.
+
+Layer contract behind the tool: `docs/data-layer-analysis-layer-contract.md`.
+
+---
+
 > **Caveat added 2026-08-30 — this soak's pass criterion can read a false 0.**
 > `oldest_message_age_sec` comes from `_oldest_message_age`
 > (`services/kalshi/websocket.py:1169`), which inspects only the three queues

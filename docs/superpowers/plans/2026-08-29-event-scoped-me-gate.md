@@ -1,5 +1,24 @@
 # Event-Scoped ME Entry Gate Implementation Plan
 
+> ## ⛔ NOT IMPLEMENTATION-READY — do not execute this plan as written
+>
+> Verified 2026-08-29 during self-review, still open as of 2026-08-30. The
+> **spec** was corrected to revision 2, but five of its six defects were fixed
+> only in the spec's prose and remain live in the task bodies below. An
+> executor following these tasks literally will build the pre-revision design.
+>
+> Revision 3 is required before execution. The open items are recorded in the
+> review notes for PR #202. At minimum, the tasks must be brought in line with
+> spec §3.1 (strictness DECIDED: ME-true blocks any second position regardless
+> of side), §4.1 (`held_events` unions open positions *and* pending orders),
+> §4.4 (blocked-flip measurement), §4.5 (the limit-order path), and §4.6
+> (`settlement_edge_entry` excluded).
+>
+> Kept in the repository because the spec and the research behind it are sound
+> and the gate targets the dominant netting-loss mechanism (`locked_loss`,
+> 26 of 37 netting rows as of 2026-08-30 — see `docs/open-decisions.md`). The
+> plan is the part that is not finished.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop doomed same-event position pairs from forming, by gating entries on the event_ticker every resolved market already carries instead of the watchlist-scoped me_pairs map.
