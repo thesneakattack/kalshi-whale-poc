@@ -32,6 +32,21 @@ import math
 
 _PRICE_SUM_TOLERANCE = 0.02
 
+# Lifetime counter (never reset except by process restart, same idiom as
+# strategy_engine.py's own _me_gate_stats) - distinct from that module's
+# me_gate_unknown_total, which tracks a different, not-yet-implemented
+# gate (PR #202's parked event-scoped ME gate). This one counts how often
+# find_open_confirmed_conflict couldn't determine an answer because
+# market_titles had no cached entry yet for the candidate ticker (a
+# brand-new market the catalog scan hasn't reached), as distinct from a
+# genuine "checked, no conflict" result.
+_me_pairing_stats = {"me_pairing_unknown_total": 0}
+
+
+def me_pairing_stats() -> dict:
+    """Pure read for observability - see _me_pairing_stats above."""
+    return dict(_me_pairing_stats)
+
 
 def find_me_pairs(markets: list[dict], event_titles: dict) -> dict[str, str]:
     """markets: state["markets"]-shaped list (needs ticker, event_ticker,
@@ -71,3 +86,40 @@ def find_me_pairs(markets: list[dict], event_titles: dict) -> dict[str, str]:
         pairs[ticker_a] = ticker_b
         pairs[ticker_b] = ticker_a
     return pairs
+
+
+def find_open_confirmed_conflict(
+    ticker: str, market_titles: dict, event_titles: dict, open_position_tickers: set[str],
+) -> str | None:
+    """The ticker of a currently-open position that is Kalshi-confirmed
+    mutually-exclusive with `ticker` (same event_ticker,
+    event_titles[...].mutually_exclusive is True), or None.
+
+    Unlike find_me_pairs (which needs both siblings in the same tick's
+    REST-fetched `markets` batch - narrow, watchlist-scoped), this reads
+    market_titles/event_titles: the persisted, catalog-wide caches
+    (services/title_cache.py) that decision_bridge.py already reads for
+    every signal regardless of watchlist membership. Works for a candidate
+    ticker that has never been on the watchlist - see docs/superpowers/
+    specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
+
+    Scoped to open_position_tickers (small, already computed once per tick
+    at main.py's open_position_tickers) rather than scanning the full
+    market_titles catalog by event_ticker - same cost shape as
+    position_netting.find_groups, which already does this safely on the
+    hot path. O(open positions), not O(catalog)."""
+    info = market_titles.get(ticker)
+    if info is None:
+        _me_pairing_stats["me_pairing_unknown_total"] += 1
+        return None
+    event_ticker = info.get("event_ticker")
+    if not event_ticker:
+        return None
+    if (event_titles.get(event_ticker) or {}).get("mutually_exclusive") is not True:
+        return None
+    for open_ticker in open_position_tickers:
+        if open_ticker == ticker:
+            continue
+        if (market_titles.get(open_ticker) or {}).get("event_ticker") == event_ticker:
+            return open_ticker
+    return None

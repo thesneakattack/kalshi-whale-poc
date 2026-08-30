@@ -91,3 +91,67 @@ def test_markets_missing_ticker_or_event_ticker_are_ignored():
     ]
     event_titles = {"EVT-1": {"mutually_exclusive": True}}
     assert find_me_pairs(markets, event_titles) == {}
+
+
+from services.mutual_exclusivity import find_open_confirmed_conflict, me_pairing_stats
+
+
+def test_find_open_confirmed_conflict_returns_the_open_sibling():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) == "BON"
+
+
+def test_find_open_confirmed_conflict_none_when_no_sibling_open():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
+
+
+def test_find_open_confirmed_conflict_none_when_not_confirmed_true():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    for flag in (False, None):
+        event_titles = {"EVT-1": {"mutually_exclusive": flag}}
+        assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+
+
+def test_find_open_confirmed_conflict_ignores_a_different_event():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "OTHER": {"event_ticker": "EVT-2"},
+    }
+    event_titles = {
+        "EVT-1": {"mutually_exclusive": True},
+        "EVT-2": {"mutually_exclusive": True},
+    }
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"OTHER"}) is None
+
+
+def test_find_open_confirmed_conflict_never_returns_the_candidate_itself():
+    market_titles = {"BON": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"BON"}) is None
+
+
+def test_find_open_confirmed_conflict_counts_missing_market_titles_entry():
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("UNKNOWN", {}, {}, {"BON"}) is None
+    after = me_pairing_stats()["me_pairing_unknown_total"]
+    assert after == before + 1
+
+
+def test_find_open_confirmed_conflict_does_not_count_a_genuine_no_conflict():
+    market_titles = {"BON": {"event_ticker": "EVT-1"}, "BUS": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before
