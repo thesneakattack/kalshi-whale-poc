@@ -167,7 +167,7 @@ def test_describe_groups_holds_when_no_action_clears_materiality_bar(tmp_path, m
     assert groups[0]["recommendation"]["action"] == "hold"
 
 
-def test_describe_groups_locked_loss_recommends_close_all():
+def test_describe_groups_locked_loss_recommends_close_all_and_reports_exit_fee_cost():
     from services.paper_broker import Position
     a = Position(ticker="A", side="yes", size=100, entry_price=0.6, opened_at=time.time(), entry_fee=0.0)
     b = Position(ticker="B", side="yes", size=100, entry_price=0.6, opened_at=time.time(), entry_fee=0.0)
@@ -177,12 +177,27 @@ def test_describe_groups_locked_loss_recommends_close_all():
 
     market_titles = _titles({"A": "EVT-1", "B": "EVT-1"})
     event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    latest_prices = {"A": 0.6, "B": 0.6}
     cfg = {"position_netting": {"enabled": True, "min_dwell_sec": 0}}
-    groups = describe_groups(_FakeBroker(), market_titles, event_titles, {"A": 0.6, "B": 0.6}, cfg)
+    groups = describe_groups(_FakeBroker(), market_titles, event_titles, latest_prices, cfg)
     rec = groups[0]["recommendation"]
     assert groups[0]["status"] == "locked_loss"
     assert rec["action"] == "close_all"
     assert set(rec["tickers"]) == {"A", "B"}
+    expected_fee = taker_fee(100, 0.6, ticker="A") + taker_fee(100, 0.6, ticker="B")
+    assert rec["exit_fee_cost_usd"] == round(expected_fee, 2)
+
+
+def test_describe_groups_variable_recommendation_has_no_exit_fee_cost_field(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("A", "yes", 200, 0.76, "r")
+    broker.open_position("B", "no", 50, 0.25, "r")
+    market_titles = _titles({"A": "EVT-1", "B": "EVT-1"})
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    latest_prices = {"A": 0.75, "B": 0.24}
+    cfg = {"position_netting": {"enabled": True, "min_dwell_sec": 0, "min_edge_improvement_usd": 1.0, "normal_volatility": None}}
+    groups = describe_groups(broker, market_titles, event_titles, latest_prices, cfg)
+    assert "exit_fee_cost_usd" not in groups[0]["recommendation"]
 
 
 def test_review_is_a_noop_when_disabled(tmp_path, monkeypatch):

@@ -312,9 +312,22 @@ def describe_groups(
                 "reason": "payout is positive under every possible outcome - settlement is fee-free, closing early can only add cost",
             }
         elif status == "locked_loss":
+            # Real, avoidable cost of closing now instead of holding to
+            # Kalshi's fee-free settlement (kalshi_fees.taker_fee returns
+            # 0.0 at price 0/1 - see this module's own top-of-file
+            # docstring). Reported, not acted on: whether the bankroll/
+            # position-headroom benefit below is worth this cost is an
+            # open, unresolved tradeoff (docs/open-decisions.md) - this
+            # only makes the number visible instead of buried in realized
+            # P&L with no attribution.
+            exit_fee_cost = sum(
+                kalshi_fees.taker_fee(pos.size, latest_prices.get(t, pos.entry_price), ticker=t)
+                for t, pos in members
+            )
             entry["recommendation"] = {
                 "action": "close_all",
                 "tickers": [t for t, _ in members],
+                "exit_fee_cost_usd": round(exit_fee_cost, 2),
                 "reason": "payout is negative under every possible outcome - the loss is already fixed regardless of timing; closing now frees up bankroll/position headroom instead of leaving it dead until settlement",
             }
         else:
