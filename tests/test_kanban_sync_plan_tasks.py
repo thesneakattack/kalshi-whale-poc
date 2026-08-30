@@ -248,3 +248,92 @@ def test_decompose_plan_start_from_task_defaults_to_one_backward_compatible():
     result = decompose_plan("x.md", _CANONICAL_PLAN, 42, client, dry_run=False)
 
     assert result["tasks_found"] == 2
+
+
+_FENCED_BACKTICK_HEREDOC = """# Some Plan
+
+### Task 1: Real task
+
+Live smoke test - create a throwaway plan doc first:
+
+```bash
+cat > /tmp/test-plan.md << 'HEREDOC'
+# Test Plan
+
+### Task 2: Fenced example, not a task
+HEREDOC
+```
+
+### Task 3: Another real task
+
+body
+"""
+
+_FENCED_TILDE = """# Some Plan
+
+### Task 1: Real task
+
+~~~markdown
+### Task 2: Fenced example, not a task
+~~~
+
+body
+"""
+
+_FENCED_NESTED_LONGER_OUTER = """# Some Plan
+
+### Task 1: Real task
+
+````markdown
+```python
+### Task 2: Fenced example, not a task
+```
+### Task 3: Still inside the outer four-backtick fence
+````
+
+### Task 4: Real task after the outer fence closes
+
+body
+"""
+
+_FENCED_UNCLOSED = """# Some Plan
+
+### Task 1: Real task
+
+```python
+### Task 2: Inside a fence that never closes
+"""
+
+
+def test_parse_canonical_tasks_ignores_task_heading_inside_a_backtick_fence():
+    """Regression for issue #226: the milestones/sub-issues plan documents
+    the `### Task N:` convention inside fenced examples (a bash heredoc,
+    python test-fixture strings) and decompose_plan turned six of those
+    example lines into real sub-issues (#174, #175, #179, #180, #184,
+    #185). Fenced lines are not headings and must never parse as tasks;
+    a heading after the fence closes still must."""
+    assert parse_canonical_tasks(_FENCED_BACKTICK_HEREDOC) == [
+        (1, "Real task"),
+        (3, "Another real task"),
+    ]
+
+
+def test_parse_canonical_tasks_ignores_task_heading_inside_a_tilde_fence():
+    assert parse_canonical_tasks(_FENCED_TILDE) == [(1, "Real task")]
+
+
+def test_parse_canonical_tasks_only_closes_a_fence_on_a_fence_at_least_as_long():
+    """CommonMark: a fence closes only on the same character with at least
+    as many of them, so a four-backtick fence wrapping a three-backtick
+    example (how a plan shows a fenced example *of* a fenced block) is one
+    block - the inner ``` lines are content, not a premature close."""
+    assert parse_canonical_tasks(_FENCED_NESTED_LONGER_OUTER) == [
+        (1, "Real task"),
+        (4, "Real task after the outer fence closes"),
+    ]
+
+
+def test_parse_canonical_tasks_treats_an_unclosed_fence_as_running_to_end_of_document():
+    """CommonMark: no closing fence means the block runs to the end of the
+    document - same reading the awk fence-toggle used to verify #226 gives."""
+    assert parse_canonical_tasks(_FENCED_UNCLOSED) == [(1, "Real task")]
