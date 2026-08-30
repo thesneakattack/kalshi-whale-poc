@@ -495,19 +495,40 @@ def _tick_duration_finding(cfg: dict, state: dict) -> QualityFinding | None:
 
 
 def _dropped_messages_findings(trade_stream, index_stream) -> list[QualityFinding]:
+    """Local QueueFull drops (Kalshi-side loss is _server_error_25_findings
+    below). Severity keys off the sample window - ingest_metrics()'s
+    dropped_window, which reset_ingest_window zeroes right after every
+    persisted sample, so "this sample window" spans at most
+    observability.sample_interval_sec (60s default) - never off the lifetime
+    counter: dropped_messages is set once in the gateway's __init__ and only
+    ever incremented, so judging it pinned GET /api/quality/summary (step 1
+    of CLAUDE.md's investigation ladder) to "error" for the rest of the
+    process after a single drop (#72). The lifetime total stays in the
+    finding, labelled as lifetime, at info once the window is clean; a
+    stream with no ingest_metrics at all has no window evidence and is
+    reported as unknown rather than judged either way. The lifetime counter
+    itself is deliberately untouched - tools/soak_analyzer.py's
+    ingest_no_drops reads it as the never-reset figure it is."""
     findings = []
     for stream, scope in ((trade_stream, "trade_stream"), (index_stream, "index_stream")):
         if stream is None:
             continue
-        dropped = getattr(stream, "dropped_messages", 0)
-        if not dropped:
+        lifetime = getattr(stream, "dropped_messages", 0) or 0
+        snapshot = _ingest_snapshot(stream)
+        window = snapshot.get("dropped_window") if snapshot is not None else None
+        if not lifetime and not window:
             continue
+        if window is None:
+            summary = (f"{scope} has dropped {lifetime} message(s) lifetime (never reset); "
+                       "no sample-window count available")
+        else:
+            summary = (f"{scope} dropped {window} message(s) this sample window "
+                       f"({lifetime} lifetime, never reset)")
         findings.append(QualityFinding(
             finding_id=f"observability:ws-dropped-messages:{scope}",
-            check="ws-dropped-messages", severity="error", confidence="high", source="runtime",
-            scope=scope,
-            summary=f"{scope} has dropped {dropped} message(s) since last reset",
-            evidence={"dropped_messages": dropped},
+            check="ws-dropped-messages", severity="error" if window else "info",
+            confidence="high", source="runtime", scope=scope, summary=summary,
+            evidence={"dropped_window": window, "dropped_messages": lifetime},
         ))
     return findings
 

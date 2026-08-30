@@ -569,7 +569,7 @@ which can run in parallel right now.
       findings while investigating the mistaken claim - filed as their own
       items directly below rather than fixed here (out of this item's
       approved scope).
-- [ ] Whether a critical active alert (`kill_switch`, `crash`) should be
+- [x] Whether a critical active alert (`kill_switch`, `crash`) should be
       able to drive `/api/quality/summary`'s `overall_status()` to
       `"error"` at all — today it can't: `status`/`counts` are computed
       only from `observability.runtime_findings()` +
@@ -578,7 +578,16 @@ which can run in parallel right now.
       2026-08-24 while fixing the crash-alert resolution item above; not
       decided — needs its own pass on severity-mapping semantics before
       changing a field other code/tests may already read as "ok".
-- [ ] **`services/kalshi_trade_ws.py`'s `dropped_messages` counter is set
+      **Decided and shipped 2026-08-30 (#71):** yes. `alerting.
+      alert_findings(active)` turns each active row into a `QualityFinding`
+      (`check: active-alert`; persisted severities are only `critical` →
+      `error` and `warning` → `warning`, any other string floors at
+      `warning`) and `services/quality/routes.py` rolls them into the same
+      `QualityReport`, so `status` and `counts` move together;
+      `alerts.active` stays exposed raw. `overall_status()` itself is
+      unchanged. Route-level proof: `tests/test_quality_routes.py::
+      test_quality_summary_status_is_error_while_a_critical_alert_is_active`.
+- [x] **`services/kalshi_trade_ws.py`'s `dropped_messages` counter is set
       once (`__init__`) and only ever incremented (one call site) — nothing
       in the codebase ever resets it.** Found live 2026-08-24 investigating
       the item above: `/api/quality/summary` was observed returning
@@ -596,6 +605,17 @@ which can run in parallel right now.
       fixed — needs its own root-cause pass (does a reconnect recreate the
       underlying stream object or just resume it? should the finding decay/
       window instead of being permanent?).
+      **Fixed 2026-08-30 (#72), windowed:** `_dropped_messages_findings`
+      now keys severity off `ingest_metrics()["dropped_window"]` (zeroed by
+      `reset_ingest_window` after every persisted sample, so at most one
+      `observability.sample_interval_sec`) — `error` only while the current
+      window has drops, `info` when only the lifetime counter is nonzero,
+      absent when both are zero. The lifetime figure stays in evidence and
+      in the summary, labelled "lifetime, never reset" (the old text said
+      "since last reset"; nothing ever reset it). `dropped_messages` itself
+      is untouched — `tools/soak_analyzer.py`'s `ingest_no_drops` reads it
+      as the lifetime figure on purpose. Route-level proof: `tests/
+      test_quality_routes.py::test_quality_summary_reports_historical_drops_as_info_and_window_drops_as_error`.
 - [x] **`min_seconds_to_close`/`exit_min_seconds_to_close` were configurable
       only by hand-editing `config/settings.yaml` — never wired into the
       dashboard Controls panel**, unlike their immediate siblings

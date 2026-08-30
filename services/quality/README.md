@@ -14,7 +14,7 @@ One HTTP call, five existing read-only sources, zero new instrumentation:
 
 | Field | Source | Notes |
 |---|---|---|
-| `findings` / `counts` / `status` | `services/observability/observability.py`'s `runtime_findings(...)` **and** `services/storage_health/storage_health.py`'s `storage_findings(...)` | both lists concatenated, then rolled into one `QualityReport` for `overall_status()`/`counts()` |
+| `findings` / `counts` / `status` | `services/observability/observability.py`'s `runtime_findings(...)`, `services/storage_health/storage_health.py`'s `storage_findings(...)` **and** (since 2026-08-30, #71) `services/alerting/alerting.py`'s `alert_findings(active_alerts())` | all three lists concatenated, then rolled into one `QualityReport` for `overall_status()`/`counts()` — an active `critical` alert (kill switch, crash) is an `error` finding, any other active alert a `warning` |
 | `diagnostics` | `services/diagnostics/diagnostics.py`'s `run_offline(cfg)` | deliberately excludes `check_coverage` (the one diagnostic that makes a real Kalshi call) — see that function's own docstring |
 | `alerts` | `services/alerting/alerting.py`'s `active_alerts()` | currently-unresolved alerts only, not full history |
 | `faults` | `services/fault_log.py`'s `summary()` | counts by component/severity + top offenders |
@@ -98,8 +98,11 @@ Terminal tab is open.
   UI" is the intended first caller, same as `services/observability/`'s
   own routes.
 - `QualityReport.overall_status()` is coarse by design (`ok`/`warning`/
-  `error`, worst-of across `findings` only) — it does not currently fold
-  in `diagnostics`' own separate `overall` (`ok`/`warn`/`fail`/`unknown`)
-  or the presence of active alerts/faults into one combined verdict; a
-  caller that wants "is *anything* wrong" today has to look at more than
-  just `status`. Revisit if/when a real UI consumer needs one true verdict.
+  `error`, worst-of across `findings` only). Since 2026-08-30 (#71) active
+  alerts are part of `findings` (`check: active-alert`, one per active row,
+  `finding_id` `alerting:active-alert:<category>:<id>`), so a tripped kill
+  switch or a crash does reach `status`; `alerts.active` is still exposed
+  raw alongside. It still does not fold in `diagnostics`' own separate
+  `overall` (`ok`/`warn`/`fail`/`unknown`) or `faults`; a caller that wants
+  "is *anything* wrong" has to look at those too. Revisit if/when a real
+  UI consumer needs one true verdict.

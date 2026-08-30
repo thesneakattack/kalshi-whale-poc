@@ -41,6 +41,7 @@ from pathlib import Path
 
 from services import fault_log, task_supervisor
 from services.http_client import get_client
+from services.quality.models import QualityFinding
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "alert_log.db"
 
@@ -156,6 +157,35 @@ def active_alerts() -> list[dict]:
             f"SELECT {', '.join(cols)} FROM alerts WHERE resolved_at IS NULL ORDER BY triggered_at DESC",
         ).fetchall()
     return [dict(zip(cols, r)) for r in rows]
+
+
+def alert_findings(active: list[dict]) -> list[QualityFinding]:
+    """Active alerts as QualityFindings so they roll into GET /api/quality/
+    summary's status/counts alongside observability/storage_health's rules
+    (#71: until 2026-08-30 alerts were only the uncombined `alerts` field,
+    so a tripped kill switch could not move `status` off "ok"). Severity
+    is the string record_alert's callers persist - "critical" (kill_switch
+    in check_and_alert, crash in task_supervisor.py) or "warning" (the two
+    connectivity checks); "info" is only ever dispatched as a resolution
+    notification, never stored as a row. "critical" is the one severity
+    that reaches "error"; every other persisted alert floors at "warning",
+    because record_alert is only ever called for a condition someone
+    decided a human must see. Takes the rows rather than re-querying so the
+    route reads the DB once for both this and its raw `alerts` field."""
+    return [
+        QualityFinding(
+            finding_id=f"alerting:active-alert:{alert['category']}:{alert['id']}",
+            check="active-alert",
+            severity="error" if alert["severity"] == "critical" else "warning",
+            confidence="high", source="runtime", scope=alert["category"],
+            summary=f"active {alert['severity']} alert ({alert['category']}): {alert['message']}",
+            evidence={
+                "alert_id": alert["id"], "severity": alert["severity"],
+                "triggered_at": alert["triggered_at"], "context": alert.get("context"),
+            },
+        )
+        for alert in active
+    ]
 
 
 def recent(limit: int = 50) -> list[dict]:

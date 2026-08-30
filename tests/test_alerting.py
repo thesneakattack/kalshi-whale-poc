@@ -250,3 +250,42 @@ async def _transition(*args, **kwargs):
 
 async def _expire_stale(*args, **kwargs):
     return alerting._expire_stale_crash_alerts(*args, **kwargs)
+
+
+# --- alert_findings: active alerts as QualityFindings (#71) ---------------
+
+def test_alert_findings_maps_critical_to_error_and_every_other_severity_to_warning():
+    crash_id = asyncio.run(_record("crash", "critical", "trading_loop.run crashed: RuntimeError: x", now=1000.0))
+    conn_id = asyncio.run(_record("trade_stream_connectivity", "warning", "Trade stream disconnected", now=1001.0))
+    odd_id = asyncio.run(_record("future_category", "unexpected", "some new caller", now=1002.0))
+
+    findings = alerting.alert_findings(alerting.active_alerts())
+
+    by_scope = {f.scope: f for f in findings}
+    assert set(by_scope) == {"crash", "trade_stream_connectivity", "future_category"}
+    crash = by_scope["crash"]
+    assert crash.severity == "error"
+    assert crash.check == "active-alert"
+    assert crash.source == "runtime"
+    assert crash.confidence == "high"
+    assert crash.finding_id == f"alerting:active-alert:crash:{crash_id}"
+    assert crash.evidence == {
+        "alert_id": crash_id, "severity": "critical", "triggered_at": 1000.0, "context": None,
+    }
+    assert "trading_loop.run crashed" in crash.summary
+    assert by_scope["trade_stream_connectivity"].severity == "warning"
+    assert by_scope["trade_stream_connectivity"].finding_id == (
+        f"alerting:active-alert:trade_stream_connectivity:{conn_id}"
+    )
+    # An active alert is by construction something a human must see, so
+    # an unmapped severity floors at warning rather than vanishing to info.
+    assert by_scope["future_category"].severity == "warning"
+    assert by_scope["future_category"].evidence["alert_id"] == odd_id
+
+
+def test_alert_findings_are_empty_once_alerts_resolve():
+    asyncio.run(_record("kill_switch", "critical", "tripped", now=1000.0))
+    assert len(alerting.alert_findings(alerting.active_alerts())) == 1
+    alerting.resolve_category("kill_switch", now=1010.0)
+    assert alerting.alert_findings(alerting.active_alerts()) == []
+    assert alerting.alert_findings([]) == []

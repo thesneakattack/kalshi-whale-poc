@@ -188,8 +188,21 @@ counters are monotone; difference two persisted samples for a rate.
 
 **Runtime finding.** `observability:ws-server-error-25:<scope>` (warning)
 fires when `error_25_window > 0` — Kalshi reported its own outbound buffer
-overflowed for this subscription. Deliberately separate from the existing
-`ws-dropped-messages` error, which is local `QueueFull` only.
+overflowed for this subscription. Deliberately separate from
+`ws-dropped-messages`, which is local `QueueFull` only.
+
+**`observability:ws-dropped-messages:<scope>` severity (corrected
+2026-08-30, #72).** `error` only when `dropped_window > 0`, i.e. a drop
+inside the current sample window; `info` when the window is clean but the
+lifetime `dropped_messages` counter is nonzero; absent when both are zero.
+Evidence carries both (`dropped_window`, `dropped_messages`) and the summary
+labels the lifetime figure as "lifetime, never reset" — which is what it is:
+the gateway sets `dropped_messages` once in `__init__` and only increments
+it. Until this correction severity keyed off that lifetime counter, so one
+drop pinned `GET /api/quality/summary` to `error` for the rest of the
+process (observed live 2026-08-24 at 5,985 drops with zero active alerts).
+A stream with no `ingest_metrics` has no window evidence and is reported at
+`info` with `dropped_window: null`, not judged either way.
 
 **Measured hot-path cost (in-container, 50k synthetic trade messages ×5,
 2026-08-25):** old path (parse + dispatch) 5.41 µs/msg → new path (parse +
