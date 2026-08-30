@@ -64,6 +64,8 @@ For participants requiring network-level isolation, Kalshi supports private conn
 
 Members on the Premier tier or above can contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to provision a PrivateLink endpoint for their AWS account.
 
+Members on the Prime tier or above can also contact [institutional@kalshi.com](mailto:institutional@kalshi.com) to discuss VPC peering for production connectivity from their AWS VPC.
+
 ## Rate Limits
 
 * **Limit**: FIX application messages use the same token model, token costs, and margin Read/Write buckets as the equivalent REST API operations.

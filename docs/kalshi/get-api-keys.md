@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -94,6 +94,14 @@ components:
           description: List of all API keys associated with the user
           items:
             $ref: '#/components/schemas/ApiKey'
+        api_key_region_expiration_ts:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Unix timestamp (seconds) when the account's location attestation for
+            API key requests expires; a past value means the attestation has
+            lapsed. Absent when the account has never attested.
     ApiKey:
       type: object
       required:

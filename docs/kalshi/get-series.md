@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -178,8 +178,10 @@ components:
             https://kalshi.com/docs/kalshi-fee-schedule.pdf. 'quadratic' is
             described by the General Trading Fees Table,
             'quadratic_with_maker_fees' is described by the General Trading Fees
-            Table with maker fees described in the Maker Fees section, 'flat' is
-            described by the Specific Trading Fees Table.
+            Table with maker fees described in the Maker Fees section,
+            'quadratic_with_combo_maker_fees' is the same maker-fee structure
+            with a 0.5 maker multiplier instead of 0.25, 'flat' is described by
+            the Specific Trading Fees Table.
         fee_multiplier:
           type: number
           format: double
@@ -236,10 +238,12 @@ components:
       enum:
         - quadratic
         - quadratic_with_maker_fees
+        - quadratic_with_combo_maker_fees
         - flat
       x-enum-varnames:
         - FeeTypeQuadratic
         - FeeTypeQuadraticWithMakerFees
+        - FeeTypeQuadraticWithComboMakerFees
         - FeeTypeFlat
       description: Fee type for a series or scheduled fee override.
     FixedPointCount:
@@ -253,7 +257,7 @@ components:
       example: '10.00'
     ExchangeIndex:
       type: integer
-      description: Identifier for an exchange shard. Defaults to 0 if unspecified.
+      description: Identifier for an exchange shard.
       example: 0
   responses:
     BadRequestError:

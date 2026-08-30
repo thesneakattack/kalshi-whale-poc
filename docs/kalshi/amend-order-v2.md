@@ -6,6 +6,9 @@
 
 > Endpoint for amending the price and/or max fillable count of an existing event-market order using the V2 request/response shape. The request `count` is the updated total/max fillable count, equal to already filled count plus desired resting remaining count. This behavior matches the v1 amend endpoints; only the request/response shape differs.
 
+<Note>
+  Amending a resting order preserves queue position only when the amendment decreases size. All other amendments — like increasing size or changing price forfeit queue position and place the order at the back of the queue.
+</Note>
 
 
 ## OpenAPI
@@ -14,7 +17,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -164,11 +167,10 @@ components:
         exchange_index:
           allOf:
             - $ref: '#/components/schemas/ExchangeIndex'
-          default: 0
           description: >-
-            Exchange shard index. Defaults to 0. Use -1 to auto-route by market
+            Exchange shard index. If omitted, auto-routes when ticker is
+            provided; otherwise defaults to 0. Use -1 to require auto-routing by
             ticker.
-          x-go-type-skip-optional-pointer: true
     AmendOrderV2Response:
       type: object
       required:
@@ -250,7 +252,7 @@ components:
       example: '10.00'
     ExchangeIndex:
       type: integer
-      description: Identifier for an exchange shard. Defaults to 0 if unspecified.
+      description: Identifier for an exchange shard.
       example: 0
     ErrorResponse:
       type: object

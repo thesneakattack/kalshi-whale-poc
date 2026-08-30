@@ -6,6 +6,9 @@
 
 > Endpoint for amending the price and/or max number of fillable contracts in an existing margin order.
 
+<Note>
+  Amending a resting order preserves queue position only when the amendment decreases size. All other amendments — like increasing size or changing price forfeit queue position and place the order at the back of the queue.
+</Note>
 
 
 ## OpenAPI
@@ -45,6 +48,8 @@ tags:
     description: Funding rates and payment history
   - name: fees
     description: Margin fee schedule
+  - name: exit-triggers
+    description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
   /margin/orders/{order_id}/amend:
     post:

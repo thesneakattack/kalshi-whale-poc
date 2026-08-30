@@ -17,6 +17,180 @@ FIX API changes, previously tracked on a separate page, now live here under
 the `FIX` tag.
 
 <Update
+  label="August 27, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Localized market content in REST responses",
+description: "Trade API v2 market responses can now return available Spanish or Portuguese translations when requested with Accept-Language."
+}}
+>
+  Trade API v2 market responses can now return available Spanish or Portuguese
+  translations, including localized market rules, when requested with the
+  `Accept-Language` header. Regional variants such as `es-MX` and `pt-BR` are
+  supported. Requests without a supported language continue to receive English.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["FIX", "Predictions", "Margin"]}
+  rss={{
+title: "Trade type on FIX market data",
+description: "FIX market data trade entries now carry TrdType<828>."
+}}
+>
+  Trade entries on `MarketDataIncrementalRefresh<35=X>` now carry
+  `TrdType<828>`=`1` for block trades. The tag is absent on regular order book
+  trades.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["WebSocket", "Predictions"]}
+  rss={{
+title: "Exchange index on user order messages",
+description: "The user_orders WebSocket channel now includes exchange_index on each order update."
+}}
+>
+  The `user_orders` WebSocket channel now includes `exchange_index` on each
+  order update, identifying the exchange shard where the order resides.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "Predictions", "Margin"]}
+  rss={{
+title: "Cancel-all-orders endpoints",
+description: "New endpoints cancel all resting Predictions or margin orders across all subaccounts or one selected subaccount."
+}}
+>
+  New endpoints cancel all resting Predictions or margin orders across every
+  subaccount or one selected subaccount. Newly placed orders may also be
+  cancelled during the minute after the request.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Historical CF Benchmarks values via the REST passthrough",
+description: "Documented how to retrieve historical CF Benchmarks index values, including intra-second granularity on some indices, through the existing REST passthrough."
+}}
+>
+  The [CF Benchmarks REST Passthrough](/cfbenchmarks/rest-passthrough) page
+  now documents retrieving historical index values through the existing
+  `GET /trade-api/v2/cfbenchmarks/*` endpoint, and the
+  [CF Benchmarks Value Feed](/websockets/cfbenchmarks-value) websocket page
+  links to it. Some indices publish at intra-second granularity on the
+  history endpoint; refer to the official CF Benchmarks API documentation
+  for supported indices and granularities.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "The available_on_brokers field on event responses is deprecated",
+description: "The available_on_brokers field on event responses is deprecated, is no longer populated, and always returns false. It will be removed in a future release."
+}}
+>
+  The `available_on_brokers` field on the individual and batch `GET` events
+  endpoints is deprecated. It is no longer populated and always returns
+  `false`. The field will be removed in a future release.
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Exchange auto-routing enabled by default",
+description: "Exchange auto-routing enabled by default"
+}}
+>
+  Exchange auto-routing enabled by default when providing `market_ticker` and excluding `exchange_index` parameter.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["WebSocket", "FIX", "Predictions", "Margin"]}
+  rss={{
+title: "VPC peering for Prime members",
+description: "Prime-tier members can contact Kalshi to discuss VPC peering for production WebSocket and FIX connectivity."
+}}
+>
+  Members on the Prime tier or above can contact
+  [institutional@kalshi.com](mailto:institutional@kalshi.com) to discuss VPC
+  peering for production WebSocket and FIX connectivity from their AWS VPC.
+  Existing AWS PrivateLink connectivity remains available to members on the
+  Premier tier or above.
+
+  See [API Environments and Endpoints](/getting_started/api_environments#private-connectivity),
+  [FIX Connectivity](/fix/connectivity#private-connectivity), and
+  [Margin FIX Connectivity](/fix-margin/connectivity#private-connectivity).
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "Margin"]}
+  rss={{
+title: "Margin maker-volume incentive programs",
+description: "GET /trade-api/v2/incentive_programs supports margin_maker_volume programs and their optional per-account reward cap."
+}}
+>
+  `GET /trade-api/v2/incentive_programs` now accepts
+  `type=margin_maker_volume`. These programs include the optional
+  `max_reward_per_account` field; event-only fields are omitted when they do
+  not apply.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Kalshi Weather Index endpoint",
+description: "GET /trade-api/v2/live_data/weather/{city} serves the minute-resolution city temperature index, with an optional per-station breakdown."
+}}
+>
+  New endpoint: `GET /trade-api/v2/live_data/weather/{city}` serves the
+  Kalshi-computed city temperature index — the canonical minute-resolution
+  series behind hourly temperature markets (`miami` first). Values are
+  Fahrenheit rounded to 0.01; minutes where the index quorum failed are
+  omitted, so gaps are real gaps. Window via `from`/`to` (unix ms) or
+  `last_sec`, defaulting to the trailing 24 hours. With `detailed=true`,
+  each point carries every member station's reported reading and
+  quality-control disposition before incorporation into the index, and
+  trailing minutes still inside the receipt deadline are additionally
+  served as `incomplete` points: no index value (`v` is absent, not `0`),
+  with the raw, not-yet-quality-controlled station readings recorded so
+  far (station code `pending`).
+</Update>
+
+<Update
+  label="August 27, 2026"
+  tags={["REST", "WebSocket", "FIX", "Predictions"]}
+  rss={{
+title: "Tapered sub-cent pricing on multivariate (combo) markets",
+description: "Combo markets move from uniform $0.001 ticks to center_deci_edge_centi_cent, with $0.0001 ticks below $0.01 and above $0.99."
+}}
+>
+  Multivariate (combo) markets are moving from `deci_cent` (a uniform \$0.001
+  tick) to `center_deci_edge_centi_cent`: \$0.0001 (0.01¢) ticks below \$0.01
+  and above \$0.99, with \$0.001 (0.1¢) ticks in between. Other markets are
+  unchanged.
+
+  No API fields or message formats change. Prices below \$0.01 and above
+  \$0.99 use all four decimal places of the existing `*_dollars` fields — read
+  prices from those fields (integer-cent fields cannot represent sub-cent
+  prices) and snap order and RFQ quote prices to the `step` of the band
+  containing the price in the market's `price_ranges` array rather than keying
+  off the structure name.
+
+  Existing combo markets migrate in place with resting orders preserved. After
+  this release every combo market is on `center_deci_edge_centi_cent`. See
+  [Fixed-Point Representation](/getting_started/fixed_point_migration) for the
+  full structure reference.
+</Update>
+
+<Update
   label="August 24, 2026"
   tags={["REST", "WebSocket", "FIX", "Predictions"]}
   rss={{
@@ -33,21 +207,107 @@ description: "Crypto, Tennis, and Baseball moving to dedicated exchange instance
   label="August 22, 2026"
   tags={["REST", "WebSocket", "FIX", "Predictions"]}
   rss={{
+title: "Post-only quotes preserved; crossing rate limits may apply",
+description: "The planned removal of post-only on quotes is cancelled. Quoters using post-only may be temporarily rate limited if they cross the book several times in short succession. The previously announced fee change will proceed at 11:59 PM ET on August 21."
+}}
+>
+  As a result of trader feedback, the formerly announced planned change to
+  remove `post-only` on quotes is cancelled. This flag will be preserved.
+
+  However, to protect against "locked" markets which can occur if a quoter
+  with post-only repeatedly crosses the book, quoters with post-only set to
+  true may be temporarily rate limited if they cross several times in short
+  succession.
+
+  The formerly announced change adjusting maker and taker fees in the event a
+  quoter matches against a recently placed resting order will proceed as
+  scheduled at 11:59 PM ET on August 21.
+</Update>
+
+<Update
+  label="August 22, 2026"
+  tags={["REST", "WebSocket", "FIX", "Predictions"]}
+  rss={{
 title: "Combo RFQ fee assignment for briefly resting orders",
-description: "Maker fees will be enabled Wednesday night; post-only mode will be disabled and the combo RFQ quoter fee swap enabled Friday night."
+description: "Maker fees were enabled at 5:00 AM ET on Thursday, August 20, after the maintenance window; the formerly planned post-only disablement is cancelled and the combo RFQ quoter fee swap remains scheduled for Friday night."
 }}
 >
   **Rollout timing:**
 
-  * Maker fees will be enabled at 11:59 PM on Wednesday, August 19.
-  * Post-only mode will be disabled and the quoter fee swap will be enabled at
-    11:59 PM on Friday, August 21.
+  * Maker fees will be enabled at 5:00 AM ET on Thursday, August 20, after the
+    maintenance window.
+  * <del>Post-only mode will be disabled and</del> the quoter fee swap will be
+    enabled at 11:59 PM on Friday, August 21.
 
   For combo trades, if a quoter executes against an order that has rested on
   the book for less than five seconds, both parties' fees will be adjusted: the
   quoter will pay the maker fee, and the resting counterparty will pay the
-  taker fee. See the [Kalshi Fee Schedule](https://kalshi.com/docs/kalshi-fee-schedule.pdf)
-  for details.
+  taker fee. The maker fee uses a fee multiplier of `0.5`, rather than the
+  standard `0.25`. See the
+  [Kalshi Fee Schedule](https://kalshi.com/fee-schedule) for details.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "WebSocket", "FIX", "Predictions"]}
+  rss={{
+title: "Maker fee exemption for independent NFL combo markets",
+description: "Independent, NFL-only combo markets created after 11:59 PM ET on August 19, 2026 will have no maker fee."
+}}
+>
+  Combo markets created after 11:59 PM ET on August 19, 2026 that are composed
+  entirely of independent NFL components will have no maker fee. The Exchange
+  will consider a market to be composed of independent components if every
+  component ties to a different milestone (NFL game) and the market consists
+  exclusively of NFL components. Markets that meet these conditions will be
+  created under the `KXMVECROSSCATEGORY0-SHARD1` series.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["FIX", "Predictions"]}
+  rss={{
+title: "Entry timestamps for FIX market data",
+description: "FIX market data snapshots and incremental refreshes now include MDEntryDate<272> and MDEntryTime<273>."
+}}
+>
+  `MarketDataSnapshotFullRefresh<35=W>` and
+  `MarketDataIncrementalRefresh<35=X>` entries now include
+  `MDEntryDate<272>` and `MDEntryTime<273>`. Snapshot values identify when the
+  snapshot was captured. Incremental values identify the exchange event that
+  produced the update.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Cross-shard subaccount transfers",
+description: "Intra Exchange Instance Transfer now supports subaccounts."
+}}
+>
+  `POST /trade-api/v2/portfolio/intra_exchange_instance_transfer` accepts
+  optional `source_subaccount` and `destination_subaccount` fields for
+  transfers between prediction exchange indexes.
+
+  Cross-exchange-index subaccount transfers run in up to three non-atomic
+  steps. If a later step fails, completed steps are not undone,
+  so funds may remain in the primary account on the source or destination
+  exchange index.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Target balance allocation endpoints",
+description: "Target balance allocation endpoints"
+}}
+>
+  New endpoints available for managing a target balance allocation across exchange shards.
+
+  * `POST /trade-api/v2/portfolio/target_balance_allocation`
+  * `GET /trade-api/v2/portfolio/target_balance_allocation`
 </Update>
 
 <Update
@@ -65,6 +325,17 @@ description: "Get Total Resting Order Value now returns a per-exchange-index bre
 
 <Update
   label="August 20, 2026"
+  tags={["REST", "WebSocket", "Predictions"]}
+  rss={{
+title: "Exchange index on portfolio and WebSocket fill records",
+description: "Exchange index provided on REST fill, settlement, and market position responses and WebSocket fill messages."
+}}
+>
+  Exchange index provided on REST fill, settlement, and market position responses and WebSocket fill messages.
+</Update>
+
+<Update
+  label="August 20, 2026"
   tags={["REST", "Predictions"]}
   rss={{
 title: "Exchange index filters for portfolio lists",
@@ -73,6 +344,93 @@ description: "Orders, positions, and fills can be filtered by exchange_index."
 >
   `GET /portfolio/orders`, `GET /portfolio/positions`, and `GET /portfolio/fills` now accept an optional `exchange_index` filter.
   Omitting it returns results from all exchange indexes.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "RFQs and combo-market creation for sub-account-restricted API keys",
+description: "Restricted keys can run the full REST RFQ lifecycle scoped to their sub-account"
+}}
+>
+  Sub-account-restricted API keys can now use the
+  [communications endpoints](/api-reference/communications) and create combo
+  markets, scoped to the key's locked sub-account: omitting `subaccount` acts
+  on the locked sub-account, any other sub-account is rejected, and a
+  different sub-account's RFQs and quotes cannot be read in detail or acted
+  on. Scoping matches rows created through the API; web-created RFQs are not
+  addressable per sub-account. The `write::trade` scope is now sufficient for
+  `POST /multivariate_event_collections/{collection_ticker}` (parent `write`
+  keys are unaffected). On FIX, restricted sessions still support the maker
+  quote lifecycle only; block-trade endpoints also remain unavailable to
+  restricted keys.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "Optional balance reads by exchange_index",
+description: "GetBalance returns totals by default and scopes balance and portfolio_value when exchange_index is provided."
+}}
+>
+  `GET /trade-api/v2/portfolio/balance` returns `balance` and `portfolio_value`
+  across all exchange indexes by default. Pass `exchange_index` to scope both
+  values to one exchange index.
+</Update>
+
+<Update
+  label="August 16, 2026"
+  tags={["REST", "Predictions"]}
+  rss={{
+title: "API key location attestation expiry",
+description: "Get API Keys now returns api_key_region_expiration_ts."
+}}
+>
+  `GET /trade-api/v2/api_keys` now returns `api_key_region_expiration_ts`, the
+  unix timestamp (seconds) when your location attestation for API key requests
+  expires. Once this date has passed, API keys are not valid for trading
+  Sports, Elections, and Entertainment markets. The field is absent when the
+  account has never attested.
+</Update>
+
+<Update
+  label="August 20, 2026"
+  tags={["REST", "Margin"]}
+  rss={{
+title: "Exit triggers on margin positions",
+description: "New REST endpoints to set, read, and cancel stop-loss, take-profit, and trailing-stop triggers on margin positions."
+}}
+>
+  Stop-loss, take-profit, and trailing-stop triggers on margin positions are now available
+  over REST:
+
+  * `PUT`, `GET`, and `DELETE` on `/trade-api/v2/margin/isolated/positions/{ticker}/exit_trigger`
+  * `PUT`, `GET`, and `DELETE` on `/trade-api/v2/margin/cross/positions/{ticker}/exit_trigger`
+  * `PUT` and `DELETE` on `/trade-api/v2/margin/cross/positions/{ticker}/exit_trigger/{trigger_id}`
+
+  A position holds at most one live `trailing` stop. Non-isolated positions may hold up to 20
+  live `bracket` (stop-loss / take-profit) triggers at once, so long as their counts fit the
+  position. Isolated positions hold one. `kind` selects the family: on `GET` and `DELETE`,
+  omitting it covers both, while a `PUT` without one writes a `bracket`. Orders fired by a
+  trigger are reduce-only.
+
+  Order-anchored triggers return to `pending_on_entry` after closing their current quantity,
+  because the anchor order can still add fills — so `status` is not monotonic, and only a
+  `filled` trigger with no `anchor_order_id` is done. A `count` or `anchor_order_id` create
+  appends a trigger, so it requires `client_trigger_id` and replaying one returns the trigger
+  the first request made; the key belongs to the position it created on, and reusing it for
+  another position returns `409` rather than that position's trigger.
+
+  Non-isolated positions take a `subaccount`, and additionally support partial triggers via
+  `count`, triggers tied to an order via `anchor_order_id`, and the `{trigger_id}` routes for
+  managing one of several triggers on the same position. Isolated positions hold a single
+  trigger per kind and always close in full. A supplied `count` must be a whole number of
+  contracts.
+
+  If an anchor order cannot currently be validated, its trigger request returns `409` with
+  error code `anchor_order_unavailable` before writing a trigger. Retrying that response is safe.
 </Update>
 
 <Update
@@ -178,30 +536,6 @@ description: "The deprecated multivariate lookup REST endpoint and multivariate 
 
   * `PUT /trade-api/v2/multivariate_event_collections/{collection_ticker}/lookup` no longer exists. This endpoint predated RFQs and had been marked deprecated; use `POST /trade-api/v2/multivariate_event_collections/{collection_ticker}` to create or resolve a combo market, or the communications (RFQ) APIs for quoting workflows.
   * The `multivariate` WebSocket channel (message type `multivariate_lookup`) no longer exists. Subscriptions to it now return an unknown-channel error. For multivariate market state changes, use the `multivariate_market_lifecycle` channel.
-</Update>
-
-<Update
-  label="August 17, 2026"
-  tags={["REST", "WebSocket", "FIX", "Predictions"]}
-  rss={{
-title: "Centicent pricing on multivariate (combo) markets",
-description: "Combo markets are moving from $0.001 to $0.0001 ticks via a new price_level_structure."
-}}
->
-  Multivariate (combo) markets are moving from `deci_cent` (\$0.001 ticks) to
-  a new `price_level_structure`, `center_centi_edge_centi_cent`: a uniform
-  \$0.0001 (0.01¢) tick across the full range. Other markets are unchanged.
-
-  No API fields or message formats change. Prices on these markets use all
-  four decimal places of the existing `*_dollars` fields — read prices from
-  those fields (integer-cent fields cannot represent sub-cent prices) and
-  snap order and RFQ quote prices to the `step` in the market's
-  `price_ranges` array rather than keying off the structure name.
-
-  Existing combo markets migrate in place with resting orders preserved, each
-  emitting the existing `price_level_structure_updated` event with its new
-  `price_ranges`. See [Fixed-Point Representation](/getting_started/fixed_point_migration)
-  for the full structure reference.
 </Update>
 
 <Update
@@ -1853,7 +2187,7 @@ description: "REST and WebSocket Order, Fill, and Trade responses now include ou
   * `Fill` (GetFills, GetFillsHistorical)
   * `Trade` (public) — fields are named `taker_outcome_side` and `taker_book_side` to match the existing `taker_side`
 
-  Affected WebSocket channels (`svc-apiexternal-ws`):
+  Affected WebSocket channels (`apiexternal-ws`):
 
   * `user_orders`
   * `fill`

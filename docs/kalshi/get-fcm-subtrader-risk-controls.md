@@ -5,8 +5,9 @@
 # Get FCM Subtrader Risk Controls
 
 > Returns the initial margin caps configured for an FCM member's subtrader on the margined
-exchange. A cap with no market_ticker applies across all markets; the remaining caps are
-scoped to a single market each. Markets without a cap are omitted.
+exchange. A cap with neither market_ticker nor asset_class applies across all markets; the
+remaining caps are scoped to a single market or a single asset class each. Every cap in
+scope for an order is enforced independently. Markets without a cap are omitted.
 
 
 
@@ -48,6 +49,8 @@ tags:
     description: Funding rates and payment history
   - name: fees
     description: Margin fee schedule
+  - name: exit-triggers
+    description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
   /margin/fcm/subtraders/risk_controls:
     get:
@@ -58,10 +61,14 @@ paths:
         Returns the initial margin caps configured for an FCM member's subtrader
         on the margined
 
-        exchange. A cap with no market_ticker applies across all markets; the
-        remaining caps are
+        exchange. A cap with neither market_ticker nor asset_class applies
+        across all markets; the
 
-        scoped to a single market each. Markets without a cap are omitted.
+        remaining caps are scoped to a single market or a single asset class
+        each. Every cap in
+
+        scope for an order is enforced independently. Markets without a cap are
+        omitted.
       operationId: GetFCMSubtraderRiskControls
       parameters:
         - name: subtrader_id
@@ -81,6 +88,25 @@ paths:
           schema:
             type: string
             x-go-type-skip-optional-pointer: true
+        - name: asset_class
+          in: query
+          required: false
+          description: >-
+            Restricts the response to the cap scoped to this asset class when
+            supplied. Mutually exclusive with market_ticker.
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+            enum:
+              - Crypto
+              - Equities
+              - Metals
+              - FX
+              - Energy
+              - Indices
+              - Rates
+              - Compute
+              - GPU
       responses:
         '200':
           description: Risk controls retrieved successfully
@@ -125,10 +151,24 @@ components:
           description: The subtrader the initial margin cap applies to.
         market_ticker:
           type: string
-          description: >-
-            The market the cap is scoped to. Absent when the cap applies across
-            all markets.
+          description: Present only on a market-scoped cap.
           x-go-type-skip-optional-pointer: true
+        asset_class:
+          type: string
+          description: >-
+            Present only on an asset-class-scoped cap. A cap with neither
+            market_ticker nor asset_class applies across all markets.
+          x-go-type-skip-optional-pointer: true
+          enum:
+            - Crypto
+            - Equities
+            - Metals
+            - FX
+            - Energy
+            - Indices
+            - Rates
+            - Compute
+            - GPU
         im_cap:
           allOf:
             - $ref: '#/components/schemas/FixedPointDollars'

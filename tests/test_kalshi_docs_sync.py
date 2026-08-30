@@ -74,14 +74,14 @@ def test_parse_index_ignores_non_bullet_prose():
 def test_parse_index_total_matches_real_llms_txt_bullet_count():
     """Sanity check against the real committed docs/kalshi/llms.txt - not a
     network test, just confirms the parser's bullet count matches a plain
-    grep count (215 markdown pages + 5 spec files, per that file's own
-    '## Notes' section)."""
+    grep count (228 markdown pages + 5 spec files; the 3.29.0 index no
+    longer carries the old '## Notes' self-count section)."""
     from pathlib import Path
     real_text = (Path(__file__).resolve().parent.parent / "docs" / "kalshi" / "llms.txt").read_text()
 
     entries = sync.parse_index(real_text)
 
-    assert len(entries) == 231  # +11 2026-08-25: upstream added weather-index, target-balance-allocation x2, margin exit-triggers x8
+    assert len(entries) == 233  # +2 2026-08-30 (3.29.0): upstream added cancel-all-orders x2 (api-reference + margin-rest)
 
 
 # --- resource_kind ---------------------------------------------------------

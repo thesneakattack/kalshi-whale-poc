@@ -59,6 +59,18 @@ Subscribe to the `communications` channel (requires auth). `rfq_created` and `rf
 
 Combo RFQs include `mve_collection_ticker` and `mve_selected_legs`. Use [Multivariate Event Collections](/api-reference/multivariate/get-multivariate-event-collections) to discover eligible combinations.
 
+## Subaccounts
+
+Requesters can create an RFQ under a numbered subaccount by passing
+`subaccount` on `POST /communications/rfqs`; makers can likewise pass
+`subaccount` on `POST /communications/quotes`. Execution, fills, and
+settlement follow the subaccount the RFQ or quote was created under.
+
+The full REST RFQ lifecycle — including combo-market creation — is also
+available to [subaccount-restricted API keys](/getting_started/subaccounts#restricted-api-keys),
+scoped to the key's locked subaccount. On FIX, restricted keys support the
+maker quote lifecycle only.
+
 ## Common errors
 
 | Error                  | What's going on                                  |

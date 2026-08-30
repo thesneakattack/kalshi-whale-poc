@@ -45,6 +45,8 @@ tags:
     description: Funding rates and payment history
   - name: fees
     description: Margin fee schedule
+  - name: exit-triggers
+    description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
   /margin/markets/{ticker}/orderbook:
     get:

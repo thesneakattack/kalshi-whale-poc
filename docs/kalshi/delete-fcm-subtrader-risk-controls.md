@@ -45,6 +45,8 @@ tags:
     description: Funding rates and payment history
   - name: fees
     description: Margin fee schedule
+  - name: exit-triggers
+    description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
   /margin/fcm/subtraders/risk_controls:
     delete:
@@ -71,6 +73,25 @@ paths:
           schema:
             type: string
             x-go-type-skip-optional-pointer: true
+        - name: asset_class
+          in: query
+          required: false
+          description: >-
+            Scopes the initial margin cap removal to this asset class when
+            supplied. Mutually exclusive with market_ticker.
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+            enum:
+              - Crypto
+              - Equities
+              - Metals
+              - FX
+              - Energy
+              - Indices
+              - Rates
+              - Compute
+              - GPU
       responses:
         '200':
           description: Risk controls deleted successfully

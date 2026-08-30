@@ -19,7 +19,7 @@ Kalshi will migrate combos from the "default" exchange instance to shard 1, foll
 * August 6, 2026: intra-exchange instance transfers enabled to exchange index 1.
 * August 10, 2026: `KXMVECROSSCATEGORY-SHARD1-R` multivariate event collection created with support for all combos.
 * August 17, 2026: combos created over legacy collections `KXMVESPORTSMULTIGAMEEXTENDED-R`, `KXMVECROSSCATEGORY-R` will be created on shard 1.
-* August 24, 2026: new crypto events will be created on shard 2, and new tennis and baseball events will be created on shard 3.
+* August 24, 2026 at 12:00 PM ET: new crypto events will be created on shard 2, and new tennis and baseball events will be created on shard 3.
 
 ## Balance Management
 
@@ -38,6 +38,14 @@ Kalshi's collateralization checks will continue to run within the matching engin
 * Then, use [Transfer Between Subaccounts](/api-reference/portfolio/transfer-between-subaccounts) with the `exchange_index` parameter to transfer funds from the primary account to the subaccount on that instance.
 * [Get All Subaccount Balances](/api-reference/portfolio/get-all-subaccount-balances) provides a breakdown of subaccount balances for each `(exchange_index, subaccount)` pair.
 
+**Auto-Rebalancing**
+
+* Users may opt in to automatic rebalancing between exchange shards.
+* The customer supplies a target balance allocation as a percentage of their balance across exchange shards. For example, `{Default: 80, Combos: 20}`.
+* Every 10 seconds, Kalshi computes the customer's balance on each exchange shard as its account balance minus the value of its resting orders.
+* If the balance has drifted from the target allocation, Kalshi executes an intra-exchange account transfer on the customer's behalf to restore the target allocation.
+* Target balance allocations can be configured through the [REST API](/api-reference/portfolio/set-target-balance-allocation) and the clearing portal.
+
 ## Order routing
 
 ### Market Data
@@ -49,15 +57,16 @@ Kalshi's collateralization checks will continue to run within the matching engin
 
 The `exchange_index` parameter is available on a per-endpoint basis.
 
-* If omitted: defaults to `0`.
-* Else if `-1`: routes to the target exchange for the provided market ticker.
-* Else if `>= 0`: routes directly to the target exchange.
+* If `>= 0`: routes directly to the target exchange.
+* Else if `-1`: auto-routes to the target exchange for the provided market ticker.
+* Else if omitted and a market ticker is provided: auto-routes to the target exchange for the market ticker.
+* Else: defaults to exchange index `0`.
 
 ### FIX
 
 The [`ExDestination` parameter](/fix/order-entry) (FIX Tag 100) is available on a per-message basis.
 
-* If omitted: defaults to `0`.
+* On event-contract sessions, if omitted: routes to the target exchange for the provided `Symbol` (FIX Tag 55).
 * Else if `-1`: routes to the target exchange for the provided `Symbol` (FIX Tag 55).
 * Else if `>= 0`: routes directly to the target exchange.
 
@@ -76,7 +85,9 @@ The following assignments determine the shard where new events will be created. 
 
 * All child markets of an event will live on the same exchange instance.
 * There is currently no plan to migrate any live market to a new exchange instance.
+* Single REST order writes that explicitly target a nonzero shard are rate-limited against that shard's Write budget. Auto-routed single REST order writes are billed to the unscoped Write bucket and every nonzero shard's Write bucket. REST batch writes and explicit shard 0 writes use only the unscoped Write budget. See [Rate Limits and Tiers](/getting_started/rate_limits#sharded-exchanges-have-per-shard-write-budgets).
 * Providing `ExDestination` / `exchange_index` is unnecessary for all RFQ operations, including FIX [`QuoteRequest` (`35=R`), `Quote` (`35=S`), and `AcceptQuote` (`35=UA`)](/fix/rfq-messages), which are routed internally by Kalshi.
+* When trading via FIX, both `MassCancelRequest` and `CancelOrdersOnDisconnect` will target all exchange shards for the FIX session.
 * Automatic routing will incur an additional latency cost.
 * Subaccount balances are local to a specific exchange instance.
 * Order groups do not function across exchange instances.
