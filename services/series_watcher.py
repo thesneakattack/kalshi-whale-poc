@@ -510,16 +510,6 @@ def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[d
     return [dict(r) for r in rows if signal_log.series_of(r["ticker"]) == series]
 
 
-def _unit_cost(side: str, yes_price: float | None) -> float | None:
-    """What the taker actually paid per contract. Side-aware, same
-    inversion PaperBroker.cost_basis uses — re-deriving this as size*price
-    without the (1 - price) no-side flip is the exact bug class CLAUDE.md's
-    "no-side dollar math" section documents."""
-    if yes_price is None:
-        return None
-    return yes_price if side == "yes" else 1.0 - yes_price
-
-
 def _pct(numerator: int, denominator: int) -> float | None:
     return round(100.0 * numerator / denominator, 1) if denominator else None
 
@@ -748,7 +738,7 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
     # headline below states the two numbers side by side rather than
     # claiming one is derived from the other.
     priced_entries = [
-        (t, uc) for t, uc in ((t, _unit_cost(t["side"], t["price"])) for t in entries)
+        (t, uc) for t, uc in ((t, kalshi_fees.unit_cost(t["side"], t["price"])) for t in entries)
         if uc is not None
     ]
     unit_costs = [uc for _, uc in priced_entries]
@@ -802,8 +792,8 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
         match = by_key.get((t["ticker"], round(seen, 6))) if seen is not None else None
         if match is None or match.get("price") is None:
             continue
-        signal_cost = _unit_cost(t["side"], match["price"])
-        fill_cost = _unit_cost(t["side"], t["price"])
+        signal_cost = kalshi_fees.unit_cost(t["side"], match["price"])
+        fill_cost = kalshi_fees.unit_cost(t["side"], t["price"])
         if signal_cost is not None and fill_cost is not None:
             slippage.append(fill_cost - signal_cost)
     mean_slippage_pts = round(sum(slippage) / len(slippage) * 100, 2) if slippage else None

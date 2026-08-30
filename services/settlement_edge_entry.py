@@ -58,7 +58,7 @@ cost 0 or 100c are just plain wrong" invariant applies to every strategy
 that opens a position, not just whale-follow.
 """
 from services.config.config_bounds import is_tradeable_unit_cost
-from services import index_feed, settlement_edge
+from services import index_feed, kalshi_fees, settlement_edge
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 
@@ -111,11 +111,12 @@ def evaluate_entry(
 
     min_probability = se_cfg.get("min_probability", 0.95)
     if p_yes >= min_probability:
-        side, p_side, market_price_side = "yes", p_yes, market_yes_price
+        side, p_side = "yes", p_yes
     elif (1.0 - p_yes) >= min_probability:
-        side, p_side, market_price_side = "no", 1.0 - p_yes, 1.0 - market_yes_price
+        side, p_side = "no", 1.0 - p_yes
     else:
         return None  # not confident enough either direction
+    market_price_side = kalshi_fees.unit_cost(side, market_yes_price)
 
     min_edge = se_cfg.get("min_edge", 0.05)
     edge = p_side - market_price_side

@@ -30,7 +30,7 @@ import time
 import uuid
 from pathlib import Path
 
-from services import signal_log
+from services import kalshi_fees, signal_log
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "shadow_mode.db"
 
@@ -237,7 +237,7 @@ class ShadowTrader:
         # per-contract cost is (1 - price), same fix as
         # strategy_engine.evaluate(); shadow mode should size trades the
         # same way the real paper broker would.
-        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+        unit_cost = kalshi_fees.unit_cost(signal.side, signal.price)
         contracts = int(max_size / unit_cost) if unit_cost > 0 else 0
         if contracts <= 0:
             return None

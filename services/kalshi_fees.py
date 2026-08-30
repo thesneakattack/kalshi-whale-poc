@@ -49,6 +49,12 @@ therefore charged double the real fee. See _FEE_MULTIPLIER_BY_SERIES below
 PDF this replaces, this is still a point-in-time snapshot, not a live
 fetch - Kalshi's own schedule can change again; revisit the same way if a
 future real-fill fee_cost stops matching this formula.
+
+Also home, since 2026-08-30 (issue #212), to unit_cost() - the one
+side-aware per-contract cost every dollar figure in this app derives from.
+It lives here rather than in a new module because this is the money-math
+module every consumer of it already imports, and breakeven_unit_cost()
+consumes its output directly.
 """
 import math
 
@@ -152,6 +158,51 @@ def taker_fee_per_contract(price: float, ticker: str | None = None) -> float:
     if price <= 0 or price >= 1:
         return 0.0
     return _TAKER_RATE * _multiplier(ticker) * price * (1 - price)
+
+
+def unit_cost(side: str, yes_price: float | None) -> float | None:
+    """Per-contract cost, in dollars, of one `side` contract when the YES
+    price is `yes_price`: the yes price itself for "yes", its complement
+    (1 - yes_price) for "no". Kalshi quotes in yes terms and a no position
+    at yes price X costs (1 - X) - "a bid for yes at price X is equivalent
+    to an ask for no at price (100-X)" (docs/kalshi/get-market-orderbook.md).
+    Every price this app carries (WhaleSignal.price, Position.entry_price,
+    PendingOrder.limit_price, trades.price, market snapshots) is the yes
+    price by convention, so every side-aware dollar figure - cost basis,
+    proceeds, fill cost, the admission band - goes through here.
+
+    The arithmetic is strategy_engine._validate_entry_price's own gate
+    expression, `price if side == "yes" else (1 - price)`, bit for bit
+    (tests/test_kalshi_fees.py pins it), so the band a signal is admitted
+    against, the charge the broker takes and every analytics read agree.
+    Issue #212: 26 inline copies and three byte-identical private helpers
+    (diagnostics, series_watcher, reset.trade_archive) had converged on
+    this one line - the no-side inversion is one of the two shipped bugs
+    CLAUDE.md cites under "A displayed value must match its label";
+    tools/quality_audit/unit_cost.py now fails CI on a fresh inline copy.
+
+    `side` must be exactly "yes" or "no", the two strings every producer
+    emits (services/kalshi/contracts/trade.py's OutcomeSide, WhaleSignal
+    .side, Position.side; all 655 persisted trades and 93,943 signals
+    checked 2026-08-30 carry nothing else). Any other value raises: the
+    inline copies silently treated an unknown side as "no" - wrong
+    direction AND wrong cost with no trace, the exact failure
+    resolve_taker_outcome_side's docstring records - and a guessed side is
+    worse than a loud one.
+
+    A None price stays None ("no price known" must never become an
+    invented cost) - the contract the three private helpers had, which
+    the WebSocket reader gate relies on to record a rejection with
+    unit_cost=None rather than 0.0.
+
+    The result is also the market-implied probability of `side` (a
+    contract pays $1 or $0), which is why breakeven_unit_cost() below can
+    add a fee to it directly."""
+    if side == "yes":
+        return yes_price
+    if side == "no":
+        return None if yes_price is None else 1 - yes_price
+    raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
 
 
 def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:

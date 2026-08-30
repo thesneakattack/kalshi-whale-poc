@@ -334,7 +334,7 @@ class PaperBroker:
         # should cost 0.9/contract, not 0.1) and manufactured phantom profit
         # on any NO position that never even moved - confirmed directly
         # against live trade history, not assumed.
-        unit_cost = price if side == "yes" else (1 - price)
+        unit_cost = kalshi_fees.unit_cost(side, price)
         cost = size * unit_cost
         cost = min(cost, self.bankroll)          # never go negative in the POC
         actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
@@ -500,17 +500,22 @@ class PaperBroker:
             if now >= order.expires_at:
                 self._cancel_pending(ticker)
                 continue
-            if order.side == "yes":
-                available_unit_cost = latest_asks.get(ticker)
-            else:
-                bid = latest_bids.get(ticker)
-                available_unit_cost = (1 - bid) if bid is not None else None
-            if available_unit_cost is None:
+            # The yes price this order would fill at right now: a YES buyer
+            # lifts the yes ask; a NO buyer lifts the no ask, which IS the
+            # yes bid (docs/kalshi/get-market-orderbook.md: "a bid for yes
+            # at price X is equivalent to an ask for no at price (100-X)").
+            # Read once as a yes price and side-adjusted once through
+            # kalshi_fees.unit_cost - this used to invert the bid into a
+            # no-side cost and then invert that back into fill_price
+            # (1 - (1 - bid)), the only place the inversion ran in reverse
+            # (issue #212); same number to within one ulp.
+            fill_price = latest_asks.get(ticker) if order.side == "yes" else latest_bids.get(ticker)
+            if fill_price is None:
                 continue  # no fresh quote this tick - wait, don't guess
-            limit_unit_cost = order.limit_price if order.side == "yes" else (1 - order.limit_price)
+            available_unit_cost = kalshi_fees.unit_cost(order.side, fill_price)
+            limit_unit_cost = kalshi_fees.unit_cost(order.side, order.limit_price)
             if available_unit_cost > limit_unit_cost:
                 continue  # market hasn't come to this order's price yet
-            fill_price = available_unit_cost if order.side == "yes" else (1 - available_unit_cost)
             if validate_fn is not None:
                 ok, reason = validate_fn(order.ticker, order.side, fill_price, order.confidence)
                 if not ok:
@@ -571,7 +576,7 @@ class PaperBroker:
         # makes the reported number match bankroll's actual net change
         # across the full round trip, not just the raw price move.
         close_fee = kalshi_fees.taker_fee(pos.size, exit_price, ticker=ticker)
-        gross_cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
+        gross_cash_back = pos.size * kalshi_fees.unit_cost(pos.side, exit_price)
         cash_back = gross_cash_back - close_fee
         realized_pnl = self.mark_to_market(ticker, exit_price) - pos.entry_fee - close_fee
         self.bankroll += cash_back
@@ -680,13 +685,13 @@ class PaperBroker:
             if already_excluded or not reason.startswith("closed:"):
                 return None
             fee = fee or 0.0
-            bad_gross = size * bad_price if side == "yes" else size * (1 - bad_price)
+            bad_gross = size * kalshi_fees.unit_cost(side, bad_price)
             reversed_cash_back = bad_gross - fee
             self.bankroll -= reversed_cash_back
 
             corrected_credit = 0.0
             if corrected_price is not None:
-                good_gross = size * corrected_price if side == "yes" else size * (1 - corrected_price)
+                good_gross = size * kalshi_fees.unit_cost(side, corrected_price)
                 good_fee = kalshi_fees.taker_fee(size, corrected_price, ticker=ticker)
                 corrected_credit = good_gross - good_fee
                 self.bankroll += corrected_credit
@@ -785,7 +790,7 @@ class PaperBroker:
         pos = self.positions.get(ticker)
         if not pos:
             return 0.0
-        return pos.size * (pos.entry_price if pos.side == "yes" else (1 - pos.entry_price))
+        return pos.size * kalshi_fees.unit_cost(pos.side, pos.entry_price)
 
     def total_unrealized_pnl(self, latest_prices: dict[str, float]) -> float:
         return sum(

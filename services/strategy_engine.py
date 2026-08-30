@@ -6,7 +6,7 @@ manager, or data sources.
 import time
 from typing import NamedTuple
 
-from services import candidate_log, market_history, signal_log
+from services import candidate_log, kalshi_fees, market_history, signal_log
 from services.config import config_overrides
 from services.confidence_scoring import WhaleSignal
 from services.paper_broker import PaperBroker
@@ -167,7 +167,7 @@ def _validate_entry_price(
         reason += " - longshot zone)" if is_longshot else ")"
         return EntryValidation(False, "entry_threshold", confidence, effective_threshold, reason)
 
-    unit_cost = price if side == "yes" else (1 - price)
+    unit_cost = kalshi_fees.unit_cost(side, price)
 
     # HARD VALIDITY FLOOR - not a tunable preference, and deliberately
     # checked before the configurable band below so no config value can
@@ -268,7 +268,7 @@ class FollowTheWhaleStrategy:
         # win rate. signal.price is always the YES price (see
         # confidence_scoring.py) - a NO print's real per-contract cost is
         # (1 - price), not price itself.
-        unit_cost = signal.price if signal.side == "yes" else (1 - signal.price)
+        unit_cost = kalshi_fees.unit_cost(signal.side, signal.price)
 
         # Audit finding (2026-08-09): this used to be self.broker.equity({})
         # - an empty prices dict makes every open position's mark_to_market
@@ -596,7 +596,7 @@ class FollowTheWhaleStrategy:
         effective_threshold, is_longshot = _effective_entry_threshold(strat_cfg, price, is_live, seconds_to_close)
         validation = _validate_entry_price(side, price, confidence or 0.0, effective_threshold, strat_cfg, is_longshot=is_longshot)
         if not validation.ok:
-            unit_cost = price if side == "yes" else (1 - price)
+            unit_cost = kalshi_fees.unit_cost(side, price)
             candidate_log.record_rejection(
                 ticker, "whale_follow", validation.gate_name, validation.observed, validation.threshold,
                 side=side, unit_cost=unit_cost,
