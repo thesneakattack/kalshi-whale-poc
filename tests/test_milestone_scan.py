@@ -5,6 +5,7 @@ event_ticker -> milestone_id discovery (docs/superpowers/specs/
 stands in for the real gateway, app_state's real `state` dict is reset
 between tests since this module reads/writes it directly."""
 import asyncio
+import time
 
 import pytest
 
@@ -83,7 +84,53 @@ def test_scan_survives_one_category_failing(capsys):
 
 
 def test_maybe_scan_milestone_batch_respects_the_due_interval():
-    import time
     state["milestone_scan"]["last_started_at"] = time.time()  # just started
     milestone_scan._maybe_scan_milestone_batch(_cfg(["Sports"]))
     assert state["milestone_scan"]["scanning"] is False  # not due yet, nothing kicked off
+
+
+# --- _maybe_scan_milestone_batch: due()/overlap-guard scheduling ------------
+# Mirrors tests/test_mve_scan.py's identical three tests for
+# _maybe_scan_mve_batch (review finding, task-5 fix pass) - the due-interval
+# test above only exercised the NOT-due path; these three monkeypatch
+# task_supervisor.supervise to verify the actual due-and-not-scanning branch
+# fires (or doesn't) with the right kwargs, not just that `scanning` ends up
+# False in the one case that never reaches it.
+
+def test_maybe_scan_milestone_batch_triggers_when_due_and_not_already_scanning(monkeypatch):
+    supervised = []
+    monkeypatch.setattr(
+        milestone_scan.task_supervisor, "supervise", lambda fn, **kw: supervised.append(kw) or "task-sentinel"
+    )
+
+    milestone_scan._maybe_scan_milestone_batch(_cfg(["Sports"]))
+
+    assert len(supervised) == 1
+    assert supervised[0]["component"] == "milestone_scan"
+    assert state["milestone_scan"]["scanning"] is True
+    assert state["milestone_scan"]["task"] == "task-sentinel"
+
+
+def test_maybe_scan_milestone_batch_does_not_refire_before_the_interval_elapses(monkeypatch):
+    supervised = []
+    monkeypatch.setattr(
+        milestone_scan.task_supervisor, "supervise", lambda fn, **kw: supervised.append(kw) or "task-sentinel"
+    )
+    state["milestone_scan"]["last_started_at"] = time.time()  # just started
+
+    milestone_scan._maybe_scan_milestone_batch(_cfg(["Sports"]))
+
+    assert supervised == []
+
+
+def test_maybe_scan_milestone_batch_does_not_overlap_a_run_already_in_flight(monkeypatch):
+    supervised = []
+    monkeypatch.setattr(
+        milestone_scan.task_supervisor, "supervise", lambda fn, **kw: supervised.append(kw) or "task-sentinel"
+    )
+    state["milestone_scan"]["scanning"] = True
+    state["milestone_scan"]["last_started_at"] = 0.0  # otherwise due()
+
+    milestone_scan._maybe_scan_milestone_batch(_cfg(["Sports"]))
+
+    assert supervised == []

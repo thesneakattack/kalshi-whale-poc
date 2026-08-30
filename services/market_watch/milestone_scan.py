@@ -34,8 +34,9 @@ from services.kalshi.public import KalshiPublicGateway
 
 _MILESTONE_SCAN_MIN_INTERVAL_SEC = 300  # Discovery only (which events have
 # a milestone + its id), not the live score/clock read itself - that stays
-# on live_status.py's own, more frequent _LIVE_STATUS_REPOLL_SEC (5 min)
-# cadence. A starting point, not a measured optimum - see the design
+# on live_status.py's own, identically-paced _LIVE_STATUS_REPOLL_SEC (5 min,
+# same 300s - not "more frequent", the two just happen to share a cadence
+# today) cadence. A starting point, not a measured optimum - see the design
 # spec's Part 3 "Verification after shipping" section.
 
 
@@ -71,7 +72,14 @@ async def _scan_milestone_batch(client: KalshiPublicGateway, cfg: dict) -> None:
                 continue
             for event_ticker in ms.get("related_event_tickers") or []:
                 state["milestone_by_event"][event_ticker] = ms_id
-    milestone_state["watermark"] = scan_started_at
+    # int(), not the raw float time.time() returns: docs/kalshi/
+    # get-milestones.md documents min_updated_ts as `integer, format:
+    # int64`, and the vendored SDK's stricter sibling method types the same
+    # field StrictInt - a float here would fail server-side on every call
+    # after the cold-start one (which passes None), silently caught by the
+    # isinstance(result, list) skip-and-continue above, so the cache would
+    # never grow past its first run (review finding, task-5 fix pass).
+    milestone_state["watermark"] = int(scan_started_at)
 
 
 def _maybe_scan_milestone_batch(cfg: dict) -> None:
