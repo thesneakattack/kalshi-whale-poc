@@ -134,8 +134,21 @@ thin to act on alone.
 
 **`whale_confidence_weights`** — checked `entry_confidence` against outcome;
 202 of 256 trades cluster in 0.50-0.60 (`entry_threshold` is 0.55), too
-narrow an observed range to say which factor weight is mistuned. Not a
-finding, a boundary: this dataset can't answer that question.
+narrow an observed range to say which factor weight is mistuned from the
+blended score alone. **Superseded by §10**: the per-factor breakdown
+(`signal_log.resolved_signals_with_factors()`, 88,828 rows) answers this
+directly — this dataset's boundary was a tool-choice problem, not a real
+data ceiling.
+
+**`kalshi.markets_watchlist: [KXBTC15M]`** — deliberately overrides
+`kalshi.live_markets_only`'s discovery filter for this one series (direct
+2026-08-16 request), because Kalshi has no broadcast/game-clock live-status
+signal for a pure price-crossing market and its `volume_24h` stays
+structurally 0 while open. Not a bug in the three separate
+`live_markets_only` flags (`kalshi`/`whale_signal`/`strategy` — different
+pipeline stages, each documented) — this is the actual mechanism behind
+§6's crypto finding above: without it, the book's whole profit source would
+never be discovered.
 
 **`risk.max_daily_loss_pct: 0.85`** — already named in `CLAUDE.md` itself as
 not protective. Restated here for completeness, not re-derived as new.
@@ -229,3 +242,75 @@ all - they need their own, separate lever.
   `whale_watcher_kalshi.min_contracts` wiring (§7).
 - New, not yet on `docs/open-decisions.md`: KXATPMATCH (and, on thinner
   data, KXUFCFIGHT) as `strategy.excluded_series` candidates (§6).
+- New, not yet on `docs/open-decisions.md`: `whale_confidence_weights`
+  re-validation (§10) - `depth_factor`'s never-checked negative correlation,
+  and `agreement_factor`'s apparent reversal from the 2026-08-10 finding.
+
+## 10. `whale_confidence_weights`, checked at 88,828 resolved signals
+
+Direct follow-up: "you're going to want to do another analysis considering
+all the factors and setting you've missed." §6's dismissal of
+`whale_confidence_weights` (blended `entry_confidence` too narrow a range
+to say anything) used the wrong tool. `signal_log.resolved_signals_with_factors()`
+- found early this session, never actually used until this pass - returns
+every resolved signal with a real per-factor breakdown, independent of
+whether it became a whale-follow trade: 88,828 rows, 345x the §1-§6
+dataset.
+
+Pearson correlation of each raw factor value against the signal's own
+`correct` outcome:
+
+| Factor | Live weight | r | Note |
+|---|---|---|---|
+| depth_factor | 0.0404 | **-0.24** | Strongest effect of any factor - never checked before this pass |
+| unusualness_factor | 0.0404 | -0.18 | Confirms the 2026-08-10 finding at n≈9,200, now 10x the sample |
+| trend_factor | 0.3131 | +0.24 | Heaviest weight, strongest positive signal - well aligned |
+| context_factor | 0.2121 | +0.23 | Second-heaviest weight, matching signal strength |
+| cluster_factor | 0.1717 | +0.17 | Aligned |
+| agreement_factor | 0.1818 | +0.13 | Contradicts the 2026-08-10 finding's sign - see below |
+| proximity_factor | 0.0404 | -0.05 | Weak either way; correctly weighted low; only 21,843/88,828 rows populated |
+| analyst_factor | 0.0000 | n/a | 0 non-default values in 88,828 rows - weight of 0 already correct |
+
+**`depth_factor` is the largest-magnitude effect in the table, and its
+formula's implicit assumption is backwards.**
+`services/confidence_scoring.py:193`: `depth_factor = 1.0 - math.exp(-k *
+depth_ratio)` - a print LARGE relative to the market's own 24h volume scores
+HIGH confidence. In the data, high `depth_factor` printed correct less often
+(mean 0.21) than low `depth_factor` (mean 0.41). It already sits at the
+config's floor weight (0.0404, cut from `DEFAULT_WEIGHTS`' 0.18 -
+`confidence_scoring.py:115`), so today's practical drag is bounded by that
+low weight - but nothing in the codebase's own history (checked: the
+2026-08-10 finding named in the function's docstring covers only
+`unusualness_factor` and `agreement_factor`) shows this was ever
+deliberately identified, only that it happens to already sit at the floor
+alongside the two factors that were.
+
+**A broken doc pointer, and a possible reversal.**
+`confidence_scoring.py`'s docstring says the 2026-08-10 finding is explained
+"in config/settings.yaml's whale_confidence_weights comment" - that section
+(`config/settings.yaml:131-140`) carries no comment at all; verified by
+direct read, not inferred from the docstring being wrong elsewhere. More
+substantively: that finding says `agreement_factor` showed negative
+discrimination against ~9,200 real resolved signals. This pass's 88,828 rows
+show `r = +0.13` - the opposite sign. No newer documented recalibration was
+found in git history, ROADMAP.md, or `services/whale_calibration/` to
+explain the reversal. Left unresolved deliberately: the two candidate
+explanations (the underlying relationship changed with 10x the data since
+2026-08-10, or something in how `agreement_factor` is computed/consumed
+changed since then) point to different next actions, and this dataset alone
+can't distinguish them.
+
+**Also checked, inconclusive:** position size (`cost_basis`, driven by
+`strategy.max_position_pct` and `kelly_fraction_of_cap`) against outcome
+across the 257 real trades. Quartile ROI: 5.6% / 2.7% / -2.6% / 14.8% - not
+monotonic, most likely confounded with the unit-cost and crypto/sports
+effects already isolated in §2 and §6 rather than an independent size
+effect. Reported as checked-and-null, not silently omitted.
+
+**Not a recommendation for new weight values.** Re-weighting a
+signal-detection formula is a materially bigger change than a threshold
+value - what this section supports is re-running
+`services/whale_calibration/confidence_calibration.py`'s discrimination
+check against the current 88,828-row population (10x what it last saw) and
+writing the settings.yaml comment that's supposed to exist, not swapping in
+numbers derived from a single ad hoc correlation pass.
