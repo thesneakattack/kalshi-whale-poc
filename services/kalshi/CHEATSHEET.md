@@ -132,6 +132,32 @@ alternative was an incrementally maintained "oldest pending ts", which moves
 bookkeeping onto the per-message path to save microseconds on a once-a-minute
 read.
 
+### Reconnect discards are counted, not lost (#209, 2026-08-30)
+
+`_begin_connection` replaces all three queues and `_ticker_by_market` on every
+(re)connect — deliberate (the ticker channel re-snapshots on resubscribe) and
+unchanged. Everything it threw away had already been counted into
+`received_by_class` on arrival and then reached neither processed, coalesced,
+pending nor dropped, so each reconnect broke
+`received == processed + coalesced + pending + dropped` by exactly (queued +
+map) at that instant: the gap constant at 74 across samples with 12 reconnects.
+A correct discard that isn't counted is indistinguishable from a leak. It now
+lands in `discarded_on_reconnect_by_class` (`ingest_metrics()`, next to
+`dropped_by_class`; persisted as `<stream>.ingest.discarded_on_reconnect.<class>`),
+distinct from `dropped_by_class` because queue-full shedding is a different
+failure. The `_TICKER_WAKE` sentinel is skipped (not a received message); map
+entries count as `ticker`. `tools/soak_analyzer.py`'s `ticker_conservation`
+identity gained the term and treats an absent counter (older app) as an assumed
+0 that can never PASS.
+
+Cost: one call site (`run()`, once per physical connection — never per message).
+O(queued) `get_nowait` drain plus O(1) `len()` for the map; measured 2026-08-30
+(container, Python 3.13): 0.3–0.4 µs/item, 27 ms with all three queues full at
+20,000 and a 20,000-entry map, once per reconnect on a path already paying a
+TCP+TLS+WS handshake. Safe to drain rather than peek: the queues are about to be
+dereferenced, `run()`'s `finally` cancelled their consumers, and the count never
+awaits.
+
 ## Type strictness / tolerance policy (C2-C6, 2026-08-25)
 
 - **Closed Literal types** (contracts/types.py): only where an unknown

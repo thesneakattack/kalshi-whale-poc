@@ -365,7 +365,9 @@ def _ingest_snapshot(stream) -> dict | None:
 def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
     p = f"{prefix}.ingest"
     out: dict = {}
-    for group in ("received", "processed", "dropped"):
+    # discarded_on_reconnect (#209): what _begin_connection threw away with
+    # the previous connection - a distinct term from dropped (queue-full).
+    for group in ("received", "processed", "dropped", "discarded_on_reconnect"):
         for cls, count in (im.get(f"{group}_by_class") or {}).items():
             if count:  # zero classes omitted, never fabricated
                 out[f"{p}.{group}.{cls}"] = float(count)

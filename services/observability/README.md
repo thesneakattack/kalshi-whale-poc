@@ -133,6 +133,14 @@ Names (all `float`; zero-count classes are omitted, never fabricated):
   (`trade`, `ticker`, `fill`, `position`, `lifecycle`, `index`, `control`,
   `other` — `_CLASS_BY_MESSAGE_TYPE` in websocket.py; unknown `type`s land
   in `other` so the label set cannot grow with vendor changes).
+- `…ingest.discarded_on_reconnect.<class>` (#209, 2026-08-30) — lifetime
+  count of what `_begin_connection` threw away with the previous
+  connection: the three queues' contents plus the coalescing map's entries
+  (the latter as `ticker`). Counted on arrival, deliberately discarded, and
+  its own counter rather than `dropped` because queue-full shedding is a
+  different failure. The term that closes
+  `received == processed + coalesced + pending + dropped + discarded_on_reconnect`
+  (`tools/soak_analyzer.py`'s `ticker_conservation`).
 - `…ingest.dropped_window`, `…ingest.malformed_messages`,
   `…ingest.handler_exceptions` — the last is the count of handler
   exceptions the consumer used to swallow with a bare `except: pass`; each

@@ -165,7 +165,19 @@ def check_ingest_drops(qh: dict) -> Check:
 
 
 def check_ticker_conservation(qh: dict) -> Check:
-    """received == processed + coalesced + pending + dropped, for tickers.
+    """received == processed + coalesced + pending + dropped +
+    discarded_on_reconnect, for tickers.
+
+    `discarded_on_reconnect` (#209) is what `_begin_connection` throws away
+    with the previous connection - its queues and the coalescing map - on
+    every reconnect: counted on arrival, deliberately discarded, and until
+    it had its own counter indistinguishable from a leak (gap constant at
+    74 across 12 reconnects). An app that predates the counter exposes no
+    `discarded_on_reconnect_by_class` at all: the term is then assumed 0,
+    the detail says so, and the check's source is marked partial - a
+    balanced identity built on an assumed term resolves to UNKNOWN, never
+    PASS, while a gap stays a FAIL (the gap is real either way; only its
+    cause is ambiguous).
 
     Only decidable on a QUIESCENT sample: with items still in the queue,
     the difference is legitimately in-flight and proves nothing. Reporting
@@ -179,6 +191,9 @@ def check_ticker_conservation(qh: dict) -> Check:
     proc = (qh.get("processed_by_class") or {}).get("ticker")
     coal = q.get("coalesced_tickers")
     dropped = (qh.get("dropped_by_class") or {}).get("ticker", 0)
+    discarded_by_class = qh.get("discarded_on_reconnect_by_class")
+    discarded_measured = discarded_by_class is not None
+    discarded = (discarded_by_class or {}).get("ticker", 0)
     if None in (depth, pending, recv, proc, coal):
         return Check("ticker_conservation", DATA_PLANE, UNKNOWN,
                      "one or more counters absent from the API response")
@@ -187,16 +202,24 @@ def check_ticker_conservation(qh: dict) -> Check:
                      f"queue depth {depth} != 0 - sample is not quiescent, "
                      "difference may be legitimately in-flight",
                      {"depth": depth})
-    accounted = proc + coal + pending + dropped
+    accounted = proc + coal + pending + dropped + discarded
     gap = recv - accounted
     ok = gap == 0
     pct = (gap / recv * 100) if recv else 0.0
+    detail = (f"received={recv} accounted={accounted} gap={gap} ({pct:.4f}%) "
+              "[processed+coalesced+pending+dropped+discarded_on_reconnect]")
+    if not discarded_measured:
+        detail += (" [discarded_on_reconnect_by_class absent from the API "
+                   "response (app predates #209) - assumed 0; a non-zero gap "
+                   "here may be an uncounted reconnect discard rather than a "
+                   "leak]")
     return Check(
-        "ticker_conservation", DATA_PLANE, PASS if ok else FAIL,
-        f"received={recv} accounted={accounted} gap={gap} ({pct:.4f}%) "
-        "[processed+coalesced+pending+dropped]",
+        "ticker_conservation", DATA_PLANE, PASS if ok else FAIL, detail,
         {"received": recv, "processed": proc, "coalesced": coal,
-         "pending": pending, "dropped": dropped, "gap": gap},
+         "pending": pending, "dropped": dropped,
+         "discarded_on_reconnect": discarded,
+         "discarded_on_reconnect_measured": discarded_measured, "gap": gap},
+        source_complete=discarded_measured,
     )
 
 
