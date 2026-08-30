@@ -10,6 +10,7 @@ the SDK client instance directly with a fake that records calls, so nothing
 here can place or cancel a real order even by accident.
 """
 import asyncio
+import json
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -420,3 +421,50 @@ def test_get_api_limits_and_endpoint_costs_delegate_to_sdk_and_are_read_only():
     assert fake.calls == [("get_account_api_limits", {}), ("get_account_endpoint_costs", {})]
     # Structural guarantee: the reads live on the read gateway, never the order gateway.
     assert hasattr(c._reads, "get_api_limits") and not hasattr(c._writes, "get_api_limits")
+
+
+# ---- issues #266/#261: exchange staleness + API-key attestation reads ------
+
+def test_get_user_data_timestamp_delegates_to_the_read_gateway():
+    # docs/kalshi/get-user-data-timestamp.md
+    c, fake = _client_with_fake_sdk(trading_enabled=False)
+
+    async def get_user_data_timestamp(**kwargs):
+        fake.calls.append(("get_user_data_timestamp", kwargs))
+        return _FakeResp({"as_of_time": "2026-08-30T12:00:00Z"})
+
+    fake.get_user_data_timestamp = get_user_data_timestamp
+
+    result = asyncio.run(c.get_user_data_timestamp())
+
+    assert result == {"as_of_time": "2026-08-30T12:00:00Z"}
+    assert fake.calls == [("get_user_data_timestamp", {})]
+    assert hasattr(c._reads, "get_user_data_timestamp") and not hasattr(c._writes, "get_user_data_timestamp")
+
+
+def test_get_api_keys_delegates_to_the_read_gateway_and_keeps_the_attestation_field():
+    # docs/kalshi/get-api-keys.md - the facade must reach the same recovery
+    # path as the gateway (services/kalshi/account.py's get_api_keys), not a
+    # naive .model_dump() that would silently drop api_key_region_expiration_ts.
+    c, fake = _client_with_fake_sdk(trading_enabled=False)
+    raw_payload = {
+        "api_keys": [{"api_key_id": "k1", "name": "n", "scopes": ["read"]}],
+        "api_key_region_expiration_ts": 9999999999,
+    }
+    model_only = {"api_keys": raw_payload["api_keys"]}  # what the real SDK model actually keeps
+
+    class _HttpInfo:
+        data = _FakeResp(model_only)
+        raw_data = json.dumps(raw_payload).encode("utf-8")
+
+    async def get_api_keys_with_http_info(**kwargs):
+        fake.calls.append(("get_api_keys_with_http_info", kwargs))
+        return _HttpInfo()
+
+    fake.get_api_keys_with_http_info = get_api_keys_with_http_info
+
+    result = asyncio.run(c.get_api_keys())
+
+    assert result["api_key_region_expiration_ts"] == 9999999999
+    assert result["api_keys"] == raw_payload["api_keys"]
+    assert hasattr(c._reads, "get_api_keys") and not hasattr(c._writes, "get_api_keys")

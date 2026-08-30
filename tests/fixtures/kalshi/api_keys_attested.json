@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-api-keys.md",
+    "note": "GetApiKeysResponse for an attested account: api_key_region_expiration_ts present as a documented int64 unix-seconds timestamp, still in the future relative to this fixture's test usage (an 'active' attestation). The installed kalshi_python_async 3.27.0 SDK's own GetApiKeysResponse Pydantic model has no api_key_region_expiration_ts field at all (predates Kalshi's 2026-08-27 changelog addition) and silently drops it on parse even from this exact raw shape - confirmed directly against the live container 2026-08-30. services/kalshi/account.py's get_api_keys() recovers it from the raw response body instead of the parsed model; see that method's own docstring and docs/kalshi/CHEATSHEET.md's entry."
+  },
+  "payload": {
+    "api_keys": [
+      {
+        "api_key_id": "3b23c1c7-f4ef-4f0d-8b9a-9e53c61f1a0d",
+        "name": "kalshi-whale-poc",
+        "scopes": ["read", "write::trade"]
+      }
+    ],
+    "api_key_region_expiration_ts": 9999999999
+  }
+}
