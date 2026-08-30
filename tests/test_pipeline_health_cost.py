@@ -251,6 +251,27 @@ def test_pipeline_health_reads_buffered_trades_without_counting_raw_trades(monke
     assert body["buffered_unwritten"]["series_watcher_trades"] == 7
 
 
+def test_pipeline_health_extends_index_stream_with_backfill_activity(monkeypatch):
+    """Issue #260: index_stream's existing status surface is extended with
+    the reconnect-gap backfill stats (services/index_feed/backfill.py),
+    not replaced by a new top-level key - the requirement was to extend
+    the existing index_feed-relevant section."""
+    import main
+    from fastapi.testclient import TestClient
+    from services.diagnostics import routes
+
+    monkeypatch.setattr(routes.index_feed_backfill, "stats", lambda: {
+        "checks": 4, "gaps_detected": 1, "attempts": 1, "successes": 1,
+        "failures": 0, "rows_backfilled": 12, "last_gap": None, "last_result": None,
+    })
+    main.state["index_stream_status"] = {"connected": True, "error": None, "ws_url": "wss://x"}
+
+    body = TestClient(main.app).get("/api/health/pipeline").json()
+
+    assert body["index_stream"]["connected"] is True  # existing field preserved
+    assert body["index_stream"]["backfill"]["rows_backfilled"] == 12
+
+
 def test_pipeline_health_reports_total_store_probe_cost(monkeypatch):
     """Permanent recurrence detection: the wall time the store block cost
     ships in the payload, so the next regression is visible in the same

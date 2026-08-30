@@ -569,7 +569,8 @@ def test_unknown_caller_class_is_rejected_so_the_label_set_stays_bounded():
             pass
     assert set(http_client.CALLER_CLASSES) == {
         "critical_whale", "critical_position", "interactive", "background_discovery",
-        "background_catalog", "background_live_status", "background_resolution", "other",
+        "background_catalog", "background_live_status", "background_resolution",
+        "background_index_backfill", "other",
     }
 
 

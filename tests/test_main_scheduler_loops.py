@@ -221,6 +221,93 @@ def test_lifespan_starts_a_liveness_loop_for_each_active_stream():
     assert "trade_stream_liveness_task.cancel()" in source and "index_stream_liveness_task.cancel()" in source
 
 
+# --- _index_feed_backfill_loop (issue #260) ---------------------------------
+# The gap-detection/REST-fetch logic itself lives in and is unit-tested
+# directly against services/index_feed/backfill.py; this file only checks
+# the small loop that polls it on a timer, wires the gateway's own
+# credentials/base_url into the real fetch function, and that
+# main.lifespan actually starts one.
+
+class _FakeIndexGateway:
+    def __init__(self, credentials=("key-1", "priv-1"), base_url="https://external-api.kalshi.com/trade-api/v2",
+                 index_ids=("BRTI", "ETHUSD_RTI"), connection_metrics=None):
+        self._credentials = credentials
+        self.base_url = base_url
+        self.index_ids = list(index_ids)
+        self._connection_metrics = connection_metrics or {"reconnects": 0}
+
+    def signing_credentials(self):
+        return self._credentials
+
+    def ingest_metrics(self):
+        return {"connection": self._connection_metrics}
+
+
+def test_index_feed_backfill_loop_skips_entirely_without_credentials(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main.index_feed_backfill, "check_and_backfill", lambda *a, **k: calls.append(True))
+    gateway = _FakeIndexGateway(credentials=None)
+
+    _drive(3, lambda: main._index_feed_backfill_loop(gateway), running=True, monkeypatch=monkeypatch)
+
+    assert calls == []
+
+
+def test_index_feed_backfill_loop_calls_check_and_backfill_with_the_gateways_connection_metrics_and_index_ids(monkeypatch):
+    seen = []
+
+    async def fake_check_and_backfill(connection_metrics, fetch_history, index_ids):
+        seen.append((connection_metrics, index_ids))
+        return []
+
+    monkeypatch.setattr(main.index_feed_backfill, "check_and_backfill", fake_check_and_backfill)
+    metrics = {"reconnects": 1, "last_disconnect": {"reason": "x", "at": 1.0}, "last_gap_sec": 2.0}
+    gateway = _FakeIndexGateway(connection_metrics=metrics, index_ids=["BRTI"])
+
+    _drive(1, lambda: main._index_feed_backfill_loop(gateway), running=True, monkeypatch=monkeypatch)
+
+    assert seen == [(metrics, ["BRTI"])]
+
+
+def test_index_feed_backfill_loops_fetch_wrapper_uses_the_gateways_own_credentials_and_base_url(monkeypatch):
+    """The fetch_history callable check_and_backfill receives must reach
+    the real REST layer with THIS gateway's own signing credentials/base
+    URL - not a hardcoded or mismatched one, since index_stream and
+    trade_stream each load their own credentials independently."""
+    captured_fetch = {}
+
+    async def fake_check_and_backfill(connection_metrics, fetch_history, index_ids):
+        captured_fetch["fn"] = fetch_history
+        return []
+
+    fetch_calls = []
+
+    async def fake_fetch_cfbenchmarks_history(index_id, start_ts, end_ts, *, key_id, private_key, base_url):
+        fetch_calls.append({"index_id": index_id, "start_ts": start_ts, "end_ts": end_ts,
+                             "key_id": key_id, "private_key": private_key, "base_url": base_url})
+        return []
+
+    monkeypatch.setattr(main.index_feed_backfill, "check_and_backfill", fake_check_and_backfill)
+    monkeypatch.setattr(main.index_feed_backfill, "fetch_cfbenchmarks_history", fake_fetch_cfbenchmarks_history)
+    gateway = _FakeIndexGateway(credentials=("key-9", "priv-9"), base_url="https://demo.example/trade-api/v2")
+
+    _drive(1, lambda: main._index_feed_backfill_loop(gateway), running=True, monkeypatch=monkeypatch)
+    asyncio.run(captured_fetch["fn"]("BRTI", 10.0, 20.0))
+
+    assert fetch_calls == [{"index_id": "BRTI", "start_ts": 10.0, "end_ts": 20.0,
+                            "key_id": "key-9", "private_key": "priv-9", "base_url": "https://demo.example/trade-api/v2"}]
+
+
+def test_lifespan_starts_the_index_feed_backfill_loop():
+    source = inspect.getsource(main.lifespan)
+    assert "_index_feed_backfill_loop" in source
+    assert "index_feed_backfill_task" in source
+    assert "index_feed_backfill_task.cancel()" in source
+    # Scoped to index_ids (CF Benchmarks), not underlying_tickers (Pyth) -
+    # there is no documented REST passthrough to backfill Pyth from.
+    assert "index_stream.index_ids" in source
+
+
 # --- _settlement_resolver_loop (P4 Tasks 19+24) ----------------------------
 # Mirrors _candidate_retry_loop's shape: own supervised loop, own client per
 # run, idle path is one snapshot() read. No streaming gate on purpose - the

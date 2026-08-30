@@ -26,6 +26,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
+from services.index_feed import backfill as index_feed_backfill
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import store_stats
@@ -407,7 +408,14 @@ async def get_pipeline_health(exact_rows: bool = False):
             # error 25 vs local drops, reconnects. Pure read.
             "queue_health": trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else None,
         },
-        "index_stream": state.get("index_stream_status"),
+        # index_feed's existing "is the stream connected" status, extended
+        # (issue #260) with the reconnect-gap backfill activity for this
+        # same connection - the completeness recovery path for exactly the
+        # gaps index_stream_status alone can't show were ever recovered.
+        "index_stream": {
+            **(state.get("index_stream_status") or {}),
+            "backfill": index_feed_backfill.stats(),
+        },
         # Whale-pipeline stage timers/counters (I2, services/whale_pipeline_
         # perf.py): where a trade message's time goes, and how many messages
         # enter the thread hop versus how many are real candidates.

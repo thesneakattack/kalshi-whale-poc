@@ -41,6 +41,12 @@ CALLER_CLASSES: tuple[str, ...] = (
     "background_catalog",       # catalog scan, event titles, category metadata
     "background_live_status",   # milestones/live data/event live data polling
     "background_resolution",    # signal/outcome resolution, event-schedule resolver
+    "background_index_backfill",  # CF Benchmarks REST passthrough gap-backfill (issue #260) -
+    # rare (only after an index_stream reconnect) but a 5x-cost outlier
+    # (50 tokens/request vs this app's usual 10, docs/kalshi/
+    # rest-passthrough.md's "Rate limit" section) - its own class so that
+    # cost is visible on its own rather than folded into an unrelated
+    # background bucket.
     "other",
 )
 _caller_class_var: contextvars.ContextVar[str] = contextvars.ContextVar("kalshi_rest_caller_class", default="other")

@@ -81,6 +81,11 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     # not a Kalshi-specific operation of its own.
     "force_reconnect": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
     "ensure_consumer_progressing": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
+    # Exposes this connection's already-loaded signing credentials to
+    # services/index_feed/backfill.py (issue #260) - the CF Benchmarks REST
+    # passthrough historical-values call needs the same signed-request auth
+    # as any other Trade API call.
+    "signing_credentials": ("docs/kalshi/api_keys.md", "docs/kalshi/quick_start_authenticated_requests.md"),
 }
 
 _PROD_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -426,6 +431,27 @@ class KalshiStreamGateway:
         if self.key_id or self.private_key_path:
             return {"enabled": False, "error": self._load_error or "incomplete websocket credentials", "ws_url": self.ws_url}
         return {"enabled": False, "error": None, "ws_url": self.ws_url}
+
+    def signing_credentials(self) -> tuple[str, rsa.RSAPrivateKey] | None:
+        """(key_id, private_key) for signing a plain REST request with this
+        connection's already-loaded Kalshi API credentials, or None if they
+        never loaded (see `enabled`/`status`).
+
+        Added for services/index_feed/backfill.py (issue #260): the CF
+        Benchmarks REST passthrough historical-values backfill needs the
+        same signed-request auth as any other Trade API call
+        (docs/kalshi/rest-passthrough.md), and this gateway already parsed
+        and validated the same KALSHI_API_KEY_ID/KALSHI_PRIVATE_KEY_PATH
+        credentials the account uses - reusing them here means backfill
+        never re-reads or re-validates the private key file a second time.
+        Read-only accessor; does not touch connection state."""
+        # Checked directly on _private_key (rather than via `enabled`) so
+        # mypy can narrow it from `RSAPrivateKey | None` to `RSAPrivateKey`
+        # for the return below - narrowing does not cross a property-call
+        # boundary the way it does a plain attribute check.
+        if self._private_key is None or not self.key_id:
+            return None
+        return self.key_id, self._private_key
 
     async def close(self) -> None:
         self._stop = True
