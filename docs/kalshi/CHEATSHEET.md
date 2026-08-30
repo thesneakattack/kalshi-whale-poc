@@ -812,6 +812,33 @@ the first real response is logged in full for a human to check
 own `docs.cfbenchmarks.com/api/rest/historical-values` (not mirrored).
 **Found:** 2026-08-30, issue #260 (index_feed reconnect-gap backfill).
 
+## What do GET /exchange/user_data_timestamp and GET /api_keys return?
+**Answer:** `GetUserDataTimestampResponse` (`get-user-data-timestamp.md`) is
+one required field: `as_of_time`, an RFC3339 date-time string - "an
+approximate indication of when the data reflected in this endpoint is
+likely as of" for GetBalance/GetOrder(s)/GetFills/GetPositions.
+`GetApiKeysResponse` (`get-api-keys.md`) is `api_keys` (required, a list of
+`{api_key_id, name, scopes, subaccount?}`) plus `api_key_region_expiration_ts`
+(optional int64 unix seconds, nullable): "Once this date has passed, API
+keys are not valid for trading Sports, Elections, and Entertainment
+markets... Absent when the account has never attested."
+**Gotcha:** the installed `kalshi_python_async` SDK (3.27.0, confirmed live
+in the fastapi container 2026-08-30) predates
+`api_key_region_expiration_ts` entirely - its `GetApiKeysResponse` Pydantic
+model has no such member, and both `.from_dict()` and `.model_validate()`
+silently drop the key even when the raw HTTP response body carries it
+(confirmed directly: `GetApiKeysResponse.model_validate({"api_keys": [],
+"api_key_region_expiration_ts": 123}).model_dump()` comes back with only
+`api_keys`). Trusting `.model_dump()` here - the pattern every other read
+in `services/kalshi/account.py` uses - would silently drop exactly the
+field issue #261 exists to surface. `KalshiAccountGateway.get_api_keys()`
+calls `get_api_keys_with_http_info` instead of `get_api_keys` and recovers
+the field from `ApiResponse.raw_data` (the real response bytes) rather
+than the parsed model - CLAUDE.md's "no lossy normalization on the way in"
+applied to a vendored-SDK/doc version gap, not a call-site preference.
+**Source:** `get-user-data-timestamp.md`, `get-api-keys.md`.
+**Found:** 2026-08-30, issues #266/#261.
+
 ## How does an event-level fee override interact with the series-level fee table, and what does `quadratic_with_combo_maker_fees` actually change?
 **Answer:** `get-event-fee-changes.md`: "Event fees are an override layered
 on top of the parent series' fee structure. If `fee_type_override` and

@@ -1,0 +1,9 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-user-data-timestamp.md",
+    "note": "GetUserDataTimestampResponse's documented OpenAPI schema: one required field, as_of_time (RFC3339 date-time string) - Kalshi's own approximate indication of when GetBalance/GetOrder(s)/GetFills/GetPositions data was last validated. Confirmed against the installed kalshi_python_async 3.27.0 model directly: GetUserDataTimestampResponse.model_fields == {'as_of_time': datetime, required=True}."
+  },
+  "payload": {
+    "as_of_time": "2026-08-30T12:00:00Z"
+  }
+}
