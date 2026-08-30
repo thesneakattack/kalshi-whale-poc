@@ -35,6 +35,30 @@ auto-mirrored by --write; deliberately mirroring a new page stays a
 separate, deliberate human action (fetch it, commit it, then --write picks
 it up because a local file now exists for that URL).
 
+--fetch (added 2026-08-30, issue #248: before it, kalshi_docs_drift
+--check could *report* 154 content-drifted pages while no tool could
+actually perform the re-sync) fetches every manifest resource's source
+URL and, where the body differs from the on-disk file (line-endings-
+normalized comparison, the same normalization drift's hash uses), writes
+the fetched body VERBATIM to its local_path - fidelity: store exactly
+what Kalshi sent, no normalization on the way in. It refreshes only
+resources already recorded in the manifest (mirroring a *new* page stays
+the deliberate human action above), never touches a curated-summary page
+(see _looks_like_curated_summary - replacing a hand-written distillation
+is a human decision), and never writes the manifest or README - run
+--write afterwards (or in the same invocation: --fetch --write) to
+record the new hashes.
+
+Upstream format note (2026-08-30, Trade API 3.29.0): llms.txt began
+listing its 5 OpenAPI/AsyncAPI spec bullets as site-relative URLs
+(`- [openapi](/openapi.yaml)`) and dropped the `## Docs` heading its
+markdown bullets used to sit under. parse_index resolves relative URLs
+against the docs host at the boundary, because everything downstream
+(check_drift's URL-set diff, _KNOWN_UNSUPPORTED_REASONS,
+local_name_for's host split) keys on absolute URLs - without that,
+--check false-flagged 5 added + 5 removed and --write would have
+reclassified all 5 long-reviewed specs as unreviewed.
+
 Local-name collision resolution (naming-collision requirement from the
 design spec: "naming collisions use deterministic, documented local
 names") is sequential and single-pass, processing index entries in their
@@ -57,12 +81,19 @@ from pathlib import Path
 
 import httpx
 
-from tools.kalshi_docs_drift import _looks_like_curated_summary, _normalized_sha256
+from tools.kalshi_docs_drift import (
+    Fetcher,
+    _http_fetch,
+    _looks_like_curated_summary,
+    _normalize,
+    _normalized_sha256,
+)
 
 _DOCS_ROOT = Path(__file__).resolve().parent.parent / "docs" / "kalshi"
 _DEFAULT_MANIFEST_PATH = _DOCS_ROOT / "upstream-manifest.json"
 _DEFAULT_README_PATH = _DOCS_ROOT / "README.md"
 _INDEX_URL = "https://docs.kalshi.com/llms.txt"
+_DOCS_HOST = "https://docs.kalshi.com"
 
 _SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^- \[([^\]]*)\]\(([^)]+)\)(?::\s*(.*))?$", re.MULTILINE)
@@ -129,9 +160,15 @@ def parse_index(text: str) -> list[dict]:
 
     entries = []
     for m in _BULLET_RE.finditer(text):
+        url = m.group(2)
+        if url.startswith("/"):
+            # Trade API 3.29.0's index lists the spec files site-relative
+            # (see module docstring) - resolve at the boundary so every
+            # consumer keeps keying on one absolute spelling per resource.
+            url = _DOCS_HOST + url
         entries.append({
             "title": m.group(1),
-            "url": m.group(2),
+            "url": url,
             "description": (m.group(3) or "").strip(),
             "section": _section_for(m.start()),
         })
@@ -245,6 +282,43 @@ def sync_manifest(index_entries: list[dict], docs_root: Path, existing_manifest:
     return {"version": 2, "resources": resources, "unsupported": unsupported}
 
 
+def fetch_resources(manifest: dict, docs_root: Path, fetch: Fetcher) -> dict:
+    """Refreshes every manifest resource's local file from its source URL,
+    writing each fetched body verbatim (no normalization - the normalized
+    comparison only decides *whether* a write is needed, matching how
+    kalshi_docs_drift hashes). fetch(url) -> (status_code, body_text),
+    injectable so tests never hit the network. Curated-summary pages are
+    skipped without even fetching (replacing a hand-written distillation
+    is a human decision, see tools/kalshi_docs_drift.py's docstring);
+    llms.txt itself is exempt from that skip - it IS the raw index, and a
+    historic index format began with the literal 'Source: ' marker line
+    (same deliberate _INDEX_URL special-casing check_drift applies). A
+    missing local file is restored from upstream: the manifest entry is
+    the record that the page is deliberately mirrored. Never writes the
+    manifest or README - that stays --write's job."""
+    docs_root = Path(docs_root)
+    report: dict = {"refreshed": [], "unchanged": [], "skipped_curated": [], "unavailable": []}
+    for entry in manifest.get("resources", []):
+        url = entry["source_urls"][0]
+        local_file = docs_root / Path(entry["local_path"]).name
+        on_disk = local_file.read_text(encoding="utf-8") if local_file.exists() else None
+        if url != _INDEX_URL and on_disk is not None and _looks_like_curated_summary(on_disk):
+            report["skipped_curated"].append(entry["local_path"])
+            continue
+        status, body = fetch(url)
+        if status != 200:
+            report["unavailable"].append({"local_path": entry["local_path"], "url": url, "status": status})
+            continue
+        if on_disk is not None and _normalize(on_disk) == _normalize(body):
+            report["unchanged"].append(entry["local_path"])
+            continue
+        with open(local_file, "w", encoding="utf-8", newline="") as f:
+            f.write(body)  # verbatim - newline="" disables any translation
+        report["refreshed"].append(entry["local_path"])
+    report["ok"] = not report["unavailable"]
+    return report
+
+
 def render_readme(manifest: dict) -> str:
     lines = [
         "# Kalshi Docs Snapshot",
@@ -295,6 +369,10 @@ def check_drift(index_entries: list[dict], manifest: dict) -> dict:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m tools.kalshi_docs_sync")
     parser.add_argument("--check", action="store_true", help="fetch llms.txt and report index drift; never writes")
+    parser.add_argument(
+        "--fetch", action="store_true",
+        help="refresh every manifest resource's local file verbatim from its source URL; never writes the manifest",
+    )
     parser.add_argument("--write", action="store_true", help="rebuild the manifest and README from current local files")
     parser.add_argument("--docs-root", type=Path, default=_DOCS_ROOT)
     parser.add_argument("--manifest", type=Path, default=_DEFAULT_MANIFEST_PATH)
@@ -306,13 +384,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    if not args.check and not args.write:
-        print("kalshi-docs-sync: pass --check or --write")
+    if not args.check and not args.fetch and not args.write:
+        print("kalshi-docs-sync: pass --check, --fetch, or --write")
         return 2
 
-    index_entries = parse_index(_fetch_index())
-
     if args.check:
+        index_entries = parse_index(_fetch_index())
         existing = json.loads(args.manifest.read_text(encoding="utf-8"))
         report = check_drift(index_entries, existing)
         print(f"kalshi-docs-sync: {len(report['added'])} added, {len(report['removed'])} removed")
@@ -325,19 +402,39 @@ def main(argv: list[str] | None = None) -> int:
             args.json_out.write_text(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
 
-    existing = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest.exists() else {
-        "version": 2, "resources": [], "unsupported": [],
-    }
-    manifest = sync_manifest(index_entries, args.docs_root, existing)
-    args.manifest.parent.mkdir(parents=True, exist_ok=True)
-    args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    args.readme.parent.mkdir(parents=True, exist_ok=True)
-    args.readme.write_text(render_readme(manifest), encoding="utf-8")
-    print(
-        f"kalshi-docs-sync: wrote {len(manifest['resources'])} resources, "
-        f"{len(manifest['unsupported'])} unsupported to {args.manifest} and {args.readme}"
-    )
-    return 0
+    fetch_ok = True
+    if args.fetch:
+        existing = json.loads(args.manifest.read_text(encoding="utf-8"))
+        report = fetch_resources(existing, args.docs_root, fetch=_http_fetch)
+        print(
+            f"kalshi-docs-sync: fetched {len(report['refreshed'])} refreshed, "
+            f"{len(report['unchanged'])} unchanged, {len(report['skipped_curated'])} curated-skipped, "
+            f"{len(report['unavailable'])} unavailable"
+        )
+        for path in report["refreshed"]:
+            print(f"  [refreshed] {path}")
+        for path in report["skipped_curated"]:
+            print(f"  [curated-skip] {path}")
+        for u in report["unavailable"]:
+            print(f"  [unavailable:{u['status']}] {u['local_path']} <- {u['url']}")
+        fetch_ok = report["ok"]
+
+    if args.write:
+        index_entries = parse_index(_fetch_index())
+        existing = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest.exists() else {
+            "version": 2, "resources": [], "unsupported": [],
+        }
+        manifest = sync_manifest(index_entries, args.docs_root, existing)
+        args.manifest.parent.mkdir(parents=True, exist_ok=True)
+        args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        args.readme.parent.mkdir(parents=True, exist_ok=True)
+        args.readme.write_text(render_readme(manifest), encoding="utf-8")
+        print(
+            f"kalshi-docs-sync: wrote {len(manifest['resources'])} resources, "
+            f"{len(manifest['unsupported'])} unsupported to {args.manifest} and {args.readme}"
+        )
+
+    return 0 if fetch_ok else 1
 
 
 if __name__ == "__main__":
