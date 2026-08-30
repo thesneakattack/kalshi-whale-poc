@@ -162,6 +162,55 @@ FIELDS = [
 
 assert len(FIELDS) == 145, f"expected 145, got {len(FIELDS)}"
 
+# Per-field suggestion overlay (2026-08-29, second revision: "update the
+# report to include all fields and suggestions and why or why not to change
+# them"). Fields not listed here default to "Keep" - the Note column carries
+# the why. APPLIED entries reflect the change-set actually applied via
+# POST /api/config on 2026-08-29 (read-back verified, all 7 fields).
+SUGGESTIONS = {
+    "strategy.max_unit_cost": "APPLIED → 0.85",
+    "strategy.max_open_positions_per_series": "APPLIED → 2",
+    "strategy.excluded_series": "APPLIED → [KXATPMATCH]",
+    "risk.max_total_exposure_pct": "APPLIED → 0.45",
+    "risk.max_daily_loss_pct": "APPLIED → 0.20",
+    "position_netting.min_edge_improvement_usd": "APPLIED → 10",
+    # strategy_overrides gained by_series.KXBTC15M.max_open_positions_per_series: 3 (APPLIED)
+    "strategy_overrides.by_category.Sports.stop_loss_pct": "Keep — plus new by_series.KXBTC15M cap override APPLIED alongside",
+    # --- position_netting, addressed field by field (direct question) ---
+    "position_netting.enabled": "Keep true — the module is the tourniquet, not the wound: every close it made was already a mathematically locked loss before it acted; disabling it would leave that dead capital parked until settlement. With the upstream caps applied, its firing rate is the metric to watch — if it keeps firing, the caps are insufficient, not the module wrong.",
+    "position_netting.min_dwell_sec": "Keep 300 — anti-noise gate mirroring check_exits' opened_since idiom; no evidence it delayed any of the 34 closes (all were locked before dwell could matter).",
+    "position_netting.normal_volatility": "Measure, then fix — NEW finding: baselines the same market_history.volatility() as strategy.auto_exit_normal_volatility yet is set 10× higher (0.02 vs 0.002). At 0.02, typical real vols give vol_ratio ≈ 0.1 → clamped to the 0.25 floor — the bar's volatility scaling has plausibly been PINNED at floor the whole time, never varying. Changing it to 0.002 now would RAISE the effective bar ($2.50 → ~$10) and trim less, so keep until a measured vol distribution says which baseline is right.",
+    "position_netting.volatility_lookback_sec": "Keep 1800 — inert in practice while the clamp is pinned (see normal_volatility); revisit together.",
+    # --- other notable keeps with the why inline ---
+    "whale_confidence_weights.depth_factor": "Keep — despite r=−0.24: calibration targets win-rate, and win-rate ≠ EV (see §12's re-target-on-EV reasoning); re-weighting from these correlations would steer into the thin-edge trap.",
+    "whale_confidence_weights.unusualness_factor": "Keep — same reason; its 'bad' zone (prices near 0.5) is the book's most profitable band.",
+    "whale_confidence_weights.agreement_factor": "Keep — sign flip vs 2026-08-10 unresolved; changing on contested evidence is guessing.",
+    "whale_confidence_weights.trend_factor": "Keep — heaviest weight, strongest positive correlation; working as intended.",
+    "whale_confidence_weights.context_factor": "Keep — aligned.",
+    "whale_confidence_weights.cluster_factor": "Keep — aligned.",
+    "whale_confidence_weights.proximity_factor": "Keep — weak either way, already floor-weighted.",
+    "whale_confidence_weights.analyst_factor": "Keep 0 — zero real values in 88,828 rows; raising it would weight a signal that never fires.",
+    "whale_confidence_weights.block_trade_factor": "Keep 0 — not in the factor breakdown; wiring it is feature work, not tuning.",
+    "strategy.entry_threshold": "Keep 0.55 — higher-confidence entries earned LESS ($5.56 vs $20.92 avg); raising selects worse trades, lowering is unmeasured.",
+    "strategy.min_unit_cost": "Keep 0.5 — lowering admits an unmeasured price zone and silently revives the dead longshot mechanism; that's its own open decision.",
+    "strategy.take_profit_pct": "Keep null — auto_exit (97.3% win, +$5,475) is the working exit manager.",
+    "strategy.stop_loss_pct": "Keep null — a hard stop interacts badly with the known stale-price exit history; the settled-loss tail belongs to the banded-EV entry-side fix.",
+    "strategy.longshot_price_threshold": "Decision open — structurally dead (unreachable behind min_unit_cost); activate deliberately or remove, never leave looking live.",
+    "strategy.longshot_entry_threshold_bonus": "Decision open — same dead mechanism.",
+    "strategy.longshot_close_window_sec": "Decision open — same dead mechanism.",
+    "whale_watcher_kalshi.min_contracts": "Keep 10000 — no sports data below it exists to justify lowering; size bands above show no gain.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXBTC15M": "Keep 2500 — the profit engine's floor.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXBTCD": "Keep 2500 — live and positive.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXETH15M": "Decision open — unreachable dead entry (ETH not in discovery scope): add ETH deliberately or remove the entry.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXETHD": "Decision open — same.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXTRUMPSAY": "Decision open — same (series not in scope).",
+    "whale_watcher_kalshi.min_contracts_by_series.KXTRUMPMENTION": "Decision open — same.",
+    "whale_watcher_kalshi.min_contracts_by_series.KXMAMDANIMENTION": "Decision open — same.",
+    "alerting.webhook_url": "Worth setting — alerts currently reach nobody outside the app; any webhook destination makes the kill switch and crash alerts actually page you.",
+    "confidence_calibration.min_resolved_signals": "Keep 50 — but note 88,828 signals now exist (1,776× the floor); the §10 re-validation is overdue by data volume, not blocked by this setting.",
+}
+DEFAULT_SUGGESTION = "Keep"
+
 CAT_LABEL = {
     "DATA": "Data-checked",
     "VERIFIED": "Source-verified",
@@ -182,23 +231,28 @@ print("Category counts:", counts, "total:", len(FIELDS))
 # ---- HTML ----
 rows_html = []
 for path, val, cat, note in FIELDS:
+    sug = SUGGESTIONS.get(path, DEFAULT_SUGGESTION)
+    sug_cls = "sug-applied" if sug.startswith("APPLIED") else (
+        "sug-open" if sug.startswith(("Decision open", "Measure", "Worth")) else "sug-keep")
     rows_html.append(
         f'<tr><td><code>{html.escape(path)}</code></td>'
         f'<td>{html.escape(str(val))}</td>'
         f'<td><span class="cat-pill {CAT_CLASS[cat]}">{CAT_LABEL[cat]}</span></td>'
+        f'<td class="{sug_cls}">{html.escape(sug)}</td>'
         f'<td>{note}</td></tr>'
     )
 html_table = (
     '<div class="table-scroll">\n<table>\n'
-    '<thead><tr><th>Field</th><th>Value</th><th>Status</th><th>Note</th></tr></thead>\n'
+    '<thead><tr><th>Field</th><th>Value (pre-change)</th><th>Status</th><th>Suggestion</th><th>Why</th></tr></thead>\n'
     '<tbody>\n' + "\n".join(rows_html) + "\n</tbody>\n</table>\n</div>"
 )
 open("/tmp/claude-1000/-home-davidf-code-portfolio-showcase-projects-autotrade/50722d08-68f0-4456-8a63-670318e12c8c/scratchpad/full_table.html", "w").write(html_table)
 
 # ---- Markdown ----
-md_lines = ["| Field | Value | Status | Note |", "|---|---|---|---|"]
+md_lines = ["| Field | Value (pre-change) | Status | Suggestion | Why |", "|---|---|---|---|---|"]
 for path, val, cat, note in FIELDS:
-    md_lines.append(f"| `{path}` | {val} | {CAT_LABEL[cat]} | {note} |")
+    sug = SUGGESTIONS.get(path, DEFAULT_SUGGESTION)
+    md_lines.append(f"| `{path}` | {val} | {CAT_LABEL[cat]} | {sug} | {note} |")
 open("/tmp/claude-1000/-home-davidf-code-portfolio-showcase-projects-autotrade/50722d08-68f0-4456-8a63-670318e12c8c/scratchpad/full_table.md", "w").write("\n".join(md_lines))
 
 print("wrote full_table.html and full_table.md")

@@ -628,3 +628,45 @@ the observed book outside the deliberately-trimmed peak. Net: the same
 book replayed under this config lands roughly +$3,000-3,500 better on
 $5,283 actual - concentrated in loss-avoidance, which is also why it
 can't simply be extrapolated (the avoided losses fund no new wins).
+
+## 13. Change-set APPLIED (2026-08-29) + per-field suggestion column
+
+The §12 change-set was applied on direct request via `POST /api/config`
+(the same surfaced-then-approved path as `two_consumer_mode`): all 7
+fields read-back verified, `strategy_overrides.by_category.Sports`
+survived the nested-merge footgun (checked explicitly), config persisted
+to `config/settings.yaml` on disk, app running, kill switch not tripped,
+`dropped_window` 0 after apply. The pre-apply settings.yaml state is
+recoverable from this doc's own tables and the config change-history log
+(`config_performance.log_applied_change` recorded each field).
+
+The generator now emits a per-field **Suggestion** column across all 145
+fields (applied / keep-with-reason / decision-open), rendered in the
+artifact's full table. Every `position_netting` field carries an explicit
+verdict, answering "why no change suggestions to netting" directly: its
+binding lever (min_edge $50→$10) and both upstream root-cause caps WERE
+the netting changes; `enabled` stays true because the module is the
+tourniquet, not the wound.
+
+**New finding from that per-field pass:**
+`position_netting.normal_volatility` (0.02) baselines the same
+`market_history.volatility()` measure as
+`strategy.auto_exit_normal_volatility` (0.002) at 10× the value. At 0.02,
+typical real vols (~0.002 scale, per auto_exit's own tuning history) give
+`vol_ratio ≈ 0.1`, clamped to the 0.25 floor
+(`position_netting.py:250`) — the netting bar's volatility scaling has
+plausibly been pinned at its clamp floor the entire time, never actually
+varying. Deliberately NOT changed with the rest: moving it to 0.002 now
+would raise the effective bar (~$2.50 → ~$10) and trim less — the
+opposite of the applied direction. The right fix is measuring the real
+volatility distribution first, then aligning both baselines to it.
+
+Post-apply watch items (next session, or after a day of trades):
+1. `position_netting` firing rate — if locked_loss closes keep appearing
+   at the same rate under the caps, the caps are insufficient.
+2. Entry-rate drop — the series caps + exposure cap deliberately trim the
+   most concentrated moments; confirm crypto volume is NOT reduced
+   (KXBTC15M's override matches its historical peak exactly, so any
+   reduction there means an unmodeled interaction).
+3. First trades above unit_cost 0.85 rejected — confirm via
+   candidate_log's max_unit_cost gate counter.
