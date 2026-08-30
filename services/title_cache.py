@@ -241,3 +241,28 @@ def save_event_titles(entries: dict[str, dict]) -> None:
                 for event_ticker, v in entries.items()
             ],
         )
+
+
+def fee_override_for_ticker(ticker: str) -> tuple[str | None, float | None]:
+    """(fee_type_override, fee_multiplier_override) for the event `ticker`'s
+    market belongs to (market_titles.event_ticker -> the matching
+    event_titles row) - a single indexed join, not the full-table
+    load_market_titles()/load_event_titles() scans above, since
+    services/kalshi_fees.py calls this on every fee calculation (issues
+    #264/#258) rather than once at startup.
+
+    (None, None) when the market isn't cached yet, its event isn't cached
+    yet, or the event carries no active override in either column -
+    docs/kalshi/get-event-fee-changes.md: "If fee_type_override and
+    fee_multiplier_override are null, that indicates the override is
+    cleared." Callers fall back to the series-level fee table in that
+    case, exactly as if this function didn't exist - never to a guessed
+    value."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT et.fee_type_override, et.fee_multiplier_override "
+            "FROM market_titles mt JOIN event_titles et ON et.event_ticker = mt.event_ticker "
+            "WHERE mt.ticker = ?",
+            (ticker,),
+        ).fetchone()
+    return (row[0], row[1]) if row else (None, None)

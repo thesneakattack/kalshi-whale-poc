@@ -25,16 +25,18 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver
+from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
+from services.index_feed import backfill as index_feed_backfill
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import store_stats
 from services.diagnostics import trade_capture_reconciliation
-from services.app_state import state, trade_stream, whale_provider
+from services.app_state import account, state, trade_stream, whale_provider
 from services import whale_pipeline_perf
 from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
 from services.config.config_store import config_store
+from services.kalshi.account import classify_api_key_attestation, user_data_age_sec
 from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
@@ -104,6 +106,83 @@ async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float 
         )
     finally:
         await client.close()
+
+
+@router.get("/api/diagnostics/account")
+@http_client.classify("interactive")
+async def get_account_diagnostics():
+    """Two Kalshi account reads with no existing caller anywhere in
+    services/ before this route (grepped, confirmed 2026-08-30) - the
+    exchange's own staleness signal (issue #266, GET /exchange/
+    user_data_timestamp) and API-key location-attestation status (issue
+    #261, GET /api_keys' api_key_region_expiration_ts).
+
+    Deliberately its own route, not folded into /api/health/pipeline or
+    /api/quality/summary: both stay network-I/O-free by design today
+    (services/quality/routes.py's own module docstring, proven by
+    tests/test_quality_routes.py monkeypatching KalshiClient construction
+    to raise) and /api/health/pipeline just had a 504 traced to unmeasured
+    per-request cost (issue #210) - the established pattern for "a
+    diagnostic that needs a real Kalshi call" is already this file's own
+    /api/diagnostics/coverage and /api/diagnostics/trade-capture: a
+    separate, on-demand route, never an inline addition to either
+    always-safe set. Both reads are single-token authenticated GETs (not
+    exchange-wide), through the same account gateway/limiter every other
+    account read already uses.
+
+    pipeline_oldest_message_age_sec rides along so issue #266's actual ask
+    - comparing the exchange's own reporting lag against this app's own
+    ingest-pipeline staleness - is answerable from one response, without
+    the two numbers ever merging into one (CLAUDE.md: "meant to be
+    compared, not merged"). Each of the two live calls degrades to an
+    explicit error rather than a fabricated value if the account isn't
+    configured or the call fails - same ethos as every other source in
+    this router."""
+    now = time.time()
+    ingest = trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else {}
+    pipeline_oldest_message_age_sec = (ingest.get("queue") or {}).get("oldest_message_age_sec")
+
+    if not account.enabled:
+        return {
+            "generated_at": now,
+            "configured": False,
+            "user_data_timestamp": None,
+            "api_key_attestation": None,
+            "pipeline_oldest_message_age_sec": pipeline_oldest_message_age_sec,
+        }
+
+    async def _timestamp() -> dict:
+        try:
+            payload = await account.get_user_data_timestamp()
+        except Exception as exc:
+            from services import fault_log
+            fault_log.record("kalshi_account", "get_user_data_timestamp", exc)
+            return {"error": str(exc)}
+        return {
+            "as_of_time": payload.get("as_of_time"),
+            "as_of_age_sec": user_data_age_sec(payload, now=now),
+        }
+
+    async def _attestation() -> dict:
+        try:
+            payload = await account.get_api_keys()
+        except Exception as exc:
+            from services import fault_log
+            fault_log.record("kalshi_account", "get_api_keys", exc)
+            return {"error": str(exc)}
+        return {
+            **classify_api_key_attestation(payload, now=now),
+            "api_key_count": len(payload.get("api_keys") or []),
+        }
+
+    ts_result, attestation_result = await asyncio.gather(_timestamp(), _attestation())
+    return {
+        "generated_at": now,
+        "configured": True,
+        "user_data_timestamp": ts_result,
+        "api_key_attestation": attestation_result,
+        "pipeline_oldest_message_age_sec": pipeline_oldest_message_age_sec,
+    }
 
 
 @router.get("/api/diagnostics/series/{series}")
@@ -181,6 +260,10 @@ def _scheduler_status(now: float) -> dict:
         "research": {"last_started_sec_ago": None, "busy": bool((state.get("research") or {}).get("running"))},
         "event_schedule": _entry("event_schedule_scan", "last_started_at", "running"),
         "catalog_scan": _entry("catalog_scan", "last_started_at", "scanning"),
+        # Multivariate (combo) event discovery (issue #268) - independent
+        # scheduler from catalog_scan above, see services/market_watch/
+        # mve_scan.py's own docstring for why.
+        "mve_scan": _entry("mve_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         # The resolver's own counters ride along (pending backlog, lifetime
         # enqueued/resolved/dropped). `dropped_after_max_attempts` growth is
@@ -325,11 +408,27 @@ async def get_pipeline_health(exact_rows: bool = False):
             # error 25 vs local drops, reconnects. Pure read.
             "queue_health": trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else None,
         },
-        "index_stream": state.get("index_stream_status"),
+        # index_feed's existing "is the stream connected" status, extended
+        # (issue #260) with the reconnect-gap backfill activity for this
+        # same connection - the completeness recovery path for exactly the
+        # gaps index_stream_status alone can't show were ever recovered.
+        "index_stream": {
+            **(state.get("index_stream_status") or {}),
+            "backfill": index_feed_backfill.stats(),
+        },
         # Whale-pipeline stage timers/counters (I2, services/whale_pipeline_
         # perf.py): where a trade message's time goes, and how many messages
         # enter the thread hop versus how many are real candidates.
         "whale_pipeline": whale_pipeline_perf.perf.snapshot(),
+        # Entry-gate lookup gaps that used to be silent (issue #267):
+        # me_gate_unknown_total is a lifetime, monotone count of every
+        # signal whose special-market conservative gate could not verify
+        # the mutually_exclusive flag (no market_titles/event_titles entry,
+        # or a genuine exception) - see services/strategy_engine.py's
+        # _me_gate_stats docstring. Zero here is meaningful only alongside
+        # markets_watched/candidates actually flowing; it does not mean
+        # "the gate is being checked and always finds it False."
+        "strategy_gates": strategy_engine.me_gate_stats(),
         # REST latency decomposition by caller class + token-bucket waiter
         # gauges (I5, services/http_client.py's rest_latency_snapshot):
         # limiter wait vs network vs backoff, so a slow call is attributable.

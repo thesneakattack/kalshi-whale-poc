@@ -166,3 +166,23 @@ no ask untouched so `check_pending_fills`' "absent means no fresh ask" contract
 holds. `/api/health/pipeline` exposes `price_staleness` (per-open-position stamp
 ages) - live on shipping: 9/9 positions stamped, oldest 19.5s, 0 over 300s, where
 before this the never-WS-seen positions had no bound at all.
+
+## Multivariate (combo) event discovery (mve_scan.py, issue #268, 2026-08-30)
+
+New sibling module, not an extension of `catalog_scan.py`'s regular
+per-series scan: `catalog_scan._get_series_cache` filters `get_series_list()`
+to `volume_fp > 0` before any category logic runs, and every real MVE
+series (`KXMVECROSSCATEGORY`/`-SHARD1` and 14 others, confirmed live)
+reports `volume_fp: "0.00"` on its own `/series` entry regardless of real
+trading activity on its dynamically-created markets - that single filter
+silently excluded every MVE series from the regular scan no matter which
+`kalshi.categories` were configured. Full root-cause detail, live-verified
+endpoint shape, and the base-ticker-vs-`-SHARDn` gotcha:
+`docs/kalshi/CHEATSHEET.md`'s "How do you actually discover multivariate
+(combo) markets" entry (2026-08-30). Writes to `market_catalog.db` via
+`market_catalog.upsert_mve_markets` (a `close_ts`-anchored sibling of
+`upsert_markets`, since MVE markets never carry `occurrence_datetime`) and
+to `title_cache`'s `market_titles`/`event_titles` the same way
+`event_metadata._fetch_event_titles` does for regular events - runs on its
+own scheduler trigger (`main._SCHEDULER_TRIGGERS`'s `mve_scan` entry),
+independent of `catalog_scan`.

@@ -42,9 +42,15 @@ from pathlib import Path
 import pytest
 
 import main  # noqa: E402
+from services.kalshi.account import (  # noqa: E402
+    KalshiAccountGateway,
+    classify_api_key_attestation,
+    user_data_age_sec,
+)
 from services.kalshi.account_client import KalshiAccountClient  # noqa: E402
 from services.kalshi.websocket import KalshiStreamGateway  # noqa: E402
 from services.market_watch import _MARKET_FIELDS  # noqa: E402
+from services.market_watch import mve_scan  # noqa: E402
 from services.whalewatchers.kalshi_trade_tape import _notional_usd, _taker_side  # noqa: E402
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "kalshi"
@@ -317,6 +323,33 @@ def test_fetch_event_titles_reads_sub_title_not_subtitle():
     assert result[event["event_ticker"]]["mutually_exclusive"] is True
 
 
+# --- multivariate (combo) event REST object: services/market_watch/
+# mve_scan.py (issue #268) - the ONLY place a combo's own title/sub_title/
+# mutually_exclusive comes from, since plain get_events "excludes
+# multivariate events" per its own doc (docs/kalshi/get-events.md).
+
+def test_event_title_fields_reads_the_documented_multivariate_event_fields():
+    event = _payload("multivariate_event.json")
+    result = mve_scan._event_title_fields(event)
+    assert result["sub_title"] == "MVE"
+    assert result["mutually_exclusive"] is False
+    assert result["series_ticker"] == "KXMVECROSSCATEGORY-SHARD1"
+    assert result["category"] == "Exotics"
+
+
+def test_market_rows_from_event_tags_each_market_with_the_parent_events_series_and_category():
+    # The Market schema itself carries neither series_ticker nor category
+    # (confirmed against docs/kalshi/get-multivariate-events.md's own
+    # Market schema and a live response) - only the parent EventData does.
+    event = _payload("multivariate_event.json")
+    rows = mve_scan._market_rows_from_event(event)
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "KXMVECROSSCATEGORY-SHARD1-S2026FF7C4259D33-71884BBDB4F"
+    assert rows[0]["series_ticker"] == "KXMVECROSSCATEGORY-SHARD1"
+    assert rows[0]["category"] == "Exotics"
+    assert rows[0]["occurrence_datetime"] is None  # never populated for a combo market
+
+
 # --- create/cancel order: services/kalshi_account_client.py -----------------
 # Lean - tests/test_kalshi_account_client.py already has exhaustive
 # coverage (test_create_order_uses_v2_shape/test_cancel_order_uses_v2_shape).
@@ -372,6 +405,130 @@ def test_cancel_order_returns_the_documented_v2_response_shape():
 
     assert result == response
     assert set(result.keys()) == {"order_id", "client_order_id", "reduced_by", "ts_ms"}
+
+
+# --- I8/issue #266+#261: exchange-side staleness + API-key attestation -----
+
+
+class _FakeUserDataTimestampSDKClient:
+    def __init__(self, response: dict):
+        self.calls = []
+        self._response = response
+
+    async def get_user_data_timestamp(self, **kwargs):
+        self.calls.append(("get_user_data_timestamp", kwargs))
+        return _FakeResp(self._response)
+
+
+class _FakeApiKeysHttpInfo:
+    """Mirrors kalshi_python_async's real ApiResponse shape for
+    get_api_keys_with_http_info: .data is the (lossy) parsed model, .raw_data
+    is the real response bytes. Built from two separately-controllable
+    dicts so tests can prove the recovery path actually reads raw_data
+    rather than trivially already having the field on .data."""
+
+    def __init__(self, model_payload: dict, raw_payload: dict):
+        self.data = _FakeResp(model_payload)
+        self.raw_data = json.dumps(raw_payload).encode("utf-8")
+
+
+class _FakeApiKeysSDKClient:
+    def __init__(self, model_payload: dict, raw_payload: dict):
+        self.calls = []
+        self._http_info = _FakeApiKeysHttpInfo(model_payload, raw_payload)
+
+    async def get_api_keys_with_http_info(self, **kwargs):
+        self.calls.append(("get_api_keys_with_http_info", kwargs))
+        return self._http_info
+
+
+def test_get_user_data_timestamp_returns_the_documented_shape():
+    fixture = _payload("user_data_timestamp.json")
+    fake = _FakeUserDataTimestampSDKClient(fixture)
+    gateway = KalshiAccountGateway(fake)
+
+    result = asyncio.run(gateway.get_user_data_timestamp())
+
+    assert result == fixture
+    assert set(result.keys()) == {"as_of_time"}
+
+
+def test_get_api_keys_recovers_the_field_the_vendored_sdk_model_drops():
+    """The regression this whole feature is about: the installed
+    kalshi_python_async 3.27.0 GetApiKeysResponse model has no
+    api_key_region_expiration_ts field and silently drops it on parse
+    (confirmed directly against the real installed SDK, 2026-08-30) - so
+    .data (the parsed model) here deliberately does NOT carry the field,
+    only .raw_data does, proving get_api_keys() reads the raw body rather
+    than trusting the model."""
+    fixture = _payload("api_keys_attested.json")
+    model_only = {"api_keys": fixture["api_keys"]}  # what the real SDK model actually keeps
+    fake = _FakeApiKeysSDKClient(model_payload=model_only, raw_payload=fixture)
+    gateway = KalshiAccountGateway(fake)
+
+    result = asyncio.run(gateway.get_api_keys())
+
+    assert result["api_key_region_expiration_ts"] == fixture["api_key_region_expiration_ts"]
+    assert result["api_keys"] == fixture["api_keys"]
+    assert fake.calls == [("get_api_keys_with_http_info", {})]
+
+
+def test_get_api_keys_never_attested_has_no_expiration_field():
+    """Absent is a documented, valid state (\"Absent when the account has
+    never attested\") - the response must not fabricate a null/zero in its
+    place."""
+    fixture = _payload("api_keys_never_attested.json")
+    fake = _FakeApiKeysSDKClient(model_payload=fixture, raw_payload=fixture)
+    gateway = KalshiAccountGateway(fake)
+
+    result = asyncio.run(gateway.get_api_keys())
+
+    assert "api_key_region_expiration_ts" not in result
+    assert result["api_keys"] == fixture["api_keys"]
+
+
+def test_classify_api_key_attestation_never_attested_when_field_is_absent():
+    payload = _payload("api_keys_never_attested.json")
+
+    status = classify_api_key_attestation(payload, now=1_000_000_000.0)
+
+    assert status == {"status": "never_attested", "region_expiration_ts": None, "seconds_until_expiration": None}
+
+
+def test_classify_api_key_attestation_active_when_expiration_is_in_the_future():
+    payload = _payload("api_keys_attested.json")
+    ts = payload["api_key_region_expiration_ts"]
+
+    status = classify_api_key_attestation(payload, now=ts - 3600.0)
+
+    assert status["status"] == "active"
+    assert status["region_expiration_ts"] == ts
+    assert status["seconds_until_expiration"] == pytest.approx(3600.0)
+
+
+def test_classify_api_key_attestation_lapsed_when_expiration_has_passed():
+    payload = _payload("api_keys_lapsed.json")
+    ts = payload["api_key_region_expiration_ts"]
+
+    status = classify_api_key_attestation(payload, now=ts + 3600.0)
+
+    assert status["status"] == "lapsed"
+    assert status["seconds_until_expiration"] == pytest.approx(-3600.0)
+
+
+def test_user_data_age_sec_computes_age_from_as_of_time():
+    fixture = _payload("user_data_timestamp.json")
+    from datetime import datetime
+
+    as_of_epoch = datetime.fromisoformat(fixture["as_of_time"]).timestamp()
+
+    age = user_data_age_sec(fixture, now=as_of_epoch + 5.0)
+
+    assert age == pytest.approx(5.0)
+
+
+def test_user_data_age_sec_returns_none_rather_than_guessing_when_as_of_time_is_missing():
+    assert user_data_age_sec({}, now=1_000_000_000.0) is None
 
 
 # --- meta: every fixture actually has a source_doc pointer -----------------

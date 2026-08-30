@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-api-keys.md",
+    "note": "GetApiKeysResponse for an account that has never attested a location: api_key_region_expiration_ts is entirely absent from the response body, the documented state (\"Absent when the account has never attested\") rather than null/zero. Only api_keys is a required field on this schema."
+  },
+  "payload": {
+    "api_keys": [
+      {
+        "api_key_id": "0f2b9a71-1c3e-4a5d-9f2c-6b7d8e9f0a1b",
+        "name": "kalshi-whale-poc",
+        "scopes": ["read"]
+      }
+    ]
+  }
+}

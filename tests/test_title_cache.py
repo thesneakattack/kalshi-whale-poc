@@ -146,6 +146,48 @@ def test_event_titles_new_fields_default_sensibly_when_unset(tmp_path, monkeypat
     assert result["settlement_sources"] == []
 
 
+# --- fee_override_for_ticker() - the ticker -> event fee-override join ----
+# (issues #264/#258: services/kalshi_fees.py never read fee_type_override/
+# fee_multiplier_override back out of this table before this - this is the
+# single indexed lookup it now calls instead of the two full-table scans
+# above.)
+
+
+def test_fee_override_for_ticker_joins_market_to_its_event_override(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({
+        "KXNFLGAME-26AUG15MINNYG-MIN": {"title": "Vikings win", "yes_sub_title": None, "no_sub_title": None, "event_ticker": "KXNFLGAME-26AUG15MINNYG"},
+    })
+    cache.save_event_titles({
+        "KXNFLGAME-26AUG15MINNYG": {"title": "Vikings vs Giants", "sub_title": None, "category": "Sports",
+                                     "fee_type_override": "quadratic_with_combo_maker_fees", "fee_multiplier_override": 0.5},
+    })
+    assert cache.fee_override_for_ticker("KXNFLGAME-26AUG15MINNYG-MIN") == ("quadratic_with_combo_maker_fees", 0.5)
+
+
+def test_fee_override_for_ticker_is_none_none_when_market_not_cached(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    assert cache.fee_override_for_ticker("NOT-CACHED-TICKER") == (None, None)
+
+
+def test_fee_override_for_ticker_is_none_none_when_event_carries_no_override(tmp_path, monkeypatch):
+    # docs/kalshi/get-event-fee-changes.md: null in both columns means "the
+    # override is cleared" - the overwhelming common case, every event that
+    # has never had a scheduled fee change.
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({"TICK-A": {"title": "T", "yes_sub_title": None, "no_sub_title": None, "event_ticker": "EVT-A"}})
+    cache.save_event_titles({"EVT-A": {"title": "Event A", "sub_title": None, "category": None}})
+    assert cache.fee_override_for_ticker("TICK-A") == (None, None)
+
+
+def test_fee_override_for_ticker_is_none_none_when_market_cached_but_event_is_not(tmp_path, monkeypatch):
+    # A market can be cached (title_cache saw its market row) before its
+    # event's row has ever been fetched/saved - the join must not raise.
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({"TICK-B": {"title": "T", "yes_sub_title": None, "no_sub_title": None, "event_ticker": "EVT-NEVER-SAVED"}})
+    assert cache.fee_override_for_ticker("TICK-B") == (None, None)
+
+
 def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, monkeypatch):
     # data/title_cache.db is a live file (CLAUDE.md) - simulates an
     # existing table from before this column existed, confirming the

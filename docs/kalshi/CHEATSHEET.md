@@ -773,3 +773,210 @@ on now.
 **Source:** `create-order-v2.md:215-216`, `cancel-order-v2.md:10,79-90`,
 `get-order.md:10`, `exchange_sharding.md:60-62,88,91`.
 **Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
+
+## How do you actually discover multivariate (combo) markets, and why did the categories widening not fix KXMVECROSSCATEGORY?
+**Answer:** Two distinct endpoints, neither reachable through the regular
+series/market browsing this app already uses. `GET
+/multivariate_event_collections` (`get-multivariate-event-collections.md`)
+returns the static *template* a combo is generated from
+(`collection_ticker`, `series_ticker`, `associated_events`, `is_ordered`,
+`size_min`/`size_max`) — filterable by `status`/`series_ticker`/
+`associated_event_ticker`, paginated. `GET /events/multivariate`
+(`get-multivariate-events.md`) returns the dynamically-created *instances*
+that actually trade — filterable by `series_ticker` XOR
+`collection_ticker` (mutually exclusive per the doc), with
+`with_nested_markets=true` embedding each event's own `Market` objects in
+one call. `GET /markets` also has an `mve_filter` param (`only`/`exclude`)
+that includes/excludes combos, but plain `GET /events` explicitly
+"excludes multivariate events" — a combo's own `title`/`sub_title`/
+`mutually_exclusive` is ONLY ever available from `/events/multivariate`.
+**Root cause (live-verified 2026-08-30, not assumed):** every
+multivariate-producing series reports `volume_fp: "0.00"` on its own
+`/series` (`get-series-list.md`) entry — confirmed on all 16 real series
+sampled, `KXMVECROSSCATEGORY`/`KXMVECROSSCATEGORY-SHARD1` included — even
+while its dynamically-created markets carry real trading activity. This
+app's `_get_series_cache` (`services/market_watch/catalog_scan.py`)
+filters `get_series_list()` down to `volume_fp > 0` before any category
+logic ever runs, so an MVE series is silently excluded regardless of which
+categories are configured. The 2026-08-30 `kalshi.categories` widening
+(`docs/open-decisions.md`) could not have fixed this no matter which
+categories it added — the series never reaches the category bucket at
+all.
+**Gotcha 1 (occurrence_datetime):** a multivariate market's own
+`occurrence_datetime` is **always** null — 2,000+ real
+`KXMVECROSSCATEGORY-SHARD1` markets sampled via `with_nested_markets=true`,
+zero exceptions. A combo has no single "occurrence" moment by
+construction (its legs can span unrelated events/times). `close_time` is
+always populated and is the right near-term-horizon anchor instead (same
+"close_time is the one signal every market shape agrees means trading has
+stopped" reasoning already used for `KXBTC15M`'s own
+occurrence/close mismatch).
+**Gotcha 2 (no recency/status filter, and shards):** `/events/multivariate`
+has no timestamp or status query param at all (only
+`limit`/`cursor`/`series_ticker`/`collection_ticker`/
+`with_nested_markets`), and its pagination order is not simply
+chronological or status-correlated. The **base** (unsharded) series
+ticker `KXMVECROSSCATEGORY` was 100% `finalized` across 2,000 sampled
+events with zero `occurrence_ts`/active rows, while its sharded sibling
+`KXMVECROSSCATEGORY-SHARD1` (also a real, distinct `/series` entry) was
+1,818/2,000 `active` on page 1 of the identical query — Kalshi appears to
+retire a base series ticker once cardinality grows and route new combos to
+a `-SHARDn` sibling, with no documented signal saying which is "current."
+`get_markets(status="open", mve_filter="only", series_ticker=X)` looked
+promising (regular `get_markets` already supports real status filtering)
+but returned `status: "closed"` rows for the base ticker despite the
+explicit `status="open"` filter — the filter IS honored correctly for
+`-SHARD1` (`status: "active"` rows with real near-future `close_time`),
+so this is the base ticker's own history being mixed in, not a broken
+filter.
+**Gotcha 3 (series discovery heuristics don't work):** `get_series_list()`
+ticker-naming (`"MVE" in ticker`) or category (`category == "Exotics"`)
+heuristics silently **miss real cases** — `KXCITIESWEATHER` appeared as a
+real collection's `series_ticker` (confirmed live) with neither an
+"MVE"-shaped name nor category `"Exotics"`. `get_multivariate_event_collections`
+(no filter, ~1,389 rows / 7 pages at the documented 200-row max) is the
+only reliable discovery source for "which series currently produce MVE
+events."
+**Gotcha 4 (always-empty/placeholder fields):** on every real multivariate
+event sampled, `sub_title` is the literal string `"MVE"` (not a real
+subtitle), `collateral_return_type` is `""` (empty string, not the
+populated value a regular event carries), `product_metadata` is `null`,
+and `last_updated_ts` is `"0001-01-01T00:00:00Z"` (Go's zero-value
+timestamp, not a real update time). None of these are fixture/mirror
+gaps — confirmed directly against live production responses.
+**Fix:** `services/market_watch/mve_scan.py` (issue #268) — its own
+discovery path, independent of `kalshi.categories`, using
+`get_multivariate_event_collections` (TTL-cached) to find MVE series and
+`get_multivariate_events(series_ticker=X, with_nested_markets=True)` (one
+page per series per cycle) to populate both `market_catalog.db`
+(`market_catalog.upsert_mve_markets`, anchored on `close_ts`) and
+`title_cache`'s `market_titles`/`event_titles`.
+**Source:** `get-multivariate-events.md`, `get-multivariate-event-collections.md`,
+`get-markets.md` (`MveFilterQuery`), `get-events.md` ("excludes
+multivariate events"), `get-series-list.md`; live-verified 2026-08-30
+directly against `https://external-api.kalshi.com/trade-api/v2` (public,
+unauthenticated GET endpoints).
+**Found:** 2026-08-30, issue #268 (KXMVECROSSCATEGORY: 13,841 of 95,535
+logged signals, 14.5%, with zero rows in `market_catalog.db`).
+
+## How does the CF Benchmarks REST passthrough's history endpoint actually work, and what does it cost?
+**Answer:** `GET /trade-api/v2/cfbenchmarks/history/values?id=<index>&
+timespan=<span>&timestamp=<ISO8601>` forwards verbatim (query string
+included) to CF Benchmarks' own `/api/v1/history/values`
+(`rest-passthrough.md`). It is a **bucketed lookup, not an arbitrary
+[start, end) range query**: CF Benchmarks' own docs (docs.cfbenchmarks.com/
+api/rest/historical-values - NOT mirrored under `docs/kalshi/`, fetched
+live 2026-08-30 since the mirror explicitly defers index/parameter detail
+to it) state "the timestamp must be truncated to the timespan granularity"
+- `timespan=HOUR` fetches the whole UTC hour containing `timestamp`, so a
+gap spanning an hour boundary needs one request per hour touched, filtered
+client-side to the actual window afterward (`services/index_feed/
+backfill.py`'s `_hour_bucket_starts`/window filter). Cost: 50 tokens/
+request from the Read bucket vs this app's usual default 10
+(`rest-passthrough.md`'s "Rate limit" section) - a real 5x outlier, worth
+its own caller class if measuring where read-bucket budget goes.
+**Gotcha:** "the most recent values may not be immediately available, and
+could be delayed by up to 15 minutes" (CF Benchmarks docs, same fetch) - a
+backfill that runs seconds after a WS reconnect can legitimately get back
+fewer points than the gap actually contains, with no error to signal it.
+Also requires "authorization for both the target index and the
+STREAM_HISTORICAL_VALUES data stream" - the same account entitlement gate
+`rest-passthrough.md`'s own "Access" section names generically
+("available only to accounts with the appropriate entitlement"); this
+repo's own credentials have not been confirmed to hold it.
+**Also unresolved:** the history endpoint's response *body* schema inside
+`data.payload` was not retrievable through available fetch tooling (only
+the generic envelope example and the *live* WS frame shape are confirmed -
+`cfbenchmarks-value.md`'s AsyncAPI example: `{"type":"value","id":"BRTI",
+"time":<ms>,"value":"<str>"}`). Treated as UNVERIFIED, not guessed: parsing
+is defensive (several plausible payload shapes, a point with no derivable
+timestamp is dropped and logged rather than stored under a wrong time) and
+the first real response is logged in full for a human to check
+(`services/kalshi/websocket.py`'s own `_logged_fill_shape` idiom).
+**Source:** `rest-passthrough.md`, `cfbenchmarks-value.md`; CF Benchmarks'
+own `docs.cfbenchmarks.com/api/rest/historical-values` (not mirrored).
+**Found:** 2026-08-30, issue #260 (index_feed reconnect-gap backfill).
+
+## What do GET /exchange/user_data_timestamp and GET /api_keys return?
+**Answer:** `GetUserDataTimestampResponse` (`get-user-data-timestamp.md`) is
+one required field: `as_of_time`, an RFC3339 date-time string - "an
+approximate indication of when the data reflected in this endpoint is
+likely as of" for GetBalance/GetOrder(s)/GetFills/GetPositions.
+`GetApiKeysResponse` (`get-api-keys.md`) is `api_keys` (required, a list of
+`{api_key_id, name, scopes, subaccount?}`) plus `api_key_region_expiration_ts`
+(optional int64 unix seconds, nullable): "Once this date has passed, API
+keys are not valid for trading Sports, Elections, and Entertainment
+markets... Absent when the account has never attested."
+**Gotcha:** the installed `kalshi_python_async` SDK (3.27.0, confirmed live
+in the fastapi container 2026-08-30) predates
+`api_key_region_expiration_ts` entirely - its `GetApiKeysResponse` Pydantic
+model has no such member, and both `.from_dict()` and `.model_validate()`
+silently drop the key even when the raw HTTP response body carries it
+(confirmed directly: `GetApiKeysResponse.model_validate({"api_keys": [],
+"api_key_region_expiration_ts": 123}).model_dump()` comes back with only
+`api_keys`). Trusting `.model_dump()` here - the pattern every other read
+in `services/kalshi/account.py` uses - would silently drop exactly the
+field issue #261 exists to surface. `KalshiAccountGateway.get_api_keys()`
+calls `get_api_keys_with_http_info` instead of `get_api_keys` and recovers
+the field from `ApiResponse.raw_data` (the real response bytes) rather
+than the parsed model - CLAUDE.md's "no lossy normalization on the way in"
+applied to a vendored-SDK/doc version gap, not a call-site preference.
+**Source:** `get-user-data-timestamp.md`, `get-api-keys.md`.
+**Found:** 2026-08-30, issues #266/#261.
+
+## How does an event-level fee override interact with the series-level fee table, and what does `quadratic_with_combo_maker_fees` actually change?
+**Answer:** `get-event-fee-changes.md`: "Event fees are an override layered
+on top of the parent series' fee structure. If `fee_type_override` and
+`fee_multiplier_override` are null, that indicates the override is
+cleared" — each of the two columns falls back to the series' own value
+**independently** (an event can override just the multiplier, just the
+type, both, or neither). `get-series-list.md`'s `FeeType` schema:
+`quadratic`/`quadratic_with_maker_fees`/`quadratic_with_combo_maker_fees`
+all reference the *same* General Trading Fees Table for the taker rate —
+only `quadratic_with_combo_maker_fees` changes anything, and only the
+maker multiplier (0.5 instead of the standard 0.25). Corroborated
+independently by `changelog-index.md`'s 2026-08-22 "Combo RFQ fee
+assignment for briefly resting orders" entry: "The maker fee uses a fee
+multiplier of `0.5`, rather than the standard `0.25`" for a combo quote
+crossing a resting order under five seconds old — background on *why*
+Kalshi assigns this fee_type, not a different rule; the schema's own
+description is the persistent per-market contract this app can actually
+read. `flat` (the fourth enum value) is unmodeled anywhere in this app —
+no cached market/event has ever resolved to it, and its formula ("Specific
+Trading Fees Table") isn't documented in a page this repo mirrors.
+**Gotcha:** `services/kalshi_fees.py` never read `fee_type` or either
+override column at all before issue #264 — every fee went through
+`_multiplier(ticker)`, a per-SERIES lookup only, even though
+`services/title_cache.py` had already been persisting both override
+columns (from every `get_event()` fetch) since 2026-08-15. Fixed by
+`title_cache.fee_override_for_ticker()` (a single indexed
+market_titles->event_titles join) feeding `kalshi_fees._event_fee_override()`.
+**Source:** `get-event-fee-changes.md`, `get-series-list.md`'s `FeeType`
+schema, `changelog-index.md` (2026-08-22 entry).
+**Found:** 2026-08-30, issues #264/#258.
+
+## Where does the KXMVECROSSCATEGORY0-SHARD1 NFL-combo maker-fee exemption live, and why can't `series_of()` find it?
+**Answer:** `changelog-index.md`'s 2026-08-20 "Maker fee exemption for
+independent NFL combo markets" entry: combo markets created after 11:59 PM
+ET on 2026-08-19, composed entirely of independent NFL components ("every
+component ties to a different milestone (NFL game)"), are created under
+series `KXMVECROSSCATEGORY0-SHARD1` and have **no maker fee** — the
+changelog says nothing about the taker fee for this series.
+**Gotcha:** the series ticker itself contains a hyphen
+(`KXMVECROSSCATEGORY0-SHARD1`) — every other entry in
+`_FEE_MULTIPLIER_BY_SERIES` is hyphen-free.
+`services/signal_log.py::series_of()` splits on the **first** hyphen only,
+so `series_of("KXMVECROSSCATEGORY0-SHARD1-25NOV02-X")` returns just
+`"KXMVECROSSCATEGORY0"`, silently dropping `-SHARD1` — adding this ticker
+to `_FEE_MULTIPLIER_BY_SERIES` keyed by `series_of()` (a literal reading of
+issue #258's own suggested fix) would never have matched a single real
+market. It also can't share that table at all even with a correct key:
+`_FEE_MULTIPLIER_BY_SERIES` is applied identically to `taker_fee()` and
+`maker_fee()` via `_multiplier()`, and a 0.0 entry there would have zeroed
+the taker fee too, which the changelog never says. Fixed as its own
+explicit maker-only exemption
+(`kalshi_fees._is_nfl_combo_maker_exempt()`, matched by literal ticker
+prefix, not `series_of()`).
+**Source:** `changelog-index.md` (2026-08-20 entry, "Maker fee exemption
+for independent NFL combo markets").
+**Found:** 2026-08-30, issue #258.

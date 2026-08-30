@@ -293,3 +293,33 @@ evidence.md`'s "don't tune by intuition") - `handler_timeouts_total` is the
 signal to watch; issue #150 names the real fix (a dedicated executor, or
 root-causing whatever inside `_process_trades_sync` can hang instead of
 raising) if that signal ever climbs.
+
+## Account attestation + exchange-side staleness reads (issues #266/#261, 2026-08-30)
+
+`KalshiAccountGateway.get_user_data_timestamp()` (GET /exchange/
+user_data_timestamp) and `.get_api_keys()` (GET /api_keys) - two account
+reads with zero prior callers anywhere in `services/` (grepped, confirmed).
+Surfaced together on a new on-demand `GET /api/diagnostics/account`
+(`services/diagnostics/routes.py`) - deliberately not folded into
+`/api/health/pipeline` or `/api/quality/summary`: both stay network-I/O-
+free by design/test today, and this app already has an established pattern
+for "a diagnostic that needs a real Kalshi call gets its own route"
+(`/api/diagnostics/coverage`, `/api/diagnostics/trade-capture`).
+
+`get_api_keys()` doesn't just call the SDK method and `.model_dump()` it
+like every other read here - see `docs/kalshi/CHEATSHEET.md`'s entry on
+why: the installed SDK's response model silently drops
+`api_key_region_expiration_ts` entirely (it predates Kalshi's 2026-08-27
+changelog addition), so this one recovers it from the raw response bytes
+(`get_api_keys_with_http_info`'s `ApiResponse.raw_data`) instead of
+trusting the parsed model.
+
+`classify_api_key_attestation()` and `user_data_age_sec()` are pure
+functions in the same module (not the diagnostics route) per the permanent
+semantic rule above - `never_attested` (field absent) / `active` / `lapsed`
+stay three distinguishable states, never collapsed into one boolean. The
+route's `pipeline_oldest_message_age_sec` field is this app's own ingest-
+pipeline staleness (`trade_stream.ingest_metrics()`), riding alongside the
+exchange's own `as_of_age_sec` so the two - genuinely different
+measurements, per issue #266's "do not confuse with" - are comparable from
+one response without ever merging into a single number.
