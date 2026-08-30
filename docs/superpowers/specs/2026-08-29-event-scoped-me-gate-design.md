@@ -1,7 +1,8 @@
 # Event-Scoped Mutual-Exclusivity Entry Gate — Design
 
-Date: 2026-08-29. Status: spec written, awaiting user review before
-implementation. Origin: direct question ("why when positions enter
+Date: 2026-08-29. Status: reviewed (inline self-review, two defects
+fixed: gate-order wording, fault-log windowing) and strictness decided
+(section 3.1, delegated); implementation approved. Origin: direct question ("why when positions enter
 netting/hedge mode, almost 100% of the time, conflicting positions are
 made, and BOTH lose") answered with a full mechanism investigation the
 same session; this spec is the fix's design. Evidence and reconstruction:
@@ -80,13 +81,46 @@ still admits one pair, and the coverage hole is code, not config.
   mathematically impossible, so C degenerates to B plus complexity.
   Revisit only if `min_unit_cost` ever drops below 0.5.
 
+### 3.1 Strictness DECIDED (2026-08-29, researched, delegated call):
+ME-true blocks any second position regardless of side
+
+The naive counterfactual looked ambiguous — across the 22 reconstructed
+pairs, second legs alone summed only -$97.92, and same-side second legs
+actually won +$519.51 — so the decision does NOT rest on it. It rests on
+four things that are not ambiguous:
+
+1. **Arb is arithmetically impossible under the current floor.** Both
+   legs cost >= 0.50, so a combined book < $1.00 cannot exist (observed
+   minimum: 1.06). The one legitimate reason to hold both sides —
+   guaranteed profit — cannot reach this gate. (Auto-revisit trigger:
+   this argument dies if `min_unit_cost` drops below 0.5; spec §3-C is
+   the successor design for that world.)
+2. **The hedge is strictly dominated by exiting leg 1.** If new whale
+   flow says the held side collapsed, buying the other side at >= 0.50
+   locks in (combined_cost - 1) + fees — observed mean 0.33 of overround
+   paid — while simply closing leg 1 captures the same information
+   without paying it. The correct instrument exists and is the book's
+   best performer (auto_exit: 97.3% win, +$5,475.47).
+3. **The gate forecloses nothing profitable — sequencing stays legal.**
+   Exit-then-enter is allowed: once leg 1 closes, the event is no longer
+   held and the flip side can be entered. Every observed profitable
+   second leg (best: +$205.46) was reachable under the gate via the
+   strictly better exit-first sequence.
+4. **Mixed-side entries are directly negative anyway.** The
+   disguised-double shape (yes-A + no-B = same bet twice) lost -$617.43
+   on second legs alone; blocking it needs no subtlety.
+
+Same-side pairs' combined book: -$2,052.48; mixed: -$1,352.14.
+
 ## 4. Design
 
 ### 4.1 Gate (services/strategy_engine.py, inside `evaluate()`)
 
-Replaces the existing `me_complement` parameter/check (same slot in the
-gate order — after cooldown, before sizing), not a second check beside
-it. Logic:
+Replaces the existing `me_complement` parameter/check in its exact
+current slot — immediately after the same-ticker duplicate check
+(strategy_engine.py:438), BEFORE the cooldown check at :498 (the spec's
+first draft said "after cooldown"; verified wrong during self-review).
+Not a second check beside it. Logic:
 
 ```
 held_events = {pos.event_ticker for pos in broker.positions.values()
@@ -99,7 +133,7 @@ if signal_event and signal_event in held_events:
     elif me_flag is False:
         allow                                    # independent props
     else:                                        # unknown
-        allow, fault_log once per event per window, increment counter
+        allow, increment counter; fault_log once per event per PROCESS
 ```
 
 - ME-true blocks ANY second position on the event regardless of side:
@@ -107,8 +141,11 @@ if signal_event and signal_event in held_events:
   the same trigger.
 - Unknown fails OPEN (the codebase's uniform rule; the data-plane rule
   forbids silently trading completeness for protection) but is never
-  silent: `fault_log` + a monotone counter, so the residual risk is
-  measured, not invisible.
+  silent: the monotone counter increments on EVERY occurrence, while
+  `fault_log` records once per event per process (a small seen-set on the
+  engine) — a broken metadata path at signal rate must not become a
+  SQLite fault write per signal on the hot path, the same
+  once-per-class-per-window reasoning websocket.py's handler faults use.
 - Rejections flow through `candidate_log.record_rejection` under
   `me_event_gate` with `unit_cost`, so the advisory counterfactual
   pipeline sees this gate from day one.

@@ -176,13 +176,17 @@ def test_me_false_event_allows_second_position():
                        event_titles={"EV": {"mutually_exclusive": False}})
     assert d["action"] != "skip" or "one-winner" not in d.get("reason", "")
 
-def test_unknown_me_flag_fails_open_and_counts():
+def test_unknown_me_flag_fails_open_counts_and_fault_logs_once(monkeypatch):
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault",
+                        lambda *a, **k: faults.append(a) or True)
     strat = _strategy()
     strat.broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
-    before = strat.me_gate_unknown_total
     d = strat.evaluate(_me_signal(), _cfg(), event_titles={})
     assert "one-winner" not in d.get("reason", "")
-    assert strat.me_gate_unknown_total == before + 1
+    d = strat.evaluate(_me_signal(), _cfg(), event_titles={})  # same event again
+    assert strat.me_gate_unknown_total == 2       # counter: every occurrence
+    assert len(faults) == 1                        # fault row: once per event
 
 def test_nway_me_event_third_market_is_skipped():
     # The shape find_me_pairs could never catch (len(siblings) != 2).
@@ -232,17 +236,24 @@ def test_simulator_signal_without_event_passes_gate():
                     )
                 if me_flag is None:
                     # Fail OPEN (uniform rule) but never silently: the
-                    # counter is the recurrence signal that the metadata
-                    # plumbing (Task 4) has a hole.
+                    # counter increments every time (the recurrence
+                    # signal that Task 4's plumbing has a hole); the
+                    # fault row is once per event per process - a broken
+                    # metadata path at signal rate must not become a
+                    # SQLite write per signal (websocket.py's
+                    # once-per-class-per-window reasoning).
                     self.me_gate_unknown_total += 1
-                    fault_log.record_fault(
-                        "strategy_engine", "me_flag_unknown",
-                        f"{signal_event}: mutually_exclusive unknown at entry - gate failed open",
-                        severity="warn",
-                    )
+                    if signal_event not in self._me_gate_unknown_logged:
+                        self._me_gate_unknown_logged.add(signal_event)
+                        fault_log.record_fault(
+                            "strategy_engine", "me_flag_unknown",
+                            f"{signal_event}: mutually_exclusive unknown at entry - gate failed open",
+                            severity="warn",
+                        )
 ```
 
-  - `__init__`: add `self.me_gate_unknown_total = 0`. strategy_engine does
+  - `__init__`: add `self.me_gate_unknown_total = 0` and
+    `self._me_gate_unknown_logged: set[str] = set()`. strategy_engine does
     NOT currently import fault_log (verified: its `from services import`
     line at :9 carries candidate_log, market_history, signal_log) - extend
     that exact import line with `fault_log`.
