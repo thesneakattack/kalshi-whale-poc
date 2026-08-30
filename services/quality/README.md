@@ -10,11 +10,11 @@ that already exist.
 
 ## What `/api/quality/summary` actually does
 
-One HTTP call, five existing read-only sources, zero new instrumentation:
+One HTTP call, six existing read-only sources, zero new instrumentation:
 
 | Field | Source | Notes |
 |---|---|---|
-| `findings` / `counts` / `status` | `services/observability/observability.py`'s `runtime_findings(...)`, `services/storage_health/storage_health.py`'s `storage_findings(...)` **and** (since 2026-08-30, #71) `services/alerting/alerting.py`'s `alert_findings(active_alerts())` | all three lists concatenated, then rolled into one `QualityReport` for `overall_status()`/`counts()` — an active `critical` alert (kill switch, crash) is an `error` finding, any other active alert a `warning` |
+| `findings` / `counts` / `status` | `services/observability/observability.py`'s `runtime_findings(...)`, `services/storage_health/storage_health.py`'s `storage_findings(...)`, (since 2026-08-30, #71) `services/alerting/alerting.py`'s `alert_findings(active_alerts())`, **and** (since 2026-08-30, #214) `services/quality/evidence_provenance.py`'s `findings()` | all four lists concatenated, then rolled into one `QualityReport` for `overall_status()`/`counts()` — an active `critical` alert (kill switch, crash) is an `error` finding, any other active alert a `warning`, and an evidence-completeness defect is a `warning` |
 | `diagnostics` | `services/diagnostics/diagnostics.py`'s `run_offline(cfg)` | deliberately excludes `check_coverage` (the one diagnostic that makes a real Kalshi call) — see that function's own docstring |
 | `alerts` | `services/alerting/alerting.py`'s `active_alerts()` | currently-unresolved alerts only, not full history |
 | `faults` | `services/fault_log.py`'s `summary()` | counts by component/severity + top offenders |
@@ -30,9 +30,26 @@ configured `backup.interval_sec` directly, to pass into
 folded in here once it lands rather than duplicated: latest research-sweep
 metadata (`services/research/`, when it exists).
 
+## Evidence-completeness signal (2026-08-30, #214)
+
+`evidence_provenance.py` composes three already-existing, already-public
+defect counters into `current_completeness_state()`: `settlement_resolver.
+snapshot()["dropped_after_max_attempts"]`, `index_feed.ingestion.
+snapshot()["dropped_rows"]`, and `capture_writer.dropped_count()`/
+`overflow_dropped_count()` (per store). Its `findings()` wrapper feeds
+`GET /api/quality/summary` the same way `alerting.alert_findings()` does.
+Deliberately NOT `settlement_resolver.dropped_total` - that field is a
+conservation sum (also incremented by the expected non-binary-result skip
+branch), not a defect count; its own source comment says so.
+`services/advisory/routes.py` and `services/whale_calibration/routes.py`
+also call `current_completeness_state()` directly, and `main.py`'s
+`_maybe_run_auto_apply` uses it to refuse an automatic config write while
+a defect is open - see `docs/superpowers/specs/2026-08-30-self-feeding-
+loop-provenance-design.md`.
+
 ## Why this route is safe to call on every tick / poll cheaply
 
-Every one of the five composed sources reads only local state — none
+Every one of the six composed sources reads only local state — none
 constructs a `KalshiClient` or otherwise touches the network.
 `diagnostics.run_offline()` is explicit about this in its own docstring
 (`check_coverage` is the one real-API diagnostic, and it's the one thing

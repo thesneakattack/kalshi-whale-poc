@@ -227,6 +227,30 @@ def _confidence_calibration_bands(rows: list[dict]) -> list[dict]:
     return bands
 
 
+def _series_win_rates(rows: list[dict]) -> list[dict]:
+    """Categorical group-by-series breakdown (#60 - `series` is a real,
+    indexed, stored column that signal_log.resolved_signals_with_factors()
+    never selected, so this module never saw it). Plain group-by, not
+    _bucket_win_rates' numeric tertile split - `series` is a category
+    label, not a sortable factor value, and it does not live inside
+    factors_json so it is not one of _FACTOR_NAMES either. Drops any
+    series under _MIN_BAND_SIZE, reusing the same floor
+    _confidence_calibration_bands already uses rather than adding a second
+    "enough data" constant to this file."""
+    buckets: dict[str, list[dict]] = {}
+    for r in rows:
+        buckets.setdefault(r["series"], []).append(r)
+    out = [
+        {
+            "series": series, "n": len(group),
+            "win_rate_pct": round(sum(1 for r in group if r["correct"]) / len(group) * 100, 1),
+        }
+        for series, group in buckets.items() if len(group) >= _MIN_BAND_SIZE
+    ]
+    out.sort(key=lambda b: -b["n"])
+    return out
+
+
 def generate_calibration_report(rows: list[dict], min_resolved_signals: int, current_weights: dict | None = None) -> dict:
     """rows: services.signal_log.resolved_signals_with_factors()'s output -
     already scoped to real (not simulated) signals that carry a factor
@@ -279,6 +303,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
             "ranked_by_discrimination": [f["factor"] for f in ranked],
             "suggested_weights": _suggested_weights(per_factor),
             "confidence_calibration": _confidence_calibration_bands(rows),
+            "by_series": _series_win_rates(rows),
         },
         "gated_reason": None,
         "resolved_count": resolved_count,

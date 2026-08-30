@@ -411,6 +411,16 @@ def test_resolved_signals_with_factors_excludes_unresolved_rows(tmp_path, monkey
     assert log.resolved_signals_with_factors() == []  # never resolved
 
 
+def test_resolved_signals_with_factors_includes_the_stored_series(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("KXBTC15M-26AUG161645-45", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})
+    log.mark_resolved(1, correct=True)
+
+    rows = log.resolved_signals_with_factors()
+
+    assert rows[0]["series"] == "KXBTC15M"
+
+
 def test_resolved_with_factors_count_matches_len_of_resolved_signals_with_factors(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     log.log_signal("TICK-A", "yes", 500, 0.6, "kalshi_trade_tape", factors={"depth_factor": 0.5})

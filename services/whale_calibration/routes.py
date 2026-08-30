@@ -14,6 +14,7 @@ from services import signal_log, tick_executor
 from services.config import config_performance
 from services.app_state import bump_generation
 from services.config.config_store import config_store
+from services.quality import evidence_provenance
 from services.whale_calibration import calibration_history, confidence_calibration
 
 router = APIRouter()
@@ -82,6 +83,7 @@ async def get_confidence_calibration_status():
         "resolved_count": resolved_count,
         "ready": resolved_count >= cc_cfg["min_resolved_signals"],
         "auto_apply_enabled": cc_cfg.get("auto_apply_enabled", False),
+        "evidence_provenance": evidence_provenance.current_completeness_state(),
     }
 
 
@@ -93,7 +95,10 @@ async def get_confidence_calibration_report():
     # matching advisory's own route-level pattern.
     cc_cfg = config_store.get()["confidence_calibration"]
     if not cc_cfg["enabled"]:
-        return {"report": None, "gated_reason": "confidence calibration is disabled", "resolved_count": None}
+        return {
+            "report": None, "gated_reason": "confidence calibration is disabled", "resolved_count": None,
+            "evidence_provenance": evidence_provenance.current_completeness_state(),
+        }
 
     # Offloaded via tick_executor (2026-08-26 fix, ROADMAP.md's event-loop-
     # stall entry) - proven live via a py-spy stack trace to run the fetch
@@ -109,7 +114,9 @@ async def get_confidence_calibration_report():
             rows, cc_cfg["min_resolved_signals"], current_weights
         )
 
-    return await tick_executor.run(_build_report)
+    result = await tick_executor.run(_build_report)
+    result["evidence_provenance"] = evidence_provenance.current_completeness_state()
+    return result
 
 
 @router.post("/api/confidence-calibration/apply")
