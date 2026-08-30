@@ -102,7 +102,91 @@ recommendation delivered directly to the user (`max_open_positions_per_series`,
 `position_netting.min_edge_improvement_usd`) for the concrete levers this
 points to - not duplicated here.
 
-## 4. What this does and does not settle
+## 6. Full settings.yaml pass (23 sections, ~140 fields)
+
+Prompted directly: "I meant all the settings." §§1-3 above cover what the
+257-trade dataset can speak to; this section is the rest.
+
+**The whale-print-size split reframes into a series/category split, not a
+size effect.** `whale_watcher_kalshi.min_contracts_by_series` gives crypto
+(KXBTC15M/KXBTCD) a 2,500-contract floor while every sports series sits on
+the 10,000 global default (`whale_watcher_kalshi.min_contracts`) — two
+different populations, not one dose-response curve. Parsed print size from
+`entry_reason` ("whale print N @ price"), cross-checked against ticker
+series to confirm the split before trusting it:
+
+| Group | n | Total P&L |
+|---|---|---|
+| Crypto (BTC/ETH) | 146 | +$5,624.66 |
+| Sports & other | 111 | -$341.73 |
+
+Nearly the entire book's edge is crypto. Sports is not uniformly bad —
+broken out by series, every sports series except two nets positive
+(+$1,388.96 combined); two series alone account for -$1,730.69:
+
+| Series | n | win% | total P&L |
+|---|---|---|---|
+| KXUFCFIGHT | 6 | 33.3% | -$911.70 |
+| KXATPMATCH | 23 | 56.5% | -$818.99 |
+
+KXATPMATCH (n=23) is the more load-bearing finding; KXUFCFIGHT (n=6) is too
+thin to act on alone.
+
+**`whale_confidence_weights`** — checked `entry_confidence` against outcome;
+202 of 256 trades cluster in 0.50-0.60 (`entry_threshold` is 0.55), too
+narrow an observed range to say which factor weight is mistuned. Not a
+finding, a boundary: this dataset can't answer that question.
+
+**`risk.max_daily_loss_pct: 0.85`** — already named in `CLAUDE.md` itself as
+not protective. Restated here for completeness, not re-derived as new.
+
+**Everything else** (`kalshi`, `realtime_data_plane`, `whale_signal` [the
+simulator's own knobs — none of these 257 trades came from it],
+`confidence_calibration`/`advisory`/`market_analyst` [meta-tuning-process
+controls, see §7], `settlement_edge_entry` [`enabled: false`, no live
+trades to check it against], `series_watcher`/`series_evaluator`
+[data-collection infra; the evaluator is itself disabled],
+`event_lifecycle`/`event_schedule` [feeds `position_netting`'s event
+grouping — plausibly relevant to §3, not independently verified this pass],
+`index_feed`/`logging`/`backup`/`alerting`/`observability`/`research`
+[operational infrastructure], `strategy_overrides` [currently a no-op —
+`Sports.stop_loss_pct: null` matches the global default]) reviewed and
+categorized as operational or not trading-outcome-tunable from this
+dataset, not skipped.
+
+## 7. `advisory_engine`'s coverage gap (verified in source, not asserted)
+
+Direct report: "the advisory is not aware of all the settings in
+settings.json." Confirmed by reading every `config_path` string
+`services/advisory/advisory_engine.py` can ever emit: exactly 11 fields, all
+under `strategy.*` — `entry_threshold`, `min_whale_winrate_pct`,
+`close_window_sec`, `special_market_min_seconds_to_close`,
+`longshot_entry_threshold_bonus`, `take_profit_pct`, `stop_loss_pct`,
+`auto_exit_threshold`, `exit_sentiment_lean_pct`,
+`exit_sentiment_min_signals`, `excluded_series`. Against ~140 fields across
+23 sections, that's the entire reachable surface — every other section in
+§6, including `position_netting`, `risk`, and `whale_watcher_kalshi`, is
+structurally invisible to it, independent of the reasoning-quality gap the
+existing "win rate alone, never cost/P&L" open-decision line already names.
+
+The most relevant single instance is already named in the code's own
+comment (`advisory_engine.py:527-544`, dated 2026-08-14):
+`whale_watcher_kalshi`'s `min_contracts` gate "also logs rejections...
+deliberately NOT added here yet, since `_rejected_candidate_recommendations`'
+current_value lookup reads straight off `strat_cfg` and `whale_watcher_kalshi`
+is a different config section entirely - needs its own comparison-baseline +
+cfg-section wiring, not just a map entry (see ROADMAP.md)." Real rejection
+data has been logged against exactly this gate since it shipped and has
+never once surfaced as a suggestion. Checked ROADMAP.md and
+`docs/open-decisions.md` for an existing tracking line before treating this
+as new — neither has one.
+
+`strategy.excluded_series` is the one exception: it's already inside
+`advisory_engine`'s reach, and the §6 KXATPMATCH finding is exactly the kind
+of input `_series_evaluator_recommendations` is built to act on. It simply
+never ran that specific check against that specific series.
+
+## 8. What this does and does not settle
 
 **Settled by this pass:** unit-cost bands above 0.60 earn a real, visible
 haircut in ROI on real executed trades; the current `max_unit_cost: 0.9`
@@ -127,14 +211,21 @@ all - they need their own, separate lever.
   by this repo's own `confidence_label` convention, not a settled long-run
   edge.
 
-## 5. Relates to (act on these, don't re-derive)
+## 9. Relates to (act on these, don't re-derive)
 
 - `docs/open-decisions.md`: "Banded cost-aware gate EV diagnostic" line -
   this is independent corroborating evidence toward approving that spec
   (now correctly unit-cost-based), not a duplicate of the finding behind it.
 - `docs/open-decisions.md`: "`advisory_engine` suggests on win rate alone"
   line - the 0.90-ceiling slice (87.5% win rate, net negative) is a
-  concrete, current, quantified instance of exactly that blind spot.
+  concrete, current, quantified instance of that blind spot; §7 above is a
+  second, structurally distinct blind spot (coverage, not reasoning
+  quality) the same line's fix would not by itself close.
 - `docs/open-decisions.md`: "`position_netting` closes lose money at
   scale" line (added same day) - this document is its full analysis;
   that line is the pointer.
+- New, not yet on `docs/open-decisions.md`: `advisory_engine`'s 11-of-~140
+  field coverage gap, and specifically the named-but-unaddressed
+  `whale_watcher_kalshi.min_contracts` wiring (§7).
+- New, not yet on `docs/open-decisions.md`: KXATPMATCH (and, on thinner
+  data, KXUFCFIGHT) as `strategy.excluded_series` candidates (§6).
