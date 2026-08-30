@@ -115,8 +115,17 @@ function renderHeaderStrip(broker, account, realBalanceHistory) {
     // guessed number) until one exists.
     const firstPortfolioValue = (first && first.portfolio_value != null) ? first.portfolio_value : null;
     const pnl = (portfolioValue != null && firstPortfolioValue != null) ? portfolioValue - firstPortfolioValue : null;
-    $('header-bankroll-label').textContent = 'Cash Balance';
-    $('header-equity-label').textContent = 'Portfolio Value';
+    // "(all shards)" (2026-08-30, issue #252): Trade API 3.29.0 changed
+    // GET /portfolio/balance to aggregate balance/portfolio_value across
+    // every exchange shard by default (docs/kalshi/get-balance.md - "Both
+    // values include all exchange indexes unless exchange_index is
+    // provided"). Pre-3.29.0 this was shard-0-only. The app deliberately
+    // keeps the new aggregate for this whole-account display (see the
+    // comment on the account.get_balance() call in
+    // services/position/account_positions.py) - the label just has to say
+    // so, per CLAUDE.md's "a displayed value must match its label".
+    $('header-bankroll-label').textContent = 'Cash Balance (all shards)';
+    $('header-equity-label').textContent = 'Portfolio Value (all shards)';
     $('header-pnl-label').textContent = 'Change (session)';
     $('bankroll').textContent = cash != null ? fmt(cash) : '—';
     $('equity').textContent = portfolioValue != null ? fmt(portfolioValue) : '—';
@@ -694,6 +703,9 @@ function renderAccount(account) {
   // numbers, not a fallback for each other. Showing only "balance" reads as
   // "you have basically nothing" right next to a positions list proving
   // otherwise, so both are shown explicitly instead of picking one.
+  // Both are also cross-shard aggregates as of Trade API 3.29.0 (2026-08-30,
+  // issue #252) - see the "(all shards)" comment in renderHeaderStrip above
+  // for the full contract citation; labels below say so too.
   const balanceCents = bal.balance ?? null;
   const portfolioCents = bal.portfolio_value ?? null;
   const positions = account.positions;
@@ -709,8 +721,8 @@ function renderAccount(account) {
 
   el.innerHTML = `<div class="account-bar">
     <span class="tag">● REAL KALSHI ACCOUNT — REAL MONEY, not the paper numbers above</span>
-    <span class="field"><span class="label">Cash Balance</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
-    <span class="field"><span class="label">Portfolio Value</span>${portfolioCents != null ? fmt(portfolioCents / 100) : 'see raw ↴'}</span>
+    <span class="field"><span class="label">Cash Balance (all shards)</span>${balanceCents != null ? fmt(balanceCents / 100) : 'see raw ↴'}</span>
+    <span class="field"><span class="label">Portfolio Value (all shards)</span>${portfolioCents != null ? fmt(portfolioCents / 100) : 'see raw ↴'}</span>
     <span class="field"><span class="label">Positions</span>${positionCount}</span>
     ${tradingHtml}
     <details>
