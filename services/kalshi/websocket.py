@@ -445,7 +445,11 @@ class KalshiStreamGateway:
         credentials the account uses - reusing them here means backfill
         never re-reads or re-validates the private key file a second time.
         Read-only accessor; does not touch connection state."""
-        if not self.enabled:
+        # Checked directly on _private_key (rather than via `enabled`) so
+        # mypy can narrow it from `RSAPrivateKey | None` to `RSAPrivateKey`
+        # for the return below - narrowing does not cross a property-call
+        # boundary the way it does a plain attribute check.
+        if self._private_key is None or not self.key_id:
             return None
         return self.key_id, self._private_key
 
