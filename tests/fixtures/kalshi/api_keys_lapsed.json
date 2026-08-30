@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "source_doc": "docs/kalshi/get-api-keys.md",
+    "note": "GetApiKeysResponse for an account whose location attestation has lapsed: api_key_region_expiration_ts present but in the past relative to this fixture's test usage - 'Once this date has passed, API keys are not valid for trading Sports, Elections, and Entertainment markets.' Distinct from api_keys_never_attested.json (field absent entirely) per issue #261: never-attested and lapsed are different states, not one boolean."
+  },
+  "payload": {
+    "api_keys": [
+      {
+        "api_key_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+        "name": "kalshi-whale-poc",
+        "scopes": ["read"]
+      }
+    ],
+    "api_key_region_expiration_ts": 1000000000
+  }
+}

@@ -107,6 +107,42 @@ so treat `not_in_rest` as boundary noise unless it grows with the window.
 A 3-minute window at this flow rate needs >10 pages; size `max_pages` to
 the rate or the result is only a lower bound (and says so).
 
+## Account attestation + exchange-side staleness (issues #266/#261, 2026-08-30)
+
+`GET /api/diagnostics/account` — a third route in this "real API call, own
+route" family alongside `/api/diagnostics/coverage` and `/api/diagnostics/
+trade-capture` above, for the same reason: `/api/health/pipeline` and
+`/api/quality/summary` stay network-I/O-free by design/test, so a
+diagnostic that needs a live Kalshi call never gets folded into either.
+
+Two account reads with no prior caller anywhere in `services/`
+(`services/kalshi/account.py`'s `get_user_data_timestamp()` and
+`get_api_keys()` — see that module's own docstrings and `services/kalshi/
+CHEATSHEET.md` for why `get_api_keys()` doesn't just `.model_dump()` the
+SDK response like every other account read):
+
+- **`user_data_timestamp`** — Kalshi's own approximate answer to "how
+  stale is the data I'm reading" (`as_of_time`, turned into `as_of_age_sec`
+  via `user_data_age_sec()`). Deliberately reported *alongside*
+  `pipeline_oldest_message_age_sec` (this app's own ingest-pipeline
+  staleness, `trade_stream.ingest_metrics()`), never merged into it — the
+  two measure different things (exchange reporting lag vs. this app's own
+  WebSocket consumer lag) and issue #266 is explicit they're meant to be
+  compared, not conflated.
+- **`api_key_attestation`** — `api_key_region_expiration_ts`'s three
+  documented states via `classify_api_key_attestation()`: `never_attested`
+  (field absent), `active` (a future timestamp), `lapsed` (a past one,
+  meaning Sports/Elections/Entertainment trading is currently blocked).
+  Kept three-way rather than one boolean per issue #261 — "never
+  attested" and "lapsed" call for different actions even though both
+  currently block the same categories.
+
+Manual/on-demand only, like its two siblings above: not on the tick loop,
+not polled by the dashboard, `configured: false` (no call attempted) when
+`account.enabled` is false, and each of the two live calls degrades to an
+explicit `{"error": ...}` (recorded to `fault_log`) rather than a
+fabricated value if the account isn't configured or the call fails.
+
 ## The cost of `/api/health/pipeline` itself (issue #210, 2026-08-30)
 
 The endpoint CLAUDE.md sends every investigation to went instant → 41.9s →
