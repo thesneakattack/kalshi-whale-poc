@@ -4,12 +4,23 @@ enforced as harness decisions instead of prose.
 
 PreToolUse (Bash):
   R8 `git add -A` / `git add .`                        -> deny (stage specific paths)
-  R6 checkout/switch/stash/reset --hard/rebase/merge/  -> deny (another live session
-     `worktree remove` in a checkout another live          sits in that working tree,
-     session sits in or under                              at its root or anywhere below)
   R2 ad hoc sqlite3/python on data/*.db before any     -> deny once, then allow
      /api/quality|health read this session
   R7 `ddev exec` from a linked worktree                -> deny, with the working command
+
+R6 (the peer-session git-merge guard) was retired 2026-08-30: its liveness
+check had no time dimension (a session record from a process that died
+without a clean handoff counted identically to a genuinely active one), so
+it could deny a real merge for a reason that no longer existed - happened
+twice in one night, once as a false positive on `merge-tree` (fixed, then
+retired anyway) and once as a real block that needed a manual `/proc`
+check + `kill -TERM` to clear. No installed replacement covers this
+specific job, and this repo's own workflow-tooling standard (CLAUDE.md's
+Toolchain section) now defaults a handspun mechanism to off until it has a
+demonstrated track record of net value - R6 didn't have one. The session
+registry/`--sessions` output it used stays: `scripts/cleanup-worktrees.sh`
+and `orient.sh` still read it for their own (correctly staleness-aware)
+purposes.
 PreToolUse (Edit|Write):
   R3 Kalshi-shaped file, no docs/kalshi read yet       -> deny (HARD RULE, CLAUDE.md)
   R4 money/strategy hot file, no GitNexus run yet      -> deny once, then allow
@@ -71,9 +82,6 @@ NUDGE_LINES = 150
 
 _SQLITE_ON_DATA = re.compile(r"sqlite3.*data/|data/\S*\.db.*sqlite3|sqlite3\.connect\([^)]*data/")
 _DIAG_READ = re.compile(r"api/quality/summary|api/health/|api/observability/")
-_RISKY_GIT = re.compile(
-    r"\bgit\b(?:\s+-C\s+(\S+))?\s+(checkout|switch|stash|reset\s+--hard|rebase|merge|worktree\s+remove)(?!-)\b"
-)
 _GIT_ADD_ALL = re.compile(r"\bgit\s+add\s+(-A\b|--all\b|\.\s*$|\.\s)")
 _DDEV_EXEC = re.compile(r"^\s*ddev\s+exec\s+(?:-s\s+\S+\s+)?(.*)$", re.S)
 _SHORTSTAT_NUM = re.compile(r"(\d+) (?:insertion|deletion)")
@@ -231,10 +239,6 @@ def record_session(state: Path, cwd: str, pid: int | None, root: Path | None = N
         pass
 
 
-def other_sessions(sessions: dict[int, str], self_pids: set[int]) -> dict[int, str]:
-    return {p: c for p, c in sessions.items() if p not in self_pids}
-
-
 # ------------------------------------------------------------- helpers
 def repo_root(cwd: str) -> Path:
     p = Path(cwd).resolve()
@@ -283,17 +287,6 @@ def pre_bash(command: str, cwd: str, state: Path, sessions: dict[int, str], self
     if _GIT_ADD_ALL.search(cmd):
         return _deny("R8: `git add -A` / `git add .` is never allowed here - stage specific paths "
                      "(data/*.db, .env, session scratch, and other sessions' files live in this tree).")
-
-    m = _RISKY_GIT.search(cmd)
-    if m:
-        target = Path(m.group(1)).resolve() if m.group(1) else Path(cwd).resolve()
-        for pid, other_cwd in other_sessions(sessions, self_pids).items():
-            oc = Path(other_cwd).resolve()
-            if oc == target or target in oc.parents:
-                return _deny(f"R6: `git {m.group(2)}` in {target} - another live Claude session (pid {pid}) "
-                             f"works in {oc}. Never checkout/stash/reset/rebase/merge under "
-                             "another session's working tree; do it from your own worktree "
-                             "(.claude/worktrees/<name>, EnterWorktree) or ask that session.")
 
     if _SQLITE_ON_DATA.search(cmd) and not has(state, "diag_checked") and not has(state, "sqlite_warned"):
         mark(state, "sqlite_warned")

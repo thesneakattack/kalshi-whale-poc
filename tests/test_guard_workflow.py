@@ -62,48 +62,24 @@ def test_r2_skipped_when_diagnostics_were_read_this_session(tmp_path):
     assert g.pre_bash("sqlite3 data/paper_broker.db .tables", str(tmp_path), st, {}, set()) is None
 
 
-# ---------------------------------------------------------------- R6
-def test_r6_checkout_in_a_checkout_another_live_session_occupies_is_denied(tmp_path):
+# ---------------------------------------------------------------- R6 (retired)
+def test_r6_is_retired_git_merge_is_never_denied_for_a_colliding_peer_session(tmp_path):
+    """R6 (the peer-session git-merge guard) was retired 2026-08-30: its
+    liveness check had no time dimension, so a session record from a process
+    that died without a clean handoff counted identically to a genuinely
+    active one - denied a real merge twice in one night for a reason that no
+    longer existed. Direct instruction: remove it rather than patch it
+    further, since no installed replacement covers this job and it had no
+    demonstrated track record of catching a real corruption. Regression test
+    against it quietly coming back: the exact colliding-cwd setup the old R6
+    tests used to deny under must now pass through untouched."""
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     primary = _repo(tmp_path / "primary")
     sessions = {111: str(primary), 222: str(tmp_path / "elsewhere")}
-    out = g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={222})
-    assert out["decision"] == "deny" and "pid 111" in out["reason"]
-    assert g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={111}) is None
-    out = g.pre_bash(f"git -C {primary} stash", str(tmp_path / "elsewhere"), st, sessions, self_pids={222})
-    assert out["decision"] == "deny"
-    assert g.pre_bash("git checkout -b x", str(tmp_path / "elsewhere"), st, sessions, self_pids={222}) is None
-
-
-def test_r6_counts_a_session_anywhere_below_the_checkout_root(tmp_path):
-    """A Bash-tool cwd persists between calls, so a session that cd'd into
-    <checkout>/services still occupies <checkout> - same predicate
-    scripts/cleanup-worktrees.sh applies."""
-    g = _load()
-    st = tmp_path / "st"; st.mkdir()
-    primary = _repo(tmp_path / "primary")
-    (primary / "services").mkdir()
-    sessions = {111: str(primary / "services")}
-    assert g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={222})["decision"] == "deny"
-    assert g.pre_bash("git checkout main", str(tmp_path), st, sessions, self_pids={222}) is not None  # tmp_path contains primary/services too
-    assert g.pre_bash("git checkout main", str(tmp_path / "elsewhere"), st, sessions, self_pids={222}) is None
-
-
-def test_r6_does_not_match_git_merge_plumbing_subcommands(tmp_path):
-    """Found live (2026-08-30): \\b matches at the e|- boundary in
-    "merge-tree", so the old regex denied the read-only diff-simulation
-    subcommand identically to a real `git merge`. A negative lookahead
-    excludes merge-tree/merge-base/merge-file while still denying the real
-    merge (and the other risky subcommands) under the same colliding-cwd
-    setup that would otherwise deny it."""
-    g = _load()
-    st = tmp_path / "st"; st.mkdir()
-    primary = _repo(tmp_path / "primary")
-    sessions = {111: str(primary)}
-    assert g.pre_bash("git merge-tree HEAD main", str(primary), st, sessions, self_pids={222}) is None
-    out = g.pre_bash("git merge origin/main", str(primary), st, sessions, self_pids={222})
-    assert out["decision"] == "deny" and "pid 111" in out["reason"]
+    assert g.pre_bash("git checkout main", str(primary), st, sessions, self_pids={222}) is None
+    assert g.pre_bash(f"git -C {primary} stash", str(tmp_path / "elsewhere"), st, sessions, self_pids={222}) is None
+    assert g.pre_bash("git merge origin/main", str(primary), st, sessions, self_pids={222}) is None
 
 
 # ---------------------------------------------------------------- R7

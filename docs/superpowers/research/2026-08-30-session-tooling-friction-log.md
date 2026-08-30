@@ -297,12 +297,26 @@ taken under the new standard, same session:
 1. **Fixed both bugs** (`3462815`): `find_by_marker` now verifies a
    candidate's body actually contains the marker instead of trusting the
    top fuzzy search hit (issue #90, closed); `guard_workflow.py`'s R6
-   regex no longer matches `merge-tree` as a prefix of `merge` (negative
-   lookahead). The broader R6/session-registry design (item #3 above) and
-   `kanban_sync`'s core sync mechanism were kept running — no installed
-   replacement exists for either, so "disabled until proven" didn't apply
-   to the whole mechanism, just the demonstrated bugs in it.
-2. **AQC given one real supervised test** (`88db3f5`): `python -m
+   regex no longer matched `merge-tree` as a prefix of `merge` (negative
+   lookahead). `kanban_sync`'s core sync mechanism was kept running — no
+   installed replacement exists for it, so "disabled until proven" didn't
+   apply to the whole mechanism, just the demonstrated bug in it.
+2. **R6 retired outright, later the same night** (commit pending on
+   `feat/realtime-data-plane-remediation`): the regex fix above didn't
+   address the deeper problem — R6's peer-session liveness check has no
+   time dimension, so a session record from a process that died without a
+   clean handoff (item #3 above) counts identically to a genuinely active
+   one. It denied a real merge for exactly that reason the same night,
+   *after* the regex fix, requiring a manual `/proc` check + `kill -TERM`
+   to clear (a *different* zombie PID than item #3's, found via the same
+   registry-vs-`ListAgents` mismatch pattern). Direct instruction: remove
+   R6 entirely rather than add a staleness floor — zero known cases of it
+   catching a real concurrent-git-corruption incident, versus two
+   documented incidents of it blocking legitimate work in one session. The
+   session-registry/`--sessions` infrastructure R6 used stays, since
+   `scripts/cleanup-worktrees.sh` and `orient.sh` still depend on it for
+   their own (correctly staleness-aware) purposes.
+3. **AQC given one real supervised test** (`88db3f5`): `python -m
    tools.quality_coordination --clean`, run for real for the first time
    ever. Result: 0 cleanup actions taken, and `cleanup_actions` turned out
    to have 0 rows across all 11 prior detect cycles — every branch signal
