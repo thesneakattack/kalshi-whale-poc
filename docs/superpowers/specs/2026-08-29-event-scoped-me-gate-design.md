@@ -1,8 +1,9 @@
 # Event-Scoped Mutual-Exclusivity Entry Gate — Design
 
 Date: 2026-08-29. Status: reviewed (inline self-review, two defects
-fixed: gate-order wording, fault-log windowing) and strictness decided
-(section 3.1, delegated); implementation approved. Origin: direct question ("why when positions enter
+fixed: gate-order wording, fault-log windowing); strictness RECOMMENDED
+with evidence in section 3.1, awaiting the user's call. Not yet approved
+for implementation. Origin: direct question ("why when positions enter
 netting/hedge mode, almost 100% of the time, conflicting positions are
 made, and BOTH lose") answered with a full mechanism investigation the
 same session; this spec is the fix's design. Evidence and reconstruction:
@@ -81,8 +82,12 @@ still admits one pair, and the coverage hole is code, not config.
   mathematically impossible, so C degenerates to B plus complexity.
   Revisit only if `min_unit_cost` ever drops below 0.5.
 
-### 3.1 Strictness DECIDED (2026-08-29, researched, delegated call):
-ME-true blocks any second position regardless of side
+### 3.1 Strictness RECOMMENDATION (2026-08-29, researched): block any
+second position on an ME-true event, regardless of side
+
+Recommended, not decided — the user's call. Evidence and the case below,
+plus the strongest argument against it, so the choice is informed rather
+than deferred.
 
 The naive counterfactual looked ambiguous — across the 22 reconstructed
 pairs, second legs alone summed only -$97.92, and same-side second legs
@@ -111,6 +116,23 @@ four things that are not ambiguous:
    on second legs alone; blocking it needs no subtlety.
 
 Same-side pairs' combined book: -$2,052.48; mixed: -$1,352.14.
+
+**The strongest argument against (stated fairly).** Point 3 assumes the
+exit-then-enter sequence actually happens. It is legal under the gate but
+nothing *causes* it: `auto_exit` fires on its own confidence score, not on
+"a whale just printed the other side of your event." So a real scenario
+exists where the gate blocks a genuinely-informative flip signal and the
+held loser is not exited promptly — the strict gate converts a bad hedge
+into a slow single loss. The observed book cannot settle this: the
+mechanism it would need (whale-flip → exit trigger) has never existed, so
+there is no counterfactual data for it.
+
+If that risk matters more to the user than the overround, the softer
+variant is: block the second entry AND emit an exit-review signal for the
+held leg (feeding `check_exits`' existing machinery rather than acting
+directly). That is strictly more code and a new cross-module coupling, so
+it is deliberately NOT in this spec's scope — it is the natural follow-up
+if the soak shows blocked-flip losers lingering.
 
 ## 4. Design
 
