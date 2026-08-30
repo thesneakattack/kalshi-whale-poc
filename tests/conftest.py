@@ -6,12 +6,33 @@ The actual mechanism - what gets redirected, the sqlite3.connect hard guard,
 and the collection-order incident that made per-file redirects insufficient
 on their own - lives in tests/support/runtime_isolation.py.
 """
-from tests.support.runtime_isolation import install_runtime_isolation
+from tests.support.runtime_isolation import install_runtime_isolation, pinned_config_get
 
 install_runtime_isolation()
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _pinned_runtime_config(monkeypatch):
+    """config/settings.yaml is live runtime state the user commits as-is, so
+    a flag flipped in production reaches every test that reads it through
+    config_store.get() without patching (issue #229: PR #222 committed
+    realtime_data_plane.two_consumer_mode: true and 16 gateway tests that
+    had only ever passed because the file said false failed at once). The
+    sections in tests/support/runtime_isolation.py's PINNED_CONFIG_SECTIONS
+    are served as fixed test dicts here, for every test, whatever the file
+    says. Patched on the config_store *instance* - the one object every
+    services module and main.py import - so a test's own
+    monkeypatch.setattr(<module>.config_store, "get", ...) (the established
+    idiom) replaces this wrapper outright and wins, and a ConfigStore a test
+    builds itself (tests/test_config_store.py, which is about the class
+    reading a file) is a different instance and is deliberately untouched.
+    tests/test_runtime_isolation.py proves the pin fires and cross-checks
+    each pinned section's keys against the committed file."""
+    from services.config.config_store import config_store
+    monkeypatch.setattr(config_store, "get", pinned_config_get(config_store.get))
 
 
 @pytest.fixture(autouse=True)
