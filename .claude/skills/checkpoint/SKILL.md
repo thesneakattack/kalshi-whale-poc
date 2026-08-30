@@ -53,8 +53,9 @@ description: This skill should be used at natural breakpoints in a long working 
 7. **Roadmap.** If this checkpoint closes a `ROADMAP.md` item, run
    `/close-roadmap-item` now.
 
-8. **Workflow tools — the user-built ones. Run them; an unused tool is a
-   workflow gap, not cruft.**
+8. **Workflow tools.** Run them for real signal — a handspun tool's place
+   in this step is earned by its own run history, not assumed
+   (`CLAUDE.md`'s Toolchain section, 2026-08-30).
    ```bash
    python -m tools.kanban_sync sync --sources worktree,roadmap,track   # mechanical board sync (plan-doc classification is /kanban-board-sync)
    python -m tools.quality_coordination                                # AQC: stale branches/worktrees, plans with unfinished tasks; ~16 s, read-only
