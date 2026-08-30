@@ -1732,6 +1732,30 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
 
 
+# --- _fetch_live_status: broad milestone cache (services/market_watch/
+# milestone_scan.py) consulted before the per-event REST call --------------
+
+def test_fetch_live_status_uses_broad_milestone_cache_and_skips_the_per_event_call():
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}
+    fake = _FakeLiveClient(widget_status="live", has_milestone=True)
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.milestone_calls == []  # broad cache already had it - no per-event REST call needed
+    assert fake.live_datas_calls == [["ms-from-bulk-scan"]]
+
+
+def test_fetch_live_status_falls_back_to_per_event_call_when_broad_cache_misses():
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # cold cache - milestone_scan hasn't reached this event yet
+    fake = _FakeLiveClient(widget_status="live", has_milestone=True)
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.milestone_calls == ["EVT-A"]  # unchanged, pre-existing behavior
+
+
 # --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
 # same get_live_datas call above already fetches the full real payload
 # (score/quarter/clock/down-distance/last_play), previously only ever read

@@ -142,21 +142,39 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
     to_poll.sort(key=lambda et: (cache.get(et) or {}).get("checked_at", 0.0))
     to_poll = to_poll[:_LIVE_STATUS_MAX_POLL_PER_TICK]
 
-    milestone_results = await asyncio.gather(
-        *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
-    )
-    # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
-    # get-multiple-live-data.md) - was N individual get_live_data() calls via
-    # asyncio.gather, one per event with a milestone. Live-verified: 3
-    # individual = 0.99s wall, 1 batched get_live_datas call = 0.02s wall.
-    milestone_by_event = {}
-    has_milestone = set()
-    for et, ms_result in zip(to_poll, milestone_results):
-        if isinstance(ms_result, list) and ms_result:
-            ms = ms_result[0]
-            if ms.get("id") and ms.get("type"):
-                has_milestone.add(et)
-                milestone_by_event[et] = ms["id"]
+    # Broad, watchlist-independent cache first (services/market_watch/
+    # milestone_scan.py, entry-gate-me-pairing-and-netting-remediation
+    # Part 3) - an event already covered there skips the per-event REST
+    # call entirely. A cache miss falls back to the exact pre-existing
+    # per-event get_milestones_for_event call, so a cold/not-yet-covered
+    # cache reproduces today's behavior byte for byte.
+    broad_cache = state["milestone_by_event"]
+    milestone_by_event: dict[str, str] = {}
+    has_milestone: set[str] = set()
+    needs_fetch = []
+    for et in to_poll:
+        ms_id = broad_cache.get(et)
+        if ms_id:
+            milestone_by_event[et] = ms_id
+            has_milestone.add(et)
+        else:
+            needs_fetch.append(et)
+
+    if needs_fetch:
+        # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
+        # get-multiple-live-data.md) - was N individual get_live_data()
+        # calls via asyncio.gather, one per event with a milestone.
+        # Live-verified: 3 individual = 0.99s wall, 1 batched get_live_datas
+        # call = 0.02s wall.
+        milestone_results = await asyncio.gather(
+            *(client.get_milestones_for_event(et) for et in needs_fetch), return_exceptions=True
+        )
+        for et, ms_result in zip(needs_fetch, milestone_results):
+            if isinstance(ms_result, list) and ms_result:
+                ms = ms_result[0]
+                if ms.get("id") and ms.get("type"):
+                    has_milestone.add(et)
+                    milestone_by_event[et] = ms["id"]
 
     confirmed = {}
     if milestone_by_event:
