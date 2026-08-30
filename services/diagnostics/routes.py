@@ -25,7 +25,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver
+from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import store_stats
@@ -408,6 +408,15 @@ async def get_pipeline_health(exact_rows: bool = False):
         # perf.py): where a trade message's time goes, and how many messages
         # enter the thread hop versus how many are real candidates.
         "whale_pipeline": whale_pipeline_perf.perf.snapshot(),
+        # Entry-gate lookup gaps that used to be silent (issue #267):
+        # me_gate_unknown_total is a lifetime, monotone count of every
+        # signal whose special-market conservative gate could not verify
+        # the mutually_exclusive flag (no market_titles/event_titles entry,
+        # or a genuine exception) - see services/strategy_engine.py's
+        # _me_gate_stats docstring. Zero here is meaningful only alongside
+        # markets_watched/candidates actually flowing; it does not mean
+        # "the gate is being checked and always finds it False."
+        "strategy_gates": strategy_engine.me_gate_stats(),
         # REST latency decomposition by caller class + token-bucket waiter
         # gauges (I5, services/http_client.py's rest_latency_snapshot):
         # limiter wait vs network vs backoff, so a slow call is attributable.

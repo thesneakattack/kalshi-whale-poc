@@ -800,3 +800,60 @@ than the parsed model - CLAUDE.md's "no lossy normalization on the way in"
 applied to a vendored-SDK/doc version gap, not a call-site preference.
 **Source:** `get-user-data-timestamp.md`, `get-api-keys.md`.
 **Found:** 2026-08-30, issues #266/#261.
+
+## How does an event-level fee override interact with the series-level fee table, and what does `quadratic_with_combo_maker_fees` actually change?
+**Answer:** `get-event-fee-changes.md`: "Event fees are an override layered
+on top of the parent series' fee structure. If `fee_type_override` and
+`fee_multiplier_override` are null, that indicates the override is
+cleared" — each of the two columns falls back to the series' own value
+**independently** (an event can override just the multiplier, just the
+type, both, or neither). `get-series-list.md`'s `FeeType` schema:
+`quadratic`/`quadratic_with_maker_fees`/`quadratic_with_combo_maker_fees`
+all reference the *same* General Trading Fees Table for the taker rate —
+only `quadratic_with_combo_maker_fees` changes anything, and only the
+maker multiplier (0.5 instead of the standard 0.25). Corroborated
+independently by `changelog-index.md`'s 2026-08-22 "Combo RFQ fee
+assignment for briefly resting orders" entry: "The maker fee uses a fee
+multiplier of `0.5`, rather than the standard `0.25`" for a combo quote
+crossing a resting order under five seconds old — background on *why*
+Kalshi assigns this fee_type, not a different rule; the schema's own
+description is the persistent per-market contract this app can actually
+read. `flat` (the fourth enum value) is unmodeled anywhere in this app —
+no cached market/event has ever resolved to it, and its formula ("Specific
+Trading Fees Table") isn't documented in a page this repo mirrors.
+**Gotcha:** `services/kalshi_fees.py` never read `fee_type` or either
+override column at all before issue #264 — every fee went through
+`_multiplier(ticker)`, a per-SERIES lookup only, even though
+`services/title_cache.py` had already been persisting both override
+columns (from every `get_event()` fetch) since 2026-08-15. Fixed by
+`title_cache.fee_override_for_ticker()` (a single indexed
+market_titles->event_titles join) feeding `kalshi_fees._event_fee_override()`.
+**Source:** `get-event-fee-changes.md`, `get-series-list.md`'s `FeeType`
+schema, `changelog-index.md` (2026-08-22 entry).
+**Found:** 2026-08-30, issues #264/#258.
+
+## Where does the KXMVECROSSCATEGORY0-SHARD1 NFL-combo maker-fee exemption live, and why can't `series_of()` find it?
+**Answer:** `changelog-index.md`'s 2026-08-20 "Maker fee exemption for
+independent NFL combo markets" entry: combo markets created after 11:59 PM
+ET on 2026-08-19, composed entirely of independent NFL components ("every
+component ties to a different milestone (NFL game)"), are created under
+series `KXMVECROSSCATEGORY0-SHARD1` and have **no maker fee** — the
+changelog says nothing about the taker fee for this series.
+**Gotcha:** the series ticker itself contains a hyphen
+(`KXMVECROSSCATEGORY0-SHARD1`) — every other entry in
+`_FEE_MULTIPLIER_BY_SERIES` is hyphen-free.
+`services/signal_log.py::series_of()` splits on the **first** hyphen only,
+so `series_of("KXMVECROSSCATEGORY0-SHARD1-25NOV02-X")` returns just
+`"KXMVECROSSCATEGORY0"`, silently dropping `-SHARD1` — adding this ticker
+to `_FEE_MULTIPLIER_BY_SERIES` keyed by `series_of()` (a literal reading of
+issue #258's own suggested fix) would never have matched a single real
+market. It also can't share that table at all even with a correct key:
+`_FEE_MULTIPLIER_BY_SERIES` is applied identically to `taker_fee()` and
+`maker_fee()` via `_multiplier()`, and a 0.0 entry there would have zeroed
+the taker fee too, which the changelog never says. Fixed as its own
+explicit maker-only exemption
+(`kalshi_fees._is_nfl_combo_maker_exempt()`, matched by literal ticker
+prefix, not `series_of()`).
+**Source:** `changelog-index.md` (2026-08-20 entry, "Maker fee exemption
+for independent NFL combo markets").
+**Found:** 2026-08-30, issue #258.
