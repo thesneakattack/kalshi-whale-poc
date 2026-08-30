@@ -396,19 +396,104 @@ def check_price_completeness(qh: dict) -> Check:
     )
 
 
-def check_capture_writer_health(faults: dict) -> Check:
+_RAW_ARCHIVE_INVALIDATED = (
+    "The raw_trades archive, and therefore every backtest, replay, and "
+    "whale-density statistic computed from it. A lost row is a hole in the "
+    "stored history, not a delayed write."
+)
+
+
+def check_capture_writer_health(faults: dict, cw: dict | None) -> Check:
+    """Gates on rows LOST, never on the fault count (issue #211).
+
+    A `database is locked` fault used to mean a discarded batch - up to 500
+    raw_trades rows each, 460 rows measured lost in one 18h process. Since
+    capture_writer retains and retries a batch on a lock, the same fault
+    means a collision the rows survived, so the fault count says how often
+    the writer collided, not how much history is missing; gating on it
+    would latch FAIL on the very mechanism that now prevents the loss.
+
+    Rows lost are `capture_writer.dropped_rows` (a non-retryable flush
+    failure discarded the batch) plus `overflow_dropped_rows` (the retained
+    buffer hit its cap during a long lock hold) - two causes, two names,
+    both loss. `lock_retries` is churn, reported for context.
+
+    Scope mismatch, stated rather than hidden: the row counters are
+    process-lifetime, the fault count is a 24h window. A 24h fault this
+    process's counters do not account for (faults_24h > lock_retries) is
+    either a flush failure before the last restart - rows lost that these
+    counters no longer hold - or a supervisor fault; the check cannot tell
+    which, so its source is partial and it resolves to UNKNOWN, never PASS.
+    A `capture_writer/flush` entry in `most_frequent` is proof of a
+    discarded batch inside the window and fails the check outright; its
+    count is a floor, the list being top-N.
+
+    An app predating the counters exposes no `capture_writer` block; that
+    is UNKNOWN, because a fault count is not a row count either way.
+    """
     by_comp = (faults or {}).get("by_component") or {}
     n = by_comp.get("capture_writer", 0)
+    freq = (faults or {}).get("most_frequent") or []
+    flush_floor = sum(f.get("count", 0) for f in freq
+                      if f.get("component") == "capture_writer"
+                      and f.get("operation") == "flush")
+    if not cw:
+        return Check(
+            "capture_writer_health", ANALYSIS_READINESS, UNKNOWN,
+            "capture_writer row counters absent from the API response (app "
+            f"predates #211); {n} capture_writer faults in the last 24h, and "
+            "a fault count is not a row count",
+            {"capture_writer_faults_24h": n,
+             "capture_writer_flush_failures_24h_floor": flush_floor},
+            invalidates=_RAW_ARCHIVE_INVALIDATED,
+        )
+    dropped = cw.get("dropped_rows") or {}
+    overflow = cw.get("overflow_dropped_rows") or {}
+    retries = cw.get("lock_retries") or {}
+    lost_failed = sum(dropped.values())
+    lost_cap = sum(overflow.values())
+    lost = lost_failed + lost_cap
+    retried = sum(retries.values())
+    by_store = {s: dropped.get(s, 0) + overflow.get(s, 0)
+                for s in sorted(set(dropped) | set(overflow))
+                if dropped.get(s, 0) + overflow.get(s, 0)}
+    unexplained = max(0, n - retried)
+    measured = {
+        "capture_writer_lost_rows": lost,
+        "capture_writer_dropped_rows": lost_failed,
+        "capture_writer_overflow_dropped_rows": lost_cap,
+        "capture_writer_lost_rows_by_store": by_store,
+        "capture_writer_lock_retries": retried,
+        "capture_writer_faults_24h": n,
+        "capture_writer_faults_unexplained_by_counters": unexplained,
+        "capture_writer_flush_failures_24h_floor": flush_floor,
+        "counter_scope": cw.get("counter_scope"),
+    }
+    context = (f"{n} capture_writer faults in the last 24h, {retried} of them "
+               "lock collisions whose rows were retained and retried")
+    if lost or flush_floor:
+        detail = (f"{lost} rows lost this process lifetime ({lost_failed} to "
+                  f"non-retryable flush failures, {lost_cap} past the "
+                  f"{cw.get('max_retained_rows')}-row retained-buffer cap; by "
+                  f"store {by_store}); {context}")
+        if flush_floor:
+            detail += (f"; at least {flush_floor} flush failure(s) in the last "
+                       "24h discarded their batch (floor - most_frequent is "
+                       "top-N; one before the last restart is a hole these "
+                       "counters no longer hold)")
+        status = FAIL
+    else:
+        detail = f"0 rows lost this process lifetime; {context}"
+        status = PASS
+    if unexplained:
+        detail += (f"; {unexplained} of the faults are not accounted for by "
+                   "this process's counters (process-lifetime counters vs a "
+                   "24h fault window: a flush failure before the last "
+                   "restart, or a supervisor fault)")
     return Check(
-        "capture_writer_health", ANALYSIS_READINESS,
-        PASS if n == 0 else FAIL,
-        f"{n} capture_writer faults in the last 24h",
-        {"capture_writer_faults_24h": n},
-        invalidates=(
-            "The raw_trades archive, and therefore every backtest, replay, "
-            "and whale-density statistic computed from it. A failed flush "
-            "is a hole in the stored history, not a delayed write."
-        ),
+        "capture_writer_health", ANALYSIS_READINESS, status, detail, measured,
+        invalidates=_RAW_ARCHIVE_INVALIDATED,
+        source_complete=unexplained == 0,
     )
 
 
@@ -458,6 +543,7 @@ def run_checks(payload: dict) -> list[Check]:
     qh = ingest.get("queue_health") or {}
     sched = payload.get("schedulers") or {}
     faults = payload.get("faults_last_24h") or {}
+    capture = payload.get("capture_writer")
     checks = [
         check_ingest_drops(qh),
         check_ticker_conservation(qh),
@@ -467,7 +553,7 @@ def run_checks(payload: dict) -> list[Check]:
         check_resolver_accounting(sched),
         check_settlement_completeness(sched),
         check_price_completeness(qh),
-        check_capture_writer_health(faults),
+        check_capture_writer_health(faults, capture),
         check_exit_engine_faults(faults),
     ]
     return resolve_dependencies(checks)

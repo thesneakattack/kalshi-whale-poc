@@ -34,8 +34,17 @@ def _payload(**over):
     faults = {"by_component": {"capture_writer": 0, "exit_engine": 0},
               "most_frequent": []}
     faults.update(over.pop("faults_last_24h", {}))
+    # services/capture_writer.loss_snapshot(), as /api/health/pipeline
+    # exposes it (issue #211): per-store row counters for the process
+    # lifetime, two distinct drop paths.
+    cw = {"dropped_rows": {"raw_trades": 0, "rejection_events": 0},
+          "overflow_dropped_rows": {"raw_trades": 0, "rejection_events": 0},
+          "lock_retries": {"raw_trades": 0, "rejection_events": 0},
+          "depth": {"raw_trades": 0, "rejection_events": 0},
+          "max_retained_rows": 200000, "counter_scope": "process lifetime"}
+    cw.update(over.pop("capture_writer", {}))
     return {"ingest": {"queue_health": qh}, "schedulers": sched,
-            "faults_last_24h": faults, **over}
+            "faults_last_24h": faults, "capture_writer": cw, **over}
 
 
 def _by_id(checks):
@@ -246,7 +255,8 @@ def test_every_failing_analysis_check_states_what_it_invalidates():
                                           "exit_engine": 175},
                          "most_frequent": [
                              {"operation": "stale_price_uncorroborated",
-                              "count": 3}]})
+                              "count": 3}]},
+        capture_writer={"dropped_rows": {"raw_trades": 346}})
     failing = [c for c in sa.run_checks(p)
                if c.layer == sa.ANALYSIS_READINESS and c.status == sa.FAIL]
     assert len(failing) == 4
@@ -280,10 +290,83 @@ def test_incomplete_per_operation_figure_is_labelled_a_floor():
     assert "floor" in c.detail
 
 
-def test_capture_writer_faults_invalidate_the_raw_archive():
-    p = _payload(faults_last_24h={"by_component": {"capture_writer": 220}})
+def test_capture_writer_gates_on_lost_rows_not_on_fault_count():
+    """Issue #211: a `database is locked` fault no longer discards its batch
+    (capture_writer retains and retries), so the fault count says how often
+    the writer collided, not how much history is missing. The gate reads
+    the row counters; the fault count stays in the detail as context. 220
+    faults every one of which the counters account for as a retained
+    collision is a PASS; 460 lost rows (the figure measured live, 2026-08-30)
+    with zero faults in the window is a FAIL."""
+    p = _payload(faults_last_24h={"by_component": {"capture_writer": 220}},
+                 capture_writer={"lock_retries": {"raw_trades": 220, "rejection_events": 0}})
+    c = _by_id(sa.run_checks(p))["capture_writer_health"]
+    assert c.status == sa.PASS
+    assert c.measured["capture_writer_lost_rows"] == 0
+    assert c.measured["capture_writer_lock_retries"] == 220
+    assert "220" in c.detail
+
+    p = _payload(capture_writer={"dropped_rows": {"raw_trades": 460, "rejection_events": 0}})
     c = _by_id(sa.run_checks(p))["capture_writer_health"]
     assert c.status == sa.FAIL and "raw_trades" in c.invalidates
+    assert c.measured["capture_writer_lost_rows"] == 460
+    assert c.measured["capture_writer_lost_rows_by_store"] == {"raw_trades": 460}
+    assert "460" in c.detail
+
+
+def test_capture_writer_faults_the_counters_cannot_account_for_are_unknown_not_pass():
+    """The row counters are process-lifetime; the fault count is a 24h
+    window. A fault the counters do not explain as a retained collision may
+    be a flush failure before the last restart - rows lost that no counter
+    holds any more - so the check's source is partial and 'no loss' cannot
+    be claimed: UNKNOWN, with the gap named, never PASS."""
+    p = _payload(faults_last_24h={"by_component": {"capture_writer": 220}})
+    c = _by_id(sa.run_checks(p))["capture_writer_health"]
+    assert c.status == sa.UNKNOWN
+    assert c.measured["capture_writer_lost_rows"] == 0
+    assert c.measured["capture_writer_faults_unexplained_by_counters"] == 220
+    assert c.source_complete is False
+    assert "220" in c.detail and "not accounted for" in c.detail
+
+
+def test_capture_writer_flush_failure_in_the_window_fails_even_with_clean_counters():
+    """A `capture_writer/flush` entry in most_frequent is a discarded batch
+    inside the 24h window whatever this process's counters say (they reset
+    at restart); it fails the check, and its count is labelled a floor
+    because most_frequent is a top-N list."""
+    p = _payload(faults_last_24h={"by_component": {"capture_writer": 3},
+                                  "most_frequent": [{"component": "capture_writer",
+                                                     "operation": "flush",
+                                                     "exc_type": "OperationalError",
+                                                     "message": "database is locked",
+                                                     "count": 3}]})
+    c = _by_id(sa.run_checks(p))["capture_writer_health"]
+    assert c.status == sa.FAIL
+    assert c.measured["capture_writer_flush_failures_24h_floor"] == 3
+    assert "floor" in c.detail
+
+
+def test_capture_writer_overflow_drops_are_loss_and_reported_by_name():
+    """The retained-buffer cap is a second, distinct drop path. It fails the
+    gate like any lost row and the detail says which path lost them."""
+    p = _payload(capture_writer={"overflow_dropped_rows": {"raw_trades": 12, "rejection_events": 0},
+                                 "lock_retries": {"raw_trades": 40, "rejection_events": 0}})
+    c = _by_id(sa.run_checks(p))["capture_writer_health"]
+    assert c.status == sa.FAIL
+    assert c.measured["capture_writer_lost_rows"] == 12
+    assert c.measured["capture_writer_overflow_dropped_rows"] == 12
+    assert c.measured["capture_writer_lock_retries"] == 40
+    assert "cap" in c.detail
+
+
+def test_capture_writer_loss_counters_absent_is_unknown_not_pass():
+    """An API that does not expose the row counters cannot be judged on
+    them - and a fault count of 0 is not evidence of zero loss."""
+    p = _payload()
+    del p["capture_writer"]
+    c = _by_id(sa.run_checks(p))["capture_writer_health"]
+    assert c.status == sa.UNKNOWN
+    assert c.measured["capture_writer_faults_24h"] == 0
 
 
 # --- layer separation is structural, not a naming convention -------------

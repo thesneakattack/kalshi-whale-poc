@@ -356,6 +356,15 @@ async def get_pipeline_health(exact_rows: bool = False):
             "settlement_edge": extras["settlement_edge_buffered"],
             "game_state": extras["game_state_buffered"],
         },
+        # Rows the capture daemon LOST, by cause and store, for the process
+        # lifetime (services/capture_writer.loss_snapshot, issue #211):
+        # dropped_rows (non-retryable flush failure), overflow_dropped_rows
+        # (retained buffer hit its cap during lock collisions), lock_retries
+        # (batches handed back for retry - churn, not loss). The
+        # capture_writer entries in faults_last_24h above count collisions;
+        # only these count missing history. tools/soak_analyzer.py gates on
+        # them.
+        "capture_writer": capture_writer.loss_snapshot(),
     }
 
 

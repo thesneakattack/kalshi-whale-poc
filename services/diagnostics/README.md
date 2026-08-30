@@ -137,3 +137,29 @@ the block reports its own wall cost, so the next regression shows up in the
 same read rather than in someone's stopwatch. Guards live in
 `tests/test_pipeline_health_cost.py`, which asserts the SQL issued and that
 no probe runs on the event loop.
+
+## `capture_writer`: rows the capture daemon lost, by cause (issue #211, 2026-08-30)
+
+`faults_last_24h.by_component.capture_writer` counts collisions, not
+missing history. Until 2026-08-30 a `database is locked` on the daemon's
+flush discarded the batch (up to 500 `raw_trades` rows; 460 rows measured
+lost in one 18.2h process, 227 faults since 2026-08-27), because the
+writer opened `series_watcher.db` with a 50ms busy budget while the file's
+other writers - `series_watcher.flush()`'s book INSERT (20-44ms hold per
+tick) and `series_watcher.prune()`'s full-scan DELETE (~90ms warm, hourly
+and on every start; 24 of 45 timestamped faults sat within 120s of a prune
+mark) - hold the per-file write lock longer than that. The daemon now
+retains the batch on a lock and retries next cycle, and the payload's
+`capture_writer` block (`services/capture_writer.loss_snapshot()`,
+in-memory, 0ms) is the completeness read:
+
+| field | meaning |
+|---|---|
+| `dropped_rows` (per store) | rows discarded by a non-retryable flush failure - loss |
+| `overflow_dropped_rows` (per store) | rows discarded because the retained buffer hit `max_retained_rows` during a long lock hold - loss, under its own name |
+| `lock_retries` (per store) | batches handed back to the buffer after a lock collision - churn, not loss |
+| `depth`, `max_retained_rows`, `counter_scope` | current backlog, the cap, and the reminder that every counter resets with the process |
+
+`tools/soak_analyzer.py`'s `capture_writer_health` gates on the two loss
+counters and treats a 24h fault the counters cannot account for as a
+partial source (UNKNOWN, never PASS).
