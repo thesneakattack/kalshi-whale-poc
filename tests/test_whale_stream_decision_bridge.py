@@ -15,6 +15,7 @@ import asyncio
 import pytest
 
 from services import candidate_ledger, signal_log
+from services.app_state import state
 from services.confidence_scoring import WhaleSignal
 from services.whale_stream import decision_bridge
 
@@ -41,9 +42,11 @@ class _FakeStrategy:
     def __init__(self, decision):
         self.decision = decision
         self.calls = 0
+        self.last_kwargs = None
 
     def evaluate(self, signal, cfg, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return self.decision
 
 
@@ -141,3 +144,71 @@ def test_handle_signal_skip_still_only_routes_the_claim_check(monkeypatch):
     assert result["reason"] == "duplicate_trade_id"
     assert len(routed_fns) == 1  # only the claim() check - never reaches record_decision
     assert fake_strategy.calls == 0
+
+
+def _set_me_state(monkeypatch, market_titles, event_titles, open_position_tickers, me_pairs=None):
+    monkeypatch.setitem(state, "market_titles", market_titles)
+    monkeypatch.setitem(state, "event_titles", event_titles)
+    monkeypatch.setitem(state, "open_position_tickers", open_position_tickers)
+    monkeypatch.setitem(state, "me_pairs", me_pairs or {})
+
+
+def test_handle_signal_passes_broad_me_complement_when_watchlist_missed_it(monkeypatch):
+    """The exact ATP-match failure mode this fix closes: BUS is a fresh
+    candidate never on the watchlist, so state["me_pairs"] (built from the
+    narrow per-tick markets list) has nothing for it - but
+    market_titles/event_titles (the broad, persisted caches) and
+    open_position_tickers (BON already open) are enough for the new
+    fallback to find the conflict."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch,
+        market_titles={
+            "BON": {"event_ticker": "EVT-1"},
+            "BUS": {"event_ticker": "EVT-1"},
+        },
+        event_titles={"EVT-1": {"mutually_exclusive": True}},
+        open_position_tickers={"BON"},
+    )
+
+    signal = _make_signal(id="bus1", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] == "BON"
+
+
+def test_handle_signal_prefers_existing_me_pairs_hit_over_the_new_fallback(monkeypatch):
+    """state["me_pairs"] (the existing, narrower mechanism) still wins when
+    it already has an answer - the new check is a fallback, not a
+    replacement, and must not override it."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch,
+        market_titles={"BUS": {"event_ticker": "EVT-1"}},  # no BON entry at all
+        event_titles={"EVT-1": {"mutually_exclusive": True}},
+        open_position_tickers=set(),  # nothing open - the new check alone would find nothing
+        me_pairs={"BUS": "BON-FROM-OLD-MECHANISM"},
+    )
+
+    signal = _make_signal(id="bus2", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] == "BON-FROM-OLD-MECHANISM"
+
+
+def test_handle_signal_me_complement_is_none_when_neither_mechanism_finds_a_conflict(monkeypatch):
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch, market_titles={}, event_titles={}, open_position_tickers=set(),
+    )
+
+    signal = _make_signal(id="bus3", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] is None
