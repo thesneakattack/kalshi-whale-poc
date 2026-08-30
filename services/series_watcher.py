@@ -452,11 +452,16 @@ def capture_stats(series: str | None = None) -> dict:
         "buffered_trades": capture_writer.depth().get("raw_trades", 0),
         "buffered_books": len(_book_buffer),
         # dropped_rows sums this module's own book-flush failures with
-        # capture_writer's raw_trades flush failures - both are real loss
-        # against the SAME series_watcher-owned dataset, so a caller
-        # reading this field shouldn't have to know the two now live in
-        # different modules to get an honest total.
-        "dropped_rows": _dropped_rows + capture_writer.dropped_count().get("raw_trades", 0),
+        # capture_writer's raw_trades losses on BOTH of its drop paths (a
+        # non-retryable flush failure, and the retained-buffer cap after
+        # lock collisions - issue #211) - all are real loss against the
+        # SAME series_watcher-owned dataset, so a caller reading this field
+        # shouldn't have to know the causes now live in different modules
+        # to get an honest total. capture_writer.loss_snapshot() has the
+        # breakdown.
+        "dropped_rows": (_dropped_rows
+                         + capture_writer.dropped_count().get("raw_trades", 0)
+                         + capture_writer.overflow_dropped_count().get("raw_trades", 0)),
     }
 
 

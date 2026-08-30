@@ -48,7 +48,7 @@ Each is a data-layer condition whose damage lands in the trade layer.
 |---|---|---|
 | ~~`settlement_resolver.dropped_total`~~ | ~~64 of 32,128 (0.199%)~~ | **Withdrawn 2026-08-30 (#208): not a breach.** The counter conflated retry give-ups with markets correctly skipped for having no binary outcome (`result` is `yes`, `no`, or `scalar` — `docs/kalshi/market_lifecycle.md:68`, `docs/kalshi/market-settlement.md:23`), and all 64 were the second kind. `dropped_after_max_attempts` — the counter that actually means lost settlements — was 0. See below. |
 | Ticker conservation gap | 74 updates unaccounted | Mark-to-market, unrealized P&L, exit decisions, and the netting materiality bar all read a price the exchange may have already superseded |
-| `capture_writer` faults | 220 in 24h ("database is locked") | Holes in the `raw_trades` archive — every backtest, replay, and whale-density statistic computed from it |
+| `capture_writer` faults | 220 in 24h ("database is locked"); **460 `raw_trades` rows lost in one 18.2h process** (#211, measured 2026-08-30 via `series_watcher.capture_stats().dropped_rows`) | Holes in the `raw_trades` archive — every backtest, replay, and whale-density statistic computed from it. Fixed in #211: the daemon now retains a batch on a lock and retries it, so the fault count became a collision count; `capture_writer_health` gates on the row counters `/api/health/pipeline` now exposes (`capture_writer.dropped_rows` + `overflow_dropped_rows`) and reads a 24h fault the counters cannot account for as a partial source (UNKNOWN, never PASS) |
 | `exit_engine.stale_price_uncorroborated` | 3 | Exits recorded as decisions whose justifying price was never confirmed |
 
 The settlement figure is the sharpest illustration of why the layers stay
