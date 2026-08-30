@@ -564,9 +564,15 @@ _FLOOR_HOURS = {
 # Which domains have a defined cleanup action at all (spec §8's three actions map onto a
 # subset of signal identities - e.g. process_hygiene findings have no corresponding
 # cleanup action, they are surfaced for a human to fix the baseline.json note by hand).
-_CLEANUP_ACTION_FOR_DOMAIN = {
-    "branch": "delete_merged_branch",
-}
+#
+# "branch" -> delete_merged_branch was retired here 2026-08-30, after this module's
+# first-ever real --clean run (issue #90's fix-out) found 0 cleanup_actions rows across
+# 11 prior detect cycles and 20 total escalations: every branch signal that ever reached
+# escalation_eligible had already been deleted through the normal gh pr merge
+# --delete-branch / scripts/cleanup-worktrees.sh path before this action ever got a
+# chance to run. delete_merged_branch() itself (below) stays - tested, safe, just no
+# longer auto-selected - in case that empirical pattern changes.
+_CLEANUP_ACTION_FOR_DOMAIN: dict[str, str] = {}
 
 
 def run_detect_cycle(
