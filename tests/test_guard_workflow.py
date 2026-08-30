@@ -90,6 +90,22 @@ def test_r6_counts_a_session_anywhere_below_the_checkout_root(tmp_path):
     assert g.pre_bash("git checkout main", str(tmp_path / "elsewhere"), st, sessions, self_pids={222}) is None
 
 
+def test_r6_does_not_match_git_merge_plumbing_subcommands(tmp_path):
+    """Found live (2026-08-30): \\b matches at the e|- boundary in
+    "merge-tree", so the old regex denied the read-only diff-simulation
+    subcommand identically to a real `git merge`. A negative lookahead
+    excludes merge-tree/merge-base/merge-file while still denying the real
+    merge (and the other risky subcommands) under the same colliding-cwd
+    setup that would otherwise deny it."""
+    g = _load()
+    st = tmp_path / "st"; st.mkdir()
+    primary = _repo(tmp_path / "primary")
+    sessions = {111: str(primary)}
+    assert g.pre_bash("git merge-tree HEAD main", str(primary), st, sessions, self_pids={222}) is None
+    out = g.pre_bash("git merge origin/main", str(primary), st, sessions, self_pids={222})
+    assert out["decision"] == "deny" and "pid 111" in out["reason"]
+
+
 # ---------------------------------------------------------------- R7
 def test_r7_ddev_exec_from_a_worktree_gets_the_docker_form(tmp_path):
     g = _load()

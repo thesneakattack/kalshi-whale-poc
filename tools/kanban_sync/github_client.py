@@ -125,17 +125,23 @@ class GithubClient:
             search_term = search_term[4:-3].strip()
         stdout = self._run([
             "issue", "list", "--search", search_term, "--state", "all",
-            "--json", "number,state,labels", "--limit", "1",
+            "--json", "number,state,labels,body", "--limit", "5",
         ])
         results = json.loads(stdout)
-        if not results:
-            return None
-        item = results[0]
-        return IssueState(
-            number=item["number"],
-            open=item["state"] == "OPEN",
-            labels=frozenset(label["name"] for label in item["labels"]),
-        )
+        # GitHub's issue search is fuzzy full-text, not a literal match - the
+        # top hit can be an unrelated issue that merely shares tokens with the
+        # marker (found live 2026-08-30, issue #90: a search for one plan's
+        # marker matched an unrelated roadmap-tracked issue and, trusted
+        # blindly, caused a real wrongful `close_issue` call). Only trust a
+        # result whose body actually contains the literal marker text.
+        for item in results:
+            if marker in (item.get("body") or ""):
+                return IssueState(
+                    number=item["number"],
+                    open=item["state"] == "OPEN",
+                    labels=frozenset(label["name"] for label in item["labels"]),
+                )
+        return None
 
     def list_open_by_label(self, label: str) -> list[IssueState]:
         """Bulk-lists every currently-OPEN issue carrying `label`, with body

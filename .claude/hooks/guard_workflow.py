@@ -72,7 +72,7 @@ NUDGE_LINES = 150
 _SQLITE_ON_DATA = re.compile(r"sqlite3.*data/|data/\S*\.db.*sqlite3|sqlite3\.connect\([^)]*data/")
 _DIAG_READ = re.compile(r"api/quality/summary|api/health/|api/observability/")
 _RISKY_GIT = re.compile(
-    r"\bgit\b(?:\s+-C\s+(\S+))?\s+(checkout|switch|stash|reset\s+--hard|rebase|merge|worktree\s+remove)\b"
+    r"\bgit\b(?:\s+-C\s+(\S+))?\s+(checkout|switch|stash|reset\s+--hard|rebase|merge|worktree\s+remove)(?!-)\b"
 )
 _GIT_ADD_ALL = re.compile(r"\bgit\s+add\s+(-A\b|--all\b|\.\s*$|\.\s)")
 _DDEV_EXEC = re.compile(r"^\s*ddev\s+exec\s+(?:-s\s+\S+\s+)?(.*)$", re.S)
