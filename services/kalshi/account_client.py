@@ -143,6 +143,12 @@ class KalshiAccountClient:
     async def get_endpoint_costs(self) -> dict:
         return await self._reads.get_endpoint_costs()
 
+    async def get_user_data_timestamp(self) -> dict:
+        return await self._reads.get_user_data_timestamp()
+
+    async def get_api_keys(self) -> dict:
+        return await self._reads.get_api_keys()
+
     async def get_positions(self) -> dict:
         return await self._reads.get_positions()
 

@@ -30,11 +30,12 @@ from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import store_stats
 from services.diagnostics import trade_capture_reconciliation
-from services.app_state import state, trade_stream, whale_provider
+from services.app_state import account, state, trade_stream, whale_provider
 from services import whale_pipeline_perf
 from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
 from services.config.config_store import config_store
+from services.kalshi.account import classify_api_key_attestation, user_data_age_sec
 from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
@@ -104,6 +105,83 @@ async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float 
         )
     finally:
         await client.close()
+
+
+@router.get("/api/diagnostics/account")
+@http_client.classify("interactive")
+async def get_account_diagnostics():
+    """Two Kalshi account reads with no existing caller anywhere in
+    services/ before this route (grepped, confirmed 2026-08-30) - the
+    exchange's own staleness signal (issue #266, GET /exchange/
+    user_data_timestamp) and API-key location-attestation status (issue
+    #261, GET /api_keys' api_key_region_expiration_ts).
+
+    Deliberately its own route, not folded into /api/health/pipeline or
+    /api/quality/summary: both stay network-I/O-free by design today
+    (services/quality/routes.py's own module docstring, proven by
+    tests/test_quality_routes.py monkeypatching KalshiClient construction
+    to raise) and /api/health/pipeline just had a 504 traced to unmeasured
+    per-request cost (issue #210) - the established pattern for "a
+    diagnostic that needs a real Kalshi call" is already this file's own
+    /api/diagnostics/coverage and /api/diagnostics/trade-capture: a
+    separate, on-demand route, never an inline addition to either
+    always-safe set. Both reads are single-token authenticated GETs (not
+    exchange-wide), through the same account gateway/limiter every other
+    account read already uses.
+
+    pipeline_oldest_message_age_sec rides along so issue #266's actual ask
+    - comparing the exchange's own reporting lag against this app's own
+    ingest-pipeline staleness - is answerable from one response, without
+    the two numbers ever merging into one (CLAUDE.md: "meant to be
+    compared, not merged"). Each of the two live calls degrades to an
+    explicit error rather than a fabricated value if the account isn't
+    configured or the call fails - same ethos as every other source in
+    this router."""
+    now = time.time()
+    ingest = trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else {}
+    pipeline_oldest_message_age_sec = (ingest.get("queue") or {}).get("oldest_message_age_sec")
+
+    if not account.enabled:
+        return {
+            "generated_at": now,
+            "configured": False,
+            "user_data_timestamp": None,
+            "api_key_attestation": None,
+            "pipeline_oldest_message_age_sec": pipeline_oldest_message_age_sec,
+        }
+
+    async def _timestamp() -> dict:
+        try:
+            payload = await account.get_user_data_timestamp()
+        except Exception as exc:
+            from services import fault_log
+            fault_log.record("kalshi_account", "get_user_data_timestamp", exc)
+            return {"error": str(exc)}
+        return {
+            "as_of_time": payload.get("as_of_time"),
+            "as_of_age_sec": user_data_age_sec(payload, now=now),
+        }
+
+    async def _attestation() -> dict:
+        try:
+            payload = await account.get_api_keys()
+        except Exception as exc:
+            from services import fault_log
+            fault_log.record("kalshi_account", "get_api_keys", exc)
+            return {"error": str(exc)}
+        return {
+            **classify_api_key_attestation(payload, now=now),
+            "api_key_count": len(payload.get("api_keys") or []),
+        }
+
+    ts_result, attestation_result = await asyncio.gather(_timestamp(), _attestation())
+    return {
+        "generated_at": now,
+        "configured": True,
+        "user_data_timestamp": ts_result,
+        "api_key_attestation": attestation_result,
+        "pipeline_oldest_message_age_sec": pipeline_oldest_message_age_sec,
+    }
 
 
 @router.get("/api/diagnostics/series/{series}")
