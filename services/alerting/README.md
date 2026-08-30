@@ -128,5 +128,9 @@ uncombined `alerts` field that never feeds into `status`. The real,
 narrower effect of the gap was `GET /api/alerts/active`/the dashboard's
 "Alerts: N active" line staying wrong forever, which is what this fix
 actually corrects. Whether a critical active alert *should* be able to
-drive `overall_status()` to `"error"` is a separate, still-open question —
-see `ROADMAP.md`.
+drive `overall_status()` to `"error"` was decided 2026-08-30 (#71): yes —
+`alert_findings(active_alerts())` maps each active row to a `QualityFinding`
+(`critical` → `error`, anything else → `warning`; `info` is never persisted
+as a row, only dispatched as a resolution notification) and
+`services/quality/routes.py` rolls those into the same `QualityReport` as
+the observability/storage rules, so `status` and `counts` move together.

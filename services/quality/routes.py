@@ -44,6 +44,10 @@ async def get_quality_summary():
         last_backup_run=backup.latest(),
         backup_interval_sec=backup_cfg.get("interval_sec", backup._DEFAULT_INTERVAL_SEC),
     )
+    # One DB read serves both the raw `alerts` field below and the
+    # alert-derived findings that let a critical alert drive `status` (#71).
+    active_alerts = alerting.active_alerts()
+    findings += alerting.alert_findings(active_alerts)
     report = QualityReport(findings=findings)
     # Deliberately just the timestamp/running flag, never the full report
     # (services/research/research.py's own build_report composes seven other
@@ -73,7 +77,7 @@ async def get_quality_summary():
         # proven live via py-spy: caught holding the loop for a continuous
         # ~15s stretch, recurring every ~30-45s.
         "diagnostics": await tick_executor.run(lambda: diagnostics.run_offline(cfg)),
-        "alerts": {"active": alerting.active_alerts()},
+        "alerts": {"active": active_alerts},
         "faults": fault_log.summary(),
         "storage": {"databases": storage_entries},
         "research": {
