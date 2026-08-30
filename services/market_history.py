@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 from services import fault_log
+from services import kalshi_fees
 from services.signal_log import series_of
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_history.db"
@@ -349,7 +350,7 @@ def compute_hypothetical_trades(lookback_windows_sec: tuple = (3600, 21600, 8640
                 entry_price, entry_ts = candidates[-1]
                 side = "yes" if entry_price > 0.5 else "no"
                 won = result == side
-                unit_cost = entry_price if side == "yes" else (1 - entry_price)
+                unit_cost = kalshi_fees.unit_cost(side, entry_price)
                 payout = 1.0 if won else 0.0
                 results.append({
                     "ticker": ticker,

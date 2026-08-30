@@ -30,7 +30,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from services import candidate_log, candidate_retry, market_analyst_agent, market_history, series_evaluator, signal_log
+from services import candidate_log, candidate_retry, kalshi_fees, market_analyst_agent, market_history, series_evaluator, signal_log
 from services.config import config_bounds
 from services import whale_pipeline_perf
 from services import http_client
@@ -208,7 +208,10 @@ def _analyst_factor(ticker: str, side: str) -> float:
     lean = market_analyst_agent.analyst_lean(ticker, max_age_sec=_ANALYST_FRESHNESS_SEC)
     if lean is None:
         return 0.5
-    return lean if side == "yes" else (1.0 - lean)
+    # The analyst's yes-probability side-adjusted exactly as a yes price
+    # is - for a $1-or-$0 contract the two are the same number (see
+    # kalshi_fees.unit_cost / breakeven_unit_cost).
+    return kalshi_fees.unit_cost(side, lean)
 
 
 class KalshiTradeTapeProvider(WhaleWatcherProvider):
@@ -578,10 +581,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                         # unit_cost too - see record_rejection's own
                         # docstring / ROADMAP.md on why that matters.
                         unresolved_price = _price_dollars(trade, "yes_price_dollars")
-                        unresolved_unit_cost = (
-                            (unresolved_price if side_n[0] == "yes" else (1.0 - unresolved_price))
-                            if unresolved_price is not None else None
-                        )
+                        unresolved_unit_cost = kalshi_fees.unit_cost(side_n[0], unresolved_price)
                         candidate_log.record_rejection(
                             ticker, "whale_watcher", "market_unresolved", side_n[1],
                             min_contracts_for(ticker, wwk_cfg), side=side_n[0], unit_cost=unresolved_unit_cost,
@@ -634,7 +634,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                     ticker, "whale_watcher", "unparseable_price", 0.0, 0.0, side=side,
                 )
                 continue
-            unit_cost = price if side == "yes" else (1.0 - price)
+            unit_cost = kalshi_fees.unit_cost(side, price)
 
             # A single global threshold can't be right for both a
             # low-liquidity niche market and a high-volume political one

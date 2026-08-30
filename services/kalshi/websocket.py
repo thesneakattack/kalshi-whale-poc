@@ -47,6 +47,7 @@ from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
 from services import candidate_log
 from services import fault_log
+from services import kalshi_fees
 from services import series_watcher
 from services import whale_gate
 from services.config.config_store import config_store
@@ -963,7 +964,7 @@ class KalshiStreamGateway:
             candidate_log.record_rejection(ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side)
             return True
         price = trade_contract._dollars(trade_msg.get("yes_price_dollars"))
-        unit_cost = (price if side == "yes" else (1.0 - price)) if price is not None else None
+        unit_cost = kalshi_fees.unit_cost(side, price)
         candidate_log.record_rejection(
             ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side, unit_cost=unit_cost,
         )

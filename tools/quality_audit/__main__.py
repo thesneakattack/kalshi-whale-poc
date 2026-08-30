@@ -29,6 +29,7 @@ from tools.quality_audit.kalshi_contract_docs import scan_kalshi_contract_docs
 from tools.quality_audit.persistence import scan_persistence_isolation
 from tools.quality_audit.resources import scan_resource_lifecycle
 from tools.quality_audit.routers import scan_router_registration
+from tools.quality_audit.unit_cost import scan_unit_cost_derivations
 
 Scanner = Callable[[Path], list[QualityFinding]]
 
@@ -42,6 +43,7 @@ _SCANNERS: list[Scanner] = [
     scan_frontend_contract,
     scan_kalshi_contract_docs,
     scan_kalshi_boundary,
+    scan_unit_cost_derivations,
 ]
 
 _DEFAULT_BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"

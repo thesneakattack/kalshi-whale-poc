@@ -104,7 +104,7 @@ def payout_profile(members: list[tuple[str, object]], include_outside: bool) -> 
     differently) - this module's own single source of truth stays that
     broker, not a second formula."""
     total_cost = sum(
-        pos.size * (pos.entry_price if pos.side == "yes" else (1 - pos.entry_price))
+        pos.size * kalshi_fees.unit_cost(pos.side, pos.entry_price)
         for _, pos in members
     )
     total_fee = sum(pos.entry_fee for _, pos in members)
@@ -178,9 +178,9 @@ def _unwind_now_value(members: list[tuple[str, object]], latest_prices: dict) ->
     total = 0.0
     for ticker, pos in members:
         price = latest_prices.get(ticker, pos.entry_price)
-        proceeds = pos.size * price if pos.side == "yes" else pos.size * (1 - price)
+        proceeds = pos.size * kalshi_fees.unit_cost(pos.side, price)
         exit_fee = kalshi_fees.taker_fee(pos.size, price, ticker=ticker)
-        cost_basis = pos.size * (pos.entry_price if pos.side == "yes" else (1 - pos.entry_price))
+        cost_basis = pos.size * kalshi_fees.unit_cost(pos.side, pos.entry_price)
         total += proceeds - exit_fee - cost_basis - pos.entry_fee
     return total
 

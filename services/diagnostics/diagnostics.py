@@ -39,6 +39,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from services import kalshi_fees
 from services import signal_log
 from services.config import config_performance
 from services import paper_broker as pb_module
@@ -94,17 +95,6 @@ def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     except sqlite3.Error:
         return {}
     return {t: ts for t, ts in rows}
-
-
-def _unit_cost(side: str, yes_price: float | None) -> float | None:
-    """What the taker actually paid per contract. Same side-aware inversion
-    PaperBroker.cost_basis/open_position use - re-deriving this as
-    size*price without the (1 - price) no-side flip is the exact bug class
-    CLAUDE.md's "no-side dollar math" section documents, so it is written
-    once here and reused by every check below."""
-    if yes_price is None:
-        return None
-    return yes_price if side == "yes" else 1.0 - yes_price
 
 
 def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
@@ -287,7 +277,7 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
             base_hist, overrides_hist, category=cats.get(r["ticker"]), series=signal_log.series_of(r["ticker"]),
         )
         lo, hi = strat.get("min_unit_cost"), strat.get("max_unit_cost")
-        uc = _unit_cost(r["side"], r["price"])
+        uc = kalshi_fees.unit_cost(r["side"], r["price"])
         if uc is None:
             continue
         if hi is not None and uc > hi:

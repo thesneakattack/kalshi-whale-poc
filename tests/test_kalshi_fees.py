@@ -1,6 +1,6 @@
 import pytest
 
-from services.kalshi_fees import breakeven_unit_cost, taker_fee, taker_fee_per_contract
+from services.kalshi_fees import breakeven_unit_cost, taker_fee, taker_fee_per_contract, unit_cost
 
 
 def test_taker_fee_matches_real_verified_fills():
@@ -121,3 +121,62 @@ def test_breakeven_unit_cost_honours_the_real_per_series_fee_multiplier():
     assert breakeven_unit_cost(0.70, ticker="KXMLBGAME-26AUG13GBPIT-PIT") == pytest.approx(
         0.70735, abs=1e-12)
     assert breakeven_unit_cost(0.70, ticker="KXBTC15M-26AUG30") == pytest.approx(0.7147, abs=1e-12)
+
+
+# --- unit_cost: the one side-aware per-contract cost (issue #212) ----------
+
+
+def test_unit_cost_yes_side_is_the_yes_price_itself():
+    assert unit_cost("yes", 0.3) == 0.3
+    assert unit_cost("yes", 0.84) == 0.84
+
+
+def test_unit_cost_no_side_is_the_complement_of_the_yes_price():
+    # docs/kalshi/get-market-orderbook.md: "a bid for yes at price X is
+    # equivalent to an ask for no at price (100-X)" - a NO contract at yes
+    # price 0.3 costs 0.7, the exact inversion the shipped no-side bug
+    # (CLAUDE.md, "A displayed value must match its label") got wrong.
+    assert unit_cost("no", 0.3) == 1 - 0.3
+    assert unit_cost("no", 0.84) == pytest.approx(0.16)
+
+
+@pytest.mark.parametrize("side,yes_price,expected", [
+    ("yes", 0.0, 0.0), ("no", 0.0, 1.0),
+    ("yes", 1.0, 1.0), ("no", 1.0, 0.0),
+])
+def test_unit_cost_at_the_price_boundaries(side, yes_price, expected):
+    # 0 and 1 are the two prices config_bounds.is_tradeable_unit_cost
+    # refuses on either side; the helper itself stays pure arithmetic and
+    # never clamps, so the gate sees exactly what was quoted.
+    assert unit_cost(side, yes_price) == expected
+
+
+@pytest.mark.parametrize("side", ["yes", "no"])
+@pytest.mark.parametrize("price", [0.0, 0.01, 0.3, 0.5, 0.7, 0.99, 1.0])
+def test_unit_cost_is_bit_identical_to_the_strategy_engine_gate_expression(side, price):
+    # strategy_engine._validate_entry_price's own gate line is the canonical
+    # semantics this helper replaces (issue #212); a last-ulp drift here
+    # would let the admission band and the broker's charge disagree.
+    assert unit_cost(side, price) == (price if side == "yes" else (1 - price))
+
+
+def test_unit_cost_none_price_stays_none_for_both_sides():
+    # "no price known" must never become an invented cost - the contract
+    # the three private _unit_cost copies (diagnostics, series_watcher,
+    # reset.trade_archive) already had, and websocket.py's reader gate
+    # relies on to record a rejection with unit_cost=None.
+    assert unit_cost("yes", None) is None
+    assert unit_cost("no", None) is None
+
+
+@pytest.mark.parametrize("bad_side", ["YES", "Yes", "NO", " no", "", "bid", "buy_yes", None, 1])
+def test_unit_cost_rejects_any_side_that_is_not_exactly_yes_or_no(bad_side):
+    # Every producer in this app emits exactly "yes"/"no" (contracts/trade.py
+    # OutcomeSide, WhaleSignal.side, Position.side; every persisted row
+    # checked 2026-08-30). The inline copies silently treated anything else
+    # as "no" - wrong direction and wrong cost with no trace - so an
+    # unknown spelling is rejected loudly, never normalised or guessed.
+    with pytest.raises(ValueError):
+        unit_cost(bad_side, 0.3)
+    with pytest.raises(ValueError):
+        unit_cost(bad_side, None)

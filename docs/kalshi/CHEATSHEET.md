@@ -660,3 +660,22 @@ distinguishable; `dropped_total` survives as the conservation sum only.
 `market-settlement.md` (Message Structure, tag 20107, line 23),
 `changelog-index.md` ("Get markets may return scalar result", lines 3245-3246).
 **Found:** 2026-08-30, #208.
+
+## Is a NO contract's per-contract cost really `1 - yes_price`, and where does the app compute it?
+**Answer:** Yes. Kalshi quotes every price in yes terms and the two sides
+of a binary market are complements: "a bid for yes at price X is equivalent
+to an ask for no at price (100-X)" — a yes bid at 7¢ is a no ask at 93¢.
+So a NO buyer at yes price X pays (1 - X) per contract, and a NO buyer's
+fill price in yes terms is the yes *bid*, not the ask. The app computes it
+in exactly one place, `services/kalshi_fees.unit_cost(side, yes_price)`;
+`tools/quality_audit/unit_cost.py` fails CI on any inline copy.
+**Gotcha:** the trade feed also carries `no_price_dollars` directly
+(`get-trades.md`), which `services/kalshi/contracts/trade.py`'s
+`taker_notional_usd` reads as sent rather than deriving — fidelity at the
+boundary; derivation only where the exchange sent nothing to read.
+**Source:** `get-market-orderbook.md`, `get-multiple-market-orderbooks.md`
+(endpoint description), `get-trades.md` (`yes_price_dollars` /
+`no_price_dollars`), `orderbook_responses.md` §"complementary opposite".
+**Found:** 2026-08-30, issue #212 — consolidating 26 inline `1 - price`
+re-derivations (the no-side inversion class CLAUDE.md names twice) behind
+one helper; needed the documented statement, not the convention, to cite.

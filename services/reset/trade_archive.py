@@ -109,16 +109,6 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _unit_cost(side: str, yes_price: float | None) -> float | None:
-    """Side-aware, same inversion PaperBroker.cost_basis uses. A "no"
-    position's real per-contract cost is (1 - price), and re-deriving it as
-    `price` is the exact bug that inflated an entire era's P&L by a median
-    factor of 49 (CLAUDE.md's hard commandment section)."""
-    if yes_price is None:
-        return None
-    return yes_price if side == "yes" else 1.0 - yes_price
-
-
 def _breakeven_pct(trade_rows: list[dict]) -> float | None:
     """Mean fee-inclusive breakeven accuracy, in percent, over the entry
     rows in `trade_rows` — the entry price PLUS the taker fee that fill
@@ -132,7 +122,7 @@ def _breakeven_pct(trade_rows: list[dict]) -> float | None:
     read back, because a stored row and a recomputed row that could drift
     apart is the whole failure this function exists to prevent."""
     priced = [
-        (t, c) for t, c in ((t, _unit_cost(t["side"], t["price"])) for t in trade_rows
+        (t, c) for t, c in ((t, kalshi_fees.unit_cost(t["side"], t["price"])) for t in trade_rows
                             if not t["reason"].startswith("closed:"))
         if c is not None
     ]
@@ -161,7 +151,7 @@ def _summarise(trade_rows: list[dict]) -> dict:
     accuracy, is the one that is."""
     history = trade_analytics.build_trade_history(trade_rows)
     entries = [t for t in trade_rows if not t["reason"].startswith("closed:")]
-    costs = [c for c in (_unit_cost(t["side"], t["price"]) for t in entries) if c is not None]
+    costs = [c for c in (kalshi_fees.unit_cost(t["side"], t["price"]) for t in entries) if c is not None]
     mean_cost = sum(costs) / len(costs) if costs else None
     wins = sum(1 for r in history if r["won"])
     win_rate = round(100.0 * wins / len(history), 1) if history else None
