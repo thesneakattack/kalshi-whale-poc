@@ -21,8 +21,11 @@ multi-task plan normally stays on one branch with one commit per task.
 Parallel sessions share one primary checkout. Work in a worktree
 (`git worktree add .claude/worktrees/<name> -b <branch> origin/main`, then
 `EnterWorktree`); never checkout/stash/reset/rebase/merge in a checkout another
-live session occupies — `guard_workflow.py` R6 denies it and `orient.sh` lists
-the live sessions at session start.
+live session occupies — convention only since 2026-08-30 (the guard that used
+to deny this, `guard_workflow.py`'s R6, was retired after its no-staleness-check
+liveness detection denied two real merges over dead sessions in one night, and
+no installed replacement covers this specific job); `orient.sh` lists the live
+sessions at session start, and that's now the only check.
 
 ## Integration lifecycle
 

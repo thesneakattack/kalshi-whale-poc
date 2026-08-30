@@ -53,11 +53,18 @@ def test_report_runs_via_tick_executor(monkeypatch):
         calibration_routes.confidence_calibration, "generate_calibration_report",
         lambda rows, min_signals, weights: {"report": None, "gated_reason": "stub", "resolved_count": 0},
     )
+    monkeypatch.setattr(
+        calibration_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
 
     result = asyncio.run(calibration_routes.get_confidence_calibration_report())
 
     assert len(calls) == 1
-    assert result == {"report": None, "gated_reason": "stub", "resolved_count": 0}
+    assert result == {
+        "report": None, "gated_reason": "stub", "resolved_count": 0,
+        "evidence_provenance": {"degraded": False, "defects": [], "checked_at": 0.0},
+    }
 
 
 def test_apply_runs_via_tick_executor(monkeypatch):
@@ -90,3 +97,33 @@ def test_apply_runs_via_tick_executor(monkeypatch):
 
     assert len(calls) == 1
     assert result == {"applied": True, "new_weights": {"depth_factor": 0.9}}
+
+
+def test_status_includes_evidence_provenance_block(monkeypatch):
+    monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_with_factors_count", lambda: 0)
+    monkeypatch.setattr(
+        calibration_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
+
+    result = asyncio.run(calibration_routes.get_confidence_calibration_status())
+
+    assert result["evidence_provenance"] == {"degraded": False, "defects": [], "checked_at": 0.0}
+
+
+def test_report_includes_evidence_provenance_block(monkeypatch):
+    monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(
+        calibration_routes.confidence_calibration, "generate_calibration_report",
+        lambda rows, min_n, weights: {"report": None, "gated_reason": "not enough data", "resolved_count": 0},
+    )
+    monkeypatch.setattr(
+        calibration_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": True, "defects": [{"component": "capture_writer"}], "checked_at": 5.0},
+    )
+
+    result = asyncio.run(calibration_routes.get_confidence_calibration_report())
+
+    assert result["evidence_provenance"]["degraded"] is True

@@ -375,3 +375,127 @@ def test_settlement_resolver_loop_respects_pause(monkeypatch):
 def test_settlement_resolver_loop_is_supervised_from_lifespan():
     source = inspect.getsource(main.lifespan)
     assert "_settlement_resolver_loop" in source
+
+
+# --- #214: auto-apply refuses to write on a known completeness defect -----
+
+def _wire_calibration_auto_apply(monkeypatch, degraded: bool):
+    monkeypatch.setattr(main.calibration_history, "due", lambda *a, **k: True)
+    monkeypatch.setattr(main.calibration_history, "record_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(main.confidence_calibration, "generate_calibration_report", lambda rows, min_n, weights: {
+        "report": {
+            "resolved_count": 200, "suggested_weights": {"depth_factor": 0.6},
+            "ranked_by_discrimination": ["depth_factor"],
+            "per_factor": [{"factor": "depth_factor", "gap_pts": 12.0}],
+        },
+    })
+    monkeypatch.setattr(main.confidence_calibration, "blended_weights_for_auto_apply",
+                         lambda current, suggested: {"depth_factor": 0.6})
+    monkeypatch.setattr(main.config_performance, "last_applied_at", lambda source: None)
+    monkeypatch.setattr(main.config_performance, "fingerprint", lambda cfg: "fp")
+    logged = []
+    monkeypatch.setattr(main.config_performance, "log_applied_change", lambda **kw: logged.append(kw))
+    updates = []
+    monkeypatch.setattr(main.config_store, "update", lambda patch: updates.append(patch))
+    monkeypatch.setattr(main.config_store, "get", lambda: {})
+    bumps = []
+    monkeypatch.setattr(main, "bump_generation", lambda: bumps.append(True))
+    monkeypatch.setattr(main.evidence_provenance, "current_completeness_state",
+                         lambda: {"degraded": degraded, "defects": [], "checked_at": 0.0})
+    return updates, logged, bumps
+
+
+_CALIBRATION_CFG = {
+    "confidence_calibration": {
+        "enabled": True, "auto_apply_enabled": True, "min_resolved_signals": 7,
+        "auto_apply_min_resolved_signals": 150, "auto_apply_cooldown_sec": 86400,
+    },
+    "advisory": {"enabled": False},
+    "whale_confidence_weights": {"depth_factor": 0.5},
+}
+
+
+def test_calibration_auto_apply_writes_new_weights_when_evidence_is_clean(monkeypatch):
+    updates, logged, bumps = _wire_calibration_auto_apply(monkeypatch, degraded=False)
+
+    main._maybe_run_auto_apply(_CALIBRATION_CFG)
+
+    assert updates == [{"whale_confidence_weights": {"depth_factor": 0.6}}]
+    assert len(logged) == 1 and logged[0]["auto_applied"] is True
+    assert bumps == [True]
+
+
+def test_calibration_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypatch):
+    updates, logged, bumps = _wire_calibration_auto_apply(monkeypatch, degraded=True)
+
+    main._maybe_run_auto_apply(_CALIBRATION_CFG)
+
+    assert updates == []  # known completeness defect open - refuse the automatic write
+    assert logged == []
+    assert bumps == []
+
+
+def _wire_advisory_auto_apply(monkeypatch, degraded: bool):
+    qualifying_rec = {
+        "id": "rec-1", "config_path": "strategy.entry_threshold",
+        "current_value": 0.5, "suggested_value": 0.6, "rationale": "test recommendation",
+        "confidence_label": "higher", "n": 100,
+    }
+    monkeypatch.setattr(main.advisory_engine, "generate_recommendations",
+                         lambda *a, **k: {"recommendations": [qualifying_rec]})
+    monkeypatch.setattr(main, "_series_evaluator_rows_for_advisory", lambda cfg: [])
+    monkeypatch.setattr(main.regime_analytics, "by_category", lambda rows: [])
+    monkeypatch.setattr(main.candidate_log, "gate_summary", lambda: {})
+    monkeypatch.setattr(main.config_performance, "last_applied_at", lambda source: None)
+    monkeypatch.setattr(main.config_performance, "fingerprint", lambda cfg: "fp")
+    monkeypatch.setattr(main.config_performance, "all_last_applied_by_path", lambda: {})
+    # all_variants() would otherwise do a real (if test-isolated) DB read
+    # this test has no reason to depend on - generate_recommendations
+    # itself is mocked below and never inspects its `variants` argument.
+    monkeypatch.setattr(main.config_performance, "all_variants", lambda: [])
+    monkeypatch.setattr(main.trade_analytics, "build_trade_history", lambda rows: [])
+    logged = []
+    monkeypatch.setattr(main.config_performance, "log_applied_change", lambda **kw: logged.append(kw))
+    updates = []
+    monkeypatch.setattr(main.config_store, "update", lambda patch: updates.append(patch))
+    monkeypatch.setattr(main.config_store, "get", lambda: {"strategy": {"entry_threshold": 0.5}})
+    bumps = []
+    monkeypatch.setattr(main, "bump_generation", lambda: bumps.append(True))
+    monkeypatch.setattr(main.evidence_provenance, "current_completeness_state",
+                         lambda: {"degraded": degraded, "defects": [], "checked_at": 0.0})
+    return updates, logged, bumps
+
+
+_ADVISORY_CFG = {
+    "advisory": {
+        "enabled": True, "auto_apply_enabled": True,
+        # min_resolved_trades_per_variant is read via adv_cfg["..."] (bracket
+        # indexing, not .get()) when building the generate_recommendations
+        # call - omitting it here raises KeyError before the mocked
+        # generate_recommendations ever runs.
+        "min_resolved_trades_per_variant": 10,
+        "auto_apply_min_confidence": "higher", "auto_apply_min_n": 25, "auto_apply_cooldown_sec": 86400,
+    },
+    "confidence_calibration": {"enabled": False},
+}
+
+
+def test_advisory_auto_apply_writes_when_evidence_is_clean(monkeypatch):
+    updates, logged, bumps = _wire_advisory_auto_apply(monkeypatch, degraded=False)
+
+    main._maybe_run_auto_apply(_ADVISORY_CFG)
+
+    assert updates == [{"strategy": {"entry_threshold": 0.6}}]
+    assert len(logged) == 1 and logged[0]["auto_applied"] is True
+    assert bumps == [True]
+
+
+def test_advisory_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypatch):
+    updates, logged, bumps = _wire_advisory_auto_apply(monkeypatch, degraded=True)
+
+    main._maybe_run_auto_apply(_ADVISORY_CFG)
+
+    assert updates == []  # known completeness defect open - refuse the automatic write
+    assert logged == []
+    assert bumps == []

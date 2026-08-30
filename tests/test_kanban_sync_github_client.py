@@ -52,7 +52,10 @@ def test_find_by_marker_strips_html_comment_delimiters_before_searching():
     therefore treat every already-created issue as new and create a duplicate. The
     search term must be the marker's inner content only."""
     runner = FakeRunner()
-    runner.queue(json.dumps([{"number": 48, "state": "OPEN", "labels": []}]))
+    runner.queue(json.dumps([{
+        "number": 48, "state": "OPEN", "labels": [],
+        "body": "## Context\n...\n\n<!-- autotrade-sync: roadmap:some-key -->",
+    }]))
     client = GithubClient(REPO, runner=runner)
 
     result = client.find_by_marker("<!-- autotrade-sync: roadmap:some-key -->")
@@ -67,7 +70,11 @@ def test_find_by_marker_strips_html_comment_delimiters_before_searching():
 def test_find_by_marker_parses_existing_issue():
     runner = FakeRunner()
     runner.queue(json.dumps([
-        {"number": 17, "state": "OPEN", "labels": [{"name": "status:claimable"}, {"name": "type:tracking"}]}
+        {
+            "number": 17, "state": "OPEN",
+            "labels": [{"name": "status:claimable"}, {"name": "type:tracking"}],
+            "body": "## Context\n...\n\n<!-- autotrade-sync: worktree:feat/x -->",
+        }
     ]))
     client = GithubClient(REPO, runner=runner)
 
@@ -76,6 +83,46 @@ def test_find_by_marker_parses_existing_issue():
     assert result.number == 17
     assert result.open is True
     assert result.labels == frozenset({"status:claimable", "type:tracking"})
+
+
+def test_find_by_marker_skips_a_fuzzy_false_positive_and_returns_the_real_match():
+    """Found live (2026-08-30, issue #90): GitHub's issue search is fuzzy
+    full-text, not literal - the top-ranked hit can be an unrelated issue
+    that merely shares tokens with the marker. A search for one plan's
+    marker fuzzy-matched an unrelated roadmap-tracked issue and, trusted
+    blindly, caused sync_pass_one to wrongly close it (it was open and the
+    plan was classified done). find_by_marker must verify each candidate's
+    body actually contains the literal marker before trusting it, not just
+    take gh's top result."""
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {
+            "number": 74, "state": "OPEN", "labels": [],
+            "body": "## Context\nAutonomous Quality Coordination (workflow-health)...\n\n"
+                    "<!-- autotrade-sync: roadmap:autonomous-quality-coordination-workflow-health -->",
+        },
+        {
+            "number": 278, "state": "OPEN", "labels": [],
+            "body": "## Context\n...\n\n<!-- autotrade-sync: plan:2026-08-27-workflow-remediation.md -->",
+        },
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_by_marker("<!-- autotrade-sync: plan:2026-08-27-workflow-remediation.md -->")
+
+    assert result.number == 278
+
+
+def test_find_by_marker_returns_none_when_no_candidate_body_contains_the_marker():
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {"number": 74, "state": "OPEN", "labels": [], "body": "unrelated issue, no marker at all"},
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.find_by_marker("<!-- autotrade-sync: plan:2026-08-27-workflow-remediation.md -->")
+
+    assert result is None
 
 
 def test_create_issue_parses_number_from_returned_url():

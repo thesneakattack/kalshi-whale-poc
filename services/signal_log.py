@@ -606,14 +606,16 @@ def resolved_signals_with_factors() -> list[dict]:
     possibly-drifting definition of "real" to maintain. No date/limit
     scoping - the calibration gate cares about total resolved count, not
     recency, and this table is small enough (one row per signal, not per
-    tick) that a full scan is cheap."""
+    tick) that a full scan is cheap. `series` is already a stored, indexed
+    column (issue #60 - it existed but was never selected here, so every
+    consumer of this function was blind to it)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h "
+            "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
             "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL",
         ).fetchall()
     results = []
-    for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h in rows:
+    for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series in rows:
         try:
             factors = json.loads(factors_json)
         except (TypeError, ValueError):
@@ -626,6 +628,7 @@ def resolved_signals_with_factors() -> list[dict]:
             # confidence_calibration.py already excludes rows missing a
             # given factors_json key.
             "raw_notional_usd": raw_notional_usd, "raw_spread": raw_spread, "raw_volume_24h": raw_volume_24h,
+            "series": series,
         })
     return results
 

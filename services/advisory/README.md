@@ -85,3 +85,23 @@ by construction, not by a training-data coincidence.
   `services/market_analyst_agent.py`'s per-series/full-spectrum analysis
   modes reuse the exact same id recipe when converting the LLM's raw
   output into this module's unified suggestion shape.
+
+## Evidence-completeness provenance (2026-08-30, #214)
+
+`GET /api/advisory/status` and `GET /api/advisory/recommendations` both
+carry an `evidence_provenance` block (`services.quality.evidence_
+provenance.current_completeness_state()`), attached at the route boundary
+only - `advisory_engine.generate_recommendations()` itself is unchanged,
+since `market_analyst_orchestrator` also calls it directly and has nothing
+to do with the HTTP surface. `main.py`'s `_maybe_run_auto_apply` folds
+`not evidence_provenance.current_completeness_state()["degraded"]` into
+its existing qualifying-recommendation check, so an automatic config write
+is silently skipped (cooldown untouched) while a known data-completeness
+defect is open - currently unreachable in production since
+`advisory.auto_apply_enabled` is `false`, but tested and ready for
+whenever #51 re-arms it. The counters behind `degraded` are lifetime/
+monotonic and never reset except by a process restart, so "while a defect
+is open" really means "since the last process restart after any
+occurrence" - a single historical drop silently and permanently disables
+this auto-apply path until the process restarts, even long after the
+defect itself is fixed.
