@@ -244,7 +244,22 @@ def _materiality_bar(
     if not normal_vol:
         return min_edge_usd
     vols = [market_history.volatility(ticker, vol_lookback, as_of=now) for ticker, _ in members]
-    vols = [v for v in vols if v is not None]
+    # `v == 0` is NO READING, not "perfectly calm" - the identical fix
+    # exit_engine._exit_confidence took on 2026-08-17, whose comment
+    # records why: 142 of 183 well-sampled live markets read exactly 0.0,
+    # because a price that hasn't ticked all lookback usually means nobody
+    # is trading it. volatility() returns None only when there aren't
+    # enough snapshots; with enough of them and a flat price it returns a
+    # real 0.0, and this module shipped 2026-08-15 filtering only the None.
+    #
+    # Left in, a zero pinned vol_ratio to its 0.25 floor and quartered the
+    # bar - inverting the intent this docstring states, since a less
+    # trustworthy price read must demand a BIGGER edge, not a 4x smaller
+    # one. Netting churn was easiest to trigger exactly where the live
+    # prices behind expected_value() deserved the least confidence. Same
+    # fallback as the sibling: no usable reading means the unscaled
+    # min_edge_usd (vol_ratio 1.0), never a discounted bar (issue #206).
+    vols = [v for v in vols if v is not None and v > 0]
     if not vols:
         return min_edge_usd
     vol_ratio = max(0.25, min(4.0, max(vols) / normal_vol))
