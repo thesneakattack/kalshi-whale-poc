@@ -161,6 +161,30 @@ def test_oldest_message_age_is_measured_from_the_queue_head_with_the_injected_cl
     assert gw.ingest_metrics(now=12.0)["queue"]["oldest_message_age_sec"] == 0.0
 
 
+def test_oldest_message_age_counts_pending_coalesced_tickers_with_every_queue_drained(monkeypatch):
+    # Task 19a's coalescing map is a backlog that lives OUTSIDE the three
+    # queues, and its wake sentinel is enqueued only on the empty -> non-empty
+    # transition. Once that sentinel is consumed every queue reads empty while
+    # the map still holds unconsumed updates, so a wedged or starved market
+    # consumer reported 0.0 - perfect health - for exactly the failure mode
+    # coalescing introduced (issue #207).
+    monkeypatch.setattr(ws_module.config_store, "get", lambda: {
+        "realtime_data_plane": {"two_consumer_mode": True},
+    })
+    gw = _gateway()
+    gw._gate_cfg_cache = None  # force a fresh config read past the 1s cache
+    assert gw._ingest_raw(_ticker(), now=50.0) is True
+    for queue in (gw._queue, gw._critical_queue, gw._market_queue):
+        while not queue.empty():
+            queue.get_nowait()  # consume the wake sentinel: queues empty, map not
+    assert gw._pending_ticker_by_market()  # the update is still unconsumed
+    q = gw.ingest_metrics(now=110.0)["queue"]
+    assert q["depth"] == 0
+    assert q["pending_tickers"] == 1
+    assert q["oldest_message_age_sec"] > 0
+    assert q["oldest_message_age_sec"] == pytest.approx(60.0)
+
+
 def test_queue_wait_is_the_monotonic_gap_between_enqueue_and_dequeue():
     gw = _gateway()
     gw._ingest_raw(_trade("a"), now=100.0)

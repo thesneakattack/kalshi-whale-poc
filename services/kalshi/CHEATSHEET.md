@@ -106,6 +106,32 @@ package on purpose: the contract-docs scanner treats every public method
 here as a Kalshi operation. Full metric list and window semantics:
 `services/observability/README.md`.
 
+### `oldest_message_age_sec` covers the coalescing map too (#207, 2026-08-30)
+
+Task 19a's `_ticker_by_market` is a **backlog that lives outside the three
+queues**, and `_coalesce_ticker` enqueues its `_TICKER_WAKE` sentinel only on
+the empty -> non-empty transition. Once that sentinel is consumed, every queue
+reads empty while the map holds arbitrarily old entries, so `_oldest_message_age`
+reported `0.0` — perfect health — for a wedged or starved market consumer, the
+one failure mode coalescing introduced. It now folds `min(ts)` over the map into
+the same max. Confirmed both ways against `tools/soak_analyzer.py`'s
+`staleness_metric_trustworthy`: BLIND before, PASS (with the real 60.0s age, and
+a correct `backlog_timeliness` FAIL) after.
+
+Semantics worth knowing when reading the number: a superseded entry's timestamp
+is deliberately refreshed, because the superseded payload no longer exists to be
+stale — so a market that keeps updating never ages, and a wedge shows up through
+the entries that stop updating plus `pending_tickers` growth. `depth` still
+counts queues only; the map is reported separately as `pending_tickers`.
+
+Cost: `_oldest_message_age` has exactly one call site (`ingest_metrics`), reached
+from the 60s observability sampler and per-request diagnostics routes — never
+from `_ingest_raw`/`_process_item`/`_consume_*`. Measured 2026-08-30: 0.4 µs at
+0 pending, 6.6 µs at 100, 54 µs at 1,000, 524 µs at 10,000. The rejected
+alternative was an incrementally maintained "oldest pending ts", which moves
+bookkeeping onto the per-message path to save microseconds on a once-a-minute
+read.
+
 ## Type strictness / tolerance policy (C2-C6, 2026-08-25)
 
 - **Closed Literal types** (contracts/types.py): only where an unknown
