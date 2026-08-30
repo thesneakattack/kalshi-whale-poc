@@ -1168,8 +1168,14 @@ class KalshiStreamGateway:
 
     def _oldest_message_age(self, now: float) -> float | None:
         """Age of the oldest unconsumed message across every ingest queue in
-        use (single/critical/market - P4 Task 18): staleness lives wherever
-        the backlog does, so this is the max over the non-empty queues."""
+        use (single/critical/market - P4 Task 18) *and* the Task 19a pending
+        ticker map: staleness lives wherever the backlog does, so this is the
+        max over every non-empty backlog. The map is a backlog no queue
+        reports - its wake sentinel is enqueued only on the empty ->
+        non-empty transition, so once that sentinel is consumed a wedged or
+        starved market consumer leaves the queues empty and the map full.
+        Reading the queues alone reported 0.0 (perfect health) for exactly
+        the failure coalescing introduced (#207)."""
         ages: list[float] = []
         for queue in (self._queue, self._critical_queue, self._market_queue):
             if queue is None or queue.empty():
@@ -1183,6 +1189,15 @@ class KalshiStreamGateway:
             except Exception:
                 return None
             ages.append(max(now - head[0], 0.0))
+        if self._ticker_by_market:
+            # Our own dict, shape fixed at its two assignment sites in
+            # _coalesce_ticker: {ticker: (monotonic enqueue time, data)}, the
+            # same clock a queued item's head carries. Oldest entry = min ts
+            # = max age. An entry's ts is deliberately refreshed when a newer
+            # update supersedes it: the superseded payload no longer exists
+            # to be stale, so what waits is the newer one.
+            oldest_pending = min(ts for ts, _ in self._ticker_by_market.values())
+            ages.append(max(now - oldest_pending, 0.0))
         return round(max(ages), 4) if ages else 0.0
 
     def ingest_metrics(self, now: float | None = None) -> dict:
