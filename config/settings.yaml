@@ -39,7 +39,7 @@ realtime_data_plane:
   # cascade drop mechanism. Default false = single queue, today's
   # behavior unchanged. Flip only with a paper-mode soak, same
   # discipline as reader_gate_enabled above.
-  two_consumer_mode: false
+  two_consumer_mode: true
 whale_signal:
   signal_frequency_sec: 12
   whale_size_range:
@@ -99,7 +99,7 @@ strategy:
   price_staleness_corroborate_sec: 120.0
 risk:
   starting_bankroll: 10000
-  max_daily_loss_pct: 0.85
+  max_daily_loss_pct: 0.8
   kill_switch_enabled: true
   max_total_exposure_pct: null
 kalshi_account:
