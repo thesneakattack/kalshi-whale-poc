@@ -511,3 +511,120 @@ this table and the artifact's are the same data):**
 | `event_schedule.web_search_enabled` | true | Structural / infra | Infra. |
 | `event_schedule.max_resolutions_per_tick` | 5 | Structural / infra | Infra. |
 | `strategy_overrides.by_category.Sports.stop_loss_pct` | null | Data-checked | Confirmed no-op — matches the global default; the mechanism a Sports-specific recommendation would route through. |
+
+## 12. Proposed full config change-set (surfaced, NOT applied)
+
+Direct request: one coherent, strongly-confident change-set over every
+tunable field, with cross-field interactions reasoned explicitly. Three
+mechanics verified in source before proposing (not assumed):
+`config_overrides.resolve()` layers `by_series` over strategy fields
+BEFORE `evaluate()`'s gates run (`strategy_engine.py:260`), so per-series
+carve-outs of any strategy field genuinely work at the entry path;
+`check_total_exposure` compares against live CASH, not starting bankroll
+(`risk_manager.py:148-150`), so a nominal pct binds at an effective
+E <= B*p/(1+p); and real peak concurrency was measured from entry/exit
+timestamps (overall 13 positions / $4,504.59 deployed; per-series peaks:
+NFL 5, MLB 4, ATP 4, BTC15M 3, UFC 3).
+
+```yaml
+strategy:
+  max_unit_cost: 0.85            # was 0.90
+  max_open_positions_per_series: 2   # was 0 (unlimited)
+  excluded_series: [KXATPMATCH]  # was []
+risk:
+  max_total_exposure_pct: 0.45   # was null; effective cap ~31% of equity
+  max_daily_loss_pct: 0.20       # was 0.85; HUMAN-DECISION item, see note
+position_netting:
+  min_edge_improvement_usd: 10   # was 50 (code default is 1)
+strategy_overrides:
+  by_series:
+    KXBTC15M:
+      max_open_positions_per_series: 3   # preserves ALL historical crypto behavior
+```
+
+Interactions, the load-bearing part:
+
+- The series cap (2) and the crypto override (3) were FITTED, not guessed:
+  KXBTC15M's measured historical peak is exactly 3 concurrent (16-min
+  median holds across consecutive 15-min windows), so the override
+  preserves 100% of the book's profit engine while the global 2 trims the
+  sports pileups (NFL 5 / MLB 4 / ATP 4) where netting groups form.
+- The caps address N-way concentration, NOT 2-leg hedge pairs - a series
+  cap of 2 still admits an opposing pair on one event. That residual is
+  exactly what min_edge_improvement_usd 50->10 covers: all 34 observed
+  netting closes were locked_loss (never a proactive variable-stage trim),
+  and a $50 floor x volatility scaling (clamp 0.25-4.0 -> bar $12.50-$200)
+  plausibly never cleared; at $10 the scaled bar is $2.50-$40.
+- ATP exclusion and the caps overlap: part of ATP's -$818.99 is its own
+  netting closes, which the caps also mitigate. Both are still proposed -
+  exclusion is the certain lever on a 56.5%-win series, the caps are the
+  mechanism-level fix; revisit re-admitting ATP only after the caps prove
+  out. KXUFCFIGHT (n=6) is watch-only, not excluded.
+- max_total_exposure_pct 0.45 nominal = ~31% effective (cash-relative
+  formula above). Peak observed deployment ($4,504.59, ~45% of cash at the
+  worst moment) WOULD have been trimmed - deliberately: that peak is the
+  same concentration class as the 51-position/43.4% incident
+  position_netting.py was built in response to. Under the new caps the
+  plausible peak (~8-9 concurrent x ~$360 median) sits comfortably inside.
+- max_unit_cost 0.85 removes the top half of the 0.80-0.90 band - the
+  half where the fee-inclusive breakeven (85.9%->90.6%) is hardest to
+  clear - and the exact-0.90 slice that was net negative. Historically
+  roughly P&L-neutral (forgoes some positive 0.85-0.90 trades, ~+$200);
+  the case is mechanism at scale, not backtest dollars.
+- max_daily_loss_pct 0.20: the book has NO losing day to size from (2
+  calendar days, worst day +$93.27), so this is derived from the exposure
+  cap instead - a 0.20 switch fires before a worst-case wipe of the ~31%
+  capped book completes. ROADMAP names kill-switch numbers a human
+  decision; 0.20 is a proposed number for that decision, not a claim.
+
+Deliberate NO-CHANGES, each a positive decision (every remaining tunable):
+
+- whale_confidence_weights (all 9): NO re-weighting despite section 10's
+  correlations, for a newly articulated reason - calibration's target is
+  `correct` (win), and win-rate is NOT the objective: unusualness_factor's
+  negative r with correctness coexists with its zone (prices near 0.5 =
+  unit costs near 0.5) being the book's MOST profitable band (9.0% ROI at
+  61.8% win). Re-weighting toward "predicts correct" would push entries
+  toward the high-cost/high-win-rate thin-edge trap - the same win-rate
+  blind spot already flagged for advisory_engine, one level down. The
+  right fix is re-targeting calibration on EV-per-contract (the open
+  banded-EV spec's territory), not new weights from these correlations.
+- strategy.entry_threshold 0.55: conf 0.6-0.7 trades averaged $5.56 vs
+  $20.92 for 0.5-0.6 - raising it would select WORSE trades by P&L;
+  lowering is unmeasured territory. Keep.
+- strategy.min_unit_cost 0.5: keep - lowering would revive the longshot
+  mechanism and admit an entirely unmeasured price zone; the dead-longshot
+  decision (section 11) stays a separate, explicit call.
+- take_profit_pct / stop_loss_pct null: keep - auto_exit (97.3% win,
+  +$5,475.47) is the active manager and its pnl weight already covers this
+  ground; a hard stop-loss interacts badly with the known stale-price
+  exit history. The $21k settled_loss tail is real but belongs to the
+  banded-EV spec's entry-side fix, not an exit patch.
+- auto_exit_* (12 fields): the book's best-performing mechanism;
+  per-trigger attribution isn't in trade rows, so any tweak would be
+  blind. Keep all.
+- whale_watcher_kalshi floors: sports 10000 - no sports data below it
+  exists to justify lowering, and size bands above it show no improvement
+  (10-20k: -$7.52 avg); crypto 2500 - the profit engine, keep. ETH/mention
+  floors are unreachable dead entries (separate cleanup decision). Keep.
+- kalshi.categories [Sports] + watchlist [KXBTC15M]: adding ETH/Crypto
+  category = new unmeasured exposure; not part of a "strongly confident"
+  set. Keep.
+- cooldown_sec, close_window_sec, min_seconds_to_close, special/exit
+  timing gates, sentiment-exit fields (inert while parent flag off),
+  limit-order fields (inert), min_whale_winrate_pct/
+  min_resolved_for_whale_filter: no discriminating data pulled this
+  session; every one is advisory-reachable or boundary-documented in
+  section 11. Keep.
+- realtime_data_plane, kalshi data-plane cadences, and all
+  STRUCTURAL/infra fields from section 11: not trade-outcome tuning;
+  two_consumer_mode stays in its soak. Keep.
+
+Historical-book arithmetic for the set (honest bounds, not a promise):
+ATP exclusion +$819; netting mitigation up to +$2,694 (partial - caps
+kill the N-way class, the $10 bar addresses pairs); ceiling trim ~neutral
+historically, positive by mechanism; exposure/daily caps cost nothing on
+the observed book outside the deliberately-trimmed peak. Net: the same
+book replayed under this config lands roughly +$3,000-3,500 better on
+$5,283 actual - concentrated in loss-avoidance, which is also why it
+can't simply be extrapolated (the avoided losses fund no new wins).
