@@ -197,7 +197,13 @@ git commit -m "feat: add broad-cache ME-pairing conflict check (Part 1 of entry-
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/test_whale_stream_decision_bridge.py`, first extend `_FakeStrategy` to record the kwargs it was called with (additive — existing tests only check `.calls`, so this doesn't break them):
+In `tests/test_whale_stream_decision_bridge.py`, add one import to the existing top-of-file import block (alongside `from services import candidate_ledger, signal_log`):
+
+```python
+from services.app_state import state
+```
+
+Then extend `_FakeStrategy` to record the kwargs it was called with (additive — existing tests only check `.calls`, so this doesn't break them):
 
 ```python
 class _FakeStrategy:
@@ -220,9 +226,6 @@ class _FakeStrategy:
 Then add, near the bottom of the file:
 
 ```python
-from services.app_state import state
-
-
 def _set_me_state(monkeypatch, market_titles, event_titles, open_position_tickers, me_pairs=None):
     monkeypatch.setitem(state, "market_titles", market_titles)
     monkeypatch.setitem(state, "event_titles", event_titles)
@@ -716,6 +719,7 @@ def test_scan_survives_one_category_failing(capsys):
     client = _PartialFailClient({"Sports": [_milestone("ms-1", ["EVT-A"])]})
     asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports", "Politics"])))
     assert state["milestone_by_event"] == {"EVT-A": "ms-1"}  # Sports still landed
+    assert "Politics" in capsys.readouterr().out  # failure surfaced, not swallowed silently
 
 
 def test_maybe_scan_milestone_batch_respects_the_due_interval():
