@@ -38,27 +38,34 @@ def test_fetch_signals_carries_the_markets_event_ticker():
     # The gate (Task 3) keys on this field; a market object's own
     # event_ticker (docs/kalshi/get-market.md:141) is the ONLY legal
     # source - never the ticker string prefix.
-    provider = _provider()
+    provider = KalshiTradeTapeProvider()
     market = _market(ticker="KXATPMATCH-26AUG29FERBUS-FER")
     market["event_ticker"] = "KXATPMATCH-26AUG29FERBUS"
-    trade = _trade(ticker="KXATPMATCH-26AUG29FERBUS-FER", count=50000)
-    signals = _fetch(provider, [trade], [market])
+    trade = _trade(ticker="KXATPMATCH-26AUG29FERBUS-FER",
+                   count_fp="50000.00", taker_side="yes")
+    ctx = {"markets": [market], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert len(signals) == 1
     assert signals[0].event_ticker == "KXATPMATCH-26AUG29FERBUS"
 
 
 def test_fetch_signals_event_ticker_none_when_market_lacks_it():
-    provider = _provider()
+    provider = KalshiTradeTapeProvider()
     market = _market(ticker="K1")
     market.pop("event_ticker", None)
-    signals = _fetch(provider, [_trade(ticker="K1", count=50000)], [market])
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    ctx = {"markets": [market], "trade_tape": [trade], "cfg": {}}
+    signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     assert signals[0].event_ticker is None
 ```
 
-(Reuse the file's existing `_provider`/`_market`/`_trade` helpers and whatever
-fetch invocation idiom its existing tests use — read three existing tests
-first and match their construction exactly; the helper names above are from
-that file's own tests.)
+(Verified against the file's real helpers this session: `_market(ticker=...)`
+and `_trade(ticker=..., count_fp=..., taker_side=...)` exist with those
+exact parameters; there is no `_provider`/`_fetch` helper - construction is
+`KalshiTradeTapeProvider()` and invocation is
+`asyncio.run(provider.fetch_signals(market_context={...}))`, the idiom of
+`test_fetch_signals_skips_trades_below_contract_threshold`. count_fp
+"50000.00" clears the code-default min_contracts with cfg={}.)
 
 - [ ] **Step 2: Run to verify both fail** — `TypeError`/`AttributeError: event_ticker`.
 
@@ -85,7 +92,7 @@ In `kalshi_trade_tape.py`'s `WhaleSignal(...)` construction add:
 
 ---
 
-### Task 2: `Position.event_ticker` — additive column, stamped at open, backfilled on load
+### Task 2: `Position.event_ticker` — additive column, stamped at open (no backfill, by design)
 
 **Files:**
 - Modify: `services/paper_broker.py` (Position dataclass ~25, `_connect` migrations ~113-150, `open_position` ~289, `_load` SELECT ~260)
@@ -99,24 +106,25 @@ In `kalshi_trade_tape.py`'s `WhaleSignal(...)` construction add:
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_open_position_stamps_and_persists_event_ticker(tmp_path):
-    broker = _broker(tmp_path)
+def test_open_position_stamps_and_persists_event_ticker(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
     broker.open_position("K-EVT-A", "yes", 10, 0.6, "test",
                          event_ticker="K-EVT")
     assert broker.positions["K-EVT-A"].event_ticker == "K-EVT"
-    reloaded = _broker(tmp_path)  # same db path -> loads persisted rows
+    reloaded = _broker(tmp_path, monkeypatch)  # same db path -> loads rows
     assert reloaded.positions["K-EVT-A"].event_ticker == "K-EVT"
 
 
-def test_legacy_position_row_loads_with_event_ticker_none(tmp_path):
-    broker = _broker(tmp_path)
+def test_legacy_position_row_loads_with_event_ticker_none(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
     broker.open_position("K1", "yes", 10, 0.6, "test")  # no event passed
-    reloaded = _broker(tmp_path)
+    reloaded = _broker(tmp_path, monkeypatch)
     assert reloaded.positions["K1"].event_ticker is None
 ```
 
-(Match `tests/test_paper_broker.py`'s existing `_broker(tmp_path)`
-construction helper — read one existing persistence test first.)
+(The real helper is `_broker(tmp_path, monkeypatch, starting_bankroll=1000.0)`
+- tests/test_paper_broker.py:10, verified this session - both fixtures are
+required.)
 
 - [ ] **Step 2: Run to verify FAIL** (unexpected keyword `event_ticker`).
 
@@ -234,7 +242,13 @@ def test_simulator_signal_without_event_passes_gate():
                     )
 ```
 
-  - `__init__`: add `self.me_gate_unknown_total = 0`. Import `fault_log` (check whether strategy_engine already imports it; add if not).
+  - `__init__`: add `self.me_gate_unknown_total = 0`. strategy_engine does
+    NOT currently import fault_log (verified: its `from services import`
+    line at :9 carries candidate_log, market_history, signal_log) - extend
+    that exact import line with `fault_log`.
+  - Rewrite the me_complement paragraph in `evaluate()`'s docstring
+    (~lines 247-258) to describe the event-scoped gate - a removed
+    parameter documented as current is worse than no docs.
   - `decision_bridge.py`: delete the `me_complement = (state.get("me_pairs") or {}).get(signal.ticker)` line and the `me_complement=me_complement,` kwarg.
 
 - [ ] **Step 4: Update the two legacy tests** (`test_skip_when_position_already_open_on_me_complement`, `test_trades_when_me_complement_has_no_open_position`): rewrite them against the new gate semantics (rename to match; the skip case becomes ME-true + shared event) rather than deleting — they are the gate's original contract.
@@ -272,20 +286,21 @@ def test_resolving_an_offlist_market_also_ensures_its_events_me_flag(monkeypatch
             calls.append(list(event_tickers))
             return [{"event_ticker": "EV-NEW", "title": "T",
                      "mutually_exclusive": True, "category": "Sports"}]
-    provider = _provider()
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(ticker="EV-NEW-A", count_fp="50000.00", taker_side="yes")
     asyncio.run(provider._resolve_unknown_markets(
-        [_trade(ticker="EV-NEW-A", count=50000)], {}, _cfg(), _Client(),
-        now=time.time(), counts={}))
+        [trade], {}, {}, _Client(), now=time.time(), counts={}))
     assert calls == [["EV-NEW"]]
     assert state["event_titles"]["EV-NEW"]["mutually_exclusive"] is True
 ```
 
-(Adapt the exact `_resolve_unknown_markets` invocation to its real
-signature — read it first; the test file already exercises it, mirror that.
-If `get_events`' real return shape differs from `_fetch_event_titles`'s
-consumption of it, match the REAL one — read main.py's `_fetch_event_titles`
-for the field extraction to reuse, and reuse `title_cache.save_event_titles`
-for persistence exactly as main.py:864 does.)
+(Signature verified this session:
+`_resolve_unknown_markets(self, trade_tape, markets_by_ticker, cfg, client,
+now, counts=None)`; there is no `_cfg` helper in this file - plain `{}` is
+the idiom, and the code-default min_contracts applies (count_fp "50000.00"
+clears it). For `get_events`' return-shape consumption, read main.py's
+`_fetch_event_titles` field extraction and reuse it verbatim, persisting
+via `title_cache.save_event_titles` exactly as main.py:864 does.)
 
 - [ ] **Step 2: Run to verify FAIL** (no get_events call made).
 - [ ] **Step 3: Implement** inside `_resolve_unknown_markets`, after the market batch resolves: collect `event_ticker`s of newly resolved markets not present in `state["event_titles"]`; if any, one `client.get_events(missing)` call (it already runs under the `critical_whale` caller class via the method's `@http_client.classify` decorator — verify, don't assume), extract the same fields `_fetch_event_titles` extracts (title, category, `mutually_exclusive`, mutually-exclusive-adjacent fields it keeps), write into `state["event_titles"]` and persist via `title_cache.save_event_titles({...})`. A get_events failure is caught, fault-logged once, and skipped — resolution of the market itself must not fail because event metadata didn't arrive (the gate then counts an unknown, which is the designed degradation).
@@ -326,7 +341,16 @@ def test_regression_kxatpmatch_ferbus_second_leg_is_refused():
 ```
 
 - [ ] **Step 2: Run to verify it passes already** (it should, from Task 3 — this is a pinning test; if it fails, Task 3 has a bug: stop and fix there).
-- [ ] **Step 3: Observability:** add the counter to the runtime capture the way an existing lifetime counter is captured (one line + one test asserting the metric name appears in a capture — mirror `tests/test_observability.py`'s existing counter tests).
+- [ ] **Step 3: Observability:** observability.py captures NO strategy_engine
+counter today (verified by grep - no anchor to mirror blindly). The correct
+existing pattern is how `candidate_retry`'s counters flow: `capture_from_runtime`
+reads `candidate_retry.snapshot()` (see `tests/test_observability.py::
+test_candidate_retry_metrics_flow_into_the_snapshot`). Mirror THAT: import
+`strategy` from `services.app_state`, emit one gauge
+(`strategy.me_gate.unknown_total`) from `strategy.me_gate_unknown_total`
+guarded for None/missing (observability must never crash on a
+partially-initialized app), plus one test asserting the metric name appears
+in a capture, mirroring the candidate_retry test's structure.
 - [ ] **Step 4: Docs:** add to research doc §13 watch items: "me_gate_unknown_total near zero in steady state; candidate_log gate_summary shows me_event_gate rejections". Cross-post one dated line to `services/exits/README.md`'s netting section pointing at the gate as the formation fix.
 - [ ] **Step 5: Run the four touched test files together.** Expected: PASS.
 - [ ] **Step 6: Commit:** `feat: real-pair regression + gate observability (event-scoped-me-gate Task 5)` — cite docs read: docs/kalshi/get-market.md, get-markets.md, get-events.md.

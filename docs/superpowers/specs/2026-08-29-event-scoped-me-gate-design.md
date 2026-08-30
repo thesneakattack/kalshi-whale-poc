@@ -123,11 +123,12 @@ if signal_event and signal_event in held_events:
   time). The simulator leaves it None — same convention as `factors`.
 - `Position` (services/paper_broker.py) gains `event_ticker` — additive
   column via the existing `_add_column_if_missing` idiom, stamped at
-  `open_position` from the signal/market. Pre-existing rows: backfilled
-  lazily from `market_catalog`'s persisted `event_ticker` column when
-  read; a position whose event cannot be determined participates in
-  `held_events` as nothing (fail-open, counted via the same unknown
-  counter).
+  `open_position` from the signal/market. Pre-existing rows deliberately
+  get NO backfill (YAGNI, resolved during plan review): positions are
+  short-lived (median hold ~51 min in the analyzed book), so unstamped
+  legacy rows age out within hours of deployment; until then a position
+  whose event cannot be determined participates in `held_events` as
+  nothing - fail-open, and the unknown counter measures the window.
 - `candidate_retry`'s recovered-candidate path re-scores through the
   same provider, so recovered signals carry `event_ticker` with no extra
   work — verify in the plan, don't assume.
@@ -137,8 +138,10 @@ if signal_event and signal_event in held_events:
 Lookup order: `state["event_titles"][event_ticker]["mutually_exclusive"]`
 (tick-fetched + `title_cache`-persisted) → on miss, the whale resolve
 path's enrichment ensures the event via the existing `get_events` batch
-(`critical_whale` caller class — it IS hot-path enrichment, same as the
-market fetch it rides beside), one call per previously-unseen event,
+(`critical_whale` caller class - verified, not assumed:
+`_resolve_unknown_markets` is decorated `@http_client.classify("critical_whale")`
+and `classify` propagates through the whole coroutine via contextvar, so the
+`get_events` call inside inherits it), one call per previously-unseen event,
 cached in `event_titles`/`title_cache` thereafter. Per the data-plane
 rule this addition is measured: the plan includes capturing per-event
 fetch counts through the existing REST class metrics before/after, and
