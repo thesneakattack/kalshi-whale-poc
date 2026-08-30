@@ -140,6 +140,38 @@ def test_conservation_with_the_discard_counter_absent_still_fails_on_a_gap():
     assert "discarded_on_reconnect_by_class absent" in c.detail
 
 
+def test_conservation_with_the_drop_counter_absent_never_passes_silently():
+    """#232: `dropped_by_class` predates the absent-counter rule #231 applied
+    to the reconnect-discard term, and an absent dict silently read as 0 -
+    so an app that never reported drops at all could PASS the identity. Same
+    treatment: assumed 0, said so in the detail, source marked partial, and
+    a balanced identity is UNKNOWN, never PASS."""
+    p = _payload(queue_health={"received_by_class": {"ticker": 1100},
+                               "processed_by_class": {"ticker": 1000}},
+                 queue={"coalesced_tickers": 100, "pending_tickers": 0})
+    del p["ingest"]["queue_health"]["dropped_by_class"]
+    c = _by_id(sa.run_checks(p))["ticker_conservation"]
+    assert c.status == sa.UNKNOWN
+    assert "dropped_by_class absent" in c.detail
+    assert "assumed 0" in c.detail
+    assert c.measured["dropped"] == 0
+    assert c.measured["dropped_measured"] is False
+
+
+def test_conservation_with_the_drop_counter_absent_still_fails_on_a_gap():
+    """A gap is real whatever the payload omits: FAIL is kept, and the
+    detail names the unmeasured term so the reader knows the gap may be an
+    uncounted drop rather than a leak."""
+    p = _payload(queue_health={"received_by_class": {"ticker": 1174},
+                               "processed_by_class": {"ticker": 1000}},
+                 queue={"coalesced_tickers": 100, "pending_tickers": 0})
+    del p["ingest"]["queue_health"]["dropped_by_class"]
+    c = _by_id(sa.run_checks(p))["ticker_conservation"]
+    assert c.status == sa.FAIL
+    assert c.measured["gap"] == 74
+    assert "dropped_by_class absent" in c.detail
+
+
 def test_conservation_is_unknown_not_failed_while_items_are_in_flight():
     """With a non-empty queue the difference is legitimately in-flight.
     Failing here would be noise, and noise is what gets baselined away."""
