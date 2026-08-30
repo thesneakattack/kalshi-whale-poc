@@ -60,10 +60,12 @@ always-safe offline set) for exactly this reason.
 - **`GET /api/health/pipeline`**: the one route that reaches into
   `series_watcher.DB_PATH`/`index_feed.DB_PATH`/`settlement_edge.DB_PATH`/
   `game_state.DB_PATH`/`signal_log.DB_PATH`/`candidate_log.DB_PATH`
-  directly via a local `sqlite3.connect()`, to report last-write-age per
-  store — deliberately reads the **live objects'** own ingest counters
-  (`trade_stream.messages_received`, etc.), not a fresh process's zeroed
-  ones, per its own docstring's 2026-08-17 finding.
+  directly, now through `store_stats.store_stats()` (read-only, one worker
+  thread per store) rather than a local `sqlite3.connect()` on the event
+  loop — see the cost section below. It deliberately reads the **live
+  objects'** own ingest counters (`trade_stream.messages_received`, etc.),
+  not a fresh process's zeroed ones, per its own docstring's 2026-08-17
+  finding.
 - **Downstream:** purely read-only with respect to trading — no
   `config_store.update()` anywhere in this module, unlike
   advisory/whale_calibration's auto-apply write-back loops.
@@ -104,3 +106,34 @@ ratio; (2) 118 WS-only ids (`ws.not_in_rest`) appeared at the window edges
 so treat `not_in_rest` as boundary noise unless it grows with the window.
 A 3-minute window at this flow rate needs >10 pages; size `max_pages` to
 the rate or the result is only a lower bound (and says so).
+
+## The cost of `/api/health/pipeline` itself (issue #210, 2026-08-30)
+
+The endpoint CLAUDE.md sends every investigation to went instant → 41.9s →
+504 in one day, and dragged `last_tick_duration_sec` to 81.3s with it. Two
+independent defects in the same four lines, both measured on the live
+stores:
+
+| probe | shipped form | measured | replacement | measured |
+|---|---|---|---|---|
+| `stores.raw_trades` rows | `SELECT COUNT(*)` over 30.8M rows / 22.3GB | **70.5s** cold, 97.2s under load | `SELECT MAX(rowid)` | **0.03–0.07s** |
+| `stores.raw_trades` last write | `SELECT MAX(observed_at)` — no index leads with it | **7.5s** | max over the newest 5 000 rowids | **<1ms** |
+| `buffered_unwritten.series_watcher_trades` | `series_watcher.capture_stats()` — two series-filtered `COUNT(*)`s over `raw_trades` | **4.5s** warm, 34.2s under load | `capture_writer.depth()` (in-memory, the value `capture_stats` was forwarding anyway) | **0ms** |
+
+Whole store block, live DBs, same machine, back to back:
+**131.6s blocking the event loop → 0.28s warm / 1.7s cold, off the loop.**
+
+Two things this is *not*. It is not a smaller payload — every field the old
+handler returned is still returned. And it is not an exact number quietly
+turned into a guess: above `store_stats.EXACT_ROW_LIMIT` (2 000 000 rowids,
+from a measured ~2.3 µs/row full-index scan) the store reports
+`rows_exact: false`, `rows_method: "max_rowid"` and a `rows_note` saying it
+is an upper bound. Every store under the limit still reports an exact
+`COUNT(*)`, labelled exact. `?exact_rows=true` forces the exact form
+everywhere — measured at **191s** on `raw_trades`, which is why it is opt-in.
+
+`stores_probe_ms` in the payload is the permanent recurrence detection:
+the block reports its own wall cost, so the next regression shows up in the
+same read rather than in someone's stopwatch. Guards live in
+`tests/test_pipeline_health_cost.py`, which asserts the SQL issued and that
+no probe runs on the event loop.
