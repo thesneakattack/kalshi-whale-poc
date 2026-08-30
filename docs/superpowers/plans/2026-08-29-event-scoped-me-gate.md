@@ -161,47 +161,60 @@ def _me_signal(ticker="EV-A", event="EV"):
     s.event_ticker = event
     return s
 
-def test_me_true_event_with_open_sibling_position_is_skipped():
-    strat = _strategy()
-    strat.broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
-    d = strat.evaluate(_me_signal(), _cfg(),
-                       event_titles={"EV": {"mutually_exclusive": True}})
+def test_me_true_event_with_open_sibling_position_is_skipped(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
+    d = strategy.evaluate(_me_signal(), _cfg(),
+                          event_titles={"EV": {"mutually_exclusive": True}})
     assert d["action"] == "skip"
     assert "one-winner event" in d["reason"]
 
-def test_me_false_event_allows_second_position():
-    strat = _strategy()
-    strat.broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
-    d = strat.evaluate(_me_signal(), _cfg(),
-                       event_titles={"EV": {"mutually_exclusive": False}})
-    assert d["action"] != "skip" or "one-winner" not in d.get("reason", "")
+def test_me_false_event_allows_second_position(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
+    d = strategy.evaluate(_me_signal(), _cfg(),
+                          event_titles={"EV": {"mutually_exclusive": False}})
+    assert "one-winner" not in d.get("reason", "")
 
-def test_unknown_me_flag_fails_open_counts_and_fault_logs_once(monkeypatch):
+def test_unknown_me_flag_fails_open_counts_and_fault_logs_once(tmp_path, monkeypatch):
+    # NOTE: two DIFFERENT tickers on the same event. Using the same ticker
+    # twice cannot work - the first call fails open and TRADES, so the
+    # second returns at the same-ticker check (strategy_engine.py:437-438)
+    # before ever reaching this gate, and the counter would read 1, not 2.
     faults = []
     monkeypatch.setattr("services.fault_log.record_fault",
                         lambda *a, **k: faults.append(a) or True)
-    strat = _strategy()
-    strat.broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
-    d = strat.evaluate(_me_signal(), _cfg(), event_titles={})
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
+    d = strategy.evaluate(_me_signal(ticker="EV-A"), _cfg(), event_titles={})
     assert "one-winner" not in d.get("reason", "")
-    d = strat.evaluate(_me_signal(), _cfg(), event_titles={})  # same event again
-    assert strat.me_gate_unknown_total == 2       # counter: every occurrence
-    assert len(faults) == 1                        # fault row: once per event
+    d = strategy.evaluate(_me_signal(ticker="EV-C"), _cfg(), event_titles={})
+    assert strategy.me_gate_unknown_total == 2   # counter: every occurrence
+    assert len(faults) == 1                      # fault row: once per event
 
-def test_nway_me_event_third_market_is_skipped():
+def test_nway_me_event_third_market_is_skipped(tmp_path, monkeypatch):
     # The shape find_me_pairs could never catch (len(siblings) != 2).
-    strat = _strategy()
-    strat.broker.open_position("GOLF-P1", "yes", 10, 0.6, "t", event_ticker="GOLF")
-    d = strat.evaluate(_me_signal(ticker="GOLF-P3", event="GOLF"), _cfg(),
-                       event_titles={"GOLF": {"mutually_exclusive": True}})
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("GOLF-P1", "yes", 10, 0.6, "t", event_ticker="GOLF")
+    d = strategy.evaluate(_me_signal(ticker="GOLF-P3", event="GOLF"), _cfg(),
+                          event_titles={"GOLF": {"mutually_exclusive": True}})
     assert d["action"] == "skip"
 
-def test_simulator_signal_without_event_passes_gate():
-    strat = _strategy()
-    strat.broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
-    d = strat.evaluate(_signal(ticker="EV-A"), _cfg(),  # event_ticker None
-                       event_titles={"EV": {"mutually_exclusive": True}})
+def test_simulator_signal_without_event_passes_gate(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
+    d = strategy.evaluate(_signal(ticker="EV-A"), _cfg(),  # event_ticker None
+                          event_titles={"EV": {"mutually_exclusive": True}})
     assert "one-winner" not in d.get("reason", "")
+
+def test_a_resting_limit_order_blocks_a_second_leg(tmp_path, monkeypatch):
+    # F2b: a resting order is committed exposure. Without this, both legs
+    # pass at placement and both fill - the pathology this gate exists for.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.place_limit_order("EV-B", "yes", 10, 0.6, "t", event_ticker="EV")
+    d = strategy.evaluate(_me_signal(ticker="EV-A"), _cfg(),
+                          event_titles={"EV": {"mutually_exclusive": True}})
+    assert d["action"] == "skip"
 ```
 
 - [ ] **Step 2: Run to verify FAIL.**
@@ -276,7 +289,21 @@ def test_simulator_signal_without_event_passes_gate():
 - Test: append to `tests/test_whalewatchers_kalshi_trade_tape.py`
 
 **Interfaces:**
-- Consumes: `client.get_events(event_tickers)` (existing `services/kalshi/public.py` method — verify its exact name/signature by reading the file first; main's `_fetch_event_titles` calls it) and `state["event_titles"]` via `services.app_state`.
+- Consumes: `client.get_events(event_tickers: list[str]) -> list[dict]`
+  (`services/kalshi/public.py:204`, returns FLAT event dicts — `r["event_ticker"]`,
+  not the `{"event": ...}` wrapper) and `state["event_titles"]`.
+- **CRITICAL — `services.app_state` must be a FUNCTION-LOCAL import inside
+  `_resolve_unknown_markets`, never module-scope.** `app_state.py:82` imports
+  `services.whalewatchers`, whose `__init__.py:18` imports this very module: a
+  top-level `from services.app_state import state` is a cycle that crashes the
+  app at startup. `strategy_engine.py:314` documents this exact hazard and uses
+  the function-local form. (`from services import title_cache` at module scope
+  IS fine — no back-edge.)
+- The field-extraction helper is `_fetch_event_titles` in
+  **`services/market_watch/event_metadata.py:17`** (re-exported via
+  `market_watch/__init__.py:40`, imported at main.py:112) — NOT in main.py, which
+  only holds the import and two call sites. Reuse its extraction; persist via
+  `title_cache.save_event_titles` (`services/title_cache.py`) as main.py:864 does.
 - Produces: after a whale-sized off-list print resolves its market, that market's event has an `event_titles` entry (with `mutually_exclusive`) before the signal reaches `evaluate()`.
 
 - [ ] **Step 1: Write the failing test**
@@ -305,13 +332,13 @@ def test_resolving_an_offlist_market_also_ensures_its_events_me_flag(monkeypatch
     assert state["event_titles"]["EV-NEW"]["mutually_exclusive"] is True
 ```
 
-(Signature verified this session:
-`_resolve_unknown_markets(self, trade_tape, markets_by_ticker, cfg, client,
-now, counts=None)`; there is no `_cfg` helper in this file - plain `{}` is
-the idiom, and the code-default min_contracts applies (count_fp "50000.00"
-clears it). For `get_events`' return-shape consumption, read main.py's
-`_fetch_event_titles` field extraction and reuse it verbatim, persisting
-via `title_cache.save_event_titles` exactly as main.py:864 does.)
+(Signature verified: `_resolve_unknown_markets(self, trade_tape,
+markets_by_ticker, cfg, client, now, counts=None)`; no `_cfg` helper exists
+in this file - plain `{}` is the idiom, and the code-default min_contracts
+applies (count_fp "50000.00" clears it). `get_events` returns FLAT event
+dicts. Reuse `services/market_watch/event_metadata.py`'s `_fetch_event_titles`
+extraction — see the Interfaces block above for the import-cycle constraint,
+which is not optional.)
 
 - [ ] **Step 2: Run to verify FAIL** (no get_events call made).
 - [ ] **Step 3: Implement** inside `_resolve_unknown_markets`, after the market batch resolves: collect `event_ticker`s of newly resolved markets not present in `state["event_titles"]`; if any, one `client.get_events(missing)` call (it already runs under the `critical_whale` caller class via the method's `@http_client.classify` decorator — verify, don't assume), extract the same fields `_fetch_event_titles` extracts (title, category, `mutually_exclusive`, mutually-exclusive-adjacent fields it keeps), write into `state["event_titles"]` and persist via `title_cache.save_event_titles({...})`. A get_events failure is caught, fault-logged once, and skipped — resolution of the market itself must not fail because event metadata didn't arrive (the gate then counts an unknown, which is the designed degradation).
@@ -323,9 +350,13 @@ via `title_cache.save_event_titles` exactly as main.py:864 does.)
 ### Task 5: Real-pair regression, observability, docs
 
 **Files:**
-- Test: append to `tests/test_strategy_engine.py`
-- Modify: `services/observability/observability.py` (one gauge line — mirror how an existing strategy counter is captured; read `capture_from_runtime` first)
+- Test: append to `tests/test_strategy_engine.py`, `tests/test_observability.py`
+- Modify: `services/observability/observability.py`, `services/strategy_engine.py` (the `me_gate_snapshot()` accessor), `main.py` (stash into `state`), `tests/conftest.py` (autouse reset fixture)
 - Modify: `docs/superpowers/research/2026-08-29-trade-performance-analysis.md` (§13 watch-items: add the gate), `docs/next-action.md` if stale
+- **MERGE-ORDER DEPENDENCY:** that research doc does NOT exist on this branch.
+  It lives on `docs/flag-position-netting-losses` (PR #201, commit `e20a60f`)
+  and is not yet on `main`. The whole spec's evidence base cites it. Merge
+  PR #201 first, then merge `origin/main` into this branch, BEFORE Task 5.
 
 **Interfaces:**
 - Consumes: everything above.
@@ -334,34 +365,52 @@ via `title_cache.save_event_titles` exactly as main.py:864 does.)
 - [ ] **Step 1: Write the failing regression test**
 
 ```python
-def test_regression_kxatpmatch_ferbus_second_leg_is_refused():
+def test_regression_kxatpmatch_ferbus_second_leg_is_refused(tmp_path, monkeypatch):
     # Reconstructs the real 2026-08-29 pair: first leg entered, second leg
     # 1,816s later at combined unit cost 1.41 - mathematically locked at
     # entry (research doc section 13). With the event gate, leg 2 never opens.
-    strat = _strategy()
-    strat.broker.open_position(
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position(
         "KXATPMATCH-26AUG29FERBUS-FER", "yes", 590, 0.75, "whale print",
         event_ticker="KXATPMATCH-26AUG29FERBUS")
     leg2 = _signal(ticker="KXATPMATCH-26AUG29FERBUS-BUS")
     leg2.event_ticker = "KXATPMATCH-26AUG29FERBUS"
     leg2.price = 0.66
-    d = strat.evaluate(leg2, _cfg(), event_titles={
+    d = strategy.evaluate(leg2, _cfg(), event_titles={
         "KXATPMATCH-26AUG29FERBUS": {"mutually_exclusive": True}})
     assert d["action"] == "skip"
-    assert "one-winner event" in d["reason"]
+    assert "one-winner event" in d["reason"
 ```
 
 - [ ] **Step 2: Run to verify it passes already** (it should, from Task 3 — this is a pinning test; if it fails, Task 3 has a bug: stop and fix there).
-- [ ] **Step 3: Observability:** observability.py captures NO strategy_engine
-counter today (verified by grep - no anchor to mirror blindly). The correct
-existing pattern is how `candidate_retry`'s counters flow: `capture_from_runtime`
-reads `candidate_retry.snapshot()` (see `tests/test_observability.py::
-test_candidate_retry_metrics_flow_into_the_snapshot`). Mirror THAT: import
-`strategy` from `services.app_state`, emit one gauge
-(`strategy.me_gate.unknown_total`) from `strategy.me_gate_unknown_total`
-guarded for None/missing (observability must never crash on a
-partially-initialized app), plus one test asserting the metric name appears
-in a capture, mirroring the candidate_retry test's structure.
+- [ ] **Step 3: Observability — do NOT import app_state.**
+`services/observability/observability.py:15-20` states its own invariant:
+`capture_from_runtime`/`maybe_capture` take `state`/`trade_stream`/`index_stream`
+as EXPLICIT ARGUMENTS "rather than importing services.app_state directly ...
+that keeps this module import-side-effect-free (no eager PaperBroker/RiskManager
+construction)". `app_state.py:91-104` constructs PaperBroker, RiskManager,
+FollowTheWhaleStrategy and ShadowTrader at import time, so importing it here
+breaks that invariant. (The `candidate_retry` precedent is NOT analogous —
+that's a stateless module exposing `snapshot()`, not a live singleton.)
+
+Do this instead: `FollowTheWhaleStrategy` exposes
+`me_gate_snapshot() -> dict` (evaluated/blocked/unknown totals + the
+`positions_without_event_ticker` gauge from §7); main.py's tick loop stashes
+it into `state`, and observability flattens it from the `state` argument it
+already receives — the `_flatten_position_ticker_cadence(state, ...)`
+precedent at observability.py:263.
+
+**Emit nothing when all counters are zero.** `tests/test_observability.py:112`
+(`test_capture_from_runtime_omits_missing_sources_instead_of_fabricating_zero`)
+asserts `metrics == {}` for an idle app; an unconditional gauge breaks it.
+Guard with `if any(...)`, matching `_flatten_candidate_retry`'s own
+`{}`-when-empty behavior (observability.py:246, 281-292).
+
+**Add an autouse reset fixture.** `strategy` is a never-reassigned singleton
+(app_state.py:103), so these counters are the exact cross-test-leak class
+`tests/conftest.py:18-59` already carries three autouse fixtures for
+(`_fresh_whale_pipeline_perf`, `_fresh_rest_latency_stats`,
+`_fresh_candidate_retry_state`). Add a fourth for the gate counters.
 - [ ] **Step 4: Docs:** add to research doc §13 watch items: "me_gate_unknown_total near zero in steady state; candidate_log gate_summary shows me_event_gate rejections". Cross-post one dated line to `services/exits/README.md`'s netting section pointing at the gate as the formation fix.
 - [ ] **Step 5: Run the four touched test files together.** Expected: PASS.
 - [ ] **Step 6: Commit:** `feat: real-pair regression + gate observability (event-scoped-me-gate Task 5)` — cite docs read: docs/kalshi/get-market.md, get-markets.md, get-events.md.
