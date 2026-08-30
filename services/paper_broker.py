@@ -117,6 +117,16 @@ class Trade:
     netting_improvement_usd: float | None = None
     netting_bar_usd: float | None = None
     netting_vol_ratio: float | None = None
+    # Real Kalshi exit-taker-fee cost of a locked_loss position_netting
+    # close (services/exits/position_netting.py, docs/superpowers/specs/
+    # 2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md
+    # Part 2) - the module's own docstring argues unwinding a locked
+    # position early only adds fee drag versus Kalshi's fee-free
+    # settlement; this makes that cost measurable instead of buried in
+    # realized P&L. None for every entry, every non-netting close, every
+    # locked_profit/variable netting close, and every row written before
+    # this existed.
+    netting_exit_fee_usd: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -214,6 +224,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     _add_column_if_missing(conn, "trades", "netting_improvement_usd", "REAL")
     _add_column_if_missing(conn, "trades", "netting_bar_usd", "REAL")
     _add_column_if_missing(conn, "trades", "netting_vol_ratio", "REAL")
+    _add_column_if_missing(conn, "trades", "netting_exit_fee_usd", "REAL")
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -286,15 +297,16 @@ class PaperBroker:
                         ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0, bool(hold_to_settlement),
                     )
                 for (tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded,
-                     net_improvement, net_bar, net_vol_ratio) in conn.execute(
+                     net_improvement, net_bar, net_vol_ratio, net_exit_fee) in conn.execute(
                     "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
-                    "signal_seen_at, excluded, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+                    "signal_seen_at, excluded, netting_improvement_usd, netting_bar_usd, netting_vol_ratio, "
+                    "netting_exit_fee_usd "
                     "FROM trades ORDER BY timestamp ASC"
                 ):
                     self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0,
                                                 signal_seen_at, bool(excluded),
                                                 netting_improvement_usd=net_improvement, netting_bar_usd=net_bar,
-                                                netting_vol_ratio=net_vol_ratio))
+                                                netting_vol_ratio=net_vol_ratio, netting_exit_fee_usd=net_exit_fee))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
                 for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence in conn.execute(
                     "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, "
@@ -547,7 +559,7 @@ class PaperBroker:
     def close_position(
         self, ticker: str, exit_price: float, reason: str, *,
         netting_improvement_usd: float | None = None, netting_bar_usd: float | None = None,
-        netting_vol_ratio: float | None = None,
+        netting_vol_ratio: float | None = None, netting_exit_fee_usd: float | None = None,
     ) -> Trade | None:
         """Sells an open position back at exit_price instead of holding it
         to settlement - direct request: this app had zero exit mechanism at
@@ -599,6 +611,7 @@ class PaperBroker:
             netting_improvement_usd=netting_improvement_usd,
             netting_bar_usd=netting_bar_usd,
             netting_vol_ratio=netting_vol_ratio,
+            netting_exit_fee_usd=netting_exit_fee_usd,
         )
         self.trade_log.append(trade)
         del self.positions[ticker]
@@ -608,11 +621,12 @@ class PaperBroker:
             conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
                 "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
-                "netting_improvement_usd, netting_bar_usd, netting_vol_ratio) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "netting_improvement_usd, netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
                  trade.config_fingerprint, close_fee,
-                 trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio),
+                 trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio,
+                 trade.netting_exit_fee_usd),
             )
         return trade
 

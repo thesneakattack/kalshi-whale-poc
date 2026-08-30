@@ -447,3 +447,44 @@ def test_entry_rows_and_locked_loss_closes_leave_the_netting_inputs_null(tmp_pat
     assert len(rows) == 4  # two entries, two locked_loss closes
     assert all(r[1] is None and r[2] is None and r[3] is None for r in rows)
     assert sum(r[0].startswith("closed: position netting (locked_loss") for r in rows) == 2
+
+
+def test_review_persists_exit_fee_cost_on_a_locked_loss_close(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("A", "yes", 100, 0.6, "r")
+    broker.open_position("B", "yes", 100, 0.6, "r")
+    market_titles = _titles({"A": "EVT-1", "B": "EVT-1"})
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    latest_prices = {"A": 0.6, "B": 0.6}
+    cfg = {"position_netting": {"enabled": True, "min_dwell_sec": 0}}
+
+    decisions = review(broker, market_titles, event_titles, latest_prices, cfg)
+    assert {d["ticker"] for d in decisions} == {"A", "B"}
+
+    expected_fee = round(taker_fee(100, 0.6, ticker="A") + taker_fee(100, 0.6, ticker="B"), 2)
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {r["ticker"]: r for r in conn.execute(
+            "SELECT ticker, netting_exit_fee_usd FROM trades WHERE reason LIKE 'closed: position netting%'"
+        )}
+    assert rows["A"]["netting_exit_fee_usd"] == expected_fee
+    assert rows["B"]["netting_exit_fee_usd"] == expected_fee
+
+
+def test_review_leaves_netting_exit_fee_usd_null_for_a_variable_close(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A",), now)
+    _wiggly_history("B", now)
+    cfg = _net_cfg(min_edge_improvement_usd=1.0)
+
+    decisions = review(broker, market_titles, event_titles, latest_prices, cfg, now=now)
+    assert [d["ticker"] for d in decisions] == ["B"]
+
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT netting_exit_fee_usd FROM trades WHERE ticker = 'B' AND reason LIKE 'closed: position netting%'"
+        ).fetchone()
+    assert row["netting_exit_fee_usd"] is None

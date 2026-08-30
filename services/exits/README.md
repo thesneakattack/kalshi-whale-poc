@@ -296,3 +296,32 @@ as additive `trades` columns (`services/paper_broker.py`,
   bar of zero dollars. Pre-existing rows keep NULL - additive only.
 - The sentence is unchanged. Prose is for the reader; columns are for the
   analysis (`docs/data-layer-analysis-layer-contract.md`).
+
+## A fourth column: the locked_loss exit-fee cost (2026-08-30, entry-gate-me-pairing-and-netting-remediation Part 2)
+
+A `locked_loss` group's recommendation carries its own structured number,
+`exit_fee_cost_usd` (`describe_groups`) - the real Kalshi taker fee paid to
+close now instead of riding to Kalshi's fee-free settlement, which this
+module's own top docstring argues is the only real cost a locked, fixed loss
+can still incur. It did not exist when the three columns above shipped
+(`locked_loss` has no bar/improvement/vol_ratio - no expected-value
+comparison happens when every outcome already loses), so it rides onto the
+CLOSE row as its own additive column, `trades.netting_exit_fee_usd`, via the
+same `_add_column_if_missing`/`close_position`/`INSERT` idiom.
+
+- Populated on exactly the opposite branch from the three columns above:
+  NULL on a `variable`/`locked_profit` netting close (and on every non-netting
+  row), a real number only on a `locked_loss` `close_all`. The two column
+  families are never both non-NULL on the same row.
+- `services/reset/trade_archive.py`'s `archived_trades` table, its
+  `archive_epoch` SELECT, and its INSERT column list are extended in the same
+  change - the #242 fix note in that file's `_connect` documents why an
+  explicit-column-list archive silently drops any `trades` column added
+  without a matching update here, and this column would otherwise reopen that
+  exact gap on its first `POST /api/reset`, an archive being append-only with
+  no way to backfill a dropped column after the fact.
+- Tests: `tests/test_position_netting.py::test_review_persists_exit_fee_cost_on_a_locked_loss_close`
+  and `::test_review_leaves_netting_exit_fee_usd_null_for_a_variable_close`.
+- The tradeoff this makes measurable - closing now for bankroll/position
+  headroom versus this fee cost - is itself still open:
+  `docs/open-decisions.md`.

@@ -394,6 +394,7 @@ def review(
                 netting_improvement_usd=rec.get("expected_value_improvement_usd"),
                 netting_bar_usd=rec.get("materiality_bar_usd"),
                 netting_vol_ratio=rec.get("vol_ratio"),
+                netting_exit_fee_usd=rec.get("exit_fee_cost_usd"),
             )
             if trade is None:
                 continue
