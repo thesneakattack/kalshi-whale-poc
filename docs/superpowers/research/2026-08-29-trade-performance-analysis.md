@@ -25,7 +25,20 @@ corrected version; the original 0.60–0.95-raw-price framing is retracted.
 ## 0. CORRECTIONS (independent verification, 2026-08-30) — READ FIRST
 
 This document was verified claim-by-claim against the live data after it was
-written. **§1, §2, §3, §6's headline split, §10's raw correlations, and §11's
+written, and every corrected figure below was then recomputed a THIRD time
+from the raw 257-trade slice and its derived arithmetic checked in Wolfram —
+not taken on the verifier's word (the same mistake in the other direction).
+Reproduced exactly: locked_loss 24 / -$2,210.94 and variable 10 / -$483.05;
+the ten printed bars $28.70-$114.62 => vol_ratio 0.574-2.2924, provably never
+touching either clamp bound (0.25 / 4.0); 11 negative non-crypto series summing
+-$4,260.36; ATP -$818.99 total = -$1,339.38 netting + $520.39 non-netting;
+union(ATP, netting) = -$2,173.60, and the identity
+atpTotal + nettingTotal - atpNetting == unionTotal holds exactly; ceiling slice
+n=25, 84.0% win, -$155.85. The naive component sum is +$3,668.83, of which
+$1,339.38 is double-counted, giving a true ceiling of **+$2,329.45** - so the
+body's "+$3,000-3,500" overstates by $670-$1,170.
+
+**§1, §2, §3, §6's headline split, §10's raw correlations, and §11's
 dead-config pass all reproduce exactly and can be trusted.** The following
 claims were WRONG, and three of them were load-bearing for config changes
 that were already applied. Corrections here override the body text below.
