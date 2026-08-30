@@ -15,6 +15,7 @@ import pytest
 from tests.support.runtime_isolation import (
     DATA_DIR_MODULE_PATHS,
     PERSISTENCE_MODULE_PATHS,
+    PINNED_CONFIG_SECTIONS,
     loaded_registered_modules,
     repo_data_dir,
     repo_root,
@@ -152,3 +153,77 @@ def test_quality_summary_route_does_not_open_live_repo_data():
 
     assert resp.status_code == 200
     assert "storage" in resp.json()
+
+
+# --- config_store pin (issue #229) -----------------------------------------
+#
+# A third shape: not a path the suite must never touch, but a file whose
+# committed VALUES the suite must never inherit - config/settings.yaml is
+# the running app's live state, committed as-is. See PINNED_CONFIG_SECTIONS'
+# own comment in runtime_isolation.py for the 16-test failure that made
+# "patch it in the test that cares" not good enough on its own.
+
+
+def _committed_config_section(section: str) -> dict:
+    """The committed config/settings.yaml, read directly and on purpose -
+    never through config_store.get(), which the pin rewrites. The one place
+    in the suite that is meant to see the file's own value."""
+    from ruamel.yaml import YAML
+
+    from services.config.config_store import CONFIG_PATH
+
+    with open(CONFIG_PATH) as f:
+        return YAML(typ="safe").load(f)[section]
+
+
+def test_config_store_get_serves_the_pinned_section_not_the_stores_own_value(monkeypatch):
+    """Proof the autouse pin fires, every run, whatever the file says: plant
+    a value no test could expect straight into the singleton's in-memory
+    copy (its mtime is unchanged, so an unpinned get() would serve exactly
+    that) and read it back through the suite-facing get()."""
+    from services.config.config_store import config_store
+
+    for section, pinned in PINNED_CONFIG_SECTIONS.items():
+        monkeypatch.setitem(config_store._data, section, {key: "NOT-PINNED" for key in pinned})
+        served = config_store.get()[section]
+        assert served == pinned
+        assert served is not pinned  # a copy: mutating it cannot edit the registry
+        assert config_store.get()[section] == pinned  # and the next read is pinned again
+
+
+def test_gateway_queue_topology_comes_from_the_pin_not_the_file(monkeypatch):
+    """The #229 instance itself: a KalshiStreamGateway built with no config
+    patch routes by the pinned two_consumer_mode, not by whatever the
+    committed file (or a test's leftover update()) says."""
+    from services.config.config_store import config_store
+    from services.kalshi.websocket import KalshiStreamGateway
+
+    pinned = PINNED_CONFIG_SECTIONS["realtime_data_plane"]["two_consumer_mode"]
+    monkeypatch.setitem(config_store._data, "realtime_data_plane", {"two_consumer_mode": not pinned})
+    gw = KalshiStreamGateway("https://external-api.kalshi.com/trade-api/v2")
+    assert gw._two_consumer_mode() is pinned
+
+
+def test_a_config_store_a_test_builds_itself_is_not_pinned(tmp_path):
+    """Scope of the pin: the shared singleton only. tests/test_config_store.py
+    is about ConfigStore reading a file, and must keep seeing its file."""
+    from services.config.config_store import ConfigStore
+
+    path = tmp_path / "settings.yaml"
+    path.write_text("realtime_data_plane:\n  two_consumer_mode: NOT-PINNED\n")
+    assert ConfigStore(path).get()["realtime_data_plane"] == {"two_consumer_mode": "NOT-PINNED"}
+
+
+def test_pinned_config_sections_cover_every_key_of_the_committed_section():
+    """Same cross-check discipline as PERSISTENCE_MODULE_PATHS: a flag added
+    to a pinned section without an explicit test value would be served from
+    the pin without it - i.e. silently absent, which reads as False to every
+    `.get()` consumer - and a pinned key the file no longer has is a test
+    value for nothing. Both are "update the registry", never a false
+    positive to work around."""
+    for section, pinned in PINNED_CONFIG_SECTIONS.items():
+        committed = _committed_config_section(section)
+        missing = set(committed) - set(pinned)
+        assert not missing, f"{section} keys in config/settings.yaml with no pinned test value: {missing}"
+        stale = set(pinned) - set(committed)
+        assert not stale, f"pinned {section} keys no longer in config/settings.yaml: {stale}"

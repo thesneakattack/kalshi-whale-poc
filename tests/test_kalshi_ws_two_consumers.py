@@ -224,9 +224,125 @@ def test_a_ticker_arriving_while_the_market_consumer_is_parked_wakes_it(monkeypa
     assert handled == ["ticker"]
 
 
+def test_the_wake_sentinel_is_enqueued_only_on_the_empty_to_non_empty_transition(monkeypatch):
+    # The `if was_empty:` guard is load-bearing and untested until now: one
+    # sentinel per pending-map transition, not one per accepted update, or a
+    # settlement cascade would push a sentinel per new market onto the very
+    # queue coalescing exists to keep short. The parked-consumer test above
+    # stays green with the guard deleted; this one does not - and the guard
+    # is precisely why _oldest_message_age has to read the map itself (#207).
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    assert gw._market_queue.qsize() == 1  # empty -> non-empty: one wake
+    gw._ingest_raw(_ticker_ts("K2", 100, 60))  # new market, map already non-empty
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))  # supersedes an existing entry
+    assert set(gw._pending_ticker_by_market()) == {"K1", "K2"}
+    assert gw._market_queue.qsize() == 1  # still exactly the one sentinel
+    now, kind, payload = gw._market_queue.get_nowait()
+    assert (kind, payload) == (ws_module._TICKER_WAKE, None)
+
+
 def test_single_queue_mode_does_not_coalesce(monkeypatch):
     gw = _gateway(two_consumer=False, monkeypatch=monkeypatch)
     gw._ingest_raw(_ticker_ts("K1", 100, 50))
     gw._ingest_raw(_ticker_ts("K1", 200, 55))
     assert gw._queue.qsize() == 2  # every update kept, exactly today's behavior
     assert gw._pending_ticker_by_market() == {}
+
+
+# --- reconnect discards are counted, never lost (#209) ---------------------
+
+async def _noop(*_args):
+    return None
+
+
+def _conservation_gap_by_class(metrics: dict) -> dict[str, int]:
+    """received - (processed + coalesced + pending + dropped +
+    discarded_on_reconnect) per class: the identity tools/soak_analyzer.py's
+    ticker_conservation checks, computed from the public ingest_metrics()
+    surface only (coalesced and pending only ever hold tickers)."""
+    q = metrics["queue"]
+    gaps = {}
+    for cls, received in metrics["received_by_class"].items():
+        accounted = (metrics["processed_by_class"].get(cls, 0)
+                     + metrics["dropped_by_class"].get(cls, 0)
+                     + metrics["discarded_on_reconnect_by_class"].get(cls, 0))
+        if cls == "ticker":
+            accounted += q["coalesced_tickers"] + q["pending_tickers"]
+        gaps[cls] = received - accounted
+    return gaps
+
+
+def test_reconnect_counts_discarded_queue_items_and_pending_tickers_by_class(monkeypatch):
+    """_begin_connection replaces all three queues and the coalescing map on
+    every (re)connect - a deliberate discard (the ticker channel re-snapshots
+    on resubscribe). Everything it throws away was already counted into
+    received_by_class on arrival, so an uncounted discard is, from outside,
+    indistinguishable from a leak (issue #209: gap constant at 74 across 12
+    reconnects). Counted into its own counter, not dropped_by_class - queue-
+    full shedding is a different failure. The wake sentinel is not a
+    received message and must not be counted."""
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_fill("f1"))
+    gw._ingest_raw(_fill("f2"))
+    for i in range(3):
+        gw._ingest_raw(_trade(f"t{i}"))
+    gw._ingest_raw(_ticker_ts("K1", 100, 50))
+    gw._ingest_raw(_ticker_ts("K2", 100, 60))
+    gw._ingest_raw(_ticker_ts("K1", 200, 55))  # supersedes K1: coalesced, not pending
+    assert gw._critical_queue.qsize() == 2
+    assert gw._market_queue.qsize() == 4  # 3 trades + the wake sentinel
+    assert len(gw._pending_ticker_by_market()) == 2
+
+    gw._begin_connection()
+
+    m = gw.ingest_metrics(now=1.0)
+    assert m["discarded_on_reconnect_by_class"] == {"fill": 2, "trade": 3, "ticker": 2}
+    assert m["dropped_by_class"] == {}  # a reconnect discard is not a drop
+    assert m["dropped_messages"] == 0
+    assert _conservation_gap_by_class(m) == {"fill": 0, "trade": 0, "ticker": 0}
+
+
+def test_conservation_identity_holds_exactly_across_a_reconnect_with_drops_and_processing(monkeypatch):
+    """Every term non-zero at once: received == processed + dropped +
+    discarded_on_reconnect for a class that was shed, partly consumed, and
+    then cut off by a reconnect."""
+    gw = _gateway(queue_max=2, two_consumer=True, monkeypatch=monkeypatch)
+    for i in range(4):
+        gw._ingest_raw(_trade(f"t{i}"))  # 2 enqueued, 2 shed (queue_max=2)
+    assert gw._dropped_by_class == {"trade": 2}
+
+    async def _drive():
+        item = gw._market_queue.get_nowait()
+        await gw._process_item(item, _noop, _noop, _noop)
+
+    asyncio.run(_drive())  # one trade processed, one still queued
+    gw._begin_connection()
+
+    m = gw.ingest_metrics(now=1.0)
+    assert m["received_by_class"]["trade"] == 4
+    assert m["processed_by_class"]["trade"] == 1
+    assert m["dropped_by_class"]["trade"] == 2
+    assert m["discarded_on_reconnect_by_class"] == {"trade": 1}
+    assert _conservation_gap_by_class(m) == {"trade": 0}
+
+
+def test_begin_connection_still_leaves_every_queue_fresh_and_empty(monkeypatch):
+    """Counting the discard changes the accounting, not the design decision:
+    a reconnect still starts with new, empty queues and an empty map, and an
+    empty reconnect counts nothing."""
+    gw = _gateway(two_consumer=True, monkeypatch=monkeypatch)
+    gw._ingest_raw(_trade())
+    gw._ingest_raw(_fill())
+    gw._ingest_raw(_ticker())
+    old = (gw._queue, gw._critical_queue, gw._market_queue)
+
+    gw._begin_connection()
+
+    new = (gw._queue, gw._critical_queue, gw._market_queue)
+    assert all(n is not o for n, o in zip(new, old))
+    assert all(q.empty() for q in new)
+    assert gw._pending_ticker_by_market() == {}
+    before = dict(gw._discarded_on_reconnect_by_class)
+    gw._begin_connection()
+    assert gw._discarded_on_reconnect_by_class == before

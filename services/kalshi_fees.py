@@ -5,11 +5,27 @@ docs/prediction-markets-research-reference.md Part 2.4) rather than trusted
 from scraped fee-schedule blogs, which converge on the same coefficient but
 disagreed on rounding precision:
 
-    taker_fee = ceil_to_$0.0001( 0.07 * contracts * price * (1 - price) )
+    taker_fee = ceil_to_$0.000001( 0.07 * contracts * price * (1 - price) )
 
-Checked against real fee_cost values: 14.11 contracts @ $0.84 -> predicted
-$0.1328, actual $0.1328. 9.13 @ $0.53 -> predicted/actual $0.1592. 21.75 @
-$0.17 -> predicted/actual $0.2149. All three exact.
+Checked 2026-08-09 against real fee_cost values under the ceiling then
+documented ($0.0001): 14.11 contracts @ $0.84 -> predicted/actual $0.1328.
+9.13 @ $0.53 -> predicted/actual $0.1592. 21.75 @ $0.17 -> predicted/actual
+$0.2149. All three exact at that precision.
+
+Trade API 3.29.0 (2026-08-30, issue #253) documents the trade-fee ceiling
+as $0.000001, six decimal places, not $0.0001 (docs/kalshi/
+fee_rounding.md:18,22 - "Fees are six-decimal dollar amounts
+($0.000001 granularity)"; the trade-fee component is "rounded up to the
+nearest $0.000001"; pre-3.29.0 the same lines said $0.0001). The ceiling
+below was updated to match; the three real-fill numbers above are the
+historical calibration at the OLD precision (kalshi_account.trading_enabled
+has always been false, so there is no real fill to re-verify the new,
+finer ceiling against) - see tests/test_kalshi_fees.py's own comment on
+what the re-ceiled values are and why they're a recomputation, not a fresh
+real-fill match. PR #224's per-fill (not per-contract) application argument
+is unaffected: a finer ceiling only tightens the per-fill overstatement
+bound (now up to $0.000001, not $0.0001), it doesn't change which quantity
+the ceiling is applied to.
 
 Before this, services/paper_broker.py modeled zero fees anywhere - every
 paper-mode P&L figure (including shadow mode's own "would I trust this with
@@ -49,6 +65,12 @@ therefore charged double the real fee. See _FEE_MULTIPLIER_BY_SERIES below
 PDF this replaces, this is still a point-in-time snapshot, not a live
 fetch - Kalshi's own schedule can change again; revisit the same way if a
 future real-fill fee_cost stops matching this formula.
+
+Also home, since 2026-08-30 (issue #212), to unit_cost() - the one
+side-aware per-contract cost every dollar figure in this app derives from.
+It lives here rather than in a new module because this is the money-math
+module every consumer of it already imports, and breakeven_unit_cost()
+consumes its output directly.
 """
 import math
 
@@ -80,6 +102,16 @@ _FEE_MULTIPLIER_BY_SERIES = {
 }
 
 
+def _multiplier(ticker: str | None) -> float:
+    """The real per-series fee multiplier for `ticker` (1.0 for every series
+    not in _FEE_MULTIPLIER_BY_SERIES, and 1.0 when no ticker is in scope at
+    the call site). One lookup, shared by every fee function here, so a
+    future correction to the table can never land in one of them only."""
+    if ticker is None:
+        return 1.0
+    return _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0)
+
+
 def taker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
     """Real Kalshi taker fee for one leg of a trade (open OR close - Kalshi
     charges per fill, not per round-trip), in dollars. contracts <= 0
@@ -94,11 +126,11 @@ def taker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     formula."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    multiplier = _multiplier(ticker)
     if multiplier == 0.0:
         return 0.0
     raw = _TAKER_RATE * multiplier * contracts * price * (1 - price)
-    return math.ceil(raw * 10000) / 10000
+    return math.ceil(raw * 1_000_000) / 1_000_000
 
 
 def maker_fee(contracts: float, price: float, ticker: str | None = None) -> float:
@@ -114,8 +146,104 @@ def maker_fee(contracts: float, price: float, ticker: str | None = None) -> floa
     limit-order simulation this now feeds."""
     if contracts <= 0 or price <= 0 or price >= 1:
         return 0.0
-    multiplier = _FEE_MULTIPLIER_BY_SERIES.get(series_of(ticker), 1.0) if ticker is not None else 1.0
+    multiplier = _multiplier(ticker)
     if multiplier == 0.0:
         return 0.0
     raw = _MAKER_RATE * multiplier * contracts * price * (1 - price)
-    return math.ceil(raw * 10000) / 10000
+    return math.ceil(raw * 1_000_000) / 1_000_000
+
+
+def taker_fee_per_contract(price: float, ticker: str | None = None) -> float:
+    """Taker fee in DOLLARS PER CONTRACT at `price` - the same rate, same
+    per-series multiplier, as taker_fee(), deliberately WITHOUT its
+    per-fill $0.000001 ceiling (docs/kalshi/fee_rounding.md:22, updated
+    2026-08-30 for Trade API 3.29.0 - issue #253; was $0.0001 pre-3.29.0).
+
+    That ceiling is charged once per fill, not once per contract: the real
+    fills this module was originally verified against (14.11 contracts @
+    $0.84 -> $0.1328 under the OLD $0.0001 ceiling) round the whole order
+    total exactly once. Carrying it into a per-contract rate would price
+    every contract as if it were its own one-contract order, overstating
+    the rate by up to $0.000001/contract, and would make an aggregate
+    metric depend on a fill size that isn't real. So this is the exact
+    rate, and taker_fee(n, p)/n converges to it as n grows - PR #224's
+    convergence argument is unaffected by the finer ceiling: ceil_k(raw) -
+    raw < 10^-k by definition, so shrinking k from 4 to 6 only tightens the
+    per-fill (and therefore per-contract, spread over n) overstatement
+    bound, from < 1e-4/n to < 1e-6/n. It does not change which quantity the
+    ceiling is applied to or that it's applied once per fill.
+
+    Exists because "what does a contract at price c really cost me" is a
+    question two separate analytics modules ask (series_watcher.reconcile,
+    reset.trade_archive._summarise) and neither may re-derive 0.07 or the
+    multiplier table locally."""
+    if price <= 0 or price >= 1:
+        return 0.0
+    return _TAKER_RATE * _multiplier(ticker) * price * (1 - price)
+
+
+def unit_cost(side: str, yes_price: float | None) -> float | None:
+    """Per-contract cost, in dollars, of one `side` contract when the YES
+    price is `yes_price`: the yes price itself for "yes", its complement
+    (1 - yes_price) for "no". Kalshi quotes in yes terms and a no position
+    at yes price X costs (1 - X) - "a bid for yes at price X is equivalent
+    to an ask for no at price (100-X)" (docs/kalshi/get-market-orderbook.md).
+    Every price this app carries (WhaleSignal.price, Position.entry_price,
+    PendingOrder.limit_price, trades.price, market snapshots) is the yes
+    price by convention, so every side-aware dollar figure - cost basis,
+    proceeds, fill cost, the admission band - goes through here.
+
+    The arithmetic is strategy_engine._validate_entry_price's own gate
+    expression, `price if side == "yes" else (1 - price)`, bit for bit
+    (tests/test_kalshi_fees.py pins it), so the band a signal is admitted
+    against, the charge the broker takes and every analytics read agree.
+    Issue #212: 26 inline copies and three byte-identical private helpers
+    (diagnostics, series_watcher, reset.trade_archive) had converged on
+    this one line - the no-side inversion is one of the two shipped bugs
+    CLAUDE.md cites under "A displayed value must match its label";
+    tools/quality_audit/unit_cost.py now fails CI on a fresh inline copy.
+
+    `side` must be exactly "yes" or "no", the two strings every producer
+    emits (services/kalshi/contracts/trade.py's OutcomeSide, WhaleSignal
+    .side, Position.side; all 655 persisted trades and 93,943 signals
+    checked 2026-08-30 carry nothing else). Any other value raises: the
+    inline copies silently treated an unknown side as "no" - wrong
+    direction AND wrong cost with no trace, the exact failure
+    resolve_taker_outcome_side's docstring records - and a guessed side is
+    worse than a loud one.
+
+    A None price stays None ("no price known" must never become an
+    invented cost) - the contract the three private helpers had, which
+    the WebSocket reader gate relies on to record a rejection with
+    unit_cost=None rather than 0.0.
+
+    The result is also the market-implied probability of `side` (a
+    contract pays $1 or $0), which is why breakeven_unit_cost() below can
+    add a fee to it directly."""
+    if side == "yes":
+        return yes_price
+    if side == "no":
+        return None if yes_price is None else 1 - yes_price
+    raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
+
+
+def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:
+    """The win probability a contract bought at `unit_cost` needs just to
+    break even, expressed as a unit cost in dollars per contract (the two
+    are the same number: a contract pays $1 or $0, so EV per contract is
+    exactly p - unit_cost - fee, and EV = 0 at p = unit_cost + fee).
+
+    `unit_cost` is the side-aware per-contract cost - (1 - yes_price) for a
+    no-side position - not the raw yes price. The fee is symmetric in price
+    and its complement (see this module's docstring), so it is the same
+    either way, but the cost it is added to is not.
+
+    Fee-free breakeven ("breakeven accuracy IS the entry price") was shipped
+    and displayed until 2026-08-30 - issue #205, the "a displayed value must
+    match its label" class in CLAUDE.md. The understatement is exactly
+    100 * _TAKER_RATE * multiplier * c * (1-c) points: 1.75 at c = 0.50 down
+    to 0.63 at c = 0.90, the band config/settings.yaml actually enforces
+    (min_unit_cost 0.5 / max_unit_cost 0.9, read 2026-08-30 - the 0.60-0.85
+    quoted in older notes is stale), halved for the MLB proposition family
+    and exactly zero for the multiplier-0 series."""
+    return unit_cost + taker_fee_per_contract(unit_cost, ticker=ticker)

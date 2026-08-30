@@ -1,15 +1,29 @@
 import pytest
 
-from services.kalshi_fees import taker_fee
+from services.kalshi_fees import breakeven_unit_cost, taker_fee, taker_fee_per_contract, unit_cost
 
 
 def test_taker_fee_matches_real_verified_fills():
     # Verified 2026-08-09 directly against three real fills on a connected
     # Kalshi account (docs/prediction-markets-research-reference.md Part 2.4) -
-    # not derived from the formula itself, these are the real numbers.
-    assert taker_fee(14.11, 0.84) == 0.1328
+    # not derived from the formula itself, these are the real numbers, and
+    # under the pre-3.29.0 $0.0001 trade-fee ceiling then documented, all
+    # three matched exactly (0.1328, 0.1592, 0.2149).
+    #
+    # Trade API 3.29.0 (issue #253) documents the trade-fee ceiling as
+    # $0.000001, not $0.0001 (docs/kalshi/fee_rounding.md:18,22 - "Fees are
+    # six-decimal dollar amounts"; pre-3.29.0 the same lines said $0.0001).
+    # The values below are the SAME rate/formula re-ceiled to that finer
+    # precision - a recomputation, not a fresh real-fill re-verification
+    # (kalshi_account.trading_enabled has always been false, so no real
+    # fill exists to re-check the exact 6dp value against; see this
+    # module's own docstring). 9.13 @ 0.53 happens to land on the same
+    # value at both precisions (0.15919981 ceils to 0.1592 either way);
+    # the other two shift by a fraction of a cent, exactly the "up to
+    # $0.000099" overstatement issue #253 named.
+    assert taker_fee(14.11, 0.84) == 0.132747
     assert taker_fee(9.13, 0.53) == 0.1592
-    assert taker_fee(21.75, 0.17) == 0.2149
+    assert taker_fee(21.75, 0.17) == 0.214825
 
 
 def test_taker_fee_is_symmetric_in_price_and_its_complement():
@@ -78,3 +92,108 @@ def test_taker_fee_zero_for_series_missed_by_the_original_pdf_pass():
     assert taker_fee(100, 0.5, ticker="KXNEXTIRANLEADER-26") == 0.0
     assert taker_fee(100, 0.5, ticker="KXTRUMPOUT-26") == 0.0
     assert taker_fee(100, 0.5, ticker="KXGDPYEAR-26") == 0.0
+
+
+def test_taker_fee_per_contract_is_the_rate_without_the_per_fill_ceiling():
+    """The $0.000001 ceiling in taker_fee() (issue #253, Trade API 3.29.0 -
+    was $0.0001) is charged once per FILL, not once per contract - the
+    real-fill evidence in kalshi_fees' own docstring rounds the whole
+    14.11-contract order, not each contract. A per-contract rate therefore
+    must not carry it, and is exactly the limit of the per-fill fee spread
+    across many contracts."""
+    assert taker_fee_per_contract(0.70) == pytest.approx(0.0147, abs=1e-12)
+    assert taker_fee_per_contract(0.85) == pytest.approx(0.008925, abs=1e-12)
+    # The per-fill ceiling adds at most $0.000001 to the ORDER (was $0.0001
+    # pre-3.29.0), so spread over n contracts the gap is bounded by 1e-6/n
+    # and is one-sided (the per-fill rate never understates). n = 1e5 leaves
+    # an order of magnitude of margin rather than asserting exactly on the
+    # bound - tighter than before (was margin against a 1e-4/n bound), not
+    # looser.
+    assert taker_fee(100000, 0.85) / 100000 == pytest.approx(
+        taker_fee_per_contract(0.85), abs=1e-8)
+
+
+def test_taker_fee_per_contract_is_zero_at_the_price_extremes():
+    assert taker_fee_per_contract(0.0) == 0.0
+    assert taker_fee_per_contract(1.0) == 0.0
+
+
+def test_breakeven_unit_cost_is_the_price_plus_the_taker_fee():
+    """Issue #205: a contract bought at unit cost c pays $1 or $0, so its
+    breakeven win probability is what it COST, and what it cost includes the
+    taker fee on the fill. Table verified 2026-08-30 against
+    c + 0.07*c*(1-c)."""
+    assert breakeven_unit_cost(0.60) == pytest.approx(0.6168, abs=1e-12)
+    assert breakeven_unit_cost(0.70) == pytest.approx(0.7147, abs=1e-12)
+    assert breakeven_unit_cost(0.80) == pytest.approx(0.8112, abs=1e-12)
+    assert breakeven_unit_cost(0.85) == pytest.approx(0.858925, abs=1e-12)
+
+
+def test_breakeven_unit_cost_honours_the_real_per_series_fee_multiplier():
+    """A multiplier-0 series charges no taker fee at all, so its breakeven
+    really IS the entry price; the MLB proposition family pays half rate.
+    Applying the default rate to either would be the same mislabelling this
+    fix removes, just in the other direction."""
+    assert breakeven_unit_cost(0.70, ticker="KXBTCY-26-T150000") == pytest.approx(0.70)
+    assert breakeven_unit_cost(0.70, ticker="KXMLBGAME-26AUG13GBPIT-PIT") == pytest.approx(
+        0.70735, abs=1e-12)
+    assert breakeven_unit_cost(0.70, ticker="KXBTC15M-26AUG30") == pytest.approx(0.7147, abs=1e-12)
+
+
+# --- unit_cost: the one side-aware per-contract cost (issue #212) ----------
+
+
+def test_unit_cost_yes_side_is_the_yes_price_itself():
+    assert unit_cost("yes", 0.3) == 0.3
+    assert unit_cost("yes", 0.84) == 0.84
+
+
+def test_unit_cost_no_side_is_the_complement_of_the_yes_price():
+    # docs/kalshi/get-market-orderbook.md: "a bid for yes at price X is
+    # equivalent to an ask for no at price (100-X)" - a NO contract at yes
+    # price 0.3 costs 0.7, the exact inversion the shipped no-side bug
+    # (CLAUDE.md, "A displayed value must match its label") got wrong.
+    assert unit_cost("no", 0.3) == 1 - 0.3
+    assert unit_cost("no", 0.84) == pytest.approx(0.16)
+
+
+@pytest.mark.parametrize("side,yes_price,expected", [
+    ("yes", 0.0, 0.0), ("no", 0.0, 1.0),
+    ("yes", 1.0, 1.0), ("no", 1.0, 0.0),
+])
+def test_unit_cost_at_the_price_boundaries(side, yes_price, expected):
+    # 0 and 1 are the two prices config_bounds.is_tradeable_unit_cost
+    # refuses on either side; the helper itself stays pure arithmetic and
+    # never clamps, so the gate sees exactly what was quoted.
+    assert unit_cost(side, yes_price) == expected
+
+
+@pytest.mark.parametrize("side", ["yes", "no"])
+@pytest.mark.parametrize("price", [0.0, 0.01, 0.3, 0.5, 0.7, 0.99, 1.0])
+def test_unit_cost_is_bit_identical_to_the_strategy_engine_gate_expression(side, price):
+    # strategy_engine._validate_entry_price's own gate line is the canonical
+    # semantics this helper replaces (issue #212); a last-ulp drift here
+    # would let the admission band and the broker's charge disagree.
+    assert unit_cost(side, price) == (price if side == "yes" else (1 - price))
+
+
+def test_unit_cost_none_price_stays_none_for_both_sides():
+    # "no price known" must never become an invented cost - the contract
+    # the three private _unit_cost copies (diagnostics, series_watcher,
+    # reset.trade_archive) already had, and websocket.py's reader gate
+    # relies on to record a rejection with unit_cost=None.
+    assert unit_cost("yes", None) is None
+    assert unit_cost("no", None) is None
+
+
+@pytest.mark.parametrize("bad_side", ["YES", "Yes", "NO", " no", "", "bid", "buy_yes", None, 1])
+def test_unit_cost_rejects_any_side_that_is_not_exactly_yes_or_no(bad_side):
+    # Every producer in this app emits exactly "yes"/"no" (contracts/trade.py
+    # OutcomeSide, WhaleSignal.side, Position.side; every persisted row
+    # checked 2026-08-30). The inline copies silently treated anything else
+    # as "no" - wrong direction and wrong cost with no trace - so an
+    # unknown spelling is rejected loudly, never normalised or guessed.
+    with pytest.raises(ValueError):
+        unit_cost(bad_side, 0.3)
+    with pytest.raises(ValueError):
+        unit_cost(bad_side, None)

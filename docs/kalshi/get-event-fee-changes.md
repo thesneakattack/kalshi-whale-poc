@@ -15,7 +15,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -187,10 +187,12 @@ components:
       enum:
         - quadratic
         - quadratic_with_maker_fees
+        - quadratic_with_combo_maker_fees
         - flat
       x-enum-varnames:
         - FeeTypeQuadratic
         - FeeTypeQuadraticWithMakerFees
+        - FeeTypeQuadraticWithComboMakerFees
         - FeeTypeFlat
       description: Fee type for a series or scheduled fee override.
   responses:

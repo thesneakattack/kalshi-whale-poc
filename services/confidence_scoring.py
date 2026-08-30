@@ -29,6 +29,8 @@ import math
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
+from services import kalshi_fees
+
 
 @dataclass
 class WhaleSignal:
@@ -198,7 +200,7 @@ def composite_confidence_breakdown(
     # implied probability when measuring distance from a coinflip. This
     # makes the market's current outcome estimate (the cost) an explicit
     # input to the confidence computation.
-    traded_side_price = price if str(side).lower() == "yes" else (1.0 - price)
+    traded_side_price = kalshi_fees.unit_cost(side, price)
     unusualness_factor = 1.0 - abs(traded_side_price - 0.5) * 2
 
     # (3) Proximity to the market's own resolution/close time - no

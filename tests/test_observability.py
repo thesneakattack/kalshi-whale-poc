@@ -31,6 +31,7 @@ import types
 import pytest
 
 from services.observability import observability
+from services.quality.models import QualityReport
 
 
 @pytest.fixture(autouse=True)
@@ -296,10 +297,22 @@ def test_tick_duration_finding_absent_when_no_duration_recorded_yet():
     assert not [f for f in findings if f.check == "tick-duration"]
 
 
-# non-zero dropped WS messages
+# non-zero dropped WS messages - severity keys off the sample window
+# (ingest_metrics()["dropped_window"], zeroed by reset_ingest_window after
+# every persisted sample), never off the lifetime counter: dropped_messages
+# is only ever incremented, so one drop pinned /api/quality/summary to
+# "error" for the rest of the process (#72).
 
-def test_dropped_messages_finding_is_an_error_when_nonzero():
-    trade_stream = _fake_stream(dropped_messages=5)
+def _fake_stream_with_drops(lifetime: int, window: int | None):
+    """window=None models a stream without ingest_metrics at all."""
+    stream = _fake_stream(dropped_messages=lifetime)
+    if window is not None:
+        stream.ingest_metrics = lambda: {"dropped_messages": lifetime, "dropped_window": window}
+    return stream
+
+
+def test_dropped_messages_finding_is_an_error_when_the_sample_window_has_drops():
+    trade_stream = _fake_stream_with_drops(lifetime=10, window=3)
     findings = observability.runtime_findings(_POLL_CFG, {}, trade_stream, None)
 
     matches = [f for f in findings if f.check == "ws-dropped-messages"]
@@ -307,21 +320,56 @@ def test_dropped_messages_finding_is_an_error_when_nonzero():
     assert matches[0].severity == "error"
     assert matches[0].confidence == "high"
     assert matches[0].scope == "trade_stream"
+    assert matches[0].evidence == {"dropped_window": 3, "dropped_messages": 10}
+    assert "3 message(s) this sample window" in matches[0].summary
+    assert "10 lifetime, never reset" in matches[0].summary
+    assert "since last reset" not in matches[0].summary
+
+
+def test_dropped_messages_finding_is_info_when_only_the_lifetime_counter_is_nonzero():
+    """The #72 regression: a historical drop with a clean current window is
+    context, not a verdict - it must not drive overall_status to error."""
+    trade_stream = _fake_stream_with_drops(lifetime=5985, window=0)
+    findings = observability.runtime_findings(_POLL_CFG, {}, trade_stream, None)
+
+    matches = [f for f in findings if f.check == "ws-dropped-messages"]
+    assert len(matches) == 1
+    assert matches[0].severity == "info"
+    assert matches[0].evidence == {"dropped_window": 0, "dropped_messages": 5985}
+    assert "5985 lifetime, never reset" in matches[0].summary
+    assert QualityReport(findings=matches).overall_status() == "ok"
+
+
+def test_dropped_messages_finding_is_info_with_unknown_window_when_ingest_metrics_are_unavailable():
+    """No window evidence means no verdict (unknown over fabricated); the
+    lifetime figure still shows, labelled as what it is."""
+    trade_stream = _fake_stream_with_drops(lifetime=2, window=None)
+    findings = observability.runtime_findings(_POLL_CFG, {}, trade_stream, None)
+
+    matches = [f for f in findings if f.check == "ws-dropped-messages"]
+    assert len(matches) == 1
+    assert matches[0].severity == "info"
+    assert matches[0].evidence == {"dropped_window": None, "dropped_messages": 2}
+    assert "2 message(s) lifetime (never reset)" in matches[0].summary
+    assert "since last reset" not in matches[0].summary
 
 
 def test_dropped_messages_finding_covers_index_stream_independently():
-    index_stream = _fake_stream(dropped_messages=2)
+    index_stream = _fake_stream_with_drops(lifetime=2, window=2)
     findings = observability.runtime_findings(_POLL_CFG, {}, None, index_stream)
 
     matches = [f for f in findings if f.check == "ws-dropped-messages"]
     assert len(matches) == 1
     assert matches[0].scope == "index_stream"
+    assert matches[0].severity == "error"
 
 
 def test_dropped_messages_finding_absent_when_zero_or_stream_missing():
     findings = observability.runtime_findings(
-        _POLL_CFG, {}, _fake_stream(dropped_messages=0), None,
+        _POLL_CFG, {}, _fake_stream_with_drops(lifetime=0, window=0), None,
     )
+    assert not [f for f in findings if f.check == "ws-dropped-messages"]
+    findings = observability.runtime_findings(_POLL_CFG, {}, _fake_stream(dropped_messages=0), None)
     assert not [f for f in findings if f.check == "ws-dropped-messages"]
 
 
@@ -444,6 +492,7 @@ def _fake_ingest_metrics() -> dict:
         "received_by_class": {"trade": 480, "ticker": 20},
         "processed_by_class": {"trade": 476, "ticker": 20},
         "dropped_by_class": {"trade": 4},
+        "discarded_on_reconnect_by_class": {"ticker": 7},
         "handler_exceptions_total": 3, "handler_exceptions_by_class": {"trade": 3},
         "handler_timeouts_total": 1, "handler_timeouts_by_class": {"trade": 1},
         "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75},
@@ -487,6 +536,8 @@ def test_capture_from_runtime_flattens_ws_ingest_metrics_under_the_stream_prefix
     assert metrics["trade_stream.ingest.processed.trade"] == 476.0
     assert metrics["trade_stream.ingest.dropped.trade"] == 4.0
     assert "trade_stream.ingest.dropped.ticker" not in metrics  # zero counts omitted, not fabricated
+    assert metrics["trade_stream.ingest.discarded_on_reconnect.ticker"] == 7.0  # #209: a reconnect discard is not a drop
+    assert "trade_stream.ingest.discarded_on_reconnect.trade" not in metrics
     assert metrics["trade_stream.ingest.dropped_window"] == 1.0
     assert metrics["trade_stream.ingest.malformed_messages"] == 2.0
     assert metrics["trade_stream.ingest.handler_exceptions"] == 3.0

@@ -74,14 +74,14 @@ def test_parse_index_ignores_non_bullet_prose():
 def test_parse_index_total_matches_real_llms_txt_bullet_count():
     """Sanity check against the real committed docs/kalshi/llms.txt - not a
     network test, just confirms the parser's bullet count matches a plain
-    grep count (215 markdown pages + 5 spec files, per that file's own
-    '## Notes' section)."""
+    grep count (228 markdown pages + 5 spec files; the 3.29.0 index no
+    longer carries the old '## Notes' self-count section)."""
     from pathlib import Path
     real_text = (Path(__file__).resolve().parent.parent / "docs" / "kalshi" / "llms.txt").read_text()
 
     entries = sync.parse_index(real_text)
 
-    assert len(entries) == 231  # +11 2026-08-25: upstream added weather-index, target-balance-allocation x2, margin exit-triggers x8
+    assert len(entries) == 233  # +2 2026-08-30 (3.29.0): upstream added cancel-all-orders x2 (api-reference + margin-rest)
 
 
 # --- resource_kind ---------------------------------------------------------
@@ -422,3 +422,238 @@ def test_cli_write_never_touches_network_for_body_fetches(tmp_path, monkeypatch)
     ])
 
     assert exit_code == 0
+
+
+# --- relative index URLs (upstream 3.29.0, 2026-08-30, issue #248) -----------
+
+
+def test_parse_index_absolutizes_relative_urls():
+    """Upstream Trade API 3.29.0's llms.txt lists the 5 spec files as
+    site-relative bullets (`- [openapi](/openapi.yaml)`) where every earlier
+    index used absolute URLs, and its markdown bullets now sit before any
+    `## Section` heading at all. Everything downstream keys on absolute
+    URLs (check_drift's URL-set diff, _KNOWN_UNSUPPORTED_REASONS,
+    local_name_for's docs.kalshi.com/ split), so parse_index resolves
+    relative URLs at the boundary instead of leaking two spellings of the
+    same resource into the rest of the module."""
+    text = (
+        "# API Documentation\n\n"
+        "- [Get Market](https://docs.kalshi.com/api-reference/market/get-market.md): d\n\n"
+        "## OpenAPI Specs\n\n"
+        "- [openapi](/openapi.yaml)\n\n"
+        "## AsyncAPI Specs\n\n"
+        "- [asyncapi](/asyncapi.yaml)\n"
+    )
+
+    entries = sync.parse_index(text)
+
+    by_title = {e["title"]: e["url"] for e in entries}
+    assert by_title["openapi"] == "https://docs.kalshi.com/openapi.yaml"
+    assert by_title["asyncapi"] == "https://docs.kalshi.com/asyncapi.yaml"
+    # absolute URLs and bullets before the first heading are untouched
+    assert by_title["Get Market"] == "https://docs.kalshi.com/api-reference/market/get-market.md"
+    assert [e for e in entries if e["title"] == "Get Market"][0]["section"] == ""
+
+
+def test_check_drift_clean_when_specs_go_relative():
+    """The exact 2026-08-30 false positive (issue #248): the manifest
+    records the spec URLs absolute; the fresh index listing them relative
+    must not report them as 5 added + 5 removed."""
+    manifest = {"version": 2, "resources": [], "unsupported": [{
+        "local_path": None,
+        "source_urls": ["https://docs.kalshi.com/openapi.yaml"],
+        "kind": "openapi",
+        "reason": "r",
+    }]}
+    entries = sync.parse_index("## OpenAPI Specs\n\n- [openapi](/openapi.yaml)\n")
+
+    report = sync.check_drift(entries, manifest)
+
+    assert report == {"ok": True, "added": [], "removed": []}
+
+
+def test_sync_manifest_keeps_known_reason_for_relative_spec_url(tmp_path):
+    """A relative spec bullet must still map onto its recorded
+    _KNOWN_UNSUPPORTED_REASONS entry - before absolutization, --write
+    would have silently reclassified all 5 long-reviewed specs as
+    'not yet reviewed'."""
+    entries = sync.parse_index("## OpenAPI Specs\n\n- [openapi](/openapi.yaml)\n")
+
+    manifest = sync.sync_manifest(entries, tmp_path, {"version": 2, "resources": [], "unsupported": []})
+
+    assert manifest["unsupported"][0]["source_urls"] == ["https://docs.kalshi.com/openapi.yaml"]
+    assert "not yet reviewed" not in manifest["unsupported"][0]["reason"].lower()
+
+
+# --- fetch_resources ---------------------------------------------------------
+
+
+def _one_resource_manifest():
+    return {
+        "version": 2,
+        "resources": [{
+            "local_path": "docs/kalshi/get-market.md",
+            "source_urls": ["https://docs.kalshi.com/api-reference/market/get-market.md"],
+            "sha256": "recorded-at-last-sync",
+        }],
+        "unsupported": [],
+    }
+
+
+def test_fetch_resources_writes_a_drifted_body_verbatim(tmp_path):
+    """Fidelity: store exactly what Kalshi sent - CRLFs and all. The
+    normalized comparison decides *whether* to write; the write itself is
+    the raw fetched text, never a normalization of it."""
+    (tmp_path / "get-market.md").write_text("> ## Documentation Index\n\nold body\n", encoding="utf-8")
+    new_body = "> ## Documentation Index\r\n\r\nnew body with CRLF kept\r\n"
+
+    report = sync.fetch_resources(_one_resource_manifest(), tmp_path, fetch=lambda url: (200, new_body))
+
+    assert report["ok"] is True
+    assert report["refreshed"] == ["docs/kalshi/get-market.md"]
+    with open(tmp_path / "get-market.md", encoding="utf-8", newline="") as f:
+        assert f.read() == new_body
+
+
+def test_fetch_resources_leaves_matching_file_untouched(tmp_path):
+    body = "> ## Documentation Index\n\nsame body\n"
+    (tmp_path / "get-market.md").write_text(body, encoding="utf-8")
+
+    report = sync.fetch_resources(_one_resource_manifest(), tmp_path, fetch=lambda url: (200, body))
+
+    assert report["refreshed"] == []
+    assert report["unchanged"] == ["docs/kalshi/get-market.md"]
+
+
+def test_fetch_resources_never_overwrites_a_curated_summary(tmp_path):
+    """docs/kalshi/get-game-stats.md is a deliberate hand-written
+    distillation (sha256: null, availability-only in drift - see
+    tools/kalshi_docs_drift.py's docstring). Replacing it with the raw
+    upstream body is a human decision, so --fetch must not even request
+    the URL."""
+    (tmp_path / "get-game-stats.md").write_text(
+        "Source: https://docs.kalshi.com/api-reference/live-data/get-game-stats.md\n\nsummary\n",
+        encoding="utf-8",
+    )
+    manifest = {"version": 2, "resources": [{
+        "local_path": "docs/kalshi/get-game-stats.md",
+        "source_urls": ["https://docs.kalshi.com/api-reference/live-data/get-game-stats.md"],
+        "sha256": None,
+    }], "unsupported": []}
+    calls: list[str] = []
+
+    def _fetch(url):
+        calls.append(url)
+        return 200, "raw upstream body"
+
+    report = sync.fetch_resources(manifest, tmp_path, fetch=_fetch)
+
+    assert report["skipped_curated"] == ["docs/kalshi/get-game-stats.md"]
+    assert calls == []
+    assert "summary" in (tmp_path / "get-game-stats.md").read_text(encoding="utf-8")
+
+
+def test_fetch_resources_refreshes_the_index_file_even_if_it_resembles_a_summary(tmp_path):
+    """llms.txt IS the raw index: a historic index format began with a
+    literal 'Source: https://docs.kalshi.com/llms.txt' line, which is the
+    curated-summary marker on every *other* page. The index is never a
+    curated summary - same deliberate _INDEX_URL special-casing
+    check_drift already applies."""
+    (tmp_path / "llms.txt").write_text(
+        "Source: https://docs.kalshi.com/llms.txt\n\nold index\n", encoding="utf-8",
+    )
+    manifest = {"version": 2, "resources": [{
+        "local_path": "docs/kalshi/llms.txt",
+        "source_urls": [sync._INDEX_URL],
+        "sha256": "x",
+    }], "unsupported": []}
+
+    report = sync.fetch_resources(manifest, tmp_path, fetch=lambda url: (200, "# API Documentation\n\nnew index\n"))
+
+    assert report["refreshed"] == ["docs/kalshi/llms.txt"]
+    assert "new index" in (tmp_path / "llms.txt").read_text(encoding="utf-8")
+
+
+def test_fetch_resources_records_non_200_and_leaves_file_alone(tmp_path):
+    (tmp_path / "get-market.md").write_text("> ## Documentation Index\n\nold\n", encoding="utf-8")
+
+    report = sync.fetch_resources(_one_resource_manifest(), tmp_path, fetch=lambda url: (404, "not found"))
+
+    assert report["ok"] is False
+    assert report["unavailable"] == [{
+        "local_path": "docs/kalshi/get-market.md",
+        "url": "https://docs.kalshi.com/api-reference/market/get-market.md",
+        "status": 404,
+    }]
+    assert "old" in (tmp_path / "get-market.md").read_text(encoding="utf-8")
+
+
+def test_fetch_resources_creates_a_missing_mirrored_file(tmp_path):
+    """A manifest resource whose local file has gone missing is restored
+    from upstream rather than skipped - the manifest entry is the record
+    that this page is deliberately mirrored."""
+    report = sync.fetch_resources(
+        _one_resource_manifest(), tmp_path, fetch=lambda url: (200, "> ## Documentation Index\n\nbody\n"),
+    )
+
+    assert report["refreshed"] == ["docs/kalshi/get-market.md"]
+    assert (tmp_path / "get-market.md").exists()
+
+
+# --- CLI --fetch -------------------------------------------------------------
+
+
+def test_cli_fetch_refreshes_bodies_but_never_the_manifest(tmp_path, monkeypatch):
+    """--fetch owns page *bodies* only; recording their new hashes stays
+    --write's job (and --fetch alone never even fetches the index)."""
+    (tmp_path / "get-market.md").write_text("> ## Documentation Index\n\nold\n", encoding="utf-8")
+    manifest_path = tmp_path / "upstream-manifest.json"
+    original = json.dumps(_one_resource_manifest())
+    manifest_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(sync, "_http_fetch", lambda url: (200, "> ## Documentation Index\n\nnew\n"))
+
+    def _no_index(*a, **k):
+        raise AssertionError("--fetch alone must not fetch llms.txt")
+
+    monkeypatch.setattr(sync, "_fetch_index", _no_index)
+
+    exit_code = sync.main(["--fetch", "--docs-root", str(tmp_path), "--manifest", str(manifest_path)])
+
+    assert exit_code == 0
+    assert "new" in (tmp_path / "get-market.md").read_text(encoding="utf-8")
+    assert manifest_path.read_text(encoding="utf-8") == original
+
+
+def test_cli_fetch_exits_nonzero_when_a_page_is_unavailable(tmp_path, monkeypatch):
+    (tmp_path / "get-market.md").write_text("> ## Documentation Index\n\nold\n", encoding="utf-8")
+    manifest_path = tmp_path / "upstream-manifest.json"
+    manifest_path.write_text(json.dumps(_one_resource_manifest()), encoding="utf-8")
+    monkeypatch.setattr(sync, "_http_fetch", lambda url: (404, "gone"))
+
+    exit_code = sync.main(["--fetch", "--docs-root", str(tmp_path), "--manifest", str(manifest_path)])
+
+    assert exit_code == 1
+    assert "old" in (tmp_path / "get-market.md").read_text(encoding="utf-8")
+
+
+def test_cli_fetch_then_write_in_one_run_refreshes_files_then_manifest(tmp_path, monkeypatch):
+    (tmp_path / "get-market.md").write_text("> ## Documentation Index\n\nold\n", encoding="utf-8")
+    manifest_path = tmp_path / "upstream-manifest.json"
+    manifest_path.write_text(json.dumps(_one_resource_manifest()), encoding="utf-8")
+    readme_path = tmp_path / "README.md"
+    new_body = "> ## Documentation Index\n\nnew\n"
+    monkeypatch.setattr(sync, "_http_fetch", lambda url: (200, new_body))
+    monkeypatch.setattr(sync, "_fetch_index", lambda: (
+        "- [Get Market](https://docs.kalshi.com/api-reference/market/get-market.md): d\n"
+    ))
+
+    exit_code = sync.main([
+        "--fetch", "--write", "--docs-root", str(tmp_path),
+        "--manifest", str(manifest_path), "--readme", str(readme_path),
+    ])
+
+    assert exit_code == 0
+    from tools.kalshi_docs_drift import _normalized_sha256
+    written = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert written["resources"][0]["sha256"] == _normalized_sha256(new_body)
+    assert "get-market.md" in readme_path.read_text(encoding="utf-8")

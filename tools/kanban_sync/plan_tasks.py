@@ -10,6 +10,13 @@ conventions (`## Task N:`, one level shallower; `## T1a -`, a lettered
 PR-group scheme with no "Task N" text at all). Both are deliberately out
 of scope (spec §2, §4.1) - zero matches is a valid, non-error outcome,
 not a signal to try a looser pattern.
+
+Fenced code blocks are stripped before the heading regex runs: a plan
+that *documents* the convention inside a ``` or ~~~ fence (a bash
+heredoc, a python test-fixture string) is showing an example, not
+declaring a task. Issue #226: six such example lines in the milestones/
+sub-issues plan became real sub-issues (#174, #175, #179, #180, #184,
+#185).
 """
 from __future__ import annotations
 
@@ -24,8 +31,44 @@ _TASK_HEADING_RE = re.compile(r"^### Task (\d+):[ \t]*(.+)$", re.MULTILINE)
 # actual titles, not empty ones.
 
 
+# CommonMark fence: 3+ backticks or 3+ tildes, at most 3 leading spaces.
+# group(1) is the whole run of fence characters, so its first char and its
+# length identify the fence for the closing-fence check below.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _strip_fenced_code_blocks(text: str) -> str:
+    """Drops every line inside a fenced code block, opening fence and
+    closing fence included. Follows CommonMark's fence rules rather than a
+    bare toggle: a block closes only on a fence of the *same character* with
+    *at least as many* of them and nothing else on the line (so a four-
+    backtick fence can wrap a three-backtick example, and a ```python line
+    inside an open block is content, not a close), and a block that never
+    closes runs to the end of the document. Line numbers are not preserved -
+    parse_canonical_tasks returns none."""
+    kept: list[str] = []
+    fence: str | None = None  # the open block's fence run, e.g. "```" or "~~~~"
+    for line in text.splitlines():
+        match = _FENCE_RE.match(line)
+        if fence is None:
+            if match:
+                fence = match.group(1)
+            else:
+                kept.append(line)
+            continue
+        if (
+            match
+            and match.group(1)[0] == fence[0]
+            and len(match.group(1)) >= len(fence)
+            and not line[match.end():].strip()
+        ):
+            fence = None
+    return "\n".join(kept)
+
+
 def parse_canonical_tasks(text: str) -> list[tuple[int, str]]:
-    return [(int(m.group(1)), m.group(2).strip()) for m in _TASK_HEADING_RE.finditer(text)]
+    prose = _strip_fenced_code_blocks(text)
+    return [(int(m.group(1)), m.group(2).strip()) for m in _TASK_HEADING_RE.finditer(prose)]
 
 
 def decompose_plan(

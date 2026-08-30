@@ -780,3 +780,106 @@ def test_real_repo_tree_has_no_kalshi_boundary_violations():
     from tools.quality_audit import kalshi_boundary
     real_findings = kalshi_boundary.scan_kalshi_boundary(Path(__file__).resolve().parent.parent)
     assert [f for f in real_findings if f.severity == "error"] == []
+
+
+# --- unit_cost.py: inline side-adjusted complement scanner (issue #212) -----
+
+
+def _unit_cost_ids(repo_root: Path) -> list[str]:
+    from tools.quality_audit import unit_cost as unit_cost_scanner
+    return sorted(f.finding_id for f in unit_cost_scanner.scan_unit_cost_derivations(repo_root))
+
+
+def test_unit_cost_scanner_flags_an_inline_side_adjusted_complement(tmp_path):
+    from tools.quality_audit import unit_cost as unit_cost_scanner
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def cost(side, price):\n    return price if side == "yes" else (1 - price)\n',
+    )
+    findings = unit_cost_scanner.scan_unit_cost_derivations(tmp_path)
+    assert [f.finding_id for f in findings] == ["unit-cost-inline:services/rogue.py:2"]
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+    assert findings[0].check == "unit-cost-inline"
+    assert "kalshi_fees.unit_cost" in (findings[0].remediation or "")
+
+
+@pytest.mark.parametrize("snippet", [
+    'c = price if side == "yes" else (1.0 - price)',                    # float literal
+    'c = (1 - price) if side == "no" else price',                       # keyed on "no"
+    'c = price if "yes" == side else 1 - price',                        # constant on the left
+    'c = 1 - price if side != "yes" else price',                        # negated comparison
+    'c = price if str(side).lower() == "yes" else (1.0 - price)',        # case-folded copy
+    'c = size * price if pos.side == "yes" else size * (1 - price)',    # whole-position dollars
+    'c = (price if side == "yes" else (1.0 - price)) if price is not None else None',
+    'if side == "yes":\n    c = price\nelse:\n    c = 1 - price',         # statement form
+    'if order.side == "yes":\n    c = asks.get(t)\nelse:\n    bid = bids.get(t)\n    c = (1 - bid) if bid is not None else None',
+])
+def test_unit_cost_scanner_catches_every_spelling_the_codebase_had(tmp_path, snippet):
+    # Each of these is a shape that really existed in services/ before the
+    # migration (issue #212's 26 sites) - a scanner that only matched the
+    # tidy textbook form would let the next copy back in.
+    _write(tmp_path / "services" / "rogue.py", "def f(side, pos, order, price, size, asks, bids, t):\n    "
+           + snippet.replace("\n", "\n    ") + "\n")
+    assert _unit_cost_ids(tmp_path), snippet
+
+
+def test_unit_cost_scanner_exempts_only_the_shared_helper_itself(tmp_path):
+    _write(
+        tmp_path / "services" / "kalshi_fees.py",
+        'def unit_cost(side, yes_price):\n'
+        '    if side == "yes":\n        return yes_price\n'
+        '    if side == "no":\n        return None if yes_price is None else 1 - yes_price\n'
+        '    raise ValueError(side)\n',
+    )
+    assert _unit_cost_ids(tmp_path) == []
+
+    # A second copy in the same module is still a copy.
+    _write(
+        tmp_path / "services" / "kalshi_fees.py",
+        'def unit_cost(side, yes_price):\n    return yes_price if side == "yes" else 1 - yes_price\n\n'
+        'def other(side, p):\n    return p if side == "yes" else 1 - p\n',
+    )
+    assert _unit_cost_ids(tmp_path) == ["unit-cost-inline:services/kalshi_fees.py:5"]
+
+    # ...and a function merely named unit_cost anywhere else is not the helper.
+    _write(tmp_path / "services" / "kalshi_fees.py", "")
+    _write(tmp_path / "services" / "elsewhere.py",
+           'def unit_cost(side, p):\n    return p if side == "yes" else 1 - p\n')
+    assert _unit_cost_ids(tmp_path) == ["unit-cost-inline:services/elsewhere.py:2"]
+
+
+def test_unit_cost_scanner_ignores_complements_that_are_not_side_keyed(tmp_path):
+    _write(
+        tmp_path / "services" / "fine.py",
+        "import math\n"
+        "from services import kalshi_fees\n"
+        "def f(side, price, prob, depth, x, result, lean):\n"
+        "    depth_factor = 1.0 - math.exp(-x * depth)\n"                       # not a side branch
+        "    unusual = (prob if prob > 0.5 else (1 - prob))\n"                  # keyed on a number
+        "    left = 1 - kalshi_fees.unit_cost(side, price)\n"                   # the migrated shape
+        "    terminal = 1.0 if result == \"yes\" else 0.0\n"                     # side-keyed, no complement
+        "    if side in (\"yes\", \"no\"):\n        return 1 - prob\n"          # membership, not a side pick
+        "    return depth_factor, unusual, left, terminal, lean\n",
+    )
+    assert _unit_cost_ids(tmp_path) == []
+
+
+def test_unit_cost_scanner_does_not_read_tests(tmp_path):
+    _write(tmp_path / "tests" / "test_x.py", 'def f(side, p):\n    return p if side == "yes" else 1 - p\n')
+    assert _unit_cost_ids(tmp_path) == []
+
+
+def test_unit_cost_scanner_is_registered_with_the_audit_cli():
+    from tools.quality_audit import unit_cost as unit_cost_scanner
+    assert unit_cost_scanner.scan_unit_cost_derivations in audit_cli._SCANNERS
+
+
+def test_unit_cost_scanner_is_clean_on_this_repo():
+    """The migration (issue #212) left zero inline copies, so the scanner
+    starts at zero findings with no baseline entry - CLAUDE.md forbids
+    baselining a scanner green. Sibling worktrees under .claude/ are other
+    branches' code (see test_real_repo_audit_has_no_new_high_confidence_errors
+    for why they are not this repo's state); CI has none."""
+    ids = [i for i in _unit_cost_ids(REPO_ROOT) if not i.startswith("unit-cost-inline:.claude/")]
+    assert ids == []

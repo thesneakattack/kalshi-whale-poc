@@ -28,7 +28,7 @@ one.
 """
 import re
 
-from services import stats_power
+from services import kalshi_fees, stats_power
 
 _CLOSE_TYPE_PATTERNS = [
     ("settled_win", re.compile(r"^closed: market settled \w+ - position won")),
@@ -124,7 +124,7 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
         left_on_table = None
         if close_type in _EARLY_PROFIT_TYPES and (realized_pnl or 0) > 0:
             left_on_table = round(
-                t["size"] * (1 - t["price"]) if t["side"] == "yes" else t["size"] * t["price"], 2,
+                t["size"] * (1 - kalshi_fees.unit_cost(t["side"], t["price"])), 2,
             )
 
         # Actual dollar amounts, not just prices - same side-aware convention
@@ -134,9 +134,9 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
         cost_basis = None
         if entry is not None:
             cost_basis = round(
-                entry["size"] * (entry["price"] if entry["side"] == "yes" else (1 - entry["price"])), 2,
+                entry["size"] * kalshi_fees.unit_cost(entry["side"], entry["price"]), 2,
             )
-        cash_back = round(t["size"] * (t["price"] if t["side"] == "yes" else (1 - t["price"])), 2)
+        cash_back = round(t["size"] * kalshi_fees.unit_cost(t["side"], t["price"]), 2)
 
         # Real Kalshi taker fees (services/kalshi_fees.py) on both legs -
         # kept as its own explicit field rather than silently folded into

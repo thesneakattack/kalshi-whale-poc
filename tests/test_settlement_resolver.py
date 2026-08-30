@@ -21,8 +21,12 @@ from services import settlement_resolver
 @pytest.fixture(autouse=True)
 def _clean_pending():
     settlement_resolver._pending.clear()
+    settlement_resolver._non_binary_by_result.clear()
+    settlement_resolver._non_binary_recent.clear()
     yield
     settlement_resolver._pending.clear()
+    settlement_resolver._non_binary_by_result.clear()
+    settlement_resolver._non_binary_recent.clear()
 
 
 def _patch_all_resolvers(monkeypatch, recorded):
@@ -245,3 +249,153 @@ def test_retries_are_spaced_by_delay_sec_not_by_caller_cadence(monkeypatch):
     assert settlement_resolver._pending["K1"]["attempts"] == 1  # backoff held; cadence didn't burn budget
     asyncio.run(settlement_resolver.run_pending(client, now=now + 122.0))  # delay re-elapsed
     assert settlement_resolver._pending["K1"]["attempts"] == 2
+
+
+# --- issue #208: the drop counter conflated a defect with expected skips ---
+# `dropped_total` was bumped by two opposite branches: retry exhaustion (a
+# real completeness defect) and a finalized market with no binary outcome
+# (correct behaviour). All 64 drops observed live on 2026-08-30 came from
+# the second - fault_log held zero settlement_resolver rows over 8 days of
+# retention, and the retry branch always fault-logs. Contract read for
+# these tests: docs/kalshi/market_lifecycle.md:68 (`result` is yes | no |
+# scalar) and docs/kalshi/changelog-index.md:3245-3246 (a scalar-settled
+# market currently returns "" and will read "scalar" after the next
+# release - so both spellings must stay distinguishable).
+
+
+def test_a_max_attempts_giveup_counts_as_a_defect_not_a_skip(monkeypatch):
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault", lambda *a, **k: faults.append(a) or True)
+    before = settlement_resolver.snapshot()
+    now = time.time()
+    settlement_resolver.enqueue("GONE", now, now=now)
+    client = _FakeClient({})
+
+    for attempt in range(1, 4):
+        asyncio.run(settlement_resolver.run_pending(
+            client, now=now + 61.0 * attempt, max_attempts=3))
+
+    after = settlement_resolver.snapshot()
+    assert after["dropped_after_max_attempts"] == before["dropped_after_max_attempts"] + 1
+    assert after["skipped_non_binary_result"] == before["skipped_non_binary_result"]
+    assert any("dropped_after_max_attempts" in str(f) for f in faults)
+
+
+def test_a_non_binary_result_counts_as_a_skip_not_a_defect(monkeypatch):
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault", lambda *a, **k: faults.append(a) or True)
+    monkeypatch.setattr("services.fault_log.record", lambda *a, **k: faults.append(a) or True)
+    before = settlement_resolver.snapshot()
+    now = time.time()
+    settlement_resolver.enqueue("SCALAR", now, now=now)
+    client = _FakeClient({"SCALAR": {"ticker": "SCALAR", "status": "finalized", "result": "scalar"}})
+
+    asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0))
+
+    after = settlement_resolver.snapshot()
+    assert after["skipped_non_binary_result"] == before["skipped_non_binary_result"] + 1
+    assert after["dropped_after_max_attempts"] == before["dropped_after_max_attempts"]
+    # Expected behaviour is not a fault: nothing is written to fault_log.
+    assert faults == []
+
+
+def test_dropped_total_stays_the_sum_so_the_conservation_identity_holds(monkeypatch):
+    """tools/soak_analyzer.check_resolver_accounting balances
+    enqueued == resolved + pending + dropped_total. Splitting the counter
+    must not break that, so dropped_total keeps counting both branches."""
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    monkeypatch.setattr("services.fault_log.record_fault", lambda *a, **k: True)
+    before = settlement_resolver.snapshot()
+    now = time.time()
+    settlement_resolver.enqueue("SCALAR", now, now=now)
+    settlement_resolver.enqueue("GONE", now, now=now)
+    client = _FakeClient({"SCALAR": {"ticker": "SCALAR", "status": "finalized", "result": "scalar"}})
+
+    for attempt in range(1, 4):
+        asyncio.run(settlement_resolver.run_pending(
+            client, now=now + 61.0 * attempt, max_attempts=3))
+
+    after = settlement_resolver.snapshot()
+    assert after["dropped_after_max_attempts"] == before["dropped_after_max_attempts"] + 1
+    assert after["skipped_non_binary_result"] == before["skipped_non_binary_result"] + 1
+    assert after["dropped_total"] == before["dropped_total"] + 2
+    assert (after["dropped_total"] - before["dropped_total"]
+            == (after["dropped_after_max_attempts"] - before["dropped_after_max_attempts"])
+            + (after["skipped_non_binary_result"] - before["skipped_non_binary_result"]))
+
+
+def test_a_skip_records_the_ticker_and_the_observed_result_value(monkeypatch):
+    """The gap that made "were those 64 all scalar?" unanswerable: the
+    branch recorded neither ticker nor value."""
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    now = time.time()
+    settlement_resolver.enqueue("SCALAR-A", now, now=now)
+    client = _FakeClient({"SCALAR-A": {"ticker": "SCALAR-A", "status": "finalized", "result": "scalar"}})
+
+    asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0))
+
+    snap = settlement_resolver.snapshot()
+    assert snap["non_binary_by_result"] == {"scalar": 1}
+    assert snap["non_binary_recent"][-1]["ticker"] == "SCALAR-A"
+    assert snap["non_binary_recent"][-1]["result"] == "scalar"
+
+
+def test_empty_and_literal_scalar_are_the_same_expected_case(monkeypatch):
+    """docs/kalshi/changelog-index.md:3245-3246: a scalar market returns ""
+    today and will read "scalar" after the next release, so BOTH must land
+    in the expected-skip counter and neither may narrow the skip condition
+    (it stays `result not in ("yes", "no")`). They stay distinguishable in
+    the diagnostic map only - collapsing them would hide that migration,
+    and conflating either with an absent field would hide a genuine
+    upstream problem."""
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    before = settlement_resolver.snapshot()
+    now = time.time()
+    settlement_resolver.enqueue("EMPTY", now, now=now)
+    settlement_resolver.enqueue("ABSENT", now, now=now)
+    settlement_resolver.enqueue("SCALAR", now, now=now)
+    client = _FakeClient({
+        "EMPTY": {"ticker": "EMPTY", "status": "finalized", "result": ""},
+        "ABSENT": {"ticker": "ABSENT", "status": "finalized"},
+        "SCALAR": {"ticker": "SCALAR", "status": "finalized", "result": "scalar"},
+    })
+
+    asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0))
+
+    after = settlement_resolver.snapshot()
+    # One expected case, three spellings: all three are skips, none a defect.
+    assert after["skipped_non_binary_result"] == before["skipped_non_binary_result"] + 3
+    assert after["dropped_after_max_attempts"] == before["dropped_after_max_attempts"]
+    # Still individually attributable, so the "" -> "scalar" migration and a
+    # genuinely absent field remain visible.
+    assert after["non_binary_by_result"] == {"<empty>": 1, "<absent>": 1, "scalar": 1}
+
+
+def test_the_observed_result_map_is_bounded_against_a_garbage_upstream_value(monkeypatch):
+    """An upstream that starts returning unique junk must not grow an
+    unbounded in-memory dict on the resolver loop."""
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+    now = time.time()
+    markets = {}
+    for i in range(settlement_resolver._MAX_RESULT_KEYS + 15):
+        ticker = f"JUNK{i}"
+        settlement_resolver.enqueue(ticker, now, now=now)
+        markets[ticker] = {"ticker": ticker, "status": "finalized", "result": f"junk-{i}"}
+    client = _FakeClient(markets)
+
+    asyncio.run(settlement_resolver.run_pending(
+        client, now=now + 61.0, batch_size=len(markets)))
+
+    by_result = settlement_resolver.snapshot()["non_binary_by_result"]
+    assert len(by_result) <= settlement_resolver._MAX_RESULT_KEYS + 1
+    assert by_result["__other__"] == 15
+    assert sum(by_result.values()) == len(markets)
+    assert len(settlement_resolver.snapshot()["non_binary_recent"]) <= 20

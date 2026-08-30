@@ -45,6 +45,8 @@ tags:
     description: Funding rates and payment history
   - name: fees
     description: Margin fee schedule
+  - name: exit-triggers
+    description: Stop-loss, take-profit, and trailing-stop triggers on margin positions
 paths:
   /margin/fcm/subtraders/risk_controls:
     put:
@@ -99,6 +101,22 @@ components:
           type: string
           description: Scopes the initial margin cap to this market when supplied.
           x-go-type-skip-optional-pointer: true
+        asset_class:
+          type: string
+          description: >-
+            Scopes the initial margin cap to this asset class when supplied.
+            Mutually exclusive with market_ticker.
+          x-go-type-skip-optional-pointer: true
+          enum:
+            - Crypto
+            - Equities
+            - Metals
+            - FX
+            - Energy
+            - Indices
+            - Rates
+            - Compute
+            - GPU
         im_cap:
           allOf:
             - $ref: '#/components/schemas/FixedPointDollars'

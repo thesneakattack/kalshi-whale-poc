@@ -266,3 +266,33 @@ so a racing second call finds nothing left to close. Proven directly with
 `tests/test_position_management_concurrency.py` rather than inferred from
 the shape of the code. `PaperBroker.check_pending_fills` got the identical
 treatment, same call site, same reasoning, same test file.
+
+## Netting decision inputs are columns, not only prose (issue #213, 2026-08-30)
+
+`position_netting.review` closes a leg with a reason sentence that embeds the
+numbers behind the decision - `estimated $X expected-value improvement over
+holding (bar $Y)`. Recovering the bar for the #206 blast-radius analysis meant
+regex-parsing `bar \$([0-9.]+)` out of `trades.reason`; it happened to work,
+and it is not an interface. The same three values now ride onto the CLOSE row
+as additive `trades` columns (`services/paper_broker.py`,
+`_add_column_if_missing`): `netting_improvement_usd`, `netting_bar_usd`,
+`netting_vol_ratio`.
+
+- `_materiality_bar` returns `(bar, vol_ratio)`; the ratio is exactly `1.0` on
+  both unscaled paths (no `normal_volatility`, or no usable reading - the
+  `v > 0` filter from #206), so the column states what scaling was applied
+  rather than reading `None` for "applied nothing". The bar's value is
+  unchanged.
+- `describe_groups` carries `vol_ratio` on every variable-group recommendation
+  next to the existing `expected_value_improvement_usd` /
+  `materiality_bar_usd`. Those two are `round(x, 2)` - the same rounding the
+  sentence's `:.2f` applies - so the columns equal the prose's numbers
+  outright, not approximately;
+  `tests/test_position_netting.py::test_review_persists_netting_decision_inputs_that_agree_with_the_reason_prose`
+  asserts that on the persisted row itself.
+- NULL means "no bar was computed": every entry, every non-netting close, and
+  a `locked_loss` close_all (the loss is fixed regardless of timing, so no
+  expected-value comparison happens). Never `0.0`, which would read as a real
+  bar of zero dollars. Pre-existing rows keep NULL - additive only.
+- The sentence is unchanged. Prose is for the reader; columns are for the
+  analysis (`docs/data-layer-analysis-layer-contract.md`).

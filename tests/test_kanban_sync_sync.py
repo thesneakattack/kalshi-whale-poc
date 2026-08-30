@@ -1,8 +1,12 @@
 from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import IssueState
+from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync import project_status
-from tools.kanban_sync.sync import close_completed_plan_parents, close_stale_worktree_issues, reconcile, sync_pass_one, _mismatch_comment
+from tools.kanban_sync.sync import (
+    close_completed_plan_parents, close_stale_roadmap_issues, close_stale_worktree_issues,
+    reconcile, sync_pass_one, _mismatch_comment,
+)
 
 
 class FakeGithubClient:
@@ -571,3 +575,131 @@ def test_mismatch_comment_for_non_plan_kind_uses_generic_message():
     )
     comment = _mismatch_comment(track_item)
     assert "still open" in comment and "reclassify" not in comment
+
+
+def _roadmap_item(key="shadow-mode-sustained-run", *, done=False):
+    return _item(
+        kind="roadmap", key=key, title=f"Roadmap: {key}",
+        status=labels.STATUS_DONE if done else labels.STATUS_CLAIMABLE,
+        type_label=labels.TYPE_FEATURE, done=done,
+    )
+
+
+def test_close_stale_roadmap_issues_closes_issue_whose_bullet_is_no_longer_in_roadmap():
+    """Regression for issue #227 (live instance #149): a roadmap bullet
+    that is *deleted* - not checked off - vanishes from parse_roadmap_items'
+    output, so sync_pass_one never sees it and never closes its issue. Same
+    class as #98, which close_stale_worktree_issues fixed for worktrees only."""
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_roadmap_issues(
+        current_keys={"some-other-bullet"}, client=client, dry_run=False,
+    )
+
+    assert client.issues[number]["open"] is False
+    assert report.closed and "bullet no longer in ROADMAP.md" in report.closed[0]
+    assert client.comments and "sync-stale-roadmap" in client.comments[0][1]
+    assert "shadow-mode-sustained-run" in client.comments[0][1]
+
+
+def test_close_stale_roadmap_issues_leaves_issue_open_when_bullet_still_present():
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_roadmap_issues(
+        current_keys={"shadow-mode-sustained-run", "some-other-bullet"}, client=client, dry_run=False,
+    )
+
+    assert client.issues[number]["open"] is True
+    assert report.closed == []
+    assert client.comments == []
+
+
+def test_close_stale_roadmap_issues_gate_is_presence_not_checkbox_state():
+    """A still-present `- [x]` bullet's key is in current_keys, so this
+    pass must not touch it: sync_pass_one's own done path closes it, with
+    no stale-roadmap comment (the bullet exists; nothing is stale)."""
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)  # created while `- [ ]`
+    (number,) = client.issues.keys()
+
+    sync_pass_one([_roadmap_item(done=True)], client, dry_run=False)  # now `- [x]`, still present
+    report = close_stale_roadmap_issues(
+        current_keys={"shadow-mode-sustained-run"}, client=client, dry_run=False,
+    )
+
+    assert client.issues[number]["open"] is False  # closed by sync_pass_one
+    assert report.closed == []
+    assert client.comments == []
+
+
+def test_close_stale_roadmap_issues_makes_no_calls_when_current_keys_is_empty():
+    """A zero-bullet parse is a broken or missing source, not an empty
+    roadmap - it must not mass-close every roadmap issue on the board."""
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_roadmap_issues(current_keys=set(), client=client, dry_run=False)
+
+    assert client.issues[number]["open"] is True
+    assert report.closed == []
+    assert client.comments == []
+
+
+def test_close_stale_roadmap_issues_ignores_issue_whose_marker_kind_is_not_roadmap():
+    client = FakeGithubClient()
+    client.issues[1] = {
+        "title": "Worktree: feat/x", "body": build_marker("worktree", "feat/x"),
+        "labels": {labels.TYPE_FEATURE}, "open": True,
+    }
+
+    report = close_stale_roadmap_issues(current_keys={"a"}, client=client, dry_run=False)
+
+    assert report.closed == []
+    assert client.issues[1]["open"] is True
+
+
+def test_close_stale_roadmap_issues_ignores_issue_whose_body_has_no_marker():
+    client = FakeGithubClient()
+    client.issues[1] = {
+        "title": "Manual", "body": "no marker here",
+        "labels": {labels.TYPE_FEATURE}, "open": True,
+    }
+
+    report = close_stale_roadmap_issues(current_keys={"a"}, client=client, dry_run=False)
+
+    assert report.closed == []
+    assert client.issues[1]["open"] is True
+
+
+def test_close_stale_roadmap_issues_dry_run_makes_no_mutating_calls():
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    report = close_stale_roadmap_issues(
+        current_keys={"some-other-bullet"}, client=client, dry_run=True,
+    )
+
+    assert client.issues[number]["open"] is True
+    assert client.comments == []
+    assert report.closed  # still reported, matching every other dry-run in this file
+
+
+def test_close_stale_roadmap_issues_does_not_touch_a_manually_closed_issue():
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.close_issue(number)  # simulate a human closing it by hand
+
+    report = close_stale_roadmap_issues(
+        current_keys={"some-other-bullet"}, client=client, dry_run=False,
+    )
+
+    assert client.issues[number]["open"] is False
+    assert client.comments == []
+    assert report.closed == []

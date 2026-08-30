@@ -64,6 +64,25 @@ The raw CF Benchmarks payload is returned under the `data` field:
 }
 ```
 
+## Historical Values
+
+Historical index values are available through the same passthrough via the CF Benchmarks history endpoint. For example, to retrieve one hour of `BRTI` values:
+
+```bash theme={null}
+curl "https://external-api.kalshi.com/trade-api/v2/cfbenchmarks/history/values?id=BRTI&timespan=HOUR&timestamp=2026-08-21T14:00:00.000Z" \
+  -H "KALSHI-ACCESS-KEY: <your-access-key>" \
+  -H "KALSHI-ACCESS-SIGNATURE: <request-signature>" \
+  -H "KALSHI-ACCESS-TIMESTAMP: <timestamp-ms>"
+```
+
+This forwards to `https://www.cfbenchmarks.com/api/v1/history/values` with the same query string. As with all passthrough requests, sign the path without the query string:
+
+```text theme={null}
+/trade-api/v2/cfbenchmarks/history/values
+```
+
+The history endpoint returns tick-level values, and some indices publish at intra-second granularity there, so a single window can contain a large number of points. For the supported indices, parameters, and granularities, refer to the official [CF Benchmarks API documentation](https://docs.cfbenchmarks.com/api/category/rest/).
+
 ## Available Endpoints
 
 The passthrough forwards any path and query parameters supported by CF Benchmarks. For the list of available endpoints, supported parameters, and index identifiers (such as `BRTI`), refer to the official [CF Benchmarks API documentation](https://docs.cfbenchmarks.com/api/category/rest/).

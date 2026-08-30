@@ -103,6 +103,20 @@ class Trade:
     # build_trade_history skips these entirely rather than counting them as
     # a loss or a phantom win.
     excluded: bool = False
+    # The three structured inputs behind a position-netting close (services/
+    # exits/position_netting.py review(), issue #213, 2026-08-30): the
+    # expected-value improvement the action was estimated to deliver, the
+    # materiality bar it had to clear, and the volatility ratio that scaled
+    # that bar. None for every entry, every non-netting close, a locked_loss
+    # close_all (no bar is computed there), and every row written before
+    # these existed. The reason sentence keeps carrying the first two in
+    # prose; these exist so an analysis reads them as columns instead of
+    # regex-parsing `bar \$([0-9.]+)` out of it (docs/data-layer-analysis-
+    # layer-contract.md: prose is for the reader, columns are for the
+    # analysis).
+    netting_improvement_usd: float | None = None
+    netting_bar_usd: float | None = None
+    netting_vol_ratio: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -193,6 +207,13 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # ceasing to count as evidence. See PaperBroker.correct_erroneous_close.
     _add_column_if_missing(conn, "trades", "excluded", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)")
+    # Netting decision inputs (issue #213, 2026-08-30; see Trade) - same
+    # idempotent-migration pattern, the live table already had rows. NULL
+    # on every pre-existing row and every non-netting row IS the meaning
+    # ("no bar was computed"), not a gap to backfill.
+    _add_column_if_missing(conn, "trades", "netting_improvement_usd", "REAL")
+    _add_column_if_missing(conn, "trades", "netting_bar_usd", "REAL")
+    _add_column_if_missing(conn, "trades", "netting_vol_ratio", "REAL")
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -264,12 +285,16 @@ class PaperBroker:
                     self.positions[ticker] = Position(
                         ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0, bool(hold_to_settlement),
                     )
-                for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded in conn.execute(
+                for (tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded,
+                     net_improvement, net_bar, net_vol_ratio) in conn.execute(
                     "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
-                    "signal_seen_at, excluded FROM trades ORDER BY timestamp ASC"
+                    "signal_seen_at, excluded, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+                    "FROM trades ORDER BY timestamp ASC"
                 ):
                     self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0,
-                                                signal_seen_at, bool(excluded)))
+                                                signal_seen_at, bool(excluded),
+                                                netting_improvement_usd=net_improvement, netting_bar_usd=net_bar,
+                                                netting_vol_ratio=net_vol_ratio))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
                 for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence in conn.execute(
                     "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, "
@@ -309,7 +334,7 @@ class PaperBroker:
         # should cost 0.9/contract, not 0.1) and manufactured phantom profit
         # on any NO position that never even moved - confirmed directly
         # against live trade history, not assumed.
-        unit_cost = price if side == "yes" else (1 - price)
+        unit_cost = kalshi_fees.unit_cost(side, price)
         cost = size * unit_cost
         cost = min(cost, self.bankroll)          # never go negative in the POC
         actual_size = int(cost / unit_cost) if unit_cost > 0 else 0
@@ -475,17 +500,22 @@ class PaperBroker:
             if now >= order.expires_at:
                 self._cancel_pending(ticker)
                 continue
-            if order.side == "yes":
-                available_unit_cost = latest_asks.get(ticker)
-            else:
-                bid = latest_bids.get(ticker)
-                available_unit_cost = (1 - bid) if bid is not None else None
-            if available_unit_cost is None:
+            # The yes price this order would fill at right now: a YES buyer
+            # lifts the yes ask; a NO buyer lifts the no ask, which IS the
+            # yes bid (docs/kalshi/get-market-orderbook.md: "a bid for yes
+            # at price X is equivalent to an ask for no at price (100-X)").
+            # Read once as a yes price and side-adjusted once through
+            # kalshi_fees.unit_cost - this used to invert the bid into a
+            # no-side cost and then invert that back into fill_price
+            # (1 - (1 - bid)), the only place the inversion ran in reverse
+            # (issue #212); same number to within one ulp.
+            fill_price = latest_asks.get(ticker) if order.side == "yes" else latest_bids.get(ticker)
+            if fill_price is None:
                 continue  # no fresh quote this tick - wait, don't guess
-            limit_unit_cost = order.limit_price if order.side == "yes" else (1 - order.limit_price)
+            available_unit_cost = kalshi_fees.unit_cost(order.side, fill_price)
+            limit_unit_cost = kalshi_fees.unit_cost(order.side, order.limit_price)
             if available_unit_cost > limit_unit_cost:
                 continue  # market hasn't come to this order's price yet
-            fill_price = available_unit_cost if order.side == "yes" else (1 - available_unit_cost)
             if validate_fn is not None:
                 ok, reason = validate_fn(order.ticker, order.side, fill_price, order.confidence)
                 if not ok:
@@ -514,7 +544,11 @@ class PaperBroker:
             fills.append({"action": "trade", "trade": trade.to_dict(), "reason": order.reason, "source": "limit_order"})
         return fills
 
-    def close_position(self, ticker: str, exit_price: float, reason: str) -> Trade | None:
+    def close_position(
+        self, ticker: str, exit_price: float, reason: str, *,
+        netting_improvement_usd: float | None = None, netting_bar_usd: float | None = None,
+        netting_vol_ratio: float | None = None,
+    ) -> Trade | None:
         """Sells an open position back at exit_price instead of holding it
         to settlement - direct request: this app had zero exit mechanism at
         all before this. A YES holder selling at the current market gets
@@ -523,7 +557,11 @@ class PaperBroker:
         throughout this app (see mark_to_market/latest_prices). Returns
         None if there's no open position on this ticker - a no-op, not an
         error, since a poll tick's exit check racing a position that
-        already closed this same tick shouldn't crash the loop."""
+        already closed this same tick shouldn't crash the loop.
+
+        The keyword-only netting_* values are position_netting.review's
+        structured decision inputs (see Trade, issue #213); every other
+        caller leaves them None and the row's columns NULL."""
         pos = self.positions.get(ticker)
         if not pos:
             return None
@@ -538,7 +576,7 @@ class PaperBroker:
         # makes the reported number match bankroll's actual net change
         # across the full round trip, not just the raw price move.
         close_fee = kalshi_fees.taker_fee(pos.size, exit_price, ticker=ticker)
-        gross_cash_back = pos.size * exit_price if pos.side == "yes" else pos.size * (1 - exit_price)
+        gross_cash_back = pos.size * kalshi_fees.unit_cost(pos.side, exit_price)
         cash_back = gross_cash_back - close_fee
         realized_pnl = self.mark_to_market(ticker, exit_price) - pos.entry_fee - close_fee
         self.bankroll += cash_back
@@ -558,6 +596,9 @@ class PaperBroker:
             # held. See services/config_performance.py's module docstring.
             config_fingerprint=pos.config_fingerprint,
             fee=close_fee,
+            netting_improvement_usd=netting_improvement_usd,
+            netting_bar_usd=netting_bar_usd,
+            netting_vol_ratio=netting_vol_ratio,
         )
         self.trade_log.append(trade)
         del self.positions[ticker]
@@ -566,10 +607,12 @@ class PaperBroker:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
+                "netting_improvement_usd, netting_bar_usd, netting_vol_ratio) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
-                 trade.config_fingerprint, close_fee),
+                 trade.config_fingerprint, close_fee,
+                 trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio),
             )
         return trade
 
@@ -642,13 +685,13 @@ class PaperBroker:
             if already_excluded or not reason.startswith("closed:"):
                 return None
             fee = fee or 0.0
-            bad_gross = size * bad_price if side == "yes" else size * (1 - bad_price)
+            bad_gross = size * kalshi_fees.unit_cost(side, bad_price)
             reversed_cash_back = bad_gross - fee
             self.bankroll -= reversed_cash_back
 
             corrected_credit = 0.0
             if corrected_price is not None:
-                good_gross = size * corrected_price if side == "yes" else size * (1 - corrected_price)
+                good_gross = size * kalshi_fees.unit_cost(side, corrected_price)
                 good_fee = kalshi_fees.taker_fee(size, corrected_price, ticker=ticker)
                 corrected_credit = good_gross - good_fee
                 self.bankroll += corrected_credit
@@ -747,7 +790,7 @@ class PaperBroker:
         pos = self.positions.get(ticker)
         if not pos:
             return 0.0
-        return pos.size * (pos.entry_price if pos.side == "yes" else (1 - pos.entry_price))
+        return pos.size * kalshi_fees.unit_cost(pos.side, pos.entry_price)
 
     def total_unrealized_pnl(self, latest_prices: dict[str, float]) -> float:
         return sum(

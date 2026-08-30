@@ -47,6 +47,7 @@ from services.kalshi.contracts import trade as trade_contract
 from services.kalshi.provenance import ContractDocs
 from services import candidate_log
 from services import fault_log
+from services import kalshi_fees
 from services import series_watcher
 from services import whale_gate
 from services.config.config_store import config_store
@@ -319,6 +320,11 @@ class KalshiStreamGateway:
         self._received_by_class: dict[str, int] = {}
         self._processed_by_class: dict[str, int] = {}
         self._dropped_by_class: dict[str, int] = {}
+        # What _begin_connection threw away with the previous connection
+        # (#209): queued items by class plus the coalescing map's entries
+        # (as "ticker"). Its own counter, never folded into
+        # _dropped_by_class - queue-full shedding is a different failure.
+        self._discarded_on_reconnect_by_class: dict[str, int] = {}
         self._dropped_window = 0
         self._handler_exceptions_by_class: dict[str, int] = {}
         self._handler_exceptions_total = 0
@@ -786,7 +792,12 @@ class KalshiStreamGateway:
         outage duration - the input the staleness benchmark (P8 Task 40)
         needs a measured distribution of, not an assumed one. Negative gaps
         (wall-clock skew - _record_disconnect and this both read
-        time.time()) are dropped rather than recorded as fabricated data."""
+        time.time()) are dropped rather than recorded as fabricated data.
+
+        What the previous connection still held is counted before it is
+        thrown away (#209, _count_reconnect_discards); the discard itself
+        is unchanged."""
+        self._count_reconnect_discards()
         self._queue = asyncio.Queue(maxsize=self._ingest_queue_max)
         # P4 Task 18: the split queues are rebuilt alongside the single one
         # every connection - always constructed (cheap, empty) so a runtime
@@ -795,7 +806,8 @@ class KalshiStreamGateway:
         self._market_queue = asyncio.Queue(maxsize=self._ingest_queue_max)
         # Pending coalesced tickers die with the connection, same as queued
         # messages today - the ticker channel re-snapshots on resubscribe
-        # (send_initial_snapshot) and staleness is visible either way.
+        # (send_initial_snapshot) and staleness is visible either way. Both
+        # were counted into _discarded_on_reconnect_by_class above (#209).
         self._ticker_by_market = {}
         self._connects += 1
         if self._last_disconnect is not None:
@@ -804,6 +816,47 @@ class KalshiStreamGateway:
                 self._last_gap_sec = round(gap, 3)
                 self._gap_sec_window = self._last_gap_sec
         return self._queue
+
+    def _count_reconnect_discards(self) -> None:
+        """Account for what the connection being replaced still holds (#209).
+
+        Every item in the three queues and every entry in the coalescing map
+        was already counted into _received_by_class on arrival; the caller
+        then throws them away - deliberately, and that decision is unchanged
+        - so before this they reached neither processed, coalesced, pending
+        nor dropped, and every reconnect broke received == processed +
+        coalesced + pending + dropped by exactly (queued + map) at that
+        instant (observed: gap constant at 74 across 12 reconnects). A
+        correct discard that is not counted is indistinguishable, from the
+        outside, from a leak. Its own counter, not _dropped_by_class:
+        queue-full shedding is a different failure with a different fix.
+
+        Cost: one call site (_begin_connection, once per physical connection
+        via run() - never per message). O(queued items) get_nowait drain
+        plus O(1) len() for the map. Measured 2026-08-30 (container, Python
+        3.13): 0.3-0.4 us/item, 27 ms with all three queues full at 20,000
+        and a 20,000-entry map - once per reconnect, on a path already
+        paying a TCP+TLS+WS handshake. Draining rather than peeking is safe
+        because the queues are about to be dereferenced, run() cancelled
+        their consumers in its finally, and this method never awaits, so
+        nothing can interleave with it. An item a consumer had already
+        dequeued is in flight and lands in _processed_by_class through
+        _process_item's own finally, even under cancellation."""
+        for queue in (self._queue, self._critical_queue, self._market_queue):
+            if queue is None:
+                continue
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                cls = item[1]  # (enqueue ts, class, data): _ingest_raw's put_nowait shape
+                if cls == _TICKER_WAKE:
+                    continue  # consumer wake sentinel - never a received message
+                self._discarded_on_reconnect_by_class[cls] = self._discarded_on_reconnect_by_class.get(cls, 0) + 1
+        if self._ticker_by_market:
+            self._discarded_on_reconnect_by_class["ticker"] = (
+                self._discarded_on_reconnect_by_class.get("ticker", 0) + len(self._ticker_by_market))
 
     @staticmethod
     def _message_class(data) -> str:
@@ -911,7 +964,7 @@ class KalshiStreamGateway:
             candidate_log.record_rejection(ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side)
             return True
         price = trade_contract._dollars(trade_msg.get("yes_price_dollars"))
-        unit_cost = (price if side == "yes" else (1.0 - price)) if price is not None else None
+        unit_cost = kalshi_fees.unit_cost(side, price)
         candidate_log.record_rejection(
             ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side, unit_cost=unit_cost,
         )
@@ -1168,8 +1221,14 @@ class KalshiStreamGateway:
 
     def _oldest_message_age(self, now: float) -> float | None:
         """Age of the oldest unconsumed message across every ingest queue in
-        use (single/critical/market - P4 Task 18): staleness lives wherever
-        the backlog does, so this is the max over the non-empty queues."""
+        use (single/critical/market - P4 Task 18) *and* the Task 19a pending
+        ticker map: staleness lives wherever the backlog does, so this is the
+        max over every non-empty backlog. The map is a backlog no queue
+        reports - its wake sentinel is enqueued only on the empty ->
+        non-empty transition, so once that sentinel is consumed a wedged or
+        starved market consumer leaves the queues empty and the map full.
+        Reading the queues alone reported 0.0 (perfect health) for exactly
+        the failure coalescing introduced (#207)."""
         ages: list[float] = []
         for queue in (self._queue, self._critical_queue, self._market_queue):
             if queue is None or queue.empty():
@@ -1183,6 +1242,15 @@ class KalshiStreamGateway:
             except Exception:
                 return None
             ages.append(max(now - head[0], 0.0))
+        if self._ticker_by_market:
+            # Our own dict, shape fixed at its two assignment sites in
+            # _coalesce_ticker: {ticker: (monotonic enqueue time, data)}, the
+            # same clock a queued item's head carries. Oldest entry = min ts
+            # = max age. An entry's ts is deliberately refreshed when a newer
+            # update supersedes it: the superseded payload no longer exists
+            # to be stale, so what waits is the newer one.
+            oldest_pending = min(ts for ts, _ in self._ticker_by_market.values())
+            ages.append(max(now - oldest_pending, 0.0))
         return round(max(ages), 4) if ages else 0.0
 
     def ingest_metrics(self, now: float | None = None) -> dict:
@@ -1202,6 +1270,7 @@ class KalshiStreamGateway:
             "received_by_class": dict(self._received_by_class),
             "processed_by_class": dict(self._processed_by_class),
             "dropped_by_class": dict(self._dropped_by_class),
+            "discarded_on_reconnect_by_class": dict(self._discarded_on_reconnect_by_class),
             "handler_exceptions_total": self._handler_exceptions_total,
             "handler_exceptions_by_class": dict(self._handler_exceptions_by_class),
             "handler_timeouts_total": self._handler_timeouts_total,

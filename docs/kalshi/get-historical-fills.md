@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -146,6 +146,7 @@ components:
       type: object
       required:
         - fill_id
+        - exchange_index
         - trade_id
         - order_id
         - ticker
@@ -161,6 +162,8 @@ components:
         fill_id:
           type: string
           description: Unique identifier for this fill
+        exchange_index:
+          $ref: '#/components/schemas/ExchangeIndex'
         trade_id:
           type: string
           description: Unique identifier for this fill (legacy field name, same as fill_id)
@@ -274,6 +277,10 @@ components:
         details:
           type: string
           description: Additional details about the error, if available
+    ExchangeIndex:
+      type: integer
+      description: Identifier for an exchange shard.
+      example: 0
     BookSide:
       type: string
       enum:

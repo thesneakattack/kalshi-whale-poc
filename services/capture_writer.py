@@ -1,9 +1,39 @@
 """Daemon thread that batches capture-store writes off both the asyncio loop
 and the reader coroutine. Design spec / realtime-data-plane-remediation.md
 Phase P3 Task 14: the reader must never do more than an in-memory append;
-this is the sole writer for the stores it owns, opened with a short
-busy_timeout so a collision with another connection never sleeps five
-seconds on any thread that matters.
+this is the sole writer for the stores it owns. The busy_timeout depends on
+whose thread is flushing (issue #211, below): the daemon thread waits out a
+lock for one flush cycle, and hands the batch back to its buffer rather
+than dropping it if the lock outlasts that; flush_now() on a caller's
+thread keeps the short budget so a collision never sleeps on a thread that
+matters.
+
+Retain on lock (issue #211, 2026-08-30). series_watcher.db is NOT single-
+writer today: series_watcher.flush() (book_snapshots INSERT - on the tick
+executor every tick, and on the websocket handler's thread whenever its
+buffer fills) and series_watcher.prune() (a full-scan DELETE, since no
+index on book_snapshots leads with observed_at - on the first tick after
+every process start, then hourly, on the event loop) share the file, and
+SQLite's write lock is per file, not per table. Measured on the same bind
+mount with synthetic tables of the live shapes (the live file is 22.8GB
+and was not copied): a single WAL commit 4.7ms median; the 500-row book
+INSERT 20-44ms; the prune on a 190k-row book table ~90ms warm. So the
+old 50ms budget lost to the prune every time and to the book flush on
+its slow tail. Live: 227 `database is locked` faults since 2026-08-27,
+every one on raw_trades; 24 of the 45 log-timestamped ones fell within
+120s of an hourly prune mark (a uniform spread would put ~1.5 there);
+460 raw_trades rows lost in one 18.2h process lifetime
+(series_watcher.capture_stats().dropped_rows - 12 faults, ~38 rows each,
+the ~1s cadence's typical batch). Now a SQLITE_BUSY/SQLITE_LOCKED failure
+puts the batch back at the FRONT of its buffer for the next cycle
+(_retain), the daemon thread waits up to _DAEMON_BUSY_TIMEOUT_MS before
+that happens, and the retained buffer is capped at _MAX_RETAINED_ROWS with
+the overflow counted in its own counter (overflow_dropped_count) - a drop
+path with a different cause must never hide inside dropped_count's number.
+Any other failure still drops the batch (a schema or disk error would fail
+identically on every retry and only fill the buffer to the cap).
+loss_snapshot() is what /api/health/pipeline and tools/soak_analyzer.py
+read.
 
 Wired (P3 Task 15, 2026-08-27): services/series_watcher.py's record_trade
 submits every raw_trades row here instead of its own local buffer. The
@@ -165,15 +195,56 @@ _STORE_DDL: dict[str, str] = {
 }
 _FLUSH_INTERVAL_SEC = 1.0
 _FLUSH_BATCH = 500
+# Busy-wait budgets (ms) for a flush that finds the file's write lock held.
+# The daemon thread (_run) is the one thread nothing waits on, so it waits
+# out the contending writers: one flush cycle (_FLUSH_INTERVAL_SEC), 10x
+# the slowest hold measured on this mount (the hourly prune, ~90ms warm)
+# and 25x the per-tick one (the book flush, 20-44ms). Not sqlite3's 5s
+# default: stop() joins this thread for _STOP_JOIN_SEC, and a flush still
+# mid-wait past that join would die with the process holding a batch that
+# is in neither the file nor the buffer - the one silent loss path this
+# module would have left. A lock held longer than a cycle is the retain
+# path's job, not the busy handler's: the batch goes back to the buffer
+# and is retried on the next cycle, counted in lock_retry_count().
+# flush_now() runs on its CALLER's thread - candidate_log.
+# resolve_from_market_results on the tick executor (the tick waits on
+# it), the gate summaries and the clear_* reset routes on the event loop -
+# and keeps the original 50ms, as does the daemon once _stop_event is set.
+_DAEMON_BUSY_TIMEOUT_MS = 1000
+_CALLER_BUSY_TIMEOUT_MS = 50
+# How long stop() joins the thread. Must outlast _DAEMON_BUSY_TIMEOUT_MS
+# plus a write (tests/test_capture_writer.py pins the relation).
+_STOP_JOIN_SEC = 2.0
+# Rows a store may hold back for retry after lock collisions before the
+# oldest are discarded (counted in _overflow_dropped_counts, never
+# silently). Sized from /api/observability/summary, 2026-08-30: peak
+# captured ingest ~460 rows/s (writer.depth.raw_trades max 459 at the 1s
+# flush cadence) x the longest stall the contending writers' tick phase
+# has shown (tick.phase.capture_flush_and_titles_sec max 224s) = ~103k
+# rows, x2 margin: ~400s of peak ingest. ~1KB per raw_trades row in
+# memory, so ~200MB worst case - reached only if the file's lock is held
+# for minutes, which no measured writer does; overflow_dropped_count() is
+# the detector if one ever does.
+_MAX_RETAINED_ROWS = 200_000
 
 def _empty_buffer(store: str):
     return {} if store in _STORE_KEY else []
 
 
+def _key_of(store: str, row: tuple) -> tuple:
+    return tuple(row[i] for i in _STORE_KEY[store])
+
+
 _buffers: dict[str, dict | list] = {name: _empty_buffer(name) for name in _STORE_PATHS}
 _lock = threading.Lock()
 _last_flush_at: dict[str, float] = {name: time.time() for name in _STORE_PATHS}
+# Three counters, three causes - each is a different question for the
+# reader of loss_snapshot(): rows discarded on a non-retryable flush
+# failure; rows discarded because the retained buffer hit its cap; and
+# how many batches were handed back for retry after a lock collision.
 _dropped_counts: dict[str, int] = {name: 0 for name in _STORE_PATHS}
+_overflow_dropped_counts: dict[str, int] = {name: 0 for name in _STORE_PATHS}
+_lock_retry_counts: dict[str, int] = {name: 0 for name in _STORE_PATHS}
 _thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
@@ -181,8 +252,7 @@ _stop_event = threading.Event()
 def submit(store: str, row: tuple) -> None:
     with _lock:
         if store in _STORE_KEY:
-            key = tuple(row[i] for i in _STORE_KEY[store])
-            _buffers.setdefault(store, {})[key] = row  # latest wins in memory
+            _buffers.setdefault(store, {})[_key_of(store, row)] = row  # latest wins in memory
         else:
             _buffers.setdefault(store, []).append(row)
 
@@ -198,22 +268,96 @@ def last_flush_age_ms() -> dict[str, float]:
 
 
 def dropped_count() -> dict[str, int]:
-    """Cumulative rows lost to a failed flush per store (never retried -
-    see _flush_store's own docstring). Lets a consumer like series_watcher.
-    capture_stats() report accurate loss for the stores it delegates here,
-    the same way it already tracked its own _dropped_rows before Task 15
-    moved raw_trades' flush into this module."""
+    """Cumulative rows lost per store to a NON-retryable flush failure (the
+    batch is discarded - see _flush_store). Does not include rows the
+    retained-buffer cap discarded; those are overflow_dropped_count(), a
+    different cause under a different name. Lets a consumer like
+    series_watcher.capture_stats() report accurate loss for the stores it
+    delegates here, the same way it already tracked its own _dropped_rows
+    before Task 15 moved raw_trades' flush into this module."""
     return dict(_dropped_counts)
 
 
-def _flush_store(store: str) -> None:
+def overflow_dropped_count() -> dict[str, int]:
+    """Cumulative rows per store discarded because the buffer held back
+    for retry after lock collisions exceeded _MAX_RETAINED_ROWS (oldest
+    first). Non-zero means the lock outlasted what memory could hold - a
+    real hole in the archive, reported apart from dropped_count() so the
+    two causes are never summed into one unexplained number."""
+    return dict(_overflow_dropped_counts)
+
+
+def lock_retry_count() -> dict[str, int]:
+    """Cumulative batches per store handed back to the buffer after a
+    SQLITE_BUSY/SQLITE_LOCKED flush. Churn, not loss: how often this
+    writer collided with another connection on the same file."""
+    return dict(_lock_retry_counts)
+
+
+def loss_snapshot() -> dict:
+    """Every counter this module keeps, by name, for /api/health/pipeline
+    and tools/soak_analyzer.py. All counters are in-memory and start at 0
+    with the process (a uvicorn --reload restart included) - the fault log
+    (services/fault_log.py) is the durable record of the failures."""
+    return {
+        "dropped_rows": dropped_count(),
+        "overflow_dropped_rows": overflow_dropped_count(),
+        "lock_retries": lock_retry_count(),
+        "depth": depth(),
+        "max_retained_rows": _MAX_RETAINED_ROWS,
+        "counter_scope": "process lifetime",
+    }
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    """SQLITE_BUSY / SQLITE_LOCKED (primary code, extended codes masked):
+    another connection held the lock past the busy budget, so the rows are
+    fine and only the moment was wrong. Read from sqlite3's own error
+    attributes (CPython 3.11+; the container and CI run 3.13) rather than
+    matched against the message text."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+
+
+def _retain(store: str, rows: list, upsert_mode: bool) -> int:
+    """Hands a batch that failed on a lock back to its buffer, AHEAD of
+    anything submitted since (arrival order survives the retry), trimmed
+    to _MAX_RETAINED_ROWS oldest-first. Returns how many rows the trim
+    discarded; the caller counts them. Upsert-mode stores merge under the
+    same latest-wins rule submit() applies: a row submitted after the
+    collision beats the retained one for the same key."""
+    with _lock:
+        current = _buffers[store]
+        if upsert_mode:
+            merged = {_key_of(store, row): row for row in rows}
+            merged.update(current)
+            overflow = max(0, len(merged) - _MAX_RETAINED_ROWS)
+            for key in list(merged)[:overflow]:
+                del merged[key]
+        else:
+            merged = rows + current
+            overflow = max(0, len(merged) - _MAX_RETAINED_ROWS)
+            if overflow:
+                merged = merged[overflow:]
+        _buffers[store] = merged
+        _lock_retry_counts[store] = _lock_retry_counts.get(store, 0) + 1
+        _overflow_dropped_counts[store] = _overflow_dropped_counts.get(store, 0) + overflow
+    return overflow
+
+
+def _flush_store(store: str, busy_timeout_ms: int = _CALLER_BUSY_TIMEOUT_MS) -> None:
     """Never raises: a failed capture-store write must not kill this
     daemon thread (a thread-target exception is silent - Python never
-    propagates it anywhere) or stop other stores from flushing. On
-    failure the batch is dropped, not retried, and counted in
-    _dropped_counts so the loss is visible (capture_writer.dropped_count())
-    instead of silent - same contract as series_watcher.flush() already
-    established for its own (book-only, post-Task-15) buffer."""
+    propagates it anywhere) or stop other stores from flushing. A lock
+    failure (SQLITE_BUSY/SQLITE_LOCKED after busy_timeout_ms) hands the
+    batch back to the buffer for the next cycle via _retain (issue #211);
+    any other failure drops the batch and counts it in _dropped_counts so
+    the loss is visible (dropped_count()) instead of silent - same contract
+    as series_watcher.flush() already established for its own (book-only,
+    post-Task-15) buffer. Nothing is ever half-written: the batch is one
+    transaction, so a failure before commit rolls it back whole and the
+    retry re-presents every row (INSERT OR IGNORE / the UPSERT's own
+    conflict clause keep that idempotent)."""
     upsert_mode = store in _STORE_KEY
     with _lock:
         buf = _buffers[store]
@@ -225,10 +369,10 @@ def _flush_store(store: str) -> None:
     try:
         db_path = _STORE_PATHS[store]
         db_path.parent.mkdir(exist_ok=True)
-        conn = sqlite3.connect(db_path, timeout=0.05)
+        conn = sqlite3.connect(db_path, timeout=busy_timeout_ms / 1000)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout = 50")
+            conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
             if store in _STORE_DDL:
                 conn.execute(_STORE_DDL[store])
             if upsert_mode:
@@ -240,11 +384,31 @@ def _flush_store(store: str) -> None:
                 )
             conn.commit()
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except sqlite3.Error:
+                # commit() above already made the batch durable (or the
+                # write failed and is being handled by the except below);
+                # a close-time error must not turn a written batch into a
+                # retained one, which would re-insert AUTOINCREMENT-keyed
+                # rows (rejection_events) as duplicates.
+                logger.warning("capture_writer: close() failed after flushing %s", store, exc_info=True)
     except Exception as exc:
-        _dropped_counts[store] = _dropped_counts.get(store, 0) + len(rows)
-        logger.exception("capture_writer flush failed for store %s", store)
-        fault_log.record("capture_writer", "flush", exc, context=store)
+        if _is_lock_error(exc):
+            overflow = _retain(store, rows, upsert_mode)
+            logger.warning(
+                "capture_writer flush of %s hit a lock after %dms: %d row(s) retained for retry, "
+                "%d oldest dropped past the %d-row cap",
+                store, busy_timeout_ms, len(rows) - overflow, overflow, _MAX_RETAINED_ROWS,
+            )
+            fault_log.record(
+                "capture_writer", "flush_retained_on_lock", exc, severity="warn",
+                context=f"{store}: {len(rows)} row(s) retained, {overflow} overflow-dropped",
+            )
+        else:
+            _dropped_counts[store] = _dropped_counts.get(store, 0) + len(rows)
+            logger.exception("capture_writer flush failed for store %s", store)
+            fault_log.record("capture_writer", "flush", exc, context=store)
     finally:
         _last_flush_at[store] = time.time()
 
@@ -253,9 +417,12 @@ def flush_now(store: str) -> dict:
     """Synchronous, immediate flush of one store, bypassing the batch/time
     threshold - for tests and diagnostics that need a deterministic flush
     without starting the daemon thread or waiting on its cadence. Safe
-    whether or not the thread is running: same _flush_store, same _lock."""
+    whether or not the thread is running: same _flush_store, same _lock.
+    Runs on the caller's thread, so it keeps the short busy budget; a
+    locked batch stays buffered for the daemon rather than stalling the
+    caller."""
     n = len(_buffers.get(store, []))
-    _flush_store(store)
+    _flush_store(store, busy_timeout_ms=_CALLER_BUSY_TIMEOUT_MS)
     return {"flushed": n}
 
 
@@ -268,9 +435,21 @@ def _run() -> None:
                 rows and (now - _last_flush_at.get(store, 0)) >= _FLUSH_INTERVAL_SEC
             )
             if due:
-                _flush_store(store)
+                # Once stop() has been called, this last pass and the final
+                # pass below both use the short budget: the join is
+                # _STOP_JOIN_SEC, and the rows must be in the file or back
+                # in the buffer before it returns, never in a thread it
+                # gave up on (see the budgets above).
+                budget = _CALLER_BUSY_TIMEOUT_MS if _stop_event.is_set() else _DAEMON_BUSY_TIMEOUT_MS
+                _flush_store(store, busy_timeout_ms=budget)
+    # Final pass at shutdown on the short budget. Whatever a held lock
+    # keeps out of the file here is still in the buffer - lost with the
+    # process, but logged as lost, never reported as written.
     for store in _buffers:
-        _flush_store(store)
+        _flush_store(store, busy_timeout_ms=_CALLER_BUSY_TIMEOUT_MS)
+    left = {name: n for name, n in depth().items() if n}
+    if left:
+        logger.warning("capture_writer stopping with unwritten rows still buffered: %s", left)
 
 
 def start() -> None:
@@ -280,7 +459,12 @@ def start() -> None:
     _thread.start()
 
 
-def stop(timeout_sec: float = 2.0) -> None:
+def stop(timeout_sec: float = _STOP_JOIN_SEC) -> None:
+    """Sets the stop flag and joins the thread. The join outlasts
+    _DAEMON_BUSY_TIMEOUT_MS on purpose: a flush already waiting on a lock
+    when stop() is called finishes - written, or retained and logged as
+    unwritten - before the join returns, so main.py's lifespan never exits
+    with a batch in a thread the join gave up on."""
     global _thread
     _stop_event.set()
     if _thread is not None:

@@ -26,6 +26,8 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/api-reference/orders/batch-create-orders-v2.md`
 - `batch-get-market-candlesticks.md`
   Source: `https://docs.kalshi.com/api-reference/market/batch-get-market-candlesticks.md`
+- `cancel-all-orders.md`
+  Source: `https://docs.kalshi.com/api-reference/orders/cancel-all-orders.md`
 - `cancel-cross-exit-trigger-by-id.md`
   Source: `https://docs.kalshi.com/margin-rest/exit-triggers/cancel-cross-exit-trigger-by-id.md`
 - `cancel-cross-exit-triggers.md`
@@ -300,6 +302,8 @@ Generated from docs/kalshi/upstream-manifest.json by `python -m tools.kalshi_doc
   Source: `https://docs.kalshi.com/getting_started/maintenance_and_pauses.md`
 - `making_your_first_request.md`
   Source: `https://docs.kalshi.com/getting_started/making_your_first_request.md`
+- `margin-rest-cancel-all-orders.md`
+  Source: `https://docs.kalshi.com/margin-rest/orders/cancel-all-orders.md`
 - `margin-rest-create-order-group.md`
   Source: `https://docs.kalshi.com/margin-rest/order-groups/create-order-group.md`
 - `margin-rest-create-subaccount.md`

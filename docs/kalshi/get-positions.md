@@ -14,7 +14,7 @@
 openapi: 3.0.0
 info:
   title: Kalshi Trade API Manual Endpoints
-  version: 3.28.0
+  version: 3.29.0
   description: >-
     Manually defined OpenAPI spec for endpoints being migrated to spec-first
     approach
@@ -186,6 +186,7 @@ components:
       type: object
       required:
         - ticker
+        - exchange_index
         - total_traded_dollars
         - position_fp
         - market_exposure_dollars
@@ -197,6 +198,8 @@ components:
           type: string
           description: Unique identifier for the market
           x-go-type-skip-optional-pointer: true
+        exchange_index:
+          $ref: '#/components/schemas/ExchangeIndex'
         total_traded_dollars:
           $ref: '#/components/schemas/FixedPointDollars'
           description: Total spent on this market in dollars
@@ -260,6 +263,10 @@ components:
         details:
           type: string
           description: Additional details about the error, if available
+    ExchangeIndex:
+      type: integer
+      description: Identifier for an exchange shard.
+      example: 0
     FixedPointDollars:
       type: string
       description: >-

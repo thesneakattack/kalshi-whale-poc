@@ -5,6 +5,7 @@ services.app_state - safe here because tests/conftest.py installs
 tests/support/runtime_isolation.py before any test module loads, so every
 eager singleton is already redirected away from the live data/*.db files."""
 import asyncio
+import time
 
 import pytest
 
@@ -19,11 +20,34 @@ class _StubProvider:
     def __init__(self, signals=None):
         self.calls = 0
         self._signals = signals or []
+        self.on_fetch = None  # a test's hook for "the provider's work took this long"
 
     async def fetch_signals(self, since_ts=None, market_context=None):
         self.calls += 1
+        if self.on_fetch is not None:
+            self.on_fetch()
         await asyncio.sleep(0.005)
         return list(self._signals)
+
+
+class _HandlerClock:
+    """Stands in for whale_stream_handlers' `time` module: monotonic() is a
+    value the test moves by hand; everything else (time.time() for the
+    trade-tape timestamp) is the real module. Only the handler module sees
+    it - the event loop keeps its own real clock, so the stub provider's
+    asyncio.sleep still works."""
+
+    def __init__(self, monotonic: float):
+        self._monotonic = monotonic
+
+    def monotonic(self) -> float:
+        return self._monotonic
+
+    def advance(self, seconds: float) -> None:
+        self._monotonic += seconds
+
+    def __getattr__(self, name):
+        return getattr(time, name)
 
 
 @pytest.fixture
@@ -55,17 +79,35 @@ def test_every_stream_trade_records_capture_config_provider_and_total_stages(_st
     assert provider.calls == 1
 
 
-def test_receive_to_handler_end_is_measured_from_the_gateway_enqueue_timestamp(_stream_mode):
-    perf, _provider = _stream_mode
-    token = ws_module.MESSAGE_ENQUEUED_AT.set(ws_module.time.monotonic() - 2.0)
+def test_receive_to_handler_end_is_measured_from_the_gateway_enqueue_timestamp(_stream_mode, monkeypatch):
+    """receive_to_handler_end is the handler's END clock minus the gateway's
+    ENQUEUE timestamp (kalshi_websocket.MESSAGE_ENQUEUED_AT): it must include
+    the queue wait that elapsed before this handler ever started (2 s here)
+    AND the handler's own work (the provider's 0.5 s), so it is neither
+    handler_total nor the queue wait on its own. Every clock read is
+    injected: the enqueue timestamp through the contextvar exactly as
+    _process_item sets it, the handler's monotonic() through _HandlerClock,
+    advanced only by the stub provider. Issue #233: the previous
+    `2000 <= max_ms < 2500` was a real-time bound on the handler's own
+    duration and measured the CI box (2598.6 ms under load, 70 ms
+    locally), not this mechanism."""
+    perf, provider = _stream_mode
+    enqueued_at = 1000.0
+    clock = _HandlerClock(monotonic=enqueued_at + 2.0)  # the handler starts 2 s after the enqueue
+    provider.on_fetch = lambda: clock.advance(0.5)  # and its own work takes 0.5 s
+    monkeypatch.setattr(wsh, "time", clock)
+    token = ws_module.MESSAGE_ENQUEUED_AT.set(enqueued_at)
     try:
         asyncio.run(wsh._process_stream_trade(_trade()))
     finally:
         ws_module.MESSAGE_ENQUEUED_AT.reset(token)
 
-    r = perf.snapshot()["stages"]["receive_to_handler_end"]["window"]
+    stages = perf.snapshot()["stages"]
+    r = stages["receive_to_handler_end"]["window"]
     assert r["count"] == 1
-    assert 2000.0 <= r["max_ms"] < 2500.0  # 2 s of simulated queue wait + the handler itself
+    assert r["max_ms"] == pytest.approx(2500.0)  # 2000 ms of queue wait + the 500 ms handler
+    assert stages["handler_total"]["window"]["max_ms"] == pytest.approx(500.0)  # the handler alone
+    assert stages["provider"]["window"]["max_ms"] == pytest.approx(500.0)  # where those 500 ms went
 
 
 def test_receive_to_handler_end_is_skipped_when_no_enqueue_timestamp_is_known(_stream_mode):

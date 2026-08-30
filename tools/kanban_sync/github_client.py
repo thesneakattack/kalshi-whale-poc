@@ -5,12 +5,19 @@ find an issue by its sync marker, create one, adjust labels, close it,
 post a plain comment, and look up a branch's PR state. Does not implement
 claim/dispatch/event-bus semantics - that's the installed github-issues-
 kanban skill's job once these issues exist (spec §2 non-goals).
+
+Every gh invocation passes through GithubClient._invoke, which retries a
+transient upstream failure (an HTTP 5xx, or a transport timeout) a bounded
+number of times with backoff and leaves every other failure to the caller
+exactly as before (issue #240).
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
@@ -18,8 +25,20 @@ from tools.kanban_sync import project_status
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
+log = logging.getLogger(__name__)
+
 _URL_NUMBER_RE = re.compile(r"/issues/(\d+)\s*$")
 _LABEL_NOT_FOUND_RE = re.compile(r"'([^']+)' not found")
+# gh reports an API failure as `HTTP <status>: <reason> (<url>)`. A transport
+# failure carries no status at all - gh is a Go binary, so it surfaces as
+# Go's net/http text ("Client.Timeout exceeded", "i/o timeout", "TLS
+# handshake timeout"), which the word "timeout" is the common thread of.
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+_TIMEOUT_RE = re.compile(r"\btimeout\b", re.IGNORECASE)
+# Three retries at 2s/4s/8s (issue #240): long enough to outlast the 504
+# that aborted the 2026-08-30 sync half-applied, short enough that a real
+# outage still fails the run inside 15s instead of hanging it.
+_RETRY_BACKOFF_S: tuple[float, ...] = (2.0, 4.0, 8.0)
 
 
 @dataclass(frozen=True)
@@ -38,13 +57,58 @@ def _default_runner(args: Sequence[str]) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(args, capture_output=True, text=True)
 
 
+def _is_transient(result: "subprocess.CompletedProcess[str]") -> bool:
+    """A failure GitHub, not the request, is responsible for: a 5xx, or a
+    transport timeout that never got a status at all. When gh reports a
+    status, that status is the API's real answer about the request - a 401
+    is a broken token, a 404 a missing issue, a 422 a bad payload, and the
+    label-not-found text create_issue/set_labels recover from is a 422 too -
+    so any non-5xx status is never retried, whatever else the text says."""
+    text = result.stderr or result.stdout or ""
+    status = _HTTP_STATUS_RE.search(text)
+    if status:
+        return status.group(1).startswith("5")
+    return bool(_TIMEOUT_RE.search(text))
+
+
 class GithubClient:
-    def __init__(self, repo: str, runner: Runner = _default_runner) -> None:
+    def __init__(self, repo: str, runner: Runner = _default_runner,
+                 sleep_fn: Callable[[float], None] = time.sleep) -> None:
         self._repo = repo
         self._runner = runner
+        # Injectable so the retry tests assert the backoff schedule instead
+        # of waiting 14s for it; the production default is the real clock.
+        self._sleep = sleep_fn
+
+    def _invoke(self, args: Sequence[str]) -> "subprocess.CompletedProcess[str]":
+        """The one place every gh call goes through - _run's --repo-scoped
+        calls and the project/milestone/rate-limit calls that omit --repo
+        alike - so the transient-retry policy exists exactly once (issue
+        #240: `gh pr list` died on `HTTP 504: 504 Gateway Timeout` and the
+        2026-08-30 sync aborted half-applied; items before it reconciled,
+        items after it not). Safe because the sync is idempotent - find-or-
+        create by marker - so a retried create cannot double-create.
+
+        Returns the final result rather than raising: each caller keeps
+        deciding what a non-zero exit means, exactly as before, so the error
+        surfaced once the budget is spent is gh's own, never a wrapper's.
+        Each retry is logged at WARNING so a flaky network is visible, not
+        silent (the CLI configures no logging; Python's last-resort handler
+        prints WARNING and above to stderr)."""
+        for attempt, delay in enumerate(_RETRY_BACKOFF_S, start=1):
+            result = self._runner(args)
+            if result.returncode == 0 or not _is_transient(result):
+                return result
+            log.warning(
+                "gh %s failed transiently (attempt %d/%d), retry in %.0fs: %s",
+                " ".join(args[1:]), attempt, len(_RETRY_BACKOFF_S) + 1, delay,
+                (result.stderr or result.stdout or "").strip(),
+            )
+            self._sleep(delay)
+        return self._runner(args)
 
     def _run(self, args: Sequence[str]) -> str:
-        result = self._runner(["gh", *args, "--repo", self._repo])
+        result = self._invoke(["gh", *args, "--repo", self._repo])
         if result.returncode != 0:
             raise GithubCliError(
                 f"gh {' '.join(args)} failed: {result.stderr or result.stdout}"
@@ -162,7 +226,7 @@ class GithubClient:
         failure surfaced as a misleading 'unknown owner type' error rather than
         anything rate-limit-shaped). Not repo-scoped - rate_limit is a global endpoint -
         so this bypasses _run's automatic --repo flag rather than reusing it."""
-        result = self._runner(["gh", "api", "rate_limit", "--jq", ".resources.graphql"])
+        result = self._invoke(["gh", "api", "rate_limit", "--jq", ".resources.graphql"])
         if result.returncode != 0:
             raise GithubCliError(
                 f"gh api rate_limit failed: {result.stderr or result.stdout}"
@@ -213,7 +277,7 @@ class GithubClient:
         Not repo-scoped (owner/project-scoped) - bypasses _run's automatic
         --repo flag like graphql_rate_limit already does."""
         issue_url = f"https://github.com/{self._repo}/issues/{issue_number}"
-        result = self._runner([
+        result = self._invoke([
             "gh", "project", "item-add", str(project_status.PROJECT_NUMBER),
             "--owner", project_status.PROJECT_OWNER,
             "--url", issue_url,
@@ -231,7 +295,7 @@ class GithubClient:
             option_id = project_status.STATUS_OPTION_IDS[status]
         except KeyError:
             raise GithubCliError(f"unknown project Status option: {status!r}") from None
-        result = self._runner([
+        result = self._invoke([
             "gh", "project", "item-edit",
             "--id", item_id,
             "--field-id", project_status.STATUS_FIELD_ID,
@@ -244,7 +308,7 @@ class GithubClient:
     def create_milestone(self, title: str) -> int:
         """Creates a new milestone, returning its repo-scoped number
         (distinct from a project item's node ID or an issue's number)."""
-        result = self._runner([
+        result = self._invoke([
             "gh", "api", "-X", "POST", f"repos/{self._repo}/milestones",
             "-f", f"title={title}",
         ])
@@ -261,7 +325,7 @@ class GithubClient:
         {"state": "all"} as a body to a GET-only endpoint instead of
         appending it as a query string). per_page=100 raises the safe ceiling
         from GitHub's default page size of 30."""
-        result = self._runner([
+        result = self._invoke([
             "gh", "api", "-X", "GET", f"repos/{self._repo}/milestones",
             "-f", "state=all", "-f", "per_page=100",
         ])
