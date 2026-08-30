@@ -49,6 +49,16 @@ gets fixed, and the process later restarts clean, older trades captured
 during the defective window keep contributing to statistics with no flag.
 Follow-on gap, not this design's job.
 
+The opposite direction is also a scope limitation, not a bug: all three
+counters are lifetime-since-process-start totals with no reset path except
+a process restart, so `current_completeness_state()["degraded"]` latches
+`True` for the rest of that process's uptime after a single occurrence —
+even once the underlying defect is fixed and no new drops are happening.
+A future improvement would compare each counter against the value captured
+at the time of the last successful auto-apply (a delta), not the lifetime
+total, so a resolved defect stops gating new applies without needing a
+restart — that is a future decision, not built here.
+
 ## Architecture
 
 ### 1. `services/quality/evidence_provenance.py` (new)

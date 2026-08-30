@@ -99,4 +99,9 @@ its existing qualifying-recommendation check, so an automatic config write
 is silently skipped (cooldown untouched) while a known data-completeness
 defect is open - currently unreachable in production since
 `advisory.auto_apply_enabled` is `false`, but tested and ready for
-whenever #51 re-arms it.
+whenever #51 re-arms it. The counters behind `degraded` are lifetime/
+monotonic and never reset except by a process restart, so "while a defect
+is open" really means "since the last process restart after any
+occurrence" - a single historical drop silently and permanently disables
+this auto-apply path until the process restarts, even long after the
+defect itself is fixed.

@@ -87,7 +87,12 @@ needing to first measure how often it happens.
 placement as `services/advisory/routes.py`'s own addition - `confidence_
 calibration.generate_calibration_report()` itself is unchanged.
 `main.py`'s calibration auto-apply block gets the same silent-skip-on-
-degraded-evidence guard as advisory's.
+degraded-evidence guard as advisory's. The counters behind `degraded` are
+lifetime/monotonic and never reset except by a process restart, so
+"degraded evidence" really means "since the last process restart after any
+occurrence" - a single historical drop silently and permanently disables
+this auto-apply path until the process restarts, even long after the
+defect itself is fixed.
 
 Separately (#60): `signal_log.resolved_signals_with_factors()` now selects
 `series` - a real, indexed, `NOT NULL` column it stored but never
