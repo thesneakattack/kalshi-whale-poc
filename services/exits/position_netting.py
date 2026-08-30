@@ -385,10 +385,16 @@ def review(
                 continue
             price = latest_prices.get(ticker, pos.entry_price)
             reason = f"position netting ({group['status']}, event {group['event_ticker']}): {rec['reason']}"
-            # The same three values the sentence above was built from ride
-            # onto the trades row as columns (issue #213). A locked_loss
-            # close_all computed no bar, so its rec has none and the columns
-            # stay NULL - "no bar", never a bar of $0.
+            # Four structured values ride onto the trades row as columns:
+            # the first three from issue #213 (the sentence's own numbers,
+            # plus vol_ratio, which has no prose counterpart of its own -
+            # see the comment above in describe_groups), netting_exit_fee_usd
+            # added 2026-08-30 for locked_loss's own real cost. The two
+            # groups are populated on opposite branches, never together: a
+            # locked_loss close_all's rec has no bar/improvement/vol_ratio
+            # (those three stay NULL) but does have exit_fee_cost_usd; every
+            # other action has the first three and never exit_fee_cost_usd.
+            # NULL always means "not this branch", never a real $0.
             trade = broker.close_position(
                 ticker, price, reason,
                 netting_improvement_usd=rec.get("expected_value_improvement_usd"),

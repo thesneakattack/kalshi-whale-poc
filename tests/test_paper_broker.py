@@ -806,26 +806,39 @@ def test_close_all_positions_is_a_no_op_with_no_open_positions(tmp_path, monkeyp
 
 
 def test_close_position_persists_netting_inputs_and_reloads_them(tmp_path, monkeypatch):
+    # netting_exit_fee_usd (2026-08-30, entry-gate-me-pairing-and-netting-
+    # remediation Part 2) rides on the opposite branch from the other three
+    # in real usage (locked_loss vs. variable/locked_profit - see
+    # paper_broker.Trade's own docstring), but this test exercises
+    # close_position's persistence plumbing directly via keyword args
+    # regardless of which real branch would produce which combination -
+    # same as it already does for the other three against a "variable"
+    # reason string. Passing all four here proves the INSERT/SELECT/reload
+    # path carries this fourth column exactly like its three siblings.
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
     trade = broker.close_position(
         "TICK-A", exit_price=0.6, reason="position netting (variable, event EVT-1): estimated $36.57 ...",
-        netting_improvement_usd=36.57, netting_bar_usd=23.0, netting_vol_ratio=2.3,
+        netting_improvement_usd=36.57, netting_bar_usd=23.0, netting_vol_ratio=2.3, netting_exit_fee_usd=5.42,
     )
-    assert (trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio) == (36.57, 23.0, 2.3)
+    assert (trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio,
+            trade.netting_exit_fee_usd) == (36.57, 23.0, 2.3, 5.42)
 
     with sqlite3.connect(pb.DB_PATH) as conn:
         row = conn.execute(
-            "SELECT netting_improvement_usd, netting_bar_usd, netting_vol_ratio FROM trades WHERE id = ?",
+            "SELECT netting_improvement_usd, netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd "
+            "FROM trades WHERE id = ?",
             (trade.id,),
         ).fetchone()
-    assert row == (36.57, 23.0, 2.3)
+    assert row == (36.57, 23.0, 2.3, 5.42)
 
     # A resumed broker reads them back onto the Trade, not just the row.
     resumed = pb.PaperBroker(starting_bankroll=1000.0)
     reloaded = next(t for t in resumed.trade_log if t.id == trade.id)
-    assert (reloaded.netting_improvement_usd, reloaded.netting_bar_usd, reloaded.netting_vol_ratio) == (36.57, 23.0, 2.3)
+    assert (reloaded.netting_improvement_usd, reloaded.netting_bar_usd, reloaded.netting_vol_ratio,
+            reloaded.netting_exit_fee_usd) == (36.57, 23.0, 2.3, 5.42)
     assert reloaded.to_dict()["netting_vol_ratio"] == 2.3
+    assert reloaded.to_dict()["netting_exit_fee_usd"] == 5.42
 
 
 def test_close_position_without_netting_inputs_leaves_them_null(tmp_path, monkeypatch):
