@@ -103,6 +103,20 @@ class Trade:
     # build_trade_history skips these entirely rather than counting them as
     # a loss or a phantom win.
     excluded: bool = False
+    # The three structured inputs behind a position-netting close (services/
+    # exits/position_netting.py review(), issue #213, 2026-08-30): the
+    # expected-value improvement the action was estimated to deliver, the
+    # materiality bar it had to clear, and the volatility ratio that scaled
+    # that bar. None for every entry, every non-netting close, a locked_loss
+    # close_all (no bar is computed there), and every row written before
+    # these existed. The reason sentence keeps carrying the first two in
+    # prose; these exist so an analysis reads them as columns instead of
+    # regex-parsing `bar \$([0-9.]+)` out of it (docs/data-layer-analysis-
+    # layer-contract.md: prose is for the reader, columns are for the
+    # analysis).
+    netting_improvement_usd: float | None = None
+    netting_bar_usd: float | None = None
+    netting_vol_ratio: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -193,6 +207,13 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # ceasing to count as evidence. See PaperBroker.correct_erroneous_close.
     _add_column_if_missing(conn, "trades", "excluded", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)")
+    # Netting decision inputs (issue #213, 2026-08-30; see Trade) - same
+    # idempotent-migration pattern, the live table already had rows. NULL
+    # on every pre-existing row and every non-netting row IS the meaning
+    # ("no bar was computed"), not a gap to backfill.
+    _add_column_if_missing(conn, "trades", "netting_improvement_usd", "REAL")
+    _add_column_if_missing(conn, "trades", "netting_bar_usd", "REAL")
+    _add_column_if_missing(conn, "trades", "netting_vol_ratio", "REAL")
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -264,12 +285,16 @@ class PaperBroker:
                     self.positions[ticker] = Position(
                         ticker, side, size, entry_price, opened_at, fp, entry_fee or 0.0, bool(hold_to_settlement),
                     )
-                for tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded in conn.execute(
+                for (tid, ticker, side, size, price, reason, timestamp, fp, fee, signal_seen_at, excluded,
+                     net_improvement, net_bar, net_vol_ratio) in conn.execute(
                     "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
-                    "signal_seen_at, excluded FROM trades ORDER BY timestamp ASC"
+                    "signal_seen_at, excluded, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+                    "FROM trades ORDER BY timestamp ASC"
                 ):
                     self.trade_log.append(Trade(tid, ticker, side, size, price, reason, timestamp, fp, fee or 0.0,
-                                                signal_seen_at, bool(excluded)))
+                                                signal_seen_at, bool(excluded),
+                                                netting_improvement_usd=net_improvement, netting_bar_usd=net_bar,
+                                                netting_vol_ratio=net_vol_ratio))
                     self.last_trade_time[ticker] = max(self.last_trade_time.get(ticker, 0.0), timestamp)
                 for ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence in conn.execute(
                     "SELECT ticker, side, size, limit_price, placed_at, expires_at, reason, config_fingerprint, "
@@ -514,7 +539,11 @@ class PaperBroker:
             fills.append({"action": "trade", "trade": trade.to_dict(), "reason": order.reason, "source": "limit_order"})
         return fills
 
-    def close_position(self, ticker: str, exit_price: float, reason: str) -> Trade | None:
+    def close_position(
+        self, ticker: str, exit_price: float, reason: str, *,
+        netting_improvement_usd: float | None = None, netting_bar_usd: float | None = None,
+        netting_vol_ratio: float | None = None,
+    ) -> Trade | None:
         """Sells an open position back at exit_price instead of holding it
         to settlement - direct request: this app had zero exit mechanism at
         all before this. A YES holder selling at the current market gets
@@ -523,7 +552,11 @@ class PaperBroker:
         throughout this app (see mark_to_market/latest_prices). Returns
         None if there's no open position on this ticker - a no-op, not an
         error, since a poll tick's exit check racing a position that
-        already closed this same tick shouldn't crash the loop."""
+        already closed this same tick shouldn't crash the loop.
+
+        The keyword-only netting_* values are position_netting.review's
+        structured decision inputs (see Trade, issue #213); every other
+        caller leaves them None and the row's columns NULL."""
         pos = self.positions.get(ticker)
         if not pos:
             return None
@@ -558,6 +591,9 @@ class PaperBroker:
             # held. See services/config_performance.py's module docstring.
             config_fingerprint=pos.config_fingerprint,
             fee=close_fee,
+            netting_improvement_usd=netting_improvement_usd,
+            netting_bar_usd=netting_bar_usd,
+            netting_vol_ratio=netting_vol_ratio,
         )
         self.trade_log.append(trade)
         del self.positions[ticker]
@@ -566,10 +602,12 @@ class PaperBroker:
             conn.execute("UPDATE broker_meta SET bankroll = ? WHERE id = 1", (self.bankroll,))
             conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
             conn.execute(
-                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, config_fingerprint, fee, "
+                "netting_improvement_usd, netting_bar_usd, netting_vol_ratio) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
-                 trade.config_fingerprint, close_fee),
+                 trade.config_fingerprint, close_fee,
+                 trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio),
             )
         return trade
 

@@ -797,3 +797,73 @@ def test_close_all_positions_is_a_no_op_with_no_open_positions(tmp_path, monkeyp
     broker = _broker(tmp_path, monkeypatch)
     closed = broker.close_all_positions({}, "manual flatten-all")
     assert closed == []
+
+
+# --- netting decision inputs as columns (issue #213, 2026-08-30) ----------
+# close_position carries the three structured inputs behind a netting close
+# (services/exits/position_netting.py) onto the trades row as additive
+# columns; every other close leaves them NULL/None.
+
+
+def test_close_position_persists_netting_inputs_and_reloads_them(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    trade = broker.close_position(
+        "TICK-A", exit_price=0.6, reason="position netting (variable, event EVT-1): estimated $36.57 ...",
+        netting_improvement_usd=36.57, netting_bar_usd=23.0, netting_vol_ratio=2.3,
+    )
+    assert (trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio) == (36.57, 23.0, 2.3)
+
+    with sqlite3.connect(pb.DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT netting_improvement_usd, netting_bar_usd, netting_vol_ratio FROM trades WHERE id = ?",
+            (trade.id,),
+        ).fetchone()
+    assert row == (36.57, 23.0, 2.3)
+
+    # A resumed broker reads them back onto the Trade, not just the row.
+    resumed = pb.PaperBroker(starting_bankroll=1000.0)
+    reloaded = next(t for t in resumed.trade_log if t.id == trade.id)
+    assert (reloaded.netting_improvement_usd, reloaded.netting_bar_usd, reloaded.netting_vol_ratio) == (36.57, 23.0, 2.3)
+    assert reloaded.to_dict()["netting_vol_ratio"] == 2.3
+
+
+def test_close_position_without_netting_inputs_leaves_them_null(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="entry")
+    trade = broker.close_position("TICK-A", exit_price=0.6, reason="take-profit")
+    assert (trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio) == (None, None, None)
+    with sqlite3.connect(pb.DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT netting_improvement_usd, netting_bar_usd, netting_vol_ratio FROM trades"
+        ).fetchall()
+    assert rows == [(None, None, None), (None, None, None)]  # the entry and the close
+
+
+def test_netting_columns_are_added_to_a_pre_existing_trades_table_without_touching_its_rows(tmp_path, monkeypatch):
+    # The live data/paper_broker.db already has a trades table with rows;
+    # CREATE TABLE IF NOT EXISTS alone would never add the columns, so they
+    # arrive through _add_column_if_missing and every pre-existing row reads
+    # NULL (None) - never rewritten, never defaulted to 0.0.
+    db = tmp_path / "paper_broker.db"
+    monkeypatch.setattr(pb, "DB_PATH", db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE broker_meta (id INTEGER PRIMARY KEY CHECK (id = 1), bankroll REAL NOT NULL, starting_bankroll REAL NOT NULL)")
+        conn.execute("INSERT INTO broker_meta (id, bankroll, starting_bankroll) VALUES (1, 900.0, 1000.0)")
+        conn.execute("CREATE TABLE positions (ticker TEXT PRIMARY KEY, side TEXT NOT NULL, size INTEGER NOT NULL, entry_price REAL NOT NULL, opened_at REAL NOT NULL)")
+        conn.execute("CREATE TABLE trades (id TEXT PRIMARY KEY, ticker TEXT NOT NULL, side TEXT NOT NULL, size INTEGER NOT NULL, price REAL NOT NULL, reason TEXT NOT NULL, timestamp REAL NOT NULL)")
+        conn.execute("INSERT INTO trades VALUES ('old1', 'TICK-OLD', 'yes', 10, 0.5, 'closed: position netting (variable, event E): estimated $2.00 expected-value improvement over holding (bar $1.00) (realized +0.10)', 1.0)")
+        old_cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+    assert "netting_bar_usd" not in old_cols
+
+    resumed = pb.PaperBroker(starting_bankroll=1000.0)
+    with sqlite3.connect(db) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+        row = conn.execute(
+            "SELECT reason, netting_improvement_usd, netting_bar_usd, netting_vol_ratio FROM trades WHERE id = 'old1'"
+        ).fetchone()
+    assert {"netting_improvement_usd", "netting_bar_usd", "netting_vol_ratio"} <= cols
+    assert row[0].startswith("closed: position netting")  # the prose row is untouched
+    assert row[1:] == (None, None, None)
+    old = next(t for t in resumed.trade_log if t.id == "old1")
+    assert (old.netting_improvement_usd, old.netting_bar_usd, old.netting_vol_ratio) == (None, None, None)
