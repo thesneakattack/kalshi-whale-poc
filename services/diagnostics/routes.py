@@ -264,6 +264,10 @@ def _scheduler_status(now: float) -> dict:
         # scheduler from catalog_scan above, see services/market_watch/
         # mve_scan.py's own docstring for why.
         "mve_scan": _entry("mve_scan", "last_started_at", "scanning"),
+        # Broad milestone discovery (entry-gate-me-pairing-and-netting-
+        # remediation Part 3) - independent scheduler, see services/
+        # market_watch/milestone_scan.py's own docstring for why.
+        "milestone_scan": _entry("milestone_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         # The resolver's own counters ride along (pending backlog, lifetime
         # enqueued/resolved/dropped). `dropped_after_max_attempts` growth is

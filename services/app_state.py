@@ -265,6 +265,13 @@ state = {
     # after a restart is cheap, and this list is small enough that a cold
     # start costs one extra scan cycle, not a real gap.
     "mve_series_cache": {"fetched_at": 0.0, "series_tickers": []},
+    "milestone_scan": {"scanning": False, "last_started_at": 0.0, "task": None, "watermark": 0.0},
+    # Broad, watchlist-independent event_ticker -> milestone_id map
+    # (services/market_watch/milestone_scan.py, issue: entry-gate-me-
+    # pairing-and-netting-remediation Part 3) - independent of the per-tick
+    # `markets` list live_status.py's _fetch_live_status otherwise depends
+    # on for milestone lookup.
+    "milestone_by_event": {},
     # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
     # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
     "candidate_retry_loop": {"running": False, "last_started_at": 0.0},

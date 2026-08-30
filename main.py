@@ -113,8 +113,8 @@ from services.market_watch import (  # noqa: E402
     _fetch_event_titles, _fetch_exchange_status, _fetch_live_status, _fetch_markets,
     _get_series_cache, _get_top_series, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC,
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _maybe_scan_catalog_batch,
-    _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners, _refresh_discovery_cache,
-    _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
+    _maybe_scan_milestone_batch, _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners,
+    _refresh_discovery_cache, _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
 from services.backup import _maybe_run_backup  # noqa: E402
 from services.backup import routes as backup_routes  # noqa: E402
@@ -569,6 +569,10 @@ _SCHEDULER_TRIGGERS = (
     # entry, which catalog_scan._get_series_cache already filters out
     # before any category logic even runs).
     ("mve_scan", _maybe_scan_mve_batch),
+    # Broad milestone discovery (entry-gate-me-pairing-and-netting-
+    # remediation Part 3) - independent of `markets`/watchlist scope, see
+    # services/market_watch/milestone_scan.py's own module docstring.
+    ("milestone_scan", _maybe_scan_milestone_batch),
     ("auto_apply", _maybe_run_auto_apply),
 )
 
