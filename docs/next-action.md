@@ -1,5 +1,16 @@
 # Next action
 
+> **Caveat added 2026-08-30 — this soak's pass criterion can read a false 0.**
+> `oldest_message_age_sec` comes from `_oldest_message_age`
+> (`services/kalshi/websocket.py:1169`), which inspects only the three queues
+> and never `_ticker_by_market`. A wedged coalescing map with drained queues
+> reports exactly 0.0 — perfect health. Fix that one-liner first, or the
+> remaining boundary checks below cannot detect the one new failure mode
+> `two_consumer_mode` introduced. Full write-up, plus two verified live bugs
+> and a prioritized test-gap list:
+> `docs/superpowers/research/2026-08-30-test-coverage-audit-handoff.md`
+> (read it before picking up any of the deferred Minors named at the end).
+
 Soak `two_consumer_mode` (enabled 2026-08-29 18:49 UTC) across several more
 hourly boundaries, then decide whether it stays on permanently (P4 gate).
 
