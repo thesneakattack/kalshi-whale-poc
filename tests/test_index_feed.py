@@ -232,3 +232,65 @@ def test_volatility_needs_real_history_before_it_reports_a_number():
     ifd.flush()
     vol = ifd.recent_volatility("BRTI", lookback_sec=3600, now=1100.0)
     assert vol == pytest.approx(0.0, abs=1e-9)   # a perfectly steady $1/s ramp has zero variance
+
+
+# ------------------------------------------------- reconnect backfill (#260)
+
+def test_last_tick_before_ignores_ticks_at_or_after_the_cutoff():
+    _ingestion.record_cfbenchmarks(_cf_msg(spot="1"), now=100.0)
+    _ingestion.record_cfbenchmarks(_cf_msg(spot="2"), now=105.0)
+    _ingestion.record_cfbenchmarks(_cf_msg(spot="3"), now=110.0)  # at/after cutoff - excluded
+
+    assert _ingestion.last_tick_before("BRTI", 110.0) == pytest.approx(105.0)
+
+
+def test_last_tick_before_flushes_the_buffer_first():
+    """A tick can still be sitting in _tick_buffer (below _FLUSH_BATCH) when
+    a gap check runs - last_tick_before must see it, not just what's
+    already on disk."""
+    _ingestion.record_cfbenchmarks(_cf_msg(), now=50.0)
+    assert _ingestion._tick_buffer  # still buffered, not yet flushed
+
+    assert _ingestion.last_tick_before("BRTI", 60.0) == pytest.approx(50.0)
+    assert _ingestion._tick_buffer == []
+
+
+def test_last_tick_before_returns_none_when_index_never_seen():
+    assert _ingestion.last_tick_before("BRTI", 100.0) is None
+
+
+def test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source():
+    points = [
+        {"type": "value", "id": "BRTI", "time": 1_755_000_000_000, "value": "63500.00"},
+        {"type": "value", "id": "BRTI", "time": 1_755_000_001_000, "value": "63501.50"},
+    ]
+    stored = _ingestion.record_cfbenchmarks_backfill("BRTI", points, now=1000.0)
+    assert stored == 2
+
+    with sqlite3.connect(_ingestion.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM index_ticks ORDER BY source_ts_ms").fetchall()
+    assert [r["source"] for r in rows] == ["cfbenchmarks_backfill", "cfbenchmarks_backfill"]
+    assert rows[0]["value"] == pytest.approx(63500.00)
+    assert rows[1]["value"] == pytest.approx(63501.50)
+    assert rows[0]["source_ts_ms"] == 1_755_000_000_000
+    # Fidelity: the exact raw point Kalshi/CF Benchmarks sent, unmodified.
+    assert json.loads(rows[0]["raw_json"]) == points[0]
+
+
+def test_record_cfbenchmarks_backfill_never_regresses_latest_backward():
+    """A live tick that already closed the gap must not be clobbered by the
+    older historical data being backfilled behind it."""
+    _ingestion.record_cfbenchmarks(_cf_msg(spot="70000.00"), now=2000.0)
+    before = _ingestion.latest("BRTI")
+
+    _ingestion.record_cfbenchmarks_backfill(
+        "BRTI", [{"time": 1_000_000_000_000, "value": "1.00"}], now=2000.0,
+    )
+
+    assert _ingestion.latest("BRTI") == before
+
+
+def test_record_cfbenchmarks_backfill_never_raises_on_garbage():
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", [None, "not a dict", {}]) == 1
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", None) == 0

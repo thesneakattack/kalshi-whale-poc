@@ -774,6 +774,44 @@ on now.
 `get-order.md:10`, `exchange_sharding.md:60-62,88,91`.
 **Found:** 2026-08-30, issue #248 re-sync to Trade API 3.29.0.
 
+## How does the CF Benchmarks REST passthrough's history endpoint actually work, and what does it cost?
+**Answer:** `GET /trade-api/v2/cfbenchmarks/history/values?id=<index>&
+timespan=<span>&timestamp=<ISO8601>` forwards verbatim (query string
+included) to CF Benchmarks' own `/api/v1/history/values`
+(`rest-passthrough.md`). It is a **bucketed lookup, not an arbitrary
+[start, end) range query**: CF Benchmarks' own docs (docs.cfbenchmarks.com/
+api/rest/historical-values - NOT mirrored under `docs/kalshi/`, fetched
+live 2026-08-30 since the mirror explicitly defers index/parameter detail
+to it) state "the timestamp must be truncated to the timespan granularity"
+- `timespan=HOUR` fetches the whole UTC hour containing `timestamp`, so a
+gap spanning an hour boundary needs one request per hour touched, filtered
+client-side to the actual window afterward (`services/index_feed/
+backfill.py`'s `_hour_bucket_starts`/window filter). Cost: 50 tokens/
+request from the Read bucket vs this app's usual default 10
+(`rest-passthrough.md`'s "Rate limit" section) - a real 5x outlier, worth
+its own caller class if measuring where read-bucket budget goes.
+**Gotcha:** "the most recent values may not be immediately available, and
+could be delayed by up to 15 minutes" (CF Benchmarks docs, same fetch) - a
+backfill that runs seconds after a WS reconnect can legitimately get back
+fewer points than the gap actually contains, with no error to signal it.
+Also requires "authorization for both the target index and the
+STREAM_HISTORICAL_VALUES data stream" - the same account entitlement gate
+`rest-passthrough.md`'s own "Access" section names generically
+("available only to accounts with the appropriate entitlement"); this
+repo's own credentials have not been confirmed to hold it.
+**Also unresolved:** the history endpoint's response *body* schema inside
+`data.payload` was not retrievable through available fetch tooling (only
+the generic envelope example and the *live* WS frame shape are confirmed -
+`cfbenchmarks-value.md`'s AsyncAPI example: `{"type":"value","id":"BRTI",
+"time":<ms>,"value":"<str>"}`). Treated as UNVERIFIED, not guessed: parsing
+is defensive (several plausible payload shapes, a point with no derivable
+timestamp is dropped and logged rather than stored under a wrong time) and
+the first real response is logged in full for a human to check
+(`services/kalshi/websocket.py`'s own `_logged_fill_shape` idiom).
+**Source:** `rest-passthrough.md`, `cfbenchmarks-value.md`; CF Benchmarks'
+own `docs.cfbenchmarks.com/api/rest/historical-values` (not mirrored).
+**Found:** 2026-08-30, issue #260 (index_feed reconnect-gap backfill).
+
 ## What do GET /exchange/user_data_timestamp and GET /api_keys return?
 **Answer:** `GetUserDataTimestampResponse` (`get-user-data-timestamp.md`) is
 one required field: `as_of_time`, an RFC3339 date-time string - "an
