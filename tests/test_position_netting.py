@@ -177,14 +177,21 @@ def test_describe_groups_locked_loss_recommends_close_all_and_reports_exit_fee_c
 
     market_titles = _titles({"A": "EVT-1", "B": "EVT-1"})
     event_titles = {"EVT-1": {"mutually_exclusive": True}}
-    latest_prices = {"A": 0.6, "B": 0.6}
+    # Deliberately diverges from entry_price (0.6 on both members): if this
+    # matched entry_price, the assertion below would pass identically
+    # whether the implementation correctly reads latest_prices or wrongly
+    # falls back to pos.entry_price - the exact bug this field is highest-
+    # risk for (2026-08-30 review finding). classify()/payout_profile() only
+    # ever consume entry_price, never latest_prices, so diverging these
+    # cannot change the locked_loss classification asserted below.
+    latest_prices = {"A": 0.55, "B": 0.62}
     cfg = {"position_netting": {"enabled": True, "min_dwell_sec": 0}}
     groups = describe_groups(_FakeBroker(), market_titles, event_titles, latest_prices, cfg)
     rec = groups[0]["recommendation"]
     assert groups[0]["status"] == "locked_loss"
     assert rec["action"] == "close_all"
     assert set(rec["tickers"]) == {"A", "B"}
-    expected_fee = taker_fee(100, 0.6, ticker="A") + taker_fee(100, 0.6, ticker="B")
+    expected_fee = taker_fee(100, 0.55, ticker="A") + taker_fee(100, 0.62, ticker="B")
     assert rec["exit_fee_cost_usd"] == round(expected_fee, 2)
 
 
@@ -197,6 +204,7 @@ def test_describe_groups_variable_recommendation_has_no_exit_fee_cost_field(tmp_
     latest_prices = {"A": 0.75, "B": 0.24}
     cfg = {"position_netting": {"enabled": True, "min_dwell_sec": 0, "min_edge_improvement_usd": 1.0, "normal_volatility": None}}
     groups = describe_groups(broker, market_titles, event_titles, latest_prices, cfg)
+    assert groups[0]["status"] == "variable"  # confirms this lands in the variable branch, not locked_profit (both lack the key)
     assert "exit_fee_cost_usd" not in groups[0]["recommendation"]
 
 
