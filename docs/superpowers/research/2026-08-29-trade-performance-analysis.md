@@ -314,3 +314,200 @@ value - what this section supports is re-running
 check against the current 88,828-row population (10x what it last saw) and
 writing the settings.yaml comment that's supposed to exist, not swapping in
 numbers derived from a single ad hoc correlation pass.
+
+
+## 11. Every field, individually (145/145) — the complete pass
+
+Direct follow-up: "you skipped analysis of 140 fields. run a complete
+analysis again." §6 categorized 23 *sections*; this is every *field*,
+checked one at a time, generated from a single flattened inventory
+(`yaml.safe_load` over `config/settings.yaml`, 145 leaves) so nothing is
+silently dropped between report and doc.
+
+**Mechanical dead-config pass first.** Ran `tools/quality_audit`'s own
+`config_usage.scan_config_usage()` directly (not the full multi-scanner CLI,
+which chokes on this worktree's own nested test files — a real, separate,
+tangential finding: the architecture-audit scanner doesn't exclude
+`.claude/worktrees/`, so any live worktree pollutes a from-root run).
+120 of 145 fields have no direct `cfg.get(...)` read the v1 scanner can
+trace; diffed against `tools/quality_audit/baseline.json`'s
+`accepted_finding_ids` — **all 120 are already reviewed and dated** (the
+documented intermediate-variable limitation, e.g. `strat_cfg = cfg.get(...)
+or {}`). Zero fields are genuinely unreviewed dead config.
+
+**Category counts:** 25 data-checked, 27 source-verified, 7 inert (read,
+but structurally unreachable given a sibling gate), 31 checked with a real,
+named boundary, 55 structural/infra (each with a field-specific reason, not
+a bucket).
+
+**The sharpest new finding: the longshot mechanism is dead.**
+`strategy.longshot_price_threshold` (0.05): `is_longshot = price <= 0.05 or
+price >= 0.95` in `services/strategy_engine.py` — checked against raw yes
+price. But `unit_cost = price if side=="yes" else 1-price`, so every price
+in that zone maps to `unit_cost <= 0.05` on whichever side is cheap, and
+`min_unit_cost: 0.5` rejects it unconditionally (`strategy_engine.py`'s gate
+has no longshot exception). `longshot_entry_threshold_bonus` (0.05) is
+therefore never applied, and `longshot_close_window_sec` (300) never
+matters. Not caught by the scanner — all three fields *are* read; the
+scanner can't see cross-field reachability, only presence of a read.
+
+**Also resolved from an earlier hedge:** `event_lifecycle.*`
+(`tournament_min_siblings`/`tournament_pretail_days`/
+`pre_tail_volume_weight`/`post_tail_volume_weight`) was flagged in §6 as
+"plausibly relevant to `position_netting`'s grouping, not verified." Checked
+directly: it feeds only `services/market_events/event_lifecycle.py` and
+`services/market_watch/discovery_cache.py` — a discovery/catalog concern.
+`position_netting.find_groups()` uses Kalshi's own `event.mutually_exclusive`
+flag directly, an entirely separate mechanism. The hypothesized connection
+does not exist.
+
+**Full table (source: `full_field_table.py`, one generator, two outputs —
+this table and the artifact's are the same data):**
+
+| Field | Value | Status | Note |
+|---|---|---|---|
+| `mode` | paper | Structural / infra | Safety mode switch, not a tuning value — protected by CLAUDE.md. |
+| `kalshi.base_url` | … | Structural / infra | Fixed API endpoint. |
+| `kalshi.markets_watchlist` | [KXBTC15M] | Source-verified | Deliberate 2026-08-16 override of live_markets_only for crypto — the actual mechanism behind the whole book's profit source. |
+| `kalshi.markets_watchlist_mode` | merge | Structural / infra | Governs how the pin combines with discovered scope. |
+| `kalshi.watchlist_size` | 150 | Structural / infra | Discovery cap, not a P&L lever directly. |
+| `kalshi.max_children_per_parent` | 5 | Structural / infra | Catalog-expansion cap. |
+| `kalshi.min_volume_24h` | 10000 | Structural / infra | Discovery volume floor. |
+| `kalshi.min_volume_24h_by_series.KXBTC15M` | 0 | Source-verified | Part of the same crypto-override mechanism as markets_watchlist — a pure price-crossing market's volume_24h stays structurally 0 while open. |
+| `kalshi.categories` | [Sports] | Data-checked | The reason the real book is Sports + explicit-watchlist-crypto only — foundational to the crypto-vs-sports finding. |
+| `kalshi.live_markets_only` | true | Source-verified | Discovery-stage gate — a different pipeline stage from strategy.live_markets_only, not a conflict. |
+| `kalshi.poll_interval_sec` | 6 | Structural / infra | Data-plane cadence — this session's other workstream. |
+| `kalshi.safety_net_interval_sec` | 30 | Structural / infra | Data-plane, P8 Task 39 — already shipped and explained this session. |
+| `kalshi.request_timeout_sec` | 10 | Structural / infra | Infra. |
+| `kalshi.trade_stream_exchange_wide` | true | Structural / infra | Data-plane — foundational to exchange-wide whale detection. |
+| `kalshi.market_lifecycle_stream_enabled` | true | Structural / infra | Data-plane — the settlement-resolver work this session depends on this being true. |
+| `kalshi.top_series_per_category` | 30 | Structural / infra | Discovery cap. |
+| `realtime_data_plane.reader_gate_enabled` | false | Source-verified | This session's own initiative — fully covered elsewhere. |
+| `realtime_data_plane.two_consumer_mode` | true | Source-verified | This session's own initiative — fully covered elsewhere, currently soaking. |
+| `whale_signal.signal_frequency_sec` | 12 | Checked, boundary | Simulator-only config — confirmed none of the 257 real trades came from it. |
+| `whale_signal.whale_size_range` | [5000, 50000] | Checked, boundary | Simulator-only. |
+| `whale_signal.bias` | random | Checked, boundary | Simulator-only. |
+| `whale_signal.live_markets_only` | false | Source-verified | Feeds whale_simulator.py only — documented as "a stronger, upstream version of strategy.live_markets_only". |
+| `strategy.name` | follow_the_whale | Structural / infra | Identifier. |
+| `strategy.entry_threshold` | 0.55 | Data-checked | entry_confidence clusters 202/256 trades in 0.50–0.60, right above this — narrow observed range. |
+| `strategy.max_position_pct` | 0.05 | Data-checked | Position-sizing check: no clean pattern by size quartile — checked, inconclusive. |
+| `strategy.cooldown_sec` | 60 | Checked, boundary | Re-entry throttle — no clean signal available this pass on whether it binds. |
+| `strategy.close_window_sec` | 2764800 | Checked, boundary | Structural window bound, not independently checked against outcome. |
+| `strategy.special_market_min_seconds_to_close` | 120 | Checked, boundary | Advisory-reachable gate field; no rejected-candidate data pulled this session. |
+| `strategy.max_open_positions_per_series` | 0 (unlimited) | Data-checked | Recommended → 2–3 — the actual root cause of position_netting's losses. |
+| `strategy.kelly_fraction_of_cap` | 0.3 | Data-checked | Position-sizing check: no clean pattern — checked, inconclusive. |
+| `strategy.min_unit_cost` | 0.5 | Data-checked | Extensively checked (unit-cost banding) — also the reason the longshot mechanism below is dead. |
+| `strategy.max_unit_cost` | 0.9 | Data-checked | Recommended → 0.85 — the only net-negative unit-cost slice sits exactly at this ceiling. |
+| `strategy.min_whale_winrate_pct` | 40 | Checked, boundary | Advisory-reachable gate; not independently checked against real rejected-candidate data this pass. |
+| `strategy.min_resolved_for_whale_filter` | 20 | Checked, boundary | Threshold for when the above gate activates — not independently checked. |
+| `strategy.live_markets_only` | false | Source-verified | The real strategy-level entry gate — distinct pipeline stage from kalshi's and whale_signal's same-named flags. |
+| `strategy.excluded_series` | [] | Data-checked | Recommended → + KXATPMATCH — already inside advisory_engine's own reach. |
+| `strategy.take_profit_pct` | null | Checked, boundary | Disabled; advisory-reachable if enabled — no live trades to check it against. |
+| `strategy.stop_loss_pct` | null | Checked, boundary | Disabled; advisory-reachable if enabled. |
+| `strategy.exit_on_sentiment_reversal` | false | Inert (sibling gate) | Disabled — the two sentiment fields below are configured but never exercised while this is off. |
+| `strategy.longshot_close_window_sec` | 300 | Inert (sibling gate) | Part of the longshot mechanism — see longshot_price_threshold. |
+| `strategy.exit_sentiment_min_signals` | 15 | Inert (sibling gate) | Configured, but exit_on_sentiment_reversal is false — currently never exercised. |
+| `strategy.exit_sentiment_lean_pct` | 90 | Inert (sibling gate) | Same — inert while the parent flag is off. |
+| `strategy.auto_exit_enabled` | true | Data-checked | auto_exit closes: 37 trades, 97.3% win, +$5,475.47 — the book's single strongest performer by close type. |
+| `strategy.auto_exit_threshold` | 0.85 | Data-checked | Drives the result above; not independently decomposed. |
+| `strategy.auto_exit_pnl_weight` | 0.85 | Checked, boundary | Internal weighting of a strong aggregate result — per-trigger attribution isn't in trade_history rows. |
+| `strategy.auto_exit_sentiment_weight` | 1.5 | Checked, boundary | Same. |
+| `strategy.auto_exit_staleness_weight` | 0.5 | Checked, boundary | Same. |
+| `strategy.auto_exit_analyst_weight` | 0.5 | Checked, boundary | Same. |
+| `strategy.auto_exit_gain_reference_pct` | 0.15 | Checked, boundary | Same. |
+| `strategy.auto_exit_loss_reference_pct` | 0.85 | Checked, boundary | Same. |
+| `strategy.auto_exit_stale_after_sec` | 7200 | Checked, boundary | Same. |
+| `strategy.auto_exit_normal_volatility` | 0.002 | Checked, boundary | Same. |
+| `strategy.auto_exit_volatility_lookback_sec` | 1800 | Checked, boundary | Same. |
+| `strategy.auto_exit_series_track_record_weight` | 0 | Source-verified | The only auto-exit weight at literal zero while every sibling is nonzero — an unused weight slot, same shape as analyst_factor/block_trade_factor elsewhere. |
+| `strategy.longshot_price_threshold` | 0.05 | Source-verified | Dead: is_longshot fires on raw price ≤0.05 or ≥0.95, but every price there maps to unit_cost ≤0.05 on whichever side is cheap — min_unit_cost (0.5) rejects it unconditionally, independent of any longshot bonus. |
+| `strategy.longshot_entry_threshold_bonus` | 0.05 | Inert (sibling gate) | Never applied — the longshot zone it modifies is unreachable (see longshot_price_threshold). |
+| `strategy.use_limit_orders` | false | Inert (sibling gate) | Disabled — limit_order_timeout_sec below is currently inert as a result. |
+| `strategy.limit_order_timeout_sec` | 60 | Inert (sibling gate) | Inert while use_limit_orders is false. |
+| `strategy.min_seconds_to_close` | 90 | Checked, boundary | Structural timing gate, not independently checked. |
+| `strategy.exit_min_seconds_to_close` | null | Checked, boundary | Same. |
+| `strategy.price_staleness_corroborate_sec` | 120.0 | Source-verified | This session's own realtime work (P8 Task 35) — already shipped and understood, not a trade-outcome question. |
+| `risk.starting_bankroll` | 10000 | Structural / infra | Paper-mode baseline. |
+| `risk.max_daily_loss_pct` | 0.85 | Source-verified | Already named in CLAUDE.md itself as not protective — restated, not re-derived. |
+| `risk.kill_switch_enabled` | true | Structural / infra | Safety feature — on is correct, not a tuning question. |
+| `risk.max_total_exposure_pct` | null (unset) | Data-checked | Recommended → 0.25–0.35 — the second concentration cap sitting off alongside max_open_positions_per_series. |
+| `kalshi_account.trading_enabled` | false | Structural / infra | Safety invariant — never a tuning lever. |
+| `whale_watcher_kalshi.min_contracts` | 10000 | Data-checked | The global floor — crypto's separate 2,500 floor is what actually explains the crypto/sports split. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXBTC15M` | 2500 | Data-checked | Live and reachable — the crypto profit driver. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXBTCD` | 2500 | Data-checked | Live and reachable, same series family. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXETH15M` | 2500 | Source-verified | Unreachable: ETH is in neither kalshi.categories nor kalshi.markets_watchlist — never discovered, confirmed zero occurrences in 257 real trades. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXETHD` | 2500 | Source-verified | Same — unreachable dead config given current discovery scope. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXTRUMPSAY` | 500 | Source-verified | Unreachable — not in categories or watchlist. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXTRUMPMENTION` | 500 | Source-verified | Unreachable, same reason. |
+| `whale_watcher_kalshi.min_contracts_by_series.KXMAMDANIMENTION` | 500 | Source-verified | Unreachable, same reason. |
+| `whale_confidence_weights.depth_factor` | 0.0404 | Data-checked | r=−0.24 at n=88,828 — strongest effect of any factor, never checked before, formula's assumption runs backward. |
+| `whale_confidence_weights.unusualness_factor` | 0.0404 | Data-checked | r=−0.18 — confirms the 2026-08-10 finding at 10× the sample. |
+| `whale_confidence_weights.proximity_factor` | 0.0404 | Data-checked | r=−0.05, weak either way, correctly weighted low; only 21,843/88,828 rows populated. |
+| `whale_confidence_weights.context_factor` | 0.2121 | Data-checked | r=+0.23 — second-heaviest weight, matching signal strength. |
+| `whale_confidence_weights.agreement_factor` | 0.1818 | Data-checked | r=+0.13 — contradicts the 2026-08-10 finding's sign; flagged, not resolved. |
+| `whale_confidence_weights.cluster_factor` | 0.1717 | Data-checked | r=+0.17 — aligned. |
+| `whale_confidence_weights.trend_factor` | 0.3131 | Data-checked | r=+0.24 — heaviest weight, strongest positive signal, well aligned. |
+| `whale_confidence_weights.analyst_factor` | 0.0 | Data-checked | 0 real values across 88,828 rows — weight of 0 already correct. |
+| `whale_confidence_weights.block_trade_factor` | 0.0 | Source-verified | Doesn't appear in the factor breakdown at all — a distinct, boolean-shaped signal (Kalshi's is_block_trade flag) rather than a weighted continuous factor. |
+| `advisory.enabled` | true | Source-verified | Meta-control for the advisory_engine coverage gap (§7). |
+| `advisory.min_resolved_trades_per_variant` | 10 | Checked, boundary | Governs a system that's made zero real auto-applies to evaluate. |
+| `advisory.auto_apply_enabled` | false | Source-verified | Off by design — matches the standing surface-don't-auto-apply rule. Correct, not a gap. |
+| `advisory.auto_apply_min_confidence` | higher | Checked, boundary | Inert while auto_apply is off. |
+| `advisory.auto_apply_min_n` | 100 | Checked, boundary | Inert while auto_apply is off. |
+| `advisory.auto_apply_cooldown_sec` | 86400 | Checked, boundary | Inert while auto_apply is off. |
+| `confidence_calibration.enabled` | true | Source-verified | The mechanism that produced whale_confidence_weights' current live values (the 2026-08-10 finding) — directly relevant to the §10 recommendation. |
+| `confidence_calibration.min_resolved_signals` | 50 | Source-verified | 88,828 real signals now exist — 1,776× this floor. Re-calibration has had more than enough data for a long time; nothing has re-triggered it. |
+| `confidence_calibration.auto_apply_min_resolved_signals` | 50 | Checked, boundary | Inert while auto_apply is off. |
+| `confidence_calibration.snapshot_interval_sec` | 21600 | Structural / infra | Cadence. |
+| `confidence_calibration.auto_apply_enabled` | false | Source-verified | Off by design — correct, not a gap. |
+| `confidence_calibration.auto_apply_cooldown_sec` | 86400 | Checked, boundary | Inert while auto_apply is off. |
+| `market_analyst.enabled` | true | Checked, boundary | The LLM full-spectrum/per-market/per-series advisor — distinct from advisory_engine; no suggestion-acceptance data pulled this session. |
+| `market_analyst.model` | claude-sonnet-5 | Structural / infra | Model selection. |
+| `market_analyst.reanalyze_cooldown_sec` | 1800 | Structural / infra | Throttle. |
+| `position_netting.enabled` | true | Data-checked | 34 closed trades, 11 wins, −$2,693.99 — extensively analyzed (§3). |
+| `position_netting.min_dwell_sec` | 300 | Checked, boundary | Not independently checked — analysis focused on the materiality bar floor below. |
+| `position_netting.min_edge_improvement_usd` | 50 | Data-checked | Recommended → $10–15 — code default is $1; all 34 observed closes were locked_loss, none a proactive variable-stage trim. |
+| `position_netting.normal_volatility` | 0.02 | Checked, boundary | Scales the materiality bar above min_edge_usd — no live volatility data joined to trade history this pass. |
+| `position_netting.volatility_lookback_sec` | 1800 | Checked, boundary | Same. |
+| `index_feed.index_ids` | [BRTI, ETHUSD_RTI] | Structural / infra | A separate index-price feed, structurally unrelated to whale-follow trade outcomes. |
+| `index_feed.underlying_tickers` | [] | Structural / infra | Same feed. |
+| `settlement_edge_entry.enabled` | false | Structural / infra | Engine off — all 5 fields below correctly inert; no live trades to check any of them against. |
+| `settlement_edge_entry.min_observations_known` | 45 | Structural / infra | Inert while disabled. |
+| `settlement_edge_entry.min_probability` | 0.95 | Structural / infra | Inert while disabled. |
+| `settlement_edge_entry.min_edge` | 0.05 | Structural / infra | Inert while disabled. |
+| `settlement_edge_entry.max_position_pct` | 0.02 | Structural / infra | Inert while disabled. |
+| `settlement_edge_entry.volatility_lookback_sec` | 3600 | Structural / infra | Inert while disabled. |
+| `series_watcher.enabled` | true | Structural / infra | Passive order-book/history collection — a different concern from whale-follow trading, not trade-outcome-tunable. |
+| `series_watcher.series` | [8 series] | Structural / infra | Watches some series (e.g. KXETH15M, KXNBAGAME) that never produce a whale-follow trade — legitimate: this is data-collection breadth, not a trading gate. |
+| `series_watcher.book_snapshot_interval_sec` | 5 | Structural / infra | Collection cadence. |
+| `series_watcher.retention_hours` | 168 | Structural / infra | Retention window. |
+| `series_evaluator.enabled` | false | Structural / infra | Engine off — all 7 fields below correctly inert. |
+| `series_evaluator.min_observation_sec` | 3600 | Structural / infra | Inert while disabled. |
+| `series_evaluator.min_trades_observed` | 1000 | Structural / infra | Inert while disabled. |
+| `series_evaluator.max_observation_sec` | 21600 | Structural / infra | Inert while disabled. |
+| `series_evaluator.min_qualify_rate` | 0.05 | Structural / infra | Inert while disabled. |
+| `series_evaluator.backoff_base_sec` | 3600 | Structural / infra | Inert while disabled. |
+| `series_evaluator.backoff_multiplier` | 2 | Structural / infra | Inert while disabled. |
+| `series_evaluator.backoff_max_sec` | 86400 | Structural / infra | Inert while disabled. |
+| `logging.level` | INFO | Structural / infra | Infra. |
+| `backup.enabled` | true | Structural / infra | Infra. |
+| `backup.interval_sec` | 21600 | Structural / infra | Infra. |
+| `backup.retention_count` | 14 | Structural / infra | Infra. |
+| `alerting.enabled` | true | Structural / infra | Infra. |
+| `alerting.webhook_url` | null (unset) | Source-verified | No external alert destination is wired — alerts fire and are visible in-app only, nobody is notified externally. |
+| `alerting.crash_auto_resolve_after_sec` | 1800 | Structural / infra | Infra. |
+| `observability.enabled` | true | Structural / infra | Infra — this session's own primary battlefield, covered extensively elsewhere. |
+| `observability.sample_interval_sec` | 60 | Structural / infra | Infra. |
+| `observability.retention_hours` | 336 | Structural / infra | Infra. |
+| `research.enabled` | false | Structural / infra | Off until manually reviewed (CLAUDE.md's own note) — the 2 fields below correctly inert. |
+| `research.min_new_resolved_signals` | 100 | Structural / infra | Inert while disabled. |
+| `research.min_new_closed_trades` | 50 | Structural / infra | Inert while disabled. |
+| `event_lifecycle.tournament_min_siblings` | 4 | Source-verified | Feeds market_events/event_lifecycle.py and discovery_cache.py only — NOT position_netting or mutual_exclusivity. The connection hypothesized earlier this session doesn't exist. |
+| `event_lifecycle.tournament_pretail_days` | 5.0 | Source-verified | Same feed, discovery/catalog concern only. |
+| `event_lifecycle.pre_tail_volume_weight` | 0.4 | Source-verified | Same. |
+| `event_lifecycle.post_tail_volume_weight` | 0.2 | Source-verified | Same. |
+| `event_schedule.enabled` | true | Structural / infra | Infra — event-schedule resolution. |
+| `event_schedule.pre_event_hours` | 6.0 | Structural / infra | Infra. |
+| `event_schedule.web_search_enabled` | true | Structural / infra | Infra. |
+| `event_schedule.max_resolutions_per_tick` | 5 | Structural / infra | Infra. |
+| `strategy_overrides.by_category.Sports.stop_loss_pct` | null | Data-checked | Confirmed no-op — matches the global default; the mechanism a Sports-specific recommendation would route through. |
