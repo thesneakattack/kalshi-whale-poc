@@ -28,7 +28,8 @@ def _payload(**over):
     sched = {"settlement_resolver": {"enqueued_total": 100, "resolved_total": 90,
                                      "pending": 10, "dropped_total": 0}}
     sched.update(over.pop("schedulers", {}))
-    faults = {"by_component": {}, "most_frequent": []}
+    faults = {"by_component": {"capture_writer": 0, "exit_engine": 0},
+              "most_frequent": []}
     faults.update(over.pop("faults_last_24h", {}))
     return {"ingest": {"queue_health": qh}, "schedulers": sched,
             "faults_last_24h": faults, **over}
@@ -97,11 +98,22 @@ def test_ingest_drops_fail_on_lifetime_drops_even_when_window_is_clean():
     assert _by_id(sa.run_checks(p))["ingest_no_drops"].status == sa.FAIL
 
 
-def test_queue_headroom_fails_above_the_pressure_threshold():
-    p = _payload(queue={"high_water": 14755, "capacity": 20000})
+def test_queue_headroom_fails_on_current_depth_above_threshold():
+    p = _payload(queue={"depth": 14755, "capacity": 20000})
     c = _by_id(sa.run_checks(p))["queue_headroom"]
     assert c.status == sa.FAIL
     assert c.measured["fraction"] == pytest.approx(0.7378)  # tool rounds to 4dp
+
+
+def test_queue_headroom_does_not_latch_on_a_historical_high_water():
+    """high_water is monotonic and never reset. Gating on it would pin the
+    check FAIL forever after one spike, and a permanently red check gets
+    ignored or baselined - the outcome the tool is meant to prevent."""
+    p = _payload(queue={"depth": 0, "high_water": 14755, "capacity": 20000})
+    c = _by_id(sa.run_checks(p))["queue_headroom"]
+    assert c.status == sa.PASS
+    assert c.measured["high_water"] == 14755   # still reported, just not gated
+    assert "lifetime peak" in c.detail
 
 
 def test_resolver_accounting_fails_when_totals_do_not_balance():
@@ -140,7 +152,8 @@ def test_every_failing_analysis_check_states_what_it_invalidates():
         schedulers={"settlement_resolver": {
             "enqueued_total": 100, "resolved_total": 30,
             "pending": 6, "dropped_total": 64}},
-        faults_last_24h={"by_component": {"capture_writer": 220},
+        faults_last_24h={"by_component": {"capture_writer": 220,
+                                          "exit_engine": 175},
                          "most_frequent": [
                              {"operation": "stale_price_uncorroborated",
                               "count": 3}]})
@@ -149,6 +162,32 @@ def test_every_failing_analysis_check_states_what_it_invalidates():
     assert len(failing) == 4
     for c in failing:
         assert c.invalidates, f"{c.id} fails without naming the impact"
+
+
+def test_exit_engine_faults_counted_from_complete_data_not_the_top_n_list():
+    """Regression: the check summed `most_frequent`, a truncated top-N
+    list, and called it a total - reporting 1-3 while the component had
+    175 faults. It must gate on `by_component`, which is complete."""
+    p = _payload(faults_last_24h={
+        "by_component": {"capture_writer": 0, "exit_engine": 175},
+        "most_frequent": [{"operation": "stale_price_uncorroborated",
+                           "count": 1}]})
+    c = _by_id(sa.run_checks(p))["exit_engine_faults"]
+    assert c.status == sa.FAIL
+    assert c.measured["exit_engine_faults_24h"] == 175
+    assert "175" in c.detail
+
+
+def test_incomplete_per_operation_figure_is_labelled_a_floor():
+    """The API exposes no complete per-operation breakdown, so the
+    stale-price number is reported as a floor and never gated on."""
+    p = _payload(faults_last_24h={
+        "by_component": {"capture_writer": 0, "exit_engine": 175},
+        "most_frequent": [{"operation": "stale_price_uncorroborated",
+                           "count": 1}]})
+    c = _by_id(sa.run_checks(p))["exit_engine_faults"]
+    assert c.measured["stale_price_uncorroborated_floor"] == 1
+    assert "floor" in c.detail
 
 
 def test_capture_writer_faults_invalidate_the_raw_archive():
@@ -176,7 +215,7 @@ def test_data_layer_checks_never_claim_to_invalidate_an_analysis():
 
 def test_main_reads_a_saved_payload_and_exits_nonzero_on_failure(tmp_path, capsys):
     f = tmp_path / "p.json"
-    f.write_text(json.dumps(_payload(queue={"high_water": 19999,
+    f.write_text(json.dumps(_payload(queue={"depth": 19999,
                                             "capacity": 20000})))
     assert sa.main(["--from-file", str(f)]) == 1
     assert "VERDICT: FAIL" in capsys.readouterr().out
@@ -196,3 +235,27 @@ def test_json_mode_emits_parseable_output_with_every_check(tmp_path, capsys):
     d = json.loads(capsys.readouterr().out)
     assert d["verdict"] == sa.PASS
     assert len(d["checks"]) == 9
+
+
+# --- fetch hardening ------------------------------------------------------
+
+def test_unreachable_api_reports_unknown_not_a_traceback(monkeypatch, capsys):
+    """A tool that reports health must never turn a degraded app into a
+    stack trace. /api/health/pipeline was measured at 41.9s on a loaded
+    app - the case this tool is most needed for."""
+    def boom(*a, **k):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(sa, "fetch_pipeline", boom)
+    assert sa.main([]) == 1
+    out = capsys.readouterr().out
+    assert "VERDICT: UNKNOWN" in out and "unreachable" in out
+
+
+def test_default_timeout_exceeds_the_measured_slow_response():
+    assert sa.DEFAULT_TIMEOUT_SEC > 41.9
+
+
+def test_tls_verification_kept_for_a_non_local_host():
+    assert sa._is_local("https://kalshi-whale-poc.ddev.site:8443")
+    assert sa._is_local("http://localhost:8000")
+    assert not sa._is_local("https://example.com")

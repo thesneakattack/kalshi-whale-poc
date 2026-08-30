@@ -40,11 +40,22 @@ import argparse
 import json
 import ssl
 import sys
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, asdict
 
 DEFAULT_BASE_URL = "https://kalshi-whale-poc.ddev.site:8443"
 PIPELINE_PATH = "/api/health/pipeline"
+
+# /api/health/pipeline is a diagnostic endpoint that walks every store and
+# scheduler, and it gets slower exactly when the app is unhealthy - the
+# case this tool is for. Measured at 41.9s on a loaded app (2026-08-30)
+# against an earlier 15s default that turned a degraded app into an
+# unhandled traceback. Generous by design; override with --timeout.
+DEFAULT_TIMEOUT_SEC = 120.0
+
+# Hosts whose certificates are local development artifacts.
+LOCAL_HOST_MARKERS = (".ddev.site", "localhost", "127.0.0.1")
 
 # Queue occupancy above this fraction of capacity is reported as pressure.
 # Not a drop - a drop is already its own check - but the headroom that
@@ -67,11 +78,25 @@ class Check:
     invalidates: str | None = None
 
 
-def fetch_pipeline(base_url: str, timeout: float = 15.0) -> dict:
-    """Read the app through its real API - a tool never imports the app."""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE  # local ddev cert
+def _is_local(base_url: str) -> bool:
+    host = urllib.parse.urlsplit(base_url).hostname or ""
+    return any(m in host for m in LOCAL_HOST_MARKERS)
+
+
+def fetch_pipeline(base_url: str, timeout: float = DEFAULT_TIMEOUT_SEC,
+                   insecure: bool = False) -> dict:
+    """Read the app through its real API - a tool never imports the app.
+
+    TLS verification is dropped only for a local development host (whose
+    cert is self-signed by ddev) or when explicitly forced. Pointing this
+    at a real host keeps verification on, rather than silently trusting
+    anything that answers.
+    """
+    ctx = None
+    if insecure or _is_local(base_url):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(base_url.rstrip("/") + PIPELINE_PATH)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         return json.loads(r.read().decode())
@@ -161,17 +186,29 @@ def check_staleness_metric_trustworthy(qh: dict) -> Check:
 
 
 def check_queue_headroom(qh: dict) -> Check:
+    """Gate on CURRENT occupancy; report the lifetime peak as context.
+
+    `high_water` is monotonic and never reset, so gating on it latches the
+    check FAIL forever after a single historical spike - a permanently red
+    check is one that gets ignored or baselined, which is the outcome this
+    file's own conservation check is written to avoid. The peak is real
+    information and stays in the output; it is just not a statement about
+    health now.
+    """
     q = qh.get("queue") or {}
-    hw, cap = q.get("high_water"), q.get("capacity")
-    if not cap:
-        return Check("queue_headroom", DATA_PLANE, UNKNOWN, "capacity absent")
-    frac = hw / cap
+    depth, hw, cap = q.get("depth"), q.get("high_water"), q.get("capacity")
+    if not cap or depth is None:
+        return Check("queue_headroom", DATA_PLANE, UNKNOWN,
+                     "capacity or depth absent")
+    frac = depth / cap
     ok = frac < QUEUE_PRESSURE_FRACTION
+    peak = f", lifetime peak {hw}/{cap} = {hw/cap*100:.1f}%" if hw else ""
     return Check(
         "queue_headroom", DATA_PLANE, PASS if ok else FAIL,
-        f"high_water {hw}/{cap} = {frac*100:.1f}% of capacity "
-        f"(pressure threshold {QUEUE_PRESSURE_FRACTION*100:.0f}%)",
-        {"high_water": hw, "capacity": cap, "fraction": round(frac, 4)},
+        f"current depth {depth}/{cap} = {frac*100:.1f}% of capacity "
+        f"(pressure threshold {QUEUE_PRESSURE_FRACTION*100:.0f}%){peak}",
+        {"depth": depth, "high_water": hw, "capacity": cap,
+         "fraction": round(frac, 4)},
     )
 
 
@@ -254,19 +291,42 @@ def check_capture_writer_health(faults: dict) -> Check:
     )
 
 
-def check_exit_price_corroboration(faults: dict) -> Check:
+def check_exit_engine_faults(faults: dict) -> Check:
+    """Gate on the COMPLETE per-component fault count.
+
+    `most_frequent` is a truncated top-N list, not a total. Summing the
+    matching entries out of it and calling the result a count reported 3 on
+    one sample and 1 on the next while the component had ~175 faults - a
+    number that swings on which operations happen to make the top N, wrong
+    by two orders of magnitude. That is precisely the "reports health it
+    did not measure" failure this tool exists to catch, so the gate reads
+    `by_component`, which is complete.
+
+    The API exposes no complete per-OPERATION breakdown, so the
+    stale-price figure below is reported as an explicit floor rather than
+    a total. An incomplete number is labeled, never silently gated on.
+    """
+    by_comp = (faults or {}).get("by_component") or {}
+    if "exit_engine" not in by_comp:
+        return Check("exit_engine_faults", ANALYSIS_READINESS, UNKNOWN,
+                     "faults_last_24h.by_component absent - cannot count")
+    n = by_comp["exit_engine"]
     freq = (faults or {}).get("most_frequent") or []
-    n = sum(f.get("count", 0) for f in freq
-            if f.get("operation") == "stale_price_uncorroborated")
+    stale_floor = sum(f.get("count", 0) for f in freq
+                      if f.get("operation") == "stale_price_uncorroborated")
+    floor_note = (f"; at least {stale_floor} of them are "
+                  "stale_price_uncorroborated (floor - the API exposes no "
+                  "complete per-operation breakdown)") if stale_floor else ""
     return Check(
-        "exit_price_corroboration", ANALYSIS_READINESS,
+        "exit_engine_faults", ANALYSIS_READINESS,
         PASS if n == 0 else FAIL,
-        f"{n} exit checks acted on an unstamped, uncorroborated price",
-        {"stale_price_exits": n},
+        f"{n} exit_engine faults in the last 24h{floor_note}",
+        {"exit_engine_faults_24h": n,
+         "stale_price_uncorroborated_floor": stale_floor},
         invalidates=(
             "Exit-reason attribution and realized P&L per exit type. An "
-            "exit taken on a stale price is recorded as a decision, but the "
-            "price that justified it was never confirmed."
+            "exit taken on a stale or uncorroborated price is recorded as a "
+            "decision, but the price that justified it was never confirmed."
         ),
     )
 
@@ -285,7 +345,7 @@ def run_checks(payload: dict) -> list[Check]:
         check_settlement_completeness(sched),
         check_price_completeness(qh),
         check_capture_writer_health(faults),
-        check_exit_price_corroboration(faults),
+        check_exit_engine_faults(faults),
     ]
 
 
@@ -323,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.soak_analyzer")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SEC,
+                   help=f"seconds to wait for the API (default {DEFAULT_TIMEOUT_SEC:g})")
+    p.add_argument("--insecure", action="store_true",
+                   help="skip TLS verification against a non-local host")
     p.add_argument("--from-file", help="analyze a saved pipeline payload")
     a = p.parse_args(argv)
 
@@ -330,7 +394,20 @@ def main(argv: list[str] | None = None) -> int:
         with open(a.from_file) as fh:
             payload = json.load(fh)
     else:
-        payload = fetch_pipeline(a.base_url)
+        try:
+            payload = fetch_pipeline(a.base_url, timeout=a.timeout,
+                                     insecure=a.insecure)
+        except Exception as exc:
+            # A tool that reports health must never report a traceback as
+            # an absence of problems. Unreachable is UNKNOWN, and UNKNOWN
+            # exits non-zero.
+            checks = [Check("api_reachable", DATA_PLANE, UNKNOWN,
+                            f"{a.base_url}{PIPELINE_PATH} unreachable: "
+                            f"{type(exc).__name__}: {exc}")]
+            print(json.dumps({"verdict": UNKNOWN,
+                              "checks": [asdict(c) for c in checks]}, indent=2)
+                  if a.json else render(checks))
+            return 1
 
     checks = run_checks(payload)
     if a.json:
