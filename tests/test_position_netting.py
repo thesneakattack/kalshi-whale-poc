@@ -1,3 +1,5 @@
+import re
+import sqlite3
 import time
 
 from services import market_history as mh_module
@@ -312,3 +314,113 @@ def test_materiality_bar_still_scales_up_on_a_genuine_noisy_reading(tmp_path, mo
     rec = describe_groups(broker, market_titles, event_titles, latest_prices, _net_cfg(), now=now)[0]["recommendation"]
     assert rec["materiality_bar_usd"] == round(10.0 * min(4.0, vol_b / 0.02), 2)
     assert rec["materiality_bar_usd"] > 10.0
+
+
+# --- decision inputs as columns (issue #213, 2026-08-30) ------------------
+# The bar, the improvement, and the vol_ratio that scaled the bar used to
+# survive only inside the reason sentence; recovering the bar for the #206
+# blast-radius analysis meant regex-parsing `bar \$([0-9.]+)` out of
+# trades.reason. Prose is for the reader; columns are for the analysis
+# (docs/data-layer-analysis-layer-contract.md). The sentence stays exactly
+# as it was - the columns supplement it, and MUST agree with it.
+
+_NETTING_PROSE = re.compile(
+    r"estimated \$([0-9.]+) expected-value improvement over holding \(bar \$([0-9.]+)\)"
+)
+
+
+def test_describe_groups_surfaces_the_vol_ratio_that_scaled_the_bar(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A",), now)
+    _wiggly_history("B", now)
+    vol_b = mh_module.volatility("B", 1800, as_of=now)
+
+    rec = describe_groups(broker, market_titles, event_titles, latest_prices, _net_cfg(), now=now)[0]["recommendation"]
+    assert rec["vol_ratio"] == max(0.25, min(4.0, vol_b / 0.02))
+    assert rec["vol_ratio"] > 1.0
+    # Surfacing the ratio changed nothing about the bar itself.
+    assert rec["materiality_bar_usd"] == round(10.0 * rec["vol_ratio"], 2)
+
+
+def test_vol_ratio_is_exactly_one_whenever_the_bar_is_unscaled(tmp_path, monkeypatch):
+    # Both unscaled paths - no baseline configured, and a baseline with no
+    # usable reading (every member a real 0.0, PR #220's `v > 0` filter) -
+    # report the ratio they actually applied: 1.0, never None and never
+    # the 0.25 floor a zero reading used to pin it to.
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A", "B"), now)
+
+    no_reading = describe_groups(broker, market_titles, event_titles, latest_prices, _net_cfg(), now=now)
+    assert no_reading[0]["recommendation"]["vol_ratio"] == 1.0
+    assert no_reading[0]["recommendation"]["materiality_bar_usd"] == 10.0
+
+    no_baseline = describe_groups(
+        broker, market_titles, event_titles, latest_prices, _net_cfg(normal_volatility=None), now=now,
+    )
+    assert no_baseline[0]["recommendation"]["vol_ratio"] == 1.0
+    assert no_baseline[0]["recommendation"]["materiality_bar_usd"] == 10.0
+
+
+def test_review_persists_netting_decision_inputs_that_agree_with_the_reason_prose(tmp_path, monkeypatch):
+    # The agreement test the issue asks for: the columns on the CLOSE row a
+    # netting action writes must equal the numbers still embedded in that
+    # same row's reason string. A mismatch would mean the column is
+    # computed at a different point than the sentence - worse than the
+    # regex it replaces.
+    broker = _broker(tmp_path, monkeypatch)
+    market_titles, event_titles, latest_prices = _variable_pair(broker)
+    now = time.time()
+    _flat_history(("A",), now)
+    _wiggly_history("B", now)
+    vol_b = mh_module.volatility("B", 1800, as_of=now)
+    assert vol_b > 0.02
+    cfg = _net_cfg(min_edge_improvement_usd=1.0)  # bar <= $4.00 - the trim clears it
+
+    decisions = review(broker, market_titles, event_titles, latest_prices, cfg, now=now)
+    assert [d["ticker"] for d in decisions] == ["B"]  # trim_worst_leg closes the weak leg only
+
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {r["ticker"]: r for r in conn.execute(
+            "SELECT ticker, reason, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+            "FROM trades WHERE reason LIKE 'closed: position netting%'"
+        )}
+    assert set(rows) == {"B"}
+    row = rows["B"]
+    m = _NETTING_PROSE.search(row["reason"])
+    assert m, row["reason"]  # the sentence is unchanged - the columns supplement it
+    assert row["netting_improvement_usd"] == float(m.group(1))
+    assert row["netting_bar_usd"] == float(m.group(2))
+    assert row["netting_vol_ratio"] == max(0.25, min(4.0, vol_b / 0.02))
+    assert row["netting_bar_usd"] == round(1.0 * row["netting_vol_ratio"], 2)
+    # The decision dict and the in-memory Trade carry the same three values.
+    trade = decisions[0]["trade"]
+    assert trade["netting_improvement_usd"] == row["netting_improvement_usd"]
+    assert trade["netting_bar_usd"] == row["netting_bar_usd"]
+    assert trade["netting_vol_ratio"] == row["netting_vol_ratio"]
+
+
+def test_entry_rows_and_locked_loss_closes_leave_the_netting_inputs_null(tmp_path, monkeypatch):
+    # NULL means "no bar was computed for this row" - true of every entry
+    # and of a locked_loss close_all (the loss is fixed regardless of
+    # timing, so no expected-value comparison or bar is involved). Never
+    # 0.0, which would read as a real bar of zero dollars.
+    broker = _broker(tmp_path, monkeypatch)
+    broker.open_position("A", "yes", 100, 0.6, "r")
+    broker.open_position("B", "yes", 100, 0.6, "r")
+    market_titles = _titles({"A": "EVT-1", "B": "EVT-1"})
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    decisions = review(broker, market_titles, event_titles, {"A": 0.6, "B": 0.6}, _net_cfg())
+    assert len(decisions) == 2 and broker.positions == {}
+
+    with sqlite3.connect(pb_module.DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT reason, netting_improvement_usd, netting_bar_usd, netting_vol_ratio FROM trades"
+        ).fetchall()
+    assert len(rows) == 4  # two entries, two locked_loss closes
+    assert all(r[1] is None and r[2] is None and r[3] is None for r in rows)
+    assert sum(r[0].startswith("closed: position netting (locked_loss") for r in rows) == 2

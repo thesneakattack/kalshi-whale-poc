@@ -229,7 +229,7 @@ def _best_variable_action(
 def _materiality_bar(
     members: list[tuple[str, object]], min_edge_usd: float, normal_vol: float | None,
     vol_lookback: float, now: float,
-) -> float:
+) -> tuple[float, float]:
     """The noise filter (direct request: "it needs to filter out noise...
     account for volatility"): small, noisy expected-value differences
     don't trigger churn. Scaled by the group's own current volatility
@@ -240,9 +240,14 @@ def _materiality_bar(
     own tickers means the live prices behind expected_value() are less
     trustworthy, so a bigger edge is required before acting. The group's
     MOST volatile member sets the bar (conservative - one noisy leg is
-    enough to make the whole group's live read less trustworthy)."""
+    enough to make the whole group's live read less trustworthy).
+
+    Returns (bar, vol_ratio). The ratio is surfaced next to the bar it
+    scaled (issue #213) so a later analysis reads the scaling as a column
+    instead of dividing a rounded bar by config after the fact; it is
+    exactly 1.0 on both unscaled paths below, matching the bar they return."""
     if not normal_vol:
-        return min_edge_usd
+        return min_edge_usd, 1.0
     vols = [market_history.volatility(ticker, vol_lookback, as_of=now) for ticker, _ in members]
     # `v == 0` is NO READING, not "perfectly calm" - the identical fix
     # exit_engine._exit_confidence took on 2026-08-17, whose comment
@@ -261,9 +266,9 @@ def _materiality_bar(
     # min_edge_usd (vol_ratio 1.0), never a discounted bar (issue #206).
     vols = [v for v in vols if v is not None and v > 0]
     if not vols:
-        return min_edge_usd
+        return min_edge_usd, 1.0
     vol_ratio = max(0.25, min(4.0, max(vols) / normal_vol))
-    return min_edge_usd * vol_ratio
+    return min_edge_usd * vol_ratio, vol_ratio
 
 
 def describe_groups(
@@ -314,19 +319,27 @@ def describe_groups(
             }
         else:
             action, tickers, improvement = _best_variable_action(profile, members, latest_prices, include_outside)
-            bar = _materiality_bar(members, min_edge, normal_vol, vol_lookback, now)
+            bar, vol_ratio = _materiality_bar(members, min_edge, normal_vol, vol_lookback, now)
+            # The two USD figures are rounded exactly as the reason sentence
+            # formats them (:.2f), so the structured values - and the trades
+            # columns review() copies them onto - equal the prose's numbers
+            # outright, never approximately (issue #213: prose is for the
+            # reader, columns are for the analysis). vol_ratio has no prose
+            # counterpart and is carried as applied.
             if action and improvement is not None and improvement >= bar:
                 entry["recommendation"] = {
                     "action": action,
                     "tickers": tickers,
                     "expected_value_improvement_usd": round(improvement, 2),
                     "materiality_bar_usd": round(bar, 2),
+                    "vol_ratio": vol_ratio,
                     "reason": f"estimated ${improvement:.2f} expected-value improvement over holding (bar ${bar:.2f})",
                 }
             else:
                 entry["recommendation"] = {
                     "action": "hold",
                     "materiality_bar_usd": round(bar, 2),
+                    "vol_ratio": vol_ratio,
                     "reason": "still outcome-dependent, but no candidate action clears the materiality bar",
                 }
         out.append(entry)
@@ -359,7 +372,16 @@ def review(
                 continue
             price = latest_prices.get(ticker, pos.entry_price)
             reason = f"position netting ({group['status']}, event {group['event_ticker']}): {rec['reason']}"
-            trade = broker.close_position(ticker, price, reason)
+            # The same three values the sentence above was built from ride
+            # onto the trades row as columns (issue #213). A locked_loss
+            # close_all computed no bar, so its rec has none and the columns
+            # stay NULL - "no bar", never a bar of $0.
+            trade = broker.close_position(
+                ticker, price, reason,
+                netting_improvement_usd=rec.get("expected_value_improvement_usd"),
+                netting_bar_usd=rec.get("materiality_bar_usd"),
+                netting_vol_ratio=rec.get("vol_ratio"),
+            )
             if trade is None:
                 continue
             decisions.append({

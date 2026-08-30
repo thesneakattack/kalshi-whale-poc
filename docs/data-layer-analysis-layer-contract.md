@@ -84,8 +84,9 @@ A gap in the trade/history/logging layer can make a correct analysis
 impossible, and one was hit while producing this document.
 
 To test whether the `position_netting` zero-volatility defect explained the
-netting losses, the materiality bar behind each decision was needed. It is
-not a column. It survives only inside a human-readable sentence:
+netting losses, the materiality bar behind each decision was needed. It was
+not a column (it is now - #213, closure noted below). It survived only inside a
+human-readable sentence:
 
 ```python
 "reason": f"estimated ${improvement:.2f} expected-value improvement over holding (bar ${bar:.2f})"
@@ -102,6 +103,14 @@ structured fields, not only in the prose that explains the decision to a
 human. The bar, the improvement, and the `vol_ratio` that scaled the bar are
 each a number some future analysis will need. Prose is for the reader;
 columns are for the analysis.
+
+*Closed 2026-08-30 (#213): `trades.netting_improvement_usd`, `netting_bar_usd`,
+and `netting_vol_ratio` carry the three values as additive columns on every
+netting close, equal to the prose's numbers by construction (same `round(x, 2)`
+as the sentence's `:.2f`; asserted on the row by
+`test_review_persists_netting_decision_inputs_that_agree_with_the_reason_prose`).
+The sentence is unchanged; pre-existing rows keep NULL. Detail in
+`services/exits/README.md`.*
 
 ## Rules
 
