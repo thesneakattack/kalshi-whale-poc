@@ -46,11 +46,13 @@ each separately rather than blaming the signal:
   2. EXIT — a stop-loss converts an eventually-correct signal into a
      realised loss. A signal can be 100% "correct" at settlement and still
      be a 100% loss rate for me if I stop out of every one before expiry.
-  3. PRICE — the one that makes 70% accuracy insufficient rather than
-     merely disappointing. A contract bought at unit cost c pays $1 or $0,
-     so expected value per contract is exactly (p - c): breakeven accuracy
-     IS the entry price. At c = 0.80, a 70%-accurate signal loses 10c per
-     contract, forever, no matter how well it's managed.
+  3. PRICE - the one that makes 70% accuracy insufficient rather than
+     merely disappointing. A contract bought at unit cost c pays $1 or $0
+     and the fill pays a taker fee, so expected value per contract is
+     exactly (p - c - fee): breakeven accuracy is the entry price PLUS the
+     fee (kalshi_fees.breakeven_unit_cost). At c = 0.80 that bar is 81.12%,
+     so a 70%-accurate signal loses 11.12c per contract, forever, no matter
+     how well it's managed.
 
 Everything degrades honestly: a stage that cannot be computed reports None
 with a stated reason, never a filled-in guess. This module exists to be
@@ -65,6 +67,7 @@ from pathlib import Path
 
 from services import capture_writer
 from services import fault_log
+from services import kalshi_fees
 from services import signal_log
 from services.history import trade_analytics
 from services import paper_broker as pb_module
@@ -672,11 +675,12 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
                                  many eventually-right calls did I exit at a
                                  loss before they settled?)
 
-        edge_pts = signal_accuracy - mean_entry_unit_cost
-            A contract at unit cost c pays $1 or $0, so EV per contract is
-            exactly (p - c) and BREAKEVEN ACCURACY IS THE ENTRY PRICE. This
-            is the component that makes "70% right" and "profitable" two
-            unrelated statements.
+        edge_pts = signal_accuracy - breakeven_accuracy
+            A contract at unit cost c pays $1 or $0 and its fill pays a
+            taker fee, so EV per contract is exactly (p - c - fee) and
+            BREAKEVEN ACCURACY IS THE ENTRY PRICE PLUS THE FEE. This is the
+            component that makes "70% right" and "profitable" two unrelated
+            statements.
 
     Signals are joined to trades on (ticker, signal_seen_at) — an exact
     key, not a heuristic: PaperBroker.Trade.signal_seen_at is written from
@@ -724,11 +728,32 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
     )
 
     # ------- the money view: what accuracy would these entry prices need?
-    unit_costs = [
-        uc for uc in (_unit_cost(t["side"], t["price"]) for t in entries) if uc is not None
+    # Breakeven is the entry price PLUS the taker fee that fill really pays
+    # (issue #205). Fee-free breakeven was displayed here until 2026-08-30
+    # and understated the bar by 100*0.07*multiplier*c*(1-c) points - 1.75
+    # at c = 0.50 down to 0.63 at c = 0.90, the band config/settings.yaml
+    # enforces - which fed straight into edge_pts.
+    #
+    # Averaged per entry, not derived from mean_unit_cost: EV = 0 over an
+    # entry set needs mean(c_i + fee_i), and the fee is concave in price
+    # with a per-ticker multiplier, so mean(fee) is not fee(mean) and a
+    # multiplier-0 series (KXBTCY, ...) genuinely has breakeven == entry
+    # price. The gap is 0.07*multiplier*Var(c) — under 0.3pts within the
+    # configured band, the whole fee on a multiplier-0 series — so the
+    # headline below states the two numbers side by side rather than
+    # claiming one is derived from the other.
+    priced_entries = [
+        (t, uc) for t, uc in ((t, _unit_cost(t["side"], t["price"])) for t in entries)
+        if uc is not None
     ]
+    unit_costs = [uc for _, uc in priced_entries]
     mean_unit_cost = round(sum(unit_costs) / len(unit_costs), 4) if unit_costs else None
-    breakeven_accuracy_pct = round(mean_unit_cost * 100, 1) if mean_unit_cost is not None else None
+    breakevens = [
+        kalshi_fees.breakeven_unit_cost(uc, ticker=t["ticker"]) for t, uc in priced_entries
+    ]
+    breakeven_accuracy_pct = (
+        round(100.0 * sum(breakevens) / len(breakevens), 2) if breakevens else None
+    )
     edge_pts = (
         round(signal_accuracy - breakeven_accuracy_pct, 1)
         if signal_accuracy is not None and breakeven_accuracy_pct is not None else None
@@ -928,9 +953,10 @@ def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.
         status = "fail"
         headline = (
             f"whales {acc}% accurate, realised win rate {win}% ({gap:+.1f}pts) — and entries "
-            f"averaged {r['mean_entry_unit_cost']:.3f}/contract, which needs "
-            f"{r['breakeven_accuracy_pct']}% accuracy just to break even, so this series is "
-            f"{abs(edge):.1f}pts underwater at the price level regardless of exits"
+            f"averaged {r['mean_entry_unit_cost']:.3f}/contract and, at their own prices and "
+            f"per-series fee rates, need {r['breakeven_accuracy_pct']:.2f}% accuracy after taker "
+            f"fees just to break even, so this series is {abs(edge):.1f}pts underwater at the "
+            f"price level regardless of exits"
         )
     elif gap <= -15:
         status = "fail"

@@ -488,10 +488,12 @@ def test_reconcile_detects_adverse_selection():
     assert r["exit_delta_pts"] == 0.0
 
 
-def test_breakeven_accuracy_is_the_entry_price():
+def test_breakeven_accuracy_is_the_entry_price_plus_the_taker_fee():
     """The arithmetic that makes "70% accurate" and "profitable" unrelated:
-    EV per contract is (p - c), so an average entry at $0.80 needs 80%
-    accuracy just to break even."""
+    EV per contract is (p - c - fee), so an average entry at $0.80 needs
+    81.12% accuracy just to break even - the fee-free 80.0% this used to
+    report was the "displayed value must match its label" bug (issue #205),
+    understating the real bar on every entry."""
     for i in range(7):
         _seed_signal(f"KXBTC15M-W{i}", "yes", 1000.0 + i, 0.80, correct=1)
     for i in range(3):
@@ -501,8 +503,9 @@ def test_breakeven_accuracy_is_the_entry_price():
     r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
     assert r["signal_accuracy_pct"] == 70.0
     assert r["mean_entry_unit_cost"] == pytest.approx(0.80)
-    assert r["breakeven_accuracy_pct"] == 80.0
-    assert r["edge_pts"] == -10.0   # 70% accurate at $0.80 loses 10c/contract
+    # 0.80 + taker_fee_per_contract(0.80) = 0.80 + 0.07*0.80*0.20 = 0.8112
+    assert r["breakeven_accuracy_pct"] == 81.12
+    assert r["edge_pts"] == -11.1   # 70% accurate at $0.80 loses 11.12c/contract
 
 
 def test_breakeven_accuracy_uses_the_no_side_inversion():
@@ -585,8 +588,11 @@ def test_negative_edge_outranks_the_gap_in_the_headline():
 
     check = sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0)
     assert check.status == "fail"
-    assert "break even" in check.summary
-    assert check.detail["edge_pts"] == pytest.approx(-5.0)
+    assert "after taker fees just to break even" in check.summary
+    # 90% accurate against a 0.95 + 0.07*0.95*0.05 = 95.33% fee-inclusive
+    # breakeven. Fee-free this read -5.0, which is the understatement
+    # issue #205 removed.
+    assert check.detail["edge_pts"] == pytest.approx(-5.3)
 
 
 def test_book_context_says_unknown_rather_than_inventing_a_spread():
