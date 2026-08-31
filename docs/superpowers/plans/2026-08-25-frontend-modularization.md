@@ -1,9 +1,12 @@
 # Frontend Modularization Execution Plan
 
-> **Agentic execution:** Use `.claude/skills/plan-task/SKILL.md` with `domains/frontend.md`
-> (the bespoke `frontend-modularization-task` skill was folded into it 2026-08-28).
-> Reconstruct progress from current HEAD, execute exactly one numbered task, verify,
-> commit, report, and stop.
+> **Agentic execution — corrected 2026-08-31 catch-up review:** `.claude/skills/plan-task/`
+> (which this line previously pointed at, itself the successor to the bespoke
+> `frontend-modularization-task` skill folded into it 2026-08-28) no longer exists — it was
+> deleted the same day (commit `05faa3b`) as redundant with `superpowers:executing-plans`.
+> Use `superpowers:executing-plans` per CLAUDE.md's current Toolchain section. Reconstruct
+> progress from current HEAD, execute exactly one numbered task, verify, commit, report,
+> and stop.
 
 **Goal:** Turn the 13-module, single-import-cycle dashboard frontend into owned, testable
 panels on Preact + signals + htm behind a schema-driven Config tab and a real charts module —
@@ -55,13 +58,19 @@ one strangler-safe commit at a time, with every guard CI-owned.
 - `tools/quality_audit/baseline.json` — accept today's findings with a dated `notes` entry
   (13 `frontend-import-cycle-member:*`, 197 `frontend-window-export:*`, inline/string handler
   names); these are **ratchets**, removals are expected every task.
-- Stale docs: `CLAUDE.md:292-294`; `frontend/src/js/shared-utils.js:5-18`;
-  `frontend/src/js/main.js:12-17`; `frontend/src/js/polling-and-websocket.js:43-47`;
-  `.github/workflows/quality.yml:42-43` (delete the no-op diff step);
-  `tools/quality_audit/source.py:25-27`; `.claude/skills/frontend-verification/SKILL.md`
-  rule 5, `.claude/skills/integration-audit/SKILL.md:21`,
-  `.claude/skills/final-verification/SKILL.md:27` ("committed bundle" → "rebuilt from source
-  by CI"); `ROADMAP.md:206` (6 views).
+- Stale docs — **corrected 2026-08-31 adversarial review, two rounds** (first pass fixed
+  the `config_bounds.py` path and dead orchestration pointer elsewhere in this doc but
+  missed this specific list; second pass caught the remainder): `CLAUDE.md:148` (not
+  `:292-294` — the file was rewritten smaller since this plan was written, "no framework
+  build" language now lives there); `frontend/src/js/shared-utils.js:5-18`;
+  `frontend/src/js/main.js:12-17`; `.github/workflows/quality.yml:42-43` (delete the
+  no-op diff step); `tools/quality_audit/source.py:25-27`; `ROADMAP.md:206` (6 views).
+  **Dropped, not replaced**: the original `polling-and-websocket.js:43-47` citation (no
+  "committed bundle" claim exists anywhere in that file today — re-grep for the actual
+  location at execution time if this specific staleness still needs fixing) and all
+  three `.claude/skills/{frontend-verification,integration-audit,final-verification}/
+  SKILL.md` citations — none of those three skill directories exist anymore; nothing
+  there to correct.
 
 **Create**
 - `tools/quality_audit/frontend_graph.py` — parse `import … from './x.js'` edges under
@@ -160,9 +169,16 @@ the legacy poll loop no longer references the panel; ownership guard green.
 ## T4a — Backend: `GET /api/config/schema` (TDD)
 
 **Create** `services/config/schema_fields.py` (seeded), `services/config/schema.py` (`build_schema(cfg)`, `HIDDEN_PATHS`, YAML leaf walker), `tools/extract_config_schema_seed.py` (stdlib `html.parser` state machine over `#view-config`; cross-checks `config-panel.js` id→path assignments; emits `schema_fields.py`), `tests/test_config_schema.py`.
-**Modify** `services/config/routes.py` (+GET), `services/config_bounds.py` (+`STOP_LOSS_CEILING`; docstring `:43`), `services/config/CHEATSHEET.md`, `baseline.json` (+`backend-route-unused:GET:/api/config/schema`, note "consumer lands in T5a").
+**Modify** `services/config/routes.py` (+GET), `services/config/config_bounds.py` (moved here from bare `services/config_bounds.py` by commit `6e4338f`, 2026-08-27 — corrected 2026-08-31 catch-up review) (+`STOP_LOSS_CEILING`; docstring `:43`, same line number at the new path), `services/config/CHEATSHEET.md`, `baseline.json` (+`backend-route-unused:GET:/api/config/schema`, note "consumer lands in T5a").
 
-- [ ] Tests 1–4 from the spec's TDD list: 200 + shape; every `ui` field has label/type/help; coverage `curated ∪ hidden == leaves`; dynamic `take_profit_pct.max` for `min_unit_cost` 0.5 / 0.8; the 3 locked paths.
+- [ ] Write these 5 tests first (corrected 2026-08-31 catch-up review — no separate
+  numbered "spec's TDD list" exists anywhere in the design or plan; these are this
+  task's own tests, written out in full rather than referenced from a phantom list):
+  (1) `GET /api/config/schema` returns 200 with the documented shape; (2) every `ui`
+  field in the response has `label`/`type`/`help`; (3) coverage: `curated ∪ hidden ==
+  leaves` (every real config leaf is either a `ui` field or explicitly hidden, none
+  missing); (4) dynamic `take_profit_pct.max` reflects `min_unit_cost` correctly for
+  both `0.5` and `0.8`; (5) the 3 locked paths are marked locked in the response.
 - [ ] Run the seed script, hand-review `schema_fields.py` (≈72 fields, ~8 need hand-written help).
 - [ ] `ddev exec -s fastapi python3 -m pytest tests/test_config_schema.py tests/test_config_bounds.py -q`; pyflakes.
 - [ ] Commit: `feat(config): serve a field schema with dynamic bounds, locks and hidden-path coverage`
@@ -172,7 +188,7 @@ the legacy poll loop no longer references the panel; ownership guard green.
 ## T4b — Backend: schema-driven `POST /api/config` validation + `/validate` (TDD)
 
 **Create** `services/config/validation.py` (`validate_patch(schema, cfg, patch) → (errors, warnings)`).
-**Modify** `services/config/routes.py` (validate before merge; `POST /api/config/validate`), `tests/test_config_schema.py` (tests 5–13: type, static bounds, enum, nullable, patch-scoped `check_all` rejection vs warning, unknown field, `/validate` is side-effect-free, override scope, logging unchanged), `baseline.json` (+validate route).
+**Modify** `services/config/routes.py` (validate before merge; `POST /api/config/validate`), `tests/test_config_schema.py` (9 more tests, continuing T4a's numbering as tests 6–14 — corrected 2026-08-31 catch-up review, same phantom-list fix as T4a above: type mismatch rejected; static bounds enforced; enum values enforced; nullable fields accept `null`; patch-scoped `check_all` rejects vs. warns correctly; unknown field rejected; `/validate` is side-effect-free (no write); a `strategy_overrides` patch on a field that isn't `overridable: true` per the schema is rejected — pinned 2026-08-31 adversarial review, the prior "override scope respected" wording was ambiguous with `config_overrides._TIERS`'s `by_category`/`by_series` scoping, a separate concept; existing logging behavior unchanged), `baseline.json` (+validate route).
 
 - [ ] `ddev exec -s fastapi python3 -m pytest tests/test_config_schema.py tests/test_trading_gate.py -q`.
 - [ ] Commit: `feat(config): validate /api/config patches against the schema and physical bounds`
