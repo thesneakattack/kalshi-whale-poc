@@ -171,7 +171,18 @@ def series_of(ticker: str) -> str:
     (see the design spec's §1.4 "Correction, found in design review"), so a
     backfill would rewrite accumulated history (CLAUDE.md) for zero actual
     gain; old and new rows simply disagree for that minority going forward,
-    a known, named accounting seam, not a bug to chase further."""
+    a known, named accounting seam, not a bug to chase further.
+
+    2026-08-31 fix round (PR review): this function is called unconditionally
+    on the exchange-wide trade-tape hot path (kalshi_trade_tape.py's
+    min_contracts_for() and its trades_observed_by_series build), so
+    title_cache.series_ticker_for() memoizes its own DB round trip in-process
+    (see that function's own docstring) - callers of series_of() do not need
+    to memoize independently. It also still never raises: a title_cache DB
+    failure degrades to the prefix fallback inside series_ticker_for() itself,
+    the same as an uncached ticker, so every existing call site (none of
+    which were written to catch an exception from this function) keeps its
+    original never-raises contract."""
     if not ticker:
         return ticker
     real = title_cache.series_ticker_for(ticker)

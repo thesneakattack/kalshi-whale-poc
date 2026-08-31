@@ -108,6 +108,24 @@ def _fresh_loop_watchdog_window(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_title_cache_series_ticker_cache(monkeypatch):
+    """services/title_cache.py's series_ticker_for() memoization (2026-08-31
+    PR review fix, kalshi-category-data-completeness Task 3 - a per-call
+    fresh-_connect() there reintroduced the exact per-trade hot-path DB cost
+    the 2026-08-11 incident closed) is process-global mutable state keyed by
+    ticker string. Same leak shape as every other fixture in this file: two
+    different tests that happen to reuse the same ticker literal (common in
+    this suite - "TICK-A", "MKT-A", etc.) against two different per-test
+    tmp_path DB_PATH values would otherwise have one test's cached
+    resolution (positive or negative) leak into another's unrelated
+    database, silently returning a stale/wrong answer instead of querying
+    the fresh per-test DB."""
+    from services import title_cache
+    monkeypatch.setattr(title_cache, "_SERIES_TICKER_CACHE", {})
+    monkeypatch.setattr(title_cache, "_SERIES_TICKER_NEGATIVE_CHECKED_AT", {})
+
+
+@pytest.fixture(autouse=True)
 def _capture_writer_not_left_running():
     """services/capture_writer.py's daemon thread is the last input
     capture_from_runtime reads (writer.* rows appear while is_alive()).

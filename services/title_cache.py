@@ -36,6 +36,7 @@ reload.
 """
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "title_cache.db"
@@ -268,11 +269,48 @@ def fee_override_for_ticker(ticker: str) -> tuple[str | None, float | None]:
     return (row[0], row[1]) if row else (None, None)
 
 
+# 2026-08-31 fix (kalshi-category-data-completeness Task 3, PR review CRITICAL
+# finding): series_ticker_for() is series_of()'s new resolution path, and
+# series_of() is called unconditionally on the exchange-wide trade-tape hot
+# path (services/whalewatchers/kalshi_trade_tape.py's min_contracts_for() and
+# its own per-trade trades_observed_by_series build) - a fresh _connect() per
+# call (WAL pragma + 2 CREATE TABLE IF NOT EXISTS + 13 PRAGMA table_info/ALTER
+# checks) reintroduces the exact per-trade-DB-round-trip cost shape that
+# froze the app for several minutes on 2026-08-11 (see kalshi_trade_tape.py's
+# own incident note on trades_observed_by_series' batching). Memoized here so
+# series_ticker_for() itself is cheap for any caller, not just series_of().
+#
+# A resolved (non-None) mapping is cached for the process lifetime with no
+# expiry: a market's event_ticker and an event's series_ticker are assigned
+# once by the exchange and never reparented, so the cached fact can never go
+# stale. An unresolved (None) result is cached too - otherwise the dominant
+# real-world case (an off-watchlist ticker whose market hasn't been resolved
+# yet) would still hit the DB on every single occurrence, the same hot-path
+# cost this fix exists to remove - but only for _SERIES_TICKER_NEGATIVE_TTL_SEC
+# (same idiom/window as kalshi_trade_tape.py's own _market_cache): this app
+# fetches title data continuously, so a market uncached today can become
+# cached later, and a permanent negative cache would silently freeze a ticker
+# onto the wrong prefix-fallback answer forever - trading accuracy for speed
+# exactly the way CLAUDE.md's data-plane HARD RULE forbids doing silently.
+#
+# Bounded (not truly unbounded) as a defensive guard against a very
+# long-running process accumulating one entry per distinct ticker ever seen
+# across the whole exchange - cleared wholesale rather than partially evicted
+# when the bound is hit, since every entry here is cheap to re-derive (one
+# more DB read) and a full clear is simpler to reason about than an LRU.
+_SERIES_TICKER_CACHE: dict[str, str] = {}
+_SERIES_TICKER_NEGATIVE_CHECKED_AT: dict[str, float] = {}
+_SERIES_TICKER_NEGATIVE_TTL_SEC = 300
+_SERIES_TICKER_CACHE_MAX_ENTRIES = 20_000
+
+
 def series_ticker_for(ticker: str) -> str | None:
     """The real series_ticker `ticker`'s market belongs to
     (market_titles.event_ticker -> the matching event_titles row's
     series_ticker column) - a single indexed join, same shape as
-    fee_override_for_ticker() above, one hop further.
+    fee_override_for_ticker() above, one hop further. Memoized in-process -
+    see the module-level comment above this function for why and for the
+    negative-TTL/eviction shape.
 
     docs/kalshi/terms.md:29: "There are occasional exceptions [to the
     Series -> Event -> Market ticker convention], so do not parse ticker
@@ -284,17 +322,39 @@ def series_ticker_for(ticker: str) -> str | None:
     already persisted by save_market_titles()/save_event_titles() from
     every get_market()/get_event() response, nothing new fetched here.
 
-    None when the market isn't cached yet, its event isn't cached yet, or
-    the event's series_ticker column is empty/null (e.g. the event row was
-    saved before required_event_fields' series_ticker fetch existed) -
-    services/signal_log.py::series_of() is the only caller and falls back
-    to its own ticker-prefix heuristic in every one of those cases, never
-    guessing a series here."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT et.series_ticker FROM market_titles mt "
-            "JOIN event_titles et ON et.event_ticker = mt.event_ticker "
-            "WHERE mt.ticker = ?",
-            (ticker,),
-        ).fetchone()
-    return row[0] if row and row[0] else None
+    None when the market isn't cached yet, its event isn't cached yet, the
+    event's series_ticker column is empty/null (e.g. the event row was
+    saved before required_event_fields' series_ticker fetch existed), or the
+    DB read itself failed (sqlite3.Error - a lock/disk/corruption condition
+    degrades to None here rather than propagating, since services/
+    signal_log.py::series_of() is the only caller and callers of THAT
+    function - strategy_engine.py's core entry gate, the trade-tape prescan
+    gate - were written when series_of() was a pure .split() that could
+    never raise). services/signal_log.py::series_of() falls back to its own
+    ticker-prefix heuristic in every one of these cases, never guessing a
+    series here."""
+    cached = _SERIES_TICKER_CACHE.get(ticker)
+    if cached is not None:
+        return cached
+    checked_at = _SERIES_TICKER_NEGATIVE_CHECKED_AT.get(ticker)
+    if checked_at is not None and (time.monotonic() - checked_at) < _SERIES_TICKER_NEGATIVE_TTL_SEC:
+        return None
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT et.series_ticker FROM market_titles mt "
+                "JOIN event_titles et ON et.event_ticker = mt.event_ticker "
+                "WHERE mt.ticker = ?",
+                (ticker,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    result = row[0] if row and row[0] else None
+    if len(_SERIES_TICKER_CACHE) + len(_SERIES_TICKER_NEGATIVE_CHECKED_AT) >= _SERIES_TICKER_CACHE_MAX_ENTRIES:
+        _SERIES_TICKER_CACHE.clear()
+        _SERIES_TICKER_NEGATIVE_CHECKED_AT.clear()
+    if result:
+        _SERIES_TICKER_CACHE[ticker] = result
+    else:
+        _SERIES_TICKER_NEGATIVE_CHECKED_AT[ticker] = time.monotonic()
+    return result
