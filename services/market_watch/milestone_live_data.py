@@ -32,11 +32,13 @@ carries `widget_status` (via `leaderboard`/`current_round`) but never
 So this module implements a **default pass-through** (matching today's
 pre-existing behavior for anything not named as deviant - both call sites
 already did a raw `details.get("widget_status")` / `details.get("winner")`
-before this module existed) with the spec's dispatch table applied only
-to the 9 named-deviant types (minus `political_race`, still deferred to
-Task 8 pending live-payload verification - see the comment on _EXTRACTORS
-below; `esports_match` was added by Task 7 once its own live-payload
-verification confirmed a mapping - see _esports_match's docstring). This
+before this module existed) with the spec's dispatch table applied to all
+9 named-deviant types: `esports_match` (Task 7, live-payload-verified
+against four real captured match lifecycles - see _esports_match's own
+docstring) and `political_race` (Task 8, live-payload-verified against a
+real Elections-category pull - this app's own captured history had zero
+political_race rows, so a live pull was required; see _political_race's
+own docstring) both now have their own mapping. This
 is not a redesign of D2's goal - every fix the
 spec's §2.1-§2.3 describes still ships - it is a correction to how the
 "unmapped type" default is implemented, grounded in the same evidence
@@ -104,6 +106,72 @@ def _no_live_outcome(details: dict) -> dict:
     return {"status": None, "winner": None}
 
 
+# Task 8 (kalshi-category-data-completeness). This app's OWN captured
+# history (data/game_state.db's game_states table) has ZERO political_race
+# rows - `SELECT COUNT(*) FROM game_states WHERE event_type =
+# 'political_race'` returns 0, and a raw_json scan for
+# race_call_status/tabulation_status/candidates/votehub across all 9,072
+# rows (every event_type, including NULL) also returns 0 - so this
+# module's status-vocabulary mapping was built from a real LIVE pull
+# instead of replayed history (this app's own unauthenticated
+# KalshiPublicGateway.get_milestones_bulk(category="Elections") +
+# get_live_datas(), docs/kalshi/get-milestones.md +
+# get-multiple-live-data.md - `category` filters by category STRING, not
+# by milestone `type`, since the wrapper only exposes `category`): 500
+# Elections-category milestones fetched 2026-08-31, 410 carrying live
+# data. See tests/test_milestone_live_data.py's political_race comment
+# block for the full evidence trail (observed field-value distribution,
+# every (race_call_status, tabulation_status) combination and count). Two
+# -line summary:
+#
+# status: derived from `race_call_status`, the only field of the two
+# named in the design spec's flagged assumption (§2.3) that actually
+# varies - `tabulation_status` is perfectly correlated with it in every
+# observed row (never independently empty/non-empty) and adds no extra
+# signal for this tri-state mapping. "Called" -> "finished" (a winner has
+# been decided). "Too Early to Call" -> "live" (ballots being counted, no
+# verdict yet). "Runoff" -> "live", NOT "finished" - deliberately
+# conservative: a single live pull cannot observe whether a race called
+# "Runoff" later transitions to "Called" once an actual runoff election
+# concludes, and live_status.py's `_LIVE_STATUS_TERMINAL` treats "finished"
+# as "never poll this event again" - wrongly marking a still-changing
+# event finished is a completeness failure (CLAUDE.md's data-plane HARD
+# RULE), wrongly leaving an actually-finished one as "live" just costs a
+# few extra polls on an already-rare state (7/410 sampled, 1.7%). ""
+# (empty string, the real pre-race shape: `candidates: {}`,
+# `reporting_percentage: "0.0"`) -> "none". A missing `race_call_status`
+# key entirely (the real "votehub-only" shape - `{"provider": "votehub",
+# "status": "created", "votehub": {...FEC data...}}`, no race-call field
+# at all) -> None, honestly: no live-data signal exists this tick, not a
+# guessed "none".
+#
+# winner: real pass-through, unchanged in shape from every other type's
+# `winner` handling - `details.get("winner") or None` (the `or None`
+# normalizes the real empty-string shape every non-"Called" row actually
+# carries into this module's existing "no winner" convention, matching
+# every other extractor's explicit `None` rather than a falsy ""). The
+# value itself is a candidate-ID string (e.g.
+# "a7d2a5af-72a1-46cb-a3b0-bf639f346fb9"), never a name - resolving that
+# ID to a candidate name is D4's own separate, not-yet-built
+# structured-target lookup, out of this task's scope; catalog_scan.py's
+# `not winner` guard (catalog_scan.py:131) already treats an empty string
+# the same as None, so this normalization changes no downstream behavior,
+# it only keeps this module's own return-value convention consistent.
+_POLITICAL_RACE_STATUS = {
+    "": "none",
+    "Called": "finished",
+    "Runoff": "live",
+    "Too Early to Call": "live",
+}
+
+
+def _political_race(details: dict) -> dict:
+    return {
+        "status": _POLITICAL_RACE_STATUS.get(details.get("race_call_status")),
+        "winner": details.get("winner") or None,
+    }
+
+
 _EXTRACTORS = {
     # Only the census's named-deviant types (S3 ∪ S4) get their own entry.
     # esports_match was added by Task 7 once its flagged assumptions (spec
@@ -115,12 +183,18 @@ _EXTRACTORS = {
     # esports_match payload); what it does change is removing esports_match
     # from _record_default_path_type's fault-log/snapshot tracking, since
     # its mapping is now a verified, deliberate decision rather than an
-    # unmapped type. political_race remains deferred to Task 8 pending its
-    # own live-payload verification - it still takes the _pass_through
-    # default below, which is IDENTICAL to today's behavior for it (both
-    # currently read details.get("winner") raw), so this task changes
-    # nothing observable for that type yet.
+    # unmapped type. political_race was added by Task 8 once its own
+    # flagged assumption (§2.3's status-vocabulary question) was
+    # live-verified (see _political_race's own comment above) - unlike
+    # esports_match, this DOES change observable output for `status` (was
+    # always None via the default pass-through's `widget_status` read,
+    # since political_race payloads never carry that field - S3; now a
+    # real derived tri-state value); `winner` behavior is unchanged
+    # (already real pass-through via the same default, modulo the
+    # empty-string-to-None normalization noted above, which no consumer
+    # observes differently per catalog_scan.py:131's `not winner` guard).
     "esports_match": _esports_match,
+    "political_race": _political_race,
     "golf_tournament": _golf_tournament,
     "company_report": _no_live_outcome,
     "truflation": _no_live_outcome,      # D3 §3.3 adds its OWN fields separately

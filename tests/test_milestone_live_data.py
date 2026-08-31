@@ -212,3 +212,166 @@ def test_esports_match_is_registered_not_left_on_the_default_path(monkeypatch):
     mld.extract("esports_match", {"widget_status": "live", "home_score": 1, "away_score": 0})
     assert faults == []
     assert "esports_match" not in mld.default_path_types_snapshot().get("types", [])
+
+
+# ---------------------------------------------------------------------------
+# political_race (Task 8, kalshi-category-data-completeness). Step 0's
+# verification spike checked this app's OWN captured history FIRST
+# (data/game_state.db's game_states table, same method as Task 7): ZERO
+# political_race rows exist - `SELECT COUNT(*) FROM game_states WHERE
+# event_type = 'political_race'` returns 0, and a `raw_json LIKE
+# '%race_call_status%' OR ... '%tabulation_status%' OR ... '%candidates%'
+# OR ... '%votehub%'` scan across ALL 9,072 rows (every event_type,
+# including NULL) also returns 0 - this app has never actually captured a
+# political_race live-data payload, unlike Task 7's esports_match which
+# had four full lifecycles already on disk. So this task pulled real
+# payloads live instead, via this app's own KalshiPublicGateway
+# (unauthenticated per D4's own design note): `get_milestones_bulk(
+# category="Elections")` (docs/kalshi/get-milestones.md: `category`
+# filters by category string, NOT by milestone `type` - the wrapper only
+# exposes `category`) then `get_live_datas()` on the political_race-typed
+# ids (docs/kalshi/get-multiple-live-data.md). 500 Elections milestones
+# fetched 2026-08-31, 410 carrying live data. Observed (race_call_status,
+# tabulation_status, top-level `status`) combinations:
+#   ("Called", {"Vote Certified"|"Gathering Certified Results"|
+#    "Active Tabulation"|"Tabulation Paused"}, "created") -> 272/410.
+#    `winner` is always a real candidate-id STRING keying into the
+#    `candidates` dict (e.g. "a7d2a5af-72a1-46cb-a3b0-bf639f346fb9"), never
+#    a name - id-to-name resolution is D4's own separate, not-yet-built
+#    structured-target lookup, out of this task's scope; extract() just
+#    passes the raw value through unchanged, same as every other type.
+#   ("Runoff", ..., "created") -> 7/410, `winner` == "" (no single winner
+#    - the race resolves to "goes to runoff" rather than a winning
+#    candidate).
+#   ("Too Early to Call", ..., "created") -> 2/410, `winner` == "" -
+#    `candidates` populated with real, non-zero vote counts (ballots
+#    actively being counted, no verdict yet - the genuine in-progress
+#    state).
+#   ("", "", "created") -> 116/410, `winner` == "" - pre-tabulation:
+#    `candidates: {}`, `reporting_percentage: "0.0"`, `last_updated: ""`.
+#   race_call_status key absent entirely -> 13/410 - "votehub-only"
+#    payloads, matching the census's disjoint-36-of-810 population, though
+#    the real shape is {"provider": "votehub", "status": "created",
+#    "votehub": {...FEC campaign-finance filing data...}} (three keys, not
+#    the task brief's simplified one-key {"provider": "votehub"} sketch -
+#    kept as its own separate, still-valid test below since the sketch's
+#    winner-is-None assertion holds either way) - no race-call field at
+#    all, so no status signal exists this tick.
+#
+# Kalshi's top-level `details.status` field (present on all 410 payloads)
+# is unconditionally "created" across every one of the above combinations
+# - zero information, not used for anything here (named in the census's
+# own key list but never claimed informative there either).
+#
+# Status mapping into this app's tri-state ("none"/"live"/"finished",
+# matching live_status.py:216's schedule fallback - verified those exact
+# three lowercase string values at that line before reusing them):
+#   "Called"            -> "finished" (a winner has been decided).
+#   "Too Early to Call" -> "live" (ballots being counted, no verdict yet).
+#   "Runoff"            -> "live", NOT "finished" - deliberately
+#                           conservative. This single live pull cannot
+#                           observe whether a race called "Runoff" later
+#                           transitions to "Called" once an actual runoff
+#                           election concludes (a genuinely separate,
+#                           later event this snapshot has no way to see).
+#                           live_status.py's `_LIVE_STATUS_TERMINAL` and
+#                           its "once genuinely confirmed, never poll this
+#                           event again" comment mean mapping "Runoff" to
+#                           "finished" would permanently stop polling an
+#                           event that might still change - a completeness
+#                           failure CLAUDE.md's data-plane HARD RULE treats
+#                           as strictly worse than the negligible cost of
+#                           continuing to poll an already-rare state
+#                           (7/410, 1.7%). Not a guess either way: "live"
+#                           is the choice that can't silently drop data if
+#                           wrong, "finished" could.
+#   ""                  -> "none" (pre-race: `candidates` empty,
+#                           `reporting_percentage` "0.0" - the same "not
+#                           started yet" meaning every other type's "none"
+#                           carries).
+#   missing key          -> None (no live-data signal this tick at all -
+#                           the votehub-only shape - the same "honest
+#                           None, not a guess" precedent as esports_match's/
+#                           golf_tournament's winner=None above).
+def test_political_race_winner_is_pass_through():
+    result = mld.extract("political_race", {"race_call_status": "Called", "winner": "Candidate A"})
+    assert result["winner"] == "Candidate A"
+
+
+def test_political_race_no_winner_when_only_votehub_provider_present():
+    # Brief's own sketch (P3: "36 of 810 carry only `provider: votehub`");
+    # the real payload shape carries two more keys (`status`, `votehub`)
+    # but no race-call field either way, so the assertion holds unchanged.
+    result = mld.extract("political_race", {"provider": "votehub"})
+    assert result["winner"] is None
+
+
+def test_political_race_status_is_finished_when_called():
+    # Real shape (272/410 sampled payloads, condensed to the fields that
+    # matter for this branch).
+    result = mld.extract("political_race", {
+        "race_call_status": "Called", "tabulation_status": "Vote Certified",
+        "winner": "a7d2a5af-72a1-46cb-a3b0-bf639f346fb9",
+        "winners": ["a7d2a5af-72a1-46cb-a3b0-bf639f346fb9"],
+    })
+    assert result == {"status": "finished", "winner": "a7d2a5af-72a1-46cb-a3b0-bf639f346fb9"}
+
+
+def test_political_race_status_is_live_when_too_early_to_call():
+    result = mld.extract("political_race", {
+        "race_call_status": "Too Early to Call", "tabulation_status": "Active Tabulation",
+        "winner": "",
+    })
+    assert result == {"status": "live", "winner": None}
+
+
+def test_political_race_status_is_live_when_runoff_not_finished():
+    # Deliberately NOT "finished" - see the comment block above for why.
+    result = mld.extract("political_race", {
+        "race_call_status": "Runoff", "tabulation_status": "Vote Certified", "winner": "",
+    })
+    assert result == {"status": "live", "winner": None}
+
+
+def test_political_race_status_is_none_when_pre_race():
+    # Real pre-tabulation shape: empty-string race_call_status/
+    # tabulation_status/winner, empty candidates dict.
+    result = mld.extract("political_race", {
+        "candidates": {}, "race_call_status": "", "tabulation_status": "",
+        "reporting_percentage": "0.0", "last_updated": "", "winner": "",
+    })
+    assert result == {"status": "none", "winner": None}
+
+
+def test_political_race_status_is_none_signal_when_race_call_status_absent():
+    # votehub-only payload (real shape: provider/status/votehub, no
+    # race-call field at all) - no status signal exists this tick, so
+    # `status` stays the honest None rather than guessing "none".
+    result = mld.extract("political_race", {"provider": "votehub", "status": "created", "votehub": {}})
+    assert result["status"] is None
+
+
+def test_political_race_never_raises_on_empty_details():
+    assert mld.extract("political_race", {}) == {"status": None, "winner": None}
+
+
+def test_has_no_live_status_false_for_political_race():
+    # Its status IS real derived data (unlike company_report/truflation/
+    # etc.'s structural always-None) - the schedule fallback still means
+    # something for it, same shape as golf_tournament/esports_match above.
+    assert mld.has_no_live_status("political_race") is False
+
+
+def test_political_race_is_registered_not_left_on_the_default_path(monkeypatch):
+    # Before this task political_race had no _EXTRACTORS entry, so every
+    # call fell through to _pass_through (status always None, since
+    # political_race payloads never carry `widget_status` - S3) AND
+    # tripped _record_default_path_type's fault_log write. Its mapping is
+    # now decided and verified (see comment block above), so it should no
+    # longer be reported as an unmapped/default-path type.
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault",
+                         lambda *a, **k: faults.append(a) or True)
+    mld.extract("political_race", {"race_call_status": "Called", "winner": "some-id"})
+    assert faults == []
+    assert "political_race" not in mld.default_path_types_snapshot().get("types", [])

@@ -277,3 +277,52 @@ milestone `type` specifically:
   object's `details`/structured-target IDs threaded into a *different*
   code path than this one — out of this task's scope (its brief forbade a
   signature change), and not attempted here.
+
+## `political_race` live-data status vocabulary, confirmed against real payloads (2026-08-31, Task 8 of kalshi-category-data-completeness)
+
+`milestone_live_data.py`'s `_political_race` extractor was verified
+against a real **live** pull, not this app's own captured history: unlike
+`esports_match` above, `data/game_state.db`'s `game_states` table has
+**zero** `political_race` rows (`SELECT COUNT(*) FROM game_states WHERE
+event_type = 'political_race'` → 0, and a `raw_json` scan for
+`race_call_status`/`tabulation_status`/`candidates`/`votehub` across all
+9,072 rows, every `event_type` including `NULL`, also → 0) — this app has
+never actually captured one. So the mapping came from a fresh,
+unauthenticated `get_milestones_bulk(category="Elections")` +
+`get_live_datas()` pull (`docs/kalshi/get-milestones.md` +
+`get-multiple-live-data.md`; `category` filters by category **string**,
+not milestone `type` — the wrapper only exposes `category`, so
+`"Elections"` was used, matching this task's own census-derived
+`political_race → Elections` mapping): 500 Elections milestones fetched,
+410 carrying live data. Confirmed shape:
+
+- `race_call_status` values observed: `"Called"` (272/410 — a winner
+  decided, `winner` populated with a real candidate-id string),
+  `"Too Early to Call"` (2/410 — ballots being counted, no verdict),
+  `"Runoff"` (7/410 — no single winner, `winner` `""`), `""` (116/410 —
+  pre-race: `candidates: {}`, `reporting_percentage: "0.0"`), and the key
+  missing entirely (13/410 — a "votehub-only" payload, `{"provider":
+  "votehub", "status": "created", "votehub": {...FEC campaign-finance
+  data...}}`, no race-call field at all; the real shape has three keys,
+  not the census's simplified one-key sketch, but still carries no status
+  signal). `tabulation_status` is perfectly correlated with
+  `race_call_status`'s emptiness in every observed row and adds no
+  independent signal for the tri-state mapping. The top-level `details.
+  status` field is unconditionally `"created"` across all 410 payloads —
+  zero information.
+- `winner` is a **candidate-ID string** (e.g.
+  `"a7d2a5af-72a1-46cb-a3b0-bf639f346fb9"`, a key into the `candidates`
+  dict), never a name — ID-to-name resolution is the design spec's D4
+  structured-target lookup, not yet built, out of this task's scope.
+- Mapped into this app's tri-state (verified exact lowercase strings at
+  `live_status.py:216` before reusing them): `"Called"` → `"finished"`;
+  `"Too Early to Call"` → `"live"`; `""` → `"none"`; missing key → `None`
+  (honest no-signal, not a guessed `"none"`). `"Runoff"` → `"live"`,
+  deliberately **not** `"finished"` — a single snapshot can't observe
+  whether a `"Runoff"`-called race later flips to `"Called"` once an
+  actual runoff election concludes, and `live_status.py`'s
+  `_LIVE_STATUS_TERMINAL` treats `"finished"` as "never poll this event
+  again"; wrongly stopping on a still-live event is the completeness
+  failure CLAUDE.md's data-plane HARD RULE weighs heaviest, versus a
+  negligible cost (7/410, 1.7%) of a few extra polls if wrong the other
+  way.
