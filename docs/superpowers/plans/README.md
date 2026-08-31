@@ -28,6 +28,12 @@ This is not cosmetic: `tools/quality_coordination.py:305` treats an unchecked
 reports plans as perpetually in-flight. **The commit history and the source are
 authoritative for what shipped; these files are not.**
 
+Related, easy to conflate: a row's description saying "awaiting execution" /
+"not yet started" is about that plan's *code*, never about the plan
+*document* — every row in the table below already has a written, merged
+document (that's what earns it a row here) — see CLAUDE.md's "nothing
+advances on one pass" HARD RULE.
+
 ## The plans
 
 "Merged branch" is a mechanical fact — a merge commit naming that branch exists. It

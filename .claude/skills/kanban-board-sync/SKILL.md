@@ -34,7 +34,11 @@ board into a record of who ran last (2026-08-28).
 4. Classify each candidate (`done` / `in-progress` / `not-started`) into a JSON
    file, e.g. `/tmp/kanban-plan-classifications.json`
    (`{"<file>": {"status": "...", "note": "..."}}`), including the `done` ones
-   (they get skipped, never created-then-closed). Evidence, in order:
+   (they get skipped, never created-then-closed). This status is always about
+   the plan's CODE, never the plan DOCUMENT — every candidate here already has
+   a written, merged plan doc by definition (that's what made it a candidate),
+   so `not-started` means "no code shipped against it yet," not "no plan
+   exists." Evidence, in order:
    - `gh issue list --search 'autotrade-sync: plan:<filename>' --state all --json number,state,title --limit 1`;
      if CLOSED, read its last comment (`gh issue view <N> --comments`) — a
      "done, merged in PR #N" comment is `done`, full stop.
