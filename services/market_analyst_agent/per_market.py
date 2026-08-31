@@ -85,6 +85,15 @@ def build_prompt(market_detail: dict, context_snapshot: dict, own_track_record: 
     else:
         own_track_line = "No resolved estimates yet - no self-calibration signal available."
 
+    cv_by_ticker = context_snapshot.get("candlestick_volatility") or {}
+    cv_reading = cv_by_ticker.get(market_detail.get("ticker"))
+    cv_line = (
+        f"{cv_reading:.4f} (population stdev of consecutive hourly Kalshi-candlestick "
+        f"close-to-close price deltas - independent of this platform's own snapshot-"
+        f"based volatility reading; informational only, not a target)"
+        if cv_reading is not None else "not enough candlestick history yet"
+    )
+
     return f"""You are an experienced prediction-market analyst evaluating one real, currently-open Kalshi market. Form your own independent estimate of the true probability this market resolves YES - do not simply restate the current market price back as your estimate.
 
 ## Market
@@ -105,6 +114,7 @@ Closes: {market_detail.get("close_time") or "unknown"}
 
 Whale-signal track record (independent size-based order-flow signals on this platform, not your input): {json.dumps(whale_track) if whale_track else "no data yet"}
 Existing rule-based config-tuning recommendations: {json.dumps(advisory.get("recommendations")) if advisory.get("recommendations") else "none yet / not enough data"}
+Candlestick-derived volatility (Kalshi's own OHLC data): {cv_line}
 
 ## Your own track record
 

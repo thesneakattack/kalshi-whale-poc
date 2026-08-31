@@ -298,3 +298,28 @@ def test_analyze_market_returns_none_when_model_skips_the_tool(tmp_path, monkeyp
 
     result = asyncio.run(agent.analyze_market({"title": "T"}, {}, model="claude-sonnet-5", api_key="fake-key"))
     assert result is None
+
+
+def test_build_prompt_includes_candlestick_volatility_reading_when_present():
+    market_detail = {
+        "title": "Will it rain tomorrow?", "category": "Weather",
+        "rules_primary": "Resolves YES if measurable rain is recorded.",
+        "yes_bid_dollars": "0.42", "volume_24h_fp": "10000", "close_time": "2026-08-10T00:00:00Z",
+        "ticker": "TICK-A",
+    }
+    context_snapshot = {"candlestick_volatility": {"TICK-A": 0.0123}}
+    prompt = maa.build_prompt(market_detail=market_detail, context_snapshot=context_snapshot)
+    assert "0.0123" in prompt
+    assert "Candlestick-derived volatility" in prompt
+
+
+def test_build_prompt_degrades_gracefully_when_candlestick_volatility_missing():
+    market_detail = {
+        "title": "Will it rain tomorrow?", "category": "Weather",
+        "rules_primary": "Resolves YES if measurable rain is recorded.",
+        "yes_bid_dollars": "0.42", "volume_24h_fp": "10000", "close_time": "2026-08-10T00:00:00Z",
+        "ticker": "TICK-A",
+    }
+    context_snapshot = {}  # no candlestick_volatility key at all
+    prompt = maa.build_prompt(market_detail=market_detail, context_snapshot=context_snapshot)
+    assert "not enough candlestick history yet" in prompt

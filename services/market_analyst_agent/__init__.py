@@ -13,15 +13,17 @@ services/whale_calibration/confidence_calibration.py's and services/advisory/adv
 actually training a model), reasoning from first principles and context per
 market instead.
 
-Deliberately advisory-only, matching the "prove it, then promote it"
-pattern already established twice in this codebase (advisory_engine's
-manual-apply-with-audit-trail design, confidence_calibration's read-only-v1
-scope): this module never calls create_order, never opens a paper position,
-and nothing here is wired into strategy_engine.evaluate()'s actual trade
-decision. Its output is a new, visible, loggable opinion sitting alongside
-the existing whale-flow and momentum signals - promoting it into an actual
-decision input is a distinct, explicit, later step once there's a real
-track record, not this one.
+Note: Despite the original "advisory-only" framing, analyst_lean()'s
+estimated_probability already feeds into services/confidence_scoring.py's
+analyst_factor (a live, weighted 0.13-factor input into strategy_engine.
+evaluate()'s real entry confidence, and into exit_engine/position_netting on
+the exit side) — this module has real, if indirect, execution influence
+today. This module never calls create_order or opens positions directly, but
+the analyst's estimate shapes the confidence score that drives actual trading
+decisions. New context field: build_prompt() now consumes
+context_snapshot["candlestick_volatility"] (ticker: value dict or empty),
+independently disabled via config/settings.yaml's candlestick_volatility.
+include_in_market_analyst_prompt, without disabling market_analyst itself.
 
 Gated behind two independent switches, both required: market_analyst.enabled
 (config/settings.yaml, default false) AND a real ANTHROPIC_API_KEY in .env -
