@@ -1,7 +1,10 @@
 # Weather Index Ingestion — Design Spec
 
 Date: 2026-08-30. Status: brainstormed, corrected during self-review after
-two verification passes, ready for user review before `writing-plans`.
+two verification passes; REVIEWED 2026-08-31 (self-review + independent
+adversarial review + consolidation, GO with the city-ranking correction
+below); implementation plan follows in
+`docs/superpowers/plans/2026-08-31-weather-index-ingestion.md`.
 
 ## What this is, and what it deliberately is not
 
@@ -92,16 +95,29 @@ Recommended starting set, by real 24h volume in the app's own catalog
 `KXHIGHLAX` (1,286,281.77 — a clear 4.5× gap over the next), `KXHIGHNY`
 (286,585.86), `KXHIGHMIA` (281,497.43), `KXHIGHCHI` (247,611.21).
 
-**Caveat, load-bearing:** this ranking is built on catalog rows that are
-**4 days stale** (`KXHIGH%` max `updated_at` = 2026-08-26, vs. minutes-old
-for `KXNFL%`/`KXMLB%` the same day). Root cause identified and recorded
-separately (`docs/open-decisions.md`, 2026-08-30): `config/settings.yaml`'s
-`kalshi.categories` is `[Sports]` only, so the per-category catalog-scan
-discovery mechanism never touches Climate/weather at all. That is a
-data-layer scoping question bigger than this feature and is being decided
-on its own track. **Re-confirm this city ranking against fresh data before
-implementation** — a 4.5× gap is unlikely to fully reverse, but should not
-be trusted blindly given the staleness.
+**Caveat, load-bearing (original, 2026-08-30):** this ranking was built on
+catalog rows that were **4 days stale** (`KXHIGH%` max `updated_at` =
+2026-08-26, vs. minutes-old for `KXNFL%`/`KXMLB%` the same day). Root cause
+identified and recorded separately (`docs/open-decisions.md`, 2026-08-30):
+`config/settings.yaml`'s `kalshi.categories` was `[Sports]` only, so the
+per-category catalog-scan discovery mechanism never touched Climate/weather
+at all. **Re-confirm this city ranking against fresh data before
+implementation.**
+
+**Re-confirmed 2026-08-31, via this design's review cycle** (self-review +
+independent adversarial-review Agent call + consolidation — see
+`...-design-review.md` / `...-design-consolidation.md` in this directory):
+`kalshi.categories` was widened to all 11 categories the same day this
+caveat was written, and a fresh, independently-reproduced live query
+(`data/market_catalog.db`, `updated_at` 2026-08-30T18:11:54Z) gives a
+**different ranking**: `KXHIGHLAX` (1,474,143.90) > `KXHIGHMIA`
+(359,090.28) > `KXHIGHNY` (343,419.24) > `KXHIGHCHI` (267,427.45) — MIA and
+NY have swapped — plus several previously-invisible cities close behind
+CHI: `KXHIGHTHOU` (209,520.81), `KXHIGHTDAL` (199,374.75), `KXHIGHAUS`
+(187,801.77). This read is still mid-cycle (`catalog_scan.py` batches only
+10 series/scan and hadn't finished a full pass through the widened category
+set at check time), not a settled steady-state number — the implementation
+plan re-runs this query once more before finalizing the starting city list.
 
 The exact `city` path-parameter spelling (`get-weather-index.md`'s example
 is `miami`, lowercase) must be verified against Kalshi's real city-ID list
