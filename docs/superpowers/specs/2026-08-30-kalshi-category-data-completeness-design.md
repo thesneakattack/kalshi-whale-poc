@@ -393,21 +393,50 @@ New submodule inside the package both consumers already live in:
 internal split of that package, the same shape as the 2026-08-22 Phase 9/9 split that
 produced both files in the first place).
 
+**Correction, found at Stage 5 planning: the original `(None, None)`-for-unmapped design
+below was itself a completeness regression.** Only a minority of the census's 44 types got
+an explicit table entry (§2.3); every other type — including `basketball_game` (15,564
+milestones) and `soccer_tournament_multi_leg` (15,546), the *2nd and 3rd largest*
+populations in the whole census — would have silently gone from "works today via the naive
+single-key read" to "explicitly `(None, None)`," a regression larger than the gap D2 exists
+to close, directly against the data-plane HARD RULE. Fixed to a **default-pass-through**
+architecture: an unmapped type falls through to the *same* naive `widget_status`/`winner`
+read `live_status.py`/`catalog_scan.py` already do today, not a hardcoded absence. Only the
+types §2.3 names as genuinely deviant (no standard fields, or needing special handling) get
+an explicit override; every other type — the ~35 not named — keeps working exactly as it
+does now, unchanged, while still being counted if truly novel:
+
 ```python
 def extract(milestone_type: str, details: dict) -> dict:
     """Normalizes ANY milestone type's live-data `details` into
     {"status": "none"|"live"|"finished"|None, "winner": str|None}.
-    An unmapped type returns (None, None) explicitly and is counted
-    (_record_unknown_type), never silently misread as "no winner" -
-    targets_and_milestones.md:28 documents `details` as varying by type,
-    and the census found 44 real types, only 30 of which return live data
-    at all - an unmapped type is the normal case here, not the edge one."""
+    A type with an explicit override (§2.3 - genuinely deviant per the
+    census) uses it. Every other type - the majority, not the edge case -
+    falls through to the SAME naive widget_status/winner pass-through
+    live_status.py/catalog_scan.py already do today, so basketball_game/
+    soccer_tournament_multi_leg/etc. (15,564/15,546 milestones, currently
+    working fine) see zero behavior change. Still counted either way
+    (_record_unknown_type) so a genuinely new/never-seen type surfaces as
+    a metric instead of silence - targets_and_milestones.md:28 documents
+    `details` as varying by type, so "haven't seen this type before" and
+    "this type needs special handling" are different signals, not one."""
     extractor = _EXTRACTORS.get(milestone_type)
-    if extractor is None:
+    if extractor is not None:
+        return extractor(details or {})
+    if milestone_type not in _KNOWN_TYPES:  # genuinely new, not just unoverridden - see below
         _record_unknown_type(milestone_type)
-        return {"status": None, "winner": None}
-    return extractor(details or {})
+    return {"status": details.get("widget_status"), "winner": details.get("winner")}
 ```
+
+**`_KNOWN_TYPES` vs. `_EXTRACTORS`, kept as two separate sets, not one.** `_EXTRACTORS`
+(§2.3) is small — only the types genuinely needing bespoke handling. `_KNOWN_TYPES` is the
+census's full 44-type catalog (`P1`'s own enumeration) — every type this investigation has
+already seen and accounted for, whether or not it needs an override. A type present in
+neither set is what `_record_unknown_type` exists to catch: a genuinely new (45th+) type
+Kalshi ships later, not `basketball_game` correctly using the default pass-through for the
+30,000th time. Firing the counter unconditionally on every unoverridden type (an earlier
+draft of this fix did exactly that) would drown the one signal this mechanism exists to
+carry in noise from types that are working exactly as intended.
 
 `live_status.py:169` becomes
 `milestone_live_data.extract(ms["type"], details)["status"]`; `catalog_scan.py:117`
@@ -433,9 +462,13 @@ the team finds out instead of re-running a census.
 | `political_race` | derive from `race_call_status`/`tabulation_status` — **assumption, flagged**: P3 names these fields but not their value vocabulary; must be read from a live payload before the status mapping ships (which values mean "not yet called" vs "called"). Maps into this app's existing tri-state vocabulary (`"none"`/`"live"`/`"finished"`, the same one `live_status.py:216`'s schedule fallback already uses). | pass-through `winner` where present (810/917 payloads carry the race-call field set per P3; the disjoint 36 carrying only `provider: votehub` correctly fall through to `None`, not a guess). |
 | `company_report`, `truflation`, `artist_streams`, `kpis`, `tv_views`, `one_off_milestone` | explicit `{"status": None, "winner": None}` — these are not sports-shaped outcomes; `company_report`/`truflation`/`artist_streams` are settlement-*input* series (D3's domain, §3.3), not resolution events. No extraction logic invented for them here. | same |
 
-Every type not listed falls through the unmapped-type branch (§2.2) — by design, not by
-omission: 14 of the census's 44 types return no live data at all, and new types can appear
-without warning.
+Every type not listed above — the majority of the census's 44, including
+`basketball_game`/`soccer_tournament_multi_leg` and every other type currently working via
+the naive read — falls through to §2.2's default pass-through, unchanged from today's
+behavior. The 14 of 44 types the census found return no live data at all resolve the same
+way without any special-casing: an empty/missing `details` dict's `.get("widget_status")`/
+`.get("winner")` already returns `None`, which is the correct value for them regardless. A
+genuinely new (45th+) type is still caught, via `_KNOWN_TYPES` above, not silently absorbed.
 
 ### 2.4 `game_state.record()` already does most of the capture work
 
