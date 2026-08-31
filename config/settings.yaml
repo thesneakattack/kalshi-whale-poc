@@ -283,6 +283,17 @@ market_history:
   # lookback_windows_sec); this leaves a wide margin above that. Added
   # 2026-08-30 to close the one retention gap found in data/*.db - see
   # services/market_history.py's prune() docstring.
+fault_log:
+  retention_hours: 336  # 14 days, matching observability's window - diagnostic/
+  # debugging data (services/fault_log.py's own docstring: "logged for
+  # analysis later"), not a trading dataset CLAUDE.md's accumulated-history
+  # rule covers. Added 2026-08-31: fault_log.db was the one store still
+  # missing from main.py's hourly _maybe_prune_capture_stores sweep - its
+  # dedup key includes per-instance message text (e.g. a specific ticker),
+  # so distinct rows grow with every new market touched, not just with true
+  # repeat faults - confirmed via /api/quality/summary's storage-growth
+  # check (229KB -> 799KB in 24h) and /api/observability/summary's db.
+  # fault_log.db.size_bytes series.
 research:
   enabled: false  # off until manually reviewed - see services/research/CHEATSHEET.md
   min_new_resolved_signals: 100

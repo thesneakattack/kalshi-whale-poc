@@ -7,6 +7,7 @@ caught it, returned a drop count nobody read, and the store sat at zero rows
 looking exactly like "no games are on right now."
 """
 import sqlite3
+import time
 
 import pytest
 
@@ -112,6 +113,7 @@ def test_logging_never_raises_even_on_a_broken_store(monkeypatch, tmp_path):
     assert fl.record("m", "op", _boom()) is False
     assert fl.record_fault("m", "op", "msg") is False
     assert fl.recent() == []
+    assert fl.prune(retention_hours=336) == 0
 
 
 def test_oversized_message_and_traceback_are_bounded():
@@ -120,3 +122,37 @@ def test_oversized_message_and_traceback_are_bounded():
     r = fl.recent()[0]
     assert len(r["message"]) <= fl._MAX_MESSAGE_CHARS
     assert len(r["first_traceback"]) <= fl._MAX_TRACEBACK_CHARS
+
+
+# --- prune -------------------------------------------------------------
+
+def test_prune_removes_faults_older_than_retention_and_keeps_the_rest():
+    now = time.time()
+    fl.record("a", "op", _boom("stale"), now=now - 400 * 3600)  # older than 336h
+    fl.record("b", "op", _boom("fresh"), now=now - 1 * 3600)  # recent
+
+    fl.prune(retention_hours=336, now=now)
+
+    remaining = fl.recent()
+    assert [r["component"] for r in remaining] == ["b"]
+
+
+def test_prune_keys_off_last_seen_not_first_seen():
+    """A fault first seen long ago but still recurring must survive prune -
+    last_seen is the signal that it's still active, not first_seen."""
+    now = time.time()
+    fl.record("a", "op", _boom("x"), now=now - 400 * 3600)  # first_seen: stale
+    fl.record("a", "op", _boom("x"), now=now - 1 * 3600)  # last_seen: recent (same fault, repeats)
+
+    fl.prune(retention_hours=336, now=now)
+
+    assert len(fl.recent()) == 1
+
+
+def test_prune_returns_the_deleted_row_count():
+    now = time.time()
+    fl.record("a", "op", _boom("stale"), now=now - 400 * 3600)
+    fl.record("b", "op", _boom("also stale"), now=now - 400 * 3600)
+    fl.record("c", "op", _boom("fresh"), now=now - 1 * 3600)
+
+    assert fl.prune(retention_hours=336, now=now) == 2

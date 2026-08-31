@@ -171,6 +171,31 @@ def recent(limit: int = 50, component: str | None = None,
         return []
 
 
+def prune(retention_hours: float, now: float | None = None) -> int:
+    """Drop rows whose last_seen (not first_seen) is older than the
+    retention window - a still-recurring fault must survive even if it was
+    first seen long ago, since last_seen is what marks it active. Same
+    shape as every other capture/observability store's prune() (services/
+    observability/observability.py, services/series_watcher.py, etc.),
+    wired into main.py's hourly _maybe_prune_capture_stores sweep - the one
+    store in that rotation without it until now.
+
+    Wrapped like every other function in this module (module docstring:
+    "Never raises, ever") - an unwrapped DELETE here would let a broken
+    fault_log.db crash the hourly sweep inside the trading tick loop,
+    which is exactly the failure mode this file exists to prevent
+    elsewhere."""
+    now = now if now is not None else time.time()
+    cutoff = now - retention_hours * 3600
+    try:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM faults WHERE last_seen < ?", (cutoff,))
+            return cur.rowcount
+    except Exception as exc:
+        record("fault_log", "prune", exc)
+        return 0
+
+
 def summary(since_ts: float | None = None) -> dict:
     """Counts by component and severity - the shape a health endpoint wants,
     so an active fault shows up as a number rather than as silence."""

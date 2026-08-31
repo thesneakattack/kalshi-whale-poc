@@ -167,6 +167,8 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     observability.prune(retention_hours=obs_hours, now=now)
     mh_hours = float((cfg.get("market_history") or {}).get("retention_hours", 168))
     market_history.prune(retention_hours=mh_hours, now=now)
+    fl_hours = float((cfg.get("fault_log") or {}).get("retention_hours", 336))
+    fault_log.prune(retention_hours=fl_hours, now=now)
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
