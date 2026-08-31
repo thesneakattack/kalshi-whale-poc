@@ -26,6 +26,7 @@ from services import auth as auth_service
 from services.whale_calibration import calibration_history
 from services import candidate_log
 from services import candidate_retry
+from services import candlestick_volatility
 from services import settlement_resolver
 from services import capture_writer
 from services.diagnostics import diagnostics
@@ -572,6 +573,7 @@ _SCHEDULER_TRIGGERS = (
     # entry, which catalog_scan._get_series_cache already filters out
     # before any category logic even runs).
     ("mve_scan", _maybe_scan_mve_batch),
+    ("candlestick_volatility_scan", candlestick_volatility._maybe_scan_candlestick_volatility),
     ("auto_apply", _maybe_run_auto_apply),
 )
 

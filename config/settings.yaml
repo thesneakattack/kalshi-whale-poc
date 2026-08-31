@@ -162,6 +162,32 @@ position_netting:
   min_edge_improvement_usd: 50
   normal_volatility: 0.02
   volatility_lookback_sec: 1800
+candlestick_volatility:
+  enabled: true  # spends only Kalshi API tokens (not real money, unlike
+  # market_analyst's LLM calls), well inside measured local-limiter
+  # headroom - see docs/kalshi/CHEATSHEET.md's dated entry (Task 8) - so
+  # this ships on by default, same posture as catalog_scan/mve_scan.
+  scan_interval_sec: 1800  # 30 min - mirrors market_analyst.reanalyze_
+  # cooldown_sec's precedent. At the ~23-market watchlist measured
+  # 2026-08-30, this is ~0.013 req/s added load, ~65x under the measured
+  # available local-limiter headroom.
+  period_interval_min: 60  # hourly bars - matches the existing per-market
+  # drill-down's own choice (services/market_catalog/routes.py).
+  lookback_window_sec: 86400  # 24h of hourly bars fetched per cycle - a
+  # small fixed request, not the drill-down's 7-day default (which would
+  # mean re-fetching bars this table already has every cycle, forever).
+  volatility_lookback_sec: 3600  # default window for the market_analyst
+  # context-bundle reading and the comparison-report route's default.
+  include_in_market_analyst_prompt: true  # independent kill switch for
+  # Task 9/10's wiring specifically - separate from `enabled` above (which
+  # gates the whole persistence/scan feature). analyst_lean() already
+  # feeds a live 0.13-weighted factor into strategy_engine.evaluate()'s
+  # real entry confidence (see this plan's Context section) - if
+  # services/whale_calibration/confidence_calibration.py's per-factor
+  # calibration for analyst_factor ever regresses after this ships, flip
+  # this to false to stop candlestick volatility from reaching the LLM
+  # prompt without touching the scan/persistence/comparison-route features
+  # at all.
 index_feed:
   index_ids:
   - BRTI
