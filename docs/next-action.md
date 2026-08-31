@@ -1,38 +1,56 @@
 # Next action
 
-**Second restart boundary done** (2026-08-30 ~20:19 UTC): 4 PRs (#272
-account diagnostics, #273 historical backfill tool, #274 index_feed
-reconnect backfill, #275 MVE combo-event discovery) plus a docs-only spec
-(#263) merged to `main`, then `origin/main` merged into the primary and
-`ddev restart`. Verified, not assumed: `/api/health/pipeline` responds in
-0.39s; `python -m tools.soak_analyzer` — 8 of 10 PASS again, all 6
-data-layer checks clean. The same 2 FAILs as the first boundary
-(`capture_writer_health`, `exit_engine_faults`) are still open, but every
-fault behind both has `last_seen` *before* this restart's timestamp — zero
-new occurrences of either kind since either restart. They remain in the
-24h fault-log window (`data/fault_log.db`, disk-persisted, ages out on wall
-clock regardless of process restarts) and should be fully gone by
-~2026-08-31 16:11 UTC.
+**Review PR #299 and PR #300** — two full research→review→design→review→plan
+pipelines (subagent-delegated, each stage independently re-verified before
+the next), both docs-only, both "ready for execution," neither pushed toward
+implementation yet:
 
-**MVE discovery (#268) verified live, not just merged:** `mve_scan` ran
-within 31s of restart and populated 14 `KXMVECROSSCATEGORY*`/`-SHARD1` rows
-in `market_catalog.db` with fresh `updated_at`; `title_cache.db`'s
-`event_titles` now carries a real `mutually_exclusive` value (not the old
-silent `False` fallback) for events that previously had zero catalog rows.
-Closes PR #275's own pending post-merge verification item.
+- **#299** — Kalshi category data-shape audit: what category-specific
+  Kalshi data this app is missing across all 11 traded categories.
+  Investigation went through 2 review/revision rounds (a milestone-sampling
+  bug — 1 page of 275 — inflated a false "Sports-only" conclusion into
+  durable guidance until the full 137,200-milestone census corrected it);
+  design went through 3 rounds, including the plan-writing stage itself
+  catching a real completeness regression in the design's own extractor
+  pseudocode (would have silently broken `basketball_game`/
+  `soccer_tournament_multi_leg`, the 2nd/3rd-largest milestone types).
+  14-task implementation plan at the end.
+- **#300** — whale-confidence-weights scoring remediation: most of tonight's
+  earlier live discrimination numbers turned out to be measurement
+  artifacts, not real findings (already corrected in `config/settings.yaml`'s
+  comment on this branch). Design review caught a safety-critical gap in the
+  `measurement_valid` auto-apply gate (missed one of two real write paths;
+  couldn't distinguish real contamination from permanent data-sparsity) —
+  fixed and re-verified. Encodes the standing directive to score accuracy
+  and edge as two independent scores, never blended. 16-task implementation
+  plan at the end.
 
-**Next check:** re-run `python -m tools.soak_analyzer` around 2026-08-31
-16:11 UTC (24h past the *first* restart) to confirm both FAILs have aged
-out with zero new faults accumulated across both restarts. If clean, close
-`docs/open-decisions.md`'s item (3) — `two_consumer_mode` permanence — by
-updating the file comment in `config/settings.yaml` to say so.
+Both branches (`worktree-agent-a72f71384c869f628`, `worktree-agent-a5110e2d3016b26a8`)
+still exist as `.claude/worktrees/` checkouts if execution is approved —
+resume there rather than starting fresh worktrees.
 
-**Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`
-(PR #263, merged as docs-only) is an architectural brainstorm for
-temperature-market settlement-edge ingestion via Kalshi's new
-`GET /live_data/weather/{city}`. Per the brainstorming skill's own hard
-gate, it stops at the spec — no plan, no code — until you've reviewed it;
-opens a new market category so it's a real decision, not a routine one.
+**Also still open, unrelated to the above:**
+
+- Re-run `python -m tools.soak_analyzer` around 2026-08-31 16:11 UTC (24h
+  past the first restart boundary) to confirm the `capture_writer_health`/
+  `exit_engine_faults` fault-log FAILs have aged out with zero new
+  occurrences. If clean, close `docs/open-decisions.md`'s `two_consumer_mode`
+  permanence item by updating the file comment in `config/settings.yaml`.
+- **Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`
+  (PR #263, merged docs-only) — temperature-market settlement-edge ingestion
+  via Kalshi's `GET /live_data/weather/{city}`. Stops at the spec per the
+  brainstorming skill's own gate until reviewed; opens a new market category.
+- **R6 retired** (`fix/realtime-data-plane-remediation`, merged to `main` via
+  #296): the peer-session git-merge guard is gone outright — no installed
+  replacement, convention-only now. `tools/kanban_sync`'s `find_by_marker`
+  bug and AQC's branch-cleanup action are also fixed/retired the same PR.
+  `CLAUDE.md`'s Toolchain section carries the new "installed over handspun"
+  standard this all came from.
+- PR #298 (entry-gate ME-pairing fix, another session) narrows but does not
+  moot PR #202's event-scoped ME gate plan — #202 retains live scope
+  (N-way blocking decision, `event_ticker` as a first-class field, the
+  limit-order path fix, blocked-flip P&L measurement). Both open, see
+  `docs/open-decisions.md`.
 
 Layer contract behind the tool: `docs/data-layer-analysis-layer-contract.md`.
 Full audit history if picking this up cold:
