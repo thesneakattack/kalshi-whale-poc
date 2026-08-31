@@ -95,6 +95,35 @@ def test_propagate_milestone_winner(monkeypatch):
     assert ("EVT1-OUTCOME1", "no") in recorded
 
 
+def test_propagate_milestone_winner_none_for_a_settlement_input_type(monkeypatch):
+    # truflation is a D2 no-op type (Task 5, milestone_live_data.py's
+    # _EXTRACTORS): even with a raw `winner` key present in live-data
+    # details, the wired call site must not surface it as a market result -
+    # it's an index series, not a resolution event. Matches
+    # test_propagate_milestone_winner's own fixture shape above, just with
+    # a settlement-input `type` instead of the synthetic "winner_decl".
+    markets = [{"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""}]
+    milestones_map = {
+        "EVT1": [{"id": "ms1", "type": "truflation", "related_event_tickers": ["EVT1-OUTCOME1"]}]
+    }
+    live_map = {
+        "ms1": {"details": {"winner": "should not surface", "related_event_tickers": ["EVT1-OUTCOME1"]}}
+    }
+    fake = FakeClient(milestones_map, live_map, market_map={})
+
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    assert "EVT1-OUTCOME1" not in market_results
+    # Confirms the skip happened because extract() nulled the winner, not
+    # because `related` was ever empty (the actual no-op reason) - if
+    # get_markets_by_tickers were called it would mean events_with_winner
+    # wrongly included this event.
+    assert fake.market_calls == []
+
+
 def test_propagate_milestone_winners_batches_related_market_lookups_across_events(monkeypatch):
     # Direct efficiency note (2026-08-16): "a lot of efficiency could be
     # gained by using batch calls to the API vs individual calls for

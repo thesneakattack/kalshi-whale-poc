@@ -12,6 +12,7 @@ from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
 from services.market_lookup import _sport_for_event
+from services.market_watch import milestone_live_data
 
 _LIVE_STATUS_LOOKBACK_SEC = 8 * 3600  # keep tracking an event up to 8h after its scheduled start
 # Widened 1h -> 12h on 2026-08-17. Measured live: 30 Sports events were on
@@ -188,6 +189,14 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
                     milestone_by_event[et] = ms["id"]
 
     confirmed = {}
+    # Populated below for any event whose confirmed milestone `type` maps to
+    # one of Task 5's always-status=None types (company_report, truflation,
+    # ...) - excluded from the schedule-fallback gate further down, since
+    # for these types a missing `confirmed[et]` means "structurally no live
+    # status, ever" rather than "not confirmed this particular tick" (see
+    # milestone_live_data.has_no_live_status' own docstring for why the
+    # schedule fallback can't tell these apart on its own).
+    no_live_status_type: set[str] = set()
     if milestone_by_event:
         live_datas = await client.get_live_datas(list(milestone_by_event.values()))
         for et, ms_id in milestone_by_event.items():
@@ -195,9 +204,35 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
             if not ld:
                 continue
             details = ld.get("details") or {}
-            status = details.get("widget_status")
+            # milestone_live_data.extract() (Task 5, kalshi-category-data-
+            # completeness) needs the milestone's own `type` (e.g.
+            # "football_game", "company_report") to route the ~9 deviant
+            # milestone types away from a raw widget_status/winner read.
+            # Sourced from `ld["type"]`, NOT a separately-tracked
+            # `ms["type"]` (what the design spec's own §2.2 literally
+            # sketches, and what catalog_scan.py's sibling call site below
+            # uses): an event resolved via the broad milestone_by_event
+            # cache above (entry-gate-me-pairing-and-netting-remediation,
+            # commit 56ae320) never has a milestone dict in hand at all -
+            # that cache only stores event_ticker -> milestone id
+            # (milestone_scan.py's own docstring), so no `ms` exists in this
+            # loop for a cache hit, only `ms_id`. `ld["type"]` is the
+            # identical value at zero extra cost either way: it's a
+            # `required` field on this SAME already-fetched get_live_datas
+            # response (docs/kalshi/get-multiple-live-data.md's LiveData
+            # schema - `type`, `details`, `milestone_id` all required), and
+            # this codebase already treats it as the milestone type -
+            # services/market_events/event_inspector.py:90's working
+            # `get_live_data(ms["type"], ms["id"])` call site passes a
+            # milestone's own `type` into the exact parameter name
+            # (`milestone_type`) the legacy single-milestone endpoint's URL
+            # path uses, confirming the two are the same field.
+            ms_type = ld.get("type")
+            status = milestone_live_data.extract(ms_type, details)["status"]
             if status:
                 confirmed[et] = status
+            elif milestone_live_data.has_no_live_status(ms_type):
+                no_live_status_type.add(et)
             # Real score/quarter/clock/down-distance/last_play (2026-08-16
             # audit finding B2, docs/kalshi/get-multiple-live-data.md) - the exact
             # same get_live_datas call above already fetches this full
@@ -238,10 +273,21 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
     # tick. Anything with no milestone at all is left out of the result
     # entirely (not cached, not "none", not "live" - genuinely unknown)
     # rather than guessed at either way.
+    #
+    # `et not in no_live_status_type` (Task 6, kalshi-category-data-
+    # completeness): the milestone-tracked-ness this fallback keys on used
+    # to mean only "some milestone with an id+type exists" - now that Task
+    # 5's extract() can definitively say a milestone TYPE never carries a
+    # live status at all (company_report, truflation, ...), an event
+    # confirmed to be exactly that type is excluded here too, the same way
+    # "no milestone at all" already is - guessing "live"/"none" for an index
+    # series would be exactly the fabrication this comment block already
+    # warns against, just via a type this function didn't used to
+    # distinguish.
     for et in to_poll:
         if et in confirmed:
             status, source = confirmed[et], "milestone"
-        elif et in has_milestone:
+        elif et in has_milestone and et not in no_live_status_type:
             status = "none" if now < event_occ_ts[et] else "live"
             source = "schedule"
         else:

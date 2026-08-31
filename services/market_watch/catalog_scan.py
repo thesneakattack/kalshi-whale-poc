@@ -14,6 +14,7 @@ from services.app_state import bump_generation, state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
 from services.market_catalog import market_catalog
+from services.market_watch import milestone_live_data
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
 # this used to call get_milestones_for_event() for every unique event on the
@@ -115,7 +116,17 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                 if not ld:
                     continue
                 details = ld.get("details") or {}
-                winner = details.get("winner")
+                # milestone_live_data.extract() (Task 5, kalshi-category-
+                # data-completeness) routes the ~9 deviant milestone types
+                # (e.g. company_report, truflation - index series/reports,
+                # not resolution events) away from a raw `winner` read that
+                # would otherwise surface a non-outcome value as a market
+                # result. `ms["type"]` is already in hand here (gated on
+                # `ms.get("id") and ms.get("type")` above, when
+                # `milestone_by_event[et] = ms` was populated) - unlike
+                # live_status.py's sibling call site, this function has no
+                # broad-cache path, so the milestone dict is always fresh.
+                winner = milestone_live_data.extract(ms["type"], details)["winner"]
                 related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
                 if not winner or not related:
                     continue

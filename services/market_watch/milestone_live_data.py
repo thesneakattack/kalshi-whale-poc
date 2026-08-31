@@ -117,6 +117,28 @@ def default_path_types_snapshot() -> dict:
             "types": sorted(_default_path_types_seen)}
 
 
+def has_no_live_status(milestone_type: str) -> bool:
+    """True only for a milestone `type` whose extractor unconditionally
+    returns status=None (mapped to `_no_live_outcome` above - company_report/
+    truflation/artist_streams/kpis/tv_views/one_off_milestone: an index
+    series or report, structurally never a discrete clocked event with a
+    genuine live/in-progress state) - as opposed to a type whose status
+    merely wasn't confirmed on a given call (a transient miss, or a type
+    that just hasn't started) but genuinely can carry one.
+
+    Added for Task 6 (kalshi-category-data-completeness): live_status.py's
+    schedule-fallback gate ("no confirmed status this tick -> guess live/
+    none from the schedule instead") predates this module and doesn't know
+    about these no-op types on its own - without this, it would guess
+    "live" for e.g. a company_report milestone just because extract()
+    correctly returned status=None for it, defeating the point of routing
+    that type through the no-op extractor in the first place. golf_tournament
+    is deliberately NOT included: its status is real pass-through (only its
+    winner is the no-op part), so the schedule fallback still means
+    something for it."""
+    return _EXTRACTORS.get(milestone_type) is _no_live_outcome
+
+
 def extract(milestone_type: str, details: dict) -> dict:
     """Normalizes ANY milestone type's live-data `details` into
     {"status": ..., "winner": ...}. Default is pass-through

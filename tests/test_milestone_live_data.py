@@ -65,6 +65,29 @@ def test_default_path_types_snapshot_lists_distinct_types_seen():
     assert set(snap["types"]) == {"a_seen_type", "another_seen_type"}
 
 
+def test_has_no_live_status_true_for_every_no_live_outcome_type():
+    # Added for Task 6 (kalshi-category-data-completeness): live_status.py's
+    # schedule-fallback gate needs to distinguish "this type structurally
+    # never has a live status" from "not confirmed this particular tick" -
+    # sourced from the same dispatch table extract() itself uses, not a
+    # second, independently-maintained list.
+    for t in ("company_report", "truflation", "artist_streams", "kpis", "tv_views", "one_off_milestone"):
+        assert mld.has_no_live_status(t) is True, t
+
+
+def test_has_no_live_status_false_for_golf_tournament():
+    # golf_tournament's status IS real pass-through (only its winner is the
+    # no-op part) - the schedule fallback still means something for it, so
+    # it must NOT be treated the same as the always-None types above.
+    assert mld.has_no_live_status("golf_tournament") is False
+
+
+def test_has_no_live_status_false_for_pass_through_and_unknown_types():
+    assert mld.has_no_live_status("tennis_tournament_singles") is False  # default pass-through
+    assert mld.has_no_live_status("basketball_game") is False  # unnamed, also default pass-through
+    assert mld.has_no_live_status(None) is False  # no confirmed type at all - not a no-op type either
+
+
 def test_extract_and_snapshot_are_re_exported_from_the_package():
     # services/market_watch/__init__.py re-exports every submodule's public
     # names at the package top level (see its own module docstring) - Task

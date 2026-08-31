@@ -1594,8 +1594,32 @@ class _FakeLiveClient:
     async def get_live_datas(self, milestone_ids):
         self.live_datas_calls.append(list(milestone_ids))
         if self.live_data_fails:
-            return {mid: {"details": {}} for mid in milestone_ids}  # no widget_status - a real, seen shape
-        return {mid: {"details": {"widget_status": self.widget_status}} for mid in milestone_ids}
+            return {mid: {"type": "game", "details": {}} for mid in milestone_ids}  # no widget_status - a real, seen shape
+        return {mid: {"type": "game", "details": {"widget_status": self.widget_status}} for mid in milestone_ids}
+
+
+# --- _fetch_live_status routes live-data through milestone_live_data.extract()
+# (Task 6, kalshi-category-data-completeness) - proves the wiring actually
+# dispatches on milestone `type` now, not still a raw details.get(
+# "widget_status") read (which would return "live" for the fixture below,
+# since the raw key IS present in it). ------------------------------------
+
+def test_fetch_live_status_returns_none_for_a_settlement_input_type():
+    # company_report is one of D2's named no-op types (Task 5,
+    # milestone_live_data.py's _EXTRACTORS) - an index/report series, not a
+    # real-world resolution event with a genuine live/finished state.
+    main.state["live_status_cache"].clear()
+
+    class _FakeReportClient:
+        async def get_milestones_for_event(self, event_ticker):
+            return [{"id": "ms1", "type": "company_report"}]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(_FakeReportClient(), markets))
+    assert result == {}  # extract() returns status=None for company_report -> no confirmed entry
 
 
 def test_fetch_live_status_polls_a_new_event_with_no_cache():
@@ -1823,6 +1847,31 @@ def test_fetch_live_status_broad_cache_mixed_hit_and_miss_in_one_tick():
     assert fake.live_datas_calls == [["ms-from-bulk-scan", "ms1"]]  # cached + freshly-fetched ids, batched together
 
 
+def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
+    # test_fetch_live_status_returns_none_for_a_settlement_input_type above
+    # only exercises the needs_fetch path (a fresh get_milestones_for_event
+    # call always returns a full milestone dict, `ms["type"]` included). An
+    # event resolved via the broad milestone_by_event cache instead
+    # (milestone_scan.py) never has that dict at all - the cache only maps
+    # event_ticker -> milestone id - so this proves the wiring's `ld["type"]`
+    # sourcing (not a separately-tracked `ms["type"]`) closes the same gap
+    # for THIS path too, not just the one the brief's own test happens to
+    # cover.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}
+
+    class _FakeBroadCacheReportClient:
+        async def get_milestones_for_event(self, event_ticker):
+            raise AssertionError("broad cache hit - the per-event REST call must not happen")
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(_FakeBroadCacheReportClient(), markets))
+    assert result == {}  # not "live" via extract(), and not "live" via the schedule fallback either
+
+
 # --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
 # same get_live_datas call above already fetches the full real payload
 # (score/quarter/clock/down-distance/last_play), previously only ever read
@@ -1836,7 +1885,7 @@ class _FakeGameStateClient:
         return [{"id": "ms1", "type": "football_game"}]
 
     async def get_live_datas(self, milestone_ids):
-        return {mid: {"details": self._details} for mid in milestone_ids}
+        return {mid: {"type": "football_game", "details": self._details} for mid in milestone_ids}
 
 
 def test_fetch_live_status_surfaces_real_game_state_details():
