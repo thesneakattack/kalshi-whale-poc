@@ -11,6 +11,15 @@ per this stage's own instructions.
 **Evidence:** the factor audit above, §0–§7. Every finding cited below is that document's,
 not re-derived.
 
+**Revision note:** Stage 4's independent review
+(`docs/superpowers/specs/2026-08-30-whale-confidence-scoring-remediation-design-review.md`,
+commit `5e092d2`) found two blocking defects in §9's `measurement_valid` gate — it was wired
+to only one of two real write paths, and its own definition could not distinguish
+tie-contamination from permanent structural sparsity — plus two non-blocking findings. All
+four are folded into this revision; §3, §5, §7.1, §7.5, §9, §10, §11 changed as a result. See
+those sections for what changed and why; everything the review confirmed sound (Phases 0–2,
+most of 4–5, the arithmetic correction, D3's exclusion) is unchanged.
+
 **Touched files** (verified against current source, not the audit's line numbers alone):
 `services/confidence_scoring.py`, `services/whale_calibration/confidence_calibration.py`,
 `services/whalewatchers/kalshi_trade_tape.py`, `config/settings.yaml`'s
@@ -21,7 +30,15 @@ didn't name but this design's wiring requires: `services/whale_stream/decision_b
 `signals` table schema). `services/diagnostics/diagnostics.py` gains one new check.
 `services/config/config_bounds.py` is where the audit's `config_bounds.py:77-87` citation
 actually resolves (`services/config/`, not `config/` — a path the audit stated informally;
-noted here so the implementation plan doesn't go looking in the wrong directory).
+noted here so the implementation plan doesn't go looking in the wrong directory). Two more
+files, found resolving Stage 4's review: `main.py` (`_maybe_run_auto_apply`, the automatic
+auto-apply write at `:453-459`, gated by `confidence_calibration.auto_apply_enabled`) and
+`services/whale_calibration/routes.py` (`apply_confidence_calibration_suggestion`, the manual
+`POST /api/confidence-calibration/apply` route, write at `:155` — wired to the dashboard's
+existing Apply button, `frontend/src/js/advisory-calibration.js:113`, and reachable
+regardless of `auto_apply_enabled`). Both call `blended_weights_for_auto_apply(...)` and then
+`config_store.update({"whale_confidence_weights": ...})` — the design's original "the
+auto-apply route" (singular) named only the first; §9 now gates both.
 
 **Constraints honoured:** `mode: paper` stays the default; nothing here touches
 `kalshi_account.trading_enabled`, `POST /api/trading/enable`, `risk_manager.py`, or any
@@ -91,20 +108,56 @@ implementation plan's test suite should confirm it against a fixture reproducing
 audit's own two reference points (`depth_factor`'s 2-6-row ties must NOT trip the guard;
 `agreement_factor`'s 24,357-row tie MUST).
 
-**Behavior when a boundary is contaminated:** `_bucket_win_rates` returns `{}` for that
-factor on that run, identical to today's `len(distinct_values) < _BUCKET_COUNT` early exit —
-"not enough clean variance to say" is already this function's honest-degradation idiom
-(its own docstring), extended to cover the new detection case rather than inventing a
-different failure mode.
+**Behavior when a boundary is contaminated, and why the return shape must say why:**
+`_bucket_win_rates` still returns an empty bucket dict for `_factor_report`'s purposes when a
+boundary is contaminated — "not enough clean variance to say" is still the right degraded
+answer for the report table. But a bare `{}` is not enough information for §9's
+`measurement_valid` gate, which must tell apart two conditions that both produce `{}` today:
+"this factor is permanently, structurally sparse" (benign — `analyst_factor`/
+`block_trade_factor` are single-valued across the *entire* raw trade table per the audit's
+own full census, §1.8/§1.9, and will return `{}` via the pre-existing
+`len(distinct_values) < _BUCKET_COUNT` branch on every future report forever, with no tie to
+ever resolve) from "this factor's tertile cut landed inside a materially large tie" (the
+actual, transient contamination this predicate exists to catch). Only the second should ever
+gate anything downstream.
+
+The fix: `_bucket_win_rates` — and the tertile-split-plus-contamination-check core it shares
+with `_bucket_mean_edge` (§7.5), which reuses this same logic unchanged — returns a
+`(buckets: dict, data_status: str)` pair instead of a bare `dict`, where `data_status` is one
+of:
+
+- `"ok"` — a real, uncontaminated tertile split; `buckets` is non-empty.
+- `"insufficient_variance"` — `n < _BUCKET_COUNT` or `len(distinct_values) < _BUCKET_COUNT`
+  (today's existing early exit, trigger condition unchanged); `buckets` is `{}`. Permanent and
+  structural: a factor with fewer than three distinct values has nothing D1a, more data
+  volume, or any future report can change about that fact if it is architecturally
+  single-valued.
+- `"contaminated"` — the boundary-in-tie predicate fired: a cut lands inside a tied run of
+  `n_tied >= max(30, 0.005 * total_n)` rows (this section's own materiality floor); `buckets`
+  is `{}`. Transient and data-quality-driven: the one condition D1a exists to catch, and the
+  only one §9 reacts to.
+
+`_factor_report` forwards `data_status` into its own return dict as a fourth key —
+`{"factor": ..., "buckets": ..., "gap_pts": ..., "discriminates": ..., "data_status": ...}` —
+so every caller building a `per_factor` list already has this distinction available without a
+second pass over `rows`. Nothing else in this design (the report table, `_suggested_weights`,
+`ranked_by_discrimination`) changes behavior based on it — they already treat `gap_pts is
+None` as "nothing to report" regardless of which `data_status` produced it; only §9 reads
+`data_status` itself.
 
 **Test surface:** the existing `low_edge != high_edge`-only test (if one exists pinning that
 predicate) is replaced, not supplemented — a design that leaves the old, insufficient
 assertion standing alongside the new one gives false confidence that both matter. A fixture
 per audit table row (§2) — `depth_factor` clean, the other six contaminated at at least one
-boundary — is the direct regression test; it should assert `_bucket_win_rates` returns real
-buckets for `depth_factor` and `{}` for the other six against the *current* (pre-Phase-1)
-fabrication-still-present data shape, since D1a and the fabrication fix (§4) are validated
-independently before either depends on the other.
+boundary — is the direct regression test; it should assert `_bucket_win_rates` returns
+`(real_buckets, "ok")` for `depth_factor` and `({}, "contaminated")` for the other six against
+the *current* (pre-Phase-1) fabrication-still-present data shape, since D1a and the
+fabrication fix (§4) are validated independently before either depends on the other. A second
+fixture, added specifically for the `data_status` distinction above: a single-valued factor
+(`analyst_factor`/`block_trade_factor`-shaped — one distinct value across every row) must
+assert `({}, "insufficient_variance")`, never `"contaminated"` — this is the exact regression
+Stage 4's review caught, where a permanently sparse factor's `{}` was indistinguishable from a
+real tie.
 
 ## 4. D1b — date scoping and deterministic order
 
@@ -137,10 +190,15 @@ this row?**
 
 **Decision: the absent factor is excluded from the weighted sum and the remaining present
 factors' weights are renormalized to sum to 1.0 for that row**, not replaced by any sentinel
-value (0.5, 0.0, or otherwise). This is not a new idiom — it is
-`blended_weights_for_auto_apply`'s own existing pattern (`confidence_calibration.py:153-177`:
-"leave every factor missing from `suggested_weights` completely unchanged... renormalize the
-WHOLE set back to sum to 1.0"), applied per-row instead of per-config-update. Rejected
+value (0.5, 0.0, or otherwise). This mirrors the same underlying idea
+`blended_weights_for_auto_apply` already applies elsewhere in this module
+(`confidence_calibration.py:153-177`: renormalize after some inputs go untouched/absent) —
+worth naming as precedent for the *shape* of this decision, though it is a different
+operation over a different input shape: that function's renormalization is over a
+config-level weights dict where every key is always present and an untouched factor still
+holds its old value in the sum, while this section's is over a per-row factor-value dict
+where an absent factor is dropped from the sum entirely, not held constant. The formula below
+(§5.2) is correct and self-contained on its own terms regardless of that precedent. Rejected
 alternative: keep the old default value for scoring purposes and only track absence
 separately for the diagnostic. Rejected because the audit measured, for two of the four
 sites, that the default is *not* neutral in outcome (`agreement_factor`'s 0.5 bucket wins
@@ -315,6 +373,16 @@ once real data exists," the exact language already used for `cluster_factor`/`tr
 Phase 6 material (§10)** — re-measured and very likely changed once D1's fix has enough
 resolved signals behind it; nothing in this design treats them as final.
 
+**Implementation-plan note:** this split is exactly the scenario
+`.claude/skills/config-field-edit/SKILL.md` exists for — adding/restructuring a
+`config/settings.yaml` field while the live dev server may have its own concurrent tuning
+applied (dashboard Controls-panel edits, applied calibration suggestions). §9 establishes
+this field has exactly that shape: two live write paths (`main.py`'s auto-apply, `routes.py`'s
+manual `/apply` route) already apply suggestions into `whale_confidence_weights` today.
+Stage 5's implementation plan should drive this migration through that skill rather than a
+hand-rolled rename/split, so neither write path's in-flight config state is clobbered
+mid-migration.
+
 ### 7.2 `services/confidence_scoring.py` changes
 
 - `DEFAULT_WEIGHTS` → `DEFAULT_ACCURACY_WEIGHTS` (rename; a `DEFAULT_WEIGHTS = DEFAULT_ACCURACY_WEIGHTS`
@@ -407,19 +475,24 @@ directly"):
       "accuracy_n": <resolved_count>, "accuracy_base_rate": ...,
       "edge_n": <priced & resolved count>, "edge_base_rate": ...,
     },
-    "measurement_valid": <bool, §6.3>,
+    "measurement_valid": <bool, §9>,
   },
   "gated_reason": ..., "resolved_count": ...,
 }
 ```
 
 `edge.per_factor` needs a new bucketing function, `_bucket_mean_edge(rows, factor_name)` —
-**reusing** the tie-safe bucketing D1a builds (§3), not a second copy of the boundary-in-tie
-logic, grouped instead by mean `edge = kalshi_fees.unit_cost(side, price) → payoff -
-unit_cost - taker_fee_per_contract(unit_cost)` per bucket rather than win rate. This is new
-code (the audit never designed a general-purpose version of this, only ran the specific
-in-band numbers in §4.1 by hand) but its shape is fully determined by reusing D1a's guard
-and the audit's own stated formula — not a new idea being introduced here.
+**reusing** §3's shared tertile-split-plus-contamination-check core (the same
+`(buckets, data_status)` pair `_bucket_win_rates` returns, §3), not a second copy of the
+boundary-in-tie logic, grouped instead by mean `edge = kalshi_fees.unit_cost(side, price) →
+payoff - unit_cost - taker_fee_per_contract(unit_cost)` per bucket rather than win rate.
+`edge.per_factor`'s entries carry `data_status` through the same way `accuracy.per_factor`'s
+do — §9's `measurement_valid` reads both lists, and `unusualness_factor`/`depth_factor`/
+`agreement_factor` (the edge score's only members) need this signal available here just as
+much as the accuracy score's factors do. This is new code (the audit never designed a
+general-purpose version of this, only ran the specific in-band numbers in §4.1 by hand) but
+its shape is fully determined by reusing D1a's guard and the audit's own stated formula — not
+a new idea being introduced here.
 
 **`brier_skill_vs_market`** (D2's other explicit recommendation): `1 -
 (composite_brier / market_price_brier)`, both computed over the same priced-subset rows
@@ -491,23 +564,57 @@ if ever flipped, raise `context_factor` to 0.34 (hardening the zero-volume artif
 simultaneously nearly halve `trend_factor` (0.3131 → 0.1818) off a contaminated measurement.
 A written warning against this is necessary but not sufficient — a future session enabling
 auto-apply for an unrelated reason would not know to re-read this design first. This design
-adds a mechanical block instead:
+adds a mechanical block instead — at **both** of `whale_confidence_weights`'s real write
+paths, not one (Stage 4's review found the original wording named only one; both are listed
+below and in "Touched files").
 
 `generate_calibration_report()`'s `report` gains `"measurement_valid": bool` — `True` only
-when **none** of the current report's `_bucket_win_rates` calls hit the boundary-in-tie
-guard (§3) for any factor in either score's factor set. `blended_weights_for_auto_apply(...)`
-(`confidence_calibration.py:153-177`) gains a required check at its call site (the auto-apply
-route, not buried inside the pure function itself, consistent with this module's existing
-"main.py's trading loop calls `config_store.update()`, this module never writes config
-itself" boundary): **the auto-apply route refuses and logs a `fault_log` entry if
-`measurement_valid` is `False`**, regardless of what `auto_apply_enabled` says. This makes
-"don't apply `suggested_weights` until D1 lands and re-measurement confirms" (D4) enforced by
-the code path itself, not only by this document's own instruction — the same "a real gate,
-not a comment" standard `kalshi_account.trading_enabled` already sets for real trading.
+when **none** of the current report's per-factor entries, across both `accuracy.per_factor`
+and `edge.per_factor` (§7.5), carry `data_status == "contaminated"` (§3's three-way
+`"ok"`/`"insufficient_variance"`/`"contaminated"` distinction). A factor parked permanently at
+`"insufficient_variance"` — `analyst_factor`/`block_trade_factor`, structurally single-valued
+per the audit's own full census, §1.8/§1.9 — never blocks this: it has no tie to detect and no
+future report can change that, so it is a benign, permanent condition, not a measurement
+defect. Only `"contaminated"` (a tertile cut landing inside a materially large tie, §3's own
+guard) does. This is the distinction §3 exists to compute, and the reason its return shape
+needed to say more than empty-vs-not.
 
-Once D1 (§3, §4) has actually landed and no factor trips the guard on live data,
-`measurement_valid` becomes `True` again on its own — no manual flag to flip, no config
-value to remember to change back.
+`blended_weights_for_auto_apply(...)` (`confidence_calibration.py:153-177`) gains a required
+check at **both** of its real call sites — not buried inside the pure function itself,
+consistent with this module's existing "the caller writes config, this module never writes it
+itself" boundary:
+
+1. `main.py:453-459` (`_maybe_run_auto_apply`'s automatic path), itself already gated behind
+   `confidence_calibration.auto_apply_enabled` (default `false`).
+2. `services/whale_calibration/routes.py`'s `POST /api/confidence-calibration/apply`
+   (`apply_confidence_calibration_suggestion`, write at `:155`) — the manual path wired to the
+   dashboard's existing Apply button (`frontend/src/js/advisory-calibration.js:113`). By its
+   own comment this route is "always available regardless of `auto_apply_enabled`" — it
+   checks no flag at all today, which makes it the *more* direct path to D4's named risk: one
+   human click writes a contaminated blend into `whale_accuracy_weights`, no config flip, no
+   cooldown, no confirmation phrase required.
+
+Both refuse and log a `fault_log` entry (same idiom each site already uses for its own
+applied-change logging, `source` distinguishing `"calibration-auto-apply"` vs
+`"calibration-manual"`) when `measurement_valid` is `False`, regardless of what
+`auto_apply_enabled` says or which of the two paths a human or the tick loop reaches. §11's
+GitNexus-impact-check list requires an impact check on both sites for exactly this reason —
+the review noted that a list naming only one site would let an implementer discover the
+second the same way the review did, by accident. This makes "don't apply `suggested_weights`
+until D1 lands and re-measurement confirms" (D4) enforced by the code path itself at every
+write path, not only by this document's own instruction or by whichever call site an
+implementer happens to patch first — the same "a real gate, not a comment" standard
+`kalshi_account.trading_enabled` already sets for real trading.
+
+Once D1 (§3, §4) has actually landed and no factor's cut lands inside a materially large tie
+on live data, `measurement_valid` becomes `True` again on its own — no manual flag to flip, no
+config value to remember to change back, and (per the `data_status` distinction above) no
+false-forever state from `analyst_factor`/`block_trade_factor`'s permanent single-valuedness.
+As literally specified against a bare `{}` check, `measurement_valid` could never turn `True`
+on real data — those two factors return `{}` via the benign, permanent branch on every future
+report, indistinguishable from real contamination without `data_status`. The three-way
+distinction is what makes "becomes valid again on its own" an actually true claim rather than
+an aspiration the mechanism couldn't deliver.
 
 ## 10. Phased rollout
 
@@ -517,12 +624,12 @@ value or any live-visible score.
 
 | Phase | Change | Gate |
 |---|---|---|
-| 0 | D1a: boundary-in-tie predicate + materiality floor in `_bucket_win_rates` (§3); D1b: `ORDER BY seen_at`, optional `since_ts` on `resolved_signals_with_factors()` (§4). Report-only — no weight, no score, no schema change | fixture test: `depth_factor` clean, other six factors return `{}` on current (pre-Phase-1) data; the superseded `low_edge != high_edge`-only test is removed, not left standing |
+| 0 | D1a: boundary-in-tie predicate + materiality floor + three-way `data_status` return in `_bucket_win_rates` (§3); D1b: `ORDER BY seen_at`, optional `since_ts` on `resolved_signals_with_factors()` (§4). Report-only — no weight, no score, no schema change | fixture test: `depth_factor` returns `(real_buckets, "ok")`, the other six contaminated factors return `({}, "contaminated")` on current (pre-Phase-1) data; a single-valued-factor fixture returns `({}, "insufficient_variance")`, never `"contaminated"` (the defect-2 regression); the superseded `low_edge != high_edge`-only test is removed, not left standing |
 | 1 | Fabrication fixes at all four sites (§5.1); `composite_confidence_breakdown`'s present/absent renormalization (§5.2); `_bucket_win_rates`'s `is not None` filter fix (§5.3, hard dependency on this phase, ships in the same commit) | unit test per site asserting `None` flows through instead of the old sentinel; renormalization unit test (synthetic all-but-one-present case); spot-check (read-only) that freshly-logged real signals now carry real `null`s where expected |
 | 2 | Shared diagnostic: `input_coverage` on the calibration report (§6.1); `check_confidence_input_coverage` folded into `run_offline`/`GET /api/quality/summary` (§6.2) | new report field present and populated; new `Check` appears in `/api/quality/summary`'s output with `status: ok` once calibration is ungated |
 | 3 | **Re-measurement (D4's blocking gate).** No code change — re-run `generate_calibration_report()` against real accumulated post-Phase-1 history; confirm the honest, tie-safe per-factor gaps land in the same order of magnitude as the audit's own corrected numbers (agreement +7.4–8.9, depth residual ≈ −17.4 before any further fix, trend's with-vs-neutral gap ≈ +30 once `momentum()` coverage allows a clean split, etc.) | `measurement_valid: true` on a live report over real data; the specific numbers are recorded, not merely "looks plausible" |
-| 4 | Dual-score plumbing: config schema split (§7.1), `confidence_scoring.py` signature/return-shape change (§7.2), `edge_score` persistence (§7.4). `score`/`confidence`'s value and meaning are unchanged for every existing consumer | unit tests for the new signature (renamed/added params, `edge_score` field); live signals populate `edge_score` with no dashboard-visible change to `confidence` |
-| 5 | Calibration report split (§7.5): `accuracy`/`edge`/`populations` sections, `_bucket_mean_edge` (reusing D1a's guard), `brier_skill_vs_market` (via the new `stats_power.brier_score` helper), `measurement_valid` wired to §9's auto-apply block | report shape matches §7.5; auto-apply route integration test confirms it refuses when `measurement_valid` is `False` |
+| 4 | Dual-score plumbing: config schema split (§7.1, via the `config-field-edit` skill given the two live write paths named in §9), `confidence_scoring.py` signature/return-shape change (§7.2), `edge_score` persistence (§7.4). `score`/`confidence`'s value and meaning are unchanged for every existing consumer | unit tests for the new signature (renamed/added params, `edge_score` field); live signals populate `edge_score` with no dashboard-visible change to `confidence` |
+| 5 | Calibration report split (§7.5): `accuracy`/`edge`/`populations` sections, `_bucket_mean_edge` (reusing §3's shared tie-check core), `brier_skill_vs_market` (via the new `stats_power.brier_score` helper), `measurement_valid` wired to §9's block at **both** write paths | report shape matches §7.5, including each per-factor entry's `data_status`; an integration test confirms **both** write paths refuse independently when `measurement_valid` is `False` (`main.py`'s auto-apply, with `auto_apply_enabled: true` forced so the test proves this block fires even when that other gate is open; `routes.py`'s manual `/apply` route, called directly, since it reads no such flag); a further test confirms a report where the only non-`"ok"` factors are `"insufficient_variance"` yields `measurement_valid: true` |
 | 6 | **Weight-value retuning (not designed in this document).** Using Phase 3's re-measurement plus Phase 5's dual-objective data, a human reviews and sets real `whale_accuracy_weights`/`whale_edge_weights` values — the audit's own numbers, honestly re-measured, inform this but this design does not pre-decide it | human-reviewed config change, same discipline as any other live strategy tuning; explicitly not `auto_apply_enabled` |
 
 Phases 0–2 can ship together as one initiative-branch (they share no dependency ordering
@@ -534,17 +641,25 @@ the implementation plan, not a constraint this design enforces.
 ## 11. GitNexus impact-check requirement (for the implementation plan, not this stage)
 
 `services/confidence_scoring.py`, `services/whale_calibration/confidence_calibration.py`,
-and `services/whalewatchers/kalshi_trade_tape.py` are all on `CLAUDE.md`'s money/strategy
-hot path. Per this repo's own standing toolchain rule, the implementation plan must run
-`mcp__gitnexus__impact` (or `context`/`trace`) on each of the following before making the
-corresponding multi-file edit, not after: (a) the `weights` → `accuracy_weights` rename and
-`DEFAULT_WEIGHTS` → `DEFAULT_ACCURACY_WEIGHTS` rename (§7.2 — a real signature/name change
-with multiple call sites: `kalshi_trade_tape.py`, `whale_simulator.py`,
-`confidence_calibration.py`, and the test suite); (b) `_bucket_win_rates`'s applicability
-filter change (§5.3 — every reader of its return shape); (c) `log_signal`'s new parameter
-and the `signals` schema addition (§7.4 — every writer and reader of that table). This is
-noted here as a requirement the plan must satisfy; running the checks themselves is
-implementation work, not design work, and is not performed in this stage.
+`services/whalewatchers/kalshi_trade_tape.py`, `main.py`, and
+`services/whale_calibration/routes.py` are all on `CLAUDE.md`'s money/strategy hot path (the
+last two by virtue of being the two real writers of `whale_confidence_weights`/
+`whale_accuracy_weights` identified in §9). Per this repo's own standing toolchain rule, the
+implementation plan must run `mcp__gitnexus__impact` (or `context`/`trace`) on each of the
+following before making the corresponding multi-file edit, not after: (a) the `weights` →
+`accuracy_weights` rename and `DEFAULT_WEIGHTS` → `DEFAULT_ACCURACY_WEIGHTS` rename (§7.2 — a
+real signature/name change with multiple call sites: `kalshi_trade_tape.py`,
+`whale_simulator.py`, `confidence_calibration.py`, and the test suite); (b) `_bucket_win_
+rates`'s applicability filter change and its return-shape change to `(buckets, data_status)`
+(§5.3, §3 — every reader of its return shape, including `_factor_report` and the new
+`_bucket_mean_edge`); (c) `log_signal`'s new parameter and the `signals` schema addition
+(§7.4 — every writer and reader of that table); (d) **both** `measurement_valid` call sites
+added by §9 — `main.py:453-459` and `services/whale_calibration/routes.py`'s `/apply` route.
+This fourth item exists because Stage 4's review found the design's original wording
+undercounted these to one call site; an implementation plan following this list mechanically
+must not be able to repeat that mistake. This is noted here as a requirement the plan must
+satisfy; running the checks themselves is implementation work, not design work, and is not
+performed in this stage.
 
 ## 12. Testing strategy (design-level, not test code)
 
@@ -559,11 +674,16 @@ implementation work, not design work, and is not performed in this stage.
   (`monkeypatch DB_PATH` to a tmp path, per this repo's standing convention — `log_signal`
   with `edge_score` set, read back, assert round-trip); a report-shape test for the new
   `accuracy`/`edge`/`populations` split.
-- **`measurement_valid` (§9):** an integration test that a report built from a fixture with
-  a known contaminated boundary produces `measurement_valid: False`, and that the auto-apply
-  route call is refused (not merely that the pure function returns something falsy) when
-  that flag is `False`, with `auto_apply_enabled: true` forced in the test fixture so the
-  test proves the block fires even when the *other* gate is open.
+- **`measurement_valid` (§9):** an integration test that a report built from a fixture with a
+  known contaminated boundary produces `measurement_valid: False`, and that **both** write
+  paths are refused (not merely that the pure function returns something falsy) — `main.py`'s
+  auto-apply call, with `auto_apply_enabled: true` forced in the test fixture so the test
+  proves the block fires even when the *other* gate is open; and `routes.py`'s manual
+  `/apply` route, called directly with `auto_apply_enabled` left at its default, since that
+  route reads no such flag at all. A second test: a report fixture where the only non-`"ok"`
+  factors are `"insufficient_variance"` (single-valued, `analyst_factor`/`block_trade_factor`-
+  shaped) asserts `measurement_valid: True` — the regression Stage 4's review caught, where a
+  permanently sparse factor's `{}` return was indistinguishable from real contamination.
 - All new/modified tests follow this repo's existing `monkeypatch(DB_PATH)`/read-only-or-
   set-confirm-revert conventions for anything touching `data/*.db`; none of this design's
   test surface writes to a live database.
@@ -602,6 +722,14 @@ phase (Phase 6, Phase 0 test suite) that revisits it, not left as an open blank.
   deliberately: §7.5 is where it's *seen* in the report, §9 is where it's *justified*; a
   forward reference in §7.5 to "§9" makes the ordering unambiguous rather than requiring a
   reorder of two already-large sections.
+- §3's `data_status` (per-factor, report-wide: "can this factor's tertile split be trusted at
+  all") and §5.2's per-row `None` (per-row, per-signal: "does this one row have a value for
+  this factor") are checked to not be confusable despite both meaning some flavor of
+  "missing" — they operate at different levels (one factor-and-report, one row-and-signal)
+  and neither substitutes for the other: a factor can be `"insufficient_variance"` while every
+  row that does carry it holds a real, non-`None` value (that is exactly
+  `analyst_factor`/`block_trade_factor`'s actual shape — always present when scored, just
+  never varying).
 
 **Scope check:** this document covers one coherent architecture (D1's fix, the diagnostic it
 enables, D2's dual-score plumbing, and the phased sequencing that respects D4) — decomposing
@@ -624,3 +752,12 @@ later, human-gated change).
   justification and an explicit note that the implementation plan's test suite is what
   actually validates it against the audit's two reference points — avoiding both a vague
   requirement and a false claim of measured precision.
+- "How many real write paths does `measurement_valid` need to gate" (Stage 4 review, Finding
+  1) — resolved in §9: both `main.py:453-459` and `services/whale_calibration/routes.py`'s
+  `/apply` route, named explicitly rather than described as "the auto-apply route" and left
+  for an implementer to enumerate.
+- "How does `measurement_valid` tell a permanently sparse factor apart from a contaminated
+  one, when both return `{}` from `_bucket_win_rates`" (Stage 4 review, Finding 2) — resolved
+  in §3: a three-way `data_status` (`"ok"`/`"insufficient_variance"`/`"contaminated"`) carried
+  through `_factor_report` and `_bucket_mean_edge`, with `measurement_valid` (§9) reacting
+  only to `"contaminated"`.
