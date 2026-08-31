@@ -1,35 +1,53 @@
 # Next action
 
-**Review PR #299 and PR #300** — two full research→review→design→review→plan
-pipelines (subagent-delegated, each stage independently re-verified before
-the next), both docs-only, both "ready for execution," neither pushed toward
-implementation yet:
+**Give PR #303 the "nothing advances on one pass" review cycle, then merge.**
+`fix/entry-gate-netting-remediation` (PR #298 follow-up — watermark boundary
+gap, stale docstring, misleading metric comment). Open, mergeable, CI green,
+but has not been through self-review → independent adversarial-review Agent
+call → consolidation yet — it's an in-scope PR (real logic fix), not a
+trivial one. Do that (each pass its own PR comment, per the rule), then
+`gh pr merge --merge` and clean up with `scripts/cleanup-worktrees.sh`.
 
-- **#299** — Kalshi category data-shape audit: what category-specific
-  Kalshi data this app is missing across all 11 traded categories.
-  Investigation went through 2 review/revision rounds (a milestone-sampling
-  bug — 1 page of 275 — inflated a false "Sports-only" conclusion into
-  durable guidance until the full 137,200-milestone census corrected it);
-  design went through 3 rounds, including the plan-writing stage itself
-  catching a real completeness regression in the design's own extractor
-  pseudocode (would have silently broken `basketball_game`/
-  `soccer_tournament_multi_leg`, the 2nd/3rd-largest milestone types).
-  14-task implementation plan at the end.
-- **#300** — whale-confidence-weights scoring remediation: most of tonight's
-  earlier live discrimination numbers turned out to be measurement
-  artifacts, not real findings (already corrected in `config/settings.yaml`'s
-  comment on this branch). Design review caught a safety-critical gap in the
-  `measurement_valid` auto-apply gate (missed one of two real write paths;
-  couldn't distinguish real contamination from permanent data-sparsity) —
-  fixed and re-verified. Encodes the standing directive to score accuracy
-  and edge as two independent scores, never blended. 16-task implementation
-  plan at the end.
+**Leave alone — active peer-session work, not ready for anything:**
+- `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
+  13 commits ahead of `main`, no PR yet).
 
-Both branches (`worktree-agent-a72f71384c869f628`, `worktree-agent-a5110e2d3016b26a8`)
-still exist as `.claude/worktrees/` checkouts if execution is approved —
-resume there rather than starting fresh worktrees.
+## Recently resolved (2026-08-31, this session)
 
-**Also still open, unrelated to the above:**
+- Two new permanent CLAUDE.md HARD RULEs merged: "nothing advances on one
+  pass" (PR #304 — self-review/adversarial-review/consolidation gates every
+  planning-stage handoff and PR merge) and the PR/commit task-list-grep
+  requirement in `.claude/rules/branching-and-ci.md` (PR #305). Both went
+  through their own review cycle, including an independent adversarial pass
+  that caught real defects each time (see the memory files
+  `nothing-advances-on-one-pass.md` and `read-pr-body-before-merging.md` for
+  the verified evidence behind adopting this — 11/12 real catches across
+  PR #299 and #300's review checkpoints, not adopted on faith).
+- PR #299, #300, #301, #302 all merged. Primary checkout (`main` working
+  directory, currently on `feat/realtime-data-plane-remediation`) was stale
+  relative to `origin/main` after those merges — fixed by merging
+  `origin/main` into it. **Lesson for next time:** that merge touches many
+  tracked `.py` files under ddev's bind mount and triggers a live
+  `uvicorn --reload` restart — don't fire a request at the running app in
+  the same breath as a file-changing git operation on the primary checkout,
+  or an in-flight request can die as a client-side 504 even though the
+  backend completes fine (confirm via the relevant status endpoint, not the
+  POST response, if this happens).
+- PR #302's deferred Task 5 (live ddev verification of the two-tier backup
+  split) completed clean once the primary was synced: regular-tier backup
+  correctly excludes series_watcher.db/candidate_log.db/market_history.db;
+  large-tier backup correctly includes exactly those three (confirmed via
+  `/api/backup/status`, not just the POST response, because of the 504
+  above). **Still open:** market_history.db's row-cap is only confirmed
+  reachable, not confirmed effective yet — current size (1.16GB) matches
+  the documented pre-fix baseline, which is expected since the fix caps
+  growth going forward rather than shrinking existing rows. Re-check its
+  size/row count after an hour or so of normal operation to confirm the
+  cap is actually holding.
+- Two provably-merged worktrees cleaned up via `scripts/cleanup-worktrees.sh`
+  (`agent-a5110e2d3016b26a8`/PR #300, `web-skip-test-tighten`/PR #301).
+
+## Also still open, unrelated
 
 - Re-run `python -m tools.soak_analyzer` around 2026-08-31 16:11 UTC (24h
   past the first restart boundary) to confirm the `capture_writer_health`/
@@ -40,17 +58,12 @@ resume there rather than starting fresh worktrees.
   (PR #263, merged docs-only) — temperature-market settlement-edge ingestion
   via Kalshi's `GET /live_data/weather/{city}`. Stops at the spec per the
   brainstorming skill's own gate until reviewed; opens a new market category.
-- **R6 retired** (`fix/realtime-data-plane-remediation`, merged to `main` via
-  #296): the peer-session git-merge guard is gone outright — no installed
-  replacement, convention-only now. `tools/kanban_sync`'s `find_by_marker`
-  bug and AQC's branch-cleanup action are also fixed/retired the same PR.
-  `CLAUDE.md`'s Toolchain section carries the new "installed over handspun"
-  standard this all came from.
-- PR #298 (entry-gate ME-pairing fix, another session) narrows but does not
-  moot PR #202's event-scoped ME gate plan — #202 retains live scope
-  (N-way blocking decision, `event_ticker` as a first-class field, the
-  limit-order path fix, blocked-flip P&L measurement). Both open, see
-  `docs/open-decisions.md`.
+- `data/fault_log.db` storage-growth warning in `/api/quality/summary`
+  (221184 -> 761856 bytes over 23.8h, >=2.0x) — not yet triaged this session.
+- `/api/quality/summary`'s `series_funnel` checks show KXBTC15M/KXMLBGAME/
+  KXATPMATCH all underwater at the price level after fees — this is the
+  already-documented, already-open pricing/edge gap at entry (see CLAUDE.md's
+  "Standing goal" section), not a new finding; no new action implied here.
 
 Layer contract behind the tool: `docs/data-layer-analysis-layer-contract.md`.
 Full audit history if picking this up cold:
