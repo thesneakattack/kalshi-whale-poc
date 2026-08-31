@@ -106,8 +106,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-selenium.txt
 
-      - run: pip install -r requirements-dev.txt
+      # requirements-dev.txt alone doesn't have selenium since 42964d8
+      # (2026-08-25) split it into its own file for the Woodpecker grid-service
+      # setup; this fallback job still runs selenium directly and needs both.
+      - run: pip install -r requirements-dev.txt -r requirements-selenium.txt
 
       - uses: browser-actions/setup-chrome@v1
         id: setup-chrome
