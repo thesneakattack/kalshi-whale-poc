@@ -55,7 +55,14 @@ section of that document; this plan does not re-derive its reasoning, only seque
 - **The Phase 3 gate is load-bearing for this plan, not just the design.** Task 10 is a
   hard prerequisite for every task in Phase 4 and Phase 5 (Tasks 11–16). No later task
   may be started, in any order, before Task 10's own checkbox is checked with recorded
-  evidence (§10's D4 gate; this plan's own sequencing, below).
+  evidence (§10's D4 gate; this plan's own sequencing, below). **Caveat found during PR
+  review, worth stating plainly: this is process discipline (a documented task
+  dependency plus a required-evidence checkbox), not a code- or CI-enforced block** — no
+  test or runtime check stops an implementer (human or agent) from starting Task 11's
+  code before Task 10's checkbox is checked. That is a different, weaker guarantee than
+  Task 12's `measurement_is_valid` gate below, which *is* code-level and test-enforced
+  (a runtime check with an adversarial test proving it fires). Whoever executes this plan
+  needs to actually honor the ordering; nothing here will catch it if they don't.
 - **The `measurement_valid` gate ships atomically with the write-path retarget it
   protects, not as a follow-up (see Task 12's rationale for why this plan brings it
   forward from the design's literal Phase 5 slot into Phase 4).**
@@ -1816,7 +1823,10 @@ Task 1,2 ──► Tasks 3-7 (Phase 1) ──► Tasks 8-9 (Phase 2) ──► T
 
 No task in Phase 4 or 5 (Tasks 11–16) is schedulable before Task 10's checkbox is
 checked with recorded evidence — stated as a plan-level constraint above, not only as
-prose in Task 10 itself.
+prose in Task 10 itself. As noted there too: this "HARD GATE" is enforced by whoever
+executes the plan following the checkbox order, not by a test or CI check that would
+catch a Task 11 started early — unlike Task 12's `measurement_is_valid`, there is no
+code-level trip-wire here.
 
 **Safety check:** no task's Files list touches `services/risk_manager.py`,
 `services/kalshi_account_client.py`, or any `kalshi_account.trading_enabled`/
