@@ -539,3 +539,19 @@ def test_upsert_mve_markets_empty_list_is_a_noop(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     cat.upsert_mve_markets([], updated_at=time.time())
     assert cat.scan_progress()["total_markets"] == 0
+
+
+def test_series_ticker_for_returns_the_catalogued_value(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.clear_all()
+    cat.upsert_markets("SERIES-A", "Politics", [
+        _market("TICK-A", "EVT-A", occurrence_offset_sec=-300),
+    ], updated_at=now)
+    assert cat.series_ticker_for("TICK-A") == "SERIES-A"
+
+
+def test_series_ticker_for_returns_none_for_an_unknown_ticker(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    cat.clear_all()
+    assert cat.series_ticker_for("NOT-CATALOGUED") is None

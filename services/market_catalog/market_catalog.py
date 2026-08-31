@@ -572,3 +572,18 @@ def clear_all():
     with _connect(DB_PATH) as conn:
         conn.execute("DELETE FROM markets")
         conn.execute("DELETE FROM series_scan_state")
+
+
+def series_ticker_for(ticker: str) -> str | None:
+    """Single indexed PRIMARY KEY lookup - the authoritative series_ticker
+    this catalog already confirmed via a real get_event()-backed scan
+    (catalog_scan.py/mve_scan.py), never a guess from the ticker string's
+    own prefix (signal_log.series_of() is explicitly a best-effort proxy,
+    not validated). None if not yet scanned into the catalog - callers
+    should skip this ticker for the current cycle rather than pay for an
+    extra get_event() call to resolve it."""
+    with _connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT series_ticker FROM markets WHERE ticker = ?", (ticker,)
+        ).fetchone()
+    return row[0] if row else None
