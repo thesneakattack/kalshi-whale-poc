@@ -151,7 +151,7 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
     broad_cache = state["milestone_by_event"]
     milestone_by_event: dict[str, str] = {}
     has_milestone: set[str] = set()
-    needs_fetch = []
+    needs_fetch: list[str] = []
     for et in to_poll:
         ms_id = broad_cache.get(et)
         if ms_id:
