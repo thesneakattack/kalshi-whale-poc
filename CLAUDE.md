@@ -54,6 +54,7 @@ Any arithmetic, unit conversion, or numeric derivation gets a `dimensional-analy
 - Applies to code being written or edited in a task's scope; not retroactive busywork on unchanged arithmetic outside that scope.
 - A displayed or persisted value's dimension is traced to its backend definition, never re-derived client-side or assumed from a variable name.
 - `dimensional-analysis` is unit/scale annotation and consistency checking, not a numeric engine; for non-trivial arithmetic, the Wolfram MCP server (`mcp__claude_ai_Wolfram__WolframLanguageEvaluator`/`WolframAlpha`) is available to numerically verify a formula's actual result — optional, not required.
+- The automated nudge (`.claude/hooks/guard_workflow.py`'s `post()`) still only fires on money/probability-shaped edits (hot-path backend code or money UI); this rule's wider scope is enforced by the session reading and following it, not yet by the hook — broadening the hook's detection is a separate, in-scope-for-review follow-up, not silently assumed done here.
 
 ## Standing goal (2026-08-26) and current objective (2026-08-23)
 
