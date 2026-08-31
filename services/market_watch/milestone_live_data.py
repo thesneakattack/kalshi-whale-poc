@@ -33,9 +33,11 @@ So this module implements a **default pass-through** (matching today's
 pre-existing behavior for anything not named as deviant - both call sites
 already did a raw `details.get("widget_status")` / `details.get("winner")`
 before this module existed) with the spec's dispatch table applied only
-to the 9 named-deviant types (minus `esports_match`/`political_race`,
-deferred to Tasks 7/8 pending live-payload verification - see the comment
-on _EXTRACTORS below). This is not a redesign of D2's goal - every fix the
+to the 9 named-deviant types (minus `political_race`, still deferred to
+Task 8 pending live-payload verification - see the comment on _EXTRACTORS
+below; `esports_match` was added by Task 7 once its own live-payload
+verification confirmed a mapping - see _esports_match's docstring). This
+is not a redesign of D2's goal - every fix the
 spec's §2.1-§2.3 describes still ships - it is a correction to how the
 "unmapped type" default is implemented, grounded in the same evidence
 document the spec itself cites, per CLAUDE.md's data-plane completeness
@@ -63,17 +65,62 @@ def _golf_tournament(details: dict) -> dict:
     return {"status": details.get("widget_status"), "winner": None}
 
 
+def _esports_match(details: dict) -> dict:
+    """Task 7 (kalshi-category-data-completeness), live-verified against
+    four real captured lifecycles in this app's own data/game_state.db
+    (game_states table, DB_PATH services/game_state.py:58 - NOT the
+    non-existent data/game_states.db the task brief's SQL sketch named):
+    KXCS2GAME-26AUG290900THEAE, KXDOTA2GAME-26AUG300400MOUZNAVI,
+    KXLOLGAME-26AUG281315FNCVIT, KXVALORANTGAME-26AUG270400NSGENG - CS2/
+    Dota2/LoL/Valorant, each spanning pregame -> live -> finished. See
+    tests/test_milestone_live_data.py's esports_match comment block for
+    the full evidence trail. Two-line summary:
+
+    status: `widget_status` is real and reliable for this type - verified
+    3-state ("created" pregame, "live", "complete" finished) across every
+    captured row - so this is genuine pass-through, identical in shape to
+    tennis/basketball's default path (`is_live` is redundant with it and
+    less informative, so not threaded through separately).
+
+    winner: verified permanently unavailable from THIS payload - no
+    `winner` key (matches census S4/D2) and no team-name field anywhere
+    (checked home_stats/away_stats too - numeric per-map stat blocks, not
+    identity). home_score/away_score reveal which SIDE won once finished,
+    but catalog_scan.py's only consumer matches `winner` as a NAME
+    substring against a related market's custom_strike/yes_sub_title/
+    no_sub_title (catalog_scan.py:154-167), so a bare "home"/"away" would
+    silently never match anything - worse than the honest None, not
+    better. docs/kalshi/targets_and_milestones.md:28 confirms why: a
+    resolvable `home_team_id`/`away_team_id` lives on the MILESTONE
+    object's own separate `details`, never on the live-data `details` this
+    function receives (and this task's brief forbids a signature change to
+    thread that through). Same shape as `_golf_tournament` above, for the
+    same reason: a real answer exists exchange-side, just not in this
+    payload."""
+    return {"status": details.get("widget_status"), "winner": None}
+
+
 def _no_live_outcome(details: dict) -> dict:
     return {"status": None, "winner": None}
 
 
 _EXTRACTORS = {
     # Only the census's named-deviant types (S3 ∪ S4) get their own entry.
-    # esports_match and political_race are added by Tasks 7/8 once their
-    # flagged assumptions (spec §2.3) are live-verified - until then they
-    # take the _pass_through default below, which is IDENTICAL to today's
-    # behavior for them (both currently read details.get("winner") raw), so
-    # this task changes nothing observable for those two types yet.
+    # esports_match was added by Task 7 once its flagged assumptions (spec
+    # §2.3) were live-verified against real captured payloads (see
+    # _esports_match's own docstring) - registering it here changes NO
+    # observable extract() output for this type (the default pass-through
+    # it replaces already produced the identical {"status": widget_status,
+    # "winner": None} shape, since a `winner` key never appears in a real
+    # esports_match payload); what it does change is removing esports_match
+    # from _record_default_path_type's fault-log/snapshot tracking, since
+    # its mapping is now a verified, deliberate decision rather than an
+    # unmapped type. political_race remains deferred to Task 8 pending its
+    # own live-payload verification - it still takes the _pass_through
+    # default below, which is IDENTICAL to today's behavior for it (both
+    # currently read details.get("winner") raw), so this task changes
+    # nothing observable for that type yet.
+    "esports_match": _esports_match,
     "golf_tournament": _golf_tournament,
     "company_report": _no_live_outcome,
     "truflation": _no_live_outcome,      # D3 §3.3 adds its OWN fields separately

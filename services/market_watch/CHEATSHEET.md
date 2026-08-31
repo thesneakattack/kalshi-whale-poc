@@ -234,3 +234,46 @@ Two things worth knowing before touching it:
   NOT rewired: `catalog_scan.propagate_milestone_winners`, which shares the
   identical narrow pattern but feeds settlement-outcome data that real
   trading decisions consume.
+
+## `esports_match` live-data shape, confirmed against real payloads (2026-08-31, Task 7 of kalshi-category-data-completeness)
+
+`milestone_live_data.py`'s `_esports_match` extractor was verified, not
+guessed, against four real captured lifecycles in `data/game_state.db`'s
+`game_states` table (CS2/Dota2/LoL/Valorant tickers, each spanning
+pregame → live → finished) — the table this app's own
+`live_status.py:254` already populates on every live-data poll, so the
+data pre-existed and needed no new watch. Confirmed shape, for this
+milestone `type` specifically:
+
+- `widget_status` is a real, reliable 3-state field: `"created"` (pregame,
+  scores both 0) → `"live"` → `"complete"` (finished). `is_live` is
+  perfectly redundant with it in every captured row (`true` iff
+  `widget_status == "live"`) and strictly less informative (can't tell
+  "not started" from "finished" the way the 3-state field can).
+- `winner` never appears — confirmed absent on every captured payload,
+  matching the census (`docs/superpowers/research/2026-08-30-kalshi-
+  category-data-shape-audit.md` S4/D2: `esports_match` is 9,385/10,706 of
+  the exchange-wide no-`winner` figure).
+- **No team-identity field of any kind appears in this payload**, checked
+  including `home_stats`/`away_stats` (numeric per-map stat blocks —
+  kills, gold, a per-map 0/1 `winner` flag keyed by side, never by name).
+  `home_score`/`away_score` (final best-of-N map tally) tell you which
+  *side* won once finished, but not a name. `docs/kalshi/
+  targets_and_milestones.md:28` explains why no better answer exists in
+  scope: a resolvable `home_team_id`/`away_team_id` lives on the
+  **milestone** object's own separate `details` field, never on the
+  **live-data** `details` this module receives (`ld.get("details")` from
+  `get_live_datas`/`get-multiple-live-data.md` — a different object
+  entirely, despite the same field name).
+- Consequence: `catalog_scan.py`'s only consumer of `winner`
+  (`catalog_scan.py:129`, matched as a name substring against a related
+  market's `custom_strike`/`yes_sub_title`/`no_sub_title`, `catalog_scan.py:
+  154-167`) cannot be fed a usable value for this type from live-data
+  alone — a `"home"`/`"away"` side label would silently never match
+  anything there, which is worse than the honest `None` this extractor
+  returns. `esports_match` therefore ships with the same shape as
+  `golf_tournament`: real `status` pass-through, permanent `winner: None`.
+  Resolving `esports_match` winners for real would need the milestone
+  object's `details`/structured-target IDs threaded into a *different*
+  code path than this one — out of this task's scope (its brief forbade a
+  signature change), and not attempted here.
