@@ -38,7 +38,12 @@ auto-apply write at `:453-459`, gated by `confidence_calibration.auto_apply_enab
 existing Apply button, `frontend/src/js/advisory-calibration.js:113`, and reachable
 regardless of `auto_apply_enabled`). Both call `blended_weights_for_auto_apply(...)` and then
 `config_store.update({"whale_confidence_weights": ...})` — the design's original "the
-auto-apply route" (singular) named only the first; §9 now gates both.
+auto-apply route" (singular) named only the first; §9 now gates both. One more, found at
+Stage 5 planning: `services/research/research.py:158` also reads
+`cfg.get("whale_confidence_weights")` as one of `generate_calibration_report`'s four
+callers — a read-only assembly path (`advisory.enabled`-gated, explicitly never the
+auto-apply path per its own comment), but its signature changes the same way every other
+caller's does once §7.1's config-key split lands.
 
 **Constraints honoured:** `mode: paper` stays the default; nothing here touches
 `kalshi_account.trading_enabled`, `POST /api/trading/enable`, `risk_manager.py`, or any
