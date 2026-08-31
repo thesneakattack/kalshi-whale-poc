@@ -1008,3 +1008,39 @@ like an empty result set, not a type error.
 `get-events.md`/`get-markets.md`/`get-series-list.md`; live probe above.
 **Found:** 2026-08-30, `milestone_scan.py`'s first watermarked scan
 (entry-gate-me-pairing-and-netting-remediation Part 3).
+
+---
+
+## Does `GET /series/fee_changes` return a row for every series (base fee included), or only series with an actual scheduled change?
+**Answer:** Only series with an actual scheduled fee **change** - a series
+that has never had one is simply absent from `series_fee_change_arr`, not
+an error and not a zero/base-fee row. `get-series-fee-changes.md`'s own
+schema doesn't say either way, but `changelog-index.md`'s 2025-09-21
+"Scheduled Series Fees API Endpoint" release-note entry does: "New public
+API endpoint for getting all of a series' scheduled fees... Get a series'
+fee changes. If query string parameter show_historical is set to true,
+ALL fee changes previous and upcoming will be shown." This is a log of
+*changes*, framed the same way as the sibling `get-event-fee-changes.md`
+endpoint (an override layered on the parent's existing value, not a full
+restated snapshot) - so "ticker absent" means "no override was ever
+scheduled, the series' raw `Series.fee_type`/`fee_multiplier` (from
+`get-series-list.md`) is still current," not "malformed request."
+**Gotcha:** `SeriesFeeChange.id` (`get-series-fee-changes.md:112-114`) is
+`type: string`, not an int, confirmed against the installed SDK's
+`SeriesFeeChange` Pydantic model (`id: FieldInfo(annotation=str, ...
+Strict(strict=True))`) - a plausible guess (a numeric identifier) would
+have been wrong. `scheduled_ts` (`:126-129`) is `type: string, format:
+date-time` - the installed model types it Python `datetime`, and
+`model_dump(mode="json")` re-serializes it back to an ISO-8601 string
+(confirmed directly: `{'...', 'scheduled_ts':
+'2026-08-31T17:25:14.066356Z'}`), not an epoch number - a `time.time()`
+comparison against it would be a straight type mismatch, not just a unit
+one.
+**Source:** `get-series-fee-changes.md` (full schema), `changelog-index.md`
+(2025-09-21 "Scheduled Series Fees API Endpoint" entry), `get-event-fee-
+changes.md` (sibling endpoint's override-semantics framing); installed
+`kalshi_python_async` SDK `SeriesFeeChange`/`ExchangeApi.get_series_fee_
+changes` introspected directly in the fastapi container.
+**Found:** 2026-08-31, kalshi-category-data-completeness Task 2
+(`services/kalshi/public.py::get_series_fee_changes`,
+`services/market_watch/catalog_scan.py::_get_series_cache`'s fee merge).

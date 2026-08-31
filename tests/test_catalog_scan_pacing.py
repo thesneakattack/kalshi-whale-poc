@@ -7,9 +7,11 @@ the critical position/account fetch behind it in the same REST bucket.
 """
 import asyncio
 import time
+from datetime import datetime, timezone
 
 import pytest
 
+from services import series_cache
 from services.app_state import state
 from services.market_catalog import market_catalog
 from services.market_watch import catalog_scan
@@ -110,3 +112,61 @@ def test_scan_catalog_batch_survives_a_second_contended_run_in_a_fresh_loop(tmp_
     # return_exceptions=True already guaranteed even with the bug present.
     assert first.calls == catalog_scan._CATALOG_SCAN_BATCH_SIZE
     assert second.calls == catalog_scan._CATALOG_SCAN_BATCH_SIZE
+
+
+# --- fee-changes bulk call folded into _get_series_cache (kalshi-category-
+# data-completeness Task 2) - docs/kalshi/get-series-fee-changes.md's
+# SeriesFeeChange.scheduled_ts is `type: string, format: date-time`
+# (ISO-8601), not an epoch number - confirmed against the installed SDK's
+# own model (scheduled_ts: datetime), which model_dump(mode="json")
+# re-serializes back to an ISO-8601 string. _get_series_cache._utcnow is a
+# thin, monkeypatchable wrapper so these tests can fix "now" without
+# patching the stdlib clock. _prime_series_cache isn't reused here since
+# these tests need _get_series_cache's real fetch path (a forced refresh),
+# not a pre-seeded cache.
+
+class _FakeFeeChangesClient:
+    def __init__(self, series, fee_changes):
+        self._series = series
+        self._fee_changes = fee_changes
+
+    async def get_series_list(self):
+        return self._series
+
+    async def get_series_fee_changes(self, show_historical=True):
+        return self._fee_changes
+
+
+def test_get_series_cache_applies_the_most_recently_scheduled_fee_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}  # force a refresh
+    series = [{"ticker": "K1", "category": "Sports", "volume_fp": "100",
+               "fee_type": "flat", "fee_multiplier": 0.5}]  # raw Series-object base fee
+    fee_changes = [
+        {"series_ticker": "K1", "fee_type": "quadratic", "fee_multiplier": 1.0,
+         "scheduled_ts": "1970-01-01T00:16:40+00:00"},  # epoch 1000
+        {"series_ticker": "K1", "fee_type": "flat", "fee_multiplier": 2.0,
+         "scheduled_ts": "1970-01-01T00:33:20+00:00"},  # epoch 2000, more recent, still <= now (epoch 3000)
+    ]
+    client = _FakeFeeChangesClient(series, fee_changes)
+    fixed_now = datetime.fromtimestamp(3000, tz=timezone.utc)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: fixed_now)  # not time.time() - scheduled_ts is ISO-8601, not epoch
+
+    result = asyncio.run(catalog_scan._get_series_cache(client))
+
+    assert result[0]["fee_type"] == "flat"
+    assert result[0]["fee_multiplier"] == 2.0  # scheduled_ts epoch 2000 wins over 1000, not creation order
+
+
+def test_get_series_cache_keeps_raw_fee_when_ticker_absent_from_fee_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}
+    series = [{"ticker": "K2", "category": "Sports", "volume_fp": "100",
+               "fee_type": "quadratic", "fee_multiplier": 1.0}]
+    client = _FakeFeeChangesClient(series, fee_changes=[])  # K2 never appears
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: datetime.fromtimestamp(3000, tz=timezone.utc))
+
+    result = asyncio.run(catalog_scan._get_series_cache(client))
+
+    assert result[0]["fee_type"] == "quadratic"
+    assert result[0]["fee_multiplier"] == 1.0

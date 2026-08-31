@@ -7,6 +7,7 @@ Phase 7 extraction left as the largest file in the tree).
 """
 import asyncio
 import time
+from datetime import datetime, timezone
 
 from services import market_history, series_cache, task_supervisor
 from services.app_state import bump_generation, state
@@ -188,6 +189,16 @@ _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basket
 # change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
 
 
+def _utcnow() -> datetime:
+    """Thin, monkeypatchable wrapper (kalshi-category-data-completeness Task
+    2) so tests can fix "now" for the scheduled_ts comparison below without
+    patching the stdlib clock. Not time.time(): SeriesFeeChange.scheduled_ts
+    (docs/kalshi/get-series-fee-changes.md:126-129) is `type: string,
+    format: date-time` - an ISO-8601 timestamp - not an epoch number, so the
+    comparison needs a real datetime, not a float."""
+    return datetime.now(timezone.utc)
+
+
 async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     """All series with nonzero lifetime volume (~9,400 of Kalshi's ~12,500
     total, as of 2026-08-08), sorted by volume_fp descending, cached in
@@ -198,12 +209,56 @@ async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     markets even across tens of thousands of entries, confirmed directly,
     repeatedly. Shared by both the automatic watchlist (_get_top_series,
     just the top N) and market search (search_markets, which also needs
-    the long tail to text-match against)."""
+    the long tail to text-match against).
+
+    Also folds in get_series_fee_changes' bulk call (kalshi-category-
+    data-completeness Task 2) on every refresh: each series' raw fee_type/
+    fee_multiplier (as returned by get_series_list) is only the fee it
+    launched with, not necessarily its CURRENT fee if Kalshi has since
+    scheduled a change - get-series-fee-changes.md's own SeriesFeeChange
+    entries are the authoritative log of those changes. For each
+    series_ticker, the most recently scheduled entry whose scheduled_ts is
+    already <= now (ties broken by id, spec Sec1.8) overwrites that
+    series' fee_type/fee_multiplier in place before series_cache.save() so
+    Task 1's _series_metadata_row() persists the resolved current fee, not
+    the stale launch-time one. A ticker absent from the fee-changes array
+    never had a scheduled change (confirmed via changelog-index.md's
+    2025-09-21 entry - see get_series_fee_changes' own docstring) and keeps
+    whatever fee_type/fee_multiplier its raw Series object already
+    carried."""
     cache = state["series_cache"]
     if time.time() - cache["fetched_at"] > _SERIES_CACHE_TTL_SEC or not cache["series"]:
         series = await client.get_series_list()
         series = [s for s in series if float(s.get("volume_fp") or 0) > 0]
         series.sort(key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
+
+        fee_changes = await client.get_series_fee_changes()
+        now = _utcnow()
+        effective_fee: dict[str, tuple[str, float, datetime, object]] = {}
+        for fc in fee_changes:
+            ticker = fc.get("series_ticker")
+            if not ticker:
+                continue
+            scheduled_ts = fc.get("scheduled_ts")
+            if not scheduled_ts:
+                continue
+            scheduled_at = datetime.fromisoformat(scheduled_ts.replace("Z", "+00:00"))
+            if scheduled_at > now:
+                continue  # not yet in effect
+            fc_id = fc.get("id") or ""  # tie-break key only (spec Sec1.8) - a
+            # missing id shouldn't crash the whole refresh on a
+            # same-scheduled_ts tie (str/None aren't mutually orderable in a
+            # tuple comparison); "" is a safe stand-in since which side wins
+            # a tie is arbitrary either way, per the spec's own admission.
+            current = effective_fee.get(ticker)
+            if current is None or (scheduled_at, fc_id) >= (current[2], current[3]):
+                effective_fee[ticker] = (fc.get("fee_type"), fc.get("fee_multiplier"), scheduled_at, fc_id)
+
+        for s in series:
+            resolved = effective_fee.get(s.get("ticker"))
+            if resolved is not None:
+                s["fee_type"], s["fee_multiplier"] = resolved[0], resolved[1]
+
         cache["series"] = series
         cache["fetched_at"] = time.time()
         series_cache.save(cache["fetched_at"], cache["series"])

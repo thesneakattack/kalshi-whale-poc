@@ -63,6 +63,7 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     "get_filters_for_sports": ("docs/kalshi/get-filters-for-sports.md",),
     "get_multivariate_events": ("docs/kalshi/get-multivariate-events.md",),
     "get_multivariate_event_collections": ("docs/kalshi/get-multivariate-event-collections.md",),
+    "get_series_fee_changes": ("docs/kalshi/get-series-fee-changes.md",),
 }
 
 
@@ -465,3 +466,45 @@ class KalshiPublicGateway:
             if not cursor:
                 break
         return collections
+
+    async def get_series_fee_changes(self, show_historical: bool = True) -> list[dict]:
+        """Every scheduled series-level fee change (base + overrides), one
+        unpaginated call - GET /series/fee_changes (docs/kalshi/
+        get-series-fee-changes.md, kalshi-category-data-completeness Task
+        2). GetSeriesFeeChangesResponse carries only series_fee_change_arr -
+        no limit/cursor field on the response, unlike get_events/
+        get_live_datas/get_multivariate_event_collections above, so there is
+        nothing to page through. series_ticker (the doc's own optional
+        filter) is deliberately never passed - omitting it, per the doc's
+        `required: false`, returns the whole array in one shot, which is
+        what population needs to backfill every series at once rather than
+        one ticker at a time. show_historical defaults True (not the raw
+        API's own documented default of False) so the merge below always
+        sees every past scheduled change, not just ones still in the
+        future - a series whose most recent change already took effect
+        needs that past row to resolve its *current* fee, not just an
+        upcoming one.
+
+        A series that has never had a scheduled fee change simply does not
+        appear in this array at all - confirmed via changelog-index.md's
+        2025-09-21 "Scheduled Series Fees API Endpoint" entry ("Get a
+        series' fee changes... ALL fee changes previous and upcoming will
+        be shown"): this is a log of *changes*, not a full census of every
+        series' current fee, so "ticker absent" means "never had a change,
+        keep the raw Series.fee_type" rather than a malformed request (Step
+        0 of Task 2's kalshi-contract-review, since the schema itself does
+        not state this either way).
+
+        Confirmed via the installed SDK (3.27.0) that
+        ExchangeApi.get_series_fee_changes's real param is show_historical
+        (not e.g. include_historical) - this repo's own precedent
+        (get_series_list's docstring) shows the SDK has previously diverged
+        from docs, so guessing the name here would repeat that mistake.
+        scheduled_ts comes out as an ISO-8601 string, not an epoch number -
+        the doc types it `format: date-time` (get-series-fee-changes.md:
+        126-129) and the installed SeriesFeeChange model types it Python
+        `datetime`; model_dump(mode="json") re-serializes a datetime field
+        to its ISO-8601 string form, confirmed directly against the
+        installed model, not assumed from the field name."""
+        resp = await call_with_backoff(self._client.get_series_fee_changes, show_historical=show_historical)
+        return [c.model_dump(mode="json") for c in resp.series_fee_change_arr]

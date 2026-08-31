@@ -392,3 +392,29 @@ def test_get_markets_by_tickers_explicit_batch_size_overrides_the_default_chunk(
     calls.clear()
     asyncio.run(client.get_markets_by_tickers(tickers))  # default path unchanged: 50-ticker chunks
     assert calls == [(50, 50), (50, 50), (20, 20)]
+
+
+# ---- get_series_fee_changes (kalshi-category-data-completeness Task 2) -----
+# docs/kalshi/get-series-fee-changes.md: GetSeriesFeeChangesResponse carries
+# only series_fee_change_arr - no limit/cursor, so this is one unpaginated
+# call, unlike get_events/get_live_datas/get_markets_by_tickers above.
+# series_ticker is an optional filter the doc's own schema marks not
+# required - omitted here on purpose to fetch the whole array in one call.
+
+
+def test_get_series_fee_changes_omits_series_ticker_for_the_full_array(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_series_fee_changes(show_historical):
+        calls.append(show_historical)
+        return type("R", (), {"series_fee_change_arr": [
+            _FakeModel({"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_series_fee_changes", fake_get_series_fee_changes)
+    result = asyncio.run(client.get_series_fee_changes())
+    assert calls == [True]  # show_historical defaults True, no series_ticker passed
+    assert result == [{"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}]
