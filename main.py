@@ -879,6 +879,12 @@ async def trading_loop():
                     tournament_pretail_days=el_cfg.get("tournament_pretail_days", 5.0),
                 )
             state["event_phase"] = event_phase
+            # Stamp real per-series tags (from Task 1's series_metadata/series_tags)
+            # onto each event - replaces the old per-category tags that were
+            # identical for every event in a category (2026-08-31 Task 4).
+            for et, event_meta in event_titles.items():
+                series_ticker = event_meta.get("series_ticker")
+                event_meta["category_tags"] = series_cache.get_tags_for_series(series_ticker) if series_ticker else []
             title_cache.save_event_titles(event_titles)  # event_titles here is already just this tick's new entries, see _fetch_event_titles
             state["event_live_data"].update(event_live_data)
             # trade_tape itself (the incremental, uncapped-beyond-a-sanity-

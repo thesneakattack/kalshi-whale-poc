@@ -159,3 +159,16 @@ def save(fetched_at: float, series: list[dict]) -> None:
             "INSERT OR IGNORE INTO series_tags (ticker, tag) VALUES (?, ?)",
             [(s["ticker"], tag) for s in series for tag in (s.get("tags") or [])],
         )
+
+
+def get_tags_for_series(series_ticker: str) -> list[str]:
+    """Fetch all tags for a given series ticker from series_tags table.
+    Returns an empty list if the series has no tags or doesn't exist."""
+    if not series_ticker:
+        return []
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT tag FROM series_tags WHERE ticker = ? ORDER BY tag",
+            (series_ticker,),
+        ).fetchall()
+    return [row[0] for row in rows]

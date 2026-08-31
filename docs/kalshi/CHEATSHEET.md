@@ -37,9 +37,12 @@ field no matter how it's parsed.
 **Found:** 2026-08-16, building whale-confidence subcategory segmentation
 (`services/trade_category.py`, `main.py`'s `_sport_for_event`).
 **Resolution:** 2026-08-31 (kalshi-category-data-completeness Task 4) —
-the redundant `category_tags` stamp was deleted from `main.py` trading
-loop; `series_metadata/series_tags` (Task 1) are the real per-series
-replacement.
+the old identical-per-category `category_tags` were replaced with real
+per-series tags: `event_meta["category_tags"]` now contains the series'
+own tag list from `series_tags` table (Task 1), fetched via the event's
+`series_ticker`. Empty for events with no series or series with no tags.
+Frontend tag-chip rendering and tag-filter UI now show actual series tags,
+not the old category-wide vocabulary.
 
 ---
 
