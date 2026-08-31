@@ -150,6 +150,32 @@ from services.ws_manager import ws_manager  # noqa: E402
 
 _last_capture_prune_at = 0.0
 
+# In-memory cache of series tags: {series_ticker: list[str]} — built from
+# state["series_cache"]["series"] each tick, invalidated when series_cache
+# refreshes (fetched_at changes). Eliminates DB roundtrips and ensures all
+# events get tagged, not just newly-discovered ones (task-4 fix 2026-08-31).
+_SERIES_TAGS_CACHE: dict[str, list[str]] = {}
+_SERIES_TAGS_CACHE_FETCHED_AT: float = 0.0
+
+
+def _build_series_tags_cache() -> dict[str, list[str]]:
+    """Build in-memory {series_ticker: tags} index from
+    state["series_cache"]["series"], invalidating and rebuilding if
+    series_cache has been refreshed (fetched_at changed). Zero DB cost;
+    all tags already loaded in memory from Kalshi's get-series-list response."""
+    global _SERIES_TAGS_CACHE, _SERIES_TAGS_CACHE_FETCHED_AT
+    cache = state["series_cache"]
+    if cache["fetched_at"] != _SERIES_TAGS_CACHE_FETCHED_AT:
+        # Cache is stale; rebuild from the fresh series_cache data
+        _SERIES_TAGS_CACHE_FETCHED_AT = cache["fetched_at"]
+        _SERIES_TAGS_CACHE.clear()
+        for series in cache.get("series") or []:
+            ticker = series.get("ticker")
+            tags = series.get("tags") or []
+            if ticker:
+                _SERIES_TAGS_CACHE[ticker] = tags
+    return _SERIES_TAGS_CACHE
+
 
 def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     """Hourly retention sweep across the sampled capture stores. Bounded
@@ -880,11 +906,15 @@ async def trading_loop():
                 )
             state["event_phase"] = event_phase
             # Stamp real per-series tags (from Task 1's series_metadata/series_tags)
-            # onto each event - replaces the old per-category tags that were
-            # identical for every event in a category (2026-08-31 Task 4).
-            for et, event_meta in event_titles.items():
+            # onto EVERY event in the cache each tick, not just this tick's fetch
+            # delta (2026-08-31 Task 4 fix: ensures backlog doesn't lose tags after
+            # restart, and eliminates DB roundtrips by using in-memory index).
+            # Build in-memory cache from state["series_cache"]["series"] if
+            # series_cache refreshed (fetched_at changed); otherwise reuse.
+            tags_by_series_ticker = _build_series_tags_cache()
+            for et, event_meta in state["event_titles"].items():
                 series_ticker = event_meta.get("series_ticker")
-                event_meta["category_tags"] = series_cache.get_tags_for_series(series_ticker) if series_ticker else []
+                event_meta["category_tags"] = tags_by_series_ticker.get(series_ticker, []) if series_ticker else []
             title_cache.save_event_titles(event_titles)  # event_titles here is already just this tick's new entries, see _fetch_event_titles
             state["event_live_data"].update(event_live_data)
             # trade_tape itself (the incremental, uncapped-beyond-a-sanity-
