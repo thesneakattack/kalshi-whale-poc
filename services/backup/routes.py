@@ -13,9 +13,7 @@ for "is my critical backup fresh" alerting. Large-tier staleness is visible
 here (GET /api/backup/status's large_tier key) but not yet alerted on -
 a deliberate scope boundary, not an oversight.
 """
-import asyncio
-
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from services.app_state import state
 from services.backup import backup
@@ -59,8 +57,20 @@ async def trigger_backup_run(tier: str = "regular"):
     forget acknowledgement, since the whole point of running this by hand
     is usually "I want to know this succeeded before I do something risky."
     Runs off the event loop the same way the periodic path does
-    (asyncio.to_thread) so it doesn't stall the trading loop or other
-    in-flight requests for however long the backup takes.
+    (backup.run_backup_now's own asyncio.to_thread) so it doesn't stall the
+    trading loop or other in-flight requests for however long the backup
+    takes.
+
+    Goes through run_backup_now's overlap guard (2026-08-31, real bug found
+    live) rather than calling run_backup_cycle directly: a manual trigger
+    used to have no idea whether the periodic scheduler (or another manual
+    call) already had the same tier running, so a manual call landing during
+    a uvicorn --reload cold-start window could race the scheduler's own
+    cold-start reseed into two independent, fully redundant ~27GB large-tier
+    snapshots 26 seconds apart - see run_backup_now's own docstring for the
+    full mechanism. 409 here means exactly what it says: this tier is
+    already backing up somewhere else right now, so this call did nothing -
+    not a failure of the backup itself.
 
     tier (2026-08-30, corrected 2026-08-30): the bare/default call covers
     the "regular" tier only - the small, account-critical files - NOT
@@ -75,24 +85,37 @@ async def trigger_backup_run(tier: str = "regular"):
     already uses to run both tiers."""
     backup_cfg = config_store.get().get("backup") or {}
     large_files = frozenset(backup_cfg.get("large_files", backup._DEFAULT_LARGE_FILES))
-    if tier == "all":
-        regular_retention = backup_cfg.get("retention_count", backup._DEFAULT_RETENTION_COUNT)
-        large_retention = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
-        regular_result = await asyncio.to_thread(
-            backup.run_backup_cycle, regular_retention, tier="regular", exclude=large_files,
+    try:
+        if tier == "all":
+            regular_retention = backup_cfg.get("retention_count", backup._DEFAULT_RETENTION_COUNT)
+            large_retention = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
+            regular_result = await backup.run_backup_now(
+                "backup", regular_retention, tier="regular", exclude=large_files,
+            )
+            try:
+                large_result = await backup.run_backup_now(
+                    "backup_large", large_retention, tier="large", only=large_files,
+                    snapshot_root=backup.LARGE_BACKUP_DIR,
+                )
+            except backup.BackupAlreadyRunningError as exc:
+                # The regular tier already completed and is safely recorded
+                # (backup_runs, on disk) by this point - say so instead of a
+                # bare 409 that would otherwise make a real, successful
+                # backup look like it never happened.
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"regular tier completed (snapshot {regular_result['snapshot']}); {exc}",
+                ) from exc
+            return {"regular": regular_result, "large": large_result}
+        if tier == "large":
+            retention_count = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
+            return await backup.run_backup_now(
+                "backup_large", retention_count, tier="large", only=large_files,
+                snapshot_root=backup.LARGE_BACKUP_DIR,
+            )
+        retention_count = backup_cfg.get("retention_count", backup._DEFAULT_RETENTION_COUNT)
+        return await backup.run_backup_now(
+            "backup", retention_count, tier="regular", exclude=large_files,
         )
-        large_result = await asyncio.to_thread(
-            backup.run_backup_cycle, large_retention, tier="large", only=large_files,
-            snapshot_root=backup.LARGE_BACKUP_DIR,
-        )
-        return {"regular": regular_result, "large": large_result}
-    if tier == "large":
-        retention_count = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
-        return await asyncio.to_thread(
-            backup.run_backup_cycle, retention_count, tier="large", only=large_files,
-            snapshot_root=backup.LARGE_BACKUP_DIR,
-        )
-    retention_count = backup_cfg.get("retention_count", backup._DEFAULT_RETENTION_COUNT)
-    return await asyncio.to_thread(
-        backup.run_backup_cycle, retention_count, tier="regular", exclude=large_files,
-    )
+    except backup.BackupAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

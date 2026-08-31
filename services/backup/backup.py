@@ -286,6 +286,54 @@ async def _run_backup_background(
         backup_state["running"] = False
 
 
+class BackupAlreadyRunningError(Exception):
+    """Raised by run_backup_now when the requested tier already has a backup
+    in flight - either the periodic scheduler (_maybe_run_backup/
+    _maybe_run_large_backup) or another manual trigger."""
+
+    def __init__(self, tier: str):
+        super().__init__(f"a {tier}-tier backup is already running")
+        self.tier = tier
+
+
+async def run_backup_now(
+    state_key: str, retention_count: int, *, tier: str, exclude: frozenset[str] = frozenset(),
+    only: frozenset[str] | None = None, snapshot_root: Path | None = None,
+) -> dict:
+    """Manual-trigger counterpart to the periodic _maybe_run_backup/
+    _maybe_run_large_backup path - same state[state_key]["running"] overlap
+    guard those already use, so POST /api/backup/run can't race the
+    scheduler (or another manual call) into backing up the same tier twice
+    concurrently.
+
+    Real bug found live 2026-08-31: the manual route used to call
+    run_backup_cycle directly with no guard at all. A manual large-tier
+    trigger landed during a uvicorn --reload cold-start window (state["
+    backup_large"] reset to running=False/last_started_at=0.0 - see
+    _maybe_run_large_backup's own docstring for why reload does this); before
+    that ~100s, ~27GB copy finished and recorded itself, the periodic tick's
+    own cold-start reseed read the still-stale pre-restart history, decided
+    the tier was overdue, and fired a second, fully independent ~27GB
+    snapshot 26 seconds later - neither side aware of the other, because the
+    manual path touched no shared state for the periodic guard to see.
+
+    The check-and-set below has no `await` between them, so - like the
+    periodic guards' own `if due and not backup_state["running"]:` - it's
+    atomic against every other coroutine on this event loop, including the
+    periodic guards themselves."""
+    backup_state = state[state_key]
+    if backup_state["running"]:
+        raise BackupAlreadyRunningError(tier)
+    backup_state["running"] = True
+    backup_state["last_started_at"] = time.time()
+    try:
+        return await asyncio.to_thread(
+            run_backup_cycle, retention_count, tier=tier, exclude=exclude, only=only, snapshot_root=snapshot_root,
+        )
+    finally:
+        backup_state["running"] = False
+
+
 def _maybe_run_backup(cfg: dict) -> None:
     """Kicks off _run_backup_background as an independent background task
     if a backup is due and none is already running - never awaited by the
