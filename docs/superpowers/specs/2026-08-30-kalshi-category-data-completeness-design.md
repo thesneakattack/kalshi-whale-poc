@@ -657,7 +657,7 @@ Matching the investigation's own "Deliberately not proposed" list, plus the item
 Not a single flag-day migration — four independently-landable pieces, in the ranked order,
 each safe to ship alone:
 
-1. **D1 Phase 1** (§1.2-1.4, §1.6): new tables, write-through population, `series_of()`
+1. **D1 Phase 1** (§1.2-1.4, §1.6, §1.8): new tables, write-through population, `series_of()`
    fix, `category_tags` stamp removal. No behavior change to any existing consumer except
    `series_of()`'s corrected output. Testable in isolation: a fixture `Series` list in,
    confirm both tables populate; a fixture `title_cache` with a known event_ticker→
