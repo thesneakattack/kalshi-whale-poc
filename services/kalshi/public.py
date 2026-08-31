@@ -495,16 +495,42 @@ class KalshiPublicGateway:
         0 of Task 2's kalshi-contract-review, since the schema itself does
         not state this either way).
 
+        Fetched raw (via _get_json), not through the SDK's typed
+        get_series_fee_changes - code-review finding, 2026-08-31:
+        SeriesFeeChange.fee_type (get-series-fee-changes.md's schema:
+        `allOf: - $ref: '#/components/schemas/FeeType'`) uses the exact
+        same FeeType enum as get_series_list's Series.fee_type, and
+        get_series_list's own docstring above already documents that the
+        installed SDK's FeeType enum (3.27.0, and 3.28.0 latest-published)
+        is missing quadratic_with_combo_maker_fees even though a real live
+        series carries it. A scheduled fee CHANGE of that type would hit
+        the identical trap: the SDK's Pydantic-validated
+        get_series_fee_changes raises on that single bad entry and fails
+        the ENTIRE array, every call - and because this call sits inside
+        _get_series_cache() below, that failure would abort the whole
+        series-cache refresh (discarding the freshly-fetched series list
+        too, not just the fee merge), leaving cache["fetched_at"] stale so
+        every subsequent tick retries both REST calls instead of
+        respecting the 1-hour TTL - a bigger, silent blast radius than
+        just losing this task's own fee data. Raw JSON has no such enum to
+        validate against, matching get_series_list's precedent exactly; the
+        SDK's real, verified field names (id/series_ticker/fee_type/
+        fee_multiplier/scheduled_ts) are also the raw wire JSON's field
+        names (same equivalence this module's own top docstring already
+        relies on for every model_dump(mode="json") call site), so the raw
+        dicts returned here need no reshaping versus the typed path.
+
         Confirmed via the installed SDK (3.27.0) that
         ExchangeApi.get_series_fee_changes's real param is show_historical
         (not e.g. include_historical) - this repo's own precedent
         (get_series_list's docstring) shows the SDK has previously diverged
         from docs, so guessing the name here would repeat that mistake.
-        scheduled_ts comes out as an ISO-8601 string, not an epoch number -
-        the doc types it `format: date-time` (get-series-fee-changes.md:
-        126-129) and the installed SeriesFeeChange model types it Python
-        `datetime`; model_dump(mode="json") re-serializes a datetime field
-        to its ISO-8601 string form, confirmed directly against the
-        installed model, not assumed from the field name."""
-        resp = await call_with_backoff(self._client.get_series_fee_changes, show_historical=show_historical)
-        return [c.model_dump(mode="json") for c in resp.series_fee_change_arr]
+        scheduled_ts comes through as the wire's own ISO-8601 string, not
+        an epoch number - the doc types it `format: date-time`
+        (get-series-fee-changes.md:126-129), and raw JSON never converts a
+        string field to anything else."""
+        data = await self._get_json(
+            "/series/fee_changes", endpoint="get_series_fee_changes",
+            params={"show_historical": show_historical},
+        )
+        return data.get("series_fee_change_arr", [])

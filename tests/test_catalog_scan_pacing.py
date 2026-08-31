@@ -170,3 +170,77 @@ def test_get_series_cache_keeps_raw_fee_when_ticker_absent_from_fee_changes(tmp_
 
     assert result[0]["fee_type"] == "quadratic"
     assert result[0]["fee_multiplier"] == 1.0
+
+
+def test_get_series_cache_excludes_a_fee_change_scheduled_in_the_future(tmp_path, monkeypatch):
+    # A change whose scheduled_ts is still ahead of "now" hasn't taken
+    # effect yet - the raw (currently-real) fee must be kept, not the
+    # not-yet-effective future value.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}
+    series = [{"ticker": "K3", "category": "Sports", "volume_fp": "100",
+               "fee_type": "flat", "fee_multiplier": 0.5}]
+    fee_changes = [
+        {"id": "1", "series_ticker": "K3", "fee_type": "quadratic", "fee_multiplier": 9.0,
+         "scheduled_ts": "1970-01-01T01:00:00+00:00"},  # epoch 3600, AFTER now (epoch 3000)
+    ]
+    client = _FakeFeeChangesClient(series, fee_changes)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: datetime.fromtimestamp(3000, tz=timezone.utc))
+
+    result = asyncio.run(catalog_scan._get_series_cache(client))
+
+    assert result[0]["fee_type"] == "flat"
+    assert result[0]["fee_multiplier"] == 0.5
+
+
+def test_get_series_cache_breaks_a_scheduled_ts_tie_by_id(tmp_path, monkeypatch):
+    # Two entries scheduled at the exact same instant - spec Sec1.8's own
+    # tie-break rule (by id) must pick one deterministically rather than
+    # depending on array order.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}
+    series = [{"ticker": "K4", "category": "Sports", "volume_fp": "100",
+               "fee_type": "flat", "fee_multiplier": 0.5}]
+    same_ts = "1970-01-01T00:16:40+00:00"  # epoch 1000, tied on both entries
+    fee_changes = [
+        {"id": "a", "series_ticker": "K4", "fee_type": "quadratic", "fee_multiplier": 1.0,
+         "scheduled_ts": same_ts},
+        {"id": "b", "series_ticker": "K4", "fee_type": "flat", "fee_multiplier": 2.0,
+         "scheduled_ts": same_ts},
+    ]
+    client = _FakeFeeChangesClient(series, fee_changes)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: datetime.fromtimestamp(3000, tz=timezone.utc))
+
+    result = asyncio.run(catalog_scan._get_series_cache(client))
+
+    # "b" > "a" lexically - the greater id wins the tie, deterministically.
+    assert result[0]["fee_type"] == "flat"
+    assert result[0]["fee_multiplier"] == 2.0
+
+
+def test_get_series_cache_tie_break_survives_a_missing_id(tmp_path, monkeypatch):
+    # Regression guard (found during self-review, not in the original
+    # brief): a same-scheduled_ts tie where one entry's id is missing
+    # entirely used to crash - (None, str) aren't mutually orderable in a
+    # tuple comparison - which would have aborted the WHOLE series-cache
+    # refresh (every series, not just this one) rather than just this
+    # ticker's fee resolution.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}
+    series = [{"ticker": "K5", "category": "Sports", "volume_fp": "100",
+               "fee_type": "flat", "fee_multiplier": 0.5}]
+    same_ts = "1970-01-01T00:16:40+00:00"
+    fee_changes = [
+        {"series_ticker": "K5", "fee_type": "quadratic", "fee_multiplier": 1.0,
+         "scheduled_ts": same_ts},  # id missing entirely
+        {"id": "b", "series_ticker": "K5", "fee_type": "flat", "fee_multiplier": 2.0,
+         "scheduled_ts": same_ts},
+    ]
+    client = _FakeFeeChangesClient(series, fee_changes)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: datetime.fromtimestamp(3000, tz=timezone.utc))
+
+    result = asyncio.run(catalog_scan._get_series_cache(client))  # must not raise
+
+    # missing id defaults to "" < "b", so the real-id entry wins the tie.
+    assert result[0]["fee_type"] == "flat"
+    assert result[0]["fee_multiplier"] == 2.0

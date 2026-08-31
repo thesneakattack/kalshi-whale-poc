@@ -400,21 +400,56 @@ def test_get_markets_by_tickers_explicit_batch_size_overrides_the_default_chunk(
 # call, unlike get_events/get_live_datas/get_markets_by_tickers above.
 # series_ticker is an optional filter the doc's own schema marks not
 # required - omitted here on purpose to fetch the whole array in one call.
+#
+# Fetched raw via _get_json, not through the typed SDK client (code-review
+# fix, 2026-08-31) - SeriesFeeChange.fee_type shares get_series_list's
+# Series.fee_type FeeType enum, and get_series_list's own docstring
+# documents that enum missing quadratic_with_combo_maker_fees in the
+# installed SDK even though a real live series carries it; the SDK's
+# Pydantic-validated get_series_fee_changes would raise on a single such
+# scheduled change and fail the entire array. So this is tested the same
+# way get_series_list's raw-fetch precedent would be: patch _get_json
+# directly, not client._client's typed method.
 
 
 def test_get_series_fee_changes_omits_series_ticker_for_the_full_array(monkeypatch):
     client = _client()
     calls = []
 
-    async def fake_get_series_fee_changes(show_historical):
-        calls.append(show_historical)
-        return type("R", (), {"series_fee_change_arr": [
-            _FakeModel({"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
-                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}),
-        ]})()
+    async def fake_get_json(path, endpoint, params=None):
+        calls.append((path, endpoint, params))
+        return {"series_fee_change_arr": [
+            {"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+             "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+        ]}
 
-    monkeypatch.setattr(client._client, "get_series_fee_changes", fake_get_series_fee_changes)
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
     result = asyncio.run(client.get_series_fee_changes())
-    assert calls == [True]  # show_historical defaults True, no series_ticker passed
-    assert result == [{"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+    # show_historical defaults True, no series_ticker filter passed at all
+    assert calls == [("/series/fee_changes", "get_series_fee_changes", {"show_historical": True})]
+    assert result == [{"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
                         "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}]
+
+
+def test_get_series_fee_changes_recovers_every_entry_even_with_an_unmodeled_fee_type(monkeypatch):
+    # The concrete failure mode the raw-fetch fix above exists to avoid:
+    # a fee_type value the installed SDK's FeeType enum doesn't recognise
+    # (e.g. quadratic_with_combo_maker_fees, confirmed live 2026-08-21 on
+    # get_series_list) would raise inside the typed path and lose EVERY
+    # entry in the array, not just the offending one. Raw JSON has no enum
+    # to validate against, so an unrecognized string passes through like
+    # any other field - this is the completeness property the fix restores.
+    client = _client()
+
+    async def fake_get_json(path, endpoint, params=None):
+        return {"series_fee_change_arr": [
+            {"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic_with_combo_maker_fees",
+             "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+            {"id": "2", "series_ticker": "KXOTHER", "fee_type": "flat",
+             "fee_multiplier": 0.5, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+        ]}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    result = asyncio.run(client.get_series_fee_changes())
+    assert [r["series_ticker"] for r in result] == ["KXNFLGAME", "KXOTHER"]
+    assert result[0]["fee_type"] == "quadratic_with_combo_maker_fees"
