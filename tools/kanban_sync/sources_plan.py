@@ -5,6 +5,12 @@ as done/in-progress/not-started is a judgment call the on-demand
 kanban-board-sync skill makes by reading git log/CLAUDE.md/ROADMAP.md, not
 something this module infers from the plan doc's own checkboxes -
 measured unreliable in spec §5.
+
+This status always describes whether the plan's CODE has shipped, never
+whether the plan DOCUMENT exists (CLAUDE.md's "nothing advances on one
+pass" HARD RULE) - a file only becomes a candidate here because its
+document already exists, so "not-started" can only mean its tasks are
+unimplemented, not that planning never happened.
 """
 from __future__ import annotations
 
