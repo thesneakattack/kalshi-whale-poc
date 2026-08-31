@@ -27,6 +27,21 @@ source and its date. Nothing here is inferred from model memory.
 says not worth pursuing (reason given). `NEEDS-LIVE` — cannot be judged without a
 measurement not made here.
 
+**Revision, 2026-08-30 (post-Stage-2).** Stage 2's review
+(`…-kalshi-category-data-shape-audit-review.md`) falsified three findings that were all
+drawn from **one page** of the paginated `/milestones` endpoint and generalised into
+type-level properties. They have been re-derived here against the **entire population**:
+275 pages at `limit=500` → **137,200 milestones**, then `GET /live_data/batch` run over
+every one of those 137,200 ids → **112,501 live-data payloads**. No sampling anywhere in
+the corrected rows. Rewritten below and marked **⟲**: **S3**, **S4**, **P1**, **P3**,
+§2.7's justification, and §4's ranking; **D1** gains the two fee-changes endpoints Stage 2
+found missing. Everything unmarked is Stage 1's original text, which Stage 2
+independently reproduced. Still outstanding from Stage 2's review and deliberately *not*
+touched by this narrow pass: the `Heatwaves` example in §0/W4 (it is in the taxonomy; the
+"+4" count is right, only the prose example leaked), X14's "the one market-data endpoint"
+uniqueness clause (`get-market-orderbook.md` and `get-multiple-market-orderbooks.md`
+declare `security` too), and the mixed local/UTC date convention.
+
 ---
 
 ## 0. Headline correction: the "general mechanism" is not authoritative
@@ -105,9 +120,9 @@ audit.
 | # | Source | Finding | Verdict |
 |---|---|---|---|
 | S1 | `get-filters-for-sports.md` (`/search/filters_by_sport`) | sport → `{scopes, competitions{competition: {scopes}}}` + `sport_ordering` | **CAPTURED.** `discovery_cache.py:84-88` builds the `sport_by_competition` reverse map; `services/market_lookup.py:133-134` consumes it. Correctly identified in-repo as sports-only. |
-| S2 | `live-data-get-live-data.md`, `get-multiple-live-data.md` — milestone live data | per-milestone in-game state | **CAPTURED** (`live_status.py:163`, batched, repoll-cached) — **with two shape defects, S3/S4.** |
-| S3 | live probe, 2026-08-31, unauth `GET /live_data/milestone/{id}` across one sample of each live milestone type | `details.widget_status` — which `live_status.py:169` reads as *the* live-status signal — is **absent from `tennis_tournament_singles`** (keys: `advantage`, `competitor1_*`, `competitor2_*`, `completed_rounds`, `round_winners`, `*_overall_score` — no `status`, no `widget_status`). Tennis was **102 of 200** milestones on the live `/milestones?limit=200` page — the single largest type. | **GAP-PURSUE.** Every tennis event silently falls through to `live_status.py:216`'s schedule guess (`"none" if now < occ else "live"`). The module's own docstring calls that path a deliberate last resort; for tennis it is the *only* path. |
-| S4 | same probe | `details.winner` — which `catalog_scan.py:117` requires to map a resolved event — is **absent from `golf_tournament`** (has `leaderboard`, `current_round`, `round_label`) and **absent from `tennis_tournament_singles`** (has `round_winners`, plural/per-round). Present on `football_game`, `basketball_game`, `mma_match`, `soccer_tournament_multi_leg`, `racing_tournament`. | **GAP-PURSUE.** Golf + tennis were **109 of 200** milestones in the same live sample. `propagate_milestone_winners` cannot resolve either, so `market_history.record_outcome` never fires for them — a hole in the very dataset the sample-size-gated heuristics train on. |
+| S2 | `live-data-get-live-data.md`, `get-multiple-live-data.md` — milestone live data | per-milestone in-game state | **CAPTURED** (`live_status.py:163`, batched, repoll-cached) — **but only one key is ever read out of a payload the exchange documents as varying by type; see S3/S4 (⟲ both re-derived) and P3.** |
+| S3 **⟲** | full-population live-data census, 2026-08-30 (revision note above) | **Stage 1's claim here is falsified and withdrawn.** `details.widget_status` — which `live_status.py:169` reads as *the* live-status signal — is present on **49,764 of 49,764** live `tennis_tournament_singles` payloads (the transcribed key list was a strict subset of the real one). No tennis event falls through; the stated impact was zero. The real hole is elsewhere and is **entirely non-Sports**: seven types return live data carrying `status` but **no `widget_status`** — `political_race` 810, `one_off_milestone` 420, `company_report` 337, `truflation` 241, `artist_streams` 139, `kpis` 14, `tv_views` 1 = **1,962 of 112,501 live milestones (1.7 %)**, rising to **814 of the 2,869 forward-dated ones (28.4 %)**, where `political_race` alone is 520. | **GAP-PURSUE, re-scoped.** Those seven are the types that silently fall through to `live_status.py:216`'s schedule guess (`"none" if now < occ else "live"`) — the path the module's own docstring calls a deliberate last resort. All seven attach to series in categories the app already configures, verified along the documented `event_ticker → event.series_ticker → Series.category` chain (24 events sampled per type): `political_race` → Elections/Politics, `company_report` → Mentions, `truflation` → Economics, `artist_streams` → Entertainment. |
+| S4 **⟲** | same census | **Golf confirmed; tennis falsified and withdrawn; a far larger hole found.** `details.winner` — which `catalog_scan.py:117` requires to map a resolved event — is absent from `golf_tournament` (**0 of 169** live; keys `current_round`, `leaderboard`, `round_label`, `status`, `widget_status`) and **present** on tennis (49,764/49,764, alongside `round_winners`). Eight types return live data with no `winner`: **`esports_match` 9,385**, `one_off_milestone` 420, `company_report` 337, `truflation` 241, `golf_tournament` 169, `artist_streams` 139, `kpis` 14, `tv_views` 1 = **10,706 of 112,501 (9.5 %)**, and **382 of 2,869 (13.3 %)** forward-dated. | **GAP-PURSUE — bigger than Stage 1 claimed, for a different reason.** The dominant type is `esports_match` (11,406 milestones, 8.3 % of the population), not golf (172, 0.13 %), and its related events resolve to **Sports** series — a configured category — so `propagate_milestone_winners` is silently unable to resolve any esports event today and `market_history.record_outcome` never fires for them. The outcome is derivable there, just not from the one key the code looks for: `esports_match` carries `widget_status`, `home_score`/`away_score`, `is_live`, `home_periods`/`away_periods`, `series_stats` and `player_stats`. Golf's `leaderboard` and tennis's `round_winners` are the same story — per-type answers, not absences. |
 | S5 | `get-game-stats.md` (`/live_data/milestone/{id}/game_stats`) | full play-by-play | **GAP-SKIP** — already assessed in-repo on 2026-08-15 ("much heavier/more detailed than anything this app currently needs", `get-game-stats.md:33-40`). No reason to revisit. |
 | S6 | `live-data-get-live-data.md:77-86` — `include_player_stats` | player-level stats for Pro Football / Pro Basketball / College Men's Basketball milestones | Never passed (`services/kalshi/public.py:269`, `:292`). | **GAP-SKIP.** Same reasoning as S5, and the app has no player-level model to feed. |
 | S7 | `exchange_sharding.md:82` | **Tennis and Baseball specifically** are being migrated to shard 3 — a *tag*-level, not category-level, split | Nothing reads `exchange_index` on markets/events (X9). | Folded into **X9**. |
@@ -149,9 +164,9 @@ audit.
 
 | # | Source | Finding | Verdict |
 |---|---|---|---|
-| P1 | live probe 2026-08-31, `GET /milestones?limit=200` | milestone `category` values observed: `Sports` 196, **`Elections` 3**, **`Companies` 1**. Types: `political_race` (Elections), `company_report` (Companies). `get-milestones.md:86-93` also documents `Esports` as a milestone category — a value that does **not** appear in the `/series` category vocabulary at all. | Milestones are not Sports-only. |
+| P1 **⟲** | full-population pagination, 2026-08-30 — 275 pages × `limit=500` (`get-milestones.md` documents `limit` max 500 and `cursor`) | **Stage 1's "of 200" figures were one page of a 275-page endpoint and are struck; every denominator built on them is void.** The population is **137,200 milestones, 44 types, 17 distinct `category` strings**, spanning `start_date` 2020-01-01 → 2033-02-07 (133,423 past, 3,777 forward of the probe). Categories: Sports 123,521 (90.0 %), Mentions 3,405, **Esports 2,728**, Financials 2,271, Economics 1,854, **Elections 1,118**, Entertainment 825, **Companies 594**, Commodities 320, Finance 205, Science and Technology 150, Politics 78, Climate and Weather 64, Crypto 34, Technology 30, World 2, Science & Technology 1. Plurality type is `tennis_tournament_singles` 49,875 (36.4 %), then `one_off_milestone` 16,054, `basketball_game` 15,564, `soccer_tournament_multi_leg` 15,546, `esports_match` 11,406. | Milestones are **not** Sports-only, by a far wider margin than any partial sample showed — and neither partial sample sized it right: `political_race` is **917**, not 3; `company_report` is **530**, not 1. `get-milestones.md:86-93`'s documented `Esports` category is real (2,728) and still absent from the `/series` category vocabulary. Two vocabulary defects visible only at full scale: the milestone `category` field carries `Financials`/`Finance` and `Science and Technology`/`Science & Technology`/`Technology` as *distinct* strings, and `Companies` appears as a milestone **type** (23) as well as a category — so this field is not safe to join against `Series.category` without normalisation. |
 | P2 | same probe | Elections milestone `details` keys: **`candidate_id_mapping`, `candidate_ids`, `state`, `main_game_event_ticker`** — the structural twin of Sports' `home_team_id`/`away_team_id`, i.e. structured-target IDs for candidates. | **GAP-PURSUE**, and it is the same fix as **X6** (structured-target resolution) applied to Elections. |
-| P3 | live probe 2026-08-31, `GET /live_data/milestone/{id}` for one `political_race` and one `company_report` | **both return `{"error": {"code": "not_found"}}`** | **GAP-SKIP for the live-status path.** Milestone *live data* is Sports-only in practice; extending `live_status.py` to Elections would fetch nothing. Worth recording so a later session does not build it on the assumption that it generalizes. The milestone **objects** (P2) are still real and useful — that is X6/X8, not this. |
+| P3 **⟲** | `GET /live_data/batch` over **all 137,200** milestone ids (100 per call, `get-multiple-live-data.md`) | **Stage 1's claim here is falsified and withdrawn — and it was the most consequential error in the document, because it was written as durable guidance to future sessions.** The two `not_found` responses it generalised from were n=1 per type; some ids 404 and most do not. Measured over the whole population: `political_race` returns live data on **810 of 917** milestones — 774 of them carrying `candidates`, `winner`, `winners`, `race_call_status`, `reporting_percentage`, `tabulation_status`, `last_updated`, provider `votehub` — and `company_report` on **337 of 530** (`company_name`, `events`, `latest_event`, `next_event`, `quartr_company_id`, `provider`, `status`). Non-Sports live data totals **4,307 payloads**: Esports 2,345, Elections 810, Economics 355, Companies 341, Mentions 292, Entertainment 140, Crypto 21, Financials 3. | **GAP-PURSUE — reopened as a Stage 3 candidate (was GAP-SKIP).** Unauthenticated election-night tabulation and race-call state, over a category holding **1,389 volume-positive series**, is real, free and directly decision-relevant to a whale-signal app; `political_race` is **520 of the 2,869 forward-dated live milestones (18.1 %)** — the largest forward-dated non-Sports type. Size it honestly: the value is episodic and election-calendar-driven, an argument about timing rather than existence. The census also surfaces two live-data families no earlier pass saw at all — **`truflation`** (241 live: `indicator`, `category`, `latest_value`, `timeseries`, `target_date`, `series_key`, on Economics/Crypto events) and **`artist_streams`** (139 live: `timeseries_daily`/`timeseries_weekly`, `current_total`, `period_start`/`period_end`, `target_week_finalized`, on Entertainment events) — both settlement-input series arriving through the milestone path the app already calls, from which it reads exactly one key. See D3. |
 | P4 | `Series.additional_prohibitions`, measured | Elections series carry the longest and most specific prohibition lists in the whole corpus (13–22 clauses: election officials, Decision Desk employees, FEC commissioners, registered lobbyists, state legislators on election committees, campaign staff). Politics/Elections are also the categories `CLAUDE.md` flags for legal exposure. | Instance of **X4**, and its strongest case. |
 | P5 | live `Series.tags` | Politics observes **31** real tags against the taxonomy's 8 — the worst ratio of any category. Missing: `Trump Agenda`, `Trump Policies`, `Culture war`, `Foreign Elections`, `Primaries`, `Public Health`, `Health Tech`, `Drug Prices`, and more. | Instance of **X2**. |
 | M1 | `get-events.md:114-118` + `get-milestones.md` + `targets_and_milestones.md:41-51` | three documented routes to milestones: inline on `get_events` (free), bulk by category (`get_milestones_bulk`, built-and-unused), per-event (`get_milestones_for_event`, the only one wired). | **GAP-PURSUE** — see **X7**/**X8**. |
@@ -182,12 +197,33 @@ carries 17.
 | Education | 1 | 0 |
 | *Exotics* | (MVE; 14 rows in `market_catalog`) | 14,501 (14.87 %) via MVE tickers |
 
-**Verdict: GAP-SKIP for the six unconfigured categories.** Measured across all
-97,541 logged signals (2026-08-30), **zero** originate from any of them. The
-category filter that excludes them lives at `services/market_watch/catalog_scan.py:337-341`
-and `services/market_watch/discovery_cache.py:234`. Widening the list is a one-line
-config change available whenever it is wanted; nothing in the data says it would
-produce a signal today. Recorded so a future session does not re-derive the question.
+**Verdict: GAP-SKIP for the six unconfigured categories — on share of universe, not
+on signal count. ⟲** The original justification here ("measured across all 97,541
+logged signals, **zero** originate from any of them") was **circular and is withdrawn**:
+the category filter at `services/market_watch/catalog_scan.py:337-341` — cited two lines
+below as the thing to change — narrows the series universe to `cfg["kalshi"]["categories"]`
+*before* discovery runs:
+
+```python
+categories = cfg["kalshi"].get("categories")
+if categories:
+    all_series = [s for s in all_series if s.get("category") in categories]
+```
+
+An unconfigured category therefore **cannot** emit a signal. The zero restates the
+filter; it is not evidence about the value of widening. It is also drawn from a signal
+history that is overwhelmingly the Sports-only era, since the widening to 11 categories
+landed hours before this audit.
+
+The non-circular argument is the size of the prize, and the data for it was already in
+hand: the six carry **279 volume-positive series between them against 10,073 for the
+eleven configured — 2.7 % of a 10,352-series universe** (independently re-fetched
+2026-08-30T23:51Z; the 10,351 quoted elsewhere in this document is the same measurement
+an hour earlier, one series apart), with `Education` at a single series. That is a real
+basis for deprioritising. The filter also lives at
+`services/market_watch/discovery_cache.py:234`; widening remains a one-line config change
+available whenever it is wanted. Recorded so a future session does not re-derive the
+question.
 
 `Exotics` is the exception and is **already handled** — `mve_scan.py` deliberately
 runs its own discovery path independent of `kalshi.categories` (issue #268), for the
@@ -213,7 +249,21 @@ and that is X9); `orderbook_responses`/`subpenny-pricing` (X12 covers the live p
 
 ## 4. Rough directions for Stage 3
 
-Three, ordered by evidence strength rather than size. Each is a direction, not a design.
+Originally three, now four (D4 is the direction the falsified P3 had closed off), ordered
+by evidence strength rather than size. Each is a direction, not a design.
+
+**Ranking after the revision: D1 → D2 → D3 → D4; the original three keep their order. ⟲**
+Stage 2 recommended demoting
+D2 below D3, on the basis that D2's two headline figures collapsed (S3 falsified outright,
+S4 surviving only as golf at 20 of 1,200). That recommendation rested on a 1,200-milestone
+sample — 0.9 % of the population — which, like Stage 1's 200, missed the type that matters
+most: **`esports_match` appears nowhere in Stage 2's twelve-type census**, and it is the
+single largest `winner` hole on the exchange (9,385 live payloads). Measured over all
+137,200 milestones, D2's defects are **larger** than Stage 1 claimed, not smaller:
+**10,706 live milestones (9.5 %) missing `winner`** and **1,962 (1.7 %) missing
+`widget_status`**, rising to 13.3 % and 28.4 % on the forward-dated slice, and every
+deviating type attaches to a series category the app has configured. D2 stays at #2. What
+changes is its *framing*, not its rank — see the rewritten D2 below.
 
 **D1 — A real series-metadata store, replacing the opaque `series_cache.db` blob.**
 The single highest ratio of value-already-downloaded to work-required. `Series.tags`,
@@ -229,20 +279,56 @@ for the first time. Natural companions: send `min_updated_ts` and
 `include_product_metadata` on the `/series` fetch (X3), and stop writing the constant
 `category_tags` onto every event (X1).
 
-**D2 — Close the milestone/live-data shape holes, and stop treating Sports as one shape.**
-The tightest measured defects in the audit. `widget_status` missing on tennis (S3,
-102/200 of a live sample) and `winner` missing on golf and tennis (S4, 109/200) are
-both single-key assumptions applied to a `details` object the exchange documents as
-"flexible JSON [that] varies by milestone type" (`targets_and_milestones.md:28`). The
-right shape is probably a per-type extractor with an explicit
-"this type has no winner/status key" branch, plus a counter so the next such type
-shows up as a metric instead of silence — and, per S4, `round_winners` and
-`leaderboard` are the real per-type answers, not absences. Cheap adjacent wins in the
-same area: `get_events(with_milestones=True)` (X7) removes the per-event milestone
-call entirely, and either that or `get_milestones_bulk` (X8) retires dead code.
-Structured-target resolution (X6) belongs here too — it is what makes
-`custom_strike`'s UUIDs mean something, and `catalog_scan.py:144`'s substring match
-against a UUID is a demonstrable no-op today.
+**⟲ Added on revision — the fee-change endpoints, missed by the original sweep.**
+`get-series-fee-changes.md` (`GET /series/fee_changes`, params `series_ticker` and
+`show_historical`, i.e. it exposes scheduled *and* historical changes, not just the
+current value) and `get-event-fee-changes.md` (`GET /events/fee_changes`) are both in
+`llms.txt` (`:30`, `:45`) and neither has a code path —
+`grep -rn fee_changes services main.py tools tests` → no output. They are the REST
+complement to X10's pushed `event_fee_update`, and `get-event-fee-changes.md:7` states
+the semantics X10's row needs and does not cite: *"Event fees are an override layered on
+top of the parent series' fee structure. If `fee_type_override` and
+`fee_multiplier_override` are null, that indicates the override is cleared."* This is
+category-*relevant* rather than category-specific — `get-series.md:172-184` documents
+`fee_type` values that are structurally category-shaped, with
+`quadratic_with_combo_maker_fees` as the combo variant, and the CHEATSHEET already
+carries a shipped bug about combo maker-fee exemption. A modest addition, and it belongs
+here because D1 already proposes carrying `fee_type` forward off the series object.
+
+**D2 ⟲ — Two single-key assumptions applied to a per-type-variable payload. The
+deviating types are not the ones this audit originally named, and most of the biggest
+are not Sports at all.**
+Stage 1's design instinct was right and is kept verbatim; only its sizing and its
+"stop treating Sports as one shape" framing were artifacts of the one-page sample.
+`live_status.py:169` reads `details.widget_status` and `catalog_scan.py:117` reads
+`details.winner` — two single-key assumptions applied to a `details` object the exchange
+documents as "flexible JSON [that] varies by milestone type"
+(`targets_and_milestones.md:28`). Measured over all 137,200 milestones / 112,501 live
+payloads:
+
+| hole | types | live milestones | share of live | forward-dated |
+|---|---|---|---|---|
+| no `details.winner` | `esports_match` 9,385 · `one_off_milestone` 420 · `company_report` 337 · `truflation` 241 · `golf_tournament` 169 · `artist_streams` 139 · `kpis` 14 · `tv_views` 1 | **10,706** | 9.5 % | 382 (13.3 %) |
+| no `details.widget_status` | `political_race` 810 · `one_off_milestone` 420 · `company_report` 337 · `truflation` 241 · `artist_streams` 139 · `kpis` 14 · `tv_views` 1 | **1,962** | 1.7 % | 814 (28.4 %) |
+
+Tennis — Stage 1's headline — has neither hole (49,764/49,764 on both keys). The
+single largest one is **`esports_match`**, whose events resolve to **Sports** series, so
+`propagate_milestone_winners` is silently unable to resolve any of the 9,385 today; the
+next largest, `political_race`/`company_report`/`truflation`/`artist_streams`, sit in
+Elections, Mentions, Economics and Entertainment — all configured categories, none of
+them Sports. The right shape is what Stage 1 said: a per-type extractor with an explicit
+"this type has no winner/status key" branch, plus a counter so the next unknown type
+surfaces as a metric instead of silence — 44 types exist today, 30 return live data and
+14 return none, so the unknown-type case is the normal case, not the edge. And the
+per-type answers are present, not absent: `esports_match` has `home_score`/`away_score`
++ `is_live`, `golf_tournament` has `leaderboard`, tennis has `round_winners`,
+`political_race` has `race_call_status`/`winners`. Cheap adjacent wins in the same area:
+`get_events(with_milestones=True)` (X7) removes the per-event milestone call entirely,
+and either that or `get_milestones_bulk` (X8) retires dead code — and note that X8's
+docstring figure ("one bulk call returned 200 milestones") is one page of 275, so the
+REST-cost argument for it is stronger than stated. Structured-target resolution (X6)
+belongs here too — it is what makes `custom_strike`'s UUIDs mean something, and
+`catalog_scan.py:144`'s substring match against a UUID is a demonstrable no-op today.
 
 **D3 — Ask each category what its version of the crypto index feed is.**
 The app built a genuinely excellent settlement-grade data path for exactly one
@@ -257,8 +343,35 @@ and lower-certainty answer for the ladder categories is the forecast-percentile
 history (X14/E1) — but verify its authentication requirement first, since it is the
 only market-data endpoint in the mirror that declares one.
 
-**Deliberately not proposed:** widening `kalshi.categories` (§2.7 — measured zero
-signal impact), game-stats/player-stats (S5/S6 — already assessed and declined),
+**⟲ Added on revision — two more answers, already arriving on a path the app calls.**
+The full-population live-data census (P3) shows the milestone live-data endpoint is
+*itself* a cross-category settlement-input feed, and the app reads exactly one key out of
+it. **Economics/Crypto**: `truflation` milestones (244 population, 241 live) carry
+`indicator`, `latest_value`, `target_date`, `series_key` and a `timeseries` — an inflation
+index in the same shape as the CF Benchmarks series. **Entertainment**: `artist_streams`
+(675 / 139 live) carry `timeseries_daily`, `timeseries_weekly`, `current_total`,
+`period_start`/`period_end` and `target_week_finalized` — the streaming counts that
+series such as `KXARTISTSTREAMSU` ("Will artist have more streams this week?") settle
+against; 242 series carry "stream" in ticker or title on the same `/series` fetch, most
+of them Entertainment, so treat that as an upper bound on the addressable set rather than
+a count. Neither of the two needs a new endpoint or a new
+subscription; both need D2's per-type extractor to stop discarding everything that is not
+`widget_status`. That makes D2 a prerequisite for part of D3 rather than a competitor
+to it.
+
+**⟲ D4 (new, from the P3 reversal) — Elections milestone live data.** P3 previously told
+the next session not to build this. It is real: `race_call_status`,
+`reporting_percentage`, `tabulation_status`, `candidates`, `winner`, `winners`,
+unauthenticated, on 810 of 917 `political_race` milestones over a category holding 1,389
+volume-positive series, and **18.1 % of all forward-dated live milestones**. Ranked last
+of the four only because its value is episodic and election-calendar-driven — a timing
+argument, not an existence one. It shares P2's structured-candidate-ID shape, so it lands
+naturally alongside X6.
+
+**Deliberately not proposed:** widening `kalshi.categories` (§2.7 ⟲ — 2.7 % of the
+volume-positive series universe; note the original "zero signals" justification was
+circular and has been withdrawn there),
+game-stats/player-stats (S5/S6 — already assessed and declined),
 and any change to `exchange_index` handling beyond persistence (X9) — the collateral
 preallocation it implies is a Program 3+ concern and `CLAUDE.md` says not to
 prioritize that over paper-mode correctness.
@@ -273,7 +386,21 @@ prioritize that over paper-mode correctness.
   2026-08-12T04:02:03Z. Superseded for this audit by a live re-fetch.
 - Live unauthenticated GETs against `https://external-api.kalshi.com/trade-api/v2`,
   2026-08-31 UTC: `/search/tags_by_categories`, `/milestones?limit=200`,
-  `/live_data/milestone/{id}` × 9 (one per observed milestone type).
+  `/live_data/milestone/{id}` × 9 (one per observed milestone type). **⟲ The
+  `/milestones?limit=200` page and the nine single-instance `/live_data/milestone/{id}`
+  probes are the sampling defect Stage 2 caught; every finding that rested on them (S3,
+  S4, P1, P3) has been re-derived from the full-population census below and their
+  original numbers are void.**
+- **⟲ Full-population milestone census, 2026-08-30 18:45–19:0x CDT
+  (2026-08-30T23:45Z–2026-08-31T00:0xZ), unauthenticated:** `GET /milestones?limit=500`
+  paginated by `cursor` to exhaustion — **275 pages, 137,200 milestones, 137,200 unique
+  ids**, `start_date` 2020-01-01 → 2033-02-07 — then `GET /live_data/batch` with 100
+  `milestone_ids` per call over **every** one of those ids (1,372 calls), yielding
+  **112,501 live-data payloads**. Per-type `details`-key tallies are counted across the
+  whole census, not sampled. Type→category attribution spot-checked along the documented
+  `event_ticker → event.series_ticker → Series.category` chain (`GET /events/{ticker}`,
+  24 events per deviating type). Also re-fetched: `GET /series?include_volume=true`
+  (13,632 series, 10,352 volume-positive) for §2.7's replacement figure.
 - Read-only queries against the running app's own stores, 2026-08-30/31:
   `data/series_cache.db` (10,351 series, `fetched_at` 2026-08-30T22:54:27Z),
   `data/market_catalog.db` (`markets` schema + category counts),
