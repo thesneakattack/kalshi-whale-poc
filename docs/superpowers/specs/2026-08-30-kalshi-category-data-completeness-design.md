@@ -256,15 +256,20 @@ that's actually horizon-bounded is `market_catalog.markets` (`market_catalog.py:
 "not a 'full' catalog by design... skip anything... scheduled well outside the near-term
 horizon") — a different table, not proposed for this join. Ran the actual coverage query
 rather than reasoning about it (`data/signal_log.db` × `data/title_cache.db`, live, this
-session): of the **12,357 distinct MVE/sharded tickers** behind the 14.85%-of-signals
-figure below, only **90 (0.7%)** have a `market_titles` row today; at the row level, only
-**218 of 14,606 (1.5%)** MVE-shaped signal rows would gain a corrected `series_ticker`
-from a backfill attempted right now. The **conclusion is unchanged — still don't
-backfill** — but for the real reason: coverage is empirically near-zero (MVE/sharded
-tickers are ephemeral, cycle out, and `market_titles`/`mve_scan.py`'s MVE-specific
-discovery only shipped the same day as this investigation — issue #268 — so almost none
-of the historical MVE tickers were ever cached in the first place), not because the
-cache is bounded. Concretely: for the large majority of series, ticker
+session) — **and corrected in a second review pass, which caught that the first attempt
+joined against the wrong table:** `series_ticker_for()` as designed resolves through
+`market_titles ⋈ event_titles` (event_ticker → series_ticker), not `market_titles` alone.
+Of the **12,357 distinct MVE/sharded tickers** behind the 14.85%-of-signals figure below,
+90 have a `market_titles` row today, but running the *actual* proposed join —
+`market_titles.event_ticker` against `event_titles.event_ticker` for those 90 — returns
+**zero** rows with a non-null `series_ticker`. Real, measured backfill coverage for MVE/
+sharded history is **0 of 12,357 tickers, 0 of 14,606 rows (0.0%)**, not the 0.7%/1.5%
+an earlier draft of this section reported from the partial join. The **conclusion is
+unchanged and now stronger — still don't backfill** — coverage is empirically zero
+(MVE/sharded tickers are ephemeral, cycle out, and `market_titles`/`mve_scan.py`'s
+MVE-specific discovery only shipped the same day as this investigation — issue #268 — so
+none of the historical MVE tickers were ever cached with a resolvable series_ticker in the
+first place), not because the cache is bounded. Concretely: for the large majority of series, ticker
 prefix already equals the real `series_ticker` (confirmed by `config/settings.yaml`'s own
 `excluded_series`/`min_contracts_by_series` keys — `KXBTC15M`, `KXTRUMPSAY`, etc. — which
 work today precisely because that equality usually holds), so old and new rows agree and
@@ -321,21 +326,37 @@ and their handlers.
 
 ### 1.8 REST complement, missed by the original investigation sweep: the fee-changes endpoints
 
-`get-series-fee-changes.md` (`GET /series/fee_changes`, params `series_ticker` and
-`show_historical` — both scheduled *and* historical changes, not just the current value)
-and `get-event-fee-changes.md` (`GET /events/fee_changes`) have no code path today
-(`grep -rn fee_changes services main.py tools tests` → no output). Unlike X10 above, these
-are plain REST reads, not a hot-path WS handler change — no new message class, no runtime-
-cost measurement gate, so there's no reason to defer them the way X10 is deferred. They
-belong in D1's scope directly: a poll of `GET /series/fee_changes?series_ticker=<t>&
-show_historical=true` per series, written into `series_metadata`'s existing `fee_type`/
-`fee_multiplier` columns (§1.2) the same way the rest of that row is populated — riding
-`_get_series_cache()`'s existing hourly refresh, one additional call per series already
-being refreshed, not a new schedule. `get-event-fee-changes.md:7`'s stated semantics
-("Event fees are an override layered on top of the parent series' fee structure. If
-`fee_type_override` and `fee_multiplier_override` are null, that indicates the override is
-cleared") is what X10's real-time handler will need once it ships — this REST poll is the
-same data, available now, without waiting on the WS work.
+`get-series-fee-changes.md` (`GET /series/fee_changes`) and `get-event-fee-changes.md`
+(`GET /events/fee_changes`) have no code path today (`grep -rn fee_changes services main.py
+tools tests` → no output). **Correction, found in a second design review — the first pass
+here guessed the call shape instead of reading the schemas:**
+
+**Series-level (`/series/fee_changes`) — in scope for D1, one bulk call, not per-series.**
+`series_ticker` is an *optional* filter and the response schema
+(`GetSeriesFeeChangesResponse.series_fee_change_arr`) has no `limit`/`cursor` field
+anywhere — omitting `series_ticker` returns the full array in one call, not ~10,351
+calls/hour as the first draft of this section assumed. `show_historical=true` returns every
+`{id, series_ticker, fee_type, fee_multiplier, scheduled_ts}` row, scheduled and past; the
+selection rule for "what's currently effective" is the entry with the greatest
+`scheduled_ts ≤ now` per `series_ticker` (ties broken by `id`, since the schema gives no
+other ordering guarantee). One call, once per `_get_series_cache()` refresh cycle, written
+into `series_metadata`'s existing `fee_type`/`fee_multiplier` columns (§1.2) — no per-series
+pacing needed (`catalog_scan.py`'s `PACE_LIMIT` convention doesn't apply; there's no
+per-series call to pace).
+
+**Event-level (`/events/fee_changes`) — explicitly out of scope for this pass, not silently
+dropped.** This endpoint *is* paginated (`limit` up to 1000, `cursor`-follow required) and
+returns `event_fee_changes` keyed by `event_ticker`/`series_ticker` with
+`fee_type_override`/`fee_multiplier_override` — a genuinely different shape (event-level
+overrides layered on the series base, `get-event-fee-changes.md:7`) that `series_metadata`
+(§1.2, series-scoped) has no column for today. It's the REST-poll twin of X10's
+`event_fee_update` WS push (§1.7), and belongs with that deferred work — a future event-level
+table, not bolted onto D1's series-level schema here.
+
+**Rollout:** the series-level fee-changes call folds into **D1 Phase 1** (§6, item 1) — same
+refresh cycle, same landing as the rest of `series_metadata`'s population; it needs no
+separate rollout step. The event-level endpoint stays with X10, already named in §6 as
+deferred, no new line needed.
 
 ---
 
