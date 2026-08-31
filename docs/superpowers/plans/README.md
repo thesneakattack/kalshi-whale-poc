@@ -44,6 +44,7 @@ realtime row below has been verified task-by-task.
 | [kalshi-integration-phase-c](2026-08-24-kalshi-integration-phase-c.md) | Consolidate and harden the Kalshi boundary | — | `refactor/kalshi-integration-phase-c` |
 | [economic-strategy-effectiveness-investigation](2026-08-26-economic-strategy-effectiveness-investigation.md) | Economic strategy effectiveness + execution realism | — | — |
 | [economic-strategy-remediation](2026-08-26-economic-strategy-remediation.md) | Candidate remediation for the above (Program 2) | — | — |
+| [whale-confidence-scoring-remediation-implementation](2026-08-30-whale-confidence-scoring-remediation-implementation.md) | `whale_confidence_weights` D1 fix, shared diagnostic, accuracy/edge dual-score split | 16 | — |
 | [backend-services-modularization](2026-08-27-backend-services-modularization.md) | Backend `services/` modularization | 4 | `refactor/backend-services-modularization` |
 | [frontend-modularization](2026-08-25-frontend-modularization.md) | Dashboard modularization | — | `docs/frontend-modularization-design` |
 | [autonomous-quality-coordination-investigation](2026-08-25-autonomous-quality-coordination-investigation.md) | AQC investigation | — | `chore/autonomous-quality-coordination-investigation` |
@@ -55,6 +56,7 @@ realtime row below has been verified task-by-task.
 | [kanban-sync-improvements](2026-08-28-kanban-sync-improvements.md) | Closed-parent guard, classification guidance | 3 | `chore/kanban-sync-improvements` |
 | [workflow-remediation](2026-08-27-workflow-remediation.md) | 2026-08-27 workflow audit remediation | 10 | `chore/workflow-remediation` |
 | [active-tracks-board](2026-08-26-active-tracks-board.md) | Cross-session initiative board | — | `docs/active-tracks-board` |
+| [kalshi-category-data-completeness](2026-08-30-kalshi-category-data-completeness-implementation.md) | D1–D4 series metadata, shared milestone extractor, Pyth commodities, political_race | 14 | — |
 
 Specs and designs live in `../specs/`, one per plan, same slug.
 
