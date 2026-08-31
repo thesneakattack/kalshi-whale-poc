@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import http_client, task_supervisor
+from services import http_client, market_history, task_supervisor
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
@@ -142,6 +142,31 @@ def bar_count(ticker: str | None = None) -> int:
         if ticker is None:
             return conn.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
         return conn.execute("SELECT COUNT(*) FROM candles WHERE ticker = ?", (ticker,)).fetchone()[0]
+
+
+def comparison_report(
+    tickers: list[str], lookback_sec: float = 3600, as_of: float | None = None,
+) -> list[dict]:
+    """Per-ticker side-by-side: this module's own volatility() vs.
+    market_history.volatility() at the same (lookback_sec, as_of) - a
+    diagnostic, never a blend/verdict (additive-only scope: nothing here
+    picks a winner or feeds a decision). delta is only computed when both
+    sides have enough history - never a fabricated comparison against a
+    missing reading."""
+    as_of = as_of if as_of is not None else time.time()
+    rows = []
+    for ticker in tickers:
+        cv_val = volatility(ticker, lookback_sec, as_of=as_of)
+        snap_val = market_history.volatility(ticker, lookback_sec, as_of=as_of)
+        delta = (cv_val - snap_val) if (cv_val is not None and snap_val is not None) else None
+        rows.append({
+            "ticker": ticker,
+            "candlestick_volatility": cv_val,
+            "candlestick_bar_count": bar_count(ticker),
+            "snapshot_volatility": snap_val,
+            "delta": delta,
+        })
+    return rows
 
 
 def clear_all() -> None:

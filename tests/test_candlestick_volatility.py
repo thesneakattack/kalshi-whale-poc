@@ -350,3 +350,24 @@ def test_scan_batch_background_clears_scanning_even_when_the_scan_raises(monkeyp
 
     assert closed == [True]
     assert state["candlestick_volatility_scan"]["scanning"] is False
+
+
+# --- comparison_report: diagnostics (Task 6) --------------------------------
+
+def test_comparison_report_reports_none_delta_when_either_side_lacks_history(monkeypatch):
+    bars = [_bar(1000.0, 0.40), _bar(1060.0, 0.42), _bar(1120.0, 0.39)]
+    cv.record_candles("TICK-A", "SERIES-A", 60, bars, fetched_at=2000.0)
+    monkeypatch.setattr("services.market_history.volatility", lambda *a, **k: None)
+    report = cv.comparison_report(["TICK-A"], lookback_sec=200, as_of=1120.0)
+    assert report[0]["ticker"] == "TICK-A"
+    assert report[0]["candlestick_volatility"] is not None
+    assert report[0]["snapshot_volatility"] is None
+    assert report[0]["delta"] is None
+
+
+def test_comparison_report_computes_delta_when_both_sides_have_history(monkeypatch):
+    bars = [_bar(1000.0, 0.40), _bar(1060.0, 0.42), _bar(1120.0, 0.39)]
+    cv.record_candles("TICK-A", "SERIES-A", 60, bars, fetched_at=2000.0)
+    monkeypatch.setattr("services.market_history.volatility", lambda *a, **k: 0.01)
+    report = cv.comparison_report(["TICK-A"], lookback_sec=200, as_of=1120.0)
+    assert report[0]["delta"] == pytest.approx(report[0]["candlestick_volatility"] - 0.01)
