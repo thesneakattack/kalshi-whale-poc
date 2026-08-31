@@ -800,9 +800,13 @@ def test_close_all_positions_is_a_no_op_with_no_open_positions(tmp_path, monkeyp
 
 
 # --- netting decision inputs as columns (issue #213, 2026-08-30) ----------
-# close_position carries the three structured inputs behind a netting close
+# close_position carries the four structured inputs behind a netting close
 # (services/exits/position_netting.py) onto the trades row as additive
-# columns; every other close leaves them NULL/None.
+# columns; every other close leaves them NULL/None. Four, not three:
+# netting_exit_fee_usd joined the original issue-#213 trio on 2026-08-30
+# (entry-gate-me-pairing-and-netting-remediation Part 2) and rides the exact
+# same path - the same stale-count correction already applied to
+# position_netting.py's own comment in 5ae4277.
 
 
 def test_close_position_persists_netting_inputs_and_reloads_them(tmp_path, monkeypatch):

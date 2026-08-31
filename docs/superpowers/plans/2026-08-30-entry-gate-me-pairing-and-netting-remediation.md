@@ -1052,6 +1052,36 @@ git commit -m "feat: _fetch_live_status checks the broad milestone cache before 
 
 ---
 
+## Corrections applied after the final whole-branch review (2026-08-30)
+
+The code blocks in Tasks 1, 5 and 6 above are what was written first, not
+what shipped. Four review findings changed them; the source files are
+authoritative, and the spec's own "Corrections" section carries the same
+list. Summarized here so this plan isn't copied verbatim into a later one:
+
+- **Task 1** — `find_open_confirmed_conflict` as written has no N-way
+  bound and would block entries on events with 3+ outcomes (314 such
+  events live in `data/title_cache.db`, up to 81 outcomes), which the spec
+  declares out of scope. Shipped version reports a conflict only when the
+  candidate would be exactly the SECOND open position on the event, the
+  same `len(members) != 2` proxy `position_netting.find_groups` uses.
+- **Task 1** — the `_me_pairing_stats` comment's claim that
+  `strategy_engine`'s `me_gate_unknown_total` "tracks a different,
+  not-yet-implemented gate" is wrong: the counter is live and called from
+  `strategy_engine.evaluate()` today. Its *gate design* (PR #202) is
+  parked; the counter is not.
+- **Task 1** — `me_pairing_stats()` shipped with no caller outside its own
+  tests. Now surfaced at `GET /api/health/pipeline` under `me_pairing_gate`
+  (`services/diagnostics/routes.py`), as a sibling key to
+  `strategy_gates`, never merged into it.
+- **Tasks 5/6** — the single `milestone_state["watermark"]` scalar advanced
+  unconditionally even when every category's call failed. Now
+  `["watermarks"]`, a `category -> int` dict, each advanced only by its own
+  successful call. Also: these two tasks do NOT broaden which events get
+  score/clock coverage (`to_poll` is still built entirely from `markets`);
+  they reduce redundant per-event REST calls for already-polled events.
+  Real broadening is an open follow-up.
+
 ## Self-Review Notes (completed during plan authoring)
 
 - **Spec coverage:** Part 1 → Tasks 1-2. Part 2 → Tasks 3-4 (including the deferred-decision `open-decisions.md` line from the spec's Part 2). Part 3 → Tasks 5-6 (including the pipeline-health wiring and the "second consumer, deliberately out of scope" note carried as a code comment in Task 5's new module, not re-implemented).

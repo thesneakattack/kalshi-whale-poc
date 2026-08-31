@@ -320,6 +320,18 @@ def describe_groups(
             # open, unresolved tradeoff (docs/open-decisions.md) - this
             # only makes the number visible instead of buried in realized
             # P&L with no attribution.
+            #
+            # This is the WHOLE GROUP's fee, summed over every member, and
+            # review() below copies this one figure onto EVERY member's
+            # trades row (netting_exit_fee_usd) - the same repeat-per-row
+            # convention the three issue-#213 columns use. Those three are
+            # non-additive (an estimate, a bar, a ratio) so repeating them
+            # is harmless; a USD amount invites a SUM(), which would
+            # overcount by the group size. Aggregate netting fee drag comes
+            # from `SELECT SUM(fee) ... WHERE netting_exit_fee_usd IS NOT
+            # NULL` instead - `trades.fee` already holds each leg's own
+            # real per-leg fee, from this same taker_fee call at this same
+            # price. See paper_broker.Trade.netting_exit_fee_usd.
             exit_fee_cost = sum(
                 kalshi_fees.taker_fee(pos.size, latest_prices.get(t, pos.entry_price), ticker=t)
                 for t, pos in members

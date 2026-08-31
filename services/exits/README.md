@@ -320,6 +320,18 @@ same `_add_column_if_missing`/`close_position`/`INSERT` idiom.
   without a matching update here, and this column would otherwise reopen that
   exact gap on its first `POST /api/reset`, an archive being append-only with
   no way to backfill a dropped column after the fact.
+- **It is the GROUP TOTAL, repeated on every member row — never `SUM()` it**
+  (2026-08-30 final-review finding). A `close_all` writes one `trades` row
+  per member ticker and each carries the same whole-group figure, matching
+  the three sibling columns' convention; those three are non-additive by
+  nature so repeating them is harmless, but a USD amount invites a sum that
+  overcounts by exactly the group size. Deliberate: the per-leg number is
+  already in the same row's `fee` column (same `taker_fee` call, same
+  price), so a per-leg version of this column would carry no information.
+  Total netting fee drag is
+  `SELECT SUM(fee) FROM trades WHERE netting_exit_fee_usd IS NOT NULL` —
+  the new column is the "this row was a locked_loss netting leg" flag,
+  `fee` is the cost. Per-group total: read any one member row.
 - Tests: `tests/test_position_netting.py::test_review_persists_exit_fee_cost_on_a_locked_loss_close`
   and `::test_review_leaves_netting_exit_fee_usd_null_for_a_variable_close`.
 - The tradeoff this makes measurable - closing now for bankroll/position

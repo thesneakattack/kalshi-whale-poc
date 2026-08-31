@@ -408,3 +408,39 @@ task" convention:
   code, deferred to its own follow-up.
 - Any change to real-trading gates, kill-switch, or `mode` — this is
   paper-mode strategy/entry-gate logic only.
+
+## Corrections (2026-08-30, final whole-branch review — read these before citing anything above)
+
+Three statements in this spec were wrong or overclaimed and were fixed on
+the branch. The code is authoritative; these notes exist so the spec
+doesn't re-seed the same errors.
+
+1. **Part 1's `me_gate_unknown_total` characterization is wrong.** This
+   spec calls it a counter for "a *different*, not-yet-implemented gate."
+   The gate design (PR #202's event-scoped ME gate) is indeed parked, but
+   the counter itself is **live today**:
+   `strategy_engine._record_me_gate_unknown` is called from
+   `strategy_engine.evaluate()` on every signal whose special-market
+   conservative gate can't verify `mutually_exclusive`, and it already
+   counts a similar underlying condition (no `market_titles`/`event_titles`
+   entry) for the same signals — just measured at a different point in
+   that gate's own logic. Corrected in
+   `services/mutual_exclusivity.py`'s own comment.
+2. **Part 1's fix sketch has no N-way bound.** The `find_open_confirmed_conflict`
+   body shown above returns the first open position sharing a confirmed-ME
+   event regardless of how many outcomes that event has, which
+   contradicts this same section's own "Scope boundary, deliberate"
+   paragraph (N-way is out of scope). Live-verified: 314
+   `mutually_exclusive=True` events in `data/title_cache.db` have 3+ cached
+   sibling markets, up to 81 (`KXPGATOUR-WYC26`). The shipped version is
+   bounded to exactly one other open position on the event — the same
+   `len(members) != 2` proxy `position_netting.find_groups` already uses.
+3. **Part 3 does not broaden score/clock coverage.** "Warm cache both
+   broadens coverage and reduces redundant per-event calls" is half true:
+   `_fetch_live_status` still builds `to_poll` entirely from its
+   watchlist-scoped `markets` argument and only consults
+   `state["milestone_by_event"]` for events already in that list (and
+   already truncated to `_LIVE_STATUS_MAX_POLL_PER_TICK`). The shipped
+   effect is the REST-call reduction only; `game_state` sees the same
+   event set as before. Real broadening is an unimplemented follow-up on
+   `docs/open-decisions.md`.

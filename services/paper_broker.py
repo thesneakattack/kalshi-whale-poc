@@ -126,6 +126,24 @@ class Trade:
     # realized P&L. None for every entry, every non-netting close, every
     # locked_profit/variable netting close, and every row written before
     # this existed.
+    #
+    # !! GROUP TOTAL, REPEATED PER ROW - NEVER SUM THIS COLUMN. A netting
+    # close_all writes one trades row per member ticker, and each of those
+    # rows carries the SAME whole-group fee figure (the convention the
+    # three sibling netting_* columns above already established - they are
+    # non-additive by nature, so repeating them is harmless; a USD amount
+    # is not, and SUM(netting_exit_fee_usd) overcounts by exactly the group
+    # size). It stays a group total deliberately: the per-leg number is
+    # already in this same row's own `fee` column, computed from the same
+    # taker_fee(size, price, ticker) at the same price, so a per-leg
+    # netting_exit_fee_usd would be a pure duplicate and this column would
+    # carry no information at all.
+    #   Total netting-driven fee drag, correctly:
+    #     SELECT SUM(fee) FROM trades WHERE netting_exit_fee_usd IS NOT NULL
+    #   (the column is the flag for "this row was a locked_loss netting
+    #   leg"; `fee` is that leg's own real cost). Per-group total: read any
+    #   ONE member row's netting_exit_fee_usd, or GROUP BY the close's
+    #   event via `reason`.
     netting_exit_fee_usd: float | None = None
 
     def to_dict(self):

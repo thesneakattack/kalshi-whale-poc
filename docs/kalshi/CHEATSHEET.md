@@ -980,3 +980,31 @@ prefix, not `series_of()`).
 **Source:** `changelog-index.md` (2026-08-20 entry, "Maker fee exemption
 for independent NFL combo markets").
 **Found:** 2026-08-30, issue #258.
+
+## Can a `min_updated_ts` watermark be a float (`time.time()`) or must it be an int?
+**Answer:** It must be an **integer** — Unix seconds, no fractional part.
+`get-milestones.md` types the parameter `type: integer, format: int64`
+("Filter milestones with metadata updated after this Unix timestamp (in
+seconds)"), and the same int64 typing appears on every other endpoint that
+takes this filter: `get-events.md`, `get-markets.md`, `get-series-list.md`.
+So `min_updated_ts=time.time()` is wrong everywhere the app uses a
+watermark, not just on `/milestones`.
+**Gotcha:** nothing rejects a float client-side. The vendored SDK's
+`MilestoneApi.get_milestones` (the method `services/kalshi/public.py`
+actually calls) types every parameter `Any`; only its stricter
+`get_milestones_with_http_info` sibling types this one
+`Annotated[Optional[StrictInt], ...]`. The float reaches Kalshi and comes
+back **HTTP 400** — live-verified 2026-08-30 against
+`GET /trade-api/v2/milestones?limit=1&category=Sports&min_updated_ts=...`:
+`1756500000` → 200 with real milestones, `1756500000.123` → 400,
+`{"msg":"Invalid format for parameter min_updated_ts: error binding string
+parameter: strconv.ParseInt: parsing \"1756500000.123\": invalid syntax"}`.
+That is a plain per-request failure with no local exception, so a caller
+that catches-and-continues per category (as
+`services/market_watch/milestone_scan.py` does) would log a generic error
+and silently never advance past its cold-start run — the failure looks
+like an empty result set, not a type error.
+**Source:** `get-milestones.md` (`min_updated_ts` schema), corroborated by
+`get-events.md`/`get-markets.md`/`get-series-list.md`; live probe above.
+**Found:** 2026-08-30, `milestone_scan.py`'s first watermarked scan
+(entry-gate-me-pairing-and-netting-remediation Part 3).
