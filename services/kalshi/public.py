@@ -268,7 +268,7 @@ class KalshiPublicGateway:
     # call site has ever needed more than a typical watchlist's worth
     # (8-20 events) of not-yet-cached events in one tick.
 
-    async def get_events(self, event_tickers: list[str]) -> list[dict]:
+    async def get_events(self, event_tickers: list[str], with_milestones: bool = False) -> list[dict]:
         """Batched form of get_event - one call for a whole list of event
         tickers instead of N individual get_event() calls. Live-verified
         2026-08-15 (docs/kalshi/get-events.md, docs/next-steps-2026-08-15-
@@ -279,14 +279,80 @@ class KalshiPublicGateway:
         {...}} wrapper shape, so callers read result[i]["event_ticker"]
         rather than result[i]["event"]["event_ticker"]. A ticker Kalshi
         doesn't return (e.g. renamed/removed) simply isn't in the result,
-        same as a failed get_event() call being skipped by its own caller."""
+        same as a failed get_event() call being skipped by its own caller.
+
+        with_milestones (kalshi-category-data-completeness Task 10,
+        docs/kalshi/get-events.md:114-118: "If true, includes related
+        milestones as a field alongside events") - additive, default
+        False, so every pre-existing caller keeps sending exactly today's
+        request (with_milestones is always explicitly passed, never
+        conditionally omitted - confirmed by
+        test_get_events_default_omits_with_milestones_for_existing_callers
+        in tests/test_kalshi_client.py) and gets back exactly today's
+        return shape, unchanged.
+
+        When True, this replaces what two call sites
+        (catalog_scan.propagate_milestone_winners, live_status.
+        _fetch_live_status) used to do themselves via N individual
+        client.get_milestones_for_event(et) calls, one per event ticker
+        (still batched via asyncio.gather, but still N real REST round
+        trips) - one get_events(..., with_milestones=True) call now
+        covers the whole batch. Kalshi returns milestones as a TOP-LEVEL
+        array sibling to `events` (GetEventsResponse.milestones,
+        get-events.md:187-201) - NOT inline per event; EventData itself
+        has no milestones field at all (get-events.md:207-314) - so this
+        method builds the join itself before returning: each Milestone is
+        indexed under every ticker in its related_event_tickers PLUS
+        primary_event_tickers (get-events.md:315-386 - both arrays of
+        tickers, there is no singular event_ticker field to key off),
+        then the matched list is attached to each returned event dict as
+        event["milestones"] (empty list, not a missing key, when nothing
+        references that ticker). One pass to index milestones by ticker,
+        then one dict lookup per event - not a nested scan of every
+        ticker against every milestone's related lists.
+
+        GetEventsResponse.milestones is genuinely Optional[List[Milestone]]
+        (required=False - confirmed via the installed SDK's own
+        model_fields introspection), the exact same nullable-response-
+        field shape that caused a real bug in a sibling task of this same
+        plan (Task 9's get_structured_targets: `resp.structured_targets or
+        []`) - guarded here (`resp.milestones or []`) from the start
+        rather than repeating it; a chunk of events none of which have any
+        associated milestone would otherwise raise TypeError on
+        `for m in None:`.
+
+        Milestone ordering within one event's `milestones` list: this
+        doc's schema carries no ordering guarantee for the top-level
+        `milestones` array (verified directly - no "sorted"/"ordered by"
+        language anywhere in the Milestone or GetEventsResponse sections),
+        so this method makes no claim of matching the old per-event
+        get_milestones_for_event(et, limit=5) endpoint's own ordering (a
+        different endpoint/filter, with no documented relationship to this
+        array's order either) - both current callers only ever use
+        `milestones[0]`, and the deterministic tie-break used here is
+        simply Kalshi's own list order as returned, documented at each
+        call site rather than assumed to match byte-for-byte."""
         if not event_tickers:
             return []
         events: list[dict] = []
+        raw_milestones: list[dict] = []
         for i in range(0, len(event_tickers), self._EVENTS_BATCH_SIZE):
             chunk = event_tickers[i:i + self._EVENTS_BATCH_SIZE]
-            resp = await call_with_backoff(self._client.get_events, tickers=",".join(chunk), limit=len(chunk))
+            resp = await call_with_backoff(
+                self._client.get_events, tickers=",".join(chunk), limit=len(chunk),
+                with_milestones=with_milestones,
+            )
             events.extend(e.model_dump(mode="json") for e in resp.events)
+            if with_milestones:
+                raw_milestones.extend(m.model_dump(mode="json") for m in (resp.milestones or []))
+        if with_milestones:
+            milestones_by_ticker: dict[str, list[dict]] = {}
+            for ms in raw_milestones:
+                tickers = set((ms.get("related_event_tickers") or []) + (ms.get("primary_event_tickers") or []))
+                for et in tickers:
+                    milestones_by_ticker.setdefault(et, []).append(ms)
+            for e in events:
+                e["milestones"] = milestones_by_ticker.get(e.get("event_ticker"), [])
         return events
 
     async def get_milestones_for_event(self, event_ticker: str, limit: int = 5) -> list[dict]:

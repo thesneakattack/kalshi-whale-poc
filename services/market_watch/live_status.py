@@ -3,7 +3,6 @@ Real live/scheduled/finished status per event, via Kalshi's milestone/
 live-data system, plus exchange status. Split out of market_watch.py
 (2026-08-22 modularization Phase 9/9).
 """
-import asyncio
 import time
 from datetime import datetime
 
@@ -173,17 +172,34 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
             needs_fetch.append(et)
 
     if needs_fetch:
-        # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
-        # get-multiple-live-data.md) - was N individual get_live_data()
-        # calls via asyncio.gather, one per event with a milestone.
-        # Live-verified: 3 individual = 0.99s wall, 1 batched get_live_datas
-        # call = 0.02s wall.
-        milestone_results = await asyncio.gather(
-            *(client.get_milestones_for_event(et) for et in needs_fetch), return_exceptions=True
-        )
-        for et, ms_result in zip(needs_fetch, milestone_results):
-            if isinstance(ms_result, list) and ms_result:
-                ms = ms_result[0]
+        # Batched (kalshi-category-data-completeness Task 10, docs/kalshi/
+        # get-events.md:114-118) - one get_events(needs_fetch,
+        # with_milestones=True) call replaces what used to be N individual
+        # client.get_milestones_for_event(et) calls (still batched via
+        # asyncio.gather, but still N real REST round trips). Scoped to
+        # needs_fetch specifically, NOT the full to_poll list above - the
+        # broad_cache short-circuit right above this block (milestone_scan.py,
+        # entry-gate-me-pairing-and-netting-remediation commit 56ae320)
+        # already resolved the rest of to_poll with zero REST calls, and
+        # applying this batch call to the full to_poll list would re-fetch
+        # milestones for events that cache already answered - discarding
+        # that already-landed REST-call reduction, a hot-path efficiency
+        # regression the data-plane HARD RULE forbids without measurement.
+        # services/kalshi/public.py's get_events already builds the
+        # event_ticker -> [milestones] join (Kalshi returns milestones as a
+        # top-level array, not inline per event); this reads
+        # event["milestones"][0] off each returned event - same first-entry
+        # convention the old per-event endpoint's own `limit=5` response
+        # used (see get_events' own docstring for why this array's
+        # ordering isn't assumed to match that endpoint's byte-for-byte).
+        events_by_ticker = {
+            e["event_ticker"]: e for e in await client.get_events(needs_fetch, with_milestones=True)
+            if e.get("event_ticker")
+        }
+        for et in needs_fetch:
+            ms_list = events_by_ticker.get(et, {}).get("milestones") or []
+            if ms_list:
+                ms = ms_list[0]
                 if ms.get("id") and ms.get("type"):
                     has_milestone.add(et)
                     milestone_by_event[et] = ms["id"]

@@ -79,19 +79,34 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             )
         ]
         if to_poll:
-            milestone_tasks = await asyncio.gather(
-                *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
-            )
+            # Batched (kalshi-category-data-completeness Task 10,
+            # docs/kalshi/get-events.md:114-118) - one get_events(...,
+            # with_milestones=True) call replaces what used to be N
+            # individual client.get_milestones_for_event(et) calls (still
+            # batched via asyncio.gather, but still N real REST round
+            # trips). services/kalshi/public.py's get_events already builds
+            # the event_ticker -> [milestones] join (Kalshi returns
+            # milestones as a top-level array, not inline per event), so
+            # this just reads event["milestones"] off each returned event -
+            # same `ms = ms_list[0]` first-entry convention the old
+            # per-event endpoint's own `limit=5` response used (see
+            # get_events' own docstring for why this array's ordering isn't
+            # assumed to match that endpoint's byte-for-byte).
+            events_by_ticker = {
+                e["event_ticker"]: e for e in await client.get_events(to_poll, with_milestones=True)
+                if e.get("event_ticker")
+            }
             # First pass: default every polled event to "no winner found
             # this tick" (recorded before any further fetch so a transient
             # failure below still throttles the retry to the next repoll
             # window), then collect the events that actually have a real
             # milestone id/type to check live-data for.
             milestone_by_event = {}
-            for et, ms_result in zip(to_poll, milestone_tasks):
+            for et in to_poll:
                 cache[et] = {"checked_at": now, "winner_found": False, "related": None, "mapped_winner_ticker": None}
-                if isinstance(ms_result, list) and ms_result:
-                    ms = ms_result[0]
+                ms_list = events_by_ticker.get(et, {}).get("milestones") or []
+                if ms_list:
+                    ms = ms_list[0]
                     if ms.get("id") and ms.get("type"):
                         milestone_by_event[et] = ms
 

@@ -56,22 +56,28 @@ reaches into it directly, `services/market_catalog/routes.py`'s
 - `docs/kalshi/get-events.md` — `event_metadata._fetch_event_titles`.
 - `docs/kalshi/get-live-data.md` / `get-event-live-data.md` — the
   milestone/live-data system: `catalog_scan.propagate_milestone_winners`
-  (`get_milestones_for_event` + `get_live_datas`) and
+  (`get_events(..., with_milestones=True)` as of Task 10 below,
+  previously `get_milestones_for_event` + `get_live_datas`) and
   `event_metadata._fetch_event_live_data` (`get_event_live_data`)
-  respectively — two independent per-event REST loops, both repoll-cached
-  (see `_MILESTONE_REPOLL_SEC`/`_EVENT_LIVE_DATA_REPOLL_SEC`) after being
-  found live as the bulk of an earlier ~27s tick_duration plateau.
+  respectively — two independent per-event-discovery loops, both repoll-
+  cached (see `_MILESTONE_REPOLL_SEC`/`_EVENT_LIVE_DATA_REPOLL_SEC`) after
+  being found live as the bulk of an earlier ~27s tick_duration plateau.
   `live_status._fetch_live_status` also calls `get_live_datas` (the sports
   live-status path), independent of the winner-propagation one in
-  `catalog_scan.py`. **Its `get_milestones_for_event` call is conditional
-  as of 2026-08-30, not unconditional as this line used to say:** it first
-  checks `state["milestone_by_event"]` (`milestone_scan.py`, below) and
-  only falls back to the per-event REST call for events that broad cache
-  hasn't covered.
+  `catalog_scan.py`. **Its milestone-discovery call is conditional as of
+  2026-08-30, not unconditional as this line used to say, and is
+  `get_events(needs_fetch, with_milestones=True)` as of Task 10 below (was
+  `get_milestones_for_event`):** it first checks
+  `state["milestone_by_event"]` (`milestone_scan.py`, below) and only
+  falls back to the batched REST call for events that broad cache hasn't
+  covered.
 - `docs/kalshi/get-milestones.md` — `milestone_scan._scan_milestone_batch`
   (`get_milestones_bulk`, category-scoped and batched) and
-  `catalog_scan`/`live_status`'s per-event `get_milestones_for_event`, all
-  the same `GET /milestones` endpoint with different filters. See the
+  `services/market_events/event_inspector.py`/`event_schedule.py`'s
+  per-event `get_milestones_for_event`, all the same `GET /milestones`
+  endpoint with different filters. `catalog_scan`/`live_status` used to
+  call `get_milestones_for_event` too but no longer do (Task 10 below,
+  `docs/kalshi/get-events.md`'s `with_milestones` param instead). See the
   `min_updated_ts` entry in `docs/kalshi/CHEATSHEET.md` before passing a
   watermark — it must be an integer.
 - `docs/kalshi/get-tags-for-series-categories.md` /
@@ -373,3 +379,66 @@ that fallback exactly as before. The `esports_match` finding above still
 stands: `winner` is `None` for that milestone type regardless, so no
 `custom_strike` resolution ever runs for it — this fix only helps types
 where `winner` is a real declared name.
+
+## `get_events(with_milestones=True)` replaces N per-event milestone polling (2026-08-31, Task 10 of kalshi-category-data-completeness)
+
+`propagate_milestone_winners` (`catalog_scan.py`) and `_fetch_live_status`
+(`live_status.py`) both used to discover an event's milestone via
+`client.get_milestones_for_event(et)`, one REST call per event ticker
+(still batched Python-side via `asyncio.gather`, but N real round trips).
+Both now call the new `KalshiPublicGateway.get_events(tickers,
+with_milestones=True)` (`services/kalshi/public.py`) instead — one REST
+call for the whole batch. `get_milestones_for_event` itself is NOT
+removed — `services/market_events/event_inspector.py` and
+`services/market_events/event_schedule.py` still call it for their own,
+different reasons (`docs/kalshi/get-milestones.md`'s per-event lookup is
+still the right tool there); only these two call sites' own polling
+loops changed.
+
+**The response-shape trap** (`docs/kalshi/get-events.md:114-118,187-201,
+315-390`, live-verified against the installed SDK's own
+`GetEventsResponse`/`Milestone` model_fields): `with_milestones=True`
+does NOT put milestones inline on each event. `GetEventsResponse.
+milestones` is a **top-level array sibling to `events`**, and each
+`Milestone` carries `related_event_tickers`/`primary_event_tickers`
+(both plural arrays — no singular `event_ticker` to key off). `EventData`
+itself has no `milestones` field at all. So `get_events` builds the join
+itself before returning: index every milestone under each ticker in its
+`related_event_tickers` + `primary_event_tickers` (one pass, a dict
+build, not a nested scan), then attach the matched list to every
+returned event dict as `event["milestones"]` (empty list, never a
+missing key, when nothing matches). `GetEventsResponse.milestones` is
+also genuinely `Optional[List[Milestone]]`/`required=False` — the same
+nullable-response-field shape Task 9's `get_structured_targets` hit —
+guarded with `resp.milestones or []` from the start.
+
+**Additive, not a breaking change:** `with_milestones` defaults to
+`False`, but `get_events` always sends it explicitly (never omits the
+kwarg) — `test_get_events_default_omits_with_milestones_for_existing_
+callers` (`tests/test_kalshi_client.py`) pins this. When `False`, no
+`milestones` key is added to the returned dicts at all — every
+pre-existing caller (`services/market_watch/event_metadata.py`'s
+`_fetch_event_titles`, and every other pre-Task-10 test) sees byte-for-
+byte the same return shape as before.
+
+**Milestone ordering, a judgment call:** both call sites only ever use
+the *first* entry in an event's milestone list (`ms_list[0]`), matching
+the old per-event endpoint's own `ms_result[0]` convention. The top-level
+`milestones` array carries no documented ordering guarantee (checked the
+full `get-events.md` schema section - no "sorted"/"ordered by" language
+anywhere), so this is Kalshi's own list-return order, not a claim that it
+matches the old per-event endpoint's ordering byte-for-byte — those are
+two different endpoints/filters with no documented relationship between
+their orderings. Documented at `get_events`' own docstring and both call
+sites; not silently assumed.
+
+**`live_status.py`'s scope is narrower than `catalog_scan.py`'s,
+deliberately:** `_fetch_live_status` applies the new batched call only to
+`needs_fetch` (the cache-miss remainder after `state["milestone_by_event"]`'s
+broad-cache short-circuit — see the "Broad milestone discovery" entry
+above), not the full `to_poll` list — applying it to all of `to_poll`
+would re-fetch milestones for events that cache already resolved,
+discarding that already-landed REST-call reduction (entry-gate-me-
+pairing-and-netting-remediation, commit `56ae320`). `catalog_scan.py`'s
+`propagate_milestone_winners` has no such broad-cache path, so it applies
+the batched call to its own full `to_poll` equivalent directly.

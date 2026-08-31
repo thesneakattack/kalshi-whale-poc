@@ -23,9 +23,21 @@ class FakeClient:
         self.market_call_batches = []  # one entry per get_markets_by_tickers call
         self.structured_targets_calls = []
 
-    async def get_milestones_for_event(self, event_ticker):
-        self.milestone_calls.append(event_ticker)
-        return self._milestones.get(event_ticker, [])
+    async def get_events(self, event_tickers, with_milestones=False):
+        # Batched (kalshi-category-data-completeness Task 10) - stands in
+        # for the real KalshiPublicGateway.get_events(with_milestones=True),
+        # which joins Kalshi's top-level `milestones` array onto each
+        # returned event; propagate_milestone_winners now reads
+        # event["milestones"] instead of calling the old per-event
+        # get_milestones_for_event(et). milestone_calls keeps recording the
+        # tickers actually fetched this tick (now via one batched call
+        # instead of N individual ones) so every pre-existing "was this
+        # event (re)polled" assertion below stays unchanged.
+        self.milestone_calls.extend(event_tickers)
+        return [
+            {"event_ticker": et, "milestones": self._milestones.get(et, [])}
+            for et in event_tickers
+        ]
 
     async def get_live_datas(self, milestone_ids):
         # Batched (2026-08-16) - replaces the old per-milestone get_live_data.
@@ -178,6 +190,48 @@ def test_propagate_milestone_winners_batches_related_market_lookups_across_event
     assert set(fake.market_call_batches[0]) == {
         "EVT1-OUTCOME1", "EVT1-OUTCOME2", "EVT2-OUTCOME1", "EVT2-OUTCOME2",
     }
+
+
+# --- Task 10 (kalshi-category-data-completeness): get_events(with_milestones
+# =True) replaces get_milestones_for_event entirely - propagate_milestone_
+# winners must never call it, even indirectly. -----------------------------
+
+class _FakeClientNoMilestoneEndpoint:
+    """Deliberately has no get_milestones_for_event at all - if
+    propagate_milestone_winners still called it (directly, or via any
+    fallback path), this would raise AttributeError rather than silently
+    passing, proving the old per-event endpoint is genuinely gone from this
+    call site, not just unused by coincidence in the other fixtures above."""
+
+    def __init__(self):
+        self.get_events_calls = []
+
+    async def get_events(self, event_tickers, with_milestones=False):
+        self.get_events_calls.append((list(event_tickers), with_milestones))
+        return [{"event_ticker": et, "milestones": []} for et in event_tickers]
+
+    async def get_live_datas(self, milestone_ids):
+        return {}
+
+    async def get_markets_by_tickers(self, tickers):
+        return {}
+
+    async def get_structured_targets(self, ids):
+        return {}
+
+
+def test_propagate_milestone_winners_never_calls_get_milestones_for_event(monkeypatch):
+    markets = [{"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""}]
+    fake = _FakeClientNoMilestoneEndpoint()
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    # No AttributeError from a fake client missing get_milestones_for_event
+    # is itself the proof - the function's own broad try/except would
+    # otherwise swallow it silently, so also assert the batched call it
+    # replaced that endpoint with actually happened.
+    asyncio.run(main.propagate_milestone_winners(fake, markets))
+    assert fake.get_events_calls == [(["EVT1"], True)]
 
 
 # --- repoll-cache behavior (2026-08-15 tick_duration fix) - this used to

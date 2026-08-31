@@ -1578,7 +1578,16 @@ class _FakeLiveClient:
     the returned status looks right. get_live_datas (batched, 2026-08-16)
     replaces the old per-milestone get_live_data - returns milestone_id ->
     {"details": {...}} flat, matching KalshiClient.get_live_datas' own real
-    shape (not get_live_data()'s single-call {"live_data": {...}} wrapper)."""
+    shape (not get_live_data()'s single-call {"live_data": {...}} wrapper).
+
+    get_events(with_milestones=True) (kalshi-category-data-completeness
+    Task 10) replaces the old per-event get_milestones_for_event - stands
+    in for the real KalshiPublicGateway.get_events, which joins Kalshi's
+    top-level `milestones` array onto each returned event.
+    milestone_calls keeps recording the tickers actually fetched this tick
+    (now via one batched call instead of N individual ones) so every
+    pre-existing "was this event (re)polled" assertion below stays
+    unchanged."""
 
     def __init__(self, widget_status="live", has_milestone=True, live_data_fails=False):
         self.widget_status = widget_status
@@ -1587,9 +1596,10 @@ class _FakeLiveClient:
         self.milestone_calls = []
         self.live_datas_calls = []  # list of milestone_id batches requested
 
-    async def get_milestones_for_event(self, event_ticker):
-        self.milestone_calls.append(event_ticker)
-        return [{"id": "ms1", "type": "game"}] if self.has_milestone else []
+    async def get_events(self, event_tickers, with_milestones=False):
+        self.milestone_calls.extend(event_tickers)
+        ms_list = [{"id": "ms1", "type": "game"}] if self.has_milestone else []
+        return [{"event_ticker": et, "milestones": ms_list} for et in event_tickers]
 
     async def get_live_datas(self, milestone_ids):
         self.live_datas_calls.append(list(milestone_ids))
@@ -1611,8 +1621,8 @@ def test_fetch_live_status_returns_none_for_a_settlement_input_type():
     main.state["live_status_cache"].clear()
 
     class _FakeReportClient:
-        async def get_milestones_for_event(self, event_ticker):
-            return [{"id": "ms1", "type": "company_report"}]
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "company_report"}]} for et in event_tickers]
 
         async def get_live_datas(self, milestone_ids):
             return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
@@ -1830,8 +1840,8 @@ def test_fetch_live_status_political_race_runoff_does_not_fall_through_to_schedu
     main.state["live_status_cache"].clear()
 
     class _FakePoliticalRaceClient:
-        async def get_milestones_for_event(self, event_ticker):
-            return [{"id": "ms1", "type": "political_race"}]
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "political_race"}]} for et in event_tickers]
 
         async def get_live_datas(self, milestone_ids):
             return {
@@ -1896,8 +1906,9 @@ def test_fetch_live_status_broad_cache_mixed_hit_and_miss_in_one_tick():
 
 def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
     # test_fetch_live_status_returns_none_for_a_settlement_input_type above
-    # only exercises the needs_fetch path (a fresh get_milestones_for_event
-    # call always returns a full milestone dict, `ms["type"]` included). An
+    # only exercises the needs_fetch path (a fresh get_events(with_milestones=
+    # True) call always returns a full milestone dict per event,
+    # `ms["type"]` included). An
     # event resolved via the broad milestone_by_event cache instead
     # (milestone_scan.py) never has that dict at all - the cache only maps
     # event_ticker -> milestone id - so this proves the wiring's `ld["type"]`
@@ -1908,8 +1919,8 @@ def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
     main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}
 
     class _FakeBroadCacheReportClient:
-        async def get_milestones_for_event(self, event_ticker):
-            raise AssertionError("broad cache hit - the per-event REST call must not happen")
+        async def get_events(self, event_tickers, with_milestones=False):
+            raise AssertionError("broad cache hit - the batched get_events fallback call must not happen")
 
         async def get_live_datas(self, milestone_ids):
             return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
@@ -1921,6 +1932,37 @@ def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
     # the needs_fetch path's equivalent test above.
     assert result == {"EVT-A": None}
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "no_live_status_type"
+
+
+# --- Task 10 (kalshi-category-data-completeness): get_events(with_milestones
+# =True) replaces get_milestones_for_event entirely - _fetch_live_status must
+# never call it, even indirectly. -------------------------------------------
+
+def test_fetch_live_status_never_calls_get_milestones_for_event():
+    # Deliberately has no get_milestones_for_event at all - if
+    # _fetch_live_status still called it (directly, or via any fallback
+    # path) this would raise AttributeError, proving the old per-event
+    # endpoint is genuinely gone from this call site, not just unused by
+    # coincidence in the other fixtures above.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # force the needs_fetch path, not the broad cache
+
+    class _FakeClientNoMilestoneEndpoint:
+        def __init__(self):
+            self.get_events_calls = []
+
+        async def get_events(self, event_tickers, with_milestones=False):
+            self.get_events_calls.append((list(event_tickers), with_milestones))
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "game"}]} for et in event_tickers]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "game", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    fake = _FakeClientNoMilestoneEndpoint()
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.get_events_calls == [(["EVT-A"], True)]
 
 
 def test_fetch_live_status_no_live_status_type_does_not_permanently_starve_poll_budget():
@@ -1937,8 +1979,8 @@ def test_fetch_live_status_no_live_status_type_does_not_permanently_starve_poll_
     main.state["live_status_cache"].clear()
 
     class _FakeReportClient:
-        async def get_milestones_for_event(self, event_ticker):
-            return [{"id": "ms1", "type": "company_report"}]
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "company_report"}]} for et in event_tickers]
 
         async def get_live_datas(self, milestone_ids):
             return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
@@ -1979,8 +2021,8 @@ class _FakeGameStateClient:
     def __init__(self, details):
         self._details = details
 
-    async def get_milestones_for_event(self, event_ticker):
-        return [{"id": "ms1", "type": "football_game"}]
+    async def get_events(self, event_tickers, with_milestones=False):
+        return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "football_game"}]} for et in event_tickers]
 
     async def get_live_datas(self, milestone_ids):
         return {mid: {"type": "football_game", "details": self._details} for mid in milestone_ids}

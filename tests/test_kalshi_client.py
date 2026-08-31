@@ -35,7 +35,12 @@ def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
     client = _client()
     calls = []
 
-    async def fake_get_events(tickers, limit):
+    # with_milestones=False (default) still needs a slot on the fake - the
+    # real gateway always passes it explicitly, never omits the kwarg (Task
+    # 10, kalshi-category-data-completeness); see
+    # test_get_events_default_omits_with_milestones_for_existing_callers
+    # below for the dedicated proof of the value actually sent.
+    async def fake_get_events(tickers, limit, with_milestones=False):
         calls.append((tickers, limit))
         return type("R", (), {"events": [
             _FakeModel({"event_ticker": "EVT-A", "title": "A"}),
@@ -51,7 +56,7 @@ def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
 def test_get_events_empty_list_makes_no_call(monkeypatch):
     client = _client()
 
-    async def fake_get_events(tickers, limit):
+    async def fake_get_events(tickers, limit, with_milestones=False):
         raise AssertionError("should not be called for an empty list")
 
     monkeypatch.setattr(client._client, "get_events", fake_get_events)
@@ -64,7 +69,7 @@ def test_get_events_chunks_above_the_batch_size(monkeypatch):
     client._EVENTS_BATCH_SIZE = 2  # shrink for a fast, deterministic test
     calls = []
 
-    async def fake_get_events(tickers, limit):
+    async def fake_get_events(tickers, limit, with_milestones=False):
         calls.append(tickers)
         return type("R", (), {"events": [_FakeModel({"event_ticker": t}) for t in tickers.split(",")]})()
 
@@ -72,6 +77,124 @@ def test_get_events_chunks_above_the_batch_size(monkeypatch):
     result = asyncio.run(client.get_events(["A", "B", "C"]))
     assert calls == ["A,B", "C"]  # 3 tickers / batch size 2 -> 2 chunked calls
     assert [e["event_ticker"] for e in result] == ["A", "B", "C"]
+
+
+# --- with_milestones (kalshi-category-data-completeness Task 10) - replaces
+# N per-event get_milestones_for_event() calls with milestones joined onto
+# get_events' own response. GetEventsResponse.milestones is a TOP-LEVEL
+# array sibling to `events` (docs/kalshi/get-events.md:187-201), not inline
+# per event, so get_events builds the ticker -> [milestones] join itself. --
+
+def test_get_events_passes_with_milestones_when_requested(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        calls.append(with_milestones)
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A"})], "milestones": []})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert calls == [True]
+    assert result == [{"event_ticker": "EVT-A", "milestones": []}]
+
+
+def test_get_events_default_omits_with_milestones_for_existing_callers(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        calls.append(with_milestones)
+        return type("R", (), {"events": []})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    asyncio.run(client.get_events(["EVT-A"]))
+    assert calls == [False]  # every existing call site keeps today's behavior exactly
+
+
+def test_get_events_with_milestones_false_does_not_add_a_milestones_key(monkeypatch):
+    # Additive-only guarantee: a caller that doesn't ask for with_milestones
+    # gets back exactly today's flat event dict shape, no extra key at all -
+    # not even an empty one - so an existing caller's `== {...}` assertions
+    # on the returned dict shape stay byte-for-byte identical.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A", "title": "A"})]})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"]))
+    assert result == [{"event_ticker": "EVT-A", "title": "A"}]
+    assert "milestones" not in result[0]
+
+
+def test_get_events_with_milestones_builds_the_ticker_join(monkeypatch):
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {
+            "events": [
+                _FakeModel({"event_ticker": "EVT-A"}),
+                _FakeModel({"event_ticker": "EVT-B"}),
+            ],
+            "milestones": [
+                _FakeModel({
+                    "id": "ms1", "type": "football_game",
+                    "related_event_tickers": ["EVT-A"], "primary_event_tickers": [],
+                }),
+            ],
+        })()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A", "EVT-B"], with_milestones=True))
+    by_ticker = {e["event_ticker"]: e for e in result}
+    assert by_ticker["EVT-A"]["milestones"] == [
+        {"id": "ms1", "type": "football_game", "related_event_tickers": ["EVT-A"], "primary_event_tickers": []},
+    ]
+    # EVT-B matches no milestone's related_event_tickers/primary_event_tickers
+    # - an empty list, not a KeyError or a missing key.
+    assert by_ticker["EVT-B"]["milestones"] == []
+
+
+def test_get_events_with_milestones_matches_on_primary_event_tickers_too(monkeypatch):
+    # Milestone.related_event_tickers and primary_event_tickers are both
+    # real, distinct arrays (docs/kalshi/get-events.md:315-386) - a ticker
+    # can be the milestone's primary outcome without being "related" in the
+    # narrower sense, so the join must check both.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {
+            "events": [_FakeModel({"event_ticker": "EVT-A"})],
+            "milestones": [
+                _FakeModel({
+                    "id": "ms1", "type": "football_game",
+                    "related_event_tickers": [], "primary_event_tickers": ["EVT-A"],
+                }),
+            ],
+        })()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert result[0]["milestones"] == [
+        {"id": "ms1", "type": "football_game", "related_event_tickers": [], "primary_event_tickers": ["EVT-A"]},
+    ]
+
+
+def test_get_events_tolerates_a_null_milestones_field(monkeypatch):
+    # GetEventsResponse.milestones is Optional[List[Milestone]], required=
+    # False (confirmed via the installed SDK's own model_fields) - the same
+    # nullable-response-field trap Task 9's get_structured_targets hit
+    # (`resp.structured_targets or []`). A chunk of events none of which
+    # have any associated milestone must not raise on `for m in None:`.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A"})], "milestones": None})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert result == [{"event_ticker": "EVT-A", "milestones": []}]
 
 
 def test_get_live_datas_returns_flat_shape_keyed_by_milestone_id(monkeypatch):
