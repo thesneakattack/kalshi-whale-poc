@@ -245,9 +245,26 @@ one function body changes, its contract doesn't.
 log-time with the old `series_of()` — 97,541+ existing rows already carry
 ticker-prefix-derived values. Per CLAUDE.md, accumulated history is never rewritten to make
 a number look different, so this design does **not** backfill `signals.series` for existing
-rows, and a backfill would be incomplete anyway (`title_cache` is a rolling watchlist cache,
-not a permanent archive — a ticker that rotated off the board months ago has no cached
-`event_ticker` to join through today). Concretely: for the large majority of series, ticker
+rows.
+
+**Correction, found in design review: the reason given above for skipping backfill was
+factually backwards, and the real reason is a measured coverage number, not an
+assumption.** `title_cache`'s `market_titles`/`event_titles` are *not* a rolling
+watchlist cache — `services/state_view.py:142-145` and `main.py:956-958` both state
+explicitly that they "accumulate unbounded for the app's whole lifetime." The table
+that's actually horizon-bounded is `market_catalog.markets` (`market_catalog.py:216-225`,
+"not a 'full' catalog by design... skip anything... scheduled well outside the near-term
+horizon") — a different table, not proposed for this join. Ran the actual coverage query
+rather than reasoning about it (`data/signal_log.db` × `data/title_cache.db`, live, this
+session): of the **12,357 distinct MVE/sharded tickers** behind the 14.85%-of-signals
+figure below, only **90 (0.7%)** have a `market_titles` row today; at the row level, only
+**218 of 14,606 (1.5%)** MVE-shaped signal rows would gain a corrected `series_ticker`
+from a backfill attempted right now. The **conclusion is unchanged — still don't
+backfill** — but for the real reason: coverage is empirically near-zero (MVE/sharded
+tickers are ephemeral, cycle out, and `market_titles`/`mve_scan.py`'s MVE-specific
+discovery only shipped the same day as this investigation — issue #268 — so almost none
+of the historical MVE tickers were ever cached in the first place), not because the
+cache is bounded. Concretely: for the large majority of series, ticker
 prefix already equals the real `series_ticker` (confirmed by `config/settings.yaml`'s own
 `excluded_series`/`min_contracts_by_series` keys — `KXBTC15M`, `KXTRUMPSAY`, etc. — which
 work today precisely because that equality usually holds), so old and new rows agree and
@@ -301,6 +318,24 @@ a hot-path WS handler change (new message classes, a new consumer), which per th
 needs its own runtime-cost measurement before it ships, not a design bolted onto a
 persistence spec. A future task, scoped narrowly: add two `_CLASS_BY_MESSAGE_TYPE` entries
 and their handlers.
+
+### 1.8 REST complement, missed by the original investigation sweep: the fee-changes endpoints
+
+`get-series-fee-changes.md` (`GET /series/fee_changes`, params `series_ticker` and
+`show_historical` — both scheduled *and* historical changes, not just the current value)
+and `get-event-fee-changes.md` (`GET /events/fee_changes`) have no code path today
+(`grep -rn fee_changes services main.py tools tests` → no output). Unlike X10 above, these
+are plain REST reads, not a hot-path WS handler change — no new message class, no runtime-
+cost measurement gate, so there's no reason to defer them the way X10 is deferred. They
+belong in D1's scope directly: a poll of `GET /series/fee_changes?series_ticker=<t>&
+show_historical=true` per series, written into `series_metadata`'s existing `fee_type`/
+`fee_multiplier` columns (§1.2) the same way the rest of that row is populated — riding
+`_get_series_cache()`'s existing hourly refresh, one additional call per series already
+being refreshed, not a new schedule. `get-event-fee-changes.md:7`'s stated semantics
+("Event fees are an override layered on top of the parent series' fee structure. If
+`fee_type_override` and `fee_multiplier_override` are null, that indicates the override is
+cleared") is what X10's real-time handler will need once it ships — this REST poll is the
+same data, available now, without waiting on the WS work.
 
 ---
 
