@@ -39,10 +39,20 @@ commit → push → Woodpecker → PR → merge → delete branch
   `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`, reading
   each `context`'s `state` independently. Never weaken or bypass a legitimate
   CI guard to go green.
-- `gh pr create` once pushed; read the PR body before merging;
-  `gh pr merge --merge` (keeps individual commits so `git log`/`blame` stay
-  real history); delete the branch locally and remotely —
-  `scripts/cleanup-worktrees.sh` does both for provably merged worktrees.
+- `gh pr create` once pushed; read the PR body before merging — run
+  `gh pr view <n> --json body,commits --jq '.body, (.commits[].messageBody)' | grep -n '\[ \]\|\[x\]'`
+  every time, plus the same grep over any `docs/superpowers/` document the
+  body links to or was generated from, since a checklist there is otherwise
+  invisible here. A "Test plan" checklist, a named human gate, or a
+  post-merge follow-up is easy to skip silently if nobody greps for it.
+  Check off what's genuinely done in the PR itself, leave a real gate
+  unchecked rather than pre-checking it, and never assume an unchecked item
+  (a scheduled re-verification, a "run X after merge" line) executes on its
+  own by merging — either do it before merging, or say explicitly, before
+  merging, what will do it and when. `gh pr merge --merge` (keeps individual commits
+  so `git log`/`blame` stay real history); delete the branch locally and
+  remotely — `scripts/cleanup-worktrees.sh` does both for provably merged
+  worktrees.
 - Single-developer repo: no self-approval ceremony, just the mechanical
   guarantees — no routine work on `main`, no force-push, CI before
   integration, reviewable diffs, safe merges. This does not exempt an

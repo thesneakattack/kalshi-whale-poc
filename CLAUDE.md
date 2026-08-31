@@ -117,7 +117,7 @@ def _connect() -> sqlite3.Connection:
 
 ## Branching, CI, sessions
 
-- `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Read a PR body before merging.
+- `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Before merging, read the PR body in full and explicitly grep it and its commits for task-list items (`- [ ]`/`- [x]`) — a checklist gate or post-merge follow-up is easy to skip if nobody looks for it.
 - CI (Woodpecker, `.woodpecker/*.yml`) is the only full-suite owner. Locally run only the targeted test files; the per-edit hook already does this. Confirm CI via `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`.
 - Checkpoint often (`/checkpoint`): commit verified units, stage specific paths, never `git add -A`, never commit a failing state.
 - Parallel sessions share one primary checkout: `orient.sh` lists the live ones and `ListAgents` names them; work in a worktree under `.claude/worktrees/` (`git worktree add … origin/main`, then `EnterWorktree`); never checkout/stash/reset/rebase/merge under another session's work — convention only since 2026-08-30 (the guard that used to deny it, R6, was retired: its liveness check had no time dimension and denied real merges over dead sessions twice in one night); never edit a file another session names as in use.
