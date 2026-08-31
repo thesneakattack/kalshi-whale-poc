@@ -126,6 +126,24 @@ def _fresh_title_cache_series_ticker_cache(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_milestone_live_data_default_path_types(monkeypatch):
+    """services/market_watch/milestone_live_data.py's _default_path_types_seen
+    (kalshi-category-data-completeness Task 5) is the same class of module-
+    global mutable state as every fixture above: it's a fire-once-per-
+    process gate keyed by milestone `type` string, so any test that calls
+    extract() with an unnamed type (this module's own tests deliberately
+    do, to prove the fault-log-once behavior) leaves that type behind for
+    the next test - which broke default_path_types_snapshot()'s "empty
+    when nothing seen" and "exactly N distinct types" assertions the first
+    time this module's own test file ran end to end (collection-order
+    dependent: an earlier test's `tennis_tournament_singles`/
+    `basketball_game`/`some_type_never_seen_before` calls all leaked into
+    the snapshot tests below them in this same file)."""
+    from services.market_watch import milestone_live_data
+    monkeypatch.setattr(milestone_live_data, "_default_path_types_seen", set())
+
+
+@pytest.fixture(autouse=True)
 def _capture_writer_not_left_running():
     """services/capture_writer.py's daemon thread is the last input
     capture_from_runtime reads (writer.* rows appear while is_alive()).
