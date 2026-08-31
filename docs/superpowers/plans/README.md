@@ -1,6 +1,6 @@
 # Plans index
 
-20 plans, ~21,900 lines. This file is the map. Read it before opening any plan,
+21 plans, ~22,100 lines. This file is the map. Read it before opening any plan,
 and before citing a task number anywhere — a commit message, a PR body, an issue,
 a session note.
 
@@ -58,6 +58,7 @@ realtime row below has been verified task-by-task.
 | [active-tracks-board](2026-08-26-active-tracks-board.md) | Cross-session initiative board | — | `docs/active-tracks-board` |
 | [kalshi-category-data-completeness](2026-08-30-kalshi-category-data-completeness-implementation.md) | D1–D4 series metadata, shared milestone extractor, Pyth commodities, political_race | 14 | — |
 | [claudesuperpower-plugin-pilot](2026-08-31-claudesuperpower-plugin-pilot.md) | Pilot rollout for 4 recommended `claude-plugins-official` plugins; awaiting human go-ahead, not yet executed | 7 | — |
+| [weather-index-ingestion](2026-08-31-weather-index-ingestion.md) | New `services/weather_index/` package polling Kalshi's per-city weather index (ingestion only, no edge study/entry logic); awaiting execution, not yet started | 8 | — |
 
 Specs and designs live in `../specs/`, one per plan, same slug.
 
