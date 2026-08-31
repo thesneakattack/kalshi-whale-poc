@@ -55,6 +55,7 @@ realtime row below has been verified task-by-task.
 | [kanban-sync-improvements](2026-08-28-kanban-sync-improvements.md) | Closed-parent guard, classification guidance | 3 | `chore/kanban-sync-improvements` |
 | [workflow-remediation](2026-08-27-workflow-remediation.md) | 2026-08-27 workflow audit remediation | 10 | `chore/workflow-remediation` |
 | [active-tracks-board](2026-08-26-active-tracks-board.md) | Cross-session initiative board | — | `docs/active-tracks-board` |
+| [kalshi-category-data-completeness](2026-08-30-kalshi-category-data-completeness-implementation.md) | D1–D4 series metadata, shared milestone extractor, Pyth commodities, political_race | 14 | — |
 
 Specs and designs live in `../specs/`, one per plan, same slug.
 
