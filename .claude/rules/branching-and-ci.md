@@ -39,7 +39,28 @@ commit → push → Woodpecker → PR → merge → delete branch
   `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`, reading
   each `context`'s `state` independently. Never weaken or bypass a legitimate
   CI guard to go green.
-- `gh pr create` once pushed; read the PR body before merging — run
+- `gh pr create` once pushed. If this PR carries a stage of the "nothing
+  advances on one pass" planning pipeline (investigation/research →
+  design/spec → implementation plan) — a research doc, a design/spec doc,
+  or a plan under `docs/superpowers/`, alone or bundled — apply the
+  matching `phase:*` label(s) to the PR itself (`gh pr edit <n> --add-label
+  phase:research`, `phase:spec`, and/or `phase:plan`; a PR bundling more
+  than one stage in one commit gets more than one label, honestly
+  reflecting what it actually contains). Reuse the exact vocabulary
+  `tools/kanban_sync/labels.py` already defines for issues
+  (`phase:research`/`phase:spec`/`phase:plan`/`phase:implementing`/
+  `phase:verification`/`phase:done`) — do not invent new label names. This
+  is a PR-level convention, not a `tools/kanban_sync` feature: that tool's
+  `phase:*` labeling is deliberately Issues-only (see `labels.py`'s own
+  header — GitHub Projects board grouping works off issue-linked fields,
+  not PR labels), so a PR gets its label directly via `gh pr edit`, never
+  through a kanban_sync source. The payoff: `gh pr list --label phase:plan`
+  (or the GitHub UI) answers "which PRs are part of a planning track, and
+  at which stage" without opening each one — before this convention, every
+  PR touching `docs/superpowers/` merged on 2026-08-31 (7 of them) carried
+  zero labels between them, confirmed via `gh pr view <n> --json labels`
+  across the day's full merge history, not guessed.
+  Read the PR body before merging — run
   `gh pr view <n> --json body,commits --jq '.body, (.commits[].messageBody)' | grep -n '\[ \]\|\[x\]'`
   every time, plus the same grep over any `docs/superpowers/` document the
   body links to or was generated from, since a checklist there is otherwise

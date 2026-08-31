@@ -1,23 +1,35 @@
 # Event-Scoped ME Entry Gate Implementation Plan
 
-> ## ⛔ NOT IMPLEMENTATION-READY — do not execute this plan as written
+> ## ⛔ RETIRED 2026-08-31 — do not execute this plan; it would regress shipped code
 >
-> Verified 2026-08-29 during self-review, still open as of 2026-08-30. The
-> **spec** was corrected to revision 2, but five of its six defects were fixed
-> only in the spec's prose and remain live in the task bodies below. An
-> executor following these tasks literally will build the pre-revision design.
+> First flagged 2026-08-29/30 as not implementation-ready (five of the spec's
+> six revision-2 defects were fixed only in prose, still live in the task
+> bodies below). That finding still stands, but the more serious problem
+> found 2026-08-31 is why this plan is retired rather than revised: PR #298
+> (`fix/entry-gate-netting-remediation`, merged) independently fixed the same
+> root cause this plan's spec §1.2 diagnosed — `find_open_confirmed_conflict`
+> in `services/mutual_exclusivity.py`, wired into
+> `services/whale_stream/decision_bridge.py:117-120` — by *extending* the
+> `me_complement` parameter this plan's Task 3 instructs an executor to
+> **remove and replace**. Following Task 3 as written today would delete
+> shipped, working code, not close a gap.
 >
-> Revision 3 is required before execution. The open items are recorded in the
-> review notes for PR #202. At minimum, the tasks must be brought in line with
-> spec §3.1 (strictness DECIDED: ME-true blocks any second position regardless
-> of side), §4.1 (`held_events` unions open positions *and* pending orders),
-> §4.4 (blocked-flip measurement), §4.5 (the limit-order path), and §4.6
-> (`settlement_edge_entry` excluded).
+> **What this plan was solving, and what's still genuinely open**: PR #298's
+> fix is deliberately bounded to the 2-outcome case only (§3.1's "uniform for
+> 2-way and N-way" strict design is not what shipped). Real, unaddressed
+> scope: N-way (3+-outcome) ME events, `event_ticker` as a first-class field
+> on `Position`/`PendingOrder` (§4.1), the limit-order/resting-order path
+> (§4.5), and blocked-flip P&L measurement (§4.4). These goals are preserved
+> — not lost with this retirement — as GitHub issues #277/#289–293, moved to
+> the generic "Unplanned" milestone (#11) rather than left attached to a plan
+> whose literal instructions are now unsafe to follow. A future design for
+> N-way coverage should start from PR #298's actual shipped code, not this
+> plan's pre-#298 assumptions.
 >
-> Kept in the repository because the spec and the research behind it are sound
-> and the gate targets the dominant netting-loss mechanism (`locked_loss`,
-> 26 of 37 netting rows as of 2026-08-30 — see `docs/open-decisions.md`). The
-> plan is the part that is not finished.
+> Kept in the repository (not deleted) because the spec and research behind
+> it are sound and record real investigation work — see
+> `docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md` and
+> `docs/open-decisions.md`'s entry for this initiative.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -1,6 +1,6 @@
 # Plans index
 
-21 plans, ~22,100 lines. This file is the map. Read it before opening any plan,
+22 plans, ~22,300 lines. This file is the map. Read it before opening any plan,
 and before citing a task number anywhere — a commit message, a PR body, an issue,
 a session note.
 
@@ -27,6 +27,12 @@ This is not cosmetic: `tools/quality_coordination.py:305` treats an unchecked
 `- [ ]` as the plan's own statement that a task is unfinished, which is why AQC
 reports plans as perpetually in-flight. **The commit history and the source are
 authoritative for what shipped; these files are not.**
+
+Related, easy to conflate: a row's description saying "awaiting execution" /
+"not yet started" is about that plan's *code*, never about the plan
+*document* — every row in the table below already has a written, merged
+document (that's what earns it a row here) — see CLAUDE.md's "nothing
+advances on one pass" HARD RULE.
 
 ## The plans
 
@@ -59,6 +65,7 @@ realtime row below has been verified task-by-task.
 | [kalshi-category-data-completeness](2026-08-30-kalshi-category-data-completeness-implementation.md) | D1–D4 series metadata, shared milestone extractor, Pyth commodities, political_race | 14 | — |
 | [claudesuperpower-plugin-pilot](2026-08-31-claudesuperpower-plugin-pilot.md) | Pilot rollout for 4 recommended `claude-plugins-official` plugins; awaiting human go-ahead, not yet executed | 7 | — |
 | [weather-index-ingestion](2026-08-31-weather-index-ingestion.md) | New `services/weather_index/` package polling Kalshi's per-city weather index (ingestion only, no edge study/entry logic); awaiting execution, not yet started | 8 | — |
+| [event-scoped-me-gate](2026-08-29-event-scoped-me-gate.md) | Event-scoped ME entry gate; **RETIRED 2026-08-31** — Task 3 would regress PR #298's shipped fix, not close a gap; underlying N-way/event_ticker/limit-order scope preserved as issues, not this plan | 5 | — |
 
 Specs and designs live in `../specs/`, one per plan, same slug.
 
