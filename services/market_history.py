@@ -305,6 +305,28 @@ def outcome_count() -> int:
         return conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]
 
 
+def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
+    """Drop price/spread snapshots older than the retention window. This
+    table's only readers - momentum()/volatility() (short, caller-supplied
+    lookback_sec windows) and compute_hypothetical_trades() (longest
+    configured lookback_windows_sec entry: 86400s/24h) - never look further
+    back than a day; the 168h/7d default leaves a wide margin above that.
+    outcomes is deliberately not pruned here: one row per settled ticker
+    (PRIMARY KEY ticker, see _connect's schema), so it can't grow unbounded
+    the way a per-tick snapshot table does - same reasoning series_watcher.
+    prune() gives for leaving raw_trades alone, just for a table that's
+    naturally bounded instead of a deliberately-unbounded one."""
+    now = now if now is not None else time.time()
+    cutoff = now - retention_hours * 3600
+    try:
+        with _connect(DB_PATH) as conn:
+            cur = conn.execute("DELETE FROM snapshots WHERE timestamp < ?", (cutoff,))
+            return {"snapshots_deleted": cur.rowcount, "cutoff": cutoff}
+    except Exception as exc:
+        fault_log.record("market_history", "prune", exc)
+        return {"snapshots_deleted": 0, "error": str(exc)}
+
+
 def clear_all():
     """Wipes snapshots and outcomes - self-healing on its own via ordinary
     per-tick recording, this exists for the Config tab's Danger Zone reset,
