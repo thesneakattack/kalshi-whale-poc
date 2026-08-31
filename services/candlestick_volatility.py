@@ -1,6 +1,12 @@
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
+
+from services import http_client, task_supervisor
+from services.app_state import state
+from services.kalshi.public import KalshiPublicGateway
+from services.market_catalog import market_catalog
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candlestick_volatility.db"
 
@@ -141,3 +147,121 @@ def bar_count(ticker: str | None = None) -> int:
 def clear_all() -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM candles")
+
+
+# ---- background scan (Task 4) ---------------------------------------------
+#
+# Periodically fetches candlestick history for the current watchlist
+# (state["markets"]) and stores it via record_candles above. Mirrors
+# services/market_watch/mve_scan.py's _maybe_scan_mve_batch/
+# _scan_mve_batch_background pair almost exactly - same due()/overlap-guard
+# scheduling shape, same task_supervisor wiring, same
+# construct-client/scan/close-in-finally lifecycle, same
+# asyncio.gather(..., return_exceptions=True) per-item failure isolation.
+
+_CANDLESTICK_SCAN_MIN_INTERVAL_SEC = 1800  # How often a new background batch
+# may be KICKED OFF - the shared token-bucket rate limiter (services/
+# http_client.py) is what actually keeps the real aggregate call rate safe,
+# same relationship catalog_scan._CATALOG_SCAN_MIN_INTERVAL_SEC/mve_scan.
+# _MVE_SCAN_MIN_INTERVAL_SEC's own comments document. Overridable via
+# config/settings.yaml's candlestick_volatility.scan_interval_sec.
+
+_CANDLESTICK_PACE_LIMIT = 4  # Same bounded-concurrency reasoning as
+# mve_scan._MVE_SCAN_PACE_LIMIT/catalog_scan.PACE_LIMIT - caps how many of
+# this batch's own get_candlesticks() calls run concurrently against the
+# shared token bucket, independent of watchlist size.
+
+
+async def _fetch_one_ticker_candles(
+    client: KalshiPublicGateway, pace_sem: asyncio.Semaphore,
+    ticker: str, series_ticker: str, start_ts: int, end_ts: int, period_interval_min: int,
+) -> tuple[str, str, dict]:
+    async with pace_sem:
+        resp = await client.get_candlesticks(series_ticker, ticker, start_ts, end_ts, period_interval_min)
+    return ticker, series_ticker, resp
+
+
+async def _scan_candlestick_volatility_batch(client: KalshiPublicGateway, cfg: dict) -> None:
+    """One cycle: current watchlist (state["markets"]) -> resolve each
+    ticker's series_ticker via market_catalog.series_ticker_for() (skip,
+    don't guess, if not yet catalogued - same posture mve_scan/catalog_scan
+    already take toward an unresolved series) -> one paced
+    get_candlesticks() per resolved ticker -> record_candles() per
+    response. A per-ticker fetch failure is isolated
+    (asyncio.gather(..., return_exceptions=True), same shape as
+    mve_scan._scan_mve_batch) and logged, never aborts the rest of the
+    cycle."""
+    cv_cfg = cfg.get("candlestick_volatility") or {}
+    period_interval_min = cv_cfg.get("period_interval_min", 60)
+    lookback_window_sec = cv_cfg.get("lookback_window_sec", 86400)
+    now = int(time.time())
+    full_window_start_ts = now - lookback_window_sec
+
+    tickers = [m["ticker"] for m in state["markets"] if m.get("ticker")]
+    pace_sem = asyncio.Semaphore(_CANDLESTICK_PACE_LIMIT)
+    fetch_tickers = []
+    fetches = []
+    for ticker in tickers:
+        series_ticker = market_catalog.series_ticker_for(ticker)
+        if not series_ticker:
+            continue
+        # Watermark, not a blind full-window refetch: a ticker this scan
+        # has already fetched only needs bars since its own last_fetched_at
+        # (same "min_ts filters items after this Unix timestamp" idiom
+        # services/kalshi/public.py's get_trades already established) -
+        # re-requesting the full lookback_window_sec every 30-minute cycle
+        # would re-fetch/re-upsert ~24 bars for ~1 new one every time
+        # (found in adversarial review, 2026-08-30). First-ever fetch for a
+        # ticker still uses the full window.
+        prior = last_fetched_at(ticker)
+        start_ts = max(full_window_start_ts, int(prior)) if prior is not None else full_window_start_ts
+        fetch_tickers.append(ticker)
+        fetches.append(_fetch_one_ticker_candles(client, pace_sem, ticker, series_ticker, start_ts, now, period_interval_min))
+
+    results = await asyncio.gather(*fetches, return_exceptions=True)
+    for ticker, result in zip(fetch_tickers, results):
+        if isinstance(result, Exception):
+            # Same "don't mark scanned, don't lose the ticker silently"
+            # posture as mve_scan._scan_mve_batch's own failure handling -
+            # no logging framework exists yet in this app, so stdout via
+            # `ddev logs -s fastapi` is the visibility path.
+            print(f"[candlestick_volatility] scan failed for {ticker!r}, will retry next cycle: {result!r}")
+            continue
+        fetched_ticker, series_ticker, resp = result
+        bars = resp.get("candlesticks") or []
+        record_candles(fetched_ticker, series_ticker, period_interval_min, bars, fetched_at=time.time())
+
+
+def _maybe_scan_candlestick_volatility(cfg: dict) -> None:
+    """Triggers _scan_candlestick_volatility_batch as an independent
+    background task on its own steady interval - mirrors
+    mve_scan._maybe_scan_mve_batch exactly (same overlap guard shape, same
+    task_supervisor wiring), gated first on candlestick_volatility.enabled."""
+    cv_cfg = cfg.get("candlestick_volatility") or {}
+    if not cv_cfg.get("enabled", True):
+        return
+    scan_state = state["candlestick_volatility_scan"]
+    interval = cv_cfg.get("scan_interval_sec", _CANDLESTICK_SCAN_MIN_INTERVAL_SEC)
+    now_ts = time.time()
+    due = now_ts - scan_state["last_started_at"] > interval
+    if due and not scan_state["scanning"]:
+        scan_state["scanning"] = True
+        scan_state["last_started_at"] = now_ts
+        scan_state["task"] = task_supervisor.supervise(
+            lambda: _scan_candlestick_volatility_batch_background(cfg),
+            component="candlestick_volatility_scan", operation="scan_batch",
+        )
+
+
+@http_client.classify("background_candlestick_volatility")
+async def _scan_candlestick_volatility_batch_background(cfg: dict) -> None:
+    """Owns its own KalshiPublicGateway - same construct/use/close shape as
+    mve_scan._scan_mve_batch_background (the calling tick's own client
+    closes at the end of that same tick, not this one)."""
+    scan_state = state["candlestick_volatility_scan"]
+    client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
+    try:
+        await _scan_candlestick_volatility_batch(client, cfg)
+    finally:
+        scan_state["scanning"] = False
+        await client.close()

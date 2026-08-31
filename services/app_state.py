@@ -256,6 +256,11 @@ state = {
     # kalshi.categories-scoped "series," so it runs on its own interval
     # regardless of which categories are configured.
     "mve_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
+    # Candlestick-derived volatility background scan (services/
+    # candlestick_volatility.py) - same background-task decoupling shape as
+    # catalog_scan/mve_scan above: current watchlist's per-ticker
+    # get_candlesticks() history, on its own steady interval.
+    "candlestick_volatility_scan": {"scanning": False, "last_started_at": 0.0, "task": None},
     # Distinct series_tickers discovered from get_multivariate_event_
     # collections (a small, stable universe - ~16 confirmed live
     # 2026-08-30, versus get_series_list's ~9,400) - cached with a TTL the
