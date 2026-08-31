@@ -749,7 +749,10 @@ def extract(milestone_type: str, details: dict) -> dict:
 ### Task 6: Wire `live_status.py`/`catalog_scan.py` to the extractor
 
 **Files:**
-- Modify: `services/market_watch/live_status.py` (line ~169)
+- Modify: `services/market_watch/live_status.py` (line ~198 — corrected 2026-08-31 catch-up
+  review; a same-day but unrelated plan, `entry-gate-me-pairing-and-netting-remediation`
+  (commit `56ae320`), inserted a broad `milestone_by_event` cache check ahead of this read;
+  see Task 10's note below for how that interacts with this task)
 - Modify: `services/market_watch/catalog_scan.py` (line ~117)
 - Test: `tests/test_trading_gate.py`, `tests/test_winner_propagation.py`
 
@@ -761,8 +764,9 @@ function's own signature or return shape.
 since Task 5's default path is pass-through (not null), these fixtures still work correctly
 post-wiring *as long as they keep using a type that stays on the default path*. Verified
 this session: `tests/test_trading_gate.py`'s `_FakeLiveClient` returns `{"id": "ms1",
-"type": "game"}` (line ~1504) and `_FakeGameStateClient` returns `{"id": "ms1", "type":
-"football_game"}` (line ~1706); `tests/test_winner_propagation.py`'s fixtures all use
+"type": "game"}` (line ~1575, corrected 2026-08-31 adversarial review) and
+`_FakeGameStateClient` returns `{"id": "ms1", "type":
+"football_game"}` (line ~1831, corrected 2026-08-31 adversarial review); `tests/test_winner_propagation.py`'s fixtures all use
 `{"type": "winner_decl"}`. None of these three strings collide with `_EXTRACTORS`' 7 keys,
 so they all resolve via the default pass-through path unchanged — **no fixture rewrite is
 required for the wiring itself to pass**, but Step 1 adds one new test per file proving the
@@ -817,7 +821,7 @@ adapt this test to whichever pattern the file actually uses, matching
   `"live"`/`"should not surface"`, not the no-op result).
 
 - [ ] **Step 3: Implement.**
-  - `services/market_watch/live_status.py:169`: replace `status =
+  - `services/market_watch/live_status.py:198`: replace `status =
     details.get("widget_status")` with `status = milestone_live_data.extract(ms["type"],
     details)["status"]`. Import `from services.market_watch import milestone_live_data` (or
     the direct submodule path, matching this file's existing import style — check whether
@@ -1024,7 +1028,14 @@ def test_propagate_milestone_winner_resolves_structured_custom_strike(monkeypatc
         structured_targets={"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}},
     )
     market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
-    assert market_results["EVT1-OUTCOME1"] is None or "EVT1-OUTCOME1" in market_results
+    # Tightened 2026-08-31 adversarial review: the prior sketch here
+    # ("is None or in market_results") is a tautology that passes even on a
+    # wrong resolution - catalog_scan.propagate_milestone_winners's real
+    # return shape is ticker -> "yes"/"no" (its own docstring). "Team Alpha"
+    # is the fixture's declared winner and structured_targets resolves
+    # uuid-1 -> "Team Alpha" -> the yes side of EVT1-OUTCOME1, so pin the
+    # actual resolved value, not just its presence:
+    assert market_results["EVT1-OUTCOME1"] == "yes"
     # exact assertion depends on the real fixture helper's shape (see note below) -
     # the load-bearing check is that ticker mapping succeeded via the resolved
     # NAME, not the raw uuid.
@@ -1160,8 +1171,21 @@ def test_get_events_default_omits_with_milestones_for_existing_callers(monkeypat
     from each returned event's `milestones` field (now populated by the gateway's join
     above) instead of from the old per-event gather's results — same downstream shape
     (`ms.get("id") and ms.get("type")` gating unchanged).
-  - `services/market_watch/live_status.py`'s `_fetch_live_status`: identical
-    restructuring for its own `to_poll`/`milestone_by_event` construction.
+  - `services/market_watch/live_status.py`'s `_fetch_live_status`: **NOT identical to
+    `catalog_scan.py` above — corrected 2026-08-31 catch-up review.** A same-day but
+    unrelated plan (`entry-gate-me-pairing-and-netting-remediation`, commit `56ae320`)
+    already added a broad-cache short-circuit here: `_fetch_live_status` now checks
+    `state["milestone_by_event"]` (populated by `services/market_watch/milestone_scan.py`,
+    that other plan's scheduler) before falling back to per-event discovery, so most of
+    `to_poll` is already resolved without any per-event call by the time this code runs.
+    Applying `get_events(to_poll, with_milestones=True)` to the *full* `to_poll` list as
+    originally worded would discard that already-landed REST-call reduction and re-fetch
+    milestones for events the broad cache already resolved — a hot-path efficiency
+    regression the data-plane HARD RULE forbids without measurement ("never change...
+    REST rate... because it 'should help'"). Scope this task's batch call to only the
+    `needs_fetch` subset (the cache-miss remainder after the broad-cache check), not
+    `to_poll` itself; build `milestone_by_event` for that subset the same way
+    `catalog_scan.py` does above, then merge it with the broad cache's own results.
 - [ ] **Step 4: Run to verify PASS.**
 - [ ] **Step 5: Run `tests/test_kalshi_client.py`, `tests/test_winner_propagation.py`,
   `tests/test_trading_gate.py` in full.**
@@ -1263,12 +1287,14 @@ def test_get_series_cache_merges_a_delta_response_instead_of_replacing(tmp_path,
     argument is non-default, matching Step 1's exact-dict assertions above).
   - `services/market_watch/catalog_scan.py`'s `_get_series_cache()`: after the first full
     sync (i.e., once `cache["series"]` is non-empty), pass
-    `min_updated_ts=max(int(s.get("last_updated_ts_epoch", 0)) for s in cache["series"] if
-    ...)` — **verify during implementation whether `last_updated_ts` on a Series object is
-    ISO-8601 (per Task 1's schema comment) or epoch-int; the watermark must be computed in
-    whatever unit `get-series-list.md:100-108`'s `min_updated_ts` param actually expects
-    (read the doc's exact type before writing this line — do not assume epoch-seconds
-    matches the stored ISO string without a conversion)** and `include_product_metadata=
+    `min_updated_ts=max(...)` over `cache["series"]` — **resolved during the 2026-08-31
+    catch-up review, confirmed against `docs/kalshi/get-series-list.md`: the request param
+    `min_updated_ts` is `type: integer, format: int64` (Unix seconds), but `Series.last_updated_ts`
+    on the response object is `type: string, format: date-time` (ISO-8601) — these are
+    genuinely different units. The watermark computation needs an explicit ISO-8601 →
+    epoch-seconds conversion (e.g. `datetime.fromisoformat(...).timestamp()`) before being
+    passed as `min_updated_ts`; do not pass the stored ISO string, or an int-parse of it,
+    directly.** and `include_product_metadata=
     True`. Rebuild the cache as a `dict[ticker -> series]` from the existing
     `cache["series"]`, update/insert every series in the new (possibly partial) response
     into that dict, then re-derive the sorted list from the dict's values before assigning
@@ -1356,10 +1382,11 @@ before assuming `_subscription_sids["pyth_value"]` is the right key.)
   - `config/settings.yaml`: change `index_feed.underlying_tickers: []` to `["Metal.XAU/USD",
     "Metal.XAG/USD"]` (`docs/kalshi/pyth-value.md:164,289-291`'s own documented examples —
     gold and silver, the two Commodities underlyings the doc names). **Check `git status`
-    on this file first** — this worktree's `config/settings.yaml` is already modified
-    (uncommitted) per this session's own `git status` at start; read the existing diff
-    before editing to avoid clobbering unrelated live-tuning changes, per
-    `config-field-edit` skill guidance for schema-adjacent edits to a live-reloadable file.
+    on this file first, every time** — `config/settings.yaml` is a live-reloadable file
+    that may carry uncommitted dashboard/Controls-panel or applied-Advisory tuning at
+    execution time regardless of what any specific past session's status happened to show;
+    read the existing diff before editing to avoid clobbering it, per `config-field-edit`
+    skill guidance for schema-adjacent edits to a live-reloadable file.
   - `services/kalshi/websocket.py`: add `request_underlying_list(self) -> None`, copying
     `request_index_list`'s structure exactly but reading `self._subscription_sids.get(
     "pyth_value")` and sending `{"cmd": "update_subscription", "params": {"sid": sid,
@@ -1482,7 +1509,11 @@ def test_propagate_milestone_winner_resolves_political_race_candidate_ids(monkey
                                               "type": "candidate"}},
     )
     market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
-    assert "EVT1-CAND1" in market_results or market_results.get("EVT1-CAND1") is not None
+    # Tightened 2026-08-31 adversarial review: same tautology fix as Task 9 -
+    # the prior sketch passed even under a wrong/missing resolution.
+    # candidate_id_mapping resolves cand-uuid-1 -> EVT1-CAND1 directly (that
+    # candidate's own market), so the winning candidate's ticker resolves yes:
+    assert market_results["EVT1-CAND1"] == "yes"
     # exact assertion shape follows Task 9's fixture pattern once that lands
 ```
 
