@@ -33,6 +33,18 @@ Not knowing is a research task, not a probability estimate. Permanent: applies e
 - Correlation is not a mechanism, and one passing observation is not a property (see the data-plane rule).
 - If the authoritative source cannot answer, say so and stop; a gap filled with a guess is read as fact by the next session.
 
+## HARD RULE — self-review, adversarial review, then consolidation, before every planning-stage handoff (permanent, 2026-08-31)
+
+A multi-stage planning pipeline (investigation/research → design/spec → implementation plan, or any comparable dated sequence under `docs/superpowers/`) never advances a stage on one pass alone, and neither does the PR that eventually carries it to `main`: submission is not the final gate, merge is. Permanent: applies to every such pipeline and every PR, ad hoc or run through a `superpowers:*`/orchestrator skill, not only ones with a dated incident behind them.
+
+- Every stage produces its own artifact, then three more before the next stage starts — self-review, adversarial review, consolidation — each its own document, never an edit folded into the one before it.
+- Self-review: same author/context checks its own artifact for internal consistency and unaddressed scope; cheapest layer, catches sloppiness before spending independent effort on it.
+- Adversarial review: a different, independently-derived pass — fresh context, not primed by the author's reasoning, not told to confirm it — that assumes the artifact is wrong until its load-bearing claims are re-derived from primary sources (source code, live data, docs), never from the artifact's own tables or summary.
+- Consolidation: one document reconciling the stage artifact, its self-review, and its adversarial review into an explicit GO/no-go, with any disagreement between the two reviews adjudicated on the merits, not defaulted to whichever ran last, and one merged list of required fixes.
+- The next stage does not start until consolidation says GO; a revision written to satisfy that fix list gets checked against the list item by item before being trusted, never accepted on its own completion claim — a revision that silently drops requested fixes is itself a defect, not a smaller version of the same task.
+- After the PR is pushed and opened, one more full review cycle runs against the PR as submitted — same self-review/adversarial-review/consolidation shape, applied to the actual diff and description — before `gh pr merge` runs. `.claude/rules/branching-and-ci.md`'s "read the PR body before merging" step is a floor, not a substitute for this cycle. Merge follows only that cycle's consolidated GO, and any fix it demands gets the same item-by-item check before being trusted.
+- This stacks on top of a skill's own review checkpoints (`writing-plans`, `executing-plans`, `requesting-code-review`) — it never justifies skipping them, and never justifies weakening any safety gate to move faster.
+
 ## Standing goal (2026-08-26) and current objective (2026-08-23)
 
 - Destination: a personal-use, real-money trading system — reached only through ROADMAP.md "Path to production"; several items there are human decisions (position sizes, kill-switch numbers, sports-category legal exposure, auth model, deployment target), not commits.
