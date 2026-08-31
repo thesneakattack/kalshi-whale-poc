@@ -1,6 +1,6 @@
 """Per-market analysis mode - the original single-ticker "doctorate-level
 prediction market trader" call. See this package's __init__.py for the full
-module-level context (advisory-only, dual-gated, degrade-honestly design).
+module-level context, including its real confidence_scoring linkage.
 """
 import json
 import logging
