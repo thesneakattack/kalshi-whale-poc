@@ -142,12 +142,23 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
     to_poll.sort(key=lambda et: (cache.get(et) or {}).get("checked_at", 0.0))
     to_poll = to_poll[:_LIVE_STATUS_MAX_POLL_PER_TICK]
 
-    # Broad, watchlist-independent cache first (services/market_watch/
-    # milestone_scan.py, entry-gate-me-pairing-and-netting-remediation
-    # Part 3) - an event already covered there skips the per-event REST
-    # call entirely. A cache miss falls back to the exact pre-existing
-    # per-event get_milestones_for_event call, so a cold/not-yet-covered
-    # cache reproduces today's behavior byte for byte.
+    # milestone_scan.py's broad cache first (entry-gate-me-pairing-and-
+    # netting-remediation Part 3) - an event already covered there skips
+    # the per-event REST call entirely. A cache miss falls back to the
+    # exact pre-existing per-event get_milestones_for_event call, so a
+    # cold/not-yet-covered cache reproduces today's behavior byte for byte.
+    #
+    # SCOPE, precisely (corrected 2026-08-30, final-review finding): this
+    # is a REST-call reduction, NOT a coverage broadening. `to_poll` above
+    # is still derived entirely from the `markets` argument - the same
+    # watchlist-scoped list as before - and already truncated to
+    # _LIVE_STATUS_MAX_POLL_PER_TICK before this cache is consulted, so an
+    # event milestone_scan knows about but that never appears in `markets`
+    # is still never polled and still contributes nothing to game_state.
+    # Making this loop ALSO poll milestone-known events outside `markets`
+    # would be the real broadening; it is deliberately not done here (it
+    # changes what the per-tick poll budget is spent on) and is tracked as
+    # a follow-up in docs/open-decisions.md.
     broad_cache = state["milestone_by_event"]
     milestone_by_event: dict[str, str] = {}
     has_milestone: set[str] = set()

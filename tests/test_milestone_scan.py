@@ -15,7 +15,7 @@ from services.market_watch import milestone_scan
 
 @pytest.fixture(autouse=True)
 def _isolated_state():
-    state["milestone_scan"] = {"scanning": False, "last_started_at": 0.0, "task": None, "watermark": 0.0}
+    state["milestone_scan"] = {"scanning": False, "last_started_at": 0.0, "task": None, "watermarks": {}}
     state["milestone_by_event"] = {}
     yield
 
@@ -64,10 +64,17 @@ def test_scan_skips_milestones_with_no_related_event_tickers():
 
 def test_scan_first_call_passes_no_watermark_then_advances_it():
     client = _FakeMilestoneClient({"Sports": []})
-    assert state["milestone_scan"]["watermark"] == 0.0
+    assert state["milestone_scan"]["watermarks"] == {}
     asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports"])))
     assert client.calls == [("Sports", None)]  # cold start - no watermark yet
-    assert state["milestone_scan"]["watermark"] > 0.0
+    assert state["milestone_scan"]["watermarks"]["Sports"] > 0
+
+
+def test_scan_passes_each_categorys_own_watermark_on_the_next_cycle():
+    client = _FakeMilestoneClient({"Sports": [], "Politics": []})
+    state["milestone_scan"]["watermarks"] = {"Sports": 111, "Politics": 222}
+    asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports", "Politics"])))
+    assert dict(client.calls) == {"Sports": 111, "Politics": 222}
 
 
 def test_scan_survives_one_category_failing(capsys):
@@ -81,6 +88,50 @@ def test_scan_survives_one_category_failing(capsys):
     asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports", "Politics"])))
     assert state["milestone_by_event"] == {"EVT-A": "ms-1"}  # Sports still landed
     assert "Politics" in capsys.readouterr().out  # failure surfaced, not swallowed silently
+
+
+def test_a_failed_categorys_watermark_does_not_advance_while_a_sibling_succeeds():
+    """Per-category watermarks (review finding, final-review fix pass). A
+    single shared scalar advanced unconditionally at the end of the cycle,
+    so a category that kept failing had its window marched forward anyway -
+    everything that changed while it was down would be permanently skipped
+    the moment it recovered. mve_scan/catalog_scan take the opposite
+    posture: a failure means don't mark it scanned."""
+    class _PartialFailClient(_FakeMilestoneClient):
+        async def get_milestones_bulk(self, category, min_updated_ts=None, limit=500):
+            if category == "Politics":
+                raise RuntimeError("boom")
+            return await super().get_milestones_bulk(category, min_updated_ts, limit)
+
+    client = _PartialFailClient({"Sports": [_milestone("ms-1", ["EVT-A"])]})
+    state["milestone_scan"]["watermarks"] = {"Sports": 111, "Politics": 222}
+
+    asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports", "Politics"])))
+
+    watermarks = state["milestone_scan"]["watermarks"]
+    assert watermarks["Sports"] > 111  # succeeded - its own window closes
+    assert watermarks["Politics"] == 222  # failed - unchanged, retried in full next cycle
+
+
+def test_a_failed_category_stays_unwatermarked_from_a_cold_start():
+    class _AllFailClient(_FakeMilestoneClient):
+        async def get_milestones_bulk(self, category, min_updated_ts=None, limit=500):
+            raise RuntimeError("boom")
+
+    client = _AllFailClient({})
+    asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports"])))
+    # No key at all, not a 0/now sentinel: the next cycle must re-ask with
+    # min_updated_ts=None exactly as if this cycle never ran.
+    assert state["milestone_scan"]["watermarks"] == {}
+
+
+def test_scan_watermark_is_an_int_not_a_float():
+    # docs/kalshi/get-milestones.md types min_updated_ts `integer, format:
+    # int64`; live-verified 2026-08-30 that a float returns HTTP 400
+    # ("strconv.ParseInt: parsing \"1756500000.123\": invalid syntax").
+    client = _FakeMilestoneClient({"Sports": []})
+    asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports"])))
+    assert isinstance(state["milestone_scan"]["watermarks"]["Sports"], int)
 
 
 def test_maybe_scan_milestone_batch_respects_the_due_interval():
