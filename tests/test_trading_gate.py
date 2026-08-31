@@ -29,6 +29,7 @@ from services.market_catalog import market_catalog as mc_module
 from services import market_analyst_agent
 from services.market_analyst_agent import _db as maa_db_module
 from services import market_history as mh_module
+from services import mutual_exclusivity
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import series_evaluator as se_module
@@ -3625,3 +3626,19 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
         assert key in body["settlement_resolver"]
     sr = body["settlement_resolver"]
     assert sr["dropped_total"] == sr["dropped_after_max_attempts"] + sr["skipped_non_binary_result"]
+
+
+def test_pipeline_health_exposes_the_me_pairing_gate_counter(monkeypatch):
+    """Final-review finding: mutual_exclusivity.me_pairing_stats() shipped
+    with zero callers outside its own tests, so the entry-gate fallback's
+    own "the catalog had no entry for this candidate" gap was unmeasurable
+    in production - against CLAUDE.md's "these properties fail silently:
+    measure them". Surfaced alongside strategy_engine's me_gate_stats as
+    its own key, since the two count different gates."""
+    monkeypatch.setattr(mutual_exclusivity, "_me_pairing_stats", {"me_pairing_unknown_total": 7})
+
+    body = client.get("/api/health/pipeline").json()
+
+    assert body["me_pairing_gate"] == {"me_pairing_unknown_total": 7}
+    # Still its own key, never folded into the other gate's counter.
+    assert "me_pairing_unknown_total" not in body["strategy_gates"]

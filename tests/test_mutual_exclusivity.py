@@ -155,3 +155,55 @@ def test_find_open_confirmed_conflict_does_not_count_a_genuine_no_conflict():
     before = me_pairing_stats()["me_pairing_unknown_total"]
     assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
     assert me_pairing_stats()["me_pairing_unknown_total"] == before
+
+
+def test_find_open_confirmed_conflict_does_not_block_an_n_way_event():
+    # The bound this function shares with find_me_pairs above (and with
+    # position_netting.find_groups' identical `len(members) != 2` proxy):
+    # two positions already open on one confirmed-ME event means the app is
+    # holding a SUBSET of a larger N-way field (a golf tournament, a
+    # multi-candidate election), not a head-to-head pair - out of scope for
+    # this entry-side gate. Live-verified 2026-08-30: 314 mutually_exclusive
+    # events in data/title_cache.db have 3+ cached sibling markets, up to 81
+    # outcomes (KXPGATOUR-WYC26). Without the bound, GOLFER-C would be
+    # blocked here purely because GOLFER-A trivially matches the event
+    # first.
+    market_titles = {
+        "GOLFER-A": {"event_ticker": "EVT-1"},
+        "GOLFER-B": {"event_ticker": "EVT-1"},
+        "GOLFER-C": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict(
+        "GOLFER-C", market_titles, event_titles, {"GOLFER-A", "GOLFER-B"},
+    ) is None
+
+
+def test_find_open_confirmed_conflict_still_blocks_the_genuine_second_leg():
+    # The other side of the same bound: exactly ONE other open position on
+    # the event is the real head-to-head case this gate exists for (the
+    # verified KXATPMATCH-26AUG28BUSBON failure), and it still blocks.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+        "UNRELATED": {"event_ticker": "EVT-2"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}, "EVT-2": {"mutually_exclusive": True}}
+    # An open position on a DIFFERENT event doesn't count toward the bound.
+    assert find_open_confirmed_conflict(
+        "BUS", market_titles, event_titles, {"BON", "UNRELATED"},
+    ) == "BON"
+
+
+def test_find_open_confirmed_conflict_n_way_bound_ignores_the_candidate_itself():
+    # A re-entry signal on a ticker already open must not inflate the
+    # same-event count: candidate + 1 real sibling is still the 2-outcome
+    # case, not an N-way field.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict(
+        "BUS", market_titles, event_titles, {"BON", "BUS"},
+    ) == "BON"
