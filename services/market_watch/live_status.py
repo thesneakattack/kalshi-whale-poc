@@ -144,9 +144,11 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
 
     # milestone_scan.py's broad cache first (entry-gate-me-pairing-and-
     # netting-remediation Part 3) - an event already covered there skips
-    # the per-event REST call entirely. A cache miss falls back to the
-    # exact pre-existing per-event get_milestones_for_event call, so a
-    # cold/not-yet-covered cache reproduces today's behavior byte for byte.
+    # the per-event REST call entirely. A cache miss falls back to a batched
+    # get_events(needs_fetch, with_milestones=True) call (kalshi-category-
+    # data-completeness Task 10 - was per-event get_milestones_for_event
+    # calls until then; see that call site's own comment below for why it
+    # is scoped to needs_fetch specifically, not the full to_poll list).
     #
     # SCOPE, precisely (corrected 2026-08-30, final-review finding): this
     # is a REST-call reduction, NOT a coverage broadening. `to_poll` above
@@ -192,8 +194,32 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
         # convention the old per-event endpoint's own `limit=5` response
         # used (see get_events' own docstring for why this array's
         # ordering isn't assumed to match that endpoint's byte-for-byte).
+        # Wrapped (fix-round 1, task review): the old per-event
+        # asyncio.gather(..., return_exceptions=True) meant a single
+        # event's milestone-fetch failure could never raise out of this
+        # function at all - it just meant that one event got no milestone
+        # this tick. The new single batched call has no such isolation by
+        # default, and unlike propagate_milestone_winners (which already
+        # has a broad try/except around its own equivalent call), this
+        # function has none - an unwrapped failure here would propagate
+        # through main.py's asyncio.gather (no return_exceptions there
+        # either) and be caught only by trading_loop's per-TICK
+        # try/except, aborting event_titles/event_live_data/trade_tape
+        # processing for the rest of that tick too, not just milestone
+        # discovery - a real widening of blast radius the data-plane HARD
+        # RULE requires being explicit and deliberate about, not silent.
+        # Same swallow-and-degrade idiom this module already uses for
+        # _fetch_exchange_status above ("a transient hiccup here shouldn't
+        # take down the whole poll tick") - an empty events_by_ticker here
+        # means every needs_fetch event just gets no milestone this tick,
+        # identical in effect to the old per-event isolation, and
+        # self-healing next tick since these events remain in to_poll.
+        try:
+            fetched_events = await client.get_events(needs_fetch, with_milestones=True)
+        except Exception:
+            fetched_events = []
         events_by_ticker = {
-            e["event_ticker"]: e for e in await client.get_events(needs_fetch, with_milestones=True)
+            e["event_ticker"]: e for e in fetched_events
             if e.get("event_ticker")
         }
         for et in needs_fetch:

@@ -1965,6 +1965,44 @@ def test_fetch_live_status_never_calls_get_milestones_for_event():
     assert fake.get_events_calls == [(["EVT-A"], True)]
 
 
+def test_fetch_live_status_degrades_gracefully_when_get_events_raises():
+    # Regression (fix-round 1, task review): the old per-event
+    # asyncio.gather(..., return_exceptions=True) meant a milestone-fetch
+    # failure could never raise out of _fetch_live_status at all - one
+    # event's REST failure just meant that event got no milestone this
+    # tick. The new single batched get_events(needs_fetch,
+    # with_milestones=True) call has no such isolation by default, and
+    # (unlike propagate_milestone_winners, which already wraps its own
+    # equivalent call in a broad try/except) this function had none -
+    # an unwrapped failure would propagate through main.py's own
+    # asyncio.gather (no return_exceptions there either) and be caught
+    # only by trading_loop's per-TICK try/except, aborting event_titles/
+    # event_live_data/trade_tape processing for the rest of that tick
+    # too, not just milestone discovery. Proves the wrapped call degrades
+    # instead: the event just gets no milestone this tick (schedule
+    # fallback still applies, same as any other cache-miss-with-no-
+    # milestone-yet tick), and _fetch_live_status itself never raises.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # force the needs_fetch path
+
+    class _FakeClientGetEventsRaises:
+        async def get_events(self, event_tickers, with_milestones=False):
+            raise RuntimeError("simulated backoff-exhausted REST failure")
+
+        async def get_live_datas(self, milestone_ids):
+            raise AssertionError("should not be called - no milestone was ever resolved")
+
+    markets = [_market_at(offset_sec=-300)]  # started 5 min ago -> past occurrence
+    result = asyncio.run(main._fetch_live_status(_FakeClientGetEventsRaises(), markets))
+    # No milestone resolved this tick (get_events raised) -> falls to the
+    # "no milestone at all" bare-else branch (live_status.py's own
+    # comment: "genuinely unknown... rather than guessed at either way"),
+    # not the schedule fallback (which requires has_milestone) and not a
+    # raised exception.
+    assert result == {}
+    assert "EVT-A" not in main.state["live_status_cache"]
+
+
 def test_fetch_live_status_no_live_status_type_does_not_permanently_starve_poll_budget():
     # Bug found in review, before this fix: the no_live_status_type branch
     # `continue`d without ever writing cache[et], so its checked_at stayed
