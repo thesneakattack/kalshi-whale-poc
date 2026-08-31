@@ -45,7 +45,11 @@ commit → push → Woodpecker → PR → merge → delete branch
   `scripts/cleanup-worktrees.sh` does both for provably merged worktrees.
 - Single-developer repo: no self-approval ceremony, just the mechanical
   guarantees — no routine work on `main`, no force-push, CI before
-  integration, reviewable diffs, safe merges.
+  integration, reviewable diffs, safe merges. This does not exempt an
+  in-scope PR from CLAUDE.md's "nothing advances on one pass" HARD RULE:
+  no *human* approval step is needed here, but the AI-executed
+  self-review/adversarial-review/consolidation cycle still runs before
+  `gh pr merge` — that is rigor, not approval ceremony.
 
 **GitHub-side enforcement (configured 2026-08-25):**
 `gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` —
