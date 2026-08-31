@@ -11,7 +11,7 @@ import os
 import time
 
 from services import (
-    candidate_log, market_analyst_agent, ml_feed,
+    candidate_log, candlestick_volatility, market_analyst_agent, ml_feed,
     series_evaluator, signal_log, stats_power,
 )
 from services.config import config_performance
@@ -99,6 +99,19 @@ async def _analyze_market_uncached(
             series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
             category_rows=regime_analytics.by_category(all_rows),
         )
+    # Independent kill switch from candlestick_volatility.enabled (Task 5) -
+    # this feeds a live, weighted input into confidence_scoring's composite
+    # confidence (analyst_lean() -> analyst_factor, weight 0.13) which
+    # strategy_engine.evaluate() uses for real (paper-mode) trade entries,
+    # so it must be independently rollback-able without touching the whole
+    # persistence/scan feature. When off, volatility() must never even be
+    # called - not called-then-discarded.
+    cv_cfg = cfg.get("candlestick_volatility") or {}
+    cv_reading = None
+    if cv_cfg.get("include_in_market_analyst_prompt", True):
+        cv_lookback_sec = cv_cfg.get("volatility_lookback_sec", 3600)
+        cv_reading = candlestick_volatility.volatility(ticker, cv_lookback_sec, as_of=now)
+
     snapshot = ml_feed.build_context_snapshot(
         cfg=cfg,
         portfolio=broker.state(state["latest_prices"]),
@@ -106,6 +119,7 @@ async def _analyze_market_uncached(
         trade_history_rows=all_rows,
         whale_track_record=signal_log.stats(),
         advisory=recommendations,
+        candlestick_volatility={ticker: cv_reading} if cv_reading is not None else {},
     )
 
     result = await market_analyst_agent.analyze_market(
