@@ -85,7 +85,14 @@ Brier scores over the same 62,584 priced rows:
 |---|---|---|
 | the market's own unit cost | **0.1580** | the benchmark |
 | `composite_confidence` score | 0.2454 | the 9-factor formula |
-| constant 0.596 base rate | 0.2553 | knows nothing |
+| constant 0.596 base rate | 0.2553 | knows nothing (wrong population — see below) |
+| constant 0.521 base rate | **0.2496** | correct benchmark: the priced subset's own base rate, not the overall 59.6% |
+
+**Correction, found in review:** 0.596 is the overall base rate; `composite_confidence`
+is scored against the priced subset, whose own base rate is 52.1%, giving the
+correct constant-predictor Brier as 0.2496, not 0.2553. This *strengthens*
+the verdict below — 0.2454 vs. 0.2496 is an even smaller margin than 0.2454
+vs. 0.2553.
 
 The formula is barely better than a constant and **far worse than simply
 reading the price**; `corr(unit_cost, score) = 0.264`. Verdict: the score is
@@ -126,20 +133,59 @@ fabricated 1.0 — the exact failure class `_price_dollars` was written for,
 Computation: `1 − |unit_cost − 0.5| × 2` (`confidence_scoring.py:203–204`).
 
 This is a **deterministic, non-monotone function of the traded-side price**,
-and the label is approximately the traded-side price (§0.1). Splitting the low
-bucket by which tail it came from:
+and the label is approximately the traded-side price (§0.1).
+
+**Population caveat, found in review:** the two-bucket table below is tertiles
+of the **priced subset only** (rows carrying a real `price` value), not the
+full population the −18.1 headline is computed over — 20,861×3 ≈ 62,688, not
+95,459. The full picture across all three populations:
+
+| population | n | unusualness tertile gap |
+|---|---|---|
+| full (the −18.1 headline) | 95,459 | **−18.1** |
+| priced subset (table below) | 62,688 | **−2.8** |
+| unpriced only (pre-`price`-column era) | 32,771 | **−43.2** |
+
+Unpriced rows are 34.3% of the population, win 74.0% vs. the priced subset's
+52.1%, and are unevenly distributed across the unusualness tertiles (38.9% of
+the low bucket vs. 33.2% of the high) — so the −18.1 headline is **substantially
+an era-mix artifact**, the same undated-blending problem this doc flags
+elsewhere for `resolved_signals_with_factors()`, biting a second factor here.
+The conclusion below is unaffected — it's about the priced-subset mechanism —
+but do not read −18.1 itself as a clean number.
+
+Splitting the low bucket (priced subset) by which tail it came from:
 
 | bucket | n | win rate | mean \|uc−0.5\| | uc>0.5 (favourite) | uc≤0.5 (longshot) |
 |---|---|---|---|---|---|
 | low (price far from 0.5) | 20,861 | 53.5% | 0.441 | n=11,338, **94.2%** | n=9,523, **5.1%** |
 | high (price near 0.5) | 20,861 | 50.7% | 0.072 | n=10,385, 58.4% | n=10,476, 43.0% |
 
-**Verdict:** the −18.1 gap is a **mathematical identity, not a finding.** The
-low bucket mixes 94.2%-winners and 5.1%-winners; its 53.5% aggregate is purely
-the mix ratio. Because the factor is symmetric about 0.5 while the outcome is
-monotone in price, **the tertile test is structurally incapable of evaluating
-this factor** — its gap is uninterpretable in either direction. (Within
-`volume > 0` the gap moves to −29.5, tracking the mix, not any real effect.)
+**Stronger evidence for the same conclusion** — win rate by unusualness
+decile on the priced subset, split by which side of 0.5 the price is:
+
+| unusualness | n | aggregate | favourites | longshots |
+|---|---|---|---|---|
+| 0.0–0.1 | 9,439 | 49.8% | 97.1% | 3.0% |
+| 0.2–0.3 | 4,672 | 53.0% | 86.8% | 12.0% |
+| 0.4–0.5 | 3,857 | 50.0% | 74.8% | 24.5% |
+| 0.6–0.7 | 4,873 | 50.9% | 68.7% | 32.8% |
+| 0.8–0.9 | 7,326 | 50.5% | 58.5% | 40.7% |
+| 0.9–1.0 | 6,839 | 51.0% | 53.1% | 48.9% |
+
+The aggregate is **flat at ~50% across all ten deciles** while the two
+conditional curves (favourites, longshots) converge monotonically toward it —
+a cleaner demonstration than the two-bucket table that `unusualness_factor`
+carries no accuracy information once you condition on side.
+
+**Verdict:** the reported gap (−18.1 on the full population, −2.8 on the
+table above) is a **mathematical identity, not a finding**, regardless of
+which population backs it. The low bucket mixes 94.2%-winners and
+5.1%-winners; its 53.5% aggregate is purely the mix ratio. Because the factor
+is symmetric about 0.5 while the outcome is monotone in price, **the tertile
+test is structurally incapable of evaluating this factor** — its gap is
+uninterpretable in either direction. (Within `volume > 0` the gap moves to
+−29.5, tracking the mix, not any real effect.)
 
 This also retires the 2026-08-10 finding recorded in
 `confidence_scoring.py:151–157`: unusualness's "NEGATIVE discrimination against
@@ -459,6 +505,16 @@ lands inside a tied run is what actually covers this. This is upstream of every
 weight decision the app makes, and `auto_apply_enabled` would act on it
 (currently `false` — `config/settings.yaml:153`).
 
+**Implementation caveat, found in a later review pass — for D1's guard spec,
+not a document defect:** the boundary-in-tie predicate as stated needs a
+materiality floor, not a bare `low == high` check. As literally worded it
+flaps run-to-run on `depth_factor`'s incidental float-duplicate ties (2–6
+tied rows observed, against the other affected factors' ties of thousands to
+tens of thousands) — a tie too small to be the same undated-blending problem
+this section describes, and not worth blocking a weight decision over. D1's
+CI guard should gate on a tied-row-count (or tied-fraction) threshold, not on
+mere tie presence.
+
 ---
 
 ## 3. The calibration bands are partly a band-width artifact
@@ -749,12 +805,22 @@ is re-measured on the fixed instrument.** Two specific reasons this is not
 theoretical:
 
 - `auto_apply_enabled` would raise `context_factor` to 0.34, hardening the
-  zero-volume artifact into production (§1.4).
+  zero-volume artifact into production (§1.4) — and, run live against
+  current weights and data, the same `blended_weights_for_auto_apply()` pass
+  would simultaneously cut `trend_factor` from **0.3131 to 0.1818**, nearly
+  halving the *largest weight in the formula* and, per §1.7's own verdict,
+  "plausibly the strongest real factor in the set." The context_factor risk
+  is the half of this warning usually noticed; the trend_factor halving is
+  the stronger half.
 - `_suggested_weights` clamps every negative gap to the same floor
   (`confidence_calibration.py:141–150`), so the instrument cannot distinguish
   actively anti-predictive from mildly anti-predictive, and can never propose
   removing or inverting anything — only shrinking toward a floor. It is
-  structurally incapable of expressing this document's own findings.
+  structurally incapable of expressing this document's own findings. Note,
+  found in review: the module's own `_MIN_SUGGESTED_WEIGHT` constant is
+  documented as a 0.05 floor, but its realized effect post-renormalization is
+  **0.04** — a small, self-contained doc/behavior mismatch inside the
+  measurement instrument itself, separate from every finding above.
 
 ---
 
