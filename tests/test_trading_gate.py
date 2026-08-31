@@ -2781,14 +2781,20 @@ class _FakeAnalystKalshiClient:
 
 
 def _isolate_market_analyst_dbs(tmp_path, monkeypatch):
-    # Both DBs _run_market_analyst_for_ticker's real code path touches
-    # (market_analyst_agent's own analyses table, plus signal_log.stats()
-    # for the prompt's whale-track-record context) - redirected per-test so
-    # nothing here can reach the real, live data/*.db files (see this
-    # module's own docstring on why that matters).
+    # All three DBs _run_market_analyst_for_ticker's real code path touches
+    # (market_analyst_agent's own analyses table, signal_log.stats() for the
+    # prompt's whale-track-record context, and candlestick_volatility.
+    # volatility() for the Task 9 context-snapshot wiring - added
+    # 2026-08-30 after that wiring made this cfg's real, live
+    # candlestick_volatility.enabled/include_in_market_analyst_prompt
+    # defaults reach a real sqlite3.connect() call here) - redirected
+    # per-test so nothing here can reach the real, live data/*.db files
+    # (see this module's own docstring on why that matters).
     import services.signal_log as signal_log_module
+    import services.candlestick_volatility as candlestick_volatility_module
     monkeypatch.setattr(maa_db_module, "DB_PATH", tmp_path / "market_analyst.db")
     monkeypatch.setattr(signal_log_module, "DB_PATH", tmp_path / "signal_log.db")
+    monkeypatch.setattr(candlestick_volatility_module, "DB_PATH", tmp_path / "candlestick_volatility.db")
 
 
 def test_run_market_analyst_for_ticker_gated_when_disabled(tmp_path, monkeypatch):
