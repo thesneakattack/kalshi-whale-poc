@@ -51,13 +51,16 @@ commit → push → Woodpecker → PR → merge → delete branch
   own by merging — either do it before merging, or say explicitly, before
   merging, what will do it and when. Before `gh pr merge`, if `ListAgents`
   shows a live peer session, send it a one-line "about to merge PR #N" ping
-  via `SendMessage` — async courtesy, not a blocking gate: proceed on an ack
-  or on no pushback in a reasonable wait, don't stall the merge indefinitely
-  on a slow or unresponsive peer (2026-08-31, after two real near-misses in
-  one session: a peer posted a redundant consolidation comment on a PR this
-  session was independently reviewing, and separately asked, unprompted,
-  whether it was safe to merge a PR this session had already merged).
-  `gh pr merge --merge` (keeps individual commits
+  via `SendMessage` — courtesy to avoid a merge race or duplicated review
+  effort, not a blocking gate and not a substitute for CLAUDE.md's "nothing
+  advances on one pass" adversarial-review requirement (that still needs its
+  own fresh, memory-less Agent call regardless of what a peer says): proceed
+  on an ack or on no pushback within a few minutes, don't stall the merge
+  indefinitely on a slow or unresponsive peer (2026-08-31, after two real
+  near-misses in one session: a peer posted a redundant consolidation
+  comment on a PR this session was independently reviewing, and separately
+  asked, unprompted, whether it was safe to merge a PR this session had
+  already merged). `gh pr merge --merge` (keeps individual commits
   so `git log`/`blame` stay real history); delete the branch locally and
   remotely — `scripts/cleanup-worktrees.sh` does both for provably merged
   worktrees.
