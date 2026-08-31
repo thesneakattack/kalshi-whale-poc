@@ -56,6 +56,19 @@ _MILESTONE_SCAN_MIN_INTERVAL_SEC = 300  # Discovery only (which events have
 # today) cadence. A starting point, not a measured optimum - see the design
 # spec's Part 3 "Verification after shipping" section.
 
+_WATERMARK_OVERLAP_SEC = 5  # docs/kalshi/get-milestones.md documents
+# min_updated_ts as "updated AFTER this Unix timestamp" - read as exclusive
+# (strictly greater than), not "at or after" (self-review finding,
+# 2026-08-30). A milestone updated in the exact same integer second as a
+# cycle's own scan_started_at, but not yet reflected in that cycle's
+# response (still in flight when it changed), would never be asked for
+# again once the watermark advances to that exact second - a real, if
+# narrow, boundary the code didn't previously guard. Re-asking for a few
+# seconds of overlap every cycle is free (state["milestone_by_event"]'s
+# writes are last-write-wins and idempotent) and removes the gap entirely;
+# 5s comfortably covers request latency plus this repeated-fetch cost, not
+# a measured optimum.
+
 
 async def _scan_milestone_batch(client: KalshiPublicGateway, cfg: dict) -> None:
     """One get_milestones_bulk call per configured category
@@ -113,8 +126,11 @@ async def _scan_milestone_batch(client: KalshiPublicGateway, cfg: dict) -> None:
         # min_updated_ts: ... strconv.ParseInt ... invalid syntax", which the
         # isinstance(result, list) skip above would swallow, so the cache
         # would never grow past its cold-start run (review finding, task-5
-        # fix pass; see docs/kalshi/CHEATSHEET.md).
-        watermarks[category] = scan_started_at
+        # fix pass; see docs/kalshi/CHEATSHEET.md). Overlap-buffered (see
+        # _WATERMARK_OVERLAP_SEC) against min_updated_ts's exclusive
+        # boundary - never advances past a point that could still exclude a
+        # genuinely-new-this-cycle update.
+        watermarks[category] = max(watermarks.get(category) or 0, scan_started_at - _WATERMARK_OVERLAP_SEC)
 
 
 def _maybe_scan_milestone_batch(cfg: dict) -> None:
