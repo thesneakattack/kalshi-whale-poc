@@ -116,7 +116,7 @@ from services.market_watch import (  # noqa: E402
     _maybe_scan_milestone_batch, _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners,
     _refresh_discovery_cache, _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
-from services.backup import _maybe_run_backup  # noqa: E402
+from services.backup import _maybe_run_backup, _maybe_run_large_backup  # noqa: E402
 from services.backup import routes as backup_routes  # noqa: E402
 from services.alerting import check_and_alert  # noqa: E402
 from services.alerting import routes as alerting_routes  # noqa: E402
@@ -165,6 +165,8 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     game_state.prune(retention_hours=hours, now=now)
     obs_hours = float((cfg.get("observability") or {}).get("retention_hours", 336))
     observability.prune(retention_hours=obs_hours, now=now)
+    mh_hours = float((cfg.get("market_history") or {}).get("retention_hours", 168))
+    market_history.prune(retention_hours=mh_hours, now=now)
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -560,6 +562,7 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
 _SCHEDULER_TRIGGERS = (
     ("signal_resolution", _maybe_check_signal_resolutions),
     ("backup", _maybe_run_backup),
+    ("backup_large", _maybe_run_large_backup),
     ("research", _maybe_run_research),
     ("event_schedule", event_schedule._maybe_resolve_event_schedules),
     ("catalog_scan", _maybe_scan_catalog_batch),

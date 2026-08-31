@@ -58,9 +58,17 @@ def test_trading_loop_no_longer_hosts_the_relocated_trigger_calls():
         assert marker not in source, f"{marker} still lives inside trading_loop"
     assert "_scheduler_loop" in inspect.getsource(main.lifespan)
     assert [name for name, _ in main._SCHEDULER_TRIGGERS] == [
-        "signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "mve_scan",
-        "milestone_scan", "auto_apply",
+        "signal_resolution", "backup", "backup_large", "research", "event_schedule", "catalog_scan",
+        "mve_scan", "milestone_scan", "auto_apply",
     ]
+
+
+def test_backup_large_trigger_is_registered_in_scheduler_triggers():
+    from main import _SCHEDULER_TRIGGERS
+    from services.backup import _maybe_run_large_backup
+
+    names_to_triggers = dict(_SCHEDULER_TRIGGERS)
+    assert names_to_triggers["backup_large"] is _maybe_run_large_backup
 
 
 def test_maybe_run_auto_apply_is_a_noop_when_both_features_are_off(monkeypatch):
