@@ -132,8 +132,9 @@ def _no_live_outcome(details: dict) -> dict:
 # been decided). "Too Early to Call" -> "live" (ballots actively being
 # counted right now - genuinely in-play, the plain meaning of "live").
 #
-# "Runoff" -> None, NOT "live" and NOT "finished" (fix-round 1, task
-# review): the original "live" choice was justified only against
+# "Runoff" -> "none", NOT "live" and NOT "finished" (fix-round 2, task
+# re-review - fix-round 1 tried None and that was NOT sufficient, see
+# below). The original "live" choice was justified only against
 # live_status.py's OWN polling completeness (a single live pull can't
 # observe whether "Runoff" later transitions to "Called" once a separate
 # future runoff election concludes, so mapping to "finished" would
@@ -155,16 +156,35 @@ def _no_live_outcome(details: dict) -> dict:
 # being actively counted (unlike "Too Early to Call", which genuinely is).
 # "live" was the wrong direction for that risk - it's the choice that
 # COULD silently relax real entry protections on a not-actually-live
-# market, where "finished" could only ever silently drop future polls.
-# None is the honest choice this module already uses elsewhere for
-# genuine uncertainty (see "missing key" below): not in
-# `_LIVE_STATUS_TERMINAL` (only {"finished", "closed"} are), so
-# live_status.py keeps polling this event on the normal cadence - zero
-# completeness loss, the original justification's actual concern - while
-# `is_live` correctly reads as False (decision_bridge.py's `== "live"`
-# check), so a runoff-pending race gets NORMAL entry-gate treatment
-# instead of the relaxed one, which is the safer failure direction if this
-# guess is ever wrong in either direction. ""
+# market.
+#
+# Fix-round 1 (this same reasoning) shipped `None` instead, and a
+# re-review caught it doesn't actually work: `live_status.py`'s own
+# `_fetch_live_status` only routes a status into its `confirmed[et]` dict
+# when the returned value is TRUTHY (`if status: confirmed[et] = status`,
+# live_status.py:~232) - Python `None` is falsy, so a `None` status from
+# this extractor is silently treated as "no confirmation happened this
+# tick" (the same bucket as a transient fetch miss), not as "confirmed
+# not-live." That event then falls through to the SCHEDULE fallback a few
+# lines below (live_status.py:~287-292), which re-derives status purely
+# from `now` vs the market's scheduled `occurrence_datetime` - and for any
+# event past its original election's occurrence time (true for essentially
+# every real "Runoff" case), that fallback computes exactly "live" again,
+# reproducing the original bug with zero net effect. `"none"` (the
+# non-empty STRING, matching the pre-race "" branch below) is truthy, so
+# it flows straight into `confirmed[et]` and is used as-is - it never
+# reaches the schedule fallback at all. `"none"` is not in
+# `_LIVE_STATUS_TERMINAL` (only {"finished", "closed"} are), so polling
+# completeness is unaffected (the original justification's actual
+# concern), and every real consumer of `live_status` in this codebase
+# (`decision_bridge.py`'s `is_live`, `whale_simulator.py`'s `live_only`
+# filter, `frontend/src/js/shared-utils.js`'s `isLive()`) checks `==
+# "live"` specifically - nothing anywhere checks `== "none"` as a distinct
+# case, confirmed by a repo-wide grep - so `"none"` and the originally
+# intended `None` are functionally identical for every actual reader
+# except the one that mattered: unlike `None`, `"none"` is truthy, so it
+# doesn't silently fall through live_status.py's own confirmed-vs-fallback
+# branch. ""
 # (empty string, the real pre-race shape: `candidates: {}`,
 # `reporting_percentage: "0.0"`) -> "none". A missing `race_call_status`
 # key entirely (the real "votehub-only" shape - `{"provider": "votehub",
@@ -187,6 +207,7 @@ def _no_live_outcome(details: dict) -> dict:
 _POLITICAL_RACE_STATUS = {
     "": "none",
     "Called": "finished",
+    "Runoff": "none",
     "Too Early to Call": "live",
 }
 

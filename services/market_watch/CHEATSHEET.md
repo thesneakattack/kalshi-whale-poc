@@ -317,12 +317,32 @@ not milestone `type` — the wrapper only exposes `category`, so
 - Mapped into this app's tri-state (verified exact lowercase strings at
   `live_status.py:216` before reusing them): `"Called"` → `"finished"`;
   `"Too Early to Call"` → `"live"`; `""` → `"none"`; missing key → `None`
-  (honest no-signal, not a guessed `"none"`). `"Runoff"` → `"live"`,
-  deliberately **not** `"finished"` — a single snapshot can't observe
-  whether a `"Runoff"`-called race later flips to `"Called"` once an
-  actual runoff election concludes, and `live_status.py`'s
-  `_LIVE_STATUS_TERMINAL` treats `"finished"` as "never poll this event
-  again"; wrongly stopping on a still-live event is the completeness
-  failure CLAUDE.md's data-plane HARD RULE weighs heaviest, versus a
-  negligible cost (7/410, 1.7%) of a few extra polls if wrong the other
-  way.
+  (honest no-signal, not a guessed `"none"`).
+- `"Runoff"` → `"none"` (fix-round 2; **not** `"live"`, and **not** Python
+  `None` either — both were tried and both were wrong). First cut mapped
+  it to `"live"`, reasoning only about `live_status.py`'s own polling
+  completeness (a single snapshot can't observe whether a `"Runoff"`-
+  called race later flips to `"Called"` once an actual runoff election
+  concludes, and `_LIVE_STATUS_TERMINAL` treats `"finished"` as "never
+  poll this event again"). Task review caught the real cost that
+  reasoning missed: this `status` value also flows into
+  `decision_bridge.py`'s `is_live`, which **bypasses real
+  `strategy_engine.py` entry-risk gates** (`close_window_sec`, the
+  ROADMAP #1 minimum-runway protection, the special-market gate, the
+  longshot threshold bonus) — and a race in "Runoff" is dead time before
+  a *separately scheduled future* runoff election, the opposite of
+  in-play. Second cut mapped it to Python `None` (this module's own
+  "genuine uncertainty" convention elsewhere) — re-review caught that
+  `_fetch_live_status` only writes a status into its `confirmed[et]` dict
+  when it's **truthy** (`if status: confirmed[et] = status`); a falsy
+  `None` silently falls through to the **schedule fallback** a few lines
+  later, which re-derives `"live"` from `now` vs `occurrence_datetime`
+  alone for any event past its scheduled start — reproducing the exact
+  bug with zero net effect, since a real "Runoff" confirmation is by
+  definition past that time. `"none"` (the truthy string, same value the
+  pre-race `""` case already uses) flows straight into `confirmed[et]`
+  and is used as-is, never reaching the fallback — closing the gap while
+  staying out of `_LIVE_STATUS_TERMINAL`, so polling completeness is
+  unaffected. Regression-tested end to end (not just the extractor in
+  isolation) at `tests/test_trading_gate.py::
+  test_fetch_live_status_political_race_runoff_does_not_fall_through_to_schedule_live`.

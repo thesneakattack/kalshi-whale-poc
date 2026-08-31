@@ -1811,6 +1811,47 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
 
 
+def test_fetch_live_status_political_race_runoff_does_not_fall_through_to_schedule_live():
+    # Regression for a real bug (kalshi-category-data-completeness Task 8,
+    # fix-round 1 -> re-review): a "Runoff" political_race extractor result
+    # of Python None is FALSY, so it was silently skipped by _fetch_live_
+    # status's own `if status: confirmed[et] = status` check (a few lines
+    # above the schedule fallback) and fell through to the schedule
+    # fallback instead - which, for any event past its scheduled
+    # occurrence_datetime (true here, started 5 min ago), re-derives
+    # "live" independent of what the extractor actually said, silently
+    # reproducing the exact is_live entry-gate-bypass bug the fix was
+    # meant to close. milestone_live_data.py's real _political_race
+    # extractor maps "Runoff" -> the "none" STRING specifically so this
+    # can't happen (a truthy value routes straight into confirmed[et] and
+    # never reaches the fallback) - this test proves that against the
+    # real _fetch_live_status/milestone_live_data.extract() wiring, not
+    # just the extractor in isolation.
+    main.state["live_status_cache"].clear()
+
+    class _FakePoliticalRaceClient:
+        async def get_milestones_for_event(self, event_ticker):
+            return [{"id": "ms1", "type": "political_race"}]
+
+        async def get_live_datas(self, milestone_ids):
+            return {
+                mid: {
+                    "type": "political_race",
+                    "details": {
+                        "race_call_status": "Runoff",
+                        "tabulation_status": "Vote Certified",
+                        "winner": "",
+                    },
+                }
+                for mid in milestone_ids
+            }
+
+    markets = [_market_at(offset_sec=-300)]  # started 5 min ago -> past occurrence, schedule fallback would say "live"
+    result = asyncio.run(main._fetch_live_status(_FakePoliticalRaceClient(), markets))
+    assert result == {"EVT-A": "none"}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
+
+
 # --- _fetch_live_status: broad milestone cache (services/market_watch/
 # milestone_scan.py) consulted before the per-event REST call --------------
 

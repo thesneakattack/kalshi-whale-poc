@@ -270,25 +270,32 @@ def test_esports_match_is_registered_not_left_on_the_default_path(monkeypatch):
 #   "Called"            -> "finished" (a winner has been decided).
 #   "Too Early to Call" -> "live" (ballots actively being counted right
 #                           now - genuinely in-play).
-#   "Runoff"            -> None (fix-round 1, task review - was
-#                           originally "live", changed because `status`
-#                           doesn't only drive live_status.py's own
-#                           polling completeness, it flows into
-#                           decision_bridge.py's `is_live`, which BYPASSES
-#                           real strategy_engine.py entry-risk gates
-#                           (close_window_sec, the ROADMAP #1
-#                           minimum-runway protection, the special-market
-#                           gate, the longshot threshold bonus) when True.
-#                           A race called "Runoff" is dead time before a
-#                           separately-scheduled future runoff election,
-#                           the opposite of in-play - "live" was the wrong
-#                           direction for that risk. None isn't in
+#   "Runoff"            -> "none" (fix-round 2, task re-review - was
+#                           originally "live", then fix-round 1 tried
+#                           `None`, and re-review caught that doesn't
+#                           actually work: live_status.py's own
+#                           `_fetch_live_status` only routes a TRUTHY
+#                           status into `confirmed[et]`; a falsy `None`
+#                           silently falls through to the SCHEDULE
+#                           fallback a few lines later, which re-derives
+#                           "live" purely from occurrence_datetime for any
+#                           event past its scheduled time - reproducing
+#                           the original bug with zero net effect. `"none"`
+#                           (the truthy string, same value the pre-race ""
+#                           branch below already uses) flows straight into
+#                           `confirmed[et]` and is used as-is, never
+#                           reaching that fallback. It isn't in
 #                           `_LIVE_STATUS_TERMINAL`, so polling continues
-#                           on the normal cadence (no completeness loss,
-#                           the original justification's actual concern)
-#                           while `is_live` correctly reads False. See the
-#                           full rationale in milestone_live_data.py's own
-#                           _POLITICAL_RACE_STATUS comment block.
+#                           on the normal cadence (no completeness loss),
+#                           and nothing in this codebase checks `==
+#                           "none"` as a distinct case - every real
+#                           consumer (decision_bridge.py's `is_live`,
+#                           whale_simulator.py's `live_only`, the
+#                           frontend's `isLive()`) checks `== "live"`
+#                           specifically, so `"none"` correctly reads as
+#                           not-live everywhere `None` was meant to. See
+#                           the full rationale in milestone_live_data.py's
+#                           own _POLITICAL_RACE_STATUS comment block.
 #   ""                  -> "none" (pre-race: `candidates` empty,
 #                           `reporting_percentage` "0.0" - the same "not
 #                           started yet" meaning every other type's "none"
@@ -329,15 +336,18 @@ def test_political_race_status_is_live_when_too_early_to_call():
     assert result == {"status": "live", "winner": None}
 
 
-def test_political_race_status_is_none_when_runoff_pending():
-    # Deliberately neither "live" nor "finished" - see the comment block
-    # above for why (fix-round 1: "live" bypassed real strategy_engine.py
-    # entry-risk gates via decision_bridge.py's is_live for a race that
-    # isn't actually in-play).
+def test_political_race_status_is_none_string_when_runoff_pending():
+    # Deliberately the "none" STRING, not "live", "finished", or Python
+    # None - see the comment block above for why (fix-round 2: "live"
+    # bypassed real strategy_engine.py entry-risk gates via
+    # decision_bridge.py's is_live for a race that isn't actually in-play;
+    # fix-round 1's Python None was silently overridden back to "live" by
+    # live_status.py's own schedule fallback since a falsy value never
+    # reaches its confirmed[et] dict).
     result = mld.extract("political_race", {
         "race_call_status": "Runoff", "tabulation_status": "Vote Certified", "winner": "",
     })
-    assert result == {"status": None, "winner": None}
+    assert result == {"status": "none", "winner": None}
 
 
 def test_political_race_status_is_none_when_pre_race():
