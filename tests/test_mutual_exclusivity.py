@@ -1,4 +1,19 @@
-from services.mutual_exclusivity import find_me_pairs
+import pytest
+
+from services import mutual_exclusivity
+from services.mutual_exclusivity import find_me_pairs, find_open_confirmed_conflict, me_pairing_stats
+
+
+@pytest.fixture(autouse=True)
+def _reset_me_pairing_stats():
+    # Same xdist cross-test leak shape this branch already found and fixed
+    # once for state["milestone_by_event"] (tests/test_trading_gate.py) -
+    # _me_pairing_stats is a bare module-level dict with no reset between
+    # tests otherwise, so an absolute-value assertion in one test would be
+    # polluted by whatever ran earlier in the same pytest-xdist worker
+    # (code-review finding, 2026-08-30).
+    mutual_exclusivity._me_pairing_stats["me_pairing_unknown_total"] = 0
+    yield
 
 
 def _market(ticker, event_ticker, yes_bid=0.5):
@@ -93,9 +108,6 @@ def test_markets_missing_ticker_or_event_ticker_are_ignored():
     assert find_me_pairs(markets, event_titles) == {}
 
 
-from services.mutual_exclusivity import find_open_confirmed_conflict, me_pairing_stats
-
-
 def test_find_open_confirmed_conflict_returns_the_open_sibling():
     market_titles = {
         "BON": {"event_ticker": "EVT-1"},
@@ -114,14 +126,55 @@ def test_find_open_confirmed_conflict_none_when_no_sibling_open():
     assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
 
 
-def test_find_open_confirmed_conflict_none_when_not_confirmed_true():
+def test_find_open_confirmed_conflict_none_when_confirmed_false_and_not_counted():
+    # Kalshi's own confirmed False is a real, determined non-conflict - the
+    # opposite of "unknown," so it must NOT inflate me_pairing_unknown_total.
     market_titles = {
         "BON": {"event_ticker": "EVT-1"},
         "BUS": {"event_ticker": "EVT-1"},
     }
-    for flag in (False, None):
-        event_titles = {"EVT-1": {"mutually_exclusive": flag}}
-        assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+    event_titles = {"EVT-1": {"mutually_exclusive": False}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before
+
+
+def test_find_open_confirmed_conflict_counts_flag_not_yet_backfilled():
+    # mutually_exclusive=None (an event_titles entry exists, but Kalshi's
+    # own flag hasn't been backfilled yet) is genuinely undetermined, not a
+    # confirmed non-conflict (code-review fix, 2026-08-30: this used to be
+    # silently indistinguishable from a real False).
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": None}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
+
+
+def test_find_open_confirmed_conflict_counts_missing_event_titles_entry():
+    # event_titles has NO entry at all for the event - the same "not yet
+    # fetched" meaning as an explicit None flag, same counting treatment.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, {}, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
+
+
+def test_find_open_confirmed_conflict_counts_missing_event_ticker_on_market_titles():
+    # market_titles has an entry for the candidate, but it carries no
+    # event_ticker yet - a different "can't tell" shape than a wholly
+    # missing market_titles entry, same counting treatment.
+    market_titles = {"BON": {}, "BUS": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"BUS"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
 
 
 def test_find_open_confirmed_conflict_ignores_a_different_event():

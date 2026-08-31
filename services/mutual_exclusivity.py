@@ -121,19 +121,28 @@ def find_open_confirmed_conflict(
     ticker that has never been on the watchlist - see docs/superpowers/
     specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
 
-    Scoped to open_position_tickers (small, already computed once per tick
-    at main.py's open_position_tickers) rather than scanning the full
-    market_titles catalog by event_ticker - same cost shape as
-    position_netting.find_groups, which already does this safely on the
-    hot path. O(open positions), not O(catalog)."""
+    Scoped to open_position_tickers (small - pass a live view of currently-
+    open positions, e.g. broker.positions.keys(), never a periodically-
+    refreshed snapshot; see the caller's own docstring on why) rather than
+    scanning the full market_titles catalog by event_ticker - same cost
+    shape as position_netting.find_groups, which already does this safely
+    on the hot path. O(open positions), not O(catalog)."""
     info = market_titles.get(ticker)
-    if info is None:
+    event_ticker = info.get("event_ticker") if info else None
+    me_flag = (event_titles.get(event_ticker) or {}).get("mutually_exclusive") if event_ticker else None
+    if info is None or not event_ticker or me_flag is None:
+        # Genuinely undetermined - counted, never silently treated as a
+        # confirmed non-conflict (code-review finding, 2026-08-30): a
+        # missing market_titles entry, a market_titles entry with no
+        # event_ticker yet, and an event_titles entry whose
+        # mutually_exclusive flag hasn't been backfilled are three
+        # different "can't tell yet" states that all deserve the same
+        # observability treatment - distinct from Kalshi's own confirmed
+        # mutually_exclusive=False, a real, determined non-conflict that
+        # must NOT inflate this counter.
         _me_pairing_stats["me_pairing_unknown_total"] += 1
         return None
-    event_ticker = info.get("event_ticker")
-    if not event_ticker:
-        return None
-    if (event_titles.get(event_ticker) or {}).get("mutually_exclusive") is not True:
+    if me_flag is not True:
         return None
     same_event_open = [
         t for t in open_position_tickers

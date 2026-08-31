@@ -104,9 +104,20 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     event_info = state["event_titles"].get(event_ticker) or {}
     category = event_info.get("category")
     subcategory = _sport_for_event(event_info)
+    # Reads strategy.broker.positions directly, NOT state["open_position_
+    # tickers"] - that set is rebuilt only once per tick (main.py, ~30s in
+    # streaming mode), while broker.positions is mutated synchronously by
+    # every open_position()/close_position() call. Two whale signals for
+    # sibling markets of the same confirmed-ME event can both reach here
+    # within one tick window; reading the periodic snapshot would silently
+    # reopen a narrower version of the exact guaranteed-loss double-entry
+    # this fallback exists to close (code-review finding, 2026-08-30).
+    # Same O(open positions) cost either way - broker.positions is already
+    # the size state["open_position_tickers"] was built from.
     me_complement = (state.get("me_pairs") or {}).get(signal.ticker) or \
         mutual_exclusivity.find_open_confirmed_conflict(
-            signal.ticker, state["market_titles"], state["event_titles"], state["open_position_tickers"],
+            signal.ticker, state["market_titles"], state["event_titles"],
+            set(strategy.broker.positions.keys()),
         )
 
     decision = strategy.evaluate(
