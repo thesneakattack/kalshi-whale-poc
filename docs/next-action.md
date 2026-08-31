@@ -1,19 +1,58 @@
 # Next action
 
-**Give PR #303 the "nothing advances on one pass" review cycle, then merge.**
-`fix/entry-gate-netting-remediation` (PR #298 follow-up — watermark boundary
-gap, stale docstring, misleading metric comment). Open, mergeable, CI green,
-but has not been through self-review → independent adversarial-review Agent
-call → consolidation yet — it's an in-scope PR (real logic fix), not a
-trivial one. Do that (each pass its own PR comment, per the rule), then
-`gh pr merge --merge` and clean up with `scripts/cleanup-worktrees.sh`.
+**Re-run `python -m tools.soak_analyzer` around 2026-08-31 16:11 UTC** (24h
+past the first restart boundary) to confirm the `capture_writer_health`/
+`exit_engine_faults` fault-log FAILs have aged out with zero new occurrences.
+If clean, close `docs/open-decisions.md`'s `two_consumer_mode` permanence
+item by updating the file comment in `config/settings.yaml`. (Not yet due —
+current time is well before 16:11 UTC; nothing else blocking right now.)
+
+**Pending peer coordination:** proposed a lightweight commit/PR/merge
+coordination procedure to `autotrade-79` (ListAgents+`gh pr list` before
+opening/merging a PR; a "claiming PR #N" ping before merge when a peer is
+live) after two near-misses this session (a redundant consolidation comment
+on PR #303, and both sessions coincidentally working claudesuperpower.com
+-related tasks in parallel — PR #307 vs PR #310, no actual conflict). Waiting
+on their read before drafting it as a `.claude/rules/branching-and-ci.md`
+change, if agreed.
 
 **Leave alone — active peer-session work, not ready for anything:**
 - `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
   13 commits ahead of `main`, no PR yet).
+- PR #310 (`docs/claudesuperpower-toolkit-assessment`, autotrade-79's exhaustive
+  claudesuperpower.com toolkit scan) — needs your read on its FINAL VERDICT
+  (4 candidate `claude-plugins-official` plugins) before anyone merges it;
+  don't merge on its behalf.
+- An untracked scratch file `docs/claudesuperpower-toolkit-assessment-2026-08-31.md`
+  sits in the shared primary checkout (not a worktree) — leftover from before
+  PR #310's branch existed, already committed there too; flagged to
+  autotrade-79 to clean up, not touched here.
 
 ## Recently resolved (2026-08-31, this session)
 
+- **PR #303 merged** (watermark boundary gap, stale docstring, misleading
+  metric comment — PR #298 follow-up). Full self-review → independent
+  adversarial-review Agent call → consolidation cycle run first; the
+  adversarial pass caught a real defect (the PR's own new comment in
+  `services/mutual_exclusivity.py` claimed a fallback runs "unconditionally
+  on EVERY whale signal" — false, it's short-circuited by the `me_pairs`
+  fast path; fixed in commit `e209c94` before merging, CI re-confirmed
+  green). Remote branch deleted; the local worktree
+  `.claude/worktrees/entry-gate-netting-remediation` was left untouched
+  (a live peer session was using it) — still on the pre-merge commit,
+  needs `scripts/cleanup-worktrees.sh` or a manual sync once that session
+  is done with it.
+- **PR #307 merged**: broadened CLAUDE.md's `dimensional-analysis` HARD RULE
+  from money/probability math only to any arithmetic/unit conversion/numeric
+  derivation; confirmed (not from memory) that `dimensional-analysis` is a
+  separate `trailofbits` plugin, not part of `superpowers`; noted Wolfram MCP
+  as an optional (not required) numeric-verification complement, since
+  dimensional-analysis itself has no computation engine. Self-review caught
+  that `.claude/hooks/guard_workflow.py`'s automated nudge is still scoped
+  narrower than the new rule (money/probability files only) — said so
+  explicitly in the rule text and tracked broadening the hook as a separate
+  item in `docs/open-decisions.md` rather than silently leaving it out of
+  sync.
 - Two new permanent CLAUDE.md HARD RULEs merged: "nothing advances on one
   pass" (PR #304 — self-review/adversarial-review/consolidation gates every
   planning-stage handoff and PR merge) and the PR/commit task-list-grep
