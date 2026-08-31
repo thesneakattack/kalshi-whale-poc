@@ -48,6 +48,11 @@ from services.market_watch.live_status import (  # noqa: F401
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _LIVE_STATUS_TERMINAL,
 )
 from services.market_watch.market_fetch import _fetch_markets, _MARKET_FIELDS, _slim_market  # noqa: F401
+from services.market_watch import milestone_scan  # noqa: F401
+from services.market_watch.milestone_scan import (  # noqa: F401
+    _maybe_scan_milestone_batch, _MILESTONE_SCAN_MIN_INTERVAL_SEC, _scan_milestone_batch,
+    _scan_milestone_batch_background,
+)
 from services.market_watch import mve_scan  # noqa: F401
 from services.market_watch.mve_scan import (  # noqa: F401
     _get_mve_series_cache, _maybe_scan_mve_batch, _MVE_COLLECTIONS_CACHE_TTL_SEC, _MVE_EVENTS_PAGE_LIMIT,

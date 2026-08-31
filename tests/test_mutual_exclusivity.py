@@ -1,4 +1,19 @@
-from services.mutual_exclusivity import find_me_pairs
+import pytest
+
+from services import mutual_exclusivity
+from services.mutual_exclusivity import find_me_pairs, find_open_confirmed_conflict, me_pairing_stats
+
+
+@pytest.fixture(autouse=True)
+def _reset_me_pairing_stats():
+    # Same xdist cross-test leak shape this branch already found and fixed
+    # once for state["milestone_by_event"] (tests/test_trading_gate.py) -
+    # _me_pairing_stats is a bare module-level dict with no reset between
+    # tests otherwise, so an absolute-value assertion in one test would be
+    # polluted by whatever ran earlier in the same pytest-xdist worker
+    # (code-review finding, 2026-08-30).
+    mutual_exclusivity._me_pairing_stats["me_pairing_unknown_total"] = 0
+    yield
 
 
 def _market(ticker, event_ticker, yes_bid=0.5):
@@ -91,3 +106,157 @@ def test_markets_missing_ticker_or_event_ticker_are_ignored():
     ]
     event_titles = {"EVT-1": {"mutually_exclusive": True}}
     assert find_me_pairs(markets, event_titles) == {}
+
+
+def test_find_open_confirmed_conflict_returns_the_open_sibling():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) == "BON"
+
+
+def test_find_open_confirmed_conflict_none_when_no_sibling_open():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
+
+
+def test_find_open_confirmed_conflict_none_when_confirmed_false_and_not_counted():
+    # Kalshi's own confirmed False is a real, determined non-conflict - the
+    # opposite of "unknown," so it must NOT inflate me_pairing_unknown_total.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": False}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before
+
+
+def test_find_open_confirmed_conflict_counts_flag_not_yet_backfilled():
+    # mutually_exclusive=None (an event_titles entry exists, but Kalshi's
+    # own flag hasn't been backfilled yet) is genuinely undetermined, not a
+    # confirmed non-conflict (code-review fix, 2026-08-30: this used to be
+    # silently indistinguishable from a real False).
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": None}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
+
+
+def test_find_open_confirmed_conflict_counts_missing_event_titles_entry():
+    # event_titles has NO entry at all for the event - the same "not yet
+    # fetched" meaning as an explicit None flag, same counting treatment.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, {}, {"BON"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
+
+
+def test_find_open_confirmed_conflict_counts_missing_event_ticker_on_market_titles():
+    # market_titles has an entry for the candidate, but it carries no
+    # event_ticker yet - a different "can't tell" shape than a wholly
+    # missing market_titles entry, same counting treatment.
+    market_titles = {"BON": {}, "BUS": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"BUS"}) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before + 1
+
+
+def test_find_open_confirmed_conflict_ignores_a_different_event():
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "OTHER": {"event_ticker": "EVT-2"},
+    }
+    event_titles = {
+        "EVT-1": {"mutually_exclusive": True},
+        "EVT-2": {"mutually_exclusive": True},
+    }
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"OTHER"}) is None
+
+
+def test_find_open_confirmed_conflict_never_returns_the_candidate_itself():
+    market_titles = {"BON": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict("BON", market_titles, event_titles, {"BON"}) is None
+
+
+def test_find_open_confirmed_conflict_counts_missing_market_titles_entry():
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("UNKNOWN", {}, {}, {"BON"}) is None
+    after = me_pairing_stats()["me_pairing_unknown_total"]
+    assert after == before + 1
+
+
+def test_find_open_confirmed_conflict_does_not_count_a_genuine_no_conflict():
+    market_titles = {"BON": {"event_ticker": "EVT-1"}, "BUS": {"event_ticker": "EVT-1"}}
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    before = me_pairing_stats()["me_pairing_unknown_total"]
+    assert find_open_confirmed_conflict("BUS", market_titles, event_titles, set()) is None
+    assert me_pairing_stats()["me_pairing_unknown_total"] == before
+
+
+def test_find_open_confirmed_conflict_does_not_block_an_n_way_event():
+    # The bound this function shares with find_me_pairs above (and with
+    # position_netting.find_groups' identical `len(members) != 2` proxy):
+    # two positions already open on one confirmed-ME event means the app is
+    # holding a SUBSET of a larger N-way field (a golf tournament, a
+    # multi-candidate election), not a head-to-head pair - out of scope for
+    # this entry-side gate. Live-verified 2026-08-30: 314 mutually_exclusive
+    # events in data/title_cache.db have 3+ cached sibling markets, up to 81
+    # outcomes (KXPGATOUR-WYC26). Without the bound, GOLFER-C would be
+    # blocked here purely because GOLFER-A trivially matches the event
+    # first.
+    market_titles = {
+        "GOLFER-A": {"event_ticker": "EVT-1"},
+        "GOLFER-B": {"event_ticker": "EVT-1"},
+        "GOLFER-C": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict(
+        "GOLFER-C", market_titles, event_titles, {"GOLFER-A", "GOLFER-B"},
+    ) is None
+
+
+def test_find_open_confirmed_conflict_still_blocks_the_genuine_second_leg():
+    # The other side of the same bound: exactly ONE other open position on
+    # the event is the real head-to-head case this gate exists for (the
+    # verified KXATPMATCH-26AUG28BUSBON failure), and it still blocks.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+        "UNRELATED": {"event_ticker": "EVT-2"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}, "EVT-2": {"mutually_exclusive": True}}
+    # An open position on a DIFFERENT event doesn't count toward the bound.
+    assert find_open_confirmed_conflict(
+        "BUS", market_titles, event_titles, {"BON", "UNRELATED"},
+    ) == "BON"
+
+
+def test_find_open_confirmed_conflict_n_way_bound_ignores_the_candidate_itself():
+    # A re-entry signal on a ticker already open must not inflate the
+    # same-event count: candidate + 1 real sibling is still the 2-outcome
+    # case, not an N-way field.
+    market_titles = {
+        "BON": {"event_ticker": "EVT-1"},
+        "BUS": {"event_ticker": "EVT-1"},
+    }
+    event_titles = {"EVT-1": {"mutually_exclusive": True}}
+    assert find_open_confirmed_conflict(
+        "BUS", market_titles, event_titles, {"BON", "BUS"},
+    ) == "BON"

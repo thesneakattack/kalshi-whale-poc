@@ -61,9 +61,19 @@ reaches into it directly, `services/market_catalog/routes.py`'s
   respectively — two independent per-event REST loops, both repoll-cached
   (see `_MILESTONE_REPOLL_SEC`/`_EVENT_LIVE_DATA_REPOLL_SEC`) after being
   found live as the bulk of an earlier ~27s tick_duration plateau.
-  `live_status._fetch_live_status` also calls `get_milestones_for_event` +
-  `get_live_datas` (the sports live-status path), independent of the
-  winner-propagation one in `catalog_scan.py`.
+  `live_status._fetch_live_status` also calls `get_live_datas` (the sports
+  live-status path), independent of the winner-propagation one in
+  `catalog_scan.py`. **Its `get_milestones_for_event` call is conditional
+  as of 2026-08-30, not unconditional as this line used to say:** it first
+  checks `state["milestone_by_event"]` (`milestone_scan.py`, below) and
+  only falls back to the per-event REST call for events that broad cache
+  hasn't covered.
+- `docs/kalshi/get-milestones.md` — `milestone_scan._scan_milestone_batch`
+  (`get_milestones_bulk`, category-scoped and batched) and
+  `catalog_scan`/`live_status`'s per-event `get_milestones_for_event`, all
+  the same `GET /milestones` endpoint with different filters. See the
+  `min_updated_ts` entry in `docs/kalshi/CHEATSHEET.md` before passing a
+  watermark — it must be an integer.
 - `docs/kalshi/get-tags-for-series-categories.md` /
   `get-live-data.md`'s sports filters endpoint —
   `discovery_cache._fetch_category_metadata` calls
@@ -186,3 +196,41 @@ to `title_cache`'s `market_titles`/`event_titles` the same way
 `event_metadata._fetch_event_titles` does for regular events - runs on its
 own scheduler trigger (`main._SCHEDULER_TRIGGERS`'s `mve_scan` entry),
 independent of `catalog_scan`.
+
+## Broad milestone discovery (milestone_scan.py, 2026-08-30, entry-gate-me-pairing-and-netting-remediation Part 3)
+
+Second new sibling module of the same shape as `mve_scan.py` above — its
+own `main._SCHEDULER_TRIGGERS` entry (`milestone_scan`), its own
+`_maybe_scan_milestone_batch` due-interval + overlap guard, its own
+`KalshiPublicGateway` inside `_scan_milestone_batch_background`, its own
+`/api/health/pipeline` `schedulers.milestone_scan` row. Interval:
+`_MILESTONE_SCAN_MIN_INTERVAL_SEC` (300s).
+
+What it does: one `get_milestones_bulk(category, min_updated_ts=...)` call
+per configured `kalshi.categories` entry — **the first and only caller of
+that gateway method, which had been implemented and tested with zero
+callers anywhere in the app** — and maps every `related_event_ticker` of
+every returned milestone into `state["milestone_by_event"]`
+(`event_ticker -> milestone_id`, last-write-wins, memory-only). One
+category's call is worth ~1,483 distinct event tickers (live-verified
+2026-08-15, recorded in `public.get_milestones_bulk`'s own docstring), so
+this is a batched, watchlist-independent alternative to N per-event
+`get_milestones_for_event` calls.
+
+Two things worth knowing before touching it:
+
+- **Watermarks are per category** (`state["milestone_scan"]["watermarks"]`,
+  `category -> int Unix seconds`), advanced only by that category's own
+  successful call. A single shared scalar (the first version) advanced
+  even on a cycle where every call failed, which would have permanently
+  skipped whatever changed while a category was down. Absent key = never
+  successfully scanned = ask for everything.
+- **This does NOT broaden live-status coverage** — `_fetch_live_status`
+  still chooses which events to poll from its own watchlist-scoped
+  `markets` argument and only consults this cache for events it already
+  chose, so `game_state` sees the same event set as before; the measured
+  effect is fewer redundant per-event REST calls. Real broadening is an
+  open follow-up (`docs/open-decisions.md`, 2026-08-30). Also deliberately
+  NOT rewired: `catalog_scan.propagate_milestone_winners`, which shares the
+  identical narrow pattern but feeds settlement-outcome data that real
+  trading decisions consume.

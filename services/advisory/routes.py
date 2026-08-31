@@ -27,6 +27,7 @@ from services.advisory import advisory_engine
 from services.analytics.market_analyst_orchestrator import _series_evaluator_rows_for_advisory
 from services.app_state import broker, bump_generation
 from services.config.config_store import config_store
+from services.quality import evidence_provenance
 
 router = APIRouter()
 
@@ -65,6 +66,7 @@ async def get_advisory_status():
         "auto_apply_enabled": adv_cfg["auto_apply_enabled"],
         "current_fingerprint": current_fp,
         "variants": variants_out,
+        "evidence_provenance": evidence_provenance.current_completeness_state(),
     }
 
 
@@ -134,7 +136,10 @@ async def get_advisory_recommendations():
     # between an under-sampled variant and a real recommendation.
     adv_cfg = config_store.get()["advisory"]
     if not adv_cfg["enabled"]:
-        return {"recommendations": [], "gated_reason": "advisory engine is disabled", "resolved_count": None}
+        return {
+            "recommendations": [], "gated_reason": "advisory engine is disabled", "resolved_count": None,
+            "evidence_provenance": evidence_provenance.current_completeness_state(),
+        }
 
     cfg = config_store.get()
     current_fp = config_performance.fingerprint(cfg)
@@ -148,6 +153,7 @@ async def get_advisory_recommendations():
         category_rows=regime_analytics.by_category(all_rows),
         declined_ids=suggestion_decisions.declined_ids(),
     )
+    result["evidence_provenance"] = evidence_provenance.current_completeness_state()
     return result
 
 

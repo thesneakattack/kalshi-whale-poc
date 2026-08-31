@@ -261,3 +261,49 @@ def test_record_snapshot_from_ticker_never_raises_and_logs_the_fault(tmp_path, m
     result = mh.record_snapshot_from_ticker("TICK-A", 0.5, now=time.time())
     assert result is False
     assert faults == [("market_history", "record_snapshot_from_ticker")]
+
+
+# --- prune (2026-08-30 data retention gap closure) ---------------------------
+
+
+def test_prune_deletes_snapshots_older_than_the_retention_window(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots(
+        [{"ticker": "TICK-A", "yes_price": 0.5, "spread": 0.02, "volume_24h": 1000, "time_to_close_sec": 3600}],
+        timestamp=1000.0,
+    )
+    mh.record_snapshots(
+        [{"ticker": "TICK-A", "yes_price": 0.6, "spread": 0.02, "volume_24h": 1000, "time_to_close_sec": 3600}],
+        timestamp=500_000.0,
+    )
+
+    result = mh.prune(retention_hours=1.0, now=500_010.0)  # cutoff = 500_010 - 3600 = 496_410
+
+    assert result["snapshots_deleted"] == 1
+    assert mh.snapshot_count() == 1
+    with mh._connect(tmp_path / "market_history.db") as conn:
+        remaining_ts = conn.execute("SELECT timestamp FROM snapshots").fetchone()[0]
+    assert remaining_ts == 500_000.0
+
+
+def test_prune_does_not_touch_outcomes(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_outcome("TICK-A", "yes", resolved_at=1000.0)
+
+    mh.prune(retention_hours=1.0, now=500_010.0)
+
+    assert mh.outcome_count() == 1
+
+
+def test_prune_respects_batch_size_cap(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    for i in range(10):
+        mh.record_snapshots(
+            [{"ticker": "TICK-A", "yes_price": 0.5, "spread": 0.02, "volume_24h": 1000, "time_to_close_sec": 3600}],
+            timestamp=float(i),
+        )
+
+    result = mh.prune(retention_hours=0.0, now=1000.0, batch_size=3)
+
+    assert result["snapshots_deleted"] == 3
+    assert mh.snapshot_count() == 7

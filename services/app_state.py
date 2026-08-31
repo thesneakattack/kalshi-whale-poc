@@ -265,6 +265,23 @@ state = {
     # after a restart is cheap, and this list is small enough that a cold
     # start costs one extra scan cycle, not a real gap.
     "mve_series_cache": {"fetched_at": 0.0, "series_tickers": []},
+    # "watermarks" is category -> Unix seconds (int), each advanced only by
+    # its OWN successful get_milestones_bulk call - never a single shared
+    # scalar, which would march a persistently-failing category's window
+    # forward and permanently skip whatever changed while it was down
+    # (see milestone_scan._scan_milestone_batch's docstring). An absent
+    # category means "never successfully scanned": ask for everything.
+    "milestone_scan": {"scanning": False, "last_started_at": 0.0, "task": None, "watermarks": {}},
+    # Broad, watchlist-independent event_ticker -> milestone_id map
+    # (services/market_watch/milestone_scan.py, issue: entry-gate-me-
+    # pairing-and-netting-remediation Part 3) - independent of the per-tick
+    # `markets` list live_status.py's _fetch_live_status otherwise depends
+    # on for milestone lookup. NOTE: this being broad does not by itself
+    # broaden live-status coverage - _fetch_live_status still chooses which
+    # events to poll from its own watchlist-scoped `markets` argument and
+    # only consults this map for events already chosen. See
+    # milestone_scan.py's "WHAT THIS DOES NOT DO YET" note.
+    "milestone_by_event": {},
     # P8 Task 37 - candidate_retry.run_pending's own supervised loop (main.py's
     # _candidate_retry_loop); read by /api/health/pipeline's schedulers block.
     "candidate_retry_loop": {"running": False, "last_started_at": 0.0},
@@ -275,6 +292,7 @@ state = {
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.
     "backup": {"running": False, "last_started_at": 0.0, "task": None},
+    "backup_large": {"running": False, "last_started_at": 0.0, "task": None},
     # services/observability/observability.py's maybe_capture() interval
     # gate - restart-safe the same way backup's own last_started_at is (see
     # that module's README.md): seeded from the most recently persisted

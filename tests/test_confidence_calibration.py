@@ -4,10 +4,11 @@ from services.whale_calibration import confidence_calibration as cc
 from services.confidence_scoring import DEFAULT_WEIGHTS
 
 
-def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5):
+def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5, series="KXTEST"):
     return {
         "confidence": confidence,
         "correct": correct,
+        "series": series,
         "factors": {
             "depth_factor": depth, "unusualness_factor": unusualness,
             "proximity_factor": proximity, "context_factor": context,
@@ -56,6 +57,42 @@ def test_discriminating_factor_is_flagged_with_correct_gap():
     assert depth_report["buckets"]["high"]["win_rate"] == 100.0
     assert depth_report["gap_pts"] == 100.0
     assert depth_report["discriminates"] is True
+
+
+def test_series_win_rates_groups_by_series_and_computes_win_rate():
+    rows = (
+        [_row(0.5, 0.5, 0.5, 0.5, 0.5, True, series="KXBTC15M") for _ in range(2)]
+        + [_row(0.5, 0.5, 0.5, 0.5, 0.5, False, series="KXBTC15M")]
+        + [_row(0.5, 0.5, 0.5, 0.5, 0.5, True, series="KXMLB") for _ in range(3)]
+    )
+
+    result = cc._series_win_rates(rows)
+
+    assert result == [
+        {"series": "KXBTC15M", "n": 3, "win_rate_pct": 66.7},
+        {"series": "KXMLB", "n": 3, "win_rate_pct": 100.0},
+    ]
+
+
+def test_series_win_rates_drops_buckets_under_the_min_band_size():
+    rows = [_row(0.5, 0.5, 0.5, 0.5, 0.5, True, series="KXTINY"),
+            _row(0.5, 0.5, 0.5, 0.5, 0.5, False, series="KXTINY")]  # n=2 < _MIN_BAND_SIZE(3)
+
+    assert cc._series_win_rates(rows) == []
+
+
+def test_series_win_rates_empty_for_no_rows():
+    assert cc._series_win_rates([]) == []
+
+
+def test_generate_calibration_report_includes_by_series_breakdown():
+    rows = _discriminating_dataset(n_per_bucket=3)  # 9 rows, all series="KXTEST" by the _row default
+
+    result = cc.generate_calibration_report(rows, min_resolved_signals=5)
+
+    assert result["report"]["by_series"] == [
+        {"series": "KXTEST", "n": 9, "win_rate_pct": round(3 / 9 * 100, 1)},
+    ]
 
 
 def test_constant_factor_does_not_discriminate():

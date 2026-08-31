@@ -180,7 +180,14 @@ def test_archive_carries_the_netting_decision_columns_of_a_netting_close():
     every archived row: nothing errored, the archive was simply less
     complete than the live table - the exact gap #213 closed, reopened one
     reset later. The broker schema here is the real one (PaperBroker creates
-    it under the tmp DB_PATH), so the row is what the live table holds."""
+    it under the tmp DB_PATH), so the row is what the live table holds.
+
+    netting_exit_fee_usd (2026-08-30, entry-gate-me-pairing-and-netting-
+    remediation Part 2) reopened the identical gap a second time - x4 below
+    is shaped like the real locked_loss close that is the only branch that
+    ever populates it, and never together with the three columns above
+    (paper_broker.Trade's own docstring: the two column families are always
+    complementary, never both non-NULL on the same row)."""
     from services import paper_broker as pb_module
 
     _seed_broker(_TRADES)
@@ -188,26 +195,42 @@ def test_archive_carries_the_netting_decision_columns_of_a_netting_close():
         conn.execute(
             "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
             "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
-            "netting_bar_usd, netting_vol_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ("e3", "KXBTC15M-C", "yes", 100, 0.60, "whale print (conf 0.80)",
-             1400.0, "fp", 1.0, 1399.0, None, None, None))
+             1400.0, "fp", 1.0, 1399.0, None, None, None, None))
         conn.execute(
             "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
             "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
-            "netting_bar_usd, netting_vol_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ("x3", "KXBTC15M-C", "yes", 100, 0.80,
              "closed: position netting (partial, event KXBTC15M): estimated $1.25 "
              "expected-value improvement over holding (bar $0.80)",
-             1500.0, "fp", 0.0, None, 1.25, 0.80, 1.6))
+             1500.0, "fp", 0.0, None, 1.25, 0.80, 1.6, None))
+        conn.execute(
+            "INSERT INTO trades (id, ticker, side, size, price, reason, timestamp, "
+            "config_fingerprint, fee, signal_seen_at, netting_improvement_usd, "
+            "netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("x4", "KXBTC15M-D", "yes", 100, 0.60,
+             "closed: position netting (locked_loss, event KXBTC15M-D): payout is negative "
+             "under every possible outcome - the loss is already fixed regardless of timing; "
+             "closing now frees up bankroll/position headroom instead of leaving it dead "
+             "until settlement",
+             1600.0, "fp", 0.0, None, None, None, None, 2.10))
     result = ta.archive_epoch("netting close")
 
     rows = {r["id"]: r for r in ta.epoch_trades(result["epoch_id"])}
     assert rows["x3"]["netting_improvement_usd"] == pytest.approx(1.25)
     assert rows["x3"]["netting_bar_usd"] == pytest.approx(0.80)
     assert rows["x3"]["netting_vol_ratio"] == pytest.approx(1.6)
+    assert rows["x3"]["netting_exit_fee_usd"] is None
+    assert rows["x4"]["netting_exit_fee_usd"] == pytest.approx(2.10)
+    assert rows["x4"]["netting_improvement_usd"] is None
+    assert rows["x4"]["netting_bar_usd"] is None
+    assert rows["x4"]["netting_vol_ratio"] is None
     # NULL on a non-netting row IS the meaning ("no bar was computed"),
     # carried over as-is rather than coerced to 0.
     assert rows["e3"]["netting_improvement_usd"] is None
+    assert rows["e3"]["netting_exit_fee_usd"] is None
     assert rows["x1"]["netting_bar_usd"] is None
 
 

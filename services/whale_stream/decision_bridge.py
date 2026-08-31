@@ -9,7 +9,7 @@ importing from the whale-stream module just for its own loop body.
 """
 import asyncio
 
-from services import candidate_ledger, signal_log, tick_executor, trade_category
+from services import candidate_ledger, mutual_exclusivity, signal_log, tick_executor, trade_category
 from services.market_events import event_lifecycle
 from services.app_state import shadow, state, strategy
 from services.market_lookup import _category_by_ticker, _sport_for_event, _subcategory_by_ticker
@@ -104,7 +104,21 @@ async def _handle_signal(signal, cfg: dict, market_results: dict, config_fp: str
     event_info = state["event_titles"].get(event_ticker) or {}
     category = event_info.get("category")
     subcategory = _sport_for_event(event_info)
-    me_complement = (state.get("me_pairs") or {}).get(signal.ticker)
+    # Reads strategy.broker.positions directly, NOT state["open_position_
+    # tickers"] - that set is rebuilt only once per tick (main.py, ~30s in
+    # streaming mode), while broker.positions is mutated synchronously by
+    # every open_position()/close_position() call. Two whale signals for
+    # sibling markets of the same confirmed-ME event can both reach here
+    # within one tick window; reading the periodic snapshot would silently
+    # reopen a narrower version of the exact guaranteed-loss double-entry
+    # this fallback exists to close (code-review finding, 2026-08-30).
+    # Same O(open positions) cost either way - broker.positions is already
+    # the size state["open_position_tickers"] was built from.
+    me_complement = (state.get("me_pairs") or {}).get(signal.ticker) or \
+        mutual_exclusivity.find_open_confirmed_conflict(
+            signal.ticker, state["market_titles"], state["event_titles"],
+            set(strategy.broker.positions.keys()),
+        )
 
     decision = strategy.evaluate(
         signal, cfg, is_live=is_live, market_results=market_results, config_fingerprint=config_fp,

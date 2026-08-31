@@ -33,6 +33,19 @@ Not knowing is a research task, not a probability estimate. Permanent: applies e
 - Correlation is not a mechanism, and one passing observation is not a property (see the data-plane rule).
 - If the authoritative source cannot answer, say so and stop; a gap filled with a guess is read as fact by the next session.
 
+## HARD RULE — nothing advances on one pass (permanent, 2026-08-31)
+
+A multi-stage planning pipeline (investigation/research → design/spec → implementation plan, or any comparable dated sequence under `docs/superpowers/`) never advances a stage on one pass alone, and neither does a PR carrying a claim, design decision, new logic, or a process/rule change to `main`: submission is not the final gate, merge is. Permanent: applies to every such pipeline and every in-scope PR, ad hoc or run through a `superpowers:*`/orchestrator skill, not only ones with a dated incident behind them. Distinct from `.claude/rules/branching-and-ci.md`'s "no self-approval ceremony": that line means no *human* approval gate in a solo repo; this rule is an AI-executed rigor gate and the two coexist.
+
+- Scope: a mechanical/trivial change (typo fix, CI re-trigger, a config value edited exactly as the user dictated, a revert) is exempt from the full cycle. Anything asserting a claim, a design decision, new logic, or a process/rule change is in scope regardless of diff size — including this rule's own PR.
+- Every in-scope stage produces its own artifact, then three more before the next stage starts — self-review, adversarial review, consolidation — each its own document or PR comment, never an edit folded into the one before it.
+- Self-review: same author/context checks its own artifact for internal consistency and unaddressed scope; cheapest layer, catches sloppiness before spending independent effort on it.
+- Adversarial review: a genuinely separate pass — a new Agent-tool call carrying no memory of the current conversation, never an Explore/Plan agent (those skip CLAUDE.md entirely and can't check this file's other rules) — that assumes the artifact is wrong until its load-bearing claims are re-derived from primary sources (source code, live data, docs), never from the artifact's own tables or summary.
+- Consolidation: one document reconciling the stage artifact, its self-review, and its adversarial review into an explicit GO/no-go, with any disagreement between the two reviews adjudicated on the merits, not defaulted to whichever ran last, and one merged list of required fixes.
+- The next stage does not start until consolidation says GO; a revision written to satisfy that fix list gets checked against the list item by item before being trusted, never accepted on its own completion claim — a revision that silently drops requested fixes is itself a defect, not a smaller version of the same task.
+- For an in-scope PR: after it's pushed and opened, one more full review cycle of the same shape (self-review, adversarial review, consolidation, each its own artifact) runs against the PR as submitted before `gh pr merge` runs. `.claude/rules/branching-and-ci.md`'s "read the PR body before merging" step is a floor, not a substitute for this cycle.
+- This stacks on top of a skill's own review checkpoints (`writing-plans`, `executing-plans`, `requesting-code-review`) — it never justifies skipping them, and never justifies weakening any safety gate to move faster.
+
 ## Standing goal (2026-08-26) and current objective (2026-08-23)
 
 - Destination: a personal-use, real-money trading system — reached only through ROADMAP.md "Path to production"; several items there are human decisions (position sizes, kill-switch numbers, sports-category legal exposure, auth model, deployment target), not commits.
@@ -104,7 +117,7 @@ def _connect() -> sqlite3.Connection:
 
 ## Branching, CI, sessions
 
-- `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Read a PR body before merging.
+- `main` is protected; work on `feat/|fix/|refactor/|chore/|docs/` branches; PR → `gh pr merge --merge` → delete the branch (`.claude/rules/branching-and-ci.md`). Before merging, read the PR body in full and explicitly grep it and its commits for task-list items (`- [ ]`/`- [x]`) — a checklist gate or post-merge follow-up is easy to skip if nobody looks for it.
 - CI (Woodpecker, `.woodpecker/*.yml`) is the only full-suite owner. Locally run only the targeted test files; the per-edit hook already does this. Confirm CI via `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`.
 - Checkpoint often (`/checkpoint`): commit verified units, stage specific paths, never `git add -A`, never commit a failing state.
 - Parallel sessions share one primary checkout: `orient.sh` lists the live ones and `ListAgents` names them; work in a worktree under `.claude/worktrees/` (`git worktree add … origin/main`, then `EnterWorktree`); never checkout/stash/reset/rebase/merge under another session's work — convention only since 2026-08-30 (the guard that used to deny it, R6, was retired: its liveness check had no time dimension and denied real merges over dead sessions twice in one night); never edit a file another session names as in use.

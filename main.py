@@ -113,16 +113,17 @@ from services.market_watch import (  # noqa: E402
     _fetch_event_titles, _fetch_exchange_status, _fetch_live_status, _fetch_markets,
     _get_series_cache, _get_top_series, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC,
     _LIVE_STATUS_MAX_POLL_PER_TICK, _LIVE_STATUS_REPOLL_SEC, _maybe_scan_catalog_batch,
-    _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners, _refresh_discovery_cache,
-    _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
+    _maybe_scan_milestone_batch, _maybe_scan_mve_batch, _MILESTONE_REPOLL_SEC, propagate_milestone_winners,
+    _refresh_discovery_cache, _refresh_discovery_cache_background, _scan_catalog_batch, _slim_market,
 )
-from services.backup import _maybe_run_backup  # noqa: E402
+from services.backup import _maybe_run_backup, _maybe_run_large_backup  # noqa: E402
 from services.backup import routes as backup_routes  # noqa: E402
 from services.alerting import check_and_alert  # noqa: E402
 from services.alerting import routes as alerting_routes  # noqa: E402
 from services.observability import maybe_capture as _maybe_capture_observability  # noqa: E402
 from services.observability import observability  # noqa: E402
 from services.observability import routes as observability_routes  # noqa: E402
+from services.quality import evidence_provenance  # noqa: E402
 from services.quality import routes as quality_routes  # noqa: E402
 from services.research import _maybe_run_research  # noqa: E402
 from services.research import routes as research_routes  # noqa: E402
@@ -164,6 +165,8 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     game_state.prune(retention_hours=hours, now=now)
     obs_hours = float((cfg.get("observability") or {}).get("retention_hours", 336))
     observability.prune(retention_hours=obs_hours, now=now)
+    mh_hours = float((cfg.get("market_history") or {}).get("retention_hours", 168))
+    market_history.prune(retention_hours=mh_hours, now=now)
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -448,8 +451,10 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 # auto_apply_min_n below applies to advisory.
                 auto_apply_floor = cc_cfg.get("auto_apply_min_resolved_signals", 150)
                 if (
-                    last_auto is None or (tick_now - last_auto) >= cooldown
-                ) and cc_result["report"]["resolved_count"] >= auto_apply_floor:
+                    (last_auto is None or (tick_now - last_auto) >= cooldown)
+                    and cc_result["report"]["resolved_count"] >= auto_apply_floor
+                    and not evidence_provenance.current_completeness_state()["degraded"]
+                ):
                     current_weights = cfg.get("whale_confidence_weights") or {}
                     blended = confidence_calibration.blended_weights_for_auto_apply(
                         current_weights, cc_result["report"].get("suggested_weights"),
@@ -540,7 +545,7 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 r for r in adv_result.get("recommendations", [])
                 if _CONFIDENCE_RANK.get(r["confidence_label"], 0) >= min_confidence_rank and r["n"] >= min_n
             ]
-            if qualifying:
+            if qualifying and not evidence_provenance.current_completeness_state()["degraded"]:
                 rec = qualifying[0]
                 section, _, field = rec["config_path"].partition(".")
                 config_store.update({section: {field: rec["suggested_value"]}})
@@ -557,6 +562,7 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
 _SCHEDULER_TRIGGERS = (
     ("signal_resolution", _maybe_check_signal_resolutions),
     ("backup", _maybe_run_backup),
+    ("backup_large", _maybe_run_large_backup),
     ("research", _maybe_run_research),
     ("event_schedule", event_schedule._maybe_resolve_event_schedules),
     ("catalog_scan", _maybe_scan_catalog_batch),
@@ -569,6 +575,10 @@ _SCHEDULER_TRIGGERS = (
     # entry, which catalog_scan._get_series_cache already filters out
     # before any category logic even runs).
     ("mve_scan", _maybe_scan_mve_batch),
+    # Broad milestone discovery (entry-gate-me-pairing-and-netting-
+    # remediation Part 3) - independent of `markets`/watchlist scope, see
+    # services/market_watch/milestone_scan.py's own module docstring.
+    ("milestone_scan", _maybe_scan_milestone_batch),
     ("auto_apply", _maybe_run_auto_apply),
 )
 

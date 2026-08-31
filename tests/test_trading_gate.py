@@ -29,6 +29,7 @@ from services.market_catalog import market_catalog as mc_module
 from services import market_analyst_agent
 from services.market_analyst_agent import _db as maa_db_module
 from services import market_history as mh_module
+from services import mutual_exclusivity
 from services import paper_broker as pb_module
 from services import risk_manager as rm_module
 from services import series_evaluator as se_module
@@ -286,6 +287,54 @@ def _reset_candidate_log_store():
     cl_module.clear_all()
     yield
     cl_module.clear_all()
+
+
+@pytest.fixture(autouse=True)
+def _reset_milestone_by_event_cache():
+    """main.state["milestone_by_event"] (== services.app_state.state's same
+    key - main.py imports `state` directly from services.app_state, not a
+    copy) is Task 5's broad, watchlist-independent milestone cache, read by
+    this file's _fetch_live_status tests since Task 6 wired it in. The ONLY
+    other file that touches this key is tests/test_milestone_scan.py, whose
+    own autouse _isolated_state fixture resets it to {} only BEFORE each of
+    ITS tests (`state["milestone_by_event"] = {}` then `yield`, no teardown
+    reset) - it protects its own tests regardless of what ran before them,
+    but does nothing to stop what it leaves behind (several of its tests
+    end with non-empty state, e.g. test_scan_builds_the_broad_event_ticker_
+    to_milestone_id_map leaves {"EVT-A": "ms-1", "EVT-B": "ms-1"}) from
+    reaching whatever runs next in the same process.
+
+    Real, confirmed leak (root-cause-debugging investigation, 2026-08-30,
+    fixing a review finding on the Task 6 commit before it ever reached real
+    CI): this repo's actual CI entrypoint (scripts/ci-testmon-run.sh:37,53)
+    runs `pytest -n 4` on every path (full-suite PR/main runs and
+    testmon-scoped branch pushes alike) with no --dist=loadscope/loadfile,
+    so pytest-xdist's default --dist=load dynamically assigns individual
+    test items to worker processes as they free up - two tests from
+    different files can and do land adjacent in the same worker, in which
+    "adjacent" means "same Python process, same main.state object,
+    sequential." Reproduced deterministically with zero xdist involved:
+    `pytest -p no:xdist
+    tests/test_milestone_scan.py::test_scan_builds_the_broad_event_ticker_to_milestone_id_map
+    tests/test_trading_gate.py::test_fetch_live_status_polls_a_new_event_with_no_cache`
+    fails the second test on this untouched merge base with
+    `assert [] == ['EVT-A']` - the broad cache's leftover "EVT-A" entry
+    (from the first test) makes _fetch_live_status skip the per-event REST
+    call the second test asserts DID happen. Every _fetch_live_status test
+    in this file that defaults to _market_at's "EVT-A" ticker and asserts
+    `fake.milestone_calls == ["EVT-A"]` is equally exposed, not just the one
+    used for the repro.
+
+    Same class of fix as _reset_shared_singletons above (reset-before only,
+    no yield/teardown needed): resetting to {} before every test in this
+    file makes this file's own results independent of whatever any other
+    file or worker left behind, regardless of collection/scheduling order.
+    Deliberately not resetting AFTER too (unlike _reset_trading_gate_state/
+    _reset_candidate_log_store above): test_milestone_scan.py already
+    resets-before its own tests unconditionally, so it needs no help from
+    this file, and no third file currently reads this key - add a teardown
+    reset here too, the same way, if one ever does."""
+    main.state["milestone_by_event"] = {}
 
 
 def test_files_are_actually_redirected_away_from_the_real_repo():
@@ -1172,6 +1221,45 @@ def test_advisory_status_reports_disabled_by_default():
     assert "current_fingerprint" in body
 
 
+def test_advisory_status_includes_evidence_provenance_block(monkeypatch):
+    _reset_advisory_state()
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
+
+    resp = client.get("/api/advisory/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["evidence_provenance"] == {"degraded": False, "defects": [], "checked_at": 0.0}
+
+
+def test_advisory_recommendations_includes_evidence_provenance_when_disabled(monkeypatch):
+    _reset_advisory_state()
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": True, "defects": [{"component": "index_feed"}], "checked_at": 1.0},
+    )
+
+    resp = client.get("/api/advisory/recommendations")
+
+    assert resp.json()["evidence_provenance"]["degraded"] is True
+
+
+def test_advisory_recommendations_includes_evidence_provenance_when_enabled(monkeypatch):
+    _reset_advisory_state()
+    main.config_store.update({"advisory": {"enabled": True}})
+    monkeypatch.setattr(
+        main.advisory_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": True, "defects": [], "checked_at": 2.0},
+    )
+
+    resp = client.get("/api/advisory/recommendations")
+
+    assert resp.status_code == 200
+    assert resp.json()["evidence_provenance"]["checked_at"] == 2.0
+
+
 def test_advisory_recommendations_empty_and_gated_when_disabled():
     _reset_advisory_state()
     resp = client.get("/api/advisory/recommendations")
@@ -1691,6 +1779,48 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     result = asyncio.run(main._fetch_live_status(fake, markets))
     assert result == {"EVT-A": "live"}
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
+
+
+# --- _fetch_live_status: broad milestone cache (services/market_watch/
+# milestone_scan.py) consulted before the per-event REST call --------------
+
+def test_fetch_live_status_uses_broad_milestone_cache_and_skips_the_per_event_call():
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}
+    fake = _FakeLiveClient(widget_status="live", has_milestone=True)
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.milestone_calls == []  # broad cache already had it - no per-event REST call needed
+    assert fake.live_datas_calls == [["ms-from-bulk-scan"]]
+
+
+def test_fetch_live_status_falls_back_to_per_event_call_when_broad_cache_misses():
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # cold cache - milestone_scan hasn't reached this event yet
+    fake = _FakeLiveClient(widget_status="live", has_milestone=True)
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.milestone_calls == ["EVT-A"]  # unchanged, pre-existing behavior
+
+
+def test_fetch_live_status_broad_cache_mixed_hit_and_miss_in_one_tick():
+    # Per-event granularity within a single tick's to_poll batch: one event
+    # already covered by the broad scan, the other not yet - only the miss
+    # should take the per-event REST fallback, and both ids still need to
+    # reach the single downstream batched get_live_datas call together.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}  # A hits, B doesn't
+    fake = _FakeLiveClient(widget_status="live", has_milestone=True)
+    markets = [
+        _market_at(offset_sec=-300, event_ticker="EVT-A"),
+        _market_at(offset_sec=-300, event_ticker="EVT-B"),
+    ]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live", "EVT-B": "live"}
+    assert fake.milestone_calls == ["EVT-B"]  # only the miss went through the per-event REST call
+    assert fake.live_datas_calls == [["ms-from-bulk-scan", "ms1"]]  # cached + freshly-fetched ids, batched together
 
 
 # --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
@@ -3496,3 +3626,19 @@ def test_pipeline_health_reports_every_background_scheduler(monkeypatch):
         assert key in body["settlement_resolver"]
     sr = body["settlement_resolver"]
     assert sr["dropped_total"] == sr["dropped_after_max_attempts"] + sr["skipped_non_binary_result"]
+
+
+def test_pipeline_health_exposes_the_me_pairing_gate_counter(monkeypatch):
+    """Final-review finding: mutual_exclusivity.me_pairing_stats() shipped
+    with zero callers outside its own tests, so the entry-gate fallback's
+    own "the catalog had no entry for this candidate" gap was unmeasurable
+    in production - against CLAUDE.md's "these properties fail silently:
+    measure them". Surfaced alongside strategy_engine's me_gate_stats as
+    its own key, since the two count different gates."""
+    monkeypatch.setattr(mutual_exclusivity, "_me_pairing_stats", {"me_pairing_unknown_total": 7})
+
+    body = client.get("/api/health/pipeline").json()
+
+    assert body["me_pairing_gate"] == {"me_pairing_unknown_total": 7}
+    # Still its own key, never folded into the other gate's counter.
+    assert "me_pairing_unknown_total" not in body["strategy_gates"]
