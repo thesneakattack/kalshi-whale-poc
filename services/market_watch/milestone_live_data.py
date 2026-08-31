@@ -129,15 +129,42 @@ def _no_live_outcome(details: dict) -> dict:
 # varies - `tabulation_status` is perfectly correlated with it in every
 # observed row (never independently empty/non-empty) and adds no extra
 # signal for this tri-state mapping. "Called" -> "finished" (a winner has
-# been decided). "Too Early to Call" -> "live" (ballots being counted, no
-# verdict yet). "Runoff" -> "live", NOT "finished" - deliberately
-# conservative: a single live pull cannot observe whether a race called
-# "Runoff" later transitions to "Called" once an actual runoff election
-# concludes, and live_status.py's `_LIVE_STATUS_TERMINAL` treats "finished"
-# as "never poll this event again" - wrongly marking a still-changing
-# event finished is a completeness failure (CLAUDE.md's data-plane HARD
-# RULE), wrongly leaving an actually-finished one as "live" just costs a
-# few extra polls on an already-rare state (7/410 sampled, 1.7%). ""
+# been decided). "Too Early to Call" -> "live" (ballots actively being
+# counted right now - genuinely in-play, the plain meaning of "live").
+#
+# "Runoff" -> None, NOT "live" and NOT "finished" (fix-round 1, task
+# review): the original "live" choice was justified only against
+# live_status.py's OWN polling completeness (a single live pull can't
+# observe whether "Runoff" later transitions to "Called" once a separate
+# future runoff election concludes, so mapping to "finished" would
+# permanently stop polling under `_LIVE_STATUS_TERMINAL` - genuinely a
+# completeness risk, CLAUDE.md's data-plane HARD RULE). What that
+# justification missed: `status` isn't only consumed by live_status.py's
+# own polling loop - it flows into `state["live_status"][event_ticker]`,
+# which becomes `is_live` in decision_bridge.py:88 and then
+# strategy_engine.py's evaluate(), where `is_live=True` BYPASSES real
+# entry-risk gates: the close_window_sec check (strategy_engine.py:~405),
+# the post-incident minimum-runway protection added for ROADMAP #1
+# (strategy_engine.py:~428-437, after 755 KXBTC15M whale signals fired in
+# the final 60 seconds of their market's life and 12/25 stop-losses fired
+# only after price had already gapped past the configured limit), the
+# special-market conservative gate (strategy_engine.py:~484), and the
+# longshot entry-threshold bonus removal (strategy_engine.py:~135). A race
+# called "Runoff" is the OPPOSITE of in-play: it's dead time between the
+# initial election and a separately-scheduled future runoff, not ballots
+# being actively counted (unlike "Too Early to Call", which genuinely is).
+# "live" was the wrong direction for that risk - it's the choice that
+# COULD silently relax real entry protections on a not-actually-live
+# market, where "finished" could only ever silently drop future polls.
+# None is the honest choice this module already uses elsewhere for
+# genuine uncertainty (see "missing key" below): not in
+# `_LIVE_STATUS_TERMINAL` (only {"finished", "closed"} are), so
+# live_status.py keeps polling this event on the normal cadence - zero
+# completeness loss, the original justification's actual concern - while
+# `is_live` correctly reads as False (decision_bridge.py's `== "live"`
+# check), so a runoff-pending race gets NORMAL entry-gate treatment
+# instead of the relaxed one, which is the safer failure direction if this
+# guess is ever wrong in either direction. ""
 # (empty string, the real pre-race shape: `candidates: {}`,
 # `reporting_percentage: "0.0"`) -> "none". A missing `race_call_status`
 # key entirely (the real "votehub-only" shape - `{"provider": "votehub",
@@ -160,7 +187,6 @@ def _no_live_outcome(details: dict) -> dict:
 _POLITICAL_RACE_STATUS = {
     "": "none",
     "Called": "finished",
-    "Runoff": "live",
     "Too Early to Call": "live",
 }
 

@@ -265,26 +265,30 @@ def test_esports_match_is_registered_not_left_on_the_default_path(monkeypatch):
 #
 # Status mapping into this app's tri-state ("none"/"live"/"finished",
 # matching live_status.py:216's schedule fallback - verified those exact
-# three lowercase string values at that line before reusing them):
+# three lowercase string values at that line before reusing them), plus
+# None for genuine uncertainty:
 #   "Called"            -> "finished" (a winner has been decided).
-#   "Too Early to Call" -> "live" (ballots being counted, no verdict yet).
-#   "Runoff"            -> "live", NOT "finished" - deliberately
-#                           conservative. This single live pull cannot
-#                           observe whether a race called "Runoff" later
-#                           transitions to "Called" once an actual runoff
-#                           election concludes (a genuinely separate,
-#                           later event this snapshot has no way to see).
-#                           live_status.py's `_LIVE_STATUS_TERMINAL` and
-#                           its "once genuinely confirmed, never poll this
-#                           event again" comment mean mapping "Runoff" to
-#                           "finished" would permanently stop polling an
-#                           event that might still change - a completeness
-#                           failure CLAUDE.md's data-plane HARD RULE treats
-#                           as strictly worse than the negligible cost of
-#                           continuing to poll an already-rare state
-#                           (7/410, 1.7%). Not a guess either way: "live"
-#                           is the choice that can't silently drop data if
-#                           wrong, "finished" could.
+#   "Too Early to Call" -> "live" (ballots actively being counted right
+#                           now - genuinely in-play).
+#   "Runoff"            -> None (fix-round 1, task review - was
+#                           originally "live", changed because `status`
+#                           doesn't only drive live_status.py's own
+#                           polling completeness, it flows into
+#                           decision_bridge.py's `is_live`, which BYPASSES
+#                           real strategy_engine.py entry-risk gates
+#                           (close_window_sec, the ROADMAP #1
+#                           minimum-runway protection, the special-market
+#                           gate, the longshot threshold bonus) when True.
+#                           A race called "Runoff" is dead time before a
+#                           separately-scheduled future runoff election,
+#                           the opposite of in-play - "live" was the wrong
+#                           direction for that risk. None isn't in
+#                           `_LIVE_STATUS_TERMINAL`, so polling continues
+#                           on the normal cadence (no completeness loss,
+#                           the original justification's actual concern)
+#                           while `is_live` correctly reads False. See the
+#                           full rationale in milestone_live_data.py's own
+#                           _POLITICAL_RACE_STATUS comment block.
 #   ""                  -> "none" (pre-race: `candidates` empty,
 #                           `reporting_percentage` "0.0" - the same "not
 #                           started yet" meaning every other type's "none"
@@ -325,12 +329,15 @@ def test_political_race_status_is_live_when_too_early_to_call():
     assert result == {"status": "live", "winner": None}
 
 
-def test_political_race_status_is_live_when_runoff_not_finished():
-    # Deliberately NOT "finished" - see the comment block above for why.
+def test_political_race_status_is_none_when_runoff_pending():
+    # Deliberately neither "live" nor "finished" - see the comment block
+    # above for why (fix-round 1: "live" bypassed real strategy_engine.py
+    # entry-risk gates via decision_bridge.py's is_live for a race that
+    # isn't actually in-play).
     result = mld.extract("political_race", {
         "race_call_status": "Runoff", "tabulation_status": "Vote Certified", "winner": "",
     })
-    assert result == {"status": "live", "winner": None}
+    assert result == {"status": None, "winner": None}
 
 
 def test_political_race_status_is_none_when_pre_race():
