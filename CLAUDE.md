@@ -46,6 +46,15 @@ A multi-stage planning pipeline (investigation/research → design/spec → impl
 - For an in-scope PR: after it's pushed and opened, one more full review cycle of the same shape (self-review, adversarial review, consolidation, each its own artifact) runs against the PR as submitted before `gh pr merge` runs. `.claude/rules/branching-and-ci.md`'s "read the PR body before merging" step is a floor, not a substitute for this cycle.
 - This stacks on top of a skill's own review checkpoints (`writing-plans`, `executing-plans`, `requesting-code-review`) — it never justifies skipping them, and never justifies weakening any safety gate to move faster.
 
+## HARD RULE — dimensional analysis on any arithmetic (permanent, 2026-08-31)
+
+Any arithmetic, unit conversion, or numeric derivation gets a `dimensional-analysis` pass (the `dimensional-analysis@trailofbits` plugin — installed separately from, and not part of, `superpowers`) before being trusted, not only money/probability math. Permanent: broadens "A displayed value must match its label" below to every quantity with a unit or scale, not a replacement for it.
+
+- Covers money and probability (the original trigger) plus contract counts, percentages, timestamps/latency, batch sizes, cache TTLs, retry budgets, rate limits, and any other value with a unit, scale, or fixed-point representation.
+- Applies to code being written or edited in a task's scope; not retroactive busywork on unchanged arithmetic outside that scope.
+- A displayed or persisted value's dimension is traced to its backend definition, never re-derived client-side or assumed from a variable name.
+- `dimensional-analysis` is unit/scale annotation and consistency checking, not a numeric engine; for non-trivial arithmetic, the Wolfram MCP server (`mcp__claude_ai_Wolfram__WolframLanguageEvaluator`/`WolframAlpha`) is available to numerically verify a formula's actual result — optional, not required.
+
 ## Standing goal (2026-08-26) and current objective (2026-08-23)
 
 - Destination: a personal-use, real-money trading system — reached only through ROADMAP.md "Path to production"; several items there are human decisions (position sizes, kill-switch numbers, sports-category legal exposure, auth model, deployment target), not commits.
@@ -103,7 +112,7 @@ def _connect() -> sqlite3.Connection:
 
 ## A displayed value must match its label
 
-- Trace every displayed financial figure to its backend definition (`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`); expose backend-computed fields rather than re-deriving client-side. Two shipped bugs of this shape: the no-side `1 - price` inversion and `equity - starting_bankroll` labeled as unrealized P&L. Run `dimensional-analysis` after any money/probability math.
+- Trace every displayed financial figure to its backend definition (`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`); expose backend-computed fields rather than re-deriving client-side. Two shipped bugs of this shape: the no-side `1 - price` inversion and `equity - starting_bankroll` labeled as unrealized P&L; run `dimensional-analysis` per the HARD RULE above.
 
 ## Workflow/tooling and application code never overlap
 
@@ -129,7 +138,7 @@ def _connect() -> sqlite3.Connection:
 - Process is `superpowers:*` — brainstorming, writing-plans, executing-plans (numbered plans under `docs/superpowers/plans/` included), test-driven-development, systematic-debugging for any bug, verification-before-completion before "done", requesting-code-review, using-git-worktrees. Project skills are only `/run`, `/checkpoint`, `/kalshi-contract-review`, `/kanban-board-sync`, `/close-roadmap-item`, `/config-field-edit`; never add one that duplicates a plugin.
 - GitNexus is pinned: `npx gitnexus@1.6.10`, never `@latest` — an in-place upgrade under a running MCP server breaks every query until sessions restart (2026-08-28). `impact`/`context`/`trace` before multi-file edits to strategy, risk, advisory, calibration, kalshi client, or shared state (R4 asks once per session). Its Claude Code hooks stay installed (`npx gitnexus@1.6.10 setup -c claude`, user-run) and their staleness nudge advertises `@latest` — ignore that string, it contradicts the pin above; `orient.sh` reports index staleness; `/checkpoint` re-analyzes after a merge. It never walks dot-directories (`dot: false` in its walker; no `.gitnexusignore` rule can reach them), so `.claude/hooks/` is covered by `tests/`, not by the graph. If two unrelated symbols return the same impact set, the index is corrupt — `npx gitnexus@1.6.10 clean` then `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=67108864 npx gitnexus@1.6.10 analyze --force --skip-agents-md` (the raised WAL threshold is what got the 2026-08-25 rebuild past the checkpoint error that corrupted it); never reason from it.
 - MCP servers: `gitnexus` is declared in the repo's `.mcp.json` at the pinned version (that file is the pin the harness actually launches; `tests/test_mcp_and_plugin_wiring.py` fails if it drifts from the version stated here). `github` stays in user config — it is cross-project and carries a personal token, which a committed file must never hold. Plugins are enabled/disabled in `.claude/settings.json`'s `enabledPlugins`.
-- `dimensional-analysis` after any cents/dollars/probability/contracts/P&L math; chrome-devtools MCP for browser evidence (`https://kalshi-whale-poc.ddev.site:8443`); context7 for FastAPI/Pydantic/asyncio docs, never for Kalshi; 42crunch and second-opinion are blocked (no account) and therefore disabled in `enabledPlugins` — re-enable there if an account ever exists; an enabled-but-unreachable plugin advertises skills that always fail.
+- `dimensional-analysis` per the HARD RULE above (any arithmetic/unit math, not just money); chrome-devtools MCP for browser evidence (`https://kalshi-whale-poc.ddev.site:8443`); context7 for FastAPI/Pydantic/asyncio docs, never for Kalshi; 42crunch and second-opinion are blocked (no account) and therefore disabled in `enabledPlugins` — re-enable there if an account ever exists; an enabled-but-unreachable plugin advertises skills that always fail.
 - Prefer proven installed plugins/MCP servers/skills/commands over handspun equivalents; a handspun tool defaults to disabled until its own run history proves real value, not merely error-free operation (2026-08-30, reversing the prior blanket "never retire" stance after `tools/kanban_sync` and `guard_workflow.py` both caused real incidents the same night).
 
 ## Quick file map
