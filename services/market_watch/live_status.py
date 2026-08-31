@@ -290,6 +290,33 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
         elif et in has_milestone and et not in no_live_status_type:
             status = "none" if now < event_occ_ts[et] else "live"
             source = "schedule"
+        elif et in no_live_status_type:
+            # Bug found in review (kalshi-category-data-completeness Task
+            # 6): this branch used to fall through to the bare `else:
+            # continue` below, which never writes `cache[et]` at all - and
+            # to_poll.sort() above (oldest-checked_at-first, missing
+            # defaults to 0.0) means a never-cached event always sorts to
+            # the very front. A milestone's `type` never changes, so a
+            # company_report/truflation/... event would win the front of
+            # _LIVE_STATUS_MAX_POLL_PER_TICK's batch on every single tick
+            # forever, permanently starving genuinely due-for-repoll live
+            # events out of the bounded per-tick budget - the exact
+            # tick_duration-plateau shape the 2026-08-15 incident (see this
+            # constant's own comment above) already happened once from an
+            # unrelated cause. `status=None` here is not "unknown" (that's
+            # the bare `else` below, for no-milestone-at-all events) - it's
+            # an explicit, already-part-of-this-dict's-documented-contract
+            # negative confirmation (services/app_state.py:192's own
+            # `"live_status": {}, # event_ticker -> "live" | "finished" |
+            # "none" | None` comment already lists `None` as a legitimate
+            # value, and every known reader - whale_simulator.py's `==
+            # "live"`, strategy_engine.py's own "None/False means not
+            # currently live" docstring - already treats it as "not live",
+            # not as a crash risk), written through the SAME cache/result
+            # path as every other branch here so it participates in the
+            # normal `_LIVE_STATUS_REPOLL_SEC` cadence instead of a new,
+            # unrequested caching tier.
+            status, source = None, "no_live_status_type"
         else:
             continue  # not a milestone-tracked event type - no basis to infer anything
         cache[et] = {"status": status, "checked_at": now, "source": source}

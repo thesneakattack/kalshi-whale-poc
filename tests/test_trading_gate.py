@@ -1619,7 +1619,13 @@ def test_fetch_live_status_returns_none_for_a_settlement_input_type():
 
     markets = [_market_at(offset_sec=-300)]
     result = asyncio.run(main._fetch_live_status(_FakeReportClient(), markets))
-    assert result == {}  # extract() returns status=None for company_report -> no confirmed entry
+    # status=None (not "live") - explicit negative confirmation, not the
+    # bare-absent-key "no milestone at all" case (see
+    # services/app_state.py:192's own "live_status" dict contract, which
+    # already lists None alongside "live"/"finished"/"none" as a value every
+    # known reader treats as "not live", e.g. whale_simulator.py's `== "live"`).
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "no_live_status_type"
 
 
 def test_fetch_live_status_polls_a_new_event_with_no_cache():
@@ -1869,7 +1875,58 @@ def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
 
     markets = [_market_at(offset_sec=-300)]
     result = asyncio.run(main._fetch_live_status(_FakeBroadCacheReportClient(), markets))
-    assert result == {}  # not "live" via extract(), and not "live" via the schedule fallback either
+    # Not "live" via extract(), and not "live" via the schedule fallback
+    # either - status=None, same explicit-negative-confirmation contract as
+    # the needs_fetch path's equivalent test above.
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "no_live_status_type"
+
+
+def test_fetch_live_status_no_live_status_type_does_not_permanently_starve_poll_budget():
+    # Bug found in review, before this fix: the no_live_status_type branch
+    # `continue`d without ever writing cache[et], so its checked_at stayed
+    # at to_poll.sort()'s 0.0 default forever. A milestone's `type` never
+    # changes, so a company_report/truflation/... event would win the front
+    # of _LIVE_STATUS_MAX_POLL_PER_TICK's bounded batch on EVERY tick,
+    # permanently starving genuinely due-for-repoll live events out of the
+    # per-tick budget - the same tick_duration-plateau shape the 2026-08-15
+    # incident this file's own _LIVE_STATUS_MAX_POLL_PER_TICK comment
+    # describes. Proves checked_at actually advances across ticks instead,
+    # participating in the normal _LIVE_STATUS_REPOLL_SEC cadence.
+    main.state["live_status_cache"].clear()
+
+    class _FakeReportClient:
+        async def get_milestones_for_event(self, event_ticker):
+            return [{"id": "ms1", "type": "company_report"}]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    fake = _FakeReportClient()
+    markets = [_market_at(offset_sec=-300)]
+
+    asyncio.run(main._fetch_live_status(fake, markets))
+    entry = main.state["live_status_cache"]["EVT-A"]
+    assert entry["status"] is None
+    assert entry["source"] == "no_live_status_type"
+    first_checked_at = entry["checked_at"]
+
+    # Not yet due for repoll - the bare bug fix alone (writing SOME cache
+    # entry) isn't enough on its own to prove starvation is fixed; this
+    # confirms it's the SAME repoll-gated cadence as every other status,
+    # not a re-poll-every-tick regression in the other direction.
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["checked_at"] == first_checked_at
+
+    # Once stale (past _LIVE_STATUS_REPOLL_SEC), it must actually get
+    # re-polled and checked_at bumped forward - the real regression check:
+    # before the fix, checked_at would still read 0.0-derived/never-updated
+    # here, and to_poll.sort() would have kept placing this event first on
+    # every tick regardless of how long ago it was last (not) cached.
+    main.state["live_status_cache"]["EVT-A"]["checked_at"] = time.time() - main._LIVE_STATUS_REPOLL_SEC - 1
+    asyncio.run(main._fetch_live_status(fake, markets))
+    assert main.state["live_status_cache"]["EVT-A"]["checked_at"] > first_checked_at
 
 
 # --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
