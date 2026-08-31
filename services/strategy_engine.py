@@ -324,9 +324,17 @@ class FollowTheWhaleStrategy:
         me_complement (2026-08-14 direct request): the other ticker in a
         confirmed 2-outcome mutually-exclusive pair (services/
         mutual_exclusivity.py), when signal.ticker is one half of one -
-        main.py resolves this once per tick from already-fetched
-        state["markets"]/state["event_titles"], zero new API calls. When
-        given and a position is already open on that complement ticker,
+        resolved by decision_bridge.py's _handle_signal from TWO sources,
+        tried in order (2026-08-30, entry-gate-me-pairing-and-netting-
+        remediation): first the once-per-tick state["me_pairs"] (built from
+        the narrow, watchlist-scoped markets list - main.py, zero new API
+        calls), then, when that finds nothing, a per-signal fallback
+        (mutual_exclusivity.find_open_confirmed_conflict) reading the
+        broad, persisted market_titles/event_titles catalog against the
+        LIVE strategy.broker.positions - not a periodic snapshot, so it has
+        no tick-cadence staleness window. This method itself doesn't care
+        which source produced the value; it only checks membership below.
+        When given and a position is already open on that complement ticker,
         this signal is skipped - holding both halves of a genuine 2-way
         matchup (e.g. yes on "Team A to win" AND yes on "Team B to win")
         is a real offsetting-bet risk, the same "betting against yourself"
