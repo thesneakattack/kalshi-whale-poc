@@ -505,6 +505,27 @@ def test_get_structured_targets_skips_an_id_kalshi_does_not_return(monkeypatch):
     assert result == {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
 
 
+def test_get_structured_targets_tolerates_a_null_response_field(monkeypatch):
+    # Regression (fix-round 1, task review): GetStructuredTargetsResponse.
+    # structured_targets is genuinely Optional (required=False), unlike
+    # GetMarketsResponse.markets/GetLiveDatasResponse.live_datas (both
+    # required=True) - confirmed via direct model_fields introspection. An
+    # all-miss chunk of ids Kalshi doesn't recognize can come back with
+    # this field null; `for t in None:` would raise TypeError, which
+    # propagates out of this call site's real caller
+    # (catalog_scan.propagate_milestone_winners) and lands in that
+    # function's own broad try/except - silently aborting the entire
+    # tick's winner propagation, not just this one chunk's resolution.
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        return type("R", (), {"structured_targets": None})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-all-miss"]))
+    assert result == {}
+
+
 def test_get_series_fee_changes_recovers_every_entry_even_with_an_unmodeled_fee_type(monkeypatch):
     # The concrete failure mode the raw-fetch fix above exists to avoid:
     # a fee_type value the installed SDK's FeeType enum doesn't recognise

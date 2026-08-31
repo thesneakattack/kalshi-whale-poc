@@ -226,7 +226,21 @@ class KalshiPublicGateway:
             resp = await call_with_backoff(
                 self._client.get_structured_targets, ids=chunk, page_size=len(chunk),
             )
-            for t in resp.structured_targets:
+            # resp.structured_targets is genuinely Optional (fix-round 1,
+            # task review) - unlike get_markets_by_tickers'/get_live_datas'
+            # own response models (`markets`/`live_datas` are both
+            # `required=True`, confirmed via direct model_fields
+            # introspection), GetStructuredTargetsResponse.structured_targets
+            # is `Optional[List[StructuredTarget]]`, `required=False` - a
+            # chunk of ids Kalshi doesn't recognize (an all-miss chunk) can
+            # come back with this field null, and `for t in None:` would
+            # raise TypeError. That exception would propagate out of this
+            # call site's caller (catalog_scan.propagate_milestone_winners),
+            # landing in that function's own broad try/except - silently
+            # aborting the ENTIRE tick's winner propagation for every event
+            # being processed, not just structured-target resolution (the
+            # data-plane completeness HARD RULE's exact failure shape).
+            for t in (resp.structured_targets or []):
                 d = t.model_dump(mode="json")
                 if d.get("id"):
                     out[d["id"]] = d

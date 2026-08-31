@@ -234,10 +234,15 @@ state = {
     # above (in-memory only here, not persisted to a *.db - the structured-
     # target universe is far smaller and cheaper to re-learn from a cold
     # start than the ~9,400-series catalog series_cache below justifies a
-    # dedicated file for) and series_metadata/series_tags (services/
-    # series_cache.py, Task 1 of this same plan) - see
-    # propagate_milestone_winners' own resolution step for the incremental
-    # fetch-only-the-missing-ids logic.
+    # dedicated file for). NOT series_metadata/series_tags (services/
+    # series_cache.py, Task 1 of this same plan) - fix-round 1, task
+    # review, corrected: that cache actually lives inside
+    # _get_series_cache's own _SERIES_CACHE_TTL_SEC-gated WHOLE-set
+    # refresh (catalog_scan.py:294 - re-fetches and re-upserts every one
+    # of Kalshi's ~9,400 volumed series on each TTL expiry), the same
+    # TTL+whole-refresh shape as category_metadata, not this cache's
+    # incremental one - see propagate_milestone_winners' own resolution
+    # step for the real fetch-only-the-missing-ids logic this cache uses.
     "structured_targets_cache": {},
     # Decouples _check_signal_resolutions from the main poll_interval_sec
     # trading-tick cadence (2026-08-15 direct instruction) - see that
