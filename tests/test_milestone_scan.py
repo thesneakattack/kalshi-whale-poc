@@ -70,6 +70,19 @@ def test_scan_first_call_passes_no_watermark_then_advances_it():
     assert state["milestone_scan"]["watermarks"]["Sports"] > 0
 
 
+def test_scan_advances_the_watermark_short_of_scan_started_at_not_to_it(monkeypatch):
+    # Self-review finding: docs/kalshi/get-milestones.md documents
+    # min_updated_ts as "updated AFTER this timestamp" - exclusive. Advancing
+    # exactly to scan_started_at would let a milestone updated in that same
+    # second, but not returned by this cycle's in-flight request, be
+    # permanently skipped once the next cycle's min_updated_ts equals it.
+    fixed_now = 2_000_000_000
+    monkeypatch.setattr(milestone_scan.time, "time", lambda: fixed_now)
+    client = _FakeMilestoneClient({"Sports": []})
+    asyncio.run(milestone_scan._scan_milestone_batch(client, _cfg(["Sports"])))
+    assert state["milestone_scan"]["watermarks"]["Sports"] == fixed_now - milestone_scan._WATERMARK_OVERLAP_SEC
+
+
 def test_scan_passes_each_categorys_own_watermark_on_the_next_cycle():
     client = _FakeMilestoneClient({"Sports": [], "Politics": []})
     state["milestone_scan"]["watermarks"] = {"Sports": 111, "Politics": 222}

@@ -52,6 +52,17 @@ _PRICE_SUM_TOLERANCE = 0.02
 # entry for the candidate", that one is "the special-market gate could not
 # verify mutually_exclusive at all". Read them side by side at
 # GET /api/health/pipeline (both are surfaced there), never as one number.
+#
+# Reading this number (self-review finding, 2026-08-30): decision_bridge.py
+# calls find_open_confirmed_conflict unconditionally on EVERY whale signal,
+# most of which are on ordinary markets that were never going to be part of
+# a mutually-exclusive pair at all - they just haven't reached market_titles
+# yet (an unrelated catalog-scan-lag question, not this gate's own blind
+# spot). At full signal volume this counter is therefore dominated by that
+# ordinary lag, not by ME-pairing-specific uncertainty - a rising count
+# mostly says "catalog coverage is behind," not "the ME gate can't do its
+# job." Real ME-pairing blindness is better read as a RATE against total
+# confirmed-ME-event signal volume than as this counter's raw magnitude.
 _me_pairing_stats = {"me_pairing_unknown_total": 0}
 
 
