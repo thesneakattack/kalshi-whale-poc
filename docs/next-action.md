@@ -14,6 +14,30 @@ trivial one. Do that (each pass its own PR comment, per the rule), then
 
 ## Recently resolved (2026-08-31, this session)
 
+- PR #308 merged: `POST /api/backup/run`'s manual trigger had zero
+  concurrency guard against the periodic scheduler
+  (`_maybe_run_backup`/`_maybe_run_large_backup`), unlike the scheduler's own
+  `state["backup"/"backup_large"]["running"]` self-guard. Found live: a
+  peer session's manual large-tier trigger (part of PR #302's Task 5
+  verification, above) landed during a `uvicorn --reload` cold-start window
+  and raced the scheduler's own cold-start reseed, producing two
+  independent, fully redundant ~27GB `series_watcher.db`/`candidate_log.db`/
+  `market_history.db` snapshots 26 seconds apart — 54GB on disk for one
+  logical backup. Fixed with `backup.run_backup_now()`, an atomic
+  check-and-set (no `await` between the `running` check and the set) now
+  shared by the manual route for all three tiers, raising
+  `BackupAlreadyRunningError` -> HTTP 409 on collision. Full review cycle
+  run (self-review, independent adversarial-review Agent call against the
+  diff, a second independent adversarial pass against the pushed PR itself)
+  — the first adversarial pass caught a real gap (the `tier=all` path could
+  silently drop a completed regular-tier result behind a bare 409 if only
+  the large tier collided), fixed and re-verified before merge. CI green,
+  merged, branch deleted. The duplicate 27GB snapshot
+  (`data/backups_large/20260831T055419Z`) was deleted from disk separately
+  (with explicit confirmation, since the classifier flags `rm -rf` as
+  destructive) — the surviving snapshot (`20260831T055445Z`, `backup_runs`
+  id 72) is intact and is what `/api/backup/status` already reported as
+  `last_run`.
 - Two new permanent CLAUDE.md HARD RULEs merged: "nothing advances on one
   pass" (PR #304 — self-review/adversarial-review/consolidation gates every
   planning-stage handoff and PR merge) and the PR/commit task-list-grep
