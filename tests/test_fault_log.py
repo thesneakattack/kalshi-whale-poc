@@ -113,6 +113,7 @@ def test_logging_never_raises_even_on_a_broken_store(monkeypatch, tmp_path):
     assert fl.record("m", "op", _boom()) is False
     assert fl.record_fault("m", "op", "msg") is False
     assert fl.recent() == []
+    assert fl.prune(retention_hours=336) == 0
 
 
 def test_oversized_message_and_traceback_are_bounded():
