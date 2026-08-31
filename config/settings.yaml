@@ -11,6 +11,16 @@ kalshi:
     KXBTC15M: 0
   categories:
   - Sports
+  - Crypto
+  - Climate and Weather
+  - Entertainment
+  - Economics
+  - Politics
+  - Mentions
+  - Commodities
+  - Financials
+  - Science and Technology
+  - Elections
   live_markets_only: true
   poll_interval_sec: 6
   # P8 Task 39: applies only in streaming mode (_streaming_trade_tape_enabled()),
@@ -56,7 +66,7 @@ strategy:
   special_market_min_seconds_to_close: 120
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
-  min_unit_cost: 0.5
+  min_unit_cost: 0.35
   max_unit_cost: 0.9
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 20
@@ -128,6 +138,30 @@ whale_watcher_kalshi:
     KXTRUMPSAY: 500
     KXTRUMPMENTION: 500
     KXMAMDANIMENTION: 500
+# depth_factor/unusualness_factor/proximity_factor floored at the shared
+# minimum (0.0404) since 2026-08-10's first real calibration run found
+# unusualness_factor/agreement_factor negative. SUPERSEDED 2026-08-30: a
+# deeper factor-by-factor audit (docs/superpowers/research/2026-08-30-
+# whale-confidence-weights-factor-audit.md, worktree-agent-a5110e2d3016b26a8)
+# found the raw tertile-discrimination numbers this file previously quoted
+# were mostly measurement artifacts, not real findings - do not re-derive
+# weights from a bare gap_pts number without reading that doc first.
+# depth_factor's gap is ~40% a zero-24h-volume denominator bug (real gap
+# -28.6 -> -17.4 controlled); unusualness_factor's gap is a mathematical
+# identity (price already calibrates outcomes; the factor is a non-monotone
+# function of that same price, un-measurable by tertile bucketing in either
+# direction - do NOT invert it); proximity_factor's gap is mostly a tied-
+# at-zero artifact acting as a KXBTC15M series proxy (real gap -3.7, not
+# -20.4); context_factor's +24.9 is over half the SAME zero-volume artifact
+# as depth_factor, inverted (+11.0 controlled) - `suggested_weights`
+# proposing 0.34 for it would harden that artifact into production, not
+# fix anything; trend_factor's true effect is LARGER than its reported gap
+# because the calibration tool's own tie-detection guard misses a 64.2%-
+# tied mode, not smaller. agreement_factor's 2026-08-10 negative finding
+# has flipped positive (+12.0pt, still real) and is not re-floored here
+# pending a human decision (docs/open-decisions.md). Do not trust this
+# module's gap_pts output on any factor until that measurement-instrument
+# bug is fixed - it is upstream of every weight decision made from it.
 whale_confidence_weights:
   depth_factor: 0.0404
   unusualness_factor: 0.0404
