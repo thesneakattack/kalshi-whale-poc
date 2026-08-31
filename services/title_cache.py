@@ -266,3 +266,35 @@ def fee_override_for_ticker(ticker: str) -> tuple[str | None, float | None]:
             (ticker,),
         ).fetchone()
     return (row[0], row[1]) if row else (None, None)
+
+
+def series_ticker_for(ticker: str) -> str | None:
+    """The real series_ticker `ticker`'s market belongs to
+    (market_titles.event_ticker -> the matching event_titles row's
+    series_ticker column) - a single indexed join, same shape as
+    fee_override_for_ticker() above, one hop further.
+
+    docs/kalshi/terms.md:29: "There are occasional exceptions [to the
+    Series -> Event -> Market ticker convention], so do not parse ticker
+    strings to infer relationships. Best practice is to use the series,
+    event, market, and search endpoints and rely on fields like
+    series_ticker, event_ticker...". docs/kalshi/get-market.md documents
+    a market's own event_ticker field; docs/kalshi/get-events.md documents
+    an event's own series_ticker field - this is exactly that chain,
+    already persisted by save_market_titles()/save_event_titles() from
+    every get_market()/get_event() response, nothing new fetched here.
+
+    None when the market isn't cached yet, its event isn't cached yet, or
+    the event's series_ticker column is empty/null (e.g. the event row was
+    saved before required_event_fields' series_ticker fetch existed) -
+    services/signal_log.py::series_of() is the only caller and falls back
+    to its own ticker-prefix heuristic in every one of those cases, never
+    guessing a series here."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT et.series_ticker FROM market_titles mt "
+            "JOIN event_titles et ON et.event_ticker = mt.event_ticker "
+            "WHERE mt.ticker = ?",
+            (ticker,),
+        ).fetchone()
+    return row[0] if row and row[0] else None

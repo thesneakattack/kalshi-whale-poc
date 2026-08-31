@@ -27,6 +27,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import title_cache
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "signal_log.db"
 
 
@@ -150,15 +152,30 @@ def _connect() -> sqlite3.Connection:
 
 
 def series_of(ticker: str) -> str:
-    """Kalshi tickers encode a series/category prefix before the first hyphen
-    (e.g. "KXOSCARBESTPICTURE-26-..."). Grouping by it is a best-effort proxy
-    for "this recurring type of market" — good enough for "how have whales done
-    on Oscar-type predictions", not a guarantee every prefix is one clean topic.
-    Public (not underscore-prefixed) since strategy_engine.py's manual
-    excluded_series gate needs the exact same series definition the
-    automatic win-rate filter already uses — one definition, not two that
-    could quietly drift apart."""
-    return ticker.split("-")[0] if ticker else ticker
+    """Real series_ticker via title_cache's market_titles -> event_titles join
+    when resolvable (services/title_cache.py:series_ticker_for) - the market's
+    own documented event_ticker/series_ticker chain (docs/kalshi/get-market.md,
+    get-events.md), never the ticker-string prefix. Falls back to the prefix
+    heuristic ONLY for a ticker this app hasn't cached an event for yet - the
+    general case this used to be, now the exception. Public (not
+    underscore-prefixed) since strategy_engine.py's manual excluded_series
+    gate needs the exact same series definition the automatic win-rate filter
+    already uses - one definition, not two that could quietly drift apart.
+
+    2026-08-30 fix (kalshi-category-data-completeness Task 3): the old
+    ticker.split("-")[0] mis-derived MVE/sharded tickers like
+    "KXMVECROSSCATEGORY0-SHARD1" as their own series instead of the real
+    "KXMVECROSSCATEGORY0" (docs/kalshi/CHEATSHEET.md). Pre-cutover
+    signals.series rows are NOT backfilled - measured coverage for the
+    join against historical MVE/sharded tickers is 0 of 12,357 tickers
+    (see the design spec's §1.4 "Correction, found in design review"), so a
+    backfill would rewrite accumulated history (CLAUDE.md) for zero actual
+    gain; old and new rows simply disagree for that minority going forward,
+    a known, named accounting seam, not a bug to chase further."""
+    if not ticker:
+        return ticker
+    real = title_cache.series_ticker_for(ticker)
+    return real or ticker.split("-")[0]
 
 
 def log_signal(

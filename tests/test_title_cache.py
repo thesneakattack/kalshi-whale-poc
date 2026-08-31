@@ -188,6 +188,37 @@ def test_fee_override_for_ticker_is_none_none_when_market_cached_but_event_is_no
     assert cache.fee_override_for_ticker("TICK-B") == (None, None)
 
 
+# --- series_ticker_for() - the ticker -> event -> real series_ticker join --
+# (kalshi-category-data-completeness Task 3: services/signal_log.py's
+# series_of() used to derive a market's series by splitting the ticker
+# string on the first hyphen - docs/kalshi/terms.md:29 says not to parse
+# ticker strings at all and to use the documented series_ticker/event_ticker
+# fields instead. This is the same single indexed join as
+# fee_override_for_ticker() above, one hop further: market_titles.ticker ->
+# event_ticker -> event_titles.series_ticker.)
+
+
+def test_series_ticker_for_resolves_via_market_and_event_titles(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({"MKT-A": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
+                                          "event_ticker": "EVT-A"}})
+    cache.save_event_titles({"EVT-A": {"series_ticker": "REAL-SERIES"}})
+    assert cache.series_ticker_for("MKT-A") == "REAL-SERIES"
+
+
+def test_series_ticker_for_returns_none_when_market_uncached(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    assert cache.series_ticker_for("UNSEEN-TICKER") is None
+
+
+def test_series_ticker_for_returns_none_when_event_series_ticker_is_null(tmp_path, monkeypatch):
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({"MKT-B": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
+                                          "event_ticker": "EVT-B"}})
+    cache.save_event_titles({"EVT-B": {}})  # event cached, series_ticker never populated
+    assert cache.series_ticker_for("MKT-B") is None
+
+
 def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, monkeypatch):
     # data/title_cache.db is a live file (CLAUDE.md) - simulates an
     # existing table from before this column existed, confirming the
