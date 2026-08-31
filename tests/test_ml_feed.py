@@ -32,3 +32,20 @@ def test_build_context_snapshot_is_json_serializable():
     import json
     snapshot = ml_feed.build_context_snapshot({}, {}, {}, [], {}, {})
     json.dumps(snapshot)  # must not raise
+
+
+def test_build_context_snapshot_includes_candlestick_volatility_when_provided():
+    snapshot = ml_feed.build_context_snapshot(
+        cfg={}, portfolio={}, market_snapshot={}, trade_history_rows=[],
+        whale_track_record={}, advisory={},
+        candlestick_volatility={"TICK-A": 0.0123},
+    )
+    assert snapshot["candlestick_volatility"] == {"TICK-A": 0.0123}
+
+
+def test_build_context_snapshot_defaults_candlestick_volatility_to_empty_dict_when_omitted():
+    snapshot = ml_feed.build_context_snapshot(
+        cfg={}, portfolio={}, market_snapshot={}, trade_history_rows=[],
+        whale_track_record={}, advisory={},
+    )
+    assert snapshot["candlestick_volatility"] == {}

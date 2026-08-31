@@ -30,6 +30,7 @@ def build_context_snapshot(
     trade_history_rows: list[dict],
     whale_track_record: dict,
     advisory: dict,
+    candlestick_volatility: dict | None = None,
 ) -> dict:
     """Assembles one JSON-serializable bundle. Each argument is the exact
     shape an existing endpoint/service already produces - nothing here
@@ -66,4 +67,5 @@ def build_context_snapshot(
         "trade_history": trade_history_rows,
         "whale_track_record": whale_track_record,
         "advisory": advisory,
+        "candlestick_volatility": candlestick_volatility or {},
     }
