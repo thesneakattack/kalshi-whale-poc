@@ -10,17 +10,33 @@ current time is well before 16:11 UTC; nothing else blocking right now.)
 **Leave alone — active peer-session work, not ready for anything:**
 - `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
   13 commits ahead of `main`, no PR yet).
-- `autotrade-79` is fixing the `data/fault_log.db` storage-growth warning
-  (below): `services/fault_log.py` has no retention/prune, unlike every
-  sibling capture-store module — confirmed root cause. Claimed
-  `services/fault_log.py` and `main.py`'s `_maybe_prune_capture_stores`;
-  working in a new worktree, will open its own PR. Don't touch either file.
 - `autotrade-29` is progressing docs-only planning PRs to just-prior-to-
   implementation (David's task) and is closing PR #310 as superseded by
   #312 (see below) — no action needed from you on that.
 
 ## Recently resolved (2026-08-31, this session)
 
+- **PR #313 merged** (`data/fault_log.db` storage-growth fix, by
+  `autotrade-79`): added `services/fault_log.py`'s `prune(retention_hours,
+  now=None) -> int`, wired into `main.py`'s hourly
+  `_maybe_prune_capture_stores` sweep, `fault_log.retention_hours: 336`
+  (14d, matching `observability`'s window) in `config/settings.yaml` — the
+  one capture store missing from that sweep, root-caused via
+  systematic-debugging (ruled out `capture_writer`'s lock-contention bug,
+  issue #211, first: its counters are zero for the live process). Full
+  review cycle run; independent adversarial review found and fixed a real
+  defect (`prune()` didn't wrap its `DELETE`, violating the module's own
+  "never raises, ever" contract — fixed in `b300a51`) and caught a false
+  Test Plan claim ("`quality_audit --strict` exits 0" — actually exits 1,
+  due to 4 pre-existing unrelated `config-unread:*` warnings on `main`, not
+  a regression; corrected in the PR body). CI green, merged, branch deleted.
+  Also cleaned up two dead worktrees left over from earlier in this session:
+  `fault-log-retention` (this PR, root-owned files needed `ddev exec -s
+  fastapi rm -rf` before `git worktree prune` would take) and
+  `entry-gate-netting-remediation` (PR #303, same root-owned-files issue;
+  its local branch pointer was also `git branch -d`-deleted since the
+  remote was already gone). A `pr-303-review` local branch of unclear
+  provenance was left alone.
 - **PR #303 merged** (watermark boundary gap, stale docstring, misleading
   metric comment — PR #298 follow-up). Full self-review → independent
   adversarial-review Agent call → consolidation cycle run first; the
@@ -29,10 +45,8 @@ current time is well before 16:11 UTC; nothing else blocking right now.)
   on EVERY whale signal" — false, it's short-circuited by the `me_pairs`
   fast path; fixed in commit `e209c94` before merging, CI re-confirmed
   green). Remote branch deleted; the local worktree
-  `.claude/worktrees/entry-gate-netting-remediation` was left untouched
-  (a live peer session was using it) — still on the pre-merge commit,
-  needs `scripts/cleanup-worktrees.sh` or a manual sync once that session
-  is done with it.
+  `.claude/worktrees/entry-gate-netting-remediation` was cleaned up later
+  this session (see the PR #313 entry above) once it was confirmed idle.
 - **PR #307 merged**: broadened CLAUDE.md's `dimensional-analysis` HARD RULE
   from money/probability math only to any arithmetic/unit conversion/numeric
   derivation; confirmed (not from memory) that `dimensional-analysis` is a
@@ -130,9 +144,6 @@ current time is well before 16:11 UTC; nothing else blocking right now.)
   (PR #263, merged docs-only) — temperature-market settlement-edge ingestion
   via Kalshi's `GET /live_data/weather/{city}`. Stops at the spec per the
   brainstorming skill's own gate until reviewed; opens a new market category.
-- `data/fault_log.db` storage-growth warning in `/api/quality/summary`
-  (221184 -> 761856 bytes over 23.8h, >=2.0x) — root cause confirmed and
-  being fixed by `autotrade-79` (see "Leave alone" above); don't duplicate.
 - **Needs your go-ahead, not a session's:** `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`'s
   FINAL VERDICT recommends piloting 4 official `claude-plugins-official`
   plugins in priority order (`pr-review-toolkit`, `claude-security`,
