@@ -47,6 +47,7 @@ CALLER_CLASSES: tuple[str, ...] = (
     # rest-passthrough.md's "Rate limit" section) - its own class so that
     # cost is visible on its own rather than folded into an unrelated
     # background bucket.
+    "background_candlestick_volatility",  # candlestick-history refresh for the volatility comparison feature
     "other",
 )
 _caller_class_var: contextvars.ContextVar[str] = contextvars.ContextVar("kalshi_rest_caller_class", default="other")
