@@ -275,6 +275,7 @@ state = {
     # above, for services/backup/backup.py's periodic data/*.db snapshot -
     # see _maybe_run_backup.
     "backup": {"running": False, "last_started_at": 0.0, "task": None},
+    "backup_large": {"running": False, "last_started_at": 0.0, "task": None},
     # services/observability/observability.py's maybe_capture() interval
     # gate - restart-safe the same way backup's own last_started_at is (see
     # that module's README.md): seeded from the most recently persisted
