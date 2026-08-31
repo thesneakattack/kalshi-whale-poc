@@ -58,13 +58,19 @@ one strangler-safe commit at a time, with every guard CI-owned.
 - `tools/quality_audit/baseline.json` — accept today's findings with a dated `notes` entry
   (13 `frontend-import-cycle-member:*`, 197 `frontend-window-export:*`, inline/string handler
   names); these are **ratchets**, removals are expected every task.
-- Stale docs: `CLAUDE.md:292-294`; `frontend/src/js/shared-utils.js:5-18`;
-  `frontend/src/js/main.js:12-17`; `frontend/src/js/polling-and-websocket.js:43-47`;
-  `.github/workflows/quality.yml:42-43` (delete the no-op diff step);
-  `tools/quality_audit/source.py:25-27`; `.claude/skills/frontend-verification/SKILL.md`
-  rule 5, `.claude/skills/integration-audit/SKILL.md:21`,
-  `.claude/skills/final-verification/SKILL.md:27` ("committed bundle" → "rebuilt from source
-  by CI"); `ROADMAP.md:206` (6 views).
+- Stale docs — **corrected 2026-08-31 adversarial review, two rounds** (first pass fixed
+  the `config_bounds.py` path and dead orchestration pointer elsewhere in this doc but
+  missed this specific list; second pass caught the remainder): `CLAUDE.md:148` (not
+  `:292-294` — the file was rewritten smaller since this plan was written, "no framework
+  build" language now lives there); `frontend/src/js/shared-utils.js:5-18`;
+  `frontend/src/js/main.js:12-17`; `.github/workflows/quality.yml:42-43` (delete the
+  no-op diff step); `tools/quality_audit/source.py:25-27`; `ROADMAP.md:206` (6 views).
+  **Dropped, not replaced**: the original `polling-and-websocket.js:43-47` citation (no
+  "committed bundle" claim exists anywhere in that file today — re-grep for the actual
+  location at execution time if this specific staleness still needs fixing) and all
+  three `.claude/skills/{frontend-verification,integration-audit,final-verification}/
+  SKILL.md` citations — none of those three skill directories exist anymore; nothing
+  there to correct.
 
 **Create**
 - `tools/quality_audit/frontend_graph.py` — parse `import … from './x.js'` edges under
