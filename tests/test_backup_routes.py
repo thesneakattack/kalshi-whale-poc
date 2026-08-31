@@ -88,6 +88,46 @@ def test_run_route_large_tier_backs_up_only_large_files():
     assert not (snapshot_dir / "paper_broker.db").exists()
 
 
+def test_run_route_returns_409_when_large_tier_already_running():
+    state["backup_large"]["running"] = True
+
+    resp = client.post("/api/backup/run?tier=large")
+
+    assert resp.status_code == 409
+
+
+def test_run_route_returns_409_when_regular_tier_already_running():
+    state["backup"]["running"] = True
+
+    resp = client.post("/api/backup/run")
+
+    assert resp.status_code == 409
+
+
+def test_run_route_all_returns_409_when_either_tier_already_running():
+    state["backup_large"]["running"] = True
+
+    resp = client.post("/api/backup/run?tier=all")
+
+    assert resp.status_code == 409
+
+
+def test_run_route_all_reports_completed_regular_tier_when_large_collides():
+    # The regular tier has no guard blocking it here, so it genuinely
+    # completes and is recorded before the large-tier collision is hit -
+    # that completed result must not be silently dropped behind the 409.
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    state["backup_large"]["running"] = True
+
+    resp = client.post("/api/backup/run?tier=all")
+
+    assert resp.status_code == 409
+    assert "regular tier completed" in resp.json()["detail"]
+    regular_run = backup.latest(tier="regular")
+    assert regular_run is not None
+    assert regular_run["snapshot_name"] in resp.json()["detail"]
+
+
 def test_run_route_all_tier_runs_both_cycles():
     _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
     _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")

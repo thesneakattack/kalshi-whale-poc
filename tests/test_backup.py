@@ -188,6 +188,65 @@ def test_recent_regular_tier_includes_pre_migration_rows_with_null_tier():
     assert last["snapshot_name"] == "pre-migration-snapshot"
 
 
+# --- run_backup_now: the manual-trigger overlap guard ----------------------
+# Real bug found live 2026-08-31: the manual route used to call
+# run_backup_cycle directly with no guard, so a manual trigger could race
+# the periodic scheduler (or another manual call) into backing up the same
+# tier twice concurrently - two independent full ~27GB large-tier snapshots
+# 26 seconds apart, in the wild. run_backup_now's check-and-set has no
+# `await` between them, so it's atomic against every other coroutine on the
+# event loop, including this module's own periodic guards.
+
+def test_run_backup_now_raises_when_tier_already_running():
+    state["backup"]["running"] = True
+
+    with pytest.raises(backup.BackupAlreadyRunningError):
+        asyncio.run(backup.run_backup_now("backup", 5, tier="regular"))
+
+
+def test_run_backup_now_blocks_a_concurrent_call_for_the_same_tier():
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    original_cycle = backup.run_backup_cycle
+
+    def _slow_cycle(*args, **kwargs):
+        time.sleep(0.1)  # hold the tier "running" long enough for the race below
+        return original_cycle(*args, **kwargs)
+
+    async def _race():
+        first = asyncio.create_task(
+            backup.run_backup_now("backup_large", 5, tier="large",
+                                   only=frozenset({"series_watcher.db"}), snapshot_root=backup.LARGE_BACKUP_DIR)
+        )
+        await asyncio.sleep(0.02)  # let `first` set running=True before the second call checks it
+        assert state["backup_large"]["running"] is True
+
+        with pytest.raises(backup.BackupAlreadyRunningError):
+            await backup.run_backup_now("backup_large", 5, tier="large",
+                                         only=frozenset({"series_watcher.db"}), snapshot_root=backup.LARGE_BACKUP_DIR)
+        await first
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(backup, "run_backup_cycle", _slow_cycle)
+        asyncio.run(_race())
+
+    # the fix's whole point: exactly one snapshot, not two
+    assert len(backup.recent(limit=10, tier="large")) == 1
+    assert len(list(backup.LARGE_BACKUP_DIR.iterdir())) == 1
+    assert state["backup_large"]["running"] is False
+
+
+def test_run_backup_now_clears_running_flag_even_if_the_cycle_raises():
+    def _boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(backup, "run_backup_cycle", _boom)
+        with pytest.raises(RuntimeError):
+            asyncio.run(backup.run_backup_now("backup", 5, tier="regular"))
+
+    assert state["backup"]["running"] is False
+
+
 # --- large tier's own _maybe_run_large_backup ----------------------------
 
 _LARGE_CFG = {"backup": {"enabled": True, "large_file_interval_sec": 21600,
