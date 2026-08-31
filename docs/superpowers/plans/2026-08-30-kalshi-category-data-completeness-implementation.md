@@ -270,6 +270,15 @@ correct) before writing the merge logic below as designed.
 - [ ] **Step 0: `kalshi-contract-review`** on `docs/kalshi/get-series-fee-changes.md`,
   resolving the absent-ticker question above. Record the answer in the commit message.
 
+**Type correction found during PR review:** `SeriesFeeChange.scheduled_ts`
+(`get-series-fee-changes.md:126-129`) is `type: string, format: date-time` — an ISO-8601
+timestamp, not an epoch number. The SDK model types it `datetime`, so
+`model_dump(mode="json")` re-serializes it back to an ISO-8601 string, not an int. The test
+fixtures and implementation below are written against the correct string shape; the
+`scheduled_ts <= now` comparison has to parse that string (e.g.
+`datetime.fromisoformat(ts.replace("Z", "+00:00"))`) and compare against
+`datetime.now(timezone.utc)`, not against `time.time()`'s epoch float.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```python
@@ -282,14 +291,14 @@ def test_get_series_fee_changes_omits_series_ticker_for_the_full_array(monkeypat
         calls.append(show_historical)
         return type("R", (), {"series_fee_change_arr": [
             _FakeModel({"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
-                        "fee_multiplier": 1.0, "scheduled_ts": 1700000000}),
+                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}),
         ]})()
 
     monkeypatch.setattr(client._client, "get_series_fee_changes", fake_get_series_fee_changes)
     result = asyncio.run(client.get_series_fee_changes())
     assert calls == [True]  # show_historical defaults True, no series_ticker passed
     assert result == [{"id": 1, "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
-                        "fee_multiplier": 1.0, "scheduled_ts": 1700000000}]
+                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}]
 ```
 
 ```python
@@ -312,16 +321,19 @@ def test_get_series_cache_applies_the_most_recently_scheduled_fee_change(tmp_pat
     series = [{"ticker": "K1", "category": "Sports", "volume_fp": "100",
                "fee_type": "flat", "fee_multiplier": 0.5}]  # raw Series-object base fee
     fee_changes = [
-        {"series_ticker": "K1", "fee_type": "quadratic", "fee_multiplier": 1.0, "scheduled_ts": 1000},
-        {"series_ticker": "K1", "fee_type": "flat", "fee_multiplier": 2.0, "scheduled_ts": 2000},  # more recent, still <= now
+        {"series_ticker": "K1", "fee_type": "quadratic", "fee_multiplier": 1.0,
+         "scheduled_ts": "2023-11-14T00:16:40+00:00"},  # epoch 1000
+        {"series_ticker": "K1", "fee_type": "flat", "fee_multiplier": 2.0,
+         "scheduled_ts": "2023-11-14T00:33:20+00:00"},  # epoch 2000, more recent, still <= now
     ]
     client = _FakeFeeChangesClient(series, fee_changes)
-    monkeypatch.setattr(time, "time", lambda: 3000)
+    fixed_now = datetime.fromtimestamp(3000, tz=timezone.utc)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: fixed_now)  # not time.time() - scheduled_ts is ISO-8601, not epoch
 
     result = asyncio.run(catalog_scan._get_series_cache(client))
 
     assert result[0]["fee_type"] == "flat"
-    assert result[0]["fee_multiplier"] == 2.0  # scheduled_ts=2000 wins over 1000, not creation order
+    assert result[0]["fee_multiplier"] == 2.0  # scheduled_ts epoch 2000 wins over 1000, not creation order
 
 
 def test_get_series_cache_keeps_raw_fee_when_ticker_absent_from_fee_changes(tmp_path, monkeypatch):
@@ -330,7 +342,7 @@ def test_get_series_cache_keeps_raw_fee_when_ticker_absent_from_fee_changes(tmp_
     series = [{"ticker": "K2", "category": "Sports", "volume_fp": "100",
                "fee_type": "quadratic", "fee_multiplier": 1.0}]
     client = _FakeFeeChangesClient(series, fee_changes=[])  # K2 never appears
-    monkeypatch.setattr(time, "time", lambda: 3000)
+    monkeypatch.setattr(catalog_scan, "_utcnow", lambda: datetime.fromtimestamp(3000, tz=timezone.utc))
 
     result = asyncio.run(catalog_scan._get_series_cache(client))
 
@@ -338,9 +350,12 @@ def test_get_series_cache_keeps_raw_fee_when_ticker_absent_from_fee_changes(tmp_
     assert result[0]["fee_multiplier"] == 1.0
 ```
 
-(`state`/`series_cache`/`catalog_scan`/`time` already imported at the top of
-`tests/test_catalog_scan_pacing.py`; `_prime_series_cache` isn't reused here since these
-tests need `_get_series_cache()`'s real fetch path, not a pre-seeded cache.)
+(`state`/`series_cache`/`catalog_scan` already imported at the top of
+`tests/test_catalog_scan_pacing.py`; add `from datetime import datetime, timezone` for the
+`fixed_now` fixture values — `time` is no longer needed for this pair of tests since
+`scheduled_ts` is ISO-8601, not epoch (see the type-correction note above). `_prime_series_cache`
+isn't reused here since these tests need `_get_series_cache()`'s real fetch path, not a
+pre-seeded cache.)
 
 - [ ] **Step 2: Run to verify all three FAIL.**
 
@@ -350,15 +365,21 @@ tests need `_get_series_cache()`'s real fetch path, not a pre-seeded cache.)
     installed SDK's exact param name during Step 0's contract review — this repo's own
     precedent, `get_series_list`'s docstring, shows the SDK has previously diverged from
     docs) and returning `resp.series_fee_change_arr` dumped the same way every other
-    gateway method here does (`[x.model_dump(mode="json") for x in ...]`).
-  - `services/market_watch/catalog_scan.py`'s `_get_series_cache()`: after the existing
+    gateway method here does (`[x.model_dump(mode="json") for x in ...]`) — `scheduled_ts`
+    comes out as an ISO-8601 string (the SDK model types it `datetime`; `mode="json"`
+    re-serializes it to a string, not an epoch number — confirmed against
+    `get-series-fee-changes.md:126-129`'s `format: date-time`).
+  - `services/market_watch/catalog_scan.py`: add a module-level `def _utcnow() ->
+    datetime: return datetime.now(timezone.utc)` — a thin, monkeypatchable wrapper so tests
+    can fix "now" without patching the stdlib. In `_get_series_cache()`, after the existing
     `series = await client.get_series_list()` / volume-filter / sort, add one
-    `fee_changes = await client.get_series_fee_changes()` call, build `effective_fee:
-    dict[str, tuple[str, float]]` keyed by `series_ticker` (per entry, keep the one with
-    the greatest `scheduled_ts <= now`, ties broken by `id`, per spec §1.8), then for each
-    `s` in `series` whose `s["ticker"]` is in `effective_fee`, overwrite
-    `s["fee_type"]`/`s["fee_multiplier"]` in place before `series_cache.save(...)` is
-    called. A ticker not in `effective_fee` is left with whatever `fee_type`/
+    `fee_changes = await client.get_series_fee_changes()` call, parse each entry's
+    `scheduled_ts` with `datetime.fromisoformat(ts.replace("Z", "+00:00"))`, build
+    `effective_fee: dict[str, tuple[str, float]]` keyed by `series_ticker` (per entry, keep
+    the one with the greatest parsed `scheduled_ts <= _utcnow()`, ties broken by `id`, per
+    spec §1.8), then for each `s` in `series` whose `s["ticker"]` is in `effective_fee`,
+    overwrite `s["fee_type"]`/`s["fee_multiplier"]` in place before `series_cache.save(...)`
+    is called. A ticker not in `effective_fee` is left with whatever `fee_type`/
     `fee_multiplier` its raw Series object already carried (Step 0's confirmed contract).
 
 - [ ] **Step 4: Run to verify all three PASS.**
@@ -1058,20 +1079,24 @@ whichever existing fixture already supplies `get_markets_by_tickers`, adding
   gather loop, replacing it with milestones read inline off each event returned by
   `get_events(to_poll, with_milestones=True)`.
 
-**Kalshi contract note:** `docs/kalshi/get-events.md:114-118` documents `with_milestones`
-as a real, current query param ("If true, includes related milestones as a field alongside
-events"), verified this session. The exact key name the milestones array lands under on
-each returned event object is **not confirmed in this pass** — read it directly off
-`get-events.md`'s response schema (or a live/fixture response) in Step 0 before writing the
-implementation, matching this file's own existing precedent of confirming SDK/doc shape
-before coding (`get_series_list`'s docstring: "confirmed via the SDK's own docstring").
+**Kalshi contract note (corrected during PR review — the original version of this note was
+wrong):** `docs/kalshi/get-events.md:114-118` documents `with_milestones` as a real, current
+query param. But the response is **not** "milestones inline on each event" — read directly
+off the schema (`get-events.md:187-201,315-390`): `GetEventsResponse.milestones` is a
+**top-level array sibling to `events`**, and each `Milestone` object carries
+`related_event_tickers`/`primary_event_tickers` (both arrays of tickers, plural — there is
+no singular `event_ticker` field to key off). `EventData` itself has no `milestones` field
+at all. The join from event → milestone has to be built by the caller (or by
+`get_events` itself before returning), not read off a key the API never populates on the
+event object.
 
-- [ ] **Step 0: `kalshi-contract-review`** on `docs/kalshi/get-events.md`, confirming the
-  exact field name the inline milestones array uses on a returned event object, and
-  whether the installed SDK's `get_events` wrapper exposes `with_milestones` under that
-  exact parameter name (check both the Pydantic response model and the SDK call signature
-  — this file's own `get_series_list` docstring already records one real case of the SDK
-  lagging documented behavior).
+- [ ] **Step 0: `kalshi-contract-review`** on `docs/kalshi/get-events.md`'s
+  `GetEventsResponse`/`Milestone` schema — confirmed above, re-verify against the live doc
+  in case it's drifted since this note was written — and whether the installed SDK's
+  `get_events` wrapper exposes both `with_milestones` and a top-level `milestones`
+  attribute on its response object under the exact names the docs use (check the Pydantic
+  response model and the SDK call signature — this file's own `get_series_list` docstring
+  already records one real case of the SDK lagging documented behavior).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1107,7 +1132,12 @@ def test_get_events_default_omits_with_milestones_for_existing_callers(monkeypat
   `tests/test_trading_gate.py` confirming `propagate_milestone_winners`/
   `_fetch_live_status` no longer call `get_milestones_for_event` at all once wired (assert
   a fake client without that method still works, or assert a call counter on it stays at
-  0) — exact shape depends on Step 0's confirmed field name for the inline milestones.
+  0), and one new test in `tests/test_kalshi_client.py` asserting `get_events` builds the
+  join correctly: given a fake response with a top-level `milestones` array whose entries
+  carry `related_event_tickers`, assert the matching returned event dict ends up with a
+  `milestones` list containing that entry (and an event ticker absent from every
+  milestone's `related_event_tickers`/`primary_event_tickers` gets an empty list, not a
+  `KeyError`).
 
 - [ ] **Step 2: Run to verify FAIL.**
 
@@ -1116,13 +1146,20 @@ def test_get_events_default_omits_with_milestones_for_existing_callers(monkeypat
     parameter, forwarded to `self._client.get_events(..., with_milestones=with_milestones)`
     per Step 0's confirmed SDK param name; if the SDK doesn't expose it, fall back to the
     documented raw query param via whatever this file's `_get_json`-based precedent
-    (`get_series_list`) already establishes for a case where the typed SDK lags.
+    (`get_series_list`) already establishes for a case where the typed SDK lags. Since
+    `milestones` comes back as a **top-level array**, not inline per event, `get_events`
+    builds the join itself before returning: index each `Milestone` under every ticker in
+    its `related_event_tickers` plus `primary_event_tickers`, then attach the matched list
+    to each returned event dict as `event["milestones"] = [...]` (empty list when no
+    milestone references that ticker) — this keeps every downstream caller's shape exactly
+    as originally planned (reading milestones off the event object), it's just the gateway,
+    not the API, doing that assembly.
   - `services/market_watch/catalog_scan.py`'s `propagate_milestone_winners`: replace the
     `client.get_milestones_for_event(et)` gather over `to_poll` with one
     `client.get_events(to_poll, with_milestones=True)` call; build `milestone_by_event`
-    from each returned event's inline milestones field (Step 0's confirmed key) instead of
-    from the old per-event gather's results — same downstream shape (`ms.get("id") and
-    ms.get("type")` gating unchanged).
+    from each returned event's `milestones` field (now populated by the gateway's join
+    above) instead of from the old per-event gather's results — same downstream shape
+    (`ms.get("id") and ms.get("type")` gating unchanged).
   - `services/market_watch/live_status.py`'s `_fetch_live_status`: identical
     restructuring for its own `to_poll`/`milestone_by_event` construction.
 - [ ] **Step 4: Run to verify PASS.**

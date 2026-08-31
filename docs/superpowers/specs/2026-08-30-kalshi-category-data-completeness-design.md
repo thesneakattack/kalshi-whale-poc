@@ -516,9 +516,14 @@ time, not accumulated history.
 
 `catalog_scan.py`'s `propagate_milestone_winners` and `live_status.py`'s
 `_fetch_live_status` both call `get_milestones_for_event()` once per event, every time they
-poll. `get-events.md:114-118` documents `GET /events?with_milestones=true` returning the
-milestone array inline with the batched events call, at zero extra cost
-(`targets_and_milestones.md:45`). `services/kalshi/public.py:206-225`'s `get_events()`
+poll. `get-events.md:114-118` documents `GET /events?with_milestones=true` returning
+milestone data alongside the batched events call, at zero extra cost
+(`targets_and_milestones.md:45`) — **correction found during PR review:** the schema
+(`get-events.md:187-201,315-390`) puts `milestones` as a **top-level array sibling to
+`events`**, not inline on each event; the join to a specific event is via each
+`Milestone`'s `related_event_tickers`/`primary_event_tickers` (plural arrays), which the
+caller (or the gateway wrapper) has to build itself. `services/kalshi/public.py:206-225`'s
+`get_events()`
 doesn't currently accept the flag. Adding it (an optional `with_milestones: bool = False`
 parameter, only sent when the caller asks) is the cheapest of the three documented routes
 to the same milestone data (the other two: `get_milestones_bulk`, already implemented and
