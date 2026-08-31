@@ -58,7 +58,9 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"## Context\nTracks `docs/superpowers/plans/{filename}` "
                 f"as a whole, not per-task (see kanban-board-sync-design.md "
                 f"§5 on why plan-doc checkboxes aren't a reliable per-task "
-                f"signal in this repo).\n\nClassification: {info['status']}."
+                f"signal in this repo).\n\nCode classification: {info['status']} "
+                f"(this plan's document is already written and merged - this "
+                f"status is about whether its tasks are implemented)."
                 f"\n{note}"
             ),
             acceptance_criteria=(
