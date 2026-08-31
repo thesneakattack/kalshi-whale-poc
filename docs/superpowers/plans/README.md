@@ -44,6 +44,7 @@ realtime row below has been verified task-by-task.
 | [kalshi-integration-phase-c](2026-08-24-kalshi-integration-phase-c.md) | Consolidate and harden the Kalshi boundary | — | `refactor/kalshi-integration-phase-c` |
 | [economic-strategy-effectiveness-investigation](2026-08-26-economic-strategy-effectiveness-investigation.md) | Economic strategy effectiveness + execution realism | — | — |
 | [economic-strategy-remediation](2026-08-26-economic-strategy-remediation.md) | Candidate remediation for the above (Program 2) | — | — |
+| [whale-confidence-scoring-remediation-implementation](2026-08-30-whale-confidence-scoring-remediation-implementation.md) | `whale_confidence_weights` D1 fix, shared diagnostic, accuracy/edge dual-score split | 16 | — |
 | [backend-services-modularization](2026-08-27-backend-services-modularization.md) | Backend `services/` modularization | 4 | `refactor/backend-services-modularization` |
 | [frontend-modularization](2026-08-25-frontend-modularization.md) | Dashboard modularization | — | `docs/frontend-modularization-design` |
 | [autonomous-quality-coordination-investigation](2026-08-25-autonomous-quality-coordination-investigation.md) | AQC investigation | — | `chore/autonomous-quality-coordination-investigation` |
