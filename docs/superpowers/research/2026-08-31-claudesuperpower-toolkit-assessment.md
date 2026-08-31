@@ -18,6 +18,20 @@ filing is independent of PR #310's own fate — that PR may still be
 reviewed/merged/closed on its own terms by whoever owns it; this copy
 exists so the assessment survives and is usable regardless.
 
+**Review-cycle amendment (2026-08-31, added after filing):** this document
+went through this repo's "nothing advances on one pass" self-review +
+independent adversarial-review + consolidation cycle. Verdict: GO, with a
+3-item fix list — see
+`2026-08-31-claudesuperpower-toolkit-assessment-review.md` (self-review),
+`2026-08-31-claudesuperpower-toolkit-assessment-consolidation.md`
+(consolidation, authoritative over this doc's FINAL VERDICT wherever they
+differ). In short: the "grants CLAUDE.md write access" claim in FINAL
+VERDICT below overstates `claude-security` (scoped to a scratch workspace,
+human-applied patches only — only `claude-md-management` writes CLAUDE.md
+directly), and the star-count/trust-score figures throughout are unverified
+outside this scan and should not be read as settled fact. The prose below is
+left unchanged as the original point-in-time scan record.
+
 ---
 
 # claudesuperpower.com toolkit assessment — 2026-08-31
