@@ -62,8 +62,10 @@ def _isolated(monkeypatch, tmp_path):
     data_dir.mkdir()
     monkeypatch.setattr(backup, "DATA_DIR", data_dir)
     monkeypatch.setattr(backup, "BACKUP_DIR", data_dir / "backups")
+    monkeypatch.setattr(backup, "LARGE_BACKUP_DIR", data_dir / "backups_large")
     monkeypatch.setattr(backup, "DB_PATH", data_dir / "backup_log.db")
     state["backup"] = {"running": False, "last_started_at": 0.0, "task": None}
+    state["backup_large"] = {"running": False, "last_started_at": 0.0, "task": None}
     yield
 
 
@@ -104,6 +106,136 @@ def test_prune_old_snapshots_keeps_only_retention_count():
 
     remaining = sorted(p.name for p in backup.BACKUP_DIR.iterdir())
     assert len(remaining) == 2  # only the 2 most recent survive
+
+
+# --- two-tier file selection --------------------------------------------
+
+def test_run_backup_cycle_exclude_skips_named_files():
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+
+    result = backup.run_backup_cycle(
+        retention_count=5, now=1000.0, tier="regular", exclude=frozenset({"series_watcher.db"}),
+    )
+
+    assert result["files_ok"] == 1
+    assert result["tier"] == "regular"
+    snapshot_dir = backup.BACKUP_DIR / result["snapshot"]
+    assert (snapshot_dir / "paper_broker.db").exists()
+    assert not (snapshot_dir / "series_watcher.db").exists()
+
+
+def test_run_backup_cycle_only_backs_up_named_files():
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+
+    result = backup.run_backup_cycle(
+        retention_count=5, now=1000.0, tier="large",
+        only=frozenset({"series_watcher.db"}), snapshot_root=backup.LARGE_BACKUP_DIR,
+    )
+
+    assert result["files_ok"] == 1
+    assert result["tier"] == "large"
+    snapshot_dir = backup.LARGE_BACKUP_DIR / result["snapshot"]
+    assert (snapshot_dir / "series_watcher.db").exists()
+    assert not (snapshot_dir / "paper_broker.db").exists()
+
+
+def test_prune_old_snapshots_respects_snapshot_root():
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    for i in range(4):
+        backup.run_backup_cycle(
+            retention_count=2, now=1000.0 + i, tier="large",
+            only=frozenset({"series_watcher.db"}), snapshot_root=backup.LARGE_BACKUP_DIR,
+        )
+
+    assert len(list(backup.LARGE_BACKUP_DIR.iterdir())) == 2
+    assert not backup.BACKUP_DIR.exists() or len(list(backup.BACKUP_DIR.iterdir())) == 0
+
+
+def test_recent_and_latest_filter_by_tier():
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    backup.run_backup_cycle(retention_count=5, now=1000.0, tier="regular",
+                             exclude=frozenset({"series_watcher.db"}))
+    backup.run_backup_cycle(retention_count=5, now=2000.0, tier="large",
+                             only=frozenset({"series_watcher.db"}), snapshot_root=backup.LARGE_BACKUP_DIR)
+
+    regular = backup.latest(tier="regular")
+    large = backup.latest(tier="large")
+
+    assert regular["tier"] == "regular"
+    assert regular["started_at"] == 1000.0
+    assert large["tier"] == "large"
+    assert large["started_at"] == 2000.0
+
+
+def test_recent_regular_tier_includes_pre_migration_rows_with_null_tier():
+    # Simulates a backup_runs row written before the `tier` column existed -
+    # recent()/latest() must still count it as "regular" so a fresh deploy
+    # of this change doesn't misread historical recency as "overdue."
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    with backup._connect() as conn:
+        conn.execute(
+            "INSERT INTO backup_runs "
+            "(started_at, finished_at, snapshot_name, files_ok, files_failed, total_bytes, pruned_count, error, tier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            (500.0, 501.0, "pre-migration-snapshot", 1, 0, 100, 0, None),
+        )
+
+    last = backup.latest(tier="regular")
+
+    assert last["snapshot_name"] == "pre-migration-snapshot"
+
+
+# --- large tier's own _maybe_run_large_backup ----------------------------
+
+_LARGE_CFG = {"backup": {"enabled": True, "large_file_interval_sec": 21600,
+                          "large_files": ["series_watcher.db"]}}
+
+
+async def _call_maybe_run_large_backup(cfg):
+    backup._maybe_run_large_backup(cfg)
+    task = state["backup_large"].get("task")
+    if task is not None:
+        await task
+
+
+def test_maybe_run_large_backup_fires_on_a_genuinely_fresh_install():
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    assert backup.latest(tier="large") is None
+    assert state["backup_large"]["last_started_at"] == 0.0
+
+    asyncio.run(_call_maybe_run_large_backup(_LARGE_CFG))
+
+    assert len(backup.recent(limit=10, tier="large")) == 1
+    assert state["backup_large"]["running"] is False
+
+
+def test_maybe_run_large_backup_only_writes_files_in_large_files_config():
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+
+    asyncio.run(_call_maybe_run_large_backup(_LARGE_CFG))
+
+    last = backup.latest(tier="large")
+    snapshot_dir = backup.LARGE_BACKUP_DIR / last["snapshot_name"]
+    assert (snapshot_dir / "series_watcher.db").exists()
+    assert not (snapshot_dir / "paper_broker.db").exists()
+
+
+def test_maybe_run_backup_still_excludes_large_files_by_default():
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+    cfg = {"backup": {"enabled": True, "interval_sec": 21600,
+                       "large_files": ["series_watcher.db"]}}
+
+    asyncio.run(_call_maybe_run_backup(cfg))
+
+    last = backup.latest(tier="regular")
+    snapshot_dir = backup.BACKUP_DIR / last["snapshot_name"]
+    assert (snapshot_dir / "paper_broker.db").exists()
+    assert not (snapshot_dir / "series_watcher.db").exists()
 
 
 # --- _maybe_run_backup: the cold-start seeding regression -------------------

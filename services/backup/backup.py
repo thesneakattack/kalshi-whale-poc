@@ -36,6 +36,12 @@ needed) for a real deployment's own cron/systemd timer, since ROADMAP.md's
 "Path to production" section is explicit that this app has no real host or
 process supervisor yet and a backup schedule shouldn't be hostage to the
 app process's own uptime once one exists.
+
+Two independent tiers as of 2026-08-30 (see _DEFAULT_LARGE_FILES): a
+"regular" tier for small, account-critical files on the original 6h/14-
+count cadence, and a "large" tier for the files that grow forever by
+design, on a longer, separately-configured cadence into their own
+LARGE_BACKUP_DIR - see _maybe_run_large_backup's own docstring for why.
 """
 import asyncio
 import shutil
@@ -48,21 +54,43 @@ from services.app_state import state
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 BACKUP_DIR = DATA_DIR / "backups"
+# A *sibling* of BACKUP_DIR, not BACKUP_DIR / "large" - nesting would make
+# _prune_old_snapshots' directory-name sort for the regular tier treat this
+# subdirectory as just another snapshot (and, since "large" sorts after
+# every UTC-timestamp name lexicographically, always the "newest" one),
+# corrupting both tiers' pruning and GET /api/backup/status's counts.
+LARGE_BACKUP_DIR = DATA_DIR / "backups_large"
 DB_PATH = DATA_DIR / "backup_log.db"
 
 _DEFAULT_INTERVAL_SEC = 21600  # 6h - frequent enough that a lost disk never
 # costs more than a few hours of real trade/signal history.
-_DEFAULT_RETENTION_COUNT = 14  # ~3.5 days at the default 6h cadence.
-# Deliberately more conservative than reset_log.py/fault_log.py's own "keep
-# enough to reconstruct what happened, not everything forever" philosophy
-# would suggest on its own - most data/*.db files are single-digit MB, but
-# series_watcher.py's raw_trades is deliberately never pruned (CLAUDE.md's
-# "accumulated history is a first-class asset" rule) and was measured at
-# 6.9GB on 2026-08-23 (the same investigation that found and fixed a
-# separate 5.7GB game_state.db bug - see that module's CHEATSHEET/
-# static/status.html phase 126), so every snapshot's real size grows over
-# time regardless of what this number is. Revisit as data/'s total
-# footprint grows.
+_DEFAULT_RETENTION_COUNT = 14  # ~3.5 days at the default 6h cadence. Safe to
+# keep unchanged now that the large tier below carries series_watcher.db/
+# candidate_log.db/market_history.db separately - this tier's own files are
+# all single-digit-MB, so 14 of them costs nothing like the pre-tiering
+# snapshot did (2026-08-30: 292GB across 13 snapshots once series_watcher.db
+# alone reached 24GB, because every snapshot carried a full copy of it).
+
+_DEFAULT_LARGE_FILE_INTERVAL_SEC = 86400  # 24h - deliberately longer than
+# the regular tier: these files are already durable, continuously-
+# accumulating append logs (CLAUDE.md's "accumulated history is a
+# first-class asset" rule), so losing a few hours of them to a backup gap
+# costs nothing like losing live trading state would.
+_DEFAULT_LARGE_FILE_RETENTION_COUNT = 4  # ~4 days at that cadence.
+_DEFAULT_LARGE_FILES = frozenset({"series_watcher.db", "candidate_log.db", "market_history.db"})
+# The three data/*.db files with no row-level retention by design (measured
+# 2026-08-30: 24.4GB, 2.8GB, and - once Task 1 of this plan ships - a
+# capped market_history.db respectively). A full 6h/14-count snapshot of
+# these dominated data/backups/ before this split existed.
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
+    # Same idiom as services/candidate_log.py/services/title_cache.py -
+    # CREATE TABLE IF NOT EXISTS alone doesn't add a column to an existing
+    # table with existing rows.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def _connect() -> sqlite3.Connection:
@@ -85,19 +113,35 @@ def _connect() -> sqlite3.Connection:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs (started_at)")
+    # tier (2026-08-30): which of the two independent backup cadences a run
+    # belongs to - "regular" (small, account-critical files) or "large"
+    # (the permanently-growing history files). NULL on rows written before
+    # this column existed; recent()/latest() treat NULL as "regular" since
+    # that's the cadence those historical runs actually ran on.
+    _add_column_if_missing(conn, "backup_runs", "tier", "TEXT")
     return conn
 
 
-def _data_db_files() -> list[Path]:
+def _data_db_files(*, exclude: frozenset[str] = frozenset(), only: frozenset[str] | None = None) -> list[Path]:
     """Every data/*.db file at call time, backup_log.db included (its own
     run history is worth keeping too) - deliberately a fresh glob every
     call, not a cached list, so a newly-added persistence module's file is
     picked up automatically with no registration step. Only matches files
-    directly in data/ (glob's * doesn't cross the data/backups/ boundary),
-    so this can never recurse into its own prior output."""
+    directly in data/ (glob's * doesn't cross the data/backups/ or
+    data/backups_large/ boundary), so this can never recurse into its own
+    prior output.
+
+    exclude/only (2026-08-30) select this call's tier: the regular tier
+    passes exclude=large_files to skip the permanently-growing files; the
+    large tier passes only=large_files to back up nothing else. Passing
+    both is never done by this module's own callers - only is checked
+    first and, if given, exclude is ignored entirely."""
     if not DATA_DIR.exists():
         return []
-    return sorted(DATA_DIR.glob("*.db"))
+    files = sorted(DATA_DIR.glob("*.db"))
+    if only is not None:
+        return [f for f in files if f.name in only]
+    return [f for f in files if f.name not in exclude]
 
 
 def _backup_one_file(src: Path, dest_dir: Path) -> int:
@@ -117,16 +161,22 @@ def _backup_one_file(src: Path, dest_dir: Path) -> int:
     return dest.stat().st_size
 
 
-def _prune_old_snapshots(retention_count: int) -> list[str]:
+def _prune_old_snapshots(retention_count: int, snapshot_root: Path | None = None) -> list[str]:
     """Deletes whole snapshot directories beyond retention_count, oldest
     first (snapshot names are UTC timestamps formatted to sort
     lexicographically in chronological order, so a plain name sort is
     enough - no need to parse them back into datetimes). retention_count
     <= 0 disables pruning entirely (an explicit opt-out, not a footgun -
-    matches this app's other "0/None means off" config conventions)."""
-    if retention_count <= 0 or not BACKUP_DIR.exists():
+    matches this app's other "0/None means off" config conventions).
+
+    snapshot_root (2026-08-30) lets the large tier prune its own
+    LARGE_BACKUP_DIR independently of the regular tier's BACKUP_DIR -
+    defaults to BACKUP_DIR so every pre-tiering call site keeps working
+    unchanged."""
+    root = snapshot_root if snapshot_root is not None else BACKUP_DIR
+    if retention_count <= 0 or not root.exists():
         return []
-    snapshots = sorted((p for p in BACKUP_DIR.iterdir() if p.is_dir()), key=lambda p: p.name)
+    snapshots = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
     to_prune = snapshots[:-retention_count] if len(snapshots) > retention_count else []
     pruned_names = []
     for p in to_prune:
@@ -135,10 +185,16 @@ def _prune_old_snapshots(retention_count: int) -> list[str]:
     return pruned_names
 
 
-def run_backup_cycle(retention_count: int = _DEFAULT_RETENTION_COUNT, now: float | None = None) -> dict:
-    """The full cycle: snapshot every data/*.db file, prune old snapshots,
-    record the run. Synchronous and blocking by design - sqlite3's backup()
-    is a blocking call with no async variant, so the async wiring below
+def run_backup_cycle(
+    retention_count: int = _DEFAULT_RETENTION_COUNT, now: float | None = None, *,
+    tier: str = "regular", exclude: frozenset[str] = frozenset(), only: frozenset[str] | None = None,
+    snapshot_root: Path | None = None,
+) -> dict:
+    """The full cycle for one tier: snapshot the tier's own file selection
+    (exclude/only, see _data_db_files), prune that tier's own old snapshots
+    (snapshot_root, see _prune_old_snapshots), record the run tagged with
+    tier. Synchronous and blocking by design - sqlite3's backup() is a
+    blocking call with no async variant, so the async wiring below
     (_run_backup_background) is what keeps this off the event loop, not
     this function itself. That also makes this directly callable from a
     plain script/cron with no asyncio involved at all.
@@ -148,14 +204,15 @@ def run_backup_cycle(retention_count: int = _DEFAULT_RETENTION_COUNT, now: float
     rest of this app already applies to REST fetches; a paper broker DB
     that's momentarily locked shouldn't cost the signal log its backup
     too."""
+    root = snapshot_root if snapshot_root is not None else BACKUP_DIR
     started_at = now if now is not None else time.time()
     snapshot_name = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started_at))
-    snapshot_dir = BACKUP_DIR / snapshot_name
+    snapshot_dir = root / snapshot_name
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     files_ok, files_failed, total_bytes = 0, 0, 0
     errors: list[str] = []
-    for src in _data_db_files():
+    for src in _data_db_files(exclude=exclude, only=only):
         try:
             total_bytes += _backup_one_file(src, snapshot_dir)
             files_ok += 1
@@ -164,51 +221,67 @@ def run_backup_cycle(retention_count: int = _DEFAULT_RETENTION_COUNT, now: float
             errors.append(f"{src.name}: {type(exc).__name__}: {exc}")
             fault_log.record("backup", "backup_one_file", exc, context=src.name)
 
-    pruned = _prune_old_snapshots(retention_count)
+    pruned = _prune_old_snapshots(retention_count, snapshot_root=root)
     finished_at = time.time()
 
     with _connect() as conn:
         conn.execute(
             "INSERT INTO backup_runs "
-            "(started_at, finished_at, snapshot_name, files_ok, files_failed, total_bytes, pruned_count, error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(started_at, finished_at, snapshot_name, files_ok, files_failed, total_bytes, pruned_count, error, tier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (started_at, finished_at, snapshot_name, files_ok, files_failed, total_bytes, len(pruned),
-             "; ".join(errors) if errors else None),
+             "; ".join(errors) if errors else None, tier),
         )
 
     return {
-        "snapshot": snapshot_name, "files_ok": files_ok, "files_failed": files_failed,
+        "snapshot": snapshot_name, "tier": tier, "files_ok": files_ok, "files_failed": files_failed,
         "total_bytes": total_bytes, "pruned": pruned, "duration_sec": round(finished_at - started_at, 3),
         "errors": errors,
     }
 
 
-def recent(limit: int = 20) -> list[dict]:
+def recent(limit: int = 20, tier: str = "regular") -> list[dict]:
     cols = ["id", "started_at", "finished_at", "snapshot_name", "files_ok", "files_failed",
-            "total_bytes", "pruned_count", "error"]
+            "total_bytes", "pruned_count", "error", "tier"]
+    # Rows written before the tier column existed have tier IS NULL - treat
+    # those as "regular" (the only cadence that existed then), so a fresh
+    # deploy of this change doesn't misread real historical recency as
+    # "overdue." Only the regular-tier query needs this; "large" never had
+    # pre-migration rows.
+    where = "WHERE tier = ? OR tier IS NULL" if tier == "regular" else "WHERE tier = ?"
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM backup_runs ORDER BY started_at DESC LIMIT ?", (limit,),
+            f"SELECT {', '.join(cols)} FROM backup_runs {where} ORDER BY started_at DESC LIMIT ?",
+            (tier, limit),
         ).fetchall()
     return [dict(zip(cols, r)) for r in rows]
 
 
-def latest() -> dict | None:
-    rows = recent(limit=1)
+def latest(tier: str = "regular") -> dict | None:
+    rows = recent(limit=1, tier=tier)
     return rows[0] if rows else None
 
 
-async def _run_backup_background(retention_count: int) -> None:
+async def _run_backup_background(
+    retention_count: int, *, tier: str = "regular", exclude: frozenset[str] = frozenset(),
+    only: frozenset[str] | None = None, snapshot_root: Path | None = None, state_key: str = "backup",
+) -> None:
     """Background-task wrapper, same split as catalog_scan._scan_catalog_
     batch_background/discovery_cache._refresh_discovery_cache_background -
     owns releasing the "running" flag regardless of outcome via finally.
     asyncio.to_thread is what actually keeps run_backup_cycle's blocking
     sqlite3.backup() calls off the event loop; without it, backing up
     several MB-scale files would stall the trading loop's own tick timing
-    for the duration."""
-    backup_state = state["backup"]
+    for the duration.
+
+    state_key (2026-08-30) picks which of state["backup"]/state["backup_large"]
+    this run's "running" flag belongs to, so the two tiers' overlap guards
+    never share state."""
+    backup_state = state[state_key]
     try:
-        await asyncio.to_thread(run_backup_cycle, retention_count)
+        await asyncio.to_thread(
+            run_backup_cycle, retention_count, tier=tier, exclude=exclude, only=only, snapshot_root=snapshot_root,
+        )
     finally:
         backup_state["running"] = False
 
@@ -220,6 +293,14 @@ def _maybe_run_backup(cfg: dict) -> None:
     _maybe_refresh_discovery_cache. Synchronous save for one lazy, one-time-
     per-process-lifetime DB read below - this doesn't otherwise do I/O of
     its own.
+
+    This is the "regular" tier only (small, account-critical files) -
+    excludes cfg's backup.large_files, which _maybe_run_large_backup below
+    backs up on its own, longer cadence. See this module's own docstring
+    and _DEFAULT_LARGE_FILES for why: those files (series_watcher.db,
+    candidate_log.db, market_history.db) grow forever by design, and every
+    snapshot on this tier's 6h/14-count cadence used to carry a full copy
+    of them (292GB measured 2026-08-30 before this split).
 
     Real bug found and fixed live 2026-08-23, same "module quality" pass as
     the rest of this session: state["backup"]["last_started_at"] is pure
@@ -246,16 +327,60 @@ def _maybe_run_backup(cfg: dict) -> None:
     interval = backup_cfg.get("interval_sec", _DEFAULT_INTERVAL_SEC)
     now_ts = time.time()
     if backup_state["last_started_at"] == 0.0:
-        last = latest()
+        last = latest(tier="regular")
         backup_state["last_started_at"] = last["started_at"] if last else 0.0
     due = now_ts - backup_state["last_started_at"] > interval
     if due and not backup_state["running"]:
         backup_state["running"] = True
         backup_state["last_started_at"] = now_ts
         retention_count = backup_cfg.get("retention_count", _DEFAULT_RETENTION_COUNT)
+        large_files = frozenset(backup_cfg.get("large_files", _DEFAULT_LARGE_FILES))
         backup_state["task"] = task_supervisor.supervise(
-            lambda: _run_backup_background(retention_count),
+            lambda: _run_backup_background(retention_count, tier="regular", exclude=large_files),
             component="backup", operation="run",
+        )
+
+
+def _maybe_run_large_backup(cfg: dict) -> None:
+    """Second, independent backup tier for the files CLAUDE.md's
+    "accumulated history is a first-class asset" rule keeps growing forever
+    (series_watcher.db's raw_trades, candidate_log.db's rejection_events,
+    market_history.db's snapshots) - see _DEFAULT_LARGE_FILES and this
+    module's own docstring for why these can't share the regular tier's
+    6h/14-count cadence without every snapshot ballooning in lockstep with
+    the source file (292GB measured 2026-08-30 across 13 regular snapshots
+    once series_watcher.db alone reached 24GB). A longer interval and
+    shorter retention here trades disaster-recovery freshness for these
+    specific files against disk - an explicit, configured choice
+    (backup.large_file_interval_sec/large_file_retention_count), not a
+    silent one; the regular tier's own cadence for the small,
+    account-critical files (_maybe_run_backup) is untouched.
+
+    Same due()/overlap-guard/cold-start-reseed shape as _maybe_run_backup,
+    against its own state["backup_large"] and its own tier="large" history
+    (latest(tier="large")) so a restart doesn't misread the regular tier's
+    recency as this tier's."""
+    backup_cfg = cfg.get("backup") or {}
+    if not backup_cfg.get("enabled", True):
+        return
+    backup_state = state["backup_large"]
+    interval = backup_cfg.get("large_file_interval_sec", _DEFAULT_LARGE_FILE_INTERVAL_SEC)
+    now_ts = time.time()
+    if backup_state["last_started_at"] == 0.0:
+        last = latest(tier="large")
+        backup_state["last_started_at"] = last["started_at"] if last else 0.0
+    due = now_ts - backup_state["last_started_at"] > interval
+    if due and not backup_state["running"]:
+        backup_state["running"] = True
+        backup_state["last_started_at"] = now_ts
+        retention_count = backup_cfg.get("large_file_retention_count", _DEFAULT_LARGE_FILE_RETENTION_COUNT)
+        large_files = frozenset(backup_cfg.get("large_files", _DEFAULT_LARGE_FILES))
+        backup_state["task"] = task_supervisor.supervise(
+            lambda: _run_backup_background(
+                retention_count, tier="large", only=large_files,
+                snapshot_root=LARGE_BACKUP_DIR, state_key="backup_large",
+            ),
+            component="backup", operation="run_large",
         )
 
 
@@ -265,5 +390,12 @@ if __name__ == "__main__":
     from services.config.config_store import config_store
 
     _cfg = (config_store.get().get("backup") or {})
-    result = run_backup_cycle(_cfg.get("retention_count", _DEFAULT_RETENTION_COUNT))
-    print(json.dumps(result, indent=2))
+    _large_files = frozenset(_cfg.get("large_files", _DEFAULT_LARGE_FILES))
+    regular_result = run_backup_cycle(
+        _cfg.get("retention_count", _DEFAULT_RETENTION_COUNT), tier="regular", exclude=_large_files,
+    )
+    large_result = run_backup_cycle(
+        _cfg.get("large_file_retention_count", _DEFAULT_LARGE_FILE_RETENTION_COUNT),
+        tier="large", only=_large_files, snapshot_root=LARGE_BACKUP_DIR,
+    )
+    print(json.dumps({"regular": regular_result, "large": large_result}, indent=2))
