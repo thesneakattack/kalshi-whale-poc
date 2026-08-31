@@ -7,26 +7,35 @@ If clean, close `docs/open-decisions.md`'s `two_consumer_mode` permanence
 item by updating the file comment in `config/settings.yaml`. (Not yet due —
 current time is well before 16:11 UTC; nothing else blocking right now.)
 
-**Pending peer coordination:** proposed a lightweight commit/PR/merge
-coordination procedure to `autotrade-79` (ListAgents+`gh pr list` before
-opening/merging a PR; a "claiming PR #N" ping before merge when a peer is
-live) after two near-misses this session (a redundant consolidation comment
-on PR #303, and both sessions coincidentally working claudesuperpower.com
--related tasks in parallel — PR #307 vs PR #310, no actual conflict). Waiting
-on their read before drafting it as a `.claude/rules/branching-and-ci.md`
-change, if agreed.
+**Coordination procedure agreed with `autotrade-79`** on a shared commit/PR/
+merge coordination discussion (triggered by two near-misses this session: a
+redundant consolidation comment on PR #303, and PR #310 turning out to be a
+*third*, unidentified session/worktree's work — not autotrade-79's, as first
+assumed). Outcome: (1) `ListAgents`+`gh pr list` before opening/merging a PR
+is already the documented convention (`.claude/rules/branching-and-ci.md`,
+since 2026-08-30) — the miss was practice, not policy, no rule-text change
+needed. (2) A one-line "about to merge #N" ping before `gh pr merge` when
+ListAgents shows a live peer is worth formalizing — this session is drafting
+it as a small addition to branching-and-ci.md's PR-merge section, through
+the full self-review/adversarial-review/consolidation cycle (it's a
+process/rule change, in scope regardless of size).
 
 **Leave alone — active peer-session work, not ready for anything:**
 - `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
   13 commits ahead of `main`, no PR yet).
-- PR #310 (`docs/claudesuperpower-toolkit-assessment`, autotrade-79's exhaustive
-  claudesuperpower.com toolkit scan) — needs your read on its FINAL VERDICT
-  (4 candidate `claude-plugins-official` plugins) before anyone merges it;
-  don't merge on its behalf.
-- An untracked scratch file `docs/claudesuperpower-toolkit-assessment-2026-08-31.md`
-  sits in the shared primary checkout (not a worktree) — leftover from before
-  PR #310's branch existed, already committed there too; flagged to
-  autotrade-79 to clean up, not touched here.
+- PR #310 (`docs/claudesuperpower-toolkit-assessment`, an exhaustive
+  claudesuperpower.com toolkit scan) — author is a third session/worktree
+  neither this session nor `autotrade-79` has identified; needs your read on
+  its FINAL VERDICT (4 candidate `claude-plugins-official` plugins) before
+  anyone merges it.
+- **Needs your confirmation, not a session's:** an untracked scratch file
+  `docs/claudesuperpower-toolkit-assessment-2026-08-31.md` sits in the
+  shared primary checkout (not any worktree) — a near-identical leftover
+  (differs by 2 trailing blank lines, mtime 2026-08-31 01:52 local/06:52 UTC,
+  predating this session's activity) of what's committed on PR #310's
+  branch. Neither this session nor `autotrade-79` created it; provenance
+  unconfirmed, so nobody's touched it — don't let it get swept into an
+  unrelated `git add`.
 
 ## Recently resolved (2026-08-31, this session)
 
