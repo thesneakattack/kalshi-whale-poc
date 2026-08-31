@@ -230,6 +230,12 @@ observability:
   enabled: true
   sample_interval_sec: 60
   retention_hours: 336  # 14 days - see services/observability/CHEATSHEET.md
+market_history:
+  retention_hours: 168  # 7d - momentum()/volatility()/compute_hypothetical_trades()'s
+  # longest lookback is 86400s/24h (services/market_history.py's own default
+  # lookback_windows_sec); this leaves a wide margin above that. Added
+  # 2026-08-30 to close the one retention gap found in data/*.db - see
+  # services/market_history.py's prune() docstring.
 research:
   enabled: false  # off until manually reviewed - see services/research/CHEATSHEET.md
   min_new_resolved_signals: 100
