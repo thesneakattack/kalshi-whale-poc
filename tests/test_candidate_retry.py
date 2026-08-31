@@ -64,6 +64,15 @@ class _NoSignalProvider:
         return []
 
 
+class _FakeBroker:
+    """Minimal stand-in - _handle_signal's find_open_confirmed_conflict
+    fallback (2026-08-30) reads strategy.broker.positions.keys() directly,
+    live, not a periodic state snapshot. Empty is enough here: these tests
+    don't exercise ME-pairing behavior."""
+    def __init__(self):
+        self.positions = {}
+
+
 class _FakeStrategy:
     """Stands in for services.app_state's real FollowTheWhaleStrategy -
     same pattern as test_whale_stream_decision_bridge.py's own fake:
@@ -72,6 +81,7 @@ class _FakeStrategy:
     def __init__(self, decision):
         self.decision = decision
         self.calls = 0
+        self.broker = _FakeBroker()
 
     def evaluate(self, signal, cfg, **kwargs):
         self.calls += 1

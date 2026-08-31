@@ -109,6 +109,13 @@ def _connect() -> sqlite3.Connection:
     _add_column_if_missing(conn, "archived_trades", "netting_improvement_usd", "REAL")
     _add_column_if_missing(conn, "archived_trades", "netting_bar_usd", "REAL")
     _add_column_if_missing(conn, "archived_trades", "netting_vol_ratio", "REAL")
+    # netting_exit_fee_usd (2026-08-30, entry-gate-me-pairing-and-netting-
+    # remediation Part 2, services/paper_broker.py's Trade field) - not an
+    # issue #213/#242 column, but the same "silently dropped from every
+    # archive until it is added in both places" trap applies to it exactly
+    # as it does to the three above, so it is added alongside them rather
+    # than after the fact.
+    _add_column_if_missing(conn, "archived_trades", "netting_exit_fee_usd", "REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_trades_epoch ON archived_trades (epoch_id, timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_trades_series ON archived_trades (series, timestamp)")
     conn.execute(
@@ -207,7 +214,8 @@ def archive_epoch(label: str, reason: str | None = None, cfg: dict | None = None
             conn.row_factory = sqlite3.Row
             trades = [dict(r) for r in conn.execute(
                 "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
-                "fee, signal_seen_at, netting_improvement_usd, netting_bar_usd, netting_vol_ratio "
+                "fee, signal_seen_at, netting_improvement_usd, netting_bar_usd, netting_vol_ratio, "
+                "netting_exit_fee_usd "
                 "FROM trades ORDER BY timestamp")]
             positions = [dict(r) for r in conn.execute(
                 "SELECT ticker, side, size, entry_price, opened_at, config_fingerprint, entry_fee "
@@ -242,12 +250,12 @@ def archive_epoch(label: str, reason: str | None = None, cfg: dict | None = None
         arch.executemany(
             "INSERT OR IGNORE INTO archived_trades (epoch_id, id, ticker, series, side, size, "
             "price, reason, timestamp, config_fingerprint, fee, signal_seen_at, "
-            "netting_improvement_usd, netting_bar_usd, netting_vol_ratio) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "netting_improvement_usd, netting_bar_usd, netting_vol_ratio, netting_exit_fee_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(epoch_id, t["id"], t["ticker"], signal_log.series_of(t["ticker"]), t["side"],
               t["size"], t["price"], t["reason"], t["timestamp"], t["config_fingerprint"],
               t["fee"], t["signal_seen_at"], t["netting_improvement_usd"], t["netting_bar_usd"],
-              t["netting_vol_ratio"]) for t in trades],
+              t["netting_vol_ratio"], t["netting_exit_fee_usd"]) for t in trades],
         )
         arch.executemany(
             "INSERT OR IGNORE INTO archived_positions (epoch_id, ticker, side, size, entry_price, "

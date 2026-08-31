@@ -312,9 +312,34 @@ def describe_groups(
                 "reason": "payout is positive under every possible outcome - settlement is fee-free, closing early can only add cost",
             }
         elif status == "locked_loss":
+            # Real, avoidable cost of closing now instead of holding to
+            # Kalshi's fee-free settlement (kalshi_fees.taker_fee returns
+            # 0.0 at price 0/1 - see this module's own top-of-file
+            # docstring). Reported, not acted on: whether the bankroll/
+            # position-headroom benefit below is worth this cost is an
+            # open, unresolved tradeoff (docs/open-decisions.md) - this
+            # only makes the number visible instead of buried in realized
+            # P&L with no attribution.
+            #
+            # This is the WHOLE GROUP's fee, summed over every member, and
+            # review() below copies this one figure onto EVERY member's
+            # trades row (netting_exit_fee_usd) - the same repeat-per-row
+            # convention the three issue-#213 columns use. Those three are
+            # non-additive (an estimate, a bar, a ratio) so repeating them
+            # is harmless; a USD amount invites a SUM(), which would
+            # overcount by the group size. Aggregate netting fee drag comes
+            # from `SELECT SUM(fee) ... WHERE netting_exit_fee_usd IS NOT
+            # NULL` instead - `trades.fee` already holds each leg's own
+            # real per-leg fee, from this same taker_fee call at this same
+            # price. See paper_broker.Trade.netting_exit_fee_usd.
+            exit_fee_cost = sum(
+                kalshi_fees.taker_fee(pos.size, latest_prices.get(t, pos.entry_price), ticker=t)
+                for t, pos in members
+            )
             entry["recommendation"] = {
                 "action": "close_all",
                 "tickers": [t for t, _ in members],
+                "exit_fee_cost_usd": round(exit_fee_cost, 2),
                 "reason": "payout is negative under every possible outcome - the loss is already fixed regardless of timing; closing now frees up bankroll/position headroom instead of leaving it dead until settlement",
             }
         else:
@@ -372,15 +397,22 @@ def review(
                 continue
             price = latest_prices.get(ticker, pos.entry_price)
             reason = f"position netting ({group['status']}, event {group['event_ticker']}): {rec['reason']}"
-            # The same three values the sentence above was built from ride
-            # onto the trades row as columns (issue #213). A locked_loss
-            # close_all computed no bar, so its rec has none and the columns
-            # stay NULL - "no bar", never a bar of $0.
+            # Four structured values ride onto the trades row as columns:
+            # the first three from issue #213 (the sentence's own numbers,
+            # plus vol_ratio, which has no prose counterpart of its own -
+            # see the comment above in describe_groups), netting_exit_fee_usd
+            # added 2026-08-30 for locked_loss's own real cost. The two
+            # groups are populated on opposite branches, never together: a
+            # locked_loss close_all's rec has no bar/improvement/vol_ratio
+            # (those three stay NULL) but does have exit_fee_cost_usd; every
+            # other action has the first three and never exit_fee_cost_usd.
+            # NULL always means "not this branch", never a real $0.
             trade = broker.close_position(
                 ticker, price, reason,
                 netting_improvement_usd=rec.get("expected_value_improvement_usd"),
                 netting_bar_usd=rec.get("materiality_bar_usd"),
                 netting_vol_ratio=rec.get("vol_ratio"),
+                netting_exit_fee_usd=rec.get("exit_fee_cost_usd"),
             )
             if trade is None:
                 continue

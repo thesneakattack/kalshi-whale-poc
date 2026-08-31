@@ -44,6 +44,20 @@ from fastapi.testclient import TestClient  # noqa: E402
 client = TestClient(main.app)
 
 
+# Docker Desktop/WSL2's embedded DNS resolves the single label "web" to
+# this synthetic placeholder instead of raising socket.gaierror - ddev's
+# own project genuinely registers a compose service literally named "web"
+# elsewhere on this Docker Desktop instance, just not reachable from a
+# container outside ddev's own network. Confirmed live 2026-08-31: bogus
+# hostnames raise gaierror as expected, "web" specifically resolves to
+# exactly this address on this host. Checking for it by name (not just
+# catching whatever error the subsequent connect attempt raises) matters:
+# a real "web" container down *while actually running inside ddev* also
+# raises requests.exceptions.ConnectionError, which must fail this test,
+# not skip it (PR #298 self-review finding, 2026-08-31 - autotrade-8a).
+_DOCKER_DESKTOP_UNRESOLVED_SENTINEL = "127.0.53.53"
+
+
 def test_static_index_served_from_web_container():
     # From inside the fastapi container the nginx/web service is reachable
     # as the host "web" on port 80 in ddev. Only ddev's docker-compose
@@ -51,11 +65,12 @@ def test_static_index_served_from_web_container():
     # tests.yml's bare ubuntu-latest, no ddev) never will, so skip there
     # rather than fail on an environment this test was never meant to cover.
     try:
-        socket.gethostbyname("web")
+        resolved_ip = socket.gethostbyname("web")
     except socket.gaierror:
         pytest.skip("'web' host not reachable outside ddev's docker network")
-    url = 'http://web/'
-    resp = requests.get(url, timeout=5)
+    if resolved_ip == _DOCKER_DESKTOP_UNRESOLVED_SENTINEL:
+        pytest.skip("'web' resolved to Docker Desktop's not-reachable-here placeholder, not ddev's real container")
+    resp = requests.get('http://web/', timeout=5)
     assert resp.status_code == 200
     assert '<div class="view" id="view-terminal">' in resp.text
     # index.html's <script>/<style> got extracted into real ES modules under

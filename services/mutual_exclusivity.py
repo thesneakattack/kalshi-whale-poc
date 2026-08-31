@@ -32,6 +32,34 @@ import math
 
 _PRICE_SUM_TOLERANCE = 0.02
 
+# Lifetime counter (never reset except by process restart, same idiom as
+# strategy_engine.py's own _me_gate_stats). This one counts how often
+# find_open_confirmed_conflict couldn't determine an answer because
+# market_titles had no cached entry yet for the candidate ticker (a
+# brand-new market the catalog scan hasn't reached), as distinct from a
+# genuine "checked, no conflict" result.
+#
+# Relationship to strategy_engine.py's me_gate_unknown_total (corrected
+# 2026-08-30, final-review finding): that counter is real and LIVE today -
+# _record_me_gate_unknown is called from strategy_engine.evaluate()'s own
+# special-market conservative gate on every signal - not a placeholder for
+# something unimplemented. It belongs to a DIFFERENT gate (the one PR
+# #202's parked event-scoped ME design would extend), and it happens to
+# count a similar underlying condition (no market_titles/event_titles
+# entry, or a lookup exception) measured at a different point in that
+# gate's own logic. The two counters therefore overlap in cause but not in
+# meaning: this one is "the entry-side ME-pairing fallback had no catalog
+# entry for the candidate", that one is "the special-market gate could not
+# verify mutually_exclusive at all". Read them side by side at
+# GET /api/health/pipeline (both are surfaced there), never as one number.
+_me_pairing_stats = {"me_pairing_unknown_total": 0}
+
+
+def me_pairing_stats() -> dict:
+    """Pure read for GET /api/health/pipeline's me_pairing_gate block
+    (services/diagnostics/routes.py) - see _me_pairing_stats above."""
+    return dict(_me_pairing_stats)
+
 
 def find_me_pairs(markets: list[dict], event_titles: dict) -> dict[str, str]:
     """markets: state["markets"]-shaped list (needs ticker, event_ticker,
@@ -71,3 +99,65 @@ def find_me_pairs(markets: list[dict], event_titles: dict) -> dict[str, str]:
         pairs[ticker_a] = ticker_b
         pairs[ticker_b] = ticker_a
     return pairs
+
+
+def find_open_confirmed_conflict(
+    ticker: str, market_titles: dict, event_titles: dict, open_position_tickers: set[str],
+) -> str | None:
+    """The ticker of a currently-open position that is Kalshi-confirmed
+    mutually-exclusive with `ticker` (same event_ticker,
+    event_titles[...].mutually_exclusive is True), or None.
+
+    Bounded to the genuine 2-outcome case, the same scope find_me_pairs
+    above restricts itself to (`if len(siblings) != 2: continue`): a
+    conflict is only reported when `ticker` would become exactly the
+    SECOND open position on its event. See the len() check below for why.
+
+    Unlike find_me_pairs (which needs both siblings in the same tick's
+    REST-fetched `markets` batch - narrow, watchlist-scoped), this reads
+    market_titles/event_titles: the persisted, catalog-wide caches
+    (services/title_cache.py) that decision_bridge.py already reads for
+    every signal regardless of watchlist membership. Works for a candidate
+    ticker that has never been on the watchlist - see docs/superpowers/
+    specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
+
+    Scoped to open_position_tickers (small - pass a live view of currently-
+    open positions, e.g. broker.positions.keys(), never a periodically-
+    refreshed snapshot; see the caller's own docstring on why) rather than
+    scanning the full market_titles catalog by event_ticker - same cost
+    shape as position_netting.find_groups, which already does this safely
+    on the hot path. O(open positions), not O(catalog)."""
+    info = market_titles.get(ticker)
+    event_ticker = info.get("event_ticker") if info else None
+    me_flag = (event_titles.get(event_ticker) or {}).get("mutually_exclusive") if event_ticker else None
+    if info is None or not event_ticker or me_flag is None:
+        # Genuinely undetermined - counted, never silently treated as a
+        # confirmed non-conflict (code-review finding, 2026-08-30): a
+        # missing market_titles entry, a market_titles entry with no
+        # event_ticker yet, and an event_titles entry whose
+        # mutually_exclusive flag hasn't been backfilled are three
+        # different "can't tell yet" states that all deserve the same
+        # observability treatment - distinct from Kalshi's own confirmed
+        # mutually_exclusive=False, a real, determined non-conflict that
+        # must NOT inflate this counter.
+        _me_pairing_stats["me_pairing_unknown_total"] += 1
+        return None
+    if me_flag is not True:
+        return None
+    same_event_open = [
+        t for t in open_position_tickers
+        if t != ticker and (market_titles.get(t) or {}).get("event_ticker") == event_ticker
+    ]
+    # Bounded to the genuine 2-outcome case, same proxy
+    # position_netting.find_groups already uses for this identical problem
+    # (len(members) != 2 there) - exactly one other open position on this
+    # event means the candidate would make a real head-to-head pair; zero
+    # means nothing to conflict with; two-or-more means this event is
+    # already N-way in practice (a real subset of a larger field, e.g. a
+    # golf tournament), which is out of scope for this entry-side gate -
+    # position_netting.py already exists to manage N-way exposure
+    # post-entry. See docs/superpowers/specs/2026-08-30-entry-gate-me-
+    # pairing-and-netting-remediation-design.md's Part 1 scope boundary.
+    if len(same_event_open) != 1:
+        return None
+    return same_event_open[0]

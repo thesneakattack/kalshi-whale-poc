@@ -25,7 +25,10 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
+from services import (
+    capture_writer, index_feed, mutual_exclusivity, series_watcher, settlement_edge, settlement_resolver,
+    strategy_engine,
+)
 from services.index_feed import backfill as index_feed_backfill
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
@@ -264,6 +267,10 @@ def _scheduler_status(now: float) -> dict:
         # scheduler from catalog_scan above, see services/market_watch/
         # mve_scan.py's own docstring for why.
         "mve_scan": _entry("mve_scan", "last_started_at", "scanning"),
+        # Broad milestone discovery (entry-gate-me-pairing-and-netting-
+        # remediation Part 3) - independent scheduler, see services/
+        # market_watch/milestone_scan.py's own docstring for why.
+        "milestone_scan": _entry("milestone_scan", "last_started_at", "scanning"),
         "candidate_retry": _entry("candidate_retry_loop", "last_started_at", "running"),
         # The resolver's own counters ride along (pending backlog, lifetime
         # enqueued/resolved/dropped). `dropped_after_max_attempts` growth is
@@ -429,6 +436,18 @@ async def get_pipeline_health(exact_rows: bool = False):
         # markets_watched/candidates actually flowing; it does not mean
         # "the gate is being checked and always finds it False."
         "strategy_gates": strategy_engine.me_gate_stats(),
+        # The entry-side ME-pairing fallback's own gap counter
+        # (services/mutual_exclusivity.py's me_pairing_stats, 2026-08-30) -
+        # how often find_open_confirmed_conflict returned None because
+        # market_titles had no cached entry for the CANDIDATE ticker yet,
+        # i.e. the gate defaulted rather than genuinely finding no
+        # conflict. Deliberately a sibling key, not merged into
+        # strategy_gates above: the two counters overlap in cause (a
+        # missing title-cache entry) but belong to different gates measured
+        # at different points, so summing or comparing them directly would
+        # be wrong. Same "measure it or it fails silently" reason
+        # strategy_gates is here at all.
+        "me_pairing_gate": mutual_exclusivity.me_pairing_stats(),
         # REST latency decomposition by caller class + token-bucket waiter
         # gauges (I5, services/http_client.py's rest_latency_snapshot):
         # limiter wait vs network vs backoff, so a slow call is attributable.
