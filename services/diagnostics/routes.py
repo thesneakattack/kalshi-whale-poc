@@ -25,7 +25,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from services import capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
+from services import candlestick_volatility, capture_writer, index_feed, series_watcher, settlement_edge, settlement_resolver, strategy_engine
 from services.index_feed import backfill as index_feed_backfill
 from services.reset import trade_archive
 from services.diagnostics import diagnostics
@@ -235,6 +235,17 @@ async def get_settlement_edge(min_samples: int = 200):
     instant (services/settlement_edge.py). Reports "insufficient" rather
     than a verdict until there's enough resolved data to mean anything."""
     return {"report": settlement_edge.edge_report(min_samples), "capture": settlement_edge.stats()}
+
+
+@router.get("/api/diagnostics/candlestick-volatility")
+async def get_candlestick_volatility_diagnostics(lookback_sec: float = 3600):
+    """Side-by-side candlestick-derived vs. snapshot-derived volatility per
+    watched ticker - a comparison surface, not a decision input."""
+    tickers = [m["ticker"] for m in state["markets"] if m.get("ticker")]
+    return {
+        "report": candlestick_volatility.comparison_report(tickers, lookback_sec),
+        "bar_count": candlestick_volatility.bar_count(),
+    }
 
 
 def _scheduler_status(now: float) -> dict:

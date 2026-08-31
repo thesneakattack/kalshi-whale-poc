@@ -172,3 +172,43 @@ def test_get_account_diagnostics_degrades_to_an_explicit_error_when_a_read_fails
     assert result["api_key_attestation"]["status"] == "never_attested"
     assert len(recorded) == 1
     assert recorded[0][0][:2] == ("kalshi_account", "get_user_data_timestamp")
+
+
+# ---- GET /api/diagnostics/candlestick-volatility ---------------------------
+
+
+def test_get_candlestick_volatility_diagnostics_returns_report_and_bar_count(monkeypatch):
+    """Calls candlestick_volatility.comparison_report and bar_count,
+    filtered to tickers present in state["markets"], and returns them as JSON."""
+    from services import candlestick_volatility
+
+    # Mock state with test markets data
+    test_markets = [
+        {"ticker": "TICKER-A"},
+        {"ticker": "TICKER-B"},
+        {"other_field": "no_ticker"},  # Should be skipped
+    ]
+    mock_state = {"markets": test_markets}
+    monkeypatch.setattr(diagnostics_routes, "state", mock_state)
+
+    # Mock candlestick_volatility functions
+    def mock_comparison_report(tickers, lookback_sec):
+        return [
+            {"ticker": t, "candlestick_volatility": 0.05, "snapshot_volatility": 0.04}
+            for t in tickers
+        ]
+
+    def mock_bar_count():
+        return 42
+
+    monkeypatch.setattr(candlestick_volatility, "comparison_report", mock_comparison_report)
+    monkeypatch.setattr(candlestick_volatility, "bar_count", mock_bar_count)
+
+    result = asyncio.run(diagnostics_routes.get_candlestick_volatility_diagnostics())
+
+    assert isinstance(result, dict)
+    assert "report" in result
+    assert "bar_count" in result
+    assert result["bar_count"] == 42
+    assert isinstance(result["report"], list)
+    assert len(result["report"]) == 2  # TICKER-A and TICKER-B
