@@ -62,11 +62,30 @@ async def trigger_backup_run(tier: str = "regular"):
     (asyncio.to_thread) so it doesn't stall the trading loop or other
     in-flight requests for however long the backup takes.
 
-    tier (2026-08-30): "regular" (default, unchanged behavior - the small,
-    account-critical files) or "large" (the permanently-growing history
-    files, backup.py's own large_files config)."""
+    tier (2026-08-30, corrected 2026-08-30): the bare/default call covers
+    the "regular" tier only - the small, account-critical files - NOT
+    "unchanged behavior" against the pre-split single-cadence backup;
+    since the two-tier split, the default silently excludes
+    series_watcher.db/candidate_log.db/market_history.db.
+    "large" covers only those three permanently-growing files
+    (backup.py's own large_files config). "all" runs both cycles in
+    sequence (regular then large) and is what to call before a risky
+    operation if full coverage of every data/*.db file is actually
+    wanted - mirrors the shape backup.py's own `__main__` CLI block
+    already uses to run both tiers."""
     backup_cfg = config_store.get().get("backup") or {}
     large_files = frozenset(backup_cfg.get("large_files", backup._DEFAULT_LARGE_FILES))
+    if tier == "all":
+        regular_retention = backup_cfg.get("retention_count", backup._DEFAULT_RETENTION_COUNT)
+        large_retention = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
+        regular_result = await asyncio.to_thread(
+            backup.run_backup_cycle, regular_retention, tier="regular", exclude=large_files,
+        )
+        large_result = await asyncio.to_thread(
+            backup.run_backup_cycle, large_retention, tier="large", only=large_files,
+            snapshot_root=backup.LARGE_BACKUP_DIR,
+        )
+        return {"regular": regular_result, "large": large_result}
     if tier == "large":
         retention_count = backup_cfg.get("large_file_retention_count", backup._DEFAULT_LARGE_FILE_RETENTION_COUNT)
         return await asyncio.to_thread(

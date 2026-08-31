@@ -293,3 +293,17 @@ def test_prune_does_not_touch_outcomes(tmp_path, monkeypatch):
     mh.prune(retention_hours=1.0, now=500_010.0)
 
     assert mh.outcome_count() == 1
+
+
+def test_prune_respects_batch_size_cap(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    for i in range(10):
+        mh.record_snapshots(
+            [{"ticker": "TICK-A", "yes_price": 0.5, "spread": 0.02, "volume_24h": 1000, "time_to_close_sec": 3600}],
+            timestamp=float(i),
+        )
+
+    result = mh.prune(retention_hours=0.0, now=1000.0, batch_size=3)
+
+    assert result["snapshots_deleted"] == 3
+    assert mh.snapshot_count() == 7

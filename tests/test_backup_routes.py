@@ -86,3 +86,21 @@ def test_run_route_large_tier_backs_up_only_large_files():
     snapshot_dir = backup.LARGE_BACKUP_DIR / body["snapshot"]
     assert (snapshot_dir / "series_watcher.db").exists()
     assert not (snapshot_dir / "paper_broker.db").exists()
+
+
+def test_run_route_all_tier_runs_both_cycles():
+    _make_real_sqlite_file(backup.DATA_DIR / "paper_broker.db")
+    _make_real_sqlite_file(backup.DATA_DIR / "series_watcher.db")
+
+    resp = client.post("/api/backup/run?tier=all")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["regular"]["tier"] == "regular"
+    assert body["large"]["tier"] == "large"
+    regular_dir = backup.BACKUP_DIR / body["regular"]["snapshot"]
+    large_dir = backup.LARGE_BACKUP_DIR / body["large"]["snapshot"]
+    assert (regular_dir / "paper_broker.db").exists()
+    assert not (regular_dir / "series_watcher.db").exists()
+    assert (large_dir / "series_watcher.db").exists()
+    assert not (large_dir / "paper_broker.db").exists()
