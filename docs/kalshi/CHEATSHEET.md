@@ -1051,3 +1051,42 @@ changes` introspected directly in the fastapi container.
 **Found:** 2026-08-31, kalshi-category-data-completeness Task 2
 (`services/kalshi/public.py::get_series_fee_changes`,
 `services/market_watch/catalog_scan.py::_get_series_cache`'s fee merge).
+
+---
+
+## For a `strike_type: "structured"` market, what does `custom_strike` actually hold, and how do I resolve it to a real name?
+**Answer:** `custom_strike` is a dict whose value(s) are structured-target
+UUIDs, not plain display strings and not a fixed key name - Kalshi's own
+example uses `{"basketball_team": "2ef4d31c-..."}`; another market might
+use a different key for the same shape. Resolve a UUID via `GET
+/structured_targets` (batched, `ids` repeated up to 2000 per call, `style:
+form, explode: true`) or `GET /structured_targets/{id}` (singular) to get
+`{id, name, type, details, source_id, source_ids, last_updated_ts}` - the
+real `name` is what a declared `winner` string should be matched against,
+never the raw UUID.
+**Gotcha:** the raw UUID substring-matched directly against `winner`
+(`str(winner).lower() in str(v).lower()`) can never succeed - it's always
+false, silently, no error. Live-sampled 2026-08-30/31: 134 of 149 sampled
+real related markets are `strike_type: "structured"`, so this wasn't an
+edge case - it was the majority path for winner propagation quietly
+falling through to the weaker `yes_sub_title`/`title` substring match
+underneath it (or failing outright when that fallback also missed).
+`page_size`'s own documented default is only 100 (max 2000) - a batched
+`ids` request larger than 100 needs `page_size` passed explicitly or it
+silently truncates, the same "explicit beats an unhelpful default" trap
+`get_markets_by_tickers`' `limit=len(chunk)` already exists to avoid for
+markets.
+**Source:** `targets_and_milestones.md:73-86` ("How They Connect To
+Markets" - the exact `custom_strike`/`basketball_team` example quoted
+above), `get-structured-targets.md` (batched endpoint, `ids`/`page_size`
+schema), `get-structured-target.md` (singular per-id endpoint, contrasted
+above). `StructuredTarget`'s fields (`id`/`name`/`type`/`source_id`) are
+all plain `Optional[str]` on the installed SDK - no enum-typed field,
+confirmed directly by introspecting `kalshi_python_async.models.
+structured_target.StructuredTarget.model_fields` in the fastapi
+container, so (unlike `get_series_fee_changes` above) this is fetched
+through the typed SDK client, not raw JSON.
+**Found:** 2026-08-31, kalshi-category-data-completeness Task 9
+(`services/kalshi/public.py::get_structured_targets`,
+`services/market_watch/catalog_scan.py::propagate_milestone_winners`'s
+`custom_strike` resolution).

@@ -145,6 +145,36 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             # regardless of how many events have a winner to map.
             related_market_by_ticker = await client.get_markets_by_tickers(all_related) if all_related else {}
 
+            # Structured-target UUID resolution (kalshi-category-data-
+            # completeness Task 9, targets_and_milestones.md:73-86: "For
+            # strike_type: 'structured', the value inside custom_strike is
+            # a structured target ID. You can resolve it with the Get
+            # Structured Target endpoint"). Collected across every related
+            # market this tick (not per-event) - same batching shape as
+            # all_related/related_market_by_ticker immediately above.
+            # Iterates every value in custom_strike generically, not a
+            # hardcoded key (Kalshi's own example uses "basketball_team";
+            # the doc names no fixed key), matching this function's
+            # existing loose `cs.values()` iteration below. See
+            # state["structured_targets_cache"]'s own comment (app_state.py)
+            # for why this is a flat, no-TTL, learn-once cache rather than
+            # category_metadata's fetched_at+TTL shape.
+            structured_targets_cache = state["structured_targets_cache"]
+            custom_strike_ids: list[str] = []
+            seen_custom_strike_ids = set()
+            for rm in related_market_by_ticker.values():
+                cs = rm.get("custom_strike") if isinstance(rm, dict) else None
+                if not isinstance(cs, dict) or not cs:
+                    continue
+                for v in cs.values():
+                    cs_id = str(v) if v else ""
+                    if cs_id and cs_id not in seen_custom_strike_ids:
+                        seen_custom_strike_ids.add(cs_id)
+                        custom_strike_ids.append(cs_id)
+            missing_target_ids = [i for i in custom_strike_ids if i not in structured_targets_cache]
+            if missing_target_ids:
+                structured_targets_cache.update(await client.get_structured_targets(missing_target_ids))
+
             for et, ms, winner, related in events_with_winner:
                 related_markets = [related_market_by_ticker[t] for t in related if t in related_market_by_ticker]
                 mapped_winner_ticker = None
@@ -153,9 +183,32 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                         continue
                     cs = rm.get("custom_strike") or {}
                     try:
-                        if isinstance(cs, dict) and any(str(winner).lower() in str(v).lower() for v in cs.values()):
-                            mapped_winner_ticker = rm.get("ticker")
-                            break
+                        if isinstance(cs, dict) and cs and isinstance(winner, str) and winner:
+                            wlow_cs = winner.lower()
+                            # Match against each UUID's *resolved* name
+                            # (structured_targets_cache, populated above) -
+                            # not the raw UUID itself, which a substring
+                            # match against `winner` can never hit (the
+                            # original bug this replaces: 134/149 sampled
+                            # real markets are strike_type: "structured",
+                            # so this was silently falling through to the
+                            # weaker yes_sub_title/title match below for
+                            # nearly every one of them). An id this tick's
+                            # get_structured_targets call didn't resolve
+                            # (fetch failure, or Kalshi not returning it)
+                            # simply isn't in the cache and is skipped here
+                            # - same skip-not-crash convention as the
+                            # ticker-keyed caches above - falling through
+                            # to the yes_sub_title/no_sub_title/title match
+                            # beneath, unchanged.
+                            for v in cs.values():
+                                target = structured_targets_cache.get(str(v)) if v else None
+                                name = target.get("name") if isinstance(target, dict) else None
+                                if name and wlow_cs in str(name).lower():
+                                    mapped_winner_ticker = rm.get("ticker")
+                                    break
+                            if mapped_winner_ticker:
+                                break
                     except Exception:
                         pass
                     yst = (rm.get("yes_sub_title") or "")

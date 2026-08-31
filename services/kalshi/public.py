@@ -64,6 +64,7 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     "get_multivariate_events": ("docs/kalshi/get-multivariate-events.md",),
     "get_multivariate_event_collections": ("docs/kalshi/get-multivariate-event-collections.md",),
     "get_series_fee_changes": ("docs/kalshi/get-series-fee-changes.md",),
+    "get_structured_targets": ("docs/kalshi/get-structured-targets.md",),
 }
 
 
@@ -180,6 +181,55 @@ class KalshiPublicGateway:
                 d = m.model_dump(mode="json")
                 if d.get("ticker"):
                     out[d["ticker"]] = d
+        return out
+
+    _STRUCTURED_TARGETS_BATCH_SIZE = 2000  # docs/kalshi/get-structured-targets.md's own
+    # documented cap on the `ids` filter (`maxItems: 2000`, `style: form, explode: true`
+    # -> repeated `?ids=uuid1&ids=uuid2...` query params - confirmed directly against the
+    # installed SDK's StructuredTargetsApi._get_structured_targets_serialize, which sets
+    # collection_formats={'ids': 'multi'} and appends the raw list as a single query-param
+    # tuple, exploded by param_serialize). Deliberately NOT
+    # _MARKETS_BY_TICKERS_BATCH_SIZE's 50 above - that number comes from get_markets'
+    # own documented 10-tokens-per-market cost against Kalshi's 600-token read-burst
+    # ceiling (see that constant's own comment); list-non-default-endpoint-costs.md
+    # (GET /account/endpoint_costs) is a live runtime listing, not a static table this
+    # doc mirror carries, and it names no non-default cost for structured_targets - so
+    # the only real, currently-known ceiling for this endpoint is its own stated ids cap.
+
+    async def get_structured_targets(self, ids: list[str]) -> dict[str, dict]:
+        """Batched structured-target lookup - resolves the UUIDs Kalshi puts in a
+        `strike_type: "structured"` market's `custom_strike` values to their real
+        name/type (targets_and_milestones.md:73-86: "For strike_type: 'structured', the
+        value inside custom_strike is a structured target ID. You can resolve it with the
+        Get Structured Target endpoint" - this is that lookup's batched form, GET
+        /structured_targets with a repeated `ids` filter, instead of N individual
+        GET /structured_targets/{id} calls).
+
+        page_size is passed explicitly as len(chunk): get-structured-targets.md documents
+        page_size's own default as 100 (max 2000) - same "an unset default silently
+        under-returns a bigger request" trap get_markets_by_tickers' own limit=len(chunk)
+        already guards against above, just for this endpoint's page_size instead of
+        get_markets' limit. Since every chunk is already <= the batch size above (which
+        equals page_size's own documented max), one page per chunk is always enough; no
+        cursor-following loop is needed the way get_multivariate_event_collections needs
+        one for its own open-ended, not-id-filtered listing.
+
+        Returns id -> structured target dict (mirrors get_markets_by_tickers' ticker-keyed
+        shape, just keyed by `id` - this endpoint's own response field per StructuredTarget's
+        schema, not `ticker`). An id Kalshi doesn't return just isn't in the result, same
+        skip-not-crash convention as get_markets_by_tickers/get_events above."""
+        if not ids:
+            return {}
+        out: dict[str, dict] = {}
+        for i in range(0, len(ids), self._STRUCTURED_TARGETS_BATCH_SIZE):
+            chunk = ids[i:i + self._STRUCTURED_TARGETS_BATCH_SIZE]
+            resp = await call_with_backoff(
+                self._client.get_structured_targets, ids=chunk, page_size=len(chunk),
+            )
+            for t in resp.structured_targets:
+                d = t.model_dump(mode="json")
+                if d.get("id"):
+                    out[d["id"]] = d
         return out
 
     async def get_orderbook(self, ticker: str) -> dict:

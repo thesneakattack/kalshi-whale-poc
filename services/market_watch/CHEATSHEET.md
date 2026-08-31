@@ -346,3 +346,30 @@ not milestone `type` — the wrapper only exposes `category`, so
   unaffected. Regression-tested end to end (not just the extractor in
   isolation) at `tests/test_trading_gate.py::
   test_fetch_live_status_political_race_runoff_does_not_fall_through_to_schedule_live`.
+
+## `catalog_scan.py`'s `custom_strike` match now resolves structured-target UUIDs (2026-08-31, Task 9 of kalshi-category-data-completeness)
+
+`propagate_milestone_winners`'s `custom_strike` block (previously
+`catalog_scan.py:154-160`, referenced above by the `esports_match` entry)
+used to substring-match the raw `winner` string against `custom_strike`'s
+raw dict values directly — for a `strike_type: "structured"` related
+market those values are structured-target UUIDs, not display strings, so
+that match could never succeed (`docs/kalshi/CHEATSHEET.md`'s new
+`custom_strike`/structured-targets entry: 134/149 sampled real markets are
+this type — the majority of real winner-propagation traffic, not an edge
+case). Fixed by resolving every distinct UUID seen across all related
+markets this tick, once, via the new `KalshiPublicGateway.
+get_structured_targets()` (`services/kalshi/public.py`), cached in
+`state["structured_targets_cache"]` (flat, no-TTL, incrementally grown —
+a structured target's id→name mapping is permanent reference data once
+learned, unlike `category_metadata`'s TTL'd tags/filters, which Kalshi
+actively revises), and matching `winner` against each resolved target's
+real `name` instead of the raw UUID. The pre-existing
+`yes_sub_title`/`no_sub_title`/`title` fallback beneath this block is
+unchanged — an id `get_structured_targets` doesn't resolve (not yet
+fetched, or Kalshi doesn't return it) is skipped, same skip-not-crash
+convention as `get_markets_by_tickers`/`get_events`, falling through to
+that fallback exactly as before. The `esports_match` finding above still
+stands: `winner` is `None` for that milestone type regardless, so no
+`custom_strike` resolution ever runs for it — this fix only helps types
+where `winner` is a real declared name.

@@ -6,14 +6,22 @@ import main
 
 
 class FakeClient:
-    def __init__(self, milestones_map, live_map, market_map):
+    def __init__(self, milestones_map, live_map, market_map, structured_targets_map=None):
         self._milestones = milestones_map
         self._live = live_map  # milestone_id -> {"details": {...}} (flat, matching get_live_datas' real shape)
         self._markets = market_map
+        # structured_target_id (uuid) -> resolved StructuredTarget dict
+        # (kalshi-category-data-completeness Task 9) - defaults to {} so
+        # every pre-existing FakeClient(...) call site (none of which pass
+        # a custom_strike at all) is unaffected: get_structured_targets is
+        # only ever called when propagate_milestone_winners finds a
+        # non-empty custom_strike dict to resolve.
+        self._structured_targets = structured_targets_map or {}
         self.milestone_calls = []
         self.live_data_calls = []
         self.market_calls = []
         self.market_call_batches = []  # one entry per get_markets_by_tickers call
+        self.structured_targets_calls = []
 
     async def get_milestones_for_event(self, event_ticker):
         self.milestone_calls.append(event_ticker)
@@ -30,6 +38,12 @@ class FakeClient:
         self.market_calls.extend(tickers)
         self.market_call_batches.append(list(tickers))
         return {t: self._markets[t] for t in tickers if t in self._markets}
+
+    async def get_structured_targets(self, ids):
+        # Batched (kalshi-category-data-completeness Task 9) - resolves
+        # custom_strike UUIDs to their real name/type.
+        self.structured_targets_calls.extend(ids)
+        return {i: self._structured_targets[i] for i in ids if i in self._structured_targets}
 
 
 def test_propagate_milestone_winners_only_includes_a_markets_own_result_once_finalized(monkeypatch):
@@ -234,3 +248,130 @@ def test_propagate_milestone_winners_repolls_a_no_winner_event_once_stale(monkey
 
     asyncio.run(main.propagate_milestone_winners(fake, markets))
     assert fake.milestone_calls == ["EVT2"]  # due for a light re-poll
+
+
+# --- structured custom_strike resolution (kalshi-category-data-completeness
+# Task 9, targets_and_milestones.md:73-86) - a strike_type: "structured"
+# related market's custom_strike dict holds a structured-target UUID, not a
+# plain string; the old str(winner).lower() in str(v).lower() substring
+# match against that raw UUID can never succeed (134/149 sampled real
+# markets are this type - the vast majority of real winner-propagation
+# traffic was silently falling through to the weaker yes_sub_title/title
+# match below, or failing outright). These fixtures deliberately carry no
+# yes_sub_title/no_sub_title/title at all, so a passing assertion can only
+# be explained by the new custom_strike resolution path, not the pre-
+# existing fallback. -------------------------------------------------------
+
+def test_propagate_milestone_winner_resolves_structured_custom_strike(monkeypatch):
+    markets = [{"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""}]
+    milestones_map = {
+        "EVT1": [{"id": "ms1", "type": "winner_decl", "related_event_tickers": ["EVT1-OUTCOME1"]}]
+    }
+    live_map = {
+        "ms1": {"details": {"winner": "Team Alpha", "related_event_tickers": ["EVT1-OUTCOME1"]}}
+    }
+    # Kalshi's own example key is "basketball_team" (targets_and_milestones.md)
+    # - deliberately not "target" here, to prove the resolution path doesn't
+    # hardcode a key name, matching the existing cs.values() generality.
+    market_map = {
+        "EVT1-OUTCOME1": {
+            "ticker": "EVT1-OUTCOME1",
+            "strike_type": "structured",
+            "custom_strike": {"basketball_team": "uuid-1"},
+        },
+    }
+    structured_targets_map = {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
+    fake = FakeClient(milestones_map, live_map, market_map, structured_targets_map=structured_targets_map)
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    main.state["structured_targets_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    # catalog_scan.propagate_milestone_winners's real return shape is
+    # ticker -> "yes"/"no" (its own docstring) - "Team Alpha" is the
+    # fixture's declared winner and structured_targets resolves uuid-1 ->
+    # "Team Alpha" -> EVT1-OUTCOME1's own ticker, so it maps to "yes".
+    assert market_results["EVT1-OUTCOME1"] == "yes"
+    assert fake.structured_targets_calls == ["uuid-1"]
+
+
+def test_propagate_milestone_winner_only_fetches_missing_structured_target_ids(monkeypatch):
+    # The caching-shape judgment call this task made (state[
+    # "structured_targets_cache"]: flat, no-TTL, incrementally grown - see
+    # that key's own comment in app_state.py) - a uuid resolved on an
+    # earlier tick (or, as here, pre-seeded) must never be re-fetched, only
+    # the ids actually missing from the cache.
+    markets = [
+        {"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""},
+        {"ticker": "EVT2-OUTCOME1", "event_ticker": "EVT2", "result": ""},
+    ]
+    milestones_map = {
+        "EVT1": [{"id": "ms1", "type": "winner_decl", "related_event_tickers": ["EVT1-OUTCOME1"]}],
+        "EVT2": [{"id": "ms2", "type": "winner_decl", "related_event_tickers": ["EVT2-OUTCOME1"]}],
+    }
+    live_map = {
+        "ms1": {"details": {"winner": "Team Alpha", "related_event_tickers": ["EVT1-OUTCOME1"]}},
+        "ms2": {"details": {"winner": "Team Beta", "related_event_tickers": ["EVT2-OUTCOME1"]}},
+    }
+    market_map = {
+        "EVT1-OUTCOME1": {
+            "ticker": "EVT1-OUTCOME1", "strike_type": "structured",
+            "custom_strike": {"basketball_team": "uuid-1"},
+        },
+        "EVT2-OUTCOME1": {
+            "ticker": "EVT2-OUTCOME1", "strike_type": "structured",
+            "custom_strike": {"basketball_team": "uuid-2"},
+        },
+    }
+    structured_targets_map = {
+        "uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"},
+        "uuid-2": {"id": "uuid-2", "name": "Team Beta", "type": "team"},
+    }
+    fake = FakeClient(milestones_map, live_map, market_map, structured_targets_map=structured_targets_map)
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    main.state["structured_targets_cache"].clear()
+    # uuid-1 already resolved (an earlier tick's work) - only uuid-2 is new.
+    main.state["structured_targets_cache"]["uuid-1"] = {"id": "uuid-1", "name": "Team Alpha", "type": "team"}
+
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    assert market_results["EVT1-OUTCOME1"] == "yes"
+    assert market_results["EVT2-OUTCOME1"] == "yes"
+    assert fake.structured_targets_calls == ["uuid-2"]
+
+
+def test_propagate_milestone_winner_structured_market_falls_back_when_unresolved(monkeypatch):
+    # Regression-testing standard for this plan: the existing yes_sub_title/
+    # no_sub_title/title fallback must keep working unchanged - here for a
+    # structured market whose custom_strike uuid get_structured_targets
+    # simply doesn't return (a real "Kalshi doesn't return this id" case,
+    # same skip-not-crash convention as get_markets_by_tickers/get_events).
+    # No cache entry for the uuid means the resolution loop matches
+    # nothing, and control falls through to the yes_sub_title match below.
+    markets = [{"ticker": "EVT1-OUTCOME1", "event_ticker": "EVT1", "result": ""}]
+    milestones_map = {
+        "EVT1": [{"id": "ms1", "type": "winner_decl", "related_event_tickers": ["EVT1-OUTCOME1"]}]
+    }
+    live_map = {
+        "ms1": {"details": {"winner": "Team Alpha", "related_event_tickers": ["EVT1-OUTCOME1"]}}
+    }
+    market_map = {
+        "EVT1-OUTCOME1": {
+            "ticker": "EVT1-OUTCOME1",
+            "strike_type": "structured",
+            "custom_strike": {"basketball_team": "uuid-unresolvable"},
+            "yes_sub_title": "Team Alpha",
+        },
+    }
+    fake = FakeClient(milestones_map, live_map, market_map, structured_targets_map={})
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    main.state["structured_targets_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    assert market_results["EVT1-OUTCOME1"] == "yes"
+    assert fake.structured_targets_calls == ["uuid-unresolvable"]

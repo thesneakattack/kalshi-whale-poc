@@ -431,6 +431,80 @@ def test_get_series_fee_changes_omits_series_ticker_for_the_full_array(monkeypat
                         "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}]
 
 
+# ---- get_structured_targets (kalshi-category-data-completeness Task 9) ----
+# docs/kalshi/get-structured-targets.md: `ids` is a repeated-param filter,
+# `style: form, explode: true`, capped at maxItems: 2000 - unlike
+# get_series_fee_changes above, StructuredTarget carries no FeeType-shaped
+# enum field anywhere on its schema (id/name/type/source_id are plain
+# Optional[str]; details/source_ids are plain dicts - confirmed directly by
+# introspecting the installed kalshi_python_async.models.structured_target.
+# StructuredTarget.model_fields), so this is fetched through the typed SDK
+# client (client._client.get_structured_targets), matching
+# get_markets_by_tickers' precedent above, not the raw _get_json path
+# get_series_fee_changes needed to route around its own real enum gap.
+
+
+def test_get_structured_targets_repeats_the_ids_param(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_structured_targets(ids, page_size):
+        calls.append((ids, page_size))
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": "uuid-1", "name": "Team Alpha", "type": "team"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-1"]))
+    assert result == {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
+    # ids passed straight through as a list (not comma-joined like tickers
+    # above) - the SDK's own collection_formats={'ids': 'multi'} explodes a
+    # plain list into repeated ?ids=... query params, confirmed directly
+    # against StructuredTargetsApi._get_structured_targets_serialize.
+    assert calls == [(["uuid-1"], 1)]
+
+
+def test_get_structured_targets_empty_list_makes_no_call(monkeypatch):
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        raise AssertionError("should not be called for an empty list")
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets([]))
+    assert result == {}
+
+
+def test_get_structured_targets_chunks_above_the_batch_size(monkeypatch):
+    client = _client()
+    client._STRUCTURED_TARGETS_BATCH_SIZE = 2
+    calls = []
+
+    async def fake_get_structured_targets(ids, page_size):
+        calls.append((list(ids), page_size))
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": uid, "name": uid, "type": "team"}) for uid in ids
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["u1", "u2", "u3"]))
+    assert calls == [(["u1", "u2"], 2), (["u3"], 1)]
+    assert set(result.keys()) == {"u1", "u2", "u3"}
+
+
+def test_get_structured_targets_skips_an_id_kalshi_does_not_return(monkeypatch):
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": "uuid-1", "name": "Team Alpha", "type": "team"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-1", "uuid-missing"]))
+    assert result == {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
+
+
 def test_get_series_fee_changes_recovers_every_entry_even_with_an_unmodeled_fee_type(monkeypatch):
     # The concrete failure mode the raw-fetch fix above exists to avoid:
     # a fee_type value the installed SDK's FeeType enum doesn't recognise
