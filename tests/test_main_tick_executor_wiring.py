@@ -197,3 +197,13 @@ def test_candidate_retry_runs_from_its_own_supervised_loop_not_the_tick():
     assert "_streaming_trade_tape_enabled()" in loop_src  # the stream-mode gate moved with the call
     assert inspect.getsource(main).count("candidate_retry.run_pending(") == 1  # single mutator, still
     assert "_candidate_retry_loop" in inspect.getsource(main.lifespan)
+
+
+def test_trading_loop_no_longer_stamps_the_redundant_category_tags_field():
+    """X1 (2026-08-30 design spec): category_tags carried the same
+    facet-filter vocabulary for every event in a category - zero
+    per-event signal, already flagged as a gotcha in docs/kalshi/
+    CHEATSHEET.md. series_metadata/series_tags (Task 1) are the real,
+    per-series replacement."""
+    import inspect
+    assert 'category_tags' not in inspect.getsource(main.trading_loop)

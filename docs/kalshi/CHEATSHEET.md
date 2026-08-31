@@ -36,6 +36,10 @@ carrying zero per-event signal. Confirmed live, not derivable from that
 field no matter how it's parsed.
 **Found:** 2026-08-16, building whale-confidence subcategory segmentation
 (`services/trade_category.py`, `main.py`'s `_sport_for_event`).
+**Resolution:** 2026-08-31 (kalshi-category-data-completeness Task 4) —
+the redundant `category_tags` stamp was deleted from `main.py` trading
+loop; `series_metadata/series_tags` (Task 1) are the real per-series
+replacement.
 
 ---
 
