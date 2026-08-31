@@ -177,38 +177,92 @@ def test_get_account_diagnostics_degrades_to_an_explicit_error_when_a_read_fails
 # ---- GET /api/diagnostics/candlestick-volatility ---------------------------
 
 
-def test_get_candlestick_volatility_diagnostics_returns_report_and_bar_count(monkeypatch):
-    """Calls candlestick_volatility.comparison_report and bar_count,
-    filtered to tickers present in state["markets"], and returns them as JSON."""
+def test_get_candlestick_volatility_diagnostics_returns_report_and_bar_count(monkeypatch, tmp_path):
+    """Seed real candlestick data, call the route without mocking the
+    candlestick_volatility functions, and assert on real computed values."""
+    import time
+    from pathlib import Path
     from services import candlestick_volatility
 
-    # Mock state with test markets data
+    # Isolate to a temporary DB
+    temp_db = tmp_path / "test_candles.db"
+    monkeypatch.setattr(candlestick_volatility, "DB_PATH", temp_db)
+
+    # Seed real candlestick data for one ticker
+    now = time.time()
+    bars = [
+        {
+            "end_period_ts": now - 300,  # 5 min ago
+            "yes_bid": {
+                "open_dollars": 0.50,
+                "high_dollars": 0.52,
+                "low_dollars": 0.49,
+                "close_dollars": 0.51,
+            },
+        },
+        {
+            "end_period_ts": now - 180,  # 3 min ago
+            "yes_bid": {
+                "open_dollars": 0.51,
+                "high_dollars": 0.53,
+                "low_dollars": 0.50,
+                "close_dollars": 0.52,
+            },
+        },
+        {
+            "end_period_ts": now - 60,  # 1 min ago
+            "yes_bid": {
+                "open_dollars": 0.52,
+                "high_dollars": 0.54,
+                "low_dollars": 0.51,
+                "close_dollars": 0.53,
+            },
+        },
+    ]
+    stored = candlestick_volatility.record_candles(
+        ticker="TEST-VOLATILITY-A",
+        series_ticker="TEST-VOLATILITY",
+        period_interval_min=60,
+        bars=bars,
+        fetched_at=now,
+    )
+    assert stored == 3, "Failed to seed test candle data"
+
+    # Set state["markets"] to include the ticker we seeded
     test_markets = [
-        {"ticker": "TICKER-A"},
-        {"ticker": "TICKER-B"},
+        {"ticker": "TEST-VOLATILITY-A"},
         {"other_field": "no_ticker"},  # Should be skipped
     ]
     mock_state = {"markets": test_markets}
     monkeypatch.setattr(diagnostics_routes, "state", mock_state)
 
-    # Mock candlestick_volatility functions
-    def mock_comparison_report(tickers, lookback_sec):
-        return [
-            {"ticker": t, "candlestick_volatility": 0.05, "snapshot_volatility": 0.04}
-            for t in tickers
-        ]
-
-    def mock_bar_count():
-        return 42
-
-    monkeypatch.setattr(candlestick_volatility, "comparison_report", mock_comparison_report)
-    monkeypatch.setattr(candlestick_volatility, "bar_count", mock_bar_count)
-
+    # Call the route handler WITHOUT mocking the functions - let them run real
     result = asyncio.run(diagnostics_routes.get_candlestick_volatility_diagnostics())
 
+    # Assert structure
     assert isinstance(result, dict)
     assert "report" in result
     assert "bar_count" in result
-    assert result["bar_count"] == 42
     assert isinstance(result["report"], list)
-    assert len(result["report"]) == 2  # TICKER-A and TICKER-B
+    assert isinstance(result["bar_count"], int)
+
+    # Assert the report contains our seeded ticker
+    assert len(result["report"]) == 1
+    report_entry = result["report"][0]
+    assert report_entry["ticker"] == "TEST-VOLATILITY-A"
+    assert report_entry["candlestick_bar_count"] == 3
+
+    # Assert candlestick_volatility computed a real value (not None)
+    # The value depends on the variance of closes: 0.51, 0.52, 0.53
+    # Deltas: 0.01, 0.01 -> stdev should be 0
+    assert report_entry["candlestick_volatility"] is not None
+    assert report_entry["candlestick_volatility"] >= 0
+
+    # Assert bar_count returns the total (should be 3 since we only seeded one ticker)
+    assert result["bar_count"] == 3
+
+    # Test with non-default lookback_sec to verify parameter is passed through
+    result_short = asyncio.run(diagnostics_routes.get_candlestick_volatility_diagnostics(lookback_sec=10))
+    # With a 10-second lookback, we should get 0 bars (all our bars are older than 10 sec)
+    # So candlestick_volatility should be None due to < 3 bars
+    assert result_short["report"][0]["candlestick_volatility"] is None
