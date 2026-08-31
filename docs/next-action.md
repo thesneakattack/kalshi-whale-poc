@@ -7,35 +7,17 @@ If clean, close `docs/open-decisions.md`'s `two_consumer_mode` permanence
 item by updating the file comment in `config/settings.yaml`. (Not yet due —
 current time is well before 16:11 UTC; nothing else blocking right now.)
 
-**Coordination procedure agreed with `autotrade-79`** on a shared commit/PR/
-merge coordination discussion (triggered by two near-misses this session: a
-redundant consolidation comment on PR #303, and PR #310 turning out to be a
-*third*, unidentified session/worktree's work — not autotrade-79's, as first
-assumed). Outcome: (1) `ListAgents`+`gh pr list` before opening/merging a PR
-is already the documented convention (`.claude/rules/branching-and-ci.md`,
-since 2026-08-30) — the miss was practice, not policy, no rule-text change
-needed. (2) A one-line "about to merge #N" ping before `gh pr merge` when
-ListAgents shows a live peer is worth formalizing — this session is drafting
-it as a small addition to branching-and-ci.md's PR-merge section, through
-the full self-review/adversarial-review/consolidation cycle (it's a
-process/rule change, in scope regardless of size).
-
 **Leave alone — active peer-session work, not ready for anything:**
 - `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
   13 commits ahead of `main`, no PR yet).
-- PR #310 (`docs/claudesuperpower-toolkit-assessment`, an exhaustive
-  claudesuperpower.com toolkit scan) — author is a third session/worktree
-  neither this session nor `autotrade-79` has identified; needs your read on
-  its FINAL VERDICT (4 candidate `claude-plugins-official` plugins) before
-  anyone merges it.
-- **Needs your confirmation, not a session's:** an untracked scratch file
-  `docs/claudesuperpower-toolkit-assessment-2026-08-31.md` sits in the
-  shared primary checkout (not any worktree) — a near-identical leftover
-  (differs by 2 trailing blank lines, mtime 2026-08-31 01:52 local/06:52 UTC,
-  predating this session's activity) of what's committed on PR #310's
-  branch. Neither this session nor `autotrade-79` created it; provenance
-  unconfirmed, so nobody's touched it — don't let it get swept into an
-  unrelated `git add`.
+- `autotrade-79` is fixing the `data/fault_log.db` storage-growth warning
+  (below): `services/fault_log.py` has no retention/prune, unlike every
+  sibling capture-store module — confirmed root cause. Claimed
+  `services/fault_log.py` and `main.py`'s `_maybe_prune_capture_stores`;
+  working in a new worktree, will open its own PR. Don't touch either file.
+- `autotrade-29` is progressing docs-only planning PRs to just-prior-to-
+  implementation (David's task) and is closing PR #310 as superseded by
+  #312 (see below) — no action needed from you on that.
 
 ## Recently resolved (2026-08-31, this session)
 
@@ -118,6 +100,24 @@ process/rule change, in scope regardless of size).
   cap is actually holding.
 - Two provably-merged worktrees cleaned up via `scripts/cleanup-worktrees.sh`
   (`agent-a5110e2d3016b26a8`/PR #300, `web-skip-test-tighten`/PR #301).
+- **PR #311 merged**: added a pre-merge peer ping to
+  `.claude/rules/branching-and-ci.md`/`CLAUDE.md` — a live peer per
+  `ListAgents` gets a one-line "about to merge PR #N" `SendMessage` ping
+  before `gh pr merge` (courtesy, not a blocking gate, not a substitute for
+  the adversarial-review requirement). Adversarial review caught a real
+  conflation risk (the ping/ack could be mistaken for the required
+  independent review) and an undefined "reasonable wait" — both fixed
+  before merge. Already used for its own merge and for PR #312 below.
+- **PR #312 merged**: filed the claudesuperpower.com toolkit assessment
+  (previously an untracked scratch file of uncertain provenance in the
+  shared primary checkout, flagged last entry) into
+  `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
+  verbatim, as a research input for a future planning sequence, plus a
+  `docs/open-decisions.md` tracking line. You confirmed the file's content
+  first. Turned out neither this session, `autotrade-79`, nor `autotrade-29`
+  authored the original — `autotrade-29` is closing PR #310 (the file's
+  other home) as superseded by this filed copy. The untracked scratch file
+  itself was deleted after filing (content now permanent in git history).
 
 ## Also still open, unrelated
 
@@ -131,7 +131,15 @@ process/rule change, in scope regardless of size).
   via Kalshi's `GET /live_data/weather/{city}`. Stops at the spec per the
   brainstorming skill's own gate until reviewed; opens a new market category.
 - `data/fault_log.db` storage-growth warning in `/api/quality/summary`
-  (221184 -> 761856 bytes over 23.8h, >=2.0x) — not yet triaged this session.
+  (221184 -> 761856 bytes over 23.8h, >=2.0x) — root cause confirmed and
+  being fixed by `autotrade-79` (see "Leave alone" above); don't duplicate.
+- **Needs your go-ahead, not a session's:** `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`'s
+  FINAL VERDICT recommends piloting 4 official `claude-plugins-official`
+  plugins in priority order (`pr-review-toolkit`, `claude-security`,
+  `claude-md-management`, `codspeed`) — nothing installed yet. Run a
+  `superpowers:brainstorming`/`writing-plans` sequence off that doc to
+  decide which (if any) to pilot, or close the `docs/open-decisions.md`
+  line explicitly.
 - `/api/quality/summary`'s `series_funnel` checks show KXBTC15M/KXMLBGAME/
   KXATPMATCH all underwater at the price level after fees — this is the
   already-documented, already-open pricing/edge gap at entry (see CLAUDE.md's
