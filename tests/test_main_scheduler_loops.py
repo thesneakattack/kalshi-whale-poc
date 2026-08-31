@@ -58,7 +58,8 @@ def test_trading_loop_no_longer_hosts_the_relocated_trigger_calls():
         assert marker not in source, f"{marker} still lives inside trading_loop"
     assert "_scheduler_loop" in inspect.getsource(main.lifespan)
     assert [name for name, _ in main._SCHEDULER_TRIGGERS] == [
-        "signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "mve_scan", "auto_apply",
+        "signal_resolution", "backup", "research", "event_schedule", "catalog_scan", "mve_scan",
+        "milestone_scan", "auto_apply",
     ]
 
 

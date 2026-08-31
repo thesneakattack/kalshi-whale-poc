@@ -15,6 +15,7 @@ import asyncio
 import pytest
 
 from services import candidate_ledger, signal_log
+from services.app_state import state
 from services.confidence_scoring import WhaleSignal
 from services.whale_stream import decision_bridge
 
@@ -32,18 +33,33 @@ def _make_signal(id="t1", ticker="KXBTC15M-26AUG17-B1", side="yes"):
     )
 
 
+class _FakeBroker:
+    """Minimal stand-in for PaperBroker - _handle_signal's
+    find_open_confirmed_conflict call (2026-08-30 fix) reads
+    strategy.broker.positions.keys() directly, live, not the periodically-
+    refreshed state["open_position_tickers"] snapshot - see that call
+    site's own comment for why. Values are never inspected, only keys."""
+    def __init__(self, open_tickers=None):
+        self.positions = {t: None for t in (open_tickers or ())}
+
+
 class _FakeStrategy:
     """Stands in for services.app_state's real FollowTheWhaleStrategy -
     _handle_signal only needs .evaluate() to return an action dict shaped
     like strategy_engine.StrategyEngine._skip()'s real output; driving the
     real strategy would require a fully configured broker/risk stack this
-    test doesn't need to prove ledger gating."""
-    def __init__(self, decision):
+    test doesn't need to prove ledger gating. .broker.positions is real
+    enough to drive though, since _handle_signal reads it directly (see
+    _FakeBroker)."""
+    def __init__(self, decision, open_positions=None):
         self.decision = decision
         self.calls = 0
+        self.last_kwargs = None
+        self.broker = _FakeBroker(open_positions)
 
     def evaluate(self, signal, cfg, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return self.decision
 
 
@@ -141,3 +157,95 @@ def test_handle_signal_skip_still_only_routes_the_claim_check(monkeypatch):
     assert result["reason"] == "duplicate_trade_id"
     assert len(routed_fns) == 1  # only the claim() check - never reaches record_decision
     assert fake_strategy.calls == 0
+
+
+def _set_me_state(monkeypatch, market_titles, event_titles, me_pairs=None):
+    monkeypatch.setitem(state, "market_titles", market_titles)
+    monkeypatch.setitem(state, "event_titles", event_titles)
+    monkeypatch.setitem(state, "me_pairs", me_pairs or {})
+
+
+def test_handle_signal_passes_broad_me_complement_when_watchlist_missed_it(monkeypatch):
+    """The exact ATP-match failure mode this fix closes: BUS is a fresh
+    candidate never on the watchlist, so state["me_pairs"] (built from the
+    narrow per-tick markets list) has nothing for it - but
+    market_titles/event_titles (the broad, persisted caches) and the live
+    broker's open positions (BON already open) are enough for the new
+    fallback to find the conflict."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision, open_positions={"BON"})
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch,
+        market_titles={
+            "BON": {"event_ticker": "EVT-1"},
+            "BUS": {"event_ticker": "EVT-1"},
+        },
+        event_titles={"EVT-1": {"mutually_exclusive": True}},
+    )
+
+    signal = _make_signal(id="bus1", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] == "BON"
+
+
+def test_handle_signal_prefers_existing_me_pairs_hit_over_the_new_fallback(monkeypatch):
+    """state["me_pairs"] (the existing, narrower mechanism) still wins when
+    it already has an answer - the new check is a fallback, not a
+    replacement, and must not override it."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)  # no open positions - the new check alone would find nothing
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch,
+        market_titles={"BUS": {"event_ticker": "EVT-1"}},  # no BON entry at all
+        event_titles={"EVT-1": {"mutually_exclusive": True}},
+        me_pairs={"BUS": "BON-FROM-OLD-MECHANISM"},
+    )
+
+    signal = _make_signal(id="bus2", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] == "BON-FROM-OLD-MECHANISM"
+
+
+def test_handle_signal_me_complement_is_none_when_neither_mechanism_finds_a_conflict(monkeypatch):
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision)
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(monkeypatch, market_titles={}, event_titles={})
+
+    signal = _make_signal(id="bus3", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] is None
+
+
+def test_handle_signal_fallback_uses_live_broker_state_not_the_stale_tick_snapshot(monkeypatch):
+    """The code-review finding this fix closes: state["open_position_
+    tickers"] is only rebuilt once per tick (main.py, ~30s in streaming
+    mode), so two whale signals for sibling markets of one confirmed-ME
+    event could both land within a single tick window. Proves the fallback
+    reads strategy.broker.positions live, not that stale snapshot: BON is
+    open on the broker but state["open_position_tickers"] is deliberately
+    left at a DIFFERENT, stale value that does NOT contain "BON" - if the
+    fallback still read the state snapshot, this would (wrongly) find no
+    conflict."""
+    decision = {"action": "trade", "signal": {}, "reason": None}
+    fake_strategy = _FakeStrategy(decision, open_positions={"BON"})
+    monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
+    _set_me_state(
+        monkeypatch,
+        market_titles={
+            "BON": {"event_ticker": "EVT-1"},
+            "BUS": {"event_ticker": "EVT-1"},
+        },
+        event_titles={"EVT-1": {"mutually_exclusive": True}},
+    )
+    monkeypatch.setitem(state, "open_position_tickers", set())  # stale - last tick had nothing open
+
+    signal = _make_signal(id="bus4", ticker="BUS", side="yes")
+    asyncio.run(decision_bridge._handle_signal(signal, _base_cfg(), {}, "", 0.0))
+
+    assert fake_strategy.last_kwargs["me_complement"] == "BON"
