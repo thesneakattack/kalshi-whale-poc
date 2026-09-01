@@ -94,13 +94,26 @@ it runs as the host user.
 
 ## whale-confidence-scoring-remediation open items (PR #388, autotrade-d4)
 
-- **Task 10 (real-data re-measurement gate) — not startable yet.** Needs this
-  fix running in production for a real soak period first (design §10) —
-  check back after real elapsed time. When ready: pull a live report,
-  confirm no factor reads `data_status: "contaminated"`
-  (`"insufficient_variance"` is fine/expected), record the real observed
-  per-factor gaps, then Tasks 11-16 can start (plan:
+- **Task 10 (real-data re-measurement gate) — check via the app's own API,
+  not a raw DB query.** `GET https://kalshi-whale-poc.ddev.site:8443/api/confidence-calibration/report`
+  (ddev running, local only, no auth) for the per-factor `data_status`
+  breakdown; `GET .../api/quality/summary` also surfaces
+  `check_confidence_input_coverage`'s absence-rate summary as a
+  cross-check. As of the PR #388 merge (2026-09-01T06:02:21Z), 20 min post-
+  merge: 77 new signals logged under the fixed formula, 0 yet resolved
+  (median seen→resolved lag ~106min on recent history, so the first real
+  post-fix resolved signals land within roughly an hour of merge, at
+  ~5,150/day historical rate). Confirm no factor reads `data_status:
+  "contaminated"` (`"insufficient_variance"` is fine/expected for
+  `analyst_factor`/`block_trade_factor`), record the real observed
+  per-factor gaps in the commit message per the plan's own Step 4-6, then
+  Tasks 11-16 can start (plan:
   `docs/superpowers/plans/2026-08-30-whale-confidence-scoring-remediation-implementation.md`).
+  A few thousand post-fix resolved signals (roughly half a day to a day at
+  the measured rate) clears the materiality-floor blind band noted below;
+  matching the original audit's own sample size for full confidence takes
+  a few days — use judgment on how much rigor the moment calls for, design
+  §10 sets no fixed duration.
 - **Do not click "Apply suggested weights" on the whale-confidence-calibration
   dashboard panel right now.** The tie-safe re-measurement correctly flags
   5/9 factors unreliable on real data, which concentrates `suggested_weights`
