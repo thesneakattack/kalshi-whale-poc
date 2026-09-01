@@ -86,3 +86,49 @@ def test_spec_for_skips_creating_a_client_entirely_on_a_cache_hit(monkeypatch):
 
     assert spec == {"supported": True, "ticker": "TICK-C"}
     assert _FakeClient.instances == []  # cache hit - no client ever constructed
+
+
+def test_process_stream_index_schedules_flush_via_tick_executor_when_told(monkeypatch):
+    """Event-loop-blocking fix 1 (2026-09-01): record_cfbenchmarks/record_pyth
+    used to call flush() inline on the event loop once their buffer hit
+    _FLUSH_BATCH - real synchronous disk I/O blocking the whole loop
+    (confirmed live: a 13-minute app-wide stall). Now they only report
+    should_flush; _process_stream_index must schedule the actual flush via
+    tick_executor.run() wrapped in asyncio.create_task, never await it
+    directly (that would just reintroduce the same blocking wait inline)."""
+    from services import index_feed, tick_executor
+
+    scheduled = []
+
+    def fake_record_cfbenchmarks(msg, now=None):
+        return True, True  # accepted, should_flush=True
+
+    monkeypatch.setattr(index_feed, "record_cfbenchmarks", fake_record_cfbenchmarks)
+
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro):
+        scheduled.append(coro)
+        return real_create_task(coro)
+
+    monkeypatch.setattr(asyncio, "create_task", spy_create_task)
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+
+    async def _drive():
+        await ish._process_stream_index("cfbenchmarks_value", {"index_id": "KXBTC"})
+        # Let the scheduled task actually run before the loop closes.
+        if scheduled:
+            await scheduled[0]
+
+    asyncio.run(_drive())
+
+    assert len(scheduled) == 1
+    assert len(tick_executor_calls) == 1
+    assert tick_executor_calls[0] is index_feed.flush

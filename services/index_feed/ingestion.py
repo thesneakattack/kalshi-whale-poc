@@ -119,13 +119,21 @@ def _parse_cf_data(raw: str | None) -> float | None:
         return None
 
 
-def record_cfbenchmarks(msg: dict, now: float | None = None) -> bool:
+def record_cfbenchmarks(msg: dict, now: float | None = None) -> tuple[bool, bool]:
     """Persist one `cfbenchmarks_value` message and update the in-memory
-    latest. Never raises - this runs on the websocket handler."""
+    latest. Never raises - this runs on the websocket handler.
+
+    Returns (accepted, should_flush) - accepted is the original "was this
+    row recorded" signal; should_flush tells the caller a buffer-full flush
+    is now due. The caller (not this function) is responsible for scheduling
+    that flush off the event loop - see services/whale_stream/
+    index_stream_handlers.py's _process_stream_index. An inline synchronous
+    flush() call here was a real, confirmed live event-loop-blocking bug
+    (Fix 1, 2026-09-01)."""
     try:
         index_id = msg.get("index_id")
         if not index_id:
-            return False
+            return False, False
         now = now if now is not None else time.time()
         avg60 = msg.get("avg_60s_data") or {}
         q15 = msg.get("last_60s_windowed_average_15min") or {}
@@ -156,22 +164,23 @@ def record_cfbenchmarks(msg: dict, now: float | None = None) -> bool:
         with _buffer_lock:
             _tick_buffer.append(row)
             should_flush = len(_tick_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
-        return True
+        return True, should_flush
     except Exception as exc:
         fault_log.record("index_feed", "record", exc)
-        return False
+        return False, False
 
 
-def record_pyth(msg: dict, now: float | None = None) -> bool:
+def record_pyth(msg: dict, now: float | None = None) -> tuple[bool, bool]:
     """Persist one `pyth_value` message. Pyth carries no windowed averages -
     it is a straight price for an underlying ticker - so the settlement-
-    projection fields stay NULL and only `value` is populated."""
+    projection fields stay NULL and only `value` is populated.
+
+    Returns (accepted, should_flush) - see record_cfbenchmarks's docstring
+    for the full explanation of this signature."""
     try:
         ticker = msg.get("underlying_ticker")
         if not ticker:
-            return False
+            return False, False
         now = now if now is not None else time.time()
         value = _float(msg.get("value_usd"))
         _latest[ticker] = {
@@ -187,11 +196,9 @@ def record_pyth(msg: dict, now: float | None = None) -> bool:
         with _buffer_lock:
             _tick_buffer.append(row)
             should_flush = len(_tick_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
-        return True
+        return True, should_flush
     except Exception:
-        return False
+        return False, False
 
 
 def last_tick_before(index_id: str, before_ts: float) -> float | None:

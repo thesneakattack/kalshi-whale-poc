@@ -8,9 +8,10 @@ services/kalshi_trade_ws.py's own comment on why), so giving it a second
 *module* mirrors that same boundary. Wired once in main.py's lifespan()
 into index_stream.run(...).
 """
+import asyncio
 import time
 
-from services import index_feed, settlement_edge, settlement_edge_entry
+from services import index_feed, settlement_edge, settlement_edge_entry, tick_executor
 from services.app_state import broker, risk, state
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
@@ -46,15 +47,23 @@ async def _process_stream_index(msg_type: str, msg: dict) -> None:
     seconds of CF Benchmarks' BRTI before <close>", and
     cfbenchmarks_value's last_60s_windowed_average_15min IS that average,
     accumulating one observation per second. ~1 message/sec/index, buffered
-    the same way trade capture is, so this never writes on the event loop.
+    the same way trade capture is. The buffer-full flush trigger is
+    scheduled via tick_executor.run() + asyncio.create_task (never awaited
+    directly here), so this never blocks the event loop - confirmed as a
+    real, previously-live bug this exact docstring's old wording claimed
+    was already true (event-loop-blocking elimination Fix 1, 2026-09-01).
     Deliberately does NOT trigger check_exits or any trading action yet -
     capture and projection first, acting on it is a separate, deliberate
     step."""
     if msg_type == "cfbenchmarks_value":
-        index_feed.record_cfbenchmarks(msg)
+        _, should_flush = index_feed.record_cfbenchmarks(msg)
+        if should_flush:
+            asyncio.create_task(tick_executor.run(index_feed.flush))
         await _record_settlement_observations(msg.get("index_id"))
     elif msg_type == "pyth_value":
-        index_feed.record_pyth(msg)
+        _, should_flush = index_feed.record_pyth(msg)
+        if should_flush:
+            asyncio.create_task(tick_executor.run(index_feed.flush))
 
 
 async def _spec_for(ticker: str) -> dict:
