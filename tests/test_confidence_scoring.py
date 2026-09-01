@@ -177,3 +177,71 @@ def test_block_trade_factor_present_in_default_weights():
     # key once someone edits DEFAULT_WEIGHTS again later.
     assert "block_trade_factor" in DEFAULT_WEIGHTS
     assert DEFAULT_WEIGHTS["block_trade_factor"] > 0
+
+
+def test_depth_factor_is_none_not_one_when_market_has_zero_volume():
+    market = _market(ticker="TICK-A", volume_24h_fp="0")
+    breakdown = composite_confidence_breakdown(market, [market], size=1000, price=0.5, now=time.time())
+    assert breakdown.depth_factor is None
+
+
+def test_explicit_none_agreement_and_trend_are_not_coerced_to_neutral():
+    market = _market()
+    breakdown = composite_confidence_breakdown(
+        market, [market], size=1000, price=0.5, now=time.time(),
+        agreement_factor=None, trend_factor=None,
+    )
+    assert breakdown.agreement_factor is None
+    assert breakdown.trend_factor is None
+
+
+def test_omitted_agreement_and_trend_still_default_to_neutral():
+    # The simulator's own no-concept-at-all case (design §5.2) - unlike an
+    # explicit None, simply not passing the kwarg must be unchanged.
+    market = _market()
+    breakdown = composite_confidence_breakdown(market, [market], size=1000, price=0.5, now=time.time())
+    assert breakdown.agreement_factor == 0.5
+    assert breakdown.trend_factor == 0.5
+
+
+def test_score_renormalizes_over_present_factors_when_one_is_absent():
+    # A synthetic all-but-one-present case (design §5.2's required unit
+    # test): depth_factor absent (None), every other factor at a known
+    # value, weights all equal - score must equal the weighted mean of the
+    # PRESENT eight factors only, not treat the absent one as 0.
+    market = _market(volume_24h_fp="0")  # forces depth_factor -> None
+    equal_weights = {name: 1 / 8 for name in [
+        "unusualness_factor", "proximity_factor", "context_factor", "agreement_factor",
+        "cluster_factor", "trend_factor", "analyst_factor", "block_trade_factor",
+    ]}
+    equal_weights["depth_factor"] = 1 / 8  # present in weights dict even though value is absent
+    breakdown = composite_confidence_breakdown(
+        market, [market], size=1000, price=0.5, now=time.time(),
+        agreement_factor=0.7, cluster_factor=0.7, trend_factor=0.7, analyst_factor=0.7,
+        block_trade_factor=0.7, weights=equal_weights,
+    )
+    assert breakdown.depth_factor is None
+    # unusualness/proximity/context aren't caller-controlled directly here;
+    # this asserts the renormalized score differs from (and is higher
+    # than) what a naive "absent scores 0" implementation would produce -
+    # a tighter bound than an exact literal, since the market fixture's
+    # own unusualness/proximity/context values aren't hand-picked above.
+    assert breakdown.score > 0.5
+
+
+def test_degenerate_all_absent_falls_back_to_maximally_uncertain():
+    # Design §5.2's documented degenerate case - every weighted factor
+    # absent for one row falls back to 0.5, not a crash or a 0.
+    market = _market(volume_24h_fp="0", close_time=None)
+    breakdown = composite_confidence_breakdown(
+        market, [market], size=1000, price=0.5, now=time.time(),
+        agreement_factor=None, trend_factor=None,
+        weights={"depth_factor": 1.0, "unusualness_factor": 0.0, "proximity_factor": 0.0,
+                 "context_factor": 0.0, "agreement_factor": 0.0, "cluster_factor": 0.0,
+                 "trend_factor": 0.0, "analyst_factor": 0.0, "block_trade_factor": 0.0},
+    )
+    # depth_factor (the only nonzero-weight factor) is None; every other
+    # weighted factor is 0-weight - the sum of weights over PRESENT
+    # factors is 0, forcing the degenerate fallback regardless of their
+    # actual computed values.
+    assert breakdown.score == 0.5

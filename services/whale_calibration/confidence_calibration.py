@@ -64,11 +64,35 @@ _MIN_DISCRIMINATION_GAP = 10
 _MIN_SUGGESTED_WEIGHT = 0.05
 
 
-def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
+def _tied_run_size(sorted_vals: list[float], cut_idx: int) -> int:
+    """Size of the contiguous run of equal, rounded values straddling the
+    cut at cut_idx (the boundary between sorted_vals[cut_idx-1] and
+    sorted_vals[cut_idx]). 0 if the two neighbors differ - no tie at this
+    cut. Rounded comparison matches the existing 2026-08-14 float-jitter
+    dedup fix a few lines up (distinct_values)."""
+    n = len(sorted_vals)
+    if cut_idx <= 0 or cut_idx >= n:
+        return 0
+    boundary_val = sorted_vals[cut_idx - 1]
+    if sorted_vals[cut_idx] != boundary_val:
+        return 0
+    lo = cut_idx - 1
+    while lo > 0 and sorted_vals[lo - 1] == boundary_val:
+        lo -= 1
+    hi = cut_idx
+    while hi < n and sorted_vals[hi] == boundary_val:
+        hi += 1
+    return hi - lo
+
+
+def _bucket_win_rates(rows: list[dict], factor_name: str) -> tuple[dict, str]:
     """Splits resolved signals into low/mid/high thirds by this factor's
     logged value (index-based tertiles on the sorted rows, not a value
-    comparison - avoids tie/duplicate-value edge cases entirely) and
-    returns each third's win rate. Same confidence-bucket idiom advisory_
+    comparison - avoids relying on the factor's own numeric spread, but a
+    tie AT a cut boundary is its own edge case, not avoided by this choice -
+    see the materiality-floored boundary-in-tie predicate a few lines below,
+    added specifically because ties at a cut can and do occur in real data)
+    and returns each third's win rate. Same confidence-bucket idiom advisory_
     engine._entry_threshold_recommendation already uses for strategy.
     entry_threshold, applied here per-factor instead of per-trade.
 
@@ -90,8 +114,26 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
     calibration against real production history crashes this function
     outright the first time it's called - same "leave it out of the
     average entirely when absent" idiom the rest of this app already uses
-    for an optional factor, applied here per-row instead of per-signal."""
-    applicable_rows = [r for r in rows if factor_name in r["factors"]]
+    for an optional factor, applied here per-row instead of per-signal.
+
+    Returns (buckets, data_status) - see design §3. data_status
+    distinguishes a permanently sparse factor (analyst_factor/
+    block_trade_factor-shaped: "insufficient_variance", benign forever)
+    from a transient tie-contaminated cut ("contaminated", the condition
+    this predicate exists to catch) - only the second should ever gate
+    anything downstream (§9)."""
+    # Post-composite_confidence_breakdown's renormalization fix
+    # (services/confidence_scoring.py), a row's factors dict always HAS
+    # every key, but the value can be None (honest absence, e.g. depth_
+    # factor when the market had no reportable 24h volume) - key-presence
+    # alone is no longer enough to know a value is comparable. Without the
+    # "and not None" half, sorted() below crashes the first time any real
+    # row carries an absent factor (None-vs-float comparison has no
+    # ordering in Python).
+    applicable_rows = [
+        r for r in rows
+        if factor_name in r["factors"] and r["factors"][factor_name] is not None
+    ]
     sorted_rows = sorted(applicable_rows, key=lambda r: r["factors"][factor_name])
     n = len(sorted_rows)
     # Rounded before dedup (2026-08-14 fix): exact float equality here would
@@ -101,10 +143,17 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
     # defeating the whole point of this near-constant-factor guard and
     # letting noise-level differences feed a spurious gap_pts/discriminates
     # verdict into auto-apply.
-    distinct_values = {round(r["factors"][factor_name], 6) for r in sorted_rows}
+    rounded_vals = [round(r["factors"][factor_name], 6) for r in sorted_rows]
+    distinct_values = set(rounded_vals)
     if n < _BUCKET_COUNT or len(distinct_values) < _BUCKET_COUNT:
-        return {}
+        return {}, "insufficient_variance"
+
     third = n // _BUCKET_COUNT
+    materiality_floor = max(30, 0.005 * n)
+    for cut_idx in (third, n - third):
+        if _tied_run_size(rounded_vals, cut_idx) >= materiality_floor:
+            return {}, "contaminated"
+
     buckets = {
         "low": sorted_rows[:third],
         "mid": sorted_rows[third:n - third],
@@ -113,19 +162,18 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> dict:
     return {
         key: {"n": len(group), "win_rate": round(sum(1 for r in group if r["correct"]) / len(group) * 100, 1)}
         for key, group in buckets.items() if group
-    }
+    }, "ok"
 
 
 def _factor_report(rows: list[dict], factor_name: str) -> dict:
-    buckets = _bucket_win_rates(rows, factor_name)
+    buckets, data_status = _bucket_win_rates(rows, factor_name)
     if "low" not in buckets or "high" not in buckets:
-        return {"factor": factor_name, "buckets": buckets, "gap_pts": None, "discriminates": None}
+        return {"factor": factor_name, "buckets": buckets, "gap_pts": None,
+                "discriminates": None, "data_status": data_status}
     gap = round(buckets["high"]["win_rate"] - buckets["low"]["win_rate"], 1)
     return {
-        "factor": factor_name,
-        "buckets": buckets,
-        "gap_pts": gap,
-        "discriminates": gap >= _MIN_DISCRIMINATION_GAP,
+        "factor": factor_name, "buckets": buckets, "gap_pts": gap,
+        "discriminates": gap >= _MIN_DISCRIMINATION_GAP, "data_status": data_status,
     }
 
 
@@ -251,6 +299,57 @@ def _series_win_rates(rows: list[dict]) -> list[dict]:
     return out
 
 
+def compute_input_coverage(rows: list[dict], resolved_count: int) -> dict:
+    """Per-fabrication-site absence rates - depth_factor/trend_factor/
+    agreement_factor/raw_spread's honest-None coverage, plus an
+    approximate score_fallback_pct (design §6.1's exact shape). Split out
+    of generate_calibration_report() (2026-09-01 perf fix, final
+    whole-branch review): a caller that only wants this -
+    services/diagnostics/diagnostics.py's check_confidence_input_coverage(),
+    polled by the dashboard every 5s via GET /api/quality/summary on the
+    same tick_executor pool the trading loop uses - was paying the full
+    nine-factor tertile report's cost (measured 1.661s of a 2.549s total
+    against 103,098 real rows) just to read these five counters out of it
+    and discard everything else."""
+    def _coverage(factor_name):
+        # n/absent are dimensionless row counts (not contracts, not
+        # dollars); absent_pct = absent/n*100 rounded to 1 decimal, same
+        # shape as overall_win_rate/gap_pts in generate_calibration_report.
+        # The `if n else 0.0` guard is defensive only: callers gate on
+        # resolved_count < min_resolved_signals before reaching here, so
+        # resolved_count == 0 is unreachable at this point in practice.
+        n = resolved_count
+        absent = sum(1 for r in rows if r["factors"].get(factor_name) is None)
+        return {"n": n, "absent_pct": round(absent / n * 100, 1) if n else 0.0}
+
+    return {
+        "depth_factor": _coverage("depth_factor"),
+        "trend_factor": _coverage("trend_factor"),
+        "agreement_factor": _coverage("agreement_factor"),
+        # Row-level column (services/signal_log.py's
+        # resolved_signals_with_factors() selects it alongside "factors",
+        # not inside it) - read from r["raw_spread"], never r["factors"].
+        "raw_spread": {
+            "n": resolved_count,
+            "absent_pct": round(
+                sum(1 for r in rows if r.get("raw_spread") is None) / resolved_count * 100, 1,
+            ) if resolved_count else 0.0,
+        },
+        # Observational approximation, not an exact flag (design doc §6.1;
+        # no persisted fallback marker exists to check instead): a row
+        # counts as a Task 3 degenerate-fallback candidate when its three
+        # sampled factors are all None AND confidence is exactly the
+        # fallback's 0.5, since a genuine 0.5 composite from real factor
+        # data is otherwise indistinguishable from the fallback firing.
+        "score_fallback_pct": round(
+            sum(1 for r in rows if r["factors"].get("depth_factor") is None
+                and r["factors"].get("trend_factor") is None
+                and r["factors"].get("agreement_factor") is None
+                and r["confidence"] == 0.5) / resolved_count * 100, 1,
+        ) if resolved_count else 0.0,
+    }
+
+
 def generate_calibration_report(rows: list[dict], min_resolved_signals: int, current_weights: dict | None = None) -> dict:
     """rows: services.signal_log.resolved_signals_with_factors()'s output -
     already scoped to real (not simulated) signals that carry a factor
@@ -283,6 +382,8 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
         key=lambda f: f["gap_pts"], reverse=True,
     )
 
+    input_coverage = compute_input_coverage(rows, resolved_count)
+
     return {
         "report": {
             "resolved_count": resolved_count,
@@ -304,6 +405,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
             "suggested_weights": _suggested_weights(per_factor),
             "confidence_calibration": _confidence_calibration_bands(rows),
             "by_series": _series_win_rates(rows),
+            "input_coverage": input_coverage,
         },
         "gated_reason": None,
         "resolved_count": resolved_count,

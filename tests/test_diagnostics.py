@@ -282,6 +282,7 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
     assert {c["name"] for c in report["checks"]} == {
         "threshold_integrity", "price_band_adherence", "runway_at_entry",
         "config_bounds", "performance_by_epoch", "selectivity_curve",
+        "confidence_input_coverage",
         # One per services/series_watcher.watched_series entry - the
         # accuracy-vs-realised-win-rate reconciliation, per-series by
         # construction (a blended figure across every series answers
@@ -333,3 +334,28 @@ def test_run_offline_never_writes_to_any_db(dbs):
     diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
     after = {p.name: p.stat().st_mtime_ns for p in dbs.glob("*.db")}
     assert before == after
+
+
+# ---- confidence input coverage ----
+
+def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypatch):
+    import json
+    sl_module._connect().close()
+    with sqlite3.connect(sl_module.DB_PATH) as conn:
+        for i in range(60):
+            conn.execute(
+                "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+                "resolved, correct, factors_json) VALUES (?,?,?,?,?,?,?,1,?,?)",
+                ("T", "T", "yes", 100, 0.6, "real-provider", time.time(), i % 2,
+                 json.dumps({"depth_factor": None, "unusualness_factor": 0.5})),
+            )
+    cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
+    c = diagnostics.check_confidence_input_coverage(cfg)
+    assert c.status == "ok"
+    assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
+
+
+def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
+    cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
+    c = diagnostics.check_confidence_input_coverage(cfg)
+    assert c.status == "unknown"

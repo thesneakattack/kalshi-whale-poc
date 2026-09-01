@@ -171,8 +171,11 @@ def analyst_lean(ticker: str, max_age_sec: float = 86400) -> float | None:
     Direct request (2026-08-09): "inform the heuristics engines... without
     consuming AI tokens" - this is that wiring. services/confidence_scoring.py's
     composite_confidence_breakdown() turns this into its own analyst_factor
-    (0.5/neutral when None, same idiom as agreement_factor/trend_factor),
-    so a market someone has manually analyzed keeps nudging the cheap,
+    (0.5/neutral when None - unlike agreement_factor/trend_factor, which
+    now report an honest None instead of a fabricated neutral when a real
+    provider has no data, Task 5/6, 2026-08-31; analyst_factor still uses
+    the simpler always-neutral-default idiom), so a market someone has
+    manually analyzed keeps nudging the cheap,
     automatic whale-confidence score afterward, at zero extra API cost -
     resolved or not, since the estimate itself doesn't stop being the
     model's honest read just because the market hasn't settled yet. 24h
