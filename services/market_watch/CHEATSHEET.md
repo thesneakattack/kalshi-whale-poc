@@ -442,3 +442,75 @@ discarding that already-landed REST-call reduction (entry-gate-me-
 pairing-and-netting-remediation, commit `56ae320`). `catalog_scan.py`'s
 `propagate_milestone_winners` has no such broad-cache path, so it applies
 the batched call to its own full `to_poll` equivalent directly.
+
+## `_get_series_cache` polls `min_updated_ts` deltas after the first sync, merges rather than replaces (2026-08-31, Task 11 of kalshi-category-data-completeness)
+
+`get_series_list` (`services/kalshi/public.py`) gained two additive,
+omit-when-unset params: `min_updated_ts` (int, Unix seconds) and
+`include_product_metadata` (bool) — `docs/kalshi/get-series-list.md:
+100-108`. A genuine first-ever sync (`cache["series"]` empty) still calls
+`get_series_list()` with zero args, a full fetch byte-identical to before
+this task. Every later refresh instead watermarks on
+`_series_watermark(cache["series"])` and, when computable, calls
+`get_series_list(min_updated_ts=..., include_product_metadata=True)` —
+Kalshi then legitimately returns only the series whose metadata changed
+since the watermark, not the whole ~9,400-series catalog.
+
+**The load-bearing fix this task exists for:** `_get_series_cache` used to
+assign the fetched batch straight to `cache["series"]`
+(`cache["series"] = series`), correct only because that batch was always
+the *complete* list. Once a refresh can legitimately return a partial
+delta, that assignment would silently drop every unchanged series out of
+`_get_top_series`/`_scan_catalog_batch`/`search_markets` — the exact
+completeness regression CLAUDE.md's data-plane HARD RULE forbids. Fixed by
+rebuilding a ticker-keyed dict seeded from the existing cache, upserting
+every series the response actually returned, and re-deriving the sorted
+list from that dict before it's assigned back and persisted
+(`series_cache.save(...)` is always called with this fully-merged list,
+never the raw fetch result — `series_cache`'s own blob table does a full
+`ON CONFLICT DO UPDATE` overwrite, so handing it a partial list would lose
+every series not in that tick's delta from the persisted blob even though
+the in-memory dict was merged correctly).
+
+**A genuinely different unit on each side of `min_updated_ts`,
+confirmed directly (not the same field re-echoed):** the request param is
+`type: integer, format: int64` (Unix seconds); the response's
+`Series.last_updated_ts` is `type: string, format: date-time` (ISO-8601,
+`get-series-list.md:228-231`). `_series_watermark` converts via
+`datetime.fromisoformat(...).timestamp()`, then truncates to `int` —
+`docs/kalshi/CHEATSHEET.md`'s "Can a `min_updated_ts` watermark be a
+float" entry live-verified a bare HTTP 400 for a fractional value on this
+same parameter family, with no local exception to catch it.
+
+**Exclusive-boundary overlap, a judgment call (not in the original task
+brief):** `min_updated_ts` is documented "Filter series with metadata
+updated **after** this Unix timestamp" — exclusive, same semantic
+`milestone_scan.py`'s own `_WATERMARK_OVERLAP_SEC` already guards against
+for the identical parameter family. `_SERIES_WATERMARK_OVERLAP_SEC` (5s,
+matching that precedent) subtracts a few seconds before use, so two series
+updates landing in the same integer second can't split across "already
+visible to this fetch" / "not yet visible" and silently exclude the
+latter forever once the watermark advances past that second. Free here:
+the extra re-fetched overlap lands in the merge as a harmless upsert of an
+already-known series.
+
+**Zero-volume-in-a-delta, a judgment call (the task brief flagged this as
+unaddressed and left it to judgment):** the pre-merge filter
+(`float(s.get("volume_fp") or 0) > 0`) used to run against the full
+catalog every refresh, so a series whose volume dropped to zero was
+naturally excluded again on the next full rebuild — a silent self-correct.
+Under the delta model, a series that dropped to zero volume still shows up
+in the delta (its metadata changed), but a bare pre-merge filter would
+just skip it, leaving a stale, no-longer-true higher-volume entry in the
+merged cache forever. `_get_series_cache` instead treats a zero-volume
+entry *in the raw delta* as a removal signal — `merged.pop(ticker, None)`
+— rather than a silent no-op. A ticker simply absent from this cycle's
+delta (unrelated series, unchanged) is untouched either way.
+
+**Every existing test kept passing unmodified** (regression-testing
+standard for this plan): the fee-changes tests' `_FakeFeeChangesClient.
+get_series_list(self)` takes zero args, so `_get_series_cache` must call
+`client.get_series_list()` with no `min_updated_ts=None` kwarg at all on
+the first-sync path — not just an equivalent default value — confirmed by
+running the pre-existing suite unchanged. `test_kalshi_client.py`,
+`test_catalog_scan_pacing.py`, `test_series_cache.py`: 54 passed.

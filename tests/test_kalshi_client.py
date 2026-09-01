@@ -671,3 +671,37 @@ def test_get_series_fee_changes_recovers_every_entry_even_with_an_unmodeled_fee_
     result = asyncio.run(client.get_series_fee_changes())
     assert [r["series_ticker"] for r in result] == ["KXNFLGAME", "KXOTHER"]
     assert result[0]["fee_type"] == "quadratic_with_combo_maker_fees"
+
+
+# ---- min_updated_ts/include_product_metadata on get_series_list
+# (kalshi-category-data-completeness Task 11, docs/kalshi/
+# get-series-list.md:100-108) - additive optional params, only added to the
+# request params dict when actually given (same omit-when-unset convention
+# get_markets' own mve_filter/series_ticker already use), so every existing
+# caller's request shape stays exactly {"include_volume": True}.
+
+def test_get_series_list_passes_min_updated_ts_and_product_metadata_when_given(monkeypatch):
+    client = _client()
+    captured = {}
+
+    async def fake_get_json(path, endpoint, params):
+        captured.update(params)
+        return {"series": []}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    asyncio.run(client.get_series_list(min_updated_ts=1700000000, include_product_metadata=True))
+    assert captured == {"include_volume": True, "min_updated_ts": 1700000000,
+                         "include_product_metadata": True}
+
+
+def test_get_series_list_omits_new_params_by_default(monkeypatch):
+    client = _client()
+    captured = {}
+
+    async def fake_get_json(path, endpoint, params):
+        captured.update(params)
+        return {"series": []}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    asyncio.run(client.get_series_list())
+    assert captured == {"include_volume": True}  # every existing caller unaffected

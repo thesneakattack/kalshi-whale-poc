@@ -115,7 +115,12 @@ class KalshiPublicGateway:
         resp = await call_with_backoff(self._client.get_markets, **kwargs)
         return [m.model_dump(mode="json") for m in resp.markets]
 
-    async def get_series_list(self, category: str | None = None) -> list[dict]:
+    async def get_series_list(
+        self,
+        category: str | None = None,
+        min_updated_ts: int | None = None,
+        include_product_metadata: bool = False,
+    ) -> list[dict]:
         """All of Kalshi's series (~12,500 as of 2026-08-08) with each one's
         own lifetime volume_fp and category - a series is a template for
         recurring events ("Pro Basketball Game", "Bitcoin price up/down"),
@@ -132,8 +137,32 @@ class KalshiPublicGateway:
         single bad series and fails the ENTIRE ~12,500-series response,
         every call, with no way to skip just the offending item short of
         reaching into SDK internals. Raw JSON has no such enum to
-        validate against and needs no SDK version to catch up."""
-        data = await self._get_json("/series", endpoint="get_series_list", params={"include_volume": True})
+        validate against and needs no SDK version to catch up.
+
+        min_updated_ts/include_product_metadata (kalshi-category-data-
+        completeness Task 11, docs/kalshi/get-series-list.md:100-108): only
+        added to the request params dict when actually given - same
+        omit-when-unset convention get_markets already uses above (an
+        explicit default reaching the wire can silently change Kalshi's
+        result set) - so every existing caller's request shape
+        ({"include_volume": True} alone) is unchanged.
+        min_updated_ts is `type: integer, format: int64` (Unix seconds) on
+        the REQUEST side; the response's own Series.last_updated_ts is
+        `type: string, format: date-time` (ISO-8601, get-series-list.md:
+        228-231) - genuinely different units, confirmed directly (not the
+        same field re-echoed). A caller deriving a watermark from a
+        previously-fetched last_updated_ts must convert to epoch seconds
+        AND truncate to int - docs/kalshi/CHEATSHEET.md's "Can a
+        min_updated_ts watermark be a float" entry live-verified a bare
+        HTTP 400 ("strconv.ParseInt: parsing ...: invalid syntax") for a
+        fractional value, with no local exception, on every endpoint that
+        takes this same filter."""
+        params: dict[str, Any] = {"include_volume": True}
+        if min_updated_ts is not None:
+            params["min_updated_ts"] = min_updated_ts
+        if include_product_metadata:
+            params["include_product_metadata"] = include_product_metadata
+        data = await self._get_json("/series", endpoint="get_series_list", params=params)
         series = data.get("series", [])
         if category:
             series = [s for s in series if (s.get("category") or "").lower() == category.lower()]

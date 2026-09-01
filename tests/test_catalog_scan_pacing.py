@@ -244,3 +244,125 @@ def test_get_series_cache_tie_break_survives_a_missing_id(tmp_path, monkeypatch)
     # missing id defaults to "" < "b", so the real-id entry wins the tie.
     assert result[0]["fee_type"] == "flat"
     assert result[0]["fee_multiplier"] == 2.0
+
+
+# --- min_updated_ts delta refresh merges into the existing cache instead of
+# replacing it (kalshi-category-data-completeness Task 11). This is the
+# "load-bearing gotcha" the task brief called out: once get_series_list can
+# return a partial (delta) response, naively assigning that partial list to
+# cache["series"] would silently shrink every unchanged series out of
+# _get_top_series/_scan_catalog_batch/search_markets.
+
+def test_get_series_cache_merges_a_delta_response_instead_of_replacing(tmp_path, monkeypatch):
+    # The gotcha above: a delta response must not shrink the cache down to
+    # only the series that changed.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {
+        "fetched_at": 0.0,
+        "series": [{"ticker": "OLD-UNCHANGED", "category": "Sports", "volume_fp": "100"}],
+    }
+
+    class _FakeDeltaClient:
+        async def get_series_list(self, min_updated_ts=None):
+            return [{"ticker": "NEW-CHANGED", "category": "Crypto", "volume_fp": "200"}]
+
+        async def get_series_fee_changes(self, show_historical=True):
+            return []
+
+    monkeypatch.setattr(catalog_scan, "_SERIES_CACHE_TTL_SEC", 0)  # force refresh
+
+    result = asyncio.run(catalog_scan._get_series_cache(_FakeDeltaClient()))
+
+    tickers = {s["ticker"] for s in result}
+    assert tickers == {"OLD-UNCHANGED", "NEW-CHANGED"}  # merged, not replaced
+
+
+def test_get_series_cache_removes_a_series_whose_volume_drops_to_zero_in_the_delta(tmp_path, monkeypatch):
+    # Judgment call (not in the original brief): before this task, a full
+    # refresh naturally self-corrected a series whose volume dropped to
+    # zero, since the whole list was rebuilt from scratch every cycle. A
+    # delta response that includes a now-zero-volume series (it changed, so
+    # Kalshi returns it) is the same real signal, not something to silently
+    # drop on the pre-merge volume filter and leave a stale, higher-volume
+    # entry behind forever.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {
+        "fetched_at": 0.0,
+        "series": [
+            {"ticker": "WENT-QUIET", "category": "Sports", "volume_fp": "100",
+             "last_updated_ts": "2026-08-01T00:00:00Z"},
+            {"ticker": "STILL-UNCHANGED", "category": "Sports", "volume_fp": "50",
+             "last_updated_ts": "2026-08-01T00:00:00Z"},
+        ],
+    }
+
+    class _FakeZeroVolumeDeltaClient:
+        async def get_series_list(self, min_updated_ts=None, include_product_metadata=False):
+            return [{"ticker": "WENT-QUIET", "category": "Sports", "volume_fp": "0",
+                      "last_updated_ts": "2026-08-31T00:00:00Z"}]
+
+        async def get_series_fee_changes(self, show_historical=True):
+            return []
+
+    monkeypatch.setattr(catalog_scan, "_SERIES_CACHE_TTL_SEC", 0)  # force refresh
+
+    result = asyncio.run(catalog_scan._get_series_cache(_FakeZeroVolumeDeltaClient()))
+
+    tickers = {s["ticker"] for s in result}
+    assert tickers == {"STILL-UNCHANGED"}  # WENT-QUIET removed, not left stale at volume_fp=100
+
+
+def test_get_series_cache_derives_min_updated_ts_from_the_cached_last_updated_ts(tmp_path, monkeypatch):
+    # The ISO-8601-vs-epoch-seconds gotcha (docs/kalshi/get-series-list.md:
+    # 100-108 vs :228-231): the request param is Unix seconds (int), the
+    # cached last_updated_ts is an ISO-8601 string - _series_watermark must
+    # convert, and _SERIES_WATERMARK_OVERLAP_SEC subtracts a few seconds of
+    # deliberate overlap (min_updated_ts is an exclusive "after" filter).
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {
+        "fetched_at": 0.0,
+        "series": [{"ticker": "K1", "category": "Sports", "volume_fp": "100",
+                     "last_updated_ts": "2026-08-01T00:00:00+00:00"}],  # epoch 1785542400
+    }
+    captured = {}
+
+    class _FakeWatermarkClient:
+        async def get_series_list(self, min_updated_ts=None, include_product_metadata=False):
+            captured["min_updated_ts"] = min_updated_ts
+            captured["include_product_metadata"] = include_product_metadata
+            return []
+
+        async def get_series_fee_changes(self, show_historical=True):
+            return []
+
+    monkeypatch.setattr(catalog_scan, "_SERIES_CACHE_TTL_SEC", 0)
+
+    asyncio.run(catalog_scan._get_series_cache(_FakeWatermarkClient()))
+
+    expected_epoch = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())
+    assert captured["min_updated_ts"] == expected_epoch - catalog_scan._SERIES_WATERMARK_OVERLAP_SEC
+    assert isinstance(captured["min_updated_ts"], int)  # never the raw float .timestamp() - Kalshi 400s on that
+    assert captured["include_product_metadata"] is True
+
+
+def test_get_series_cache_first_sync_omits_min_updated_ts_entirely(tmp_path, monkeypatch):
+    # A genuine first-ever sync (cache["series"] empty) must call
+    # get_series_list() with zero args - the pre-Task-11 shape - not even
+    # min_updated_ts=None explicitly, so every existing zero-arg fake client
+    # in this file (_FakeFeeChangesClient above) keeps working unmodified.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {"fetched_at": 0.0, "series": []}
+    calls = []
+
+    class _FakeFirstSyncClient:
+        async def get_series_list(self):
+            calls.append(())
+            return [{"ticker": "FIRST", "category": "Sports", "volume_fp": "1"}]
+
+        async def get_series_fee_changes(self, show_historical=True):
+            return []
+
+    result = asyncio.run(catalog_scan._get_series_cache(_FakeFirstSyncClient()))
+
+    assert calls == [()]
+    assert [s["ticker"] for s in result] == ["FIRST"]

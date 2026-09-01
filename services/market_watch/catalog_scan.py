@@ -278,6 +278,51 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_SERIES_WATERMARK_OVERLAP_SEC = 5  # get-series-list.md:103-105 documents
+# min_updated_ts as "Filter series with metadata updated after this Unix
+# timestamp" - exclusive (strictly greater than), not "at or after" - same
+# semantic milestone_scan.py's own _WATERMARK_OVERLAP_SEC already guards
+# against for the same request-parameter family (get-milestones.md, docs/
+# kalshi/CHEATSHEET.md's min_updated_ts entry: "the same int64 typing
+# appears on every other endpoint that takes this filter"). Two series
+# metadata updates landing in the same integer second could split across
+# "already visible to this fetch" vs "not yet visible" - once the watermark
+# advances past that second, the not-yet-visible one would never be asked
+# for again, a silent completeness hole. Re-fetching a few seconds of
+# overlap every refresh is free here: it lands in the merge below, which
+# upserts an already-known, unchanged series as a harmless no-op.
+
+
+def _series_watermark(series: list[dict]) -> int | None:
+    """Unix-seconds high-water mark for get_series_list's min_updated_ts
+    (kalshi-category-data-completeness Task 11) - the max of the cache's
+    own Series.last_updated_ts values. last_updated_ts is `type: string,
+    format: date-time` (ISO-8601, get-series-list.md:228-231) on the
+    RESPONSE side but min_updated_ts is `type: integer, format: int64`
+    (Unix seconds) on the REQUEST side - genuinely different units, so this
+    converts before returning. int(), not the raw float .timestamp()
+    returns: docs/kalshi/CHEATSHEET.md's "Can a min_updated_ts watermark be
+    a float" entry live-verified a bare HTTP 400 for a fractional value on
+    this same parameter family. Returns None when no cached series carries
+    a usable timestamp (e.g. a cache seeded before this field was tracked)
+    - the caller falls back to an unfiltered fetch rather than risk
+    narrowing the request off a watermark that was never really known, the
+    same "when in doubt, ask for everything" posture _get_series_cache
+    already takes on a genuine first-ever sync."""
+    watermarks = []
+    for s in series:
+        raw_ts = s.get("last_updated_ts")
+        if not raw_ts:
+            continue
+        try:
+            watermarks.append(datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp())
+        except (ValueError, AttributeError):
+            continue
+    if not watermarks:
+        return None
+    return max(0, int(max(watermarks)) - _SERIES_WATERMARK_OVERLAP_SEC)
+
+
 async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     """All series with nonzero lifetime volume (~9,400 of Kalshi's ~12,500
     total, as of 2026-08-08), sorted by volume_fp descending, cached in
@@ -289,6 +334,30 @@ async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     repeatedly. Shared by both the automatic watchlist (_get_top_series,
     just the top N) and market search (search_markets, which also needs
     the long tail to text-match against).
+
+    Merges, never replaces (kalshi-category-data-completeness Task 11): a
+    genuine first-ever sync (cache["series"] empty) still calls
+    get_series_list() with zero args - a full fetch, byte-identical to
+    this function's pre-Task-11 behavior. Every later refresh instead
+    watermarks on _series_watermark(cache["series"]) and, when that's
+    computable, calls get_series_list(min_updated_ts=..., include_product_
+    metadata=True) - Kalshi then legitimately returns only the series whose
+    metadata changed since the watermark, not the whole catalog. Naively
+    assigning that partial response to cache["series"] would silently drop
+    every unchanged series out of _get_top_series/_scan_catalog_batch/
+    search_markets - the exact completeness regression CLAUDE.md's
+    data-plane HARD RULE forbids - so the response is instead merged into a
+    ticker-keyed dict seeded from the existing cache, and the full,
+    re-sorted dict is what gets assigned back and persisted.
+
+    A series whose raw (pre-filter) volume_fp has genuinely dropped to zero
+    since the last fetch is treated as a removal from the merged cache,
+    not a silent no-op: before Task 11, a full refresh naturally
+    self-corrected this every cycle (the whole list was rebuilt from
+    scratch, so a now-zero-volume series was simply excluded again); under
+    the delta model a series that dropped to zero volume would otherwise
+    never be re-filtered out once merged in, leaving a stale, now-wrong
+    higher-volume entry in the cache forever.
 
     Also folds in get_series_fee_changes' bulk call (kalshi-category-
     data-completeness Task 2) on every refresh: each series' raw fee_type/
@@ -304,12 +373,33 @@ async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     never had a scheduled change (confirmed via changelog-index.md's
     2025-09-21 entry - see get_series_fee_changes' own docstring) and keeps
     whatever fee_type/fee_multiplier its raw Series object already
-    carried."""
+    carried. This resolution runs over the FULL merged list every refresh,
+    not just this cycle's delta batch - a scheduled fee change can cross
+    "now" (get-series-fee-changes.md's own scheduled_ts) without the
+    series' own last_updated_ts moving at all, so a series absent from this
+    cycle's delta could still have a fee change newly come into effect;
+    scoping this resolution to the delta alone would silently miss it."""
     cache = state["series_cache"]
     if time.time() - cache["fetched_at"] > _SERIES_CACHE_TTL_SEC or not cache["series"]:
-        series = await client.get_series_list()
-        series = [s for s in series if float(s.get("volume_fp") or 0) > 0]
-        series.sort(key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
+        if not cache["series"]:
+            raw = await client.get_series_list()  # first-ever sync - full fetch, exactly as today
+        else:
+            min_updated_ts = _series_watermark(cache["series"])
+            if min_updated_ts is not None:
+                raw = await client.get_series_list(min_updated_ts=min_updated_ts, include_product_metadata=True)
+            else:
+                raw = await client.get_series_list(min_updated_ts=min_updated_ts)
+
+        merged = {s["ticker"]: s for s in cache["series"] if s.get("ticker")}
+        for s in raw:
+            ticker = s.get("ticker")
+            if not ticker:
+                continue
+            if float(s.get("volume_fp") or 0) > 0:
+                merged[ticker] = s
+            else:
+                merged.pop(ticker, None)  # dropped to zero volume - remove, don't leave a stale entry
+        series = sorted(merged.values(), key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
 
         fee_changes = await client.get_series_fee_changes()
         now = _utcnow()
