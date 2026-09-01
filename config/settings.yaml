@@ -2,7 +2,22 @@ mode: paper
 kalshi:
   base_url: https://external-api.kalshi.com/trade-api/v2
   markets_watchlist:
+  - KXBTCW
+  - KXSILVERW
+  - KXGOLDW
+  - KXETHW
+  - KXBTCD
+  - KXGOLDD
+  - KXSILVERD
+  - KXETHD
+  - KXBTCH
+  - KXGOLDH
+  - KXSILVERH
+  - KXETHH
   - KXBTC15M
+  - KXGOLD15M
+  - KXSILVER15M
+  - KXETH15M
   markets_watchlist_mode: merge
   watchlist_size: 150
   max_children_per_parent: 5
@@ -66,7 +81,7 @@ strategy:
   special_market_min_seconds_to_close: 120
   max_open_positions_per_series: 0
   kelly_fraction_of_cap: 0.3
-  min_unit_cost: 0.35
+  min_unit_cost: 0.25
   max_unit_cost: 0.9
   min_whale_winrate_pct: 40
   min_resolved_for_whale_filter: 20
@@ -121,7 +136,7 @@ whale_watcher_kalshi:
   # and services/whalewatchers/kalshi_trade_tape.py's module docstring).
   # 5000 is the measured recommendation (mean unit cost 0.759 vs the old
   # dollar gate's 0.926).
-  min_contracts: 10000
+  min_contracts: 3000
   # Same two-tier structure the old min_notional_usd_by_series had (crypto
   # looser than the global default, mention-style markets loosest), same
   # round numbers - but re-validated against real historical signal sizes,
@@ -130,14 +145,7 @@ whale_watcher_kalshi:
   # 5000 global floor with no override would have gone dark on both. 2500/
   # 500 sit at or below every affected series' observed p10, so switching
   # units doesn't silently zero out their signal flow.
-  min_contracts_by_series:
-    KXBTC15M: 2500
-    KXBTCD: 2500
-    KXETH15M: 2500
-    KXETHD: 2500
-    KXTRUMPSAY: 500
-    KXTRUMPMENTION: 500
-    KXMAMDANIMENTION: 500
+  min_contracts_by_series: {}
 # depth_factor/unusualness_factor/proximity_factor floored at the shared
 # minimum (0.0404) since 2026-08-10's first real calibration run found
 # unusualness_factor/agreement_factor negative. SUPERSEDED 2026-08-30: a
@@ -259,9 +267,9 @@ backup:
   # that file alone reached 24.4GB (2026-08-30 investigation, see
   # services/backup/backup.py's module docstring).
   large_files:
-    - series_watcher.db
-    - candidate_log.db
-    - market_history.db
+  - series_watcher.db
+  - candidate_log.db
+  - market_history.db
   large_file_interval_sec: 86400  # 24h - deliberately longer than the
   # regular tier's 6h: these files are already durable, continuously-
   # accumulating append logs, so losing a few hours of them to a backup gap
@@ -311,7 +319,5 @@ event_schedule:
   web_search_enabled: true
   max_resolutions_per_tick: 5
 strategy_overrides:
-  by_category:
-    Sports:
-      stop_loss_pct: null
+  by_category: {}
   by_series: {}
